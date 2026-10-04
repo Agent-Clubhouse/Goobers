@@ -28,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/textsuggest"
 	"github.com/goobers/goobers/internal/workflowsafety"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -54,10 +55,21 @@ import (
 // per `run`), only for harnesses an agentic stage actually references.
 var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
 
+// copilotAuthCheckSuccessLine is the reply copilotAuthCheckArgs asks for. The
+// probe passes as soon as the CLI prints it, without waiting out the CLI's own
+// shutdown, which on slow hosts took long enough after a valid reply to push
+// the probe past harnessPreflightTimeout (#5165).
+const copilotAuthCheckSuccessLine = "ok"
+
 // harnessPreflightTimeout bounds a single harness preflight (its version check
 // plus the auth probe's real API round-trip) so a hung CLI or network can't
-// hang `goobers validate` or `goobers up`/`run` startup.
-const harnessPreflightTimeout = 90 * time.Second
+// hang `goobers validate` or `goobers up`/`run` startup. One value serves all
+// three so they cannot disagree about whether the same harness is healthy.
+// It is deliberately generous: a valid Copilot probe was measured at 92-100s
+// end to end on Windows (#5165), so the former 90s cap failed healthy hosts.
+// The probe returns as soon as its reply arrives, so the cap only costs time
+// when a CLI or network is genuinely hung.
+const harnessPreflightTimeout = 180 * time.Second
 
 const placeholderFindingCode = "PLACEHOLDER001"
 const sourceTreeAdvisoryCode = "SOURCE001"
@@ -90,7 +102,10 @@ var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--c
 	"that identity lacks Contribute, Contribute to pull requests or Create\n" +
 	"branch, and warns on a missing Force push, a held policy bypass, a blocking\n" +
 	"Prefix policy over refs/heads/, and backlog.doneStates state names the\n" +
-	"Boards project does not have; these checks only read. " +
+	"Boards project does not have; these checks only read. It also probes\n" +
+	"every credentials: capability override that replaces a repository token\n" +
+	"against each gaggle's target repository, since an override applies to\n" +
+	"every gaggle. " +
 	"--check-dispatch-namespaces additionally verifies, for each gaggle, that\n" +
 	"its declared isolation.namespace exists and this kubeconfig's credentials\n" +
 	"hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check\n" +
@@ -314,7 +329,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// validates (#124). A config that fails this would also fail to start
 	// the daemon; catching that now, at `validate` time, is the whole point.
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		file := diagnosticFile(root, configDir)
@@ -344,7 +359,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		options.deferModelDiscovery, modelCredential,
+		options.deferModelDiscovery, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
@@ -546,7 +561,9 @@ var strictNeutralWarningCodes = func() []validate.WarningCode {
 		validate.RunnerAVExclusionsUnverified,
 		validate.WarningImplicitWritableWorkspace,
 		validate.WarningGaggleMixedProvider,
+		validate.WarningCrossProviderCredentialOverride,
 		validate.WarningInertADOCapability,
+		validate.WarningProviderInputDefaulted,
 	}
 	for _, code := range workflowsafety.Codes() {
 		codes = append(codes, validate.WarningCode(code))
@@ -801,7 +818,7 @@ func suggestConfiguredRepo(repo apiv1.RepoRef, configured []instance.RepoRef) (i
 		if repo.Provider != "" && candidate.Provider != string(repo.Provider) {
 			continue
 		}
-		distance := repositoryEditDistance(wanted, strings.ToLower(candidate.Owner+"/"+candidate.Name))
+		distance := textsuggest.Distance(wanted, strings.ToLower(candidate.Owner+"/"+candidate.Name))
 		if bestDistance == -1 || distance < bestDistance {
 			bestDistance = distance
 			best = candidate
@@ -811,26 +828,6 @@ func suggestConfiguredRepo(repo apiv1.RepoRef, configured []instance.RepoRef) (i
 		return instance.RepoRef{}, false
 	}
 	return best, true
-}
-
-func repositoryEditDistance(a, b string) int {
-	previous := make([]int, len(b)+1)
-	for i := range previous {
-		previous[i] = i
-	}
-	for i := 1; i <= len(a); i++ {
-		current := make([]int, len(b)+1)
-		current[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 0
-			if a[i-1] != b[j-1] {
-				cost = 1
-			}
-			current[j] = min(current[j-1]+1, previous[j]+1, previous[j-1]+cost)
-		}
-		previous = current
-	}
-	return previous[len(b)]
 }
 
 func apiRepoName(repo apiv1.RepoRef) string {

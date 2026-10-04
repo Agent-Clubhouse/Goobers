@@ -59,6 +59,8 @@ type copilotControlledRunner struct {
 	runCancel       context.CancelFunc
 	deadlineDone    func()
 	readiness       MCPReadiness
+	settleTimeout   time.Duration
+	diagnosticsOnly bool
 }
 
 func (r *copilotControlledRunner) initialize(ctx context.Context, req ProcessRequest) error {
@@ -103,7 +105,7 @@ func (r *copilotControlledRunner) run(ctx context.Context, req ProcessRequest) (
 	if !r.ready {
 		err := r.open(r.runCtx, req)
 		if err == nil {
-			r.readiness, err = probeRequiredMCPSession(ctx, r.session)
+			r.readiness, err = probeRequiredMCPSession(ctx, r.session, r.settleTimeout)
 		}
 		if err := readinessReportedError(r.request, r.readiness, err); err != nil {
 			return ProcessResult{ExitCode: -1}, err
@@ -115,6 +117,23 @@ func (r *copilotControlledRunner) run(ctx context.Context, req ProcessRequest) (
 		return ProcessResult{ExitCode: -1}, err
 	}
 	return r.session.RunPrompt(ctx, prompt, req)
+}
+
+func (r *copilotControlledRunner) reopenForRetry(_ context.Context, _ ProcessRequest) error {
+	if !r.ready {
+		return nil
+	}
+	if r.process != nil {
+		r.process.close()
+		r.process = nil
+	}
+	r.session = nil
+	r.ready = false
+	return nil
+}
+
+func (r *copilotControlledRunner) RestartCopilotForRepair(ctx context.Context, req ProcessRequest) error {
+	return r.reopenForRetry(ctx, req)
 }
 
 func (r *copilotControlledRunner) open(ctx context.Context, req ProcessRequest) error {
@@ -218,6 +237,10 @@ func (r *copilotControlledRunner) sessionConfig(id string, req ProcessRequest, s
 		SessionID: id, Model: r.model, ReasoningEffort: r.options["reasoningEffort"],
 		WorkingDirectory: req.Dir, MCPServers: servers, AvailableTools: copilotAvailableTools(r.request),
 		OnPermissionRequest: copilotSessionPermissions(r.request, r.permissionRoots),
+	}
+	if r.diagnosticsOnly {
+		config.OnPermissionRequest = diagnosticMCPPermissions()
+		config.DisabledMCPServers = []string{"github-mcp-server"}
 	}
 	if r.options["context"] == "long_context" {
 		config.ContextTier = copilot.ContextTierLongContext

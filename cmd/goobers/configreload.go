@@ -21,7 +21,10 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/configgeneration"
+	"github.com/goobers/goobers/internal/configsignal"
 	"github.com/goobers/goobers/internal/configtree"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -114,6 +117,55 @@ type configReloader struct {
 	rejectedDigest  string
 	mirroredDigest  string
 	lastMirrorError string
+	// transientRetry re-evaluates a digest whose reload was rejected by a
+	// transient provider failure (#5596). Without it the unchanged digest
+	// matched observedDigest and was never looked at again, so a valid edit
+	// rejected during a quota window stayed unapplied until the next edit.
+	transientRetry transientReloadRetry
+	pollDigest     configsignal.Cache
+}
+
+// transientReloadRetry is the backoff schedule for one rejected digest. A zero
+// at means no retry is due: the pending attempt was consumed, and only another
+// transient rejection of the same digest schedules the next one.
+type transientReloadRetry struct {
+	digest  string
+	at      time.Time
+	backoff time.Duration
+}
+
+const (
+	transientReloadRetryInitial = 30 * time.Second
+	transientReloadRetryMax     = 10 * time.Minute
+)
+
+// takeTransientRetry reports whether digest has a transient-rejection retry
+// due at now, consuming it so a retry that fails some other way does not
+// re-run on every poll.
+func (r *configReloader) takeTransientRetry(digest string, now time.Time) bool {
+	retry := &r.transientRetry
+	if retry.digest != digest || retry.at.IsZero() || now.Before(retry.at) {
+		return false
+	}
+	retry.at = time.Time{}
+	return true
+}
+
+// scheduleTransientRetry records the outcome of building digest's
+// definitions. A transient provider failure schedules the next attempt with
+// doubling backoff and says so in the returned error; any other failure is
+// deterministic for these bytes and clears the schedule.
+func (r *configReloader) scheduleTransientRetry(digest string, err error, now time.Time) error {
+	if !errors.Is(err, credentials.ErrTransientProvider) {
+		r.transientRetry = transientReloadRetry{}
+		return err
+	}
+	backoff := transientReloadRetryInitial
+	if r.transientRetry.digest == digest && r.transientRetry.backoff > 0 {
+		backoff = min(2*r.transientRetry.backoff, transientReloadRetryMax)
+	}
+	r.transientRetry = transientReloadRetry{digest: digest, at: now.Add(backoff), backoff: backoff}
+	return fmt.Errorf("%w (transient provider failure; retrying in %s)", err, backoff)
 }
 
 func (r *configReloader) Run(ctx context.Context) error {
@@ -156,6 +208,7 @@ func (r *configReloader) pollOnceMode(now time.Time, forceSourceValidation bool)
 	defer r.mu.Unlock()
 	oldDigest = r.appliedDigest
 	r.lastRejectionMessage = ""
+	r.pollDigest.Invalidate() // Explicit apply always reads the current bytes.
 	if forceSourceValidation {
 		r.observedDigest = ""
 	}
@@ -202,7 +255,10 @@ func (r *configReloader) workflowSource(gaggle, workflow string) (string, bool) 
 func (r *configReloader) poll(now time.Time) error {
 	defer r.publishReloadStatus(now)
 	defer r.refreshConfigMirror(context.Background())
-	digest, err := configDirectoryDigest(r.layout.ConfigDir())
+	root := r.layout.ConfigDir()
+	digest, err := r.pollDigest.Digest(now, []string{root, filepath.Join(filepath.Dir(root), "goobers"), filepath.Join(filepath.Dir(root), "skills")}, func(observe func(string)) (string, error) {
+		return configDirectoryDigestObserved(root, "", observe)
+	})
 	if err != nil {
 		message := err.Error()
 		if message == r.lastDigestError {
@@ -212,7 +268,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return r.reject("", err)
 	}
 	r.lastDigestError = ""
-	if digest == r.observedDigest {
+	if digest == r.observedDigest && !r.takeTransientRetry(digest, now) {
 		return nil
 	}
 	r.observedDigest = digest
@@ -231,7 +287,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
 	}
 	if engineTopologyChanged(r.setup.Definitions, set, r.setup.Config) {
-		return r.reject(digest, errors.New("adding or removing a gaggle requires a daemon restart while the engine is enabled (the live journal writer and projection reconciler are pinned to the boot-time gaggle set)"))
+		return r.reject(digest, errors.New(engineTopologyRestartMessage))
 	}
 	runtimeMigration, err := r.layout.MigrateLegacyRuntimeWithReport(configuredGaggleNames(set))
 	if err != nil {
@@ -240,27 +296,27 @@ func (r *configReloader) poll(now time.Time) error {
 	if err := journalLegacyRuntimeMigration(r.layout, r.setup.InstanceLog, runtimeMigration); err != nil {
 		return r.reject(digest, fmt.Errorf("journal legacy runtime migration: %w", err))
 	}
-	definitions, err := buildSchedulerDefinitions(
-		r.layout,
-		r.setup.Config,
-		set,
-		report,
-		r.wg,
-		r.setup.RunnerRegistry,
-		r.setup.Telemetry,
-		r.setup.RollupDB,
-		r.setup.Watermarks,
-		r.setup.InstanceLog,
-		r.setup.SharedRegistry,
-		r.setup.WorktreesByGaggle,
-		r.setup.ProviderQuota,
-		r.setup.TerminalNotifier,
-		r.setup.SecretStores,
-		nil,
-		r.setup.Generations,
-	)
+	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
+		Layout:           r.layout,
+		Config:           r.setup.Config,
+		Definitions:      set,
+		Validation:       report,
+		WaitGroup:        r.wg,
+		RunnerRegistry:   r.setup.RunnerRegistry,
+		Telemetry:        r.setup.Telemetry,
+		RollupDB:         r.setup.RollupDB,
+		Watermarks:       r.setup.Watermarks,
+		InstanceLog:      r.setup.InstanceLog,
+		SharedRegistry:   r.setup.SharedRegistry,
+		WorktreeManagers: r.setup.WorktreesByGaggle,
+		ProviderQuota:    r.setup.ProviderQuota,
+		TerminalNotifier: r.setup.TerminalNotifier,
+		CredentialStores: r.setup.SecretStores,
+		StartupProgress:  nil,
+		Generations:      []*configgeneration.Retainer{r.setup.Generations},
+	})
 	if err != nil {
-		return r.reject(digest, &configReportError{report: report, err: err})
+		return r.reject(digest, &configReportError{report: report, err: r.scheduleTransientRetry(digest, err, now)})
 	}
 
 	stableDigest, err := configDirectoryDigest(r.layout.ConfigDir())
@@ -332,6 +388,7 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	r.appliedDigest = digest
 	r.digests.Set(digest)
+	r.transientRetry = transientReloadRetry{}
 	r.rejectionReason = ""
 	r.candidateWarnings = nil
 	// Advisory persistence cannot turn a successfully applied configuration
@@ -432,6 +489,10 @@ func configDirectoryDigestForGaggle(root, gaggle string) (string, error) {
 }
 
 func configDirectoryDigestScoped(root, gaggle string) (string, error) {
+	return configDirectoryDigestObserved(root, gaggle, nil)
+}
+
+func configDirectoryDigestObserved(root, gaggle string, observe func(string)) (string, error) {
 	hash := sha256.New()
 	contentPaths := make(map[string]struct{})
 	includePath := func(path string) (bool, error) {
@@ -543,6 +604,9 @@ func configDirectoryDigestScoped(root, gaggle string) (string, error) {
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
+		if observe != nil {
+			observe(path)
+		}
 		info, err := os.Stat(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue

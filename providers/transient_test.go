@@ -31,6 +31,9 @@ func TestIsTransientError(t *testing.T) {
 		{"typed rate-limit give-up", &RateLimitError{Endpoint: "/repos/acme/app/issues", Status: 403}, true},
 		{"wrapped typed rate-limit give-up", fmt.Errorf("list work items: %w", &RateLimitError{Endpoint: "/x", Status: 429}), true},
 		{"serialized typed rate-limit give-up", errors.New((&RateLimitError{Endpoint: "/x", Status: 403, Secondary: true}).Error()), true},
+		{"typed claim metadata drift", &ClaimMetadataDriftError{Provider: ProviderGitHub, ItemID: "7", RunID: "run-1", Label: LabelClaimed}, true},
+		{"wrapped claim metadata drift", fmt.Errorf("confirm provider claim: %w", &ClaimMetadataDriftError{Provider: ProviderGitHub, ItemID: "7", RunID: "run-1", Label: LabelClaimed}), true},
+		{"serialized claim metadata drift", errors.New("confirm provider claim: claim metadata drift for github item 7: run run-1 claim succeeded but label \"goobers:claimed\" is not visible"), true},
 		{"url client timeout", &url.Error{Op: "Get", URL: "https://api.github.com", Err: context.DeadlineExceeded}, true},
 		{"url transport eof", &url.Error{Op: "Get", URL: "https://api.github.com", Err: io.EOF}, true},
 		{"subprocess connection reset", errors.New("error: list work items: send request: read tcp: connection reset by peer"), true},
@@ -51,6 +54,29 @@ func TestIsTransientError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsTransientError(tc.err); got != tc.want {
 				t.Fatalf("IsTransientError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsUnauthorizedError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"serialized 401", errors.New("GET /repos/acme/web/pulls/41 failed: status 401: Bad credentials"), true},
+		{"wrapped serialized 401", fmt.Errorf("poll pull request: %w", errors.New("GET /pulls/41 failed: status 401: Bad credentials")), true},
+		{"typed 401", &providerResponseError{method: "GET", endpoint: "/pulls/41", statusCode: 401, body: "Bad credentials"}, true},
+		{"403", errors.New("GET /pulls/41 failed: status 403: forbidden"), false},
+		{"503", errors.New("GET /pulls/41 failed: status 503: unavailable"), false},
+		{"opaque", errors.New("status nope"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsUnauthorizedError(tc.err); got != tc.want {
+				t.Fatalf("IsUnauthorizedError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

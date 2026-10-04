@@ -2,6 +2,8 @@ package dslmigrate
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -99,6 +101,465 @@ func TestMigratePinsUnsetPollInterval(t *testing.T) {
 	}
 }
 
+func TestMigrateTransformPreservesUnrelatedSourceBytes(t *testing.T) {
+	source := `# workflow docs must stay byte-stable
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4" # keep this comment
+
+metadata:
+  name: unpinned
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      goal: >-
+        Keep this hand-wrapped text
+        on multiple source lines.
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated:
+        check: ci-status
+      branches:
+        pass: ""
+`
+	want := `# workflow docs must stay byte-stable
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0" # keep this comment
+
+metadata:
+  name: unpinned
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      goal: >-
+        Keep this hand-wrapped text
+        on multiple source lines.
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated:
+        check: ci-status
+        pollIntervalSeconds: 10
+      branches:
+        pass: ""
+`
+
+	result, err := Migrate([]byte(source), "2.0")
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if result.After != want {
+		t.Fatalf("transform migration rewrote unrelated source bytes\nwant:\n%s\ngot:\n%s", want, result.After)
+	}
+	if len(result.Notes) != 1 || !strings.Contains(result.Notes[0], `gate "ci"`) {
+		t.Fatalf("Notes = %v, want one note naming gate \"ci\"", result.Notes)
+	}
+}
+
+func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
+	tests := []struct {
+		name      string
+		automated string
+		want      string
+	}{
+		{
+			name:      "non-empty flow",
+			automated: "{check: ci-status}",
+			want:      "{pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "empty flow",
+			automated: "{}",
+			want:      "{pollIntervalSeconds: 10}",
+		},
+		{
+			name:      "existing poll interval",
+			automated: "{check: ci-status, pollIntervalSeconds: 0}",
+			want:      "{check: ci-status, pollIntervalSeconds: 10}",
+		},
+		{
+			name:      "multi-line flow",
+			automated: "{\n        check: ci-status\n      }",
+			want:      "{pollIntervalSeconds: 10, \n        check: ci-status\n      }",
+		},
+		{
+			name:      "commented flow",
+			automated: "{ # keep comment\n        check: ci-status\n      }",
+			want:      "{pollIntervalSeconds: 10,  # keep comment\n        check: ci-status\n      }",
+		},
+		{
+			name:      "nested flow",
+			automated: "{check: ci-status, params: {description: keep}}",
+			want:      "{pollIntervalSeconds: 10, check: ci-status, params: {description: keep}}",
+		},
+		{
+			name:      "comment-only empty flow",
+			automated: "{ # keep this comment\n      }",
+			want:      "{ # keep this comment\n      pollIntervalSeconds: 10\n      }",
+		},
+		{
+			name:      "anchored flow mapping",
+			automated: "&ci {check: ci-status}",
+			want:      "&ci {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "tagged flow mapping",
+			automated: "!!map {check: ci-status}",
+			want:      "!!map {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "anchor then tag flow mapping",
+			automated: "&ci !!map {check: ci-status}",
+			want:      "&ci !!map {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "tag then anchor flow mapping",
+			automated: "!!map &ci {check: ci-status}",
+			want:      "!!map &ci {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "decorated comment-only empty flow",
+			automated: "&a { # keep this comment\n      }",
+			want:      "&a { # keep this comment\n      pollIntervalSeconds: 10\n      }",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := workflowWithAutomatedMapping(test.automated)
+			want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "automated: "+test.automated, "automated: "+test.want, 1)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("flow transform changed bytes beyond the version/poll edits\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
+			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
+				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformEditsDecoratedBlockAutomatedMapping(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{name: "anchored block mapping", header: "      automated: &ci\n"},
+		{name: "tagged block mapping", header: "      automated: !!map\n"},
+		{name: "anchor then tag block mapping", header: "      automated: &ci !!map\n"},
+		{name: "tag then anchor block mapping", header: "      automated: !!map &ci\n"},
+		{name: "decorator on following line", header: "      automated:\n        &ci\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := workflowWithAutomatedHeader(test.header, "        check: ci-status\n")
+			want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "        check: ci-status\n", "        check: ci-status\n        pollIntervalSeconds: 10\n", 1)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("decorated block mapping changed bytes beyond expected edits\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
+			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
+				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformPreservesCommentsInFixtureMatrix(t *testing.T) {
+	sources := []string{
+		workflowWithUnpinnedCIPoll,
+		workflowWithPinnedCIPoll,
+		workflowWithAutomatedMapping("{ # keep this comment\n      }"),
+		workflowWithAutomatedMapping("&a { # keep this comment\n      }"),
+		workflowWithAutomatedBlock("        check: ci-status # keep check comment\n"),
+		workflowWithAutomatedBlock("        pollIntervalSeconds: # keep null comment\n        check: ci-status\n"),
+		strings.Replace(workflowWithAutomatedBlock("        check: ci-status\n"),
+			"      type: deterministic\n",
+			"      type: deterministic\n      goal: |\n        literal # not a comment inside block\n", 1),
+	}
+	for i, source := range sources {
+		t.Run(fmt.Sprintf("fixture-%d", i), func(t *testing.T) {
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			for _, comment := range yamlCommentTexts([]byte(source)) {
+				if !strings.Contains(result.After, comment) {
+					t.Fatalf("comment %q was not preserved in:\n%s", comment, result.After)
+				}
+			}
+		})
+	}
+}
+
+func TestMigrateTransformPreservesMultilineAutomatedValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		automated string
+	}{
+		{
+			name: "direct literal block scalar",
+			automated: `        check: ci-status
+        description: |
+          first line
+          second line
+`,
+		},
+		{
+			name: "direct folded block scalar",
+			automated: `        check: ci-status
+        description: >
+          first line
+          second line
+`,
+		},
+		{
+			name: "nested literal block scalar",
+			automated: `        check: ci-status
+        params:
+          description: |
+            first line
+            second line
+`,
+		},
+		{
+			name: "nested folded block scalar",
+			automated: `        check: ci-status
+        params:
+          description: >
+            first line
+            second line
+`,
+		},
+		{
+			name: "multiline double quoted scalar",
+			automated: `        check: ci-status
+        description: "first line
+          second line"
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := workflowWithAutomatedBlock(test.automated)
+			want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "      automated:\n        ", "      automated:\n        pollIntervalSeconds: 10\n        ", 1)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("multiline transform changed bytes beyond the version/poll edits\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
+			got := decodeWorkflow(t, result.After)
+			if got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
+				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformExistingPollIntervalUnsetAndExplicitValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name:   "block empty",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds:\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10\n        check: ci-status\n"),
+		},
+		{
+			name:   "block empty before comment",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds: # keep\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10 # keep\n        check: ci-status\n"),
+		},
+		{
+			name:   "block tilde null",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds: ~\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10\n        check: ci-status\n"),
+		},
+		{
+			name:   "block null literal",
+			source: workflowWithAutomatedBlock("        pollIntervalSeconds: null\n        check: ci-status\n"),
+			want:   workflowWithAutomatedBlock("        pollIntervalSeconds: 10\n        check: ci-status\n"),
+		},
+		{
+			name:   "flow empty before comma",
+			source: workflowWithAutomatedMapping("{pollIntervalSeconds: , check: ci-status}"),
+			want:   workflowWithAutomatedMapping("{pollIntervalSeconds: 10, check: ci-status}"),
+		},
+		{
+			name:   "flow empty only",
+			source: workflowWithAutomatedMapping("{pollIntervalSeconds:}"),
+			want:   workflowWithAutomatedMapping("{pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "flow null literal",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: null}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "flow tilde null",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: ~}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "block zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: 0\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: 10\n"),
+		},
+		{
+			name:   "block tagged zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 0\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 10\n"),
+		},
+		{
+			name:   "block tagged zero with repeated comment value",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 0 # 0 means default\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 10 # 0 means default\n"),
+		},
+		{
+			name:   "block tagged quoted zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int \"0\" # 0 means default\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: !!int 10 # 0 means default\n"),
+		},
+		{
+			name:   "block anchored zero",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 0\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 10\n"),
+		},
+		{
+			name:   "block anchored zero with repeated comment value",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 0 # 0 means default\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: &zero 10 # 0 means default\n"),
+		},
+		{
+			name:   "flow zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 0}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: 10}"),
+		},
+		{
+			name:   "flow tagged zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 0}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 10}"),
+		},
+		{
+			name:   "flow tagged zero with repeated comment value",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 0 # 0 means default\n      }"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 10 # 0 means default\n      }"),
+		},
+		{
+			name:   "flow tagged quoted zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int \"0\" # 0 means default\n      }"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: !!int 10 # 0 means default\n      }"),
+		},
+		{
+			name:   "flow anchored zero",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 0}"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 10}"),
+		},
+		{
+			name:   "flow anchored zero with repeated comment value",
+			source: workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 0 # 0 means default\n      }"),
+			want:   workflowWithAutomatedMapping("{check: ci-status, pollIntervalSeconds: &zero 10 # 0 means default\n      }"),
+		},
+		{
+			name:   "negative stays explicit",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: -1\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: -1\n"),
+		},
+		{
+			name:   "non-numeric stays explicit",
+			source: workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: soon\n"),
+			want:   workflowWithAutomatedBlock("        check: ci-status\n        pollIntervalSeconds: soon\n"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := strings.Replace(test.want, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+
+			result, err := Migrate([]byte(test.source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("migration changed bytes beyond expected edits\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
+			gotSem, err := parseSemanticYAML([]byte(result.After))
+			if err != nil {
+				t.Fatalf("parse migrated YAML: %v\n%s", err, result.After)
+			}
+			wantSem, err := expectedSemanticV14ToV20([]byte(test.source), "2.0")
+			if err != nil {
+				t.Fatalf("node-transform semantics: %v", err)
+			}
+			if !reflect.DeepEqual(gotSem, wantSem) {
+				t.Fatalf("source edit semantics differ from node transform\ngot:  %#v\nwant: %#v", gotSem, wantSem)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformDoesNotNormalizeUnrelatedPollIntervalText(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "quoted scalar",
+			source: strings.Replace(workflowWithAutomatedBlock("        check: ci-status\n"),
+				"      type: deterministic\n",
+				"      type: deterministic\n      goal: \"literal pollIntervalSeconds:} text\"\n", 1),
+		},
+		{
+			name: "block scalar",
+			source: strings.Replace(workflowWithAutomatedBlock("        check: ci-status\n"),
+				"      type: deterministic\n",
+				"      type: deterministic\n      goal: |\n        literal pollIntervalSeconds:} text\n", 1),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := strings.Replace(test.source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "        check: ci-status\n", "        check: ci-status\n        pollIntervalSeconds: 10\n", 1)
+
+			result, err := Migrate([]byte(test.source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("migration changed unrelated scalar content\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
+		})
+	}
+}
+
 func TestMigrateLeavesExplicitPositivePollIntervalUntouched(t *testing.T) {
 	result, err := Migrate([]byte(workflowWithPinnedCIPoll), "2.0")
 	if err != nil {
@@ -113,6 +574,33 @@ func TestMigrateLeavesExplicitPositivePollIntervalUntouched(t *testing.T) {
 	}
 }
 
+func workflowWithAutomatedBlock(automated string) string {
+	return workflowWithAutomatedHeader("      automated:\n", automated)
+}
+
+func workflowWithAutomatedHeader(header, automated string) string {
+	return `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: block-automated
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+` + header + automated + `      branches:
+        pass: ""
+`
+}
+
 func TestMigrateBumpsVersionEvenWithoutCIPollTasks(t *testing.T) {
 	result, err := Migrate([]byte(workflowWithNoCIPoll), "2.0")
 	if err != nil {
@@ -125,6 +613,30 @@ func TestMigrateBumpsVersionEvenWithoutCIPollTasks(t *testing.T) {
 	if after.DSLVersion != "2.0" {
 		t.Fatalf("after dslVersion = %q, want 2.0", after.DSLVersion)
 	}
+}
+
+func workflowWithAutomatedMapping(automated string) string {
+	return `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: flow-automated
+spec:
+  gaggle: golden
+  start: poll
+  tasks:
+    - name: poll
+      type: deterministic
+      inputs:
+        kind: "ci-poll"
+      next: ci
+  gates:
+    - name: ci
+      evaluator: automated
+      automated: ` + automated + `
+      branches:
+        pass: ""
+`
 }
 
 func TestMigratePinOnlyPreservesOriginalBytes(t *testing.T) {

@@ -2,7 +2,9 @@ package recovery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,6 +66,14 @@ func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issue
 		return ErrNoMatchingSnapshot
 	}
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusConflict {
+			var envelope apicontract.ErrorEnvelope
+			if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&envelope); err == nil && envelope.Error.Code == OverflowPendingCode {
+				if pending, ok := ParsePromotionState(response.Header.Get(PromotionStateHeader)); ok {
+					return pending
+				}
+			}
+		}
 		return fmt.Errorf("recovery download refused (HTTP %d)", response.StatusCode)
 	}
 	directory, err := os.MkdirTemp("", "goobers-recovery-download-*")

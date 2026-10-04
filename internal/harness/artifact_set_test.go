@@ -75,6 +75,9 @@ func TestExecutorManifestArtifactSet(t *testing.T) {
 				if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "invalid_declared_artifact_set" || len(result.Artifacts) != 0 || len(rec.artifacts) != 0 {
 					t.Fatalf("invalid set published or wrong failure: %+v; records %d", result, len(rec.artifacts))
 				}
+				if !result.Error.Retryable {
+					t.Fatalf("invalid declared artifact set was non-retryable: %+v", result.Error)
+				}
 				return
 			}
 			count := 3
@@ -138,5 +141,72 @@ func TestExecutorReviewManifestArtifactSet(t *testing.T) {
 		} else if verdict.Decision != apiv1.VerdictPass || len(verdict.Evidence) != 2 || verdict.Evidence[0].Digest != apiv1.Digest(rec.artifacts[1].data) {
 			t.Fatalf("review did not publish index first: %+v", verdict)
 		}
+	}
+}
+
+func TestExecutorNamedSlotPublication(t *testing.T) {
+	for _, mode := range []string{"valid", "missing", "no-work", "self-reported", "no-manifest"} {
+		t.Run(mode, func(t *testing.T) {
+			rec := &fakeRecorder{}
+			adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+				entries := []artifactset.ManifestEntry{}
+				if mode != "missing" && mode != "no-work" {
+					entries = append(entries, artifactset.ManifestEntry{Name: "report", Path: "payload", MediaType: "text/plain"})
+				}
+				data, err := json.Marshal(artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: entries})
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(req.Workspace, "manifest.json"), data, 0600); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(req.Workspace, "payload"), []byte("report"), 0600); err != nil {
+					return err
+				}
+				result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+				if mode == "no-work" {
+					result.Status = apiv1.ResultNoWork
+				}
+				if mode == "self-reported" {
+					result.Artifacts = []apiv1.ArtifactPointer{{Path: "artifacts/forged", Digest: apiv1.Digest(nil)}}
+				}
+				return WriteCompletion(req.Workspace, req.CompletionPath, result)
+			}}
+			e, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec, journal.NewRegistryScrubber(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := testEnvelope(t.TempDir())
+			env.Attempt = 2
+			env.ArtifactPublication = &apiv1.ArtifactPublication{Stage: "produce", Visit: 11, Slots: []apiv1.ArtifactSlot{{Name: "report"}}}
+			env.Inputs = map[string]any{InputArtifactManifestFile: "manifest.json"}
+			if mode == "no-manifest" {
+				env.Inputs = nil
+			}
+			result, err := e.Invoke(t.Context(), env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "valid" {
+				if len(result.Artifacts) != 2 {
+					t.Fatalf("result=%+v", result)
+				}
+				var index artifactset.Index
+				if err := json.Unmarshal(rec.artifacts[len(rec.artifacts)-1].data, &index); err != nil {
+					t.Fatal(err)
+				}
+				if len(index.Bindings) != 1 || index.Bindings[0].Visit != 11 || index.Bindings[0].Attempt != 2 || index.Bindings[0].Artifact != result.Artifacts[1] {
+					t.Fatalf("index=%+v", index)
+				}
+				return
+			}
+			code := artifactset.MissingSlotCode
+			if mode == "self-reported" {
+				code = artifactset.InvalidPublicationCode
+			}
+			if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != code || len(result.Artifacts) != 0 {
+				t.Fatalf("result=%+v", result)
+			}
+		})
 	}
 }

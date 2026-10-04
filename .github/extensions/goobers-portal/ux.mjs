@@ -328,6 +328,17 @@ export function measureFromPayload(payload, keys, requireUnit = false) {
 }
 
 export function deriveTelemetryInsights(run = {}) {
+    const aicMeasureFromPayload = (payload, aicKeys, nanoAIUKeys, usdKeys) => {
+        const aic = measureFromPayload(payload, aicKeys);
+        if (aic) return { value: aic.value, unit: "AIC" };
+
+        const nanoAIU = measureFromPayload(payload, nanoAIUKeys);
+        if (nanoAIU) return { value: nanoAIU.value / 1_000_000_000, unit: "AIC" };
+
+        const usd = measureFromPayload(payload, usdKeys, true);
+        if (usd?.unit.toLowerCase() === "usd") return { value: usd.value * 100, unit: "AIC" };
+        return null;
+    };
     const diagnosis = deriveAttemptLineage(run);
     const attempts = diagnosis.attempts || [];
     const durations = attempts
@@ -387,20 +398,29 @@ export function deriveTelemetryInsights(run = {}) {
         ["Output tokens", ["outputTokens", "output_tokens", "gen_ai.usage.output_tokens"]],
         ["Tokens", ["tokens", "totalTokens", "total_tokens"]],
         ["Premium requests", ["copilotPremiumRequests", "premiumRequests", "goobers.usage.copilot_premium_requests"]],
-        ["Cost", ["costUSD", "cost_usd", "goobers.usage.cost_usd"]],
     ];
     for (const [label, keys] of usageKeys) {
         const measure = measureFromPayload(run, keys, true);
         if (measure) usage.push({ label, value: measure.value, unit: measure.unit });
     }
+    const costAIC = aicMeasureFromPayload(
+        run,
+        ["costAIC", "cost_aic"],
+        ["nanoAiu", "nanoAIU", "nano_aiu", "goobers.usage.nano_aiu"],
+        ["costUSD", "cost_usd", "goobers.usage.cost_usd"],
+    );
+    if (costAIC) usage.push({ label: "AIC", value: costAIC.value, unit: costAIC.unit });
+
     const budgets = [];
-    for (const [label, keys] of [
-        ["Token budget", ["maxTokens", "max_tokens"]],
-        ["Cost budget", ["maxCostUSD", "max_cost_usd"]],
-    ]) {
-        const measure = measureFromPayload(run, keys, true);
-        if (measure) budgets.push({ label, value: measure.value, unit: measure.unit });
-    }
+    const tokenBudget = measureFromPayload(run, ["maxTokens", "max_tokens"], true);
+    if (tokenBudget) budgets.push({ label: "Token budget", value: tokenBudget.value, unit: tokenBudget.unit });
+    const budgetAIC = aicMeasureFromPayload(
+        run,
+        ["maxCostAIC", "max_cost_aic"],
+        ["maxNanoAiu", "maxNanoAIU", "max_nano_aiu"],
+        ["maxCostUSD", "max_cost_usd"],
+    );
+    if (budgetAIC) budgets.push({ label: "AIC budget", value: budgetAIC.value, unit: budgetAIC.unit });
     return {
         duration: { totalMillis, queueMillis, executionMillis: executionKnown ? executionMillis : null },
         counts: { failures, repasses },

@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
 // dispatchagentic.go is the pod half of the agentic claim check.
@@ -76,7 +77,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	//
 	// The credential is resolved first because the checkout authenticates with
 	// it, and resolving twice would mint two credentials for one stage.
-	minted, err := resolveStageCredentials(ctx)
+	minted, mintedScheme, err := resolveStageCredentialsWithScheme(ctx)
 	if err != nil {
 		return fail("credential_resolve_failed", err)
 	}
@@ -88,11 +89,12 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// provisions the working tree and is excluded from buildPodAgenticExecutor
 	// below, so the goober's resolver and its environment see only what the
 	// stage actually declared.
-	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	// checkoutCreds is minted plus that checkout-only credential.
+	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, minted, mintedScheme)
 	if checkoutErr != nil {
 		return fail("credential_resolve_failed", checkoutErr)
 	}
-	if err := checkoutRepoWorkspace(ctx, workspace, stderr, append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...)); err != nil {
+	if err := checkoutRepoWorkspace(ctx, workspace, stderr, checkoutCreds, checkoutScheme); err != nil {
 		return fail("workspace_provision_failed", err)
 	}
 	// The stamp the harness actually reads.
@@ -129,8 +131,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		// The checkout credential is registered with the diff's scrubber even
 		// though the AGENT never sees it: a commit could have captured it, and
 		// the diff is journaled.
-		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage),
-			append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...), stderr)
+		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage), checkoutCreds, stderr)
 		if derr != nil {
 			return fail("reviewer_diff_failed", derr)
 		}
@@ -208,13 +209,21 @@ func reviewSubstrateFailure(code string) bool {
 // anything, a pod-local harness-construction fault (agentic_executor_
 // unavailable's own errors never wrap a plane response at all) — is
 // transport- or infra-shaped, exactly what a fresh pod's retry exists to
-// ride out, so it keeps the historical Retryable=true.
+// ride out, so it keeps the historical Retryable=true. A
+// *workspacedelta.DivergedError is deterministic too (#5948) and is not
+// retried.
 func substrateRetryable(err error) bool {
 	var refusal *dispatcher.CredentialResolveRefusal
 	if errors.As(err, &refusal) {
 		return !refusal.Deterministic()
 	}
-	return true
+	// The workspace-delta ancestry guard's refusal is deterministic in the
+	// same sense (#5948): the branch carries commits the delta lacks, and a
+	// fresh pod clones that same branch and fetches that same delta, so a
+	// retry re-derives the identical refusal. Marking it retryable spent the
+	// gate's evaluator retry bound on it and then failed the run anyway.
+	var diverged *workspacedelta.DivergedError
+	return !errors.As(err, &diverged)
 }
 
 // fetchAgenticKit reads the kit from the blob plane and verifies it against the
@@ -258,24 +267,33 @@ func fetchAgenticKit(ctx context.Context, digest string) (*agentickit.Kit, error
 // A ref names ONE underlying credential, so any capability it backs that the
 // plane did materialise yields the same token: the first hit is the answer.
 type podCredentialResolver struct {
-	byRef map[string][]string // credential ref -> capabilities it backs
-	vals  map[string]string   // capability -> resolved value
+	byRef    map[string][]string // credential ref -> capabilities it backs
+	vals     map[string]string   // capability -> resolved value
+	expiries map[string]time.Time
 }
 
-func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, error) {
+func (r podCredentialResolver) Resolve(ctx context.Context, name string) (string, error) {
+	value, _, err := r.ResolveWithExpiry(ctx, name)
+	return value, err
+}
+
+func (r podCredentialResolver) ResolveWithExpiry(ctx context.Context, name string) (string, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return "", time.Time{}, err
+	}
 	capabilities, ok := r.byRef[name]
 	if !ok {
-		return "", fmt.Errorf("credential %q is not granted to this stage", name)
+		return "", time.Time{}, fmt.Errorf("credential %q is not granted to this stage", name)
 	}
 	for _, capability := range capabilities {
 		if value, ok := r.vals[capability]; ok {
-			return value, nil
+			return value, r.expiries[capability], nil
 		}
 	}
 	// The plane materialised none of them. Name every capability the ref backs
 	// rather than an arbitrary one: the operator granted a capability, and
 	// which of these is missing is exactly what they need to see.
-	return "", fmt.Errorf("credential %q is backed by capabilities %s, none of which were materialised by the credential plane",
+	return "", time.Time{}, fmt.Errorf("credential %q is backed by capabilities %s, none of which were materialised by the credential plane",
 		name, strings.Join(capabilities, ", "))
 }
 
@@ -292,6 +310,20 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 // existing newAgenticAdapter / repoCloneURL test seams.
 var podHarnessRegistry = buildHarnessRegistry
 
+// podHarnessEnvironment is the pod's view of the instance harness policy, as
+// the daemon wrote it into the kit for the selected harness. A settle budget
+// the kit does not carry, or cannot parse, keeps the adapter default: the
+// daemon validated it at load, so only a legacy kit omits it.
+func podHarnessEnvironment(kit *agentickit.Kit, selected apiv1.Harness) harness.EnvironmentConfig {
+	settle, _ := (instance.RunnerConfig{RequiredMCPSettleTimeout: kit.RequiredMCPSettleTimeout}).RequiredMCPSettleTimeoutDuration()
+	return harness.EnvironmentConfig{
+		Unset:                    kit.HarnessEnvUnset,
+		SessionArgs:              map[string][]string{string(selected): kit.HarnessSessionArgs},
+		PreflightArgs:            map[string][]string{string(selected): kit.HarnessPreflightArgs},
+		RequiredMCPSettleTimeout: settle,
+	}
+}
+
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
 // runsDir is the staging root the caller already created and already
@@ -299,7 +331,7 @@ var podHarnessRegistry = buildHarnessRegistry
 // and the contextResolver's root, which is what makes the two agree.
 func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
-	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
+	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}, expiries: map[string]time.Time{}}
 	for _, g := range kit.Grants {
 		if g.Ref != "" && g.Capability != "" {
 			resolver.byRef[g.Ref] = append(resolver.byRef[g.Ref], g.Capability)
@@ -309,6 +341,9 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	registry.Register([]byte(os.Getenv(dispatcher.JournalTokenEnv)))
 	for _, c := range minted {
 		resolver.vals[c.Capability] = c.Value
+		if c.ExpiresAt != nil && !c.ExpiresAt.IsZero() {
+			resolver.expiries[c.Capability] = *c.ExpiresAt
+		}
 		// Register before use so the value is scrubbed out of transcripts and
 		// journal events even if the harness echoes it.
 		registry.Register([]byte(c.Value))
@@ -372,11 +407,14 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	if len(kit.HarnessCommand) > 0 {
 		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
 	}
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, harness.EnvironmentConfig{
-		Unset:         kit.HarnessEnvUnset,
-		SessionArgs:   map[string][]string{string(spec.Harness): kit.HarnessSessionArgs},
-		PreflightArgs: map[string][]string{string(spec.Harness): kit.HarnessPreflightArgs},
-	}, commands, "", "", false, nil, false)
+	// The pod launches goobers-io through this binary. Passing an empty self
+	// binary silently omits its MCP registration and leaves artifact-producing
+	// agents unable to publish their declared output.
+	selfBin, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve goobers binary path in pod: %w", err)
+	}
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, podHarnessEnvironment(kit, spec.Harness), commands, "", selfBin, false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
@@ -429,6 +467,9 @@ type podExecutorWiring struct {
 }
 
 // podAgenticExecutorInput assembles the executor input for a pod stage.
+// Daemon-host credential paths are deliberately absent: the kit carries scoped
+// credentials, not the daemon config or its credential-file mounts. Deployment
+// isolation must keep those host files out of the pod.
 //
 // FACTORED OUT SO THE DIRECTORY AGREEMENT IS OBSERVABLE. The bug this file's
 // change fixes crosses two edges: materializePodContext must be CALLED before

@@ -3,7 +3,6 @@ package readservice
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -294,7 +294,10 @@ type RunDetail struct {
 	// non-completed terminal phase (#4246). Escalation stays escalated-only so
 	// consumers keyed on "this run escalated" keep their meaning.
 	TerminalCause *EscalationCause `json:"terminalCause,omitempty"`
-	Outcome       *RunOutcome      `json:"outcome,omitempty"`
+	// TerminalCauseStatus distinguishes durable causes from the legacy display
+	// projection. An unavailable record is never synthesized from log text.
+	TerminalCauseStatus string      `json:"terminalCauseStatus"`
+	Outcome             *RunOutcome `json:"outcome,omitempty"`
 	// Transitions is the run's exact executed workflow-graph transition
 	// history (#1427) — never inferred from "both endpoint nodes were
 	// visited", which is what let the portal highlight an untaken repass
@@ -366,6 +369,8 @@ type RunOutcome struct {
 
 // EscalationCause projects the durable event that selected escalation.
 type EscalationCause struct {
+	// Record is the authoritative typed terminal cause, nil for legacy journals.
+	Record         *journal.TerminalCause `json:"record,omitempty"`
 	Selector       EscalationSelector     `json:"selector"`
 	SelectedBranch string                 `json:"selectedBranch,omitempty"`
 	RepassCount    int                    `json:"repassCount"`
@@ -815,7 +820,7 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		return false
 	case options.Workflow != "" && summary.Workflow != options.Workflow:
 		return false
-	case options.Stage != "" && !containsString(summary.Stages, options.Stage):
+	case options.Stage != "" && !slices.Contains(summary.Stages, options.Stage):
 		return false
 	case (options.Outcome != "" ||
 		(options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation))) &&
@@ -869,7 +874,7 @@ func candidateRunStatuses(options RunListOptions) (statuses []string, narrowed, 
 			return
 		}
 		for status := range set {
-			if !containsString(next, status) {
+			if !slices.Contains(next, status) {
 				delete(set, status)
 			}
 		}
@@ -956,6 +961,14 @@ func paginateRuns(summaries []RunSummary, limit int) (RunList, error) {
 
 // listRunsScanning is the journal-authoritative fallback used when no telemetry
 // index is available (offline/CLI reads). It opens and summarizes every run.
+//
+// Retirement trigger: the daemon-side use of this path is superseded by
+// listRunsIndexed. It can be deleted from the daemon read path once the
+// read-model cutover has no remaining rollback, i.e. DisableReadModelReads
+// (`goobers up --disable-read-model-reads`) and the ReadModeAuthoritative
+// journal-scan mode are removed. The offline CLI journal walk (a Local built
+// without a telemetry source) must remain: it is the only list path that
+// works with no daemon and no index.
 func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
 	allSummaries, err := s.runSummariesForStage(ctx, false, attemptStageFor(options))
 	if err != nil {
@@ -986,6 +999,10 @@ func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cu
 // was the wrong place to put that guarantee — so a run present on disk but
 // absent from the index (migrated/imported/still in flight) is never silently
 // hidden.
+//
+// This is the path that supersedes the daemon-side journal scan
+// (listRunsScanning); see that function for the exact condition under which the
+// scan can be retired and for the offline CLI walk that must stay.
 func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
 	// No reconcile here — see listLatestWorkflowOutcomesIndexed. A read does not
 	// write.
@@ -1206,6 +1223,13 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err != nil {
 		return RunDetail{}, err
 	}
+	causeStatus := "not-applicable"
+	if cause != nil {
+		causeStatus = "unavailable"
+		if cause.Record != nil {
+			causeStatus = "recorded"
+		}
+	}
 	var escalation *EscalationCause
 	if summary.Phase == journal.PhaseEscalated {
 		escalation = cause
@@ -1213,15 +1237,16 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	transitions, transitionsStatus := readmodel.ProjectTransitions(recordEvents(run.records), graph)
 	agentProgress := summarizeAgentProgress(run.identity.RunID, run.records)
 	return RunDetail{
-		RunSummary:        summary,
-		Graph:             graph,
-		GraphStatus:       status,
-		AgentProgress:     agentProgress,
-		Escalation:        escalation,
-		TerminalCause:     cause,
-		Outcome:           runOutcome(summary, run.records),
-		Transitions:       runTransitionsFrom(transitions),
-		TransitionsStatus: transitionsStatus,
+		RunSummary:          summary,
+		Graph:               graph,
+		GraphStatus:         status,
+		AgentProgress:       agentProgress,
+		Escalation:          escalation,
+		TerminalCause:       cause,
+		TerminalCauseStatus: causeStatus,
+		Outcome:             runOutcome(summary, run.records),
+		Transitions:         runTransitionsFrom(transitions),
+		TransitionsStatus:   transitionsStatus,
 	}, nil
 }
 
@@ -1304,12 +1329,7 @@ func attachStageAttemptModels(attempts []StageAttempt, stage string, telemetryAt
 	}
 }
 
-// telemetryStageAttempts returns rollup-ingested stage attempts (each
-// carrying its indexed requested model, when present) for runID. A missing
-// telemetry database is a valid empty result, matching RunSpans' contract:
-// model provenance is informational and must never make StageAttempts fail.
-func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
-	empty := []rollup.StageAttempt{}
+func withTelemetryDB[T any](s *Local, empty []T, read func(*rollup.DB) ([]T, error)) ([]T, error) {
 	db := s.sources.Telemetry
 	if db == nil {
 		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
@@ -1325,7 +1345,25 @@ func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rol
 		}
 		defer func() { _ = db.Close() }()
 	}
-	return db.StageAttempts(ctx, runID)
+	result, err := read(db)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return empty, nil
+	}
+	return result, nil
+}
+
+// telemetryStageAttempts returns rollup-ingested stage attempts (each
+// carrying its indexed requested model, when present) for runID. A missing
+// telemetry database is a valid empty result, matching RunSpans' contract:
+// model provenance is informational and must never make StageAttempts fail.
+func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
+	empty := []rollup.StageAttempt{}
+	return withTelemetryDB(s, empty, func(db *rollup.DB) ([]rollup.StageAttempt, error) {
+		return db.StageAttempts(ctx, runID)
+	})
 }
 
 // RunTelemetryStageAttempts returns rollup-ingested stage attempts (with each
@@ -1497,32 +1535,16 @@ func (s *Local) RunSpans(ctx context.Context, runID string) ([]rollup.SpanSummar
 		return nil, err
 	}
 	empty := []rollup.SpanSummary{}
-	db := s.sources.Telemetry
-	if db == nil {
-		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return empty, nil
-			}
-			return nil, err
-		}
-		var err error
-		db, err = rollup.Open(s.sources.Layout.TelemetryDB())
+	return withTelemetryDB(s, empty, func(db *rollup.DB) ([]rollup.SpanSummary, error) {
+		spans, err := db.Spans(ctx, runID)
 		if err != nil {
 			return nil, err
 		}
-		defer func() { _ = db.Close() }()
-	}
-	spans, err := db.Spans(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if spans == nil {
-		return empty, nil
-	}
-	return spans, nil
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return spans, nil
+	})
 }
 
 // RunEscalation returns the gate-specific values required by the legacy trace
@@ -2054,15 +2076,6 @@ func matchesStageAttempt(
 	return false
 }
 
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
 func canonicalOutcome(outcome OutcomeFilter) bool {
 	switch outcome {
 	case OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, OutcomeOther:
@@ -2241,6 +2254,28 @@ func terminalCause(phase journal.RunPhase, records []journal.EventRecord) (*Esca
 	default:
 		return nil, nil
 	}
+	if recorded, err := journal.TerminalCauseFromEvents(recordEvents(records)); err == nil {
+		cause := &EscalationCause{
+			Record:         recorded,
+			Selector:       EscalationSelector{Kind: recorded.SelectorKind, Name: recorded.Selector},
+			SelectedBranch: recorded.Verdict, TerminalReason: recorded.Message,
+			CausalEventSeq: recorded.CausalEventSeq,
+		}
+		if cause.TerminalReason == "" {
+			cause.TerminalReason = recorded.Code
+		}
+		if recorded.Retry != nil {
+			cause.RetryCount = recorded.Retry.Consumed
+		}
+		if recorded.Repass != nil {
+			cause.RepassCount = recorded.Repass.Consumed
+		}
+		return cause, nil
+	} else if !errors.Is(err, journal.ErrTerminalCauseUnavailable) {
+		return nil, err
+	}
+	// Preserve pre-record display behavior for legacy consumers, explicitly
+	// marked unavailable in RunDetail. This is not an authoritative record.
 	records = currentLifecycleRecords(records)
 	repasses, retries, _, _ := countStageAttempts(records)
 	cause := &EscalationCause{
@@ -2887,7 +2922,10 @@ func collectStageAttempts(
 			visit := visits[event.Stage]
 			visit.humanRequested = true
 			visits[event.Stage] = visit
-		case journal.EventStageStarted:
+		case journal.EventStageStarted, journal.EventReviewerStarted:
+			if event.Type == journal.EventReviewerStarted {
+				closeInterruptedReviewerAttempts(attempts, event)
+			}
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 		case journal.EventRunnerPlacement:
 			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
@@ -2914,7 +2952,7 @@ func collectStageAttempts(
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
-		case journal.EventStageFinished:
+		case journal.EventStageFinished, journal.EventReviewerFinished:
 			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
 				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
@@ -2991,8 +3029,7 @@ func newStageAttempt(
 }
 
 func stageAttemptID(runID string, branch int, stage string, anchorSeq uint64) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", runID, branch, stage, anchorSeq)))
-	return "sta_" + base64.RawURLEncoding.EncodeToString(sum[:])
+	return journal.StageAttemptID(runID, branch, stage, anchorSeq)
 }
 
 func finishAttempt(

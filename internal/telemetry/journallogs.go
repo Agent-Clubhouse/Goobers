@@ -29,6 +29,9 @@ const (
 	journalLogBytesLimit  = 8 << 20
 	journalLogRecordLimit = 1 << 20
 	journalLogTimeout     = 5 * time.Second
+	journalLogBatchLimit  = 128
+	journalLogBatchBytes  = 256 << 10 // Charged input bytes, not encoded wire bytes.
+	journalLogBatchDelay  = 100 * time.Millisecond
 )
 
 // journalDropCause is the closed set of reasons a committed event is not
@@ -115,6 +118,9 @@ type JournalExportStats struct {
 	QueuedRecords         int
 	QueuedBytes           int
 	AzureReplay           AzureReplayStats
+	// CatchupDeferred counts dropped wake hints, not lost journal records.
+	// Background discovery recovers those records from the authoritative journal.
+	CatchupDeferred uint64
 }
 
 var _ journal.CommittedEventSink = (*Client)(nil)
@@ -124,6 +130,7 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 		return nil
 	}
 	exporters := make([]sdklog.Exporter, 0, 2)
+	durableJournal := false
 	var degraded error
 	if cfg.Exporter == ExporterOTLP && strings.TrimSpace(cfg.OTLPEndpoint) != "" {
 		exporter, err := newJournalLogExporter(ctx, cfg)
@@ -142,6 +149,7 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 			degraded = errors.Join(degraded, err)
 		} else {
 			exporters = append(exporters, exporter)
+			durableJournal = cfg.AzureMonitorReplayRoot != ""
 		}
 	}
 	if len(exporters) == 0 {
@@ -159,10 +167,16 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 	if cfg.JournalRoot == "" {
 		return nil
 	}
+	if durableJournal {
+		c.journalCatchup = newJournalCatchup(cfg, c.journalLogs)
+	}
 	unregister, err := journal.RegisterCommittedEventSink(cfg.JournalRoot, cfg.JournalInstanceID, c)
 	if err != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), journalLogTimeout)
 		defer cancel()
+		if c.journalCatchup != nil {
+			c.journalCatchup.shutdown(shutdownCtx)
+		}
 		_ = c.journalLogs.shutdown(shutdownCtx)
 		c.journalLogs = nil
 		return fmt.Errorf("%w: register journal logs: %w", ErrOTLPUnavailable, err)
@@ -172,6 +186,16 @@ func (c *Client) configureJournalLogs(ctx context.Context, cfg Config, res *reso
 }
 
 type journalLogFanoutExporter []sdklog.Exporter
+
+func (e journalLogFanoutExporter) setReplayLossSource(sample func() replayLossCounters) {
+	for _, exporter := range e {
+		if target, ok := exporter.(interface {
+			setReplayLossSource(func() replayLossCounters)
+		}); ok {
+			target.setReplayLossSource(sample)
+		}
+	}
+}
 
 func (e journalLogFanoutExporter) ReplayStats() AzureReplayStats {
 	for _, exporter := range e {
@@ -209,7 +233,16 @@ func (e journalLogFanoutExporter) Shutdown(ctx context.Context) error {
 // Commit only copies into a bounded queue. It never exports or logs while the
 // caller holds a journal lock. The journal remains authoritative on overload.
 func (c *Client) Commit(event journal.CommittedEvent) {
+	if c != nil {
+		for _, destination := range c.journalDestinations {
+			destination.Commit(event)
+		}
+	}
 	if c != nil && c.journalLogs != nil {
+		if c.journalCatchup != nil {
+			c.journalCatchup.notify(event)
+			return
+		}
 		c.journalLogs.commit(event)
 	}
 }
@@ -217,6 +250,13 @@ func (c *Client) Commit(event journal.CommittedEvent) {
 // JournalLogsEnabled reports whether the client has a live journal Logs queue.
 // Disabled, degraded, nil, and shutting-down clients return false.
 func (c *Client) JournalLogsEnabled() bool {
+	if c != nil {
+		for _, destination := range c.journalDestinations {
+			if destination.JournalLogsEnabled() {
+				return true
+			}
+		}
+	}
 	if c == nil || c.journalLogs == nil {
 		return false
 	}
@@ -228,15 +268,18 @@ func (c *Client) JournalLogsEnabled() bool {
 
 // JournalExportStats returns zero values when live journal export is disabled.
 func (c *Client) JournalExportStats() JournalExportStats {
+	if c != nil && len(c.journalDestinations) > 0 {
+		return c.namedJournalStats()
+	}
 	if c == nil || c.journalLogs == nil {
 		return JournalExportStats{}
 	}
 	p := c.journalLogs
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	return JournalExportStats{
+	queuedRecords, queuedBytes := p.reserved()
+	stats := JournalExportStats{
 		Accepted: p.accepted.Load(), Dropped: p.dropped.Load(),
-		ExportFailures: p.failures.Load(), QueuedRecords: p.pending, QueuedBytes: p.bytes,
+		ExportFailures: p.failures.Load(), QueuedRecords: queuedRecords, QueuedBytes: queuedBytes,
 		InvalidMetadata:       p.invalidMetadata.Load(),
 		DroppedRecordTooLarge: p.dropCauses[dropRecordTooLarge].Load(),
 		DroppedLockContention: p.dropCauses[dropLockContention].Load(),
@@ -244,8 +287,12 @@ func (c *Client) JournalExportStats() JournalExportStats {
 		DroppedStopping:       p.dropCauses[dropStopping].Load(),
 		DroppedShutdown:       p.dropCauses[dropShutdown].Load(),
 		SinkPanics:            journal.CommittedSinkPanicCount(),
-		AzureReplay:           p.azureReplayStats(),
+		CatchupDeferred:       p.catchupDeferred.Load(),
 	}
+	p.mu.Unlock()
+	// Replay inspection can touch disk; keep it outside the worker state lock.
+	stats.AzureReplay = p.azureReplayStats()
+	return stats
 }
 
 func (p *journalLogPipeline) azureReplayStats() AzureReplayStats {
@@ -270,8 +317,8 @@ type journalLogPipeline struct {
 	queue           [journalLogQueueLimit]journalLogItem
 	head            int
 	length          int
-	pending         int // Includes the single in-flight record.
-	bytes           int // Includes the single in-flight record and all metadata.
+	incoming        chan journalLogItem
+	admission       atomic.Uint64 // stopping bit | reserved count | reserved bytes
 	stopping        bool
 	progress        chan struct{}
 	wake            chan struct{}
@@ -282,12 +329,14 @@ type journalLogPipeline struct {
 	cancel          context.CancelFunc
 	provider        *sdklog.LoggerProvider
 	logger          apilog.Logger
+	batch           *journalBatchProcessor
 	reporter        *exportErrorHandler
 	accepted        atomic.Uint64
 	dropped         atomic.Uint64
 	failures        atomic.Uint64
 	invalidMetadata atomic.Uint64
 	completed       atomic.Uint64
+	catchupDeferred atomic.Uint64
 	scrubber        journal.Scrubber
 	// dropCauses breaks dropped down by journalDropCause. Written by drop on the
 	// journal write path (atomics only) and published outside that path.
@@ -311,13 +360,24 @@ func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource, scr
 		ctx:      ctx, cancel: cancel, progress: make(chan struct{}),
 		wake: make(chan struct{}, 1), done: make(chan struct{}), ready: make(chan struct{}),
 		flushes:  make(chan journalLogFlush, 1),
+		incoming: make(chan journalLogItem, journalLogQueueLimit),
 		reporter: newExportErrorHandler(),
 	}
 	if source, ok := exporter.(interface{ ReplayStats() AzureReplayStats }); ok {
 		p.replayStats = source.ReplayStats
 	}
-	// The application queue is the only lossy boundary. A batch processor here
-	// would introduce another queue whose losses could not be accounted for.
+	if target, ok := exporter.(interface {
+		setReplayLossSource(func() replayLossCounters)
+	}); ok {
+		target.setReplayLossSource(func() replayLossCounters {
+			return replayLossCounters{Dropped: p.dropped.Load(), ExportFailures: p.failures.Load(), CatchupDeferred: p.catchupDeferred.Load()}
+		})
+	}
+	// The application queue is the only lossy boundary. An SDK asynchronous
+	// batch processor would add a queue whose losses could not be accounted for.
+	// Instead the worker gathers one bounded batch; this processor only keeps
+	// the SDK-enriched records for that batch, with no second queue or worker.
+	p.batch = &journalBatchProcessor{exporter: &journalLogExporter{Exporter: exporter, pipeline: p}}
 	p.provider = sdklog.NewLoggerProvider(
 		sdklog.WithResource(res),
 		// Fixed correlation fields now include workflow/digest/stage/attempt in
@@ -325,7 +385,7 @@ func newJournalLogPipeline(exporter sdklog.Exporter, res *resource.Resource, scr
 		// additions without silently dropping the last correlation key.
 		sdklog.WithAttributeCountLimit(16),
 		sdklog.WithAttributeValueLengthLimit(-1),
-		sdklog.WithProcessor(sdklog.NewSimpleProcessor(&journalLogExporter{Exporter: exporter, pipeline: p})),
+		sdklog.WithProcessor(p.batch),
 	)
 	p.logger = p.provider.Logger("goobers.journal", apilog.WithInstrumentationVersion("1"))
 	go p.run()
@@ -357,14 +417,33 @@ func journalLogSize(e journal.CommittedEvent) int {
 		len(e.Workflow) + len(e.WorkflowDigest) + len(e.ConfigGeneration) + len(e.TriggerKind) + len(e.RunID) + len(e.Stage)
 }
 
-func (p *journalLogPipeline) queueRejectionLocked(size int) (journalDropCause, bool) {
-	if p.stopping {
-		return dropStopping, true
+const journalAdmissionStopping uint64 = 1 << 63
+
+func (p *journalLogPipeline) reserved() (int, int) {
+	state := p.admission.Load()
+	return int((state &^ journalAdmissionStopping) >> 32), int(uint32(state))
+}
+
+// Reserve both limits before copying. CAS contention retries instead of losing
+// records; no consumer mutex, disk work or exporter callback is on this path.
+// Reservations include copies in progress, queued items and in-flight batches.
+func (p *journalLogPipeline) reserve(size int) (journalDropCause, bool) {
+	for {
+		state := p.admission.Load()
+		if state&journalAdmissionStopping != 0 {
+			return dropStopping, false
+		}
+		if state>>32 >= journalLogQueueLimit || size > journalLogBytesLimit-int(uint32(state)) {
+			return dropQueueFull, false
+		}
+		if p.admission.CompareAndSwap(state, state+(1<<32)+uint64(size)) {
+			return 0, true
+		}
 	}
-	if p.pending >= journalLogQueueLimit || size > journalLogBytesLimit-p.bytes {
-		return dropQueueFull, true
-	}
-	return 0, false
+}
+
+func (p *journalLogPipeline) release(count, size int) {
+	p.admission.Add(^(uint64(count)<<32 + uint64(size)) + 1)
 }
 
 func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
@@ -378,27 +457,11 @@ func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 		p.drop(dropRecordTooLarge)
 		return
 	}
-	// Reject an already-full/stopping queue before cloning as much as 1 MiB.
-	// The second check below remains authoritative because capacity can change
-	// while the copy runs; this first short lock prevents a saturated queue from
-	// turning every dropped event into avoidable allocation and memcpy work.
-	if !p.mu.TryLock() {
-		p.drop(dropLockContention)
-		return
-	}
-	if cause, rejected := p.queueRejectionLocked(size); rejected {
-		p.mu.Unlock()
+	if cause, ok := p.reserve(size); !ok {
 		p.drop(cause)
 		return
 	}
-	p.mu.Unlock()
-	// Copy outside the queue lock (#5575). The copy itself has to
-	// stay: TestJournalLogsQueueBoundsAndOwnership pins that a caller mutating
-	// its slice after Commit cannot alter an already-queued record, which is a
-	// defense the ownership contract asks for but cannot enforce. Doing it here
-	// keeps a memcpy of up to journalLogRecordLimit bytes out of the journal
-	// write lock, and out of the TryLock window whose loss is counted below as
-	// dropLockContention.
+	// Keep ownership independent of caller buffers after Commit returns.
 	e.Body = append([]byte(nil), e.Body...)
 	e.Kind = strings.Clone(e.Kind)
 	e.JournalID = strings.Clone(e.JournalID)
@@ -410,25 +473,36 @@ func (p *journalLogPipeline) commit(e journal.CommittedEvent) {
 	e.TriggerKind = strings.Clone(e.TriggerKind)
 	e.RunID = strings.Clone(e.RunID)
 	e.Stage = strings.Clone(e.Stage)
-	if !p.mu.TryLock() {
-		// Distinct from queue_full: the queue may be empty and the collector
-		// healthy. This is contention on the queue lock itself, which the
-		// journal write path must never wait on.
-		p.drop(dropLockContention)
-		return
-	}
-	if cause, rejected := p.queueRejectionLocked(size); rejected {
-		p.mu.Unlock()
-		p.drop(cause)
-		return
-	}
-	p.queue[(p.head+p.length)%len(p.queue)] = journalLogItem{event: e, bytes: size}
-	p.length++
-	p.pending++
-	p.bytes += size
 	p.accepted.Add(1)
-	p.mu.Unlock()
+	// Each sender owns a reservation and the channel has the full count limit,
+	// so an admitted send always fits, even when the consumer is paused.
+	p.incoming <- journalLogItem{event: e, bytes: size}
 	p.signal()
+}
+
+// collectLocked transfers published reservations into the worker's batch ring.
+func (p *journalLogPipeline) collectLocked() {
+	for {
+		select {
+		case item := <-p.incoming:
+			p.queue[(p.head+p.length)%len(p.queue)] = item
+			p.length++
+		default:
+			return
+		}
+	}
+}
+
+func (p *journalLogPipeline) abandonLocked() {
+	p.collectLocked()
+	for p.length > 0 {
+		item := p.queue[p.head]
+		p.queue[p.head] = journalLogItem{}
+		p.head = (p.head + 1) % len(p.queue)
+		p.length--
+		p.release(1, item.bytes)
+		p.drop(dropShutdown)
+	}
 }
 
 // journalExportDropped records delta unexported committed events attributed to
@@ -493,20 +567,23 @@ func (p *journalLogPipeline) run() {
 		}
 		p.publishDrops()
 		p.mu.Lock()
+		p.collectLocked()
 		if p.ctx.Err() != nil {
-			abandoned := uint64(p.length)
-			p.dropCauses[dropShutdown].Add(abandoned)
-			p.dropped.Add(abandoned)
-			clear(p.queue[:])
-			p.length, p.pending, p.bytes = 0, 0, 0
+			p.abandonLocked()
+			pending, _ := p.reserved()
 			close(p.progress)
 			p.progress = make(chan struct{})
 			p.mu.Unlock()
 			p.publishDrops()
+			if pending > 0 {
+				<-p.wake // A producer reserved before shutdown and is still copying.
+				continue
+			}
 			return
 		}
 		if p.length == 0 {
-			stopping := p.stopping
+			pending, _ := p.reserved()
+			stopping := p.stopping && pending == 0
 			p.mu.Unlock()
 			if !started {
 				// Publish readiness only after releasing the queue lock. The
@@ -519,6 +596,9 @@ func (p *journalLogPipeline) run() {
 			}
 			select {
 			case <-p.wake:
+				// Coalesce a newly arriving burst. This is a maximum batching
+				// delay, never a delay between batches of an existing backlog.
+				p.coalesce(journalLogBatchDelay)
 			case <-p.ctx.Done():
 			case request := <-p.flushes:
 				err := p.provider.ForceFlush(request.ctx)
@@ -529,21 +609,60 @@ func (p *journalLogPipeline) run() {
 			}
 			continue
 		}
-		item := p.queue[p.head]
-		p.queue[p.head] = journalLogItem{}
-		p.head = (p.head + 1) % len(p.queue)
-		p.length--
+		var batch [journalLogBatchLimit]journalLogItem
+		count, size := 0, 0
+		for p.length > 0 && count < len(batch) {
+			item := p.queue[p.head]
+			// An individually valid large record travels alone.
+			if count > 0 && size+item.bytes > journalLogBatchBytes {
+				break
+			}
+			batch[count] = item
+			count++
+			size += item.bytes
+			p.queue[p.head] = journalLogItem{}
+			p.head = (p.head + 1) % len(p.queue)
+			p.length--
+		}
 		p.mu.Unlock()
 
-		p.emit(item.event)
+		for i := range count {
+			p.emit(batch[i].event)
+		}
+		ctx, cancel := context.WithTimeout(p.ctx, journalLogTimeout)
+		_ = p.batch.ForceFlush(ctx) // journalLogExporter accounts export errors.
+		cancel()
 
 		p.mu.Lock()
-		p.pending--
-		p.bytes -= item.bytes
-		p.completed.Add(1)
+		p.release(count, size)
+		p.completed.Add(uint64(count))
 		close(p.progress)
 		p.progress = make(chan struct{})
 		p.mu.Unlock()
+	}
+}
+
+func (p *journalLogPipeline) coalesce(delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		// There is nothing left to coalesce once a bounded batch is full.
+		// In particular, durable catch-up admits one read batch then waits
+		// for its acknowledgement; imposing the idle delay on each full
+		// byte-limited batch artificially throttles large-record recovery.
+		count, size := p.reserved()
+		if count >= journalLogBatchLimit || size >= journalLogBatchBytes {
+			return
+		}
+		select {
+		case <-timer.C:
+			return
+		case <-p.ctx.Done():
+			return
+		case <-p.wake:
+			// Existing producer notifications announce that the batch grew.
+			// Do not restart the timer: sparse traffic still waits at most delay.
+		}
 	}
 }
 
@@ -551,7 +670,7 @@ func (p *journalLogPipeline) emit(e journal.CommittedEvent) {
 	var record apilog.Record
 	record.SetTimestamp(e.Time)
 	record.SetObservedTimestamp(e.ObservedTime)
-	record.SetBody(attribute.StringValue(string(e.Body)))
+	record.SetBody(attribute.StringValue(string(journalExportBody(e.Body))))
 	record.AddAttributes(
 		attribute.Int("goobers.journal.schema_version", 1),
 		attribute.String("goobers.telemetry.stream", "journal"),
@@ -588,8 +707,7 @@ func (p *journalLogPipeline) emit(e journal.CommittedEvent) {
 	if e.Attempt > 0 {
 		record.AddAttributes(attribute.Int(AttrAttemptNumber, e.Attempt))
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, journalLogTimeout)
-	defer cancel()
+	ctx := p.ctx
 	if id, err := trace.TraceIDFromHex(e.RunID); err == nil && id.IsValid() {
 		// The journal knows the run trace, not an active span. Trace-only
 		// correlation is intentional; manufacturing a span ID is incorrect.
@@ -635,6 +753,7 @@ func (p *journalLogPipeline) flush(ctx context.Context) error {
 }
 
 func (p *journalLogPipeline) shutdown(ctx context.Context) error {
+	p.admission.Or(journalAdmissionStopping)
 	p.mu.Lock()
 	p.stopping = true
 	p.mu.Unlock()
@@ -656,11 +775,7 @@ func (p *journalLogPipeline) shutdown(ctx context.Context) error {
 		// resets both once it exits. Both paths run under p.mu, so whichever
 		// arrives second adds zero.
 		p.mu.Lock()
-		abandoned := uint64(p.length)
-		p.dropCauses[dropShutdown].Add(abandoned)
-		p.dropped.Add(abandoned)
-		clear(p.queue[:])
-		p.length = 0
+		p.abandonLocked()
 		p.mu.Unlock()
 		// The worker may still be blocked in the exporter. Publish the abandoned
 		// backlog synchronously so Client can export its metric before returning.
@@ -675,6 +790,57 @@ func (p *journalLogPipeline) shutdown(ctx context.Context) error {
 type journalLogExporter struct {
 	sdklog.Exporter
 	pipeline *journalLogPipeline
+}
+
+// All calls originate on the pipeline worker. The mutex also satisfies the
+// SDK processor concurrency contract without moving I/O onto Commit.
+type journalBatchProcessor struct {
+	mu       sync.Mutex
+	exporter sdklog.Exporter
+	records  []sdklog.Record
+	closed   bool
+}
+
+func (*journalBatchProcessor) Enabled(context.Context, sdklog.EnabledParameters) bool { return true }
+
+func (b *journalBatchProcessor) OnEmit(_ context.Context, record *sdklog.Record) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.closed {
+		b.records = append(b.records, record.Clone())
+	}
+	return nil
+}
+
+func (b *journalBatchProcessor) ForceFlush(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil
+	}
+	return b.flushLocked(ctx)
+}
+
+func (b *journalBatchProcessor) flushLocked(ctx context.Context) error {
+	if len(b.records) > 0 {
+		err := b.exporter.Export(ctx, b.records)
+		clear(b.records)
+		b.records = b.records[:0]
+		if err != nil {
+			return err
+		}
+	}
+	return b.exporter.ForceFlush(ctx)
+}
+
+func (b *journalBatchProcessor) Shutdown(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil
+	}
+	b.closed = true
+	return errors.Join(b.flushLocked(ctx), b.exporter.Shutdown(ctx))
 }
 
 func (e *journalLogExporter) Export(ctx context.Context, records []sdklog.Record) error {

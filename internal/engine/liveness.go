@@ -76,8 +76,9 @@ const (
 // It satisfies localscheduler.RunLivenessProbe; the dependency points from
 // the composition root (cmd/goobers), never from localscheduler to here.
 type WorkflowLiveness struct {
-	client    workflowLivenessClient
-	namespace string
+	dataConverter converter.DataConverter
+	client        workflowLivenessClient
+	namespace     string
 
 	// Open-workflow scan cache: one visibility enumeration serves every
 	// hash-shaped RunID probed in the same renewal pass instead of one scan
@@ -91,8 +92,8 @@ type WorkflowLiveness struct {
 // NewWorkflowLiveness builds the probe over a Temporal client. namespace is
 // the Temporal namespace the client is bound to; the open-workflow scan's
 // list requests must name it explicitly.
-func NewWorkflowLiveness(c workflowLivenessClient, namespace string) *WorkflowLiveness {
-	return &WorkflowLiveness{client: c, namespace: namespace}
+func NewWorkflowLiveness(c workflowLivenessClient, namespace string, dc ...converter.DataConverter) *WorkflowLiveness {
+	return &WorkflowLiveness{client: c, namespace: namespace, dataConverter: memoDataConverter(dc)}
 }
 
 // ErrRunNotOpen reports that no open workflow in the namespace maps to a run
@@ -373,7 +374,7 @@ func isScheduledRunWorkflowID(workflowID string) bool {
 
 // looksLikeScheduleClaimID reports whether workflowID has the shape Temporal
 // gives a Schedule action: the configured action id, "-", and the nominal
-// fire time in RFC3339 (the same encoding scheduledFireTime parses back out).
+// fire time in RFC3339, as used by the removed Temporal Schedule starter.
 //
 // The timestamp itself contains '-', so the split point is found by trying
 // each '-' from the right — cheap on ids this short, and exact, which matters
@@ -395,13 +396,13 @@ func looksLikeScheduleClaimID(workflowID string) bool {
 // present and decodable. A memo that fails to decode is treated as absent:
 // every caller here is filtering, and a filter must not admit a value it
 // could not read.
-func memoString(info *workflowpb.WorkflowExecutionInfo, key string) (string, bool) {
+func memoString(info *workflowpb.WorkflowExecutionInfo, key string, dc ...converter.DataConverter) (string, bool) {
 	payload := info.GetMemo().GetFields()[key]
 	if payload == nil {
 		return "", false
 	}
 	var value string
-	if err := converter.GetDefaultDataConverter().FromPayload(payload, &value); err != nil {
+	if err := memoDataConverter(dc).FromPayload(payload, &value); err != nil {
 		return "", false
 	}
 	return value, value != ""
@@ -426,8 +427,8 @@ func (p *WorkflowLiveness) scanOpenWorkflows(ctx context.Context) (*openWorkflow
 			index.live[RunID(claimID)] = struct{}{}
 		}
 
-		gaggle, _ := memoString(info, RunGaggleMemoKey)
-		workflowName, _ := memoString(info, RunWorkflowMemoKey)
+		gaggle, _ := memoString(info, RunGaggleMemoKey, p.dataConverter)
+		workflowName, _ := memoString(info, RunWorkflowMemoKey, p.dataConverter)
 		candidate := openRunCandidate{
 			run: OpenRun{WorkflowID: workflowID, Gaggle: gaggle, Workflow: workflowName},
 		}
@@ -490,4 +491,17 @@ func (p *WorkflowLiveness) eachOpenWorkflow(ctx context.Context, visit func(info
 			return nil
 		}
 	}
+}
+
+// Legacy Schedule histories used a child workflow to execute each claimed run.
+// Keep this mapping for lookup and cancellation of existing run journals.
+const scheduledRunWorkflowIDSuffix = "-run"
+
+// memoDataConverter keeps legacy callers compatible while runtime readers receive
+// the same converter as their client. It never stores mutable global state.
+func memoDataConverter(dc []converter.DataConverter) converter.DataConverter {
+	if len(dc) > 0 && dc[0] != nil {
+		return dc[0]
+	}
+	return converter.GetDefaultDataConverter()
 }

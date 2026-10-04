@@ -52,27 +52,32 @@ type DiagnosticExportStats struct {
 // DiagnosticExporter owns an independent, bounded OTLP Logs transport. A slow
 // collector never blocks the producer or the journal/trace export stream.
 type DiagnosticExporter struct {
-	mu          sync.Mutex
-	closed      bool
-	queue       chan diagnosticBatch
-	queuedBytes int
-	done        chan struct{}
-	cancel      context.CancelFunc
-	conn        *grpc.ClientConn
-	client      collectorlogpb.LogsServiceClient
-	azure       *azureMonitorLogExporter
-	ctx         context.Context
-	resource    *resourcepb.Resource
-	scrubber    journal.Scrubber
-	accepted    atomic.Uint64
-	delivered   atomic.Uint64
-	dropped     atomic.Uint64
-	failures    atomic.Uint64
+	legacy       *DiagnosticExporter
+	destinations map[string]*DiagnosticExporter
+	mu           sync.Mutex
+	closed       bool
+	queue        chan diagnosticBatch
+	queuedBytes  int
+	done         chan struct{}
+	cancel       context.CancelFunc
+	conn         *grpc.ClientConn
+	client       collectorlogpb.LogsServiceClient
+	azure        *azureMonitorLogExporter
+	ctx          context.Context
+	resource     *resourcepb.Resource
+	scrubber     journal.Scrubber
+	accepted     atomic.Uint64
+	delivered    atomic.Uint64
+	dropped      atomic.Uint64
+	failures     atomic.Uint64
 }
 
 // NewDiagnosticExporter reads no ambient OTLP variables. An empty endpoint
 // creates no client, goroutine, DNS lookup, or connection.
 func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
+	if len(cfg.Destinations) > 0 {
+		return newNamedDiagnosticExporter(cfg)
+	}
 	if cfg.OTLPEndpoint == "" && cfg.AzureMonitorConnectionString == "" {
 		return nil, nil
 	}
@@ -117,6 +122,11 @@ func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &DiagnosticExporter{queue: make(chan diagnosticBatch, DiagnosticQueueLimit), done: make(chan struct{}), cancel: cancel, conn: conn, client: client, azure: azure, scrubber: cfg.Scrubber}
+	if azure != nil {
+		azure.setReplayLossSource(func() replayLossCounters {
+			return replayLossCounters{Dropped: d.dropped.Load(), ExportFailures: d.failures.Load()}
+		})
+	}
 	d.ctx = metadata.NewOutgoingContext(ctx, metadata.New(cfg.OTLPHeaders))
 	resourceAttributes := []*commonpb.KeyValue{
 		d.field("service.name", "goobers"), d.field("service.version", cfg.ServiceVersion), d.field("goobers.build.commit", cfg.BuildCommit), d.field("goobers.telemetry.stream", "diagnostics"),
@@ -210,6 +220,9 @@ func (d *DiagnosticExporter) run() {
 
 // Stats returns transport counters; after Shutdown returns they are final.
 func (d *DiagnosticExporter) Stats() DiagnosticExportStats {
+	if d != nil && len(d.destinations) > 0 {
+		return d.namedDiagnosticStats()
+	}
 	if d == nil {
 		return DiagnosticExportStats{}
 	}
@@ -223,6 +236,9 @@ func (d *DiagnosticExporter) Stats() DiagnosticExportStats {
 // Shutdown drains within the caller's deadline, then cancels the outstanding
 // RPC and drops queued records. Repeated/concurrent calls are safe.
 func (d *DiagnosticExporter) Shutdown(ctx context.Context) error {
+	if d != nil && len(d.destinations) > 0 {
+		return d.shutdownNamedDiagnostics(ctx)
+	}
 	if d == nil {
 		return nil
 	}

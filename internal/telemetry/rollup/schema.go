@@ -874,4 +874,48 @@ ON run_cost_attribution(provider, repository, external_kind, external_id, run_id
 CREATE INDEX idx_run_cost_attribution_run
 ON run_cost_attribution(run_id);
 `,
+	// v29 (#5433): preserve structured wrapped-error causes without widening
+	// the flat run_errors query table. A missing satellite row is the explicit
+	// legacy/unavailable representation.
+	`
+CREATE TABLE IF NOT EXISTS run_error_causes (
+	run_id      TEXT NOT NULL,
+	seq         INTEGER NOT NULL,
+	causes_json TEXT NOT NULL,
+	PRIMARY KEY (run_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_error_causes_run ON run_error_causes(run_id);
+`,
+	// v30 (#5558): classify polling-budget exhaustion distinctly for stores
+	// that already materialized v21 gate classifications before
+	// POLLING_BUDGET_EXHAUSTED existed. Fresh stores run v21 first, then this
+	// data migration; upgraded stores repair the already-derived rows.
+	`
+UPDATE gate_classifications
+SET classification = 'polling',
+	reason = 'POLLING_BUDGET_EXHAUSTED'
+WHERE EXISTS (
+	SELECT 1
+	FROM gate_verdicts
+	WHERE gate_verdicts.run_id = gate_classifications.run_id
+		AND gate_verdicts.seq = gate_classifications.seq
+		AND json_extract(gate_verdicts.runner_json, '$.reason') = 'POLLING_BUDGET_EXHAUSTED'
+);
+`,
+	// v31 (#5562): durable scheduler-ingest health. A failing scheduler
+	// ingest used to report only into the scheduler log it could not read,
+	// so a stall was invisible; this single row (id pinned to 1) records the
+	// current failure streak and the corrupt records skipped.
+	`
+CREATE TABLE IF NOT EXISTS scheduler_ingest_health (
+	id              INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+	failing_since   TEXT,
+	last_failure_at TEXT,
+	last_failure    TEXT NOT NULL DEFAULT '',
+	skipped_records INTEGER NOT NULL DEFAULT 0,
+	last_skip_at    TEXT,
+	last_skip       TEXT NOT NULL DEFAULT ''
+);
+`,
 }

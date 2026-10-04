@@ -231,3 +231,14 @@ stage, retrieve its artifact through the blob plane, observe its surrender and
 terminal run state, and repeat across worker and daemon restarts. Verify denied
 cross-gaggle traffic and actual CNI policy enforcement. This preparer and its
 static/local container checks do not establish the full S1–S9 support gate.
+
+## Temporal payload encryption
+
+The generator defaults `--temporal-codec-key-secret` to
+`goobers-temporal-codec-key`. Before rollout, [provision the dedicated wrapping
+key](../temporal-codec/README.md). Both daemon and worker receive its private
+read-only copy and the same keyRef; `strict: false` preserves old history replay.
+Regenerating manifests never regenerates the key. Pass
+`--temporal-codec-key-secret=` to retain an already configured external key store
+(and supply its access through your overlay), or explicitly opt out if no keyRef
+is set. The generator refuses to replace an existing codec configuration.

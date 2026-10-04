@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ func NewTelemetryQueryExecutor(host *externaltelemetry.Host, recorder ArtifactRe
 // Run executes one external telemetry query.
 func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	required := string(capability.TelemetryRead)
-	if !containsString(env.Capabilities, required) {
+	if !slices.Contains(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindExternalTelemetry, required)
 	}
 	connectorName, err := telemetryStringInput(env, InputTelemetryConnector)
@@ -135,6 +136,7 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 			Status:    apiv1.ResultFailure,
 			Outputs:   outputs,
 			Artifacts: []apiv1.ArtifactPointer{pointer},
+			Integrity: apiv1.IntegrityUnapproved,
 			Summary:   fmt.Sprintf("external telemetry query failed: %s", code),
 			Error: &apiv1.ErrorInfo{
 				Code:      "external_telemetry_" + code,
@@ -146,10 +148,15 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 	if artifact.Shape == externaltelemetry.ShapePoint && len(artifact.Rows) == 1 && len(artifact.Rows[0]) == 1 {
 		outputs[OutputTelemetryValue] = artifact.Rows[0][0]
 	}
+	// The outputs are connector-returned data, graded exactly like the
+	// artifact above. Stamped on the envelope too, so the runner keeps it
+	// rather than grading the stage by its (operator-authored) inputs alone
+	// and handing these outputs downstream as trusted (#2979).
 	return apiv1.ResultEnvelope{
 		Status:    apiv1.ResultSuccess,
 		Outputs:   outputs,
 		Artifacts: []apiv1.ArtifactPointer{pointer},
+		Integrity: apiv1.IntegrityUnapproved,
 		Summary:   fmt.Sprintf("external telemetry query completed with data state %s", artifact.State),
 	}, nil
 }

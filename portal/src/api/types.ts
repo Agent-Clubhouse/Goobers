@@ -95,6 +95,69 @@ export interface CancelRunResult {
   code?: string;
   error?: string;
 }
+
+export interface OperatorMessageContent {
+  text?: string;
+  artifact?: {
+    path: string;
+    digest: string;
+    size: number;
+    mediaType?: string;
+  };
+}
+
+export interface OperatorMessageSubmitRequest {
+  gaggle: string;
+  targetAddress: string;
+  expiresAt?: string;
+  purpose: string;
+  content: OperatorMessageContent;
+  deliveryMode: string;
+}
+
+export interface OperatorMessageRequestRecord {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  targetAddress: string;
+  principalRef: string;
+  requestedAt: string;
+  expiresAt?: string;
+  purpose: string;
+  content: OperatorMessageContent;
+  deliveryMode: string;
+}
+
+export interface OperatorMessageAcknowledgement {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  principalRef: string;
+  acknowledgedAt: string;
+}
+
+export interface OperatorMessageOutcome {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  completedAt: string;
+  status: "delivered" | "failed" | "rejected" | "expired";
+  code?: string;
+  detail?: string;
+  request?: OperatorMessageRequestRecord;
+}
+
+export interface OperatorMessageRecord {
+  request: OperatorMessageRequestRecord;
+  state: "accepted" | "acknowledged" | "delivered" | "failed" | "rejected" | "expired";
+  acknowledgement?: OperatorMessageAcknowledgement;
+  outcome?: OperatorMessageOutcome;
+}
+
+export interface OperatorMessageSubmitResponse {
+  accepted: boolean;
+  record: OperatorMessageRecord;
+}
 export type AttemptClass = "initial" | "policy" | "infra" | "human";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";
@@ -240,6 +303,7 @@ export interface ConfigDocument extends ConfigAuthoringContractVersion {
   revision: string;
   document: ConfigDocumentDescriptor;
   content: string;
+  diagnostics: ConfigDiagnostic[];
 }
 
 export type ConfigDocumentChange =
@@ -334,8 +398,10 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
-	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
-  startup?: { phase: string; target?: string; since: string };
+  /** Present on daemons that report the local self-execution policy. */
+  selfExecution?: { policy: string; observed: boolean; placements: number; refusals: number };
+  definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
+  startup?: StartupStatus;
   build?: BuildMetadata;
   readState?: ReadState;
   ready: boolean;
@@ -348,6 +414,52 @@ export interface Health extends ContractVersion {
    * same as a check that confirmed the build is current.
    */
   update?: UpdateAvailability;
+  telemetryExporterHealth?: TelemetryExporterHealthStatus;
+}
+
+export interface StartupStatus {
+  phase: string;
+  target?: string;
+  since: string;
+  elapsedSeconds?: number;
+  worktreeCount?: number;
+  recoveryRunCount?: number;
+  accumulationCount?: number;
+  budgetSeconds?: number;
+  budgetUsedPercent?: number;
+  budgetState?: string;
+  blockingCandidate?: RecoveryCandidateStatus;
+}
+
+export interface RecoveryCandidateStatus {
+  progress: RecoveryProgress;
+  runId?: string;
+  gaggle?: string;
+  workflow?: string;
+  disposition?: string;
+  phase?: string;
+  operation?: string;
+  startedAt?: string;
+  lastProgressAt?: string;
+  elapsedSeconds?: number;
+  progressAgeSeconds?: number;
+}
+
+export interface RecoveryProgress {
+  total: number;
+  examined: number;
+  resumed: number;
+  reattached: number;
+  terminal: number;
+  skipped: number;
+}
+
+export interface InstanceReadiness extends ContractVersion {
+  computerName?: string;
+  instanceRoot: string;
+  rootIdentity?: Instance["rootIdentity"];
+  ready: boolean;
+  recovery: StartupStatus;
 }
 
 export interface UpdateAvailability {
@@ -398,6 +510,7 @@ export interface Instance extends ContractVersion {
   warnings: ValidationWarning[];
   maintenance?: MaintenanceStatus;
   telemetryRetention?: TelemetryRetentionStatus;
+  telemetryExporterHealth?: TelemetryExporterHealthStatus;
   journalHealth?: JournalHealthStatus;
   storageHealth?: StorageHealthStatus;
   recoveryInventory?: RecoveryInventoryStatus;
@@ -428,6 +541,33 @@ export interface StorageHealthStatus {
   criticalFloorPercent?: number;
   measuredAt?: string;
   error?: string;
+}
+
+export interface TelemetryExporterHealthStatus {
+  destinations?: Record<string, TelemetryExporterHealthStatus>;
+  unavailableReason?: string;
+  replay?: { accountingReady: boolean; pendingRecords: number; pendingBytes: number; oldestPendingSeconds: number; lastSuccess?: string; lastFailure?: string; failureClass?: string; activeFailure: boolean };
+  journal?: { accepted: number; dropped: number; failures: number };
+  diagnostics?: { accepted: number; dropped: number; failures: number };
+  enabled: boolean;
+  mode?: "disabled" | "local" | "otlp" | "stdout" | "azure-monitor" | "custom" | string;
+  endpointHost?: string;
+  endpointClass?: "ip-address" | "localhost" | "dns-name" | "unknown" | string;
+  trace: TelemetryExporterSignalState;
+  metric: TelemetryExporterSignalState;
+}
+
+export interface TelemetryExporterSignalState {
+  configured: boolean;
+  state: "disabled" | "unknown" | "healthy" | "unhealthy" | string;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastFailureReason?: "collector_unavailable" | "signal_unimplemented" | "canceled" | "deadline_exceeded" | "exporter_error" | "unknown" | string;
+  consecutiveFailures?: number;
+  lastTransitionAt?: string;
+  recoveryTransitions?: number;
+  failureTransitions?: number;
+  suppressedFailureEvents?: number;
 }
 
 /**
@@ -929,6 +1069,8 @@ export interface RunDetail extends RunSummary {
   escalation?: EscalationCause;
   /** The same cause projection as escalation, present for every non-completed terminal phase (#4246). */
   terminalCause?: EscalationCause;
+  /** Availability of a durable cause record; absent on older daemons. */
+  terminalCauseStatus?: "recorded" | "unavailable" | "not-applicable";
   /** The business decision a completed run reached, distinct from phase (the execution axis). */
   outcome?: RunOutcome;
   /** The run's exact executed workflow-graph transition history — never inferred from "both endpoint nodes were visited". */
@@ -1186,6 +1328,13 @@ export interface ExternalRef {
 export interface ErrorDetail {
   code: string;
   message?: string;
+  causes?: ErrorCause[];
+}
+
+export interface ErrorCause {
+  code?: string;
+  class?: string;
+  message?: string;
 }
 
 export interface RedactionInfo {
@@ -1332,6 +1481,9 @@ export interface TelemetryCostModelAggregate {
 
 export interface TelemetryCostRunAggregate {
   runId: string;
+  gaggle?: string;
+  workflow?: string;
+  status?: string;
   startedAt: string;
   usageAttempts: number;
   measuredAttempts: number;
@@ -1561,11 +1713,17 @@ export interface TelemetryStageStats {
   p50Tokens?: number;
   p95Tokens?: number;
   costSamples: number;
+  p50CostAIC?: number;
+  p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
+  retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   retryWasteCostUSD?: number;
   // How many of totalAttempts belong to a run that hung and was later
   // aborted (the watchdog's max-duration expiry), excluded from
@@ -1588,11 +1746,19 @@ export interface TelemetryUsageStats {
   p50CopilotPremiumRequests?: number;
   p95CopilotPremiumRequests?: number;
   costSamples: number;
+  costAIC?: number;
+  p50CostAIC?: number;
+  p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   costUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
   retryWasteTokens?: number;
+  retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   retryWasteCostUSD?: number;
 }
 
@@ -1606,6 +1772,8 @@ export interface TelemetryModelStats {
   premiumRequestSamples: number;
   copilotPremiumRequests?: number;
   costSamples: number;
+  costAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   costUSD?: number;
 }
 
@@ -1692,6 +1860,7 @@ export interface PortalConfig {
 }
 
 export type WorkItemKind = "pr" | "issue";
+export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 
 export interface WorkItemListOptions {
   provider?: string;
@@ -1705,6 +1874,7 @@ export interface WorkItemSummary {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   actionCount: number;
   lastOperation: string;
   lastActionAt: string;
@@ -1736,6 +1906,7 @@ export interface WorkItemDetail {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   cost?: WorkItemCost;
   relatedPullRequests: RelatedWorkItem[];
   actions: WorkItemAction[];
@@ -1743,8 +1914,9 @@ export interface WorkItemDetail {
 }
 
 export interface WorkItemCost {
-  costUSD?: number;
   nanoAIU?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to nano-AIU by the HTTP client. */
+  costUSD?: number;
   totalRuns: number;
   measuredRuns: number;
   totalAttempts: number;
@@ -1766,6 +1938,7 @@ export interface DaemonClient {
     options?: RequestOptions,
   ): Promise<DaemonEventStream>;
   getHealth(options?: RequestOptions): Promise<Health>;
+  getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness>;
   getInstance(options?: RequestOptions): Promise<Instance>;
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig>;
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;

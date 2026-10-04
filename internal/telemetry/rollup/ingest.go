@@ -86,7 +86,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "landing_intents", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
+var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "landing_intents", "run_errors", "run_error_causes", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -275,12 +275,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				a.errorCode = ev.Error.Code
 				a.errorClass = class
 				if !standaloneErrorCodes[k][ev.Error.Code] {
-					if _, err := tx.ExecContext(ctx, `
-						INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
-						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-						runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
-						nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
-						return fmt.Errorf("rollup: insert run_error (stage.finished) seq %d: %w", ev.Seq, err)
+					if err := insertRunError(ctx, tx, runID, ev, ev.Error.Code, class, " (stage.finished)"); err != nil {
+						return err
 					}
 				}
 			}
@@ -290,12 +286,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				continue
 			}
 			code, class := errorCodeAndClass(ev)
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), code,
-				nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
-				return fmt.Errorf("rollup: insert run_error seq %d: %w", ev.Seq, err)
+			if err := insertRunError(ctx, tx, runID, ev, code, class, ""); err != nil {
+				return err
 			}
 			if a := stages[eventStageKeys[i]]; a != nil {
 				a.errorCode = code
@@ -668,6 +660,45 @@ func errorCodeAndClass(ev journalEvent) (code, class string) {
 	return code, class
 }
 
+func insertRunError(ctx context.Context, tx *sql.Tx, runID string, ev journalEvent, code, class, source string) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), code,
+		nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
+		return fmt.Errorf("rollup: insert run_error%s seq %d: %w", source, ev.Seq, err)
+	}
+	if err := insertRunErrorCauses(ctx, tx, runID, ev.Seq, ev.Error.Causes); err != nil {
+		return err
+	}
+	return nil
+}
+
+func insertRunErrorCauses(ctx context.Context, tx *sql.Tx, runID string, seq uint64, causes []journalErrorCause) error {
+	if len(causes) == 0 {
+		return nil
+	}
+	scrubbed := make([]journalErrorCause, 0, len(causes))
+	for _, cause := range causes {
+		scrubbed = append(scrubbed, journalErrorCause{
+			Code:    cause.Code,
+			Class:   cause.Class,
+			Message: capMessage(telemetry.Redact(cause.Message)),
+		})
+	}
+	data, err := json.Marshal(scrubbed)
+	if err != nil {
+		return fmt.Errorf("rollup: encode run_error causes seq %d: %w", seq, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_error_causes (run_id, seq, causes_json)
+		VALUES (?, ?, ?)`,
+		runID, seq, string(data)); err != nil {
+		return fmt.Errorf("rollup: insert run_error causes seq %d: %w", seq, err)
+	}
+	return nil
+}
+
 var curationAgentOutputKeys = []string{
 	"ready",
 	"needsHuman",
@@ -927,6 +958,8 @@ func classifyGateEvaluation(runID string, ev journalEvent) (string, string, stri
 			}
 		case reason == "UNCHANGED_REPASS":
 			classification = "unchanged-repass"
+		case reason == "POLLING_BUDGET_EXHAUSTED":
+			classification = "polling"
 		default:
 			classification = "repass-escalation"
 			if reason == "" {
@@ -1062,6 +1095,88 @@ func writeSpansCursor(ctx context.Context, tx *sql.Tx, byteOffset int64) error {
 
 const defaultSchedulerIngestTimeout = 5 * time.Second
 
+// SchedulerIngestHealth is the durable health of scheduler-log ingestion
+// (#5562): whether it is failing now, and how many corrupt records it has
+// skipped. Both live in telemetry.db rather than only in the scheduler log,
+// because a stalled ingest is exactly the case where that log is not read.
+type SchedulerIngestHealth struct {
+	// FailingSince is the first failure after the last successful ingest;
+	// nil while ingestion is succeeding.
+	FailingSince  *time.Time
+	LastFailureAt *time.Time
+	LastFailure   string
+	// SkippedRecords counts every corrupt scheduler-log line skipped since
+	// telemetry.db was created; LastSkip is the newest skip's example error.
+	SkippedRecords int64
+	LastSkipAt     *time.Time
+	LastSkip       string
+}
+
+// SchedulerIngestHealth reads the scheduler-ingest health row. A store that
+// has never ingested reports the zero value.
+func (db *DB) SchedulerIngestHealth(ctx context.Context) (SchedulerIngestHealth, error) {
+	var failingSince, lastFailureAt, lastSkipAt sql.NullString
+	var health SchedulerIngestHealth
+	err := db.readDB().QueryRowContext(ctx, `
+		SELECT failing_since, last_failure_at, last_failure, skipped_records, last_skip_at, last_skip
+		FROM scheduler_ingest_health WHERE id = 1`).
+		Scan(&failingSince, &lastFailureAt, &health.LastFailure, &health.SkippedRecords, &lastSkipAt, &health.LastSkip)
+	if err == sql.ErrNoRows {
+		return SchedulerIngestHealth{}, nil
+	}
+	if err != nil {
+		return SchedulerIngestHealth{}, fmt.Errorf("rollup: read scheduler ingest health: %w", err)
+	}
+	health.FailingSince = parseOptionalTime(failingSince)
+	health.LastFailureAt = parseOptionalTime(lastFailureAt)
+	health.LastSkipAt = parseOptionalTime(lastSkipAt)
+	return health, nil
+}
+
+func parseOptionalTime(value sql.NullString) *time.Time {
+	parsed, err := parseTime(value)
+	if err != nil || parsed.IsZero() {
+		return nil
+	}
+	return &parsed
+}
+
+// writeSchedulerIngestSuccess clears a recorded failure and accumulates any
+// skipped records, inside the ingest transaction. It writes only when there
+// is something to change, so a steady-state ingest adds no health write.
+func writeSchedulerIngestSuccess(ctx context.Context, tx *sql.Tx, skipped jsonlSkips, now time.Time) error {
+	if skipped.count > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO scheduler_ingest_health (id, skipped_records, last_skip_at, last_skip)
+			VALUES (1, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET skipped_records = skipped_records + excluded.skipped_records,
+				last_skip_at = excluded.last_skip_at, last_skip = excluded.last_skip`,
+			skipped.count, formatTime(now), capMessage(telemetry.Redact(skipped.first.Error()))); err != nil {
+			return fmt.Errorf("rollup: record skipped scheduler records: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE scheduler_ingest_health SET failing_since = NULL
+		WHERE id = 1 AND failing_since IS NOT NULL`); err != nil {
+		return fmt.Errorf("rollup: clear scheduler ingest failure: %w", err)
+	}
+	return nil
+}
+
+// recordSchedulerIngestFailure is best-effort: the ingest has already failed,
+// and a second failure recording it must not replace the first error.
+func (db *DB) recordSchedulerIngestFailure(cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), db.schedulerIngestTimeout)
+	defer cancel()
+	now := formatTime(time.Now())
+	_, _ = db.sql.ExecContext(ctx, `
+		INSERT INTO scheduler_ingest_health (id, failing_since, last_failure_at, last_failure)
+		VALUES (1, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET failing_since = COALESCE(failing_since, excluded.failing_since),
+			last_failure_at = excluded.last_failure_at, last_failure = excluded.last_failure`,
+		now, now, capMessage(telemetry.Redact(cause.Error())))
+}
+
 var errSchedulerIngestInProgress = errors.New("rollup: scheduler ingest already in progress")
 
 // IngestSchedulerLog rolls up the instance journal (claim transitions,
@@ -1090,7 +1205,16 @@ func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error
 		return errSchedulerIngestInProgress
 	}
 	defer db.schedulerMu.Unlock()
-	return db.ingestSchedulerLog(ctx, schedulerDir)
+	err := db.ingestSchedulerLog(ctx, schedulerDir)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		// A cancelled context is the caller stopping (daemon shutdown), not
+		// ingestion failing; recording it would leave a false warning.
+		// The daemon also journals this failure, but into the scheduler log
+		// this ingest is failing to read (#5562); telemetry.db is where an
+		// operator, and `goobers status`, can see it.
+		db.recordSchedulerIngestFailure(err)
+	}
+	return err
 }
 
 func (db *DB) rebuildSchedulerLog(ctx context.Context, schedulerDir string) error {
@@ -1104,7 +1228,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	events, newGen, newOffset, _, err := readInstanceEventsFrom(schedulerDir, cursor.generation, cursor.byteOffset)
+	events, newGen, newOffset, _, eventSkips, err := readInstanceEventsFrom(schedulerDir, cursor.generation, cursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -1112,7 +1236,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	spans, newSpanOffset, _, err := readSchedulerSpansFrom(schedulerDir, spanCursor.byteOffset)
+	spans, newSpanOffset, _, spanSkips, err := readSchedulerSpansFrom(schedulerDir, spanCursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -1180,7 +1304,12 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// a duplicate-key error.
 	for _, span := range spans {
 		if span.TraceID == "" {
-			return fmt.Errorf("rollup: scheduler span %s has no trace id", span.SpanID)
+			// Decodable but unusable — the same class as an undecodable line
+			// (#5562): failing here would pin the cursor in front of it.
+			spanSkips = spanSkips.add(jsonlSkips{
+				count: 1, first: fmt.Errorf("rollup: scheduler span %q has no trace id", span.SpanID),
+			})
+			continue
 		}
 		if err := deleteSpan(ctx, tx, span.TraceID, span.SpanID); err != nil {
 			return err
@@ -1193,6 +1322,9 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 		return err
 	}
 	if err := writeSpansCursor(ctx, tx, newSpanOffset); err != nil {
+		return err
+	}
+	if err := writeSchedulerIngestSuccess(ctx, tx, eventSkips.add(spanSkips), time.Now()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1596,7 +1728,7 @@ func matchingTraversalForSpan(ctx context.Context, tx *sql.Tx, runID, stage stri
 		query += ` AND branch = ?`
 		args = append(args, branch)
 	}
-	query += ` ORDER BY traversal`
+	query += ` ORDER BY started_at, traversal`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, false, fmt.Errorf("rollup: query traversal for span %s: %w", span.SpanID, err)
@@ -1617,10 +1749,12 @@ func matchingTraversalForSpan(ctx context.Context, tx *sql.Tx, runID, stage stri
 		if startedAt.Before(span.StartTime) || startedAt.After(span.EndTime) {
 			continue
 		}
-		if traversal != 0 {
-			return 0, false, fmt.Errorf("rollup: span %s matches multiple traversals for stage attempt %s/%d", span.SpanID, stage, attempt)
+		if traversal == 0 {
+			// A repass can restart its dispatch-local attempt number while an
+			// earlier span is still open. The first matching start is the
+			// traversal that opened the span; later starts belong to repasses.
+			traversal = candidate
 		}
-		traversal = candidate
 	}
 	if err := rows.Err(); err != nil {
 		return 0, false, fmt.Errorf("rollup: iterate traversals for span %s: %w", span.SpanID, err)

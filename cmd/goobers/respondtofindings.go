@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -54,8 +55,8 @@ type recordedFindingDisposition struct {
 // remediationResponseResult records the account exactly as validated.
 // FindingCount is the original merge-review verdict's finding count, which
 // also partitions Findings: entries numbered 1..FindingCount answer verdict
-// findings and carry their Original, entries past it answer findings raised
-// during this remediation cycle and carry none.
+// findings, entries past it answer findings an in-run reviewer raised during
+// this remediation cycle. Every entry carries the Original finding it answers.
 type remediationResponseResult struct {
 	SelectedNumber string                       `json:"selectedNumber"`
 	SourceRunID    string                       `json:"sourceRunId"`
@@ -97,12 +98,12 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	verdict, rawResponses, published, err := readRemediationResponseInputs(root, runID, !*checkOnly)
+	verdict, inRunFindings, rawResponses, published, err := readRemediationResponseInputs(root, runID, !*checkOnly)
 	if err != nil {
 		pf(stderr, "error: read remediation response inputs from journal: %v\n", err)
 		return 1
 	}
-	responses, err := validateFindingResponses(verdict.Findings, rawResponses)
+	responses, err := validateFindingResponses(verdict.Findings, inRunFindings, rawResponses)
 	if err != nil {
 		return failFindingResponseValidation(err, stderr)
 	}
@@ -131,10 +132,12 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 			Disposition: response.Disposition,
 			Detail:      response.Detail,
 		}
-		// Responses past FindingCount answer in-run review findings, so they
-		// have no original verdict finding to quote.
+		// Responses past FindingCount answer in-run review findings; bind each
+		// to the captured reviewer finding it names (#2748).
 		if response.Finding <= len(verdict.Findings) {
 			recorded.Original = verdict.Findings[response.Finding-1]
+		} else {
+			recorded.Original = inRunFindings[response.Finding-len(verdict.Findings)-1]
 		}
 		result.Findings[i] = recorded
 	}
@@ -158,14 +161,14 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := remediationStageProviderWithRecorder(root, repo, token, false, sidecarMutationRecorder{kind: "pr"})
+	channel, err := newRemediationResponseChannel(root, repo, token)
 	if err != nil {
 		pf(stderr, "error: construct remediation provider: %v\n", err)
 		return 1
 	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	if err := reconcileRemediationResponseComment(ctx, provider, repo, selectedNumber, runID, comment); err != nil {
+	if err := reconcileRemediationResponseComment(ctx, channel, selectedNumber, runID, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post remediation response to PR #%d", selectedNumber), err, remediationResponseArtifactName)
 	}
 	result.Posted = true
@@ -226,15 +229,19 @@ func remediationStageNames() (implementStage, pushStage string) {
 		providerInput("pushStage", "push-remediated")
 }
 
-func readRemediationResponseInputs(root, runID string, requirePublication bool) (apiv1.Verdict, string, bool, error) {
+// readRemediationResponseInputs returns the original merge-review verdict, the
+// findings in-run reviewer gates raised before the latest implement result
+// (#2748), the implementer's raw findingResponses, and whether the remediated
+// branch was published.
+func readRemediationResponseInputs(root, runID string, requirePublication bool) (apiv1.Verdict, []apiv1.Finding, string, bool, error) {
 	implementStage, pushStage := remediationStageNames()
 	rd, err := stageRunJournal(root, runID)
 	if err != nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
+		return apiv1.Verdict{}, nil, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
+		return apiv1.Verdict{}, nil, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 
 	var contextRef *journal.Ref
@@ -242,8 +249,17 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 	var implementFound bool
 	var pushFound bool
 	var published string
+	// reviewRefs holds the runner-recorded verdict artifact of the latest
+	// agentic gate evaluated so far (the reviewer feedback a repass hands
+	// implement); inRunRefs snapshots it at the latest implement result, so
+	// responses are bounded by, and numbered against, the reviewer findings
+	// that attempt was actually answering (#2748).
+	var reviewRefs, inRunRefs []journal.Ref
 	for i := range events {
 		event := events[i]
+		if event.Type == journal.EventGateEvaluated && event.Ref != nil {
+			reviewRefs = []journal.Ref{*event.Ref}
+		}
 		// stageArtifactName, not a hard-coded "<runID>:" prefix: a pod
 		// records the same artifact without the run qualifier (#4119).
 		if event.Type == journal.EventArtifactRecorded &&
@@ -254,6 +270,7 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 		}
 		if event.Type == journal.EventStageFinished && event.Stage == implementStage {
 			implementFound = true
+			inRunRefs = append([]journal.Ref(nil), reviewRefs...)
 			rawResponses = ""
 			if raw, ok := event.Outputs[findingResponsesOutput].(string); ok {
 				rawResponses = raw
@@ -265,42 +282,75 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 		}
 	}
 	if contextRef == nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactMissing("gather-pr-context", remediationBriefArtifact)
+		return apiv1.Verdict{}, nil, "", false, upstreamArtifactMissing("gather-pr-context", remediationBriefArtifact)
 	}
 	if !implementFound {
-		return apiv1.Verdict{}, "", false, fmt.Errorf(
+		return apiv1.Verdict{}, nil, "", false, fmt.Errorf(
 			"no %q stage result found in this run's journal; set the implementStage input if the remediation stage has a different name",
 			implementStage)
 	}
 	if requirePublication {
 		if !pushFound {
-			return apiv1.Verdict{}, "", false, fmt.Errorf(
+			return apiv1.Verdict{}, nil, "", false, fmt.Errorf(
 				"no %q stage result found in this run's journal; set the pushStage input if the publication stage has a different name",
 				pushStage)
 		}
 		if published != "true" && published != "false" {
-			return apiv1.Verdict{}, "", false, fmt.Errorf("push-remediated result has invalid published output %q", published)
+			return apiv1.Verdict{}, nil, "", false, fmt.Errorf("push-remediated result has invalid published output %q", published)
 		}
 	}
 
-	data, err := rd.ArtifactBytes(*contextRef)
+	verdict, err := remediationBriefVerdict(rd, *contextRef)
 	if err != nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
+		return apiv1.Verdict{}, nil, "", false, err
+	}
+	inRunFindings, err := inRunReviewFindings(rd, inRunRefs)
+	if err != nil {
+		return apiv1.Verdict{}, nil, "", false, err
+	}
+	return verdict, inRunFindings, rawResponses, published == "true", nil
+}
+
+// remediationBriefVerdict decodes the gather-pr-context brief and returns its
+// original merge-review verdict (zero when the remediation cause carries none).
+func remediationBriefVerdict(rd journalclient.Reader, ref journal.Ref) (apiv1.Verdict, error) {
+	data, err := rd.ArtifactBytes(ref)
+	if err != nil {
+		return apiv1.Verdict{}, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 	var brief apiv1.RemediationBrief
 	if err := json.Unmarshal(data, &brief); err != nil {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("unmarshal remediation-brief.json artifact: %w", err)
+		return apiv1.Verdict{}, fmt.Errorf("unmarshal remediation-brief.json artifact: %w", err)
 	}
 	if brief.Schema != apiv1.RemediationBriefVersion {
-		return apiv1.Verdict{}, "", false, fmt.Errorf(
+		return apiv1.Verdict{}, fmt.Errorf(
 			"remediation-brief.json artifact schema is %q, want %q",
 			brief.Schema, apiv1.RemediationBriefVersion,
 		)
 	}
 	if brief.GatherPRContext.Verdict == nil {
-		return apiv1.Verdict{}, rawResponses, published == "true", nil
+		return apiv1.Verdict{}, nil
 	}
-	return *brief.GatherPRContext.Verdict, rawResponses, published == "true", nil
+	return *brief.GatherPRContext.Verdict, nil
+}
+
+// inRunReviewFindings loads the findings from the given gate verdict
+// artifacts in journal order. They are the ground truth for responses
+// numbered past the original verdict: response N+k answers the k-th finding.
+func inRunReviewFindings(rd journalclient.Reader, refs []journal.Ref) ([]apiv1.Finding, error) {
+	var findings []apiv1.Finding
+	for _, ref := range refs {
+		data, err := rd.ArtifactBytes(ref)
+		if err != nil {
+			return nil, fmt.Errorf("read in-run review verdict artifact: %w", err)
+		}
+		var verdict apiv1.Verdict
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			return nil, fmt.Errorf("unmarshal in-run review verdict artifact: %w", err)
+		}
+		findings = append(findings, verdict.Findings...)
+	}
+	return findings, nil
 }
 
 // parseFindingResponses decodes the findingResponses output.
@@ -385,12 +435,14 @@ func parseFindingResponseLines(raw string) ([]findingDisposition, error) {
 // validateFindingResponses enforces the remediation account contract against
 // the original merge-review verdict: every verdict finding needs exactly one
 // addressed/declined disposition with a detail. Responses numbered past the
-// verdict's finding count account for findings raised by an in-run reviewer
-// repass; they are validated structurally and bind to no original finding.
+// verdict's finding count account for findings an in-run reviewer raised;
+// they are optional, but each must name one of the inRun findings captured
+// from this run's journal (numbered len(findings)+1 onward), so a producer
+// cannot claim to have addressed a finding no reviewer raised (#2748).
 // Runs whose remediation cause carries no verdict at all (failing-ci,
-// sibling-overlap) have nothing to account for, so responses are optional
-// there rather than required to be absent.
-func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDisposition, error) {
+// sibling-overlap) have no verdict findings to account for, so responses are
+// optional there rather than required to be absent.
+func validateFindingResponses(findings, inRun []apiv1.Finding, raw string) ([]findingDisposition, error) {
 	if strings.TrimSpace(raw) == "" {
 		if len(findings) == 0 {
 			return []findingDisposition{}, nil
@@ -410,6 +462,12 @@ func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDi
 		response.Detail = strings.TrimSpace(response.Detail)
 		if response.Finding < 1 {
 			return nil, fmt.Errorf("response %d names finding %d, want a 1-based finding number", i+1, response.Finding)
+		}
+		if limit := len(findings) + len(inRun); response.Finding > limit {
+			return nil, fmt.Errorf(
+				"response %d names finding %d, but only %d verdict finding(s) and %d in-run reviewer finding(s) were raised; "+
+					"respond only to findings a reviewer raised (\"[]\" when there are none)",
+				i+1, response.Finding, len(findings), len(inRun))
 		}
 		if seen[response.Finding] {
 			return nil, fmt.Errorf("finding %d is accounted for more than once", response.Finding)
@@ -463,25 +521,29 @@ func renderRemediationResponse(runID string, result remediationResponseResult) s
 			additional = append(additional, response)
 			continue
 		}
-		finding := response.Original
 		fmt.Fprintf(&b, "\n%d. **%s** - %s\n", response.Finding, dispositionLabel(response.Disposition), response.Detail)
-		fmt.Fprintf(&b, "   > [%s", finding.Severity)
-		if finding.Class != "" {
-			fmt.Fprintf(&b, "/%s", finding.Class)
-		}
-		fmt.Fprintf(&b, "] %s", finding.Message)
-		if finding.Location != "" {
-			fmt.Fprintf(&b, " (%s)", finding.Location)
-		}
-		b.WriteByte('\n')
+		writeFindingQuote(&b, response.Original)
 	}
 	if len(additional) > 0 {
 		b.WriteString("\n### Raised during this remediation cycle\n")
 		for _, response := range additional {
 			fmt.Fprintf(&b, "\n- **%s** - %s\n", dispositionLabel(response.Disposition), response.Detail)
+			writeFindingQuote(&b, response.Original)
 		}
 	}
 	return b.String()
+}
+
+func writeFindingQuote(b *strings.Builder, finding apiv1.Finding) {
+	fmt.Fprintf(b, "   > [%s", finding.Severity)
+	if finding.Class != "" {
+		fmt.Fprintf(b, "/%s", finding.Class)
+	}
+	fmt.Fprintf(b, "] %s", finding.Message)
+	if finding.Location != "" {
+		fmt.Fprintf(b, " (%s)", finding.Location)
+	}
+	b.WriteByte('\n')
 }
 
 func dispositionLabel(disposition string) string {
@@ -491,61 +553,151 @@ func dispositionLabel(disposition string) string {
 	return "Addressed"
 }
 
+// remediationResponseChannel is where respond-to-findings keeps its one
+// run-scoped comment on a pull request: the PR conversation (issue comments)
+// on GitHub and Gitea, a pull-request thread on Azure DevOps.
+type remediationResponseChannel interface {
+	// authoredBySelf resolves the stage's own identity and reports whether a
+	// comment was written by it.
+	authoredBySelf(ctx context.Context) (func(providers.Comment) bool, error)
+	list(ctx context.Context, pullID string) ([]providers.Comment, error)
+	create(ctx context.Context, pullID, body string) error
+	update(ctx context.Context, commentID, body string) error
+	remove(ctx context.Context, commentID string) error
+}
+
+// newRemediationResponseChannel builds the channel from the stage's declared
+// github:issues:write credential, the capability respond-to-findings has
+// always declared for its pull-request comment. GitHub and Gitea use the broad
+// remediation factory as before; Azure DevOps, whose *ADOProvider does not
+// implement it, builds the narrow thread surface through
+// remediationStageSurface. Both record their mutations as kind "pr".
+func newRemediationResponseChannel(root string, repo providers.RepositoryRef, token string) (remediationResponseChannel, error) {
+	recorder := sidecarMutationRecorder{kind: "pr"}
+	if repo.Provider == providers.ProviderADO {
+		provider, err := remediationStageSurface[adoRemediationResponseThreads](root, repo, token,
+			withStageProviderCapability(capability.GitHubIssuesWrite), withStageProviderMutationRecorder(recorder))
+		if err != nil {
+			return nil, err
+		}
+		return threadRemediationResponseChannel{provider: provider, repo: repo}, nil
+	}
+	provider, err := remediationStageProviderWithRecorder(root, repo, token, false, recorder)
+	if err != nil {
+		return nil, err
+	}
+	return issueCommentRemediationResponseChannel{provider: provider, repo: repo}, nil
+}
+
+type issueCommentRemediationResponseChannel struct {
+	provider remediationProvider
+	repo     providers.RepositoryRef
+}
+
+func (c issueCommentRemediationResponseChannel) authoredBySelf(ctx context.Context) (func(providers.Comment) bool, error) {
+	author, err := c.provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(comment providers.Comment) bool { return strings.EqualFold(comment.Author, author) }, nil
+}
+
+func (c issueCommentRemediationResponseChannel) list(ctx context.Context, pullID string) ([]providers.Comment, error) {
+	return c.provider.ListComments(ctx, c.repo, pullID)
+}
+
+func (c issueCommentRemediationResponseChannel) create(ctx context.Context, pullID, body string) error {
+	_, err := c.provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{Repository: c.repo, ID: pullID, Comment: body})
+	return err
+}
+
+func (c issueCommentRemediationResponseChannel) update(ctx context.Context, commentID, body string) error {
+	return c.provider.UpdateComment(ctx, c.repo, commentID, body)
+}
+
+func (c issueCommentRemediationResponseChannel) remove(ctx context.Context, commentID string) error {
+	return c.provider.DeleteComment(ctx, c.repo, commentID)
+}
+
+// adoRemediationResponseThreads is the Azure DevOps pull-request thread
+// surface respond-to-findings needs. Its comment is posted as a closed
+// (informational) thread, so it never trips a comment-resolution policy.
+type adoRemediationResponseThreads interface {
+	adoIdentityReader
+	ListPullRequestThreadComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
+	PostPullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, pullID, body string) (providers.Comment, error)
+	UpdatePullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, commentID, body string) error
+	DeletePullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, commentID string) error
+}
+
+type threadRemediationResponseChannel struct {
+	provider adoRemediationResponseThreads
+	repo     providers.RepositoryRef
+}
+
+// authoredBySelf matches by identity GUID (ADO-N5): display names are not
+// unique on Azure DevOps.
+func (c threadRemediationResponseChannel) authoredBySelf(ctx context.Context) (func(providers.Comment) bool, error) {
+	self, err := c.provider.AuthenticatedIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(comment providers.Comment) bool { return adoCommentAuthoredBy(comment, self) }, nil
+}
+
+func (c threadRemediationResponseChannel) list(ctx context.Context, pullID string) ([]providers.Comment, error) {
+	return c.provider.ListPullRequestThreadComments(ctx, c.repo, pullID)
+}
+
+func (c threadRemediationResponseChannel) create(ctx context.Context, pullID, body string) error {
+	_, err := c.provider.PostPullRequestThreadComment(ctx, c.repo, pullID, body)
+	return err
+}
+
+func (c threadRemediationResponseChannel) update(ctx context.Context, commentID, body string) error {
+	return c.provider.UpdatePullRequestThreadComment(ctx, c.repo, commentID, body)
+}
+
+func (c threadRemediationResponseChannel) remove(ctx context.Context, commentID string) error {
+	return c.provider.DeletePullRequestThreadComment(ctx, c.repo, commentID)
+}
+
 func reconcileRemediationResponseComment(
 	ctx context.Context,
-	provider remediationProvider,
-	repo providers.RepositoryRef,
+	channel remediationResponseChannel,
 	prNumber int,
 	runID, body string,
 ) error {
-	author, err := provider.AuthenticatedLogin(ctx)
+	authoredBySelf, err := channel.authoredBySelf(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve remediation response author: %w", err)
 	}
 	id := strconv.Itoa(prNumber)
-	comments, err := provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("list remediation response comments: %w", err)
-	}
-	matches := remediationResponseComments(comments, author, runID)
-	if len(matches) == 0 {
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         id,
-			Comment:    body,
-		}); err != nil {
-			return fmt.Errorf("create remediation response comment: %w", err)
-		}
-	} else if err := provider.UpdateComment(ctx, repo, matches[0].ID, body); err != nil {
-		return fmt.Errorf("update remediation response comment: %w", err)
-	}
-
-	comments, err = provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("relist remediation response comments: %w", err)
-	}
-	matches = remediationResponseComments(comments, author, runID)
-	if len(matches) == 0 {
-		return fmt.Errorf("remediation response comment disappeared during reconciliation")
-	}
-	if matches[0].Body != body {
-		if err := provider.UpdateComment(ctx, repo, matches[0].ID, body); err != nil {
-			return fmt.Errorf("update canonical remediation response comment: %w", err)
-		}
-	}
-	for _, duplicate := range matches[1:] {
-		if err := provider.DeleteComment(ctx, repo, duplicate.ID); err != nil {
-			return fmt.Errorf("delete duplicate remediation response comment %s: %w", duplicate.ID, err)
-		}
-	}
-	return nil
+	return reconcileCanonicalProviderComment(body, canonicalProviderCommentSpec{
+		noun: "remediation response",
+		list: func() ([]providers.Comment, error) {
+			return channel.list(ctx, id)
+		},
+		create: func(body string) error {
+			return channel.create(ctx, id, body)
+		},
+		update: func(commentID, body string) error {
+			return channel.update(ctx, commentID, body)
+		},
+		remove: func(commentID string) error {
+			return channel.remove(ctx, commentID)
+		},
+		match: func(comments []providers.Comment) []providers.Comment {
+			return remediationResponseComments(comments, authoredBySelf, runID)
+		},
+	})
 }
 
-func remediationResponseComments(comments []providers.Comment, author, runID string) []providers.Comment {
+func remediationResponseComments(comments []providers.Comment, authoredBySelf func(providers.Comment) bool, runID string) []providers.Comment {
 	marker := remediationResponseMarker(runID)
 	var matches []providers.Comment
 	for _, comment := range comments {
-		if strings.EqualFold(comment.Author, author) &&
+		if authoredBySelf(comment) &&
 			(comment.Body == marker || strings.HasPrefix(comment.Body, marker+"\n")) {
 			matches = append(matches, comment)
 		}

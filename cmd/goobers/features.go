@@ -37,16 +37,9 @@ func runFeatures(args []string, stdout, stderr io.Writer) int {
 	usedOnly := fs.Bool("used", false, "list only the features the instance at path references")
 	dslVersion := fs.String("dsl-version", "", "list only features contained in this DSL version")
 	fs.Usage = helpUsage(stderr, "features")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	features := workflow.AllFeatures()

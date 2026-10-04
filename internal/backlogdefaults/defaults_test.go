@@ -179,6 +179,68 @@ func TestApplyLeavesDeclaredInputsAlone(t *testing.T) {
 	}
 }
 
+func TestApplyIssueOwnershipScopeInheritsAndAllowsIndependentOverrides(t *testing.T) {
+	got := ApplyIssueOwnershipScope(map[string]string{"trustLabel": "goobers:approved"}, "owner-a,owner-b", "refuse")
+	want := map[string]string{
+		"trustLabel":          "goobers:approved",
+		"ownershipAssignees":  "owner-a,owner-b",
+		"ownershipUnassigned": "refuse",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inputs = %#v, want %#v", got, want)
+	}
+
+	declared := map[string]string{
+		"ownershipAssignees": "task-owner",
+	}
+	got = ApplyIssueOwnershipScope(declared, "gaggle-owner", "allow")
+	want = map[string]string{
+		"ownershipAssignees":  "task-owner",
+		"ownershipUnassigned": "allow",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inputs = %#v, want independent per-input override %#v", got, want)
+	}
+}
+
+func TestApplyIssueOwnershipScopeNoopReturnsSameMap(t *testing.T) {
+	inputs := map[string]string{"trustLabel": "goobers:approved"}
+	got := ApplyIssueOwnershipScope(inputs, "", "")
+	if !reflect.DeepEqual(got, inputs) {
+		t.Fatalf("inputs = %#v, want %#v", got, inputs)
+	}
+	got["marker"] = "written-through"
+	if _, ok := inputs["marker"]; !ok {
+		t.Fatal("ApplyIssueOwnershipScope copied the inputs map for a no-op")
+	}
+}
+
+func TestApplyBacklogScopeConjoinsDeclaredSelectors(t *testing.T) {
+	declared := map[string]string{
+		"requireLabels":  "goobers:ready",
+		"labelPredicate": `"size:s" in labels`,
+	}
+	got := ApplyBacklogScope(backlogQueryTask, declared, "area:web,goobers:ready", `"team:web" in labels`)
+	want := map[string]string{
+		"requireLabels":  "area:web,goobers:ready",
+		"labelPredicate": `("team:web" in labels) && ("size:s" in labels)`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inputs = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(declared, map[string]string{"requireLabels": "goobers:ready", "labelPredicate": `"size:s" in labels`}) {
+		t.Fatalf("declared task inputs were mutated: %#v", declared)
+	}
+}
+
+func TestApplyBacklogScopeNarrowsExplicitRequireLabels(t *testing.T) {
+	got := ApplyBacklogScope(backlogQueryTask, map[string]string{"requireLabels": "goobers:ready"}, "area:web", "")
+	want := map[string]string{"requireLabels": "area:web,goobers:ready"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inputs = %#v, want %#v", got, want)
+	}
+}
+
 // TestApplyIsANoOpWithoutDefaults pins the zero-configuration invariance every
 // type-1/type-2 instance depends on: no gaggle defaults means the SAME map
 // back, not a copy of it, byte for byte as before this package existed.

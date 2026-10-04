@@ -72,6 +72,15 @@ type Authorizer interface {
 	Authorize(*http.Request) error
 }
 
+func operatorMessagePlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	run, ok := strings.CutSuffix(rest, "/operator-messages")
+	return ok && run != "" && !strings.Contains(run, "/")
+}
+
 // Principal is the identity established by an Authenticator.
 type Principal struct {
 	Subject string
@@ -145,6 +154,17 @@ const PodPrincipalIssuer = "goobers/pod"
 // config-observability credential. It carries neither instance roles nor a run
 // identity.
 const WorkerPrincipalIssuer = "goobers/worker"
+
+// WorkerBlobPrincipalIssuer is a blob-only resident-worker credential.
+const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
+
+// WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
+const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
+
+// CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
+// (Goobers#6120). Such a principal holds no roles and no pod scopes: the
+// authorizer admits it to the credential refresh route and nothing else.
+const CredentialGrantPrincipalIssuer = "goobers/credential-grant"
 
 // IsPodPrincipal reports whether principal was authenticated as a stage pod.
 func IsPodPrincipal(principal Principal) bool {
@@ -387,8 +407,9 @@ func telemetryPlanePath(path string) bool {
 // convention.
 //
 // Resident worker principals use a separate identity and may only GET the
-// config digest or POST their own divergence report. Neither pod scopes nor
-// instance roles broaden that grant.
+// config digest or POST their own divergence report. Dedicated blob-worker
+// principals may only GET/PUT blobs; surrender-worker principals may only
+// read surrender results and presence. Pod scopes and roles broaden none.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -401,11 +422,26 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if principal.Issuer == CredentialGrantPrincipalIssuer {
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
+				return nil
+			}
+			return errors.New("a credential-refresh grant may only call the credential refresh route")
+		}
+		if principal.Issuer == WorkerSurrenderPrincipalIssuer {
+			return authorizeWorkerSurrender(request)
+		}
+		if principal.Issuer == WorkerBlobPrincipalIssuer {
+			return authorizeWorkerBlob(request)
+		}
 		if principal.Issuer == WorkerPrincipalIssuer {
 			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
 				return nil
 			}
 			return errors.New("worker principal may only read config digest or report config divergence")
+		}
+		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
+			return nil
 		}
 		if IsPodPrincipal(principal) {
 			scope, admitted := podRouteScope(request)
@@ -444,6 +480,9 @@ func podRouteScope(request *http.Request) (scope string, admitted bool) {
 		return scope, true
 	}
 	if journalPlanePath(path) && method == http.MethodPost {
+		return ScopeJournal, true
+	}
+	if operatorMessagePlanePath(path) && method == http.MethodPost {
 		return ScopeJournal, true
 	}
 	if surrenderPlanePath(path) && method == http.MethodPost {
@@ -563,12 +602,14 @@ type handlerConfig struct {
 	interventionContext     context.Context
 	runRevealer             func(context.Context, string) error
 	workflowMutations       WorkflowMutationService
+	gaggleBundles           GaggleBundleService
 	claims                  ClaimService
 	triggers                TriggerService
 	escalations             EscalationService
 	cancels                 CancelService
 	journal                 JournalService
 	runJournal              RunJournalService
+	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
 	recovery                RecoveryService
@@ -584,6 +625,8 @@ type handlerConfig struct {
 	discoveryIdentity       DiscoveryIdentity
 	telemetryReadsAvailable bool
 	workItemsAvailable      bool
+	activeClaimsAvailable   bool
+	configAuthoring         ConfigAuthoringReader
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -657,6 +700,17 @@ func WithConfigDigest(digest func() string) HandlerOption {
 			return errors.New("http api: config digest source is required")
 		}
 		c.configDigest = digest
+		return nil
+	}
+}
+
+// WithConfigAuthoringReader registers authenticated configuration-source reads.
+func WithConfigAuthoringReader(reader ConfigAuthoringReader) HandlerOption {
+	return func(c *handlerConfig) error {
+		if reader == nil {
+			return errors.New("http API configuration authoring reader is required")
+		}
+		c.configAuthoring = reader
 		return nil
 	}
 }
@@ -780,6 +834,18 @@ func WithWorkflowMutations(service WorkflowMutationService) HandlerOption {
 	}
 }
 
+// WithGaggleBundles enables the sanitized gaggle export and atomic import
+// routes behind the router's existing authentication and authorization gates.
+func WithGaggleBundles(service GaggleBundleService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("http API gaggle bundle service is required")
+		}
+		config.gaggleBundles = service
+		return nil
+	}
+}
+
 type apiHandler struct {
 	http.Handler
 	events        eventSource
@@ -819,6 +885,19 @@ func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
 	if !ok {
 		panic(fmt.Sprintf("unknown API route ID %q", routeID))
 	}
+	r.handleRoute(route, handler)
+}
+
+func (r *Router) handleAuthoring(routeID apicontract.RouteID, handler http.HandlerFunc) {
+	r.ensureAdmission()
+	route, ok := apicontract.V1ConfigAuthoringRoute(routeID)
+	if !ok {
+		panic(fmt.Sprintf("unknown configuration authoring route ID %q", routeID))
+	}
+	r.handleRoute(route, handler)
+}
+
+func (r *Router) handleRoute(route apicontract.Route, handler http.HandlerFunc) {
 	r.routes = append(r.routes, route)
 	r.mux.HandleFunc(route.Path, func(w http.ResponseWriter, request *http.Request) {
 		if request.Method != route.Method {
@@ -883,6 +962,19 @@ func (r *Router) HandleByMethod(routeIDsByMethod map[string]apicontract.RouteID,
 	})
 }
 
+// Wire contract of the crash-recovery gate (#5019). Clients branch on the code
+// to wait out a daemon restart instead of reporting a failure (#5897), so it is
+// a stable string like the seam codes in mutability.go.
+const (
+	// CodeRecovering is the error code every route that is not recovery-safe
+	// answers with, as HTTP 503, until startup crash recovery completes.
+	CodeRecovering = "recovering"
+
+	// NotReadyRetryAfterSeconds is the Retry-After hint sent with a 503 that
+	// means only that the daemon has not finished starting yet.
+	NotReadyRetryAfterSeconds = 2
+)
+
 // serve runs the per-request pipeline shared by every registered route —
 // authenticate, authorize, admit, bound — then calls handler. Factored out of
 // Handle so HandleByMethod's multi-method dispatch reuses it exactly rather
@@ -894,7 +986,8 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 	// reaches a handler whose subsystems have not opened yet, regardless of
 	// whether it would otherwise have authenticated.
 	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
-		writeError(w, http.StatusServiceUnavailable, "recovering", "daemon is completing crash recovery")
+		w.Header().Set(HeaderRetryAfterSeconds, strconv.Itoa(NotReadyRetryAfterSeconds))
+		writeError(w, http.StatusServiceUnavailable, CodeRecovering, "daemon is completing crash recovery")
 		return
 	}
 	principal, err := r.authenticator.Authenticate(request)
@@ -971,10 +1064,12 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, errors.New("http API error logger is required")
 	}
 	_, workItemsAvailable := reader.(readservice.WorkItemReader)
+	_, activeClaimsAvailable := reader.(readservice.ActiveClaimsReader)
 	config := handlerConfig{
-		authenticator:       NullAuthenticator{},
-		interventionContext: context.Background(),
-		workItemsAvailable:  workItemsAvailable,
+		authenticator:         NullAuthenticator{},
+		interventionContext:   context.Background(),
+		workItemsAvailable:    workItemsAvailable,
+		activeClaimsAvailable: activeClaimsAvailable,
 	}
 	for _, opt := range opts {
 		if err := opt(&config); err != nil {
@@ -991,6 +1086,9 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, fmt.Errorf("register API discovery routes: %w", err)
 	}
 	registerV1Routes(router, reader, errorLog, config, discovery)
+	if config.configAuthoring != nil {
+		registerConfigAuthoringReadRoutes(router, config.configAuthoring, errorLog)
+	}
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -1000,6 +1098,13 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		expected = slices.DeleteFunc(expected, func(route apicontract.Route) bool {
 			return route.ID == apicontract.RouteEvents
 		})
+	}
+	if config.configAuthoring != nil {
+		for _, route := range apicontract.V1ConfigAuthoringRoutes() {
+			if route.Method == http.MethodGet {
+				expected = append(expected, route)
+			}
+		}
 	}
 	if err := apicontract.ValidateRoutes(expected, router.routes); err != nil {
 		return nil, fmt.Errorf("register HTTP API routes: %w", err)
@@ -1114,6 +1219,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)
+	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)

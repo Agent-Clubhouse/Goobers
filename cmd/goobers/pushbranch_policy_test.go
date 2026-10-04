@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/pushrejection"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -20,53 +22,13 @@ const adoTF402455Stderr = "To https://dev.azure.com/example-org/example-project/
 	"! [remote rejected] main -> main (TF402455: Pushes to this branch are not permitted; you must use a pull request to update this branch.)\n" +
 	"error: failed to push some refs to 'https://dev.azure.com/example-org/example-project/_git/example-repo'\n"
 
-// TestIsADOPolicyProtectedPush is ADO-N26's classifier table: only ADO's own
-// policy-rejection markers match, and a plain ref race or an auth failure —
-// including one that also happens to print git's generic "failed to push
-// some refs" trailer — do not.
-func TestIsADOPolicyProtectedPush(t *testing.T) {
-	cases := []struct {
-		name   string
-		output string
-		want   bool
-	}{
-		{"real ADO TF402455 rejection", adoTF402455Stderr, true},
-		{"GitRefUpdateRejectedByPolicyException exception text alone", "remote: GitRefUpdateRejectedByPolicyException: the push was rejected by policy.", true},
-		{"plain ref race", "! [rejected] main -> main (fetch first)\nerror: failed to push some refs", false},
-		{"non-fast-forward race", "! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs", false},
-		{"auth failure", "remote: Invalid username or password.\nfatal: Authentication failed for 'https://dev.azure.com/example-org/example-project/_git/example-repo'", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isADOPolicyProtectedPush(tc.output); got != tc.want {
-				t.Fatalf("isADOPolicyProtectedPush(%q) = %v, want %v", tc.output, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestIsPushRaceErrorAloneCannotTellAPolicyRejectionFromARace documents WHY
-// pushBranchWithRetry must check isADOPolicyProtectedPush ahead of
-// isPushRaceError: TF402455's own "failed to push some refs" trailer is
-// exactly the marker isPushRaceError keys on, so read in isolation the two
-// classifiers disagree on the same real ADO rejection text.
-func TestIsPushRaceErrorAloneCannotTellAPolicyRejectionFromARace(t *testing.T) {
-	err := errors.New(adoTF402455Stderr)
-	if !isPushRaceError(err) {
-		t.Fatal("isPushRaceError = false, want true — precondition: TF402455's trailer text must still look race-shaped in isolation, which is exactly why the ordering in pushBranchWithRetry matters")
-	}
-	if !isADOPolicyProtectedPush(err.Error()) {
-		t.Fatal("isADOPolicyProtectedPush = false, want true")
-	}
-}
-
 // TestClassifyProviderError_BranchPolicyProtectedPush proves
-// classifyProviderError maps a policyProtectedPushError to its own
+// classifyProviderError maps a pushrejection.PolicyProtectedError to its own
 // non-retryable code, never the auth-failed code — even wrapped, and even
 // though the underlying message contains no HTTP status classifyProviderError
 // could otherwise key on.
 func TestClassifyProviderError_BranchPolicyProtectedPush(t *testing.T) {
-	base := &policyProtectedPushError{branch: "main", err: errors.New(adoTF402455Stderr)}
+	base := &pushrejection.PolicyProtectedError{Branch: "main", Err: errors.New(adoTF402455Stderr)}
 	cases := []struct {
 		name string
 		err  error
@@ -81,7 +43,10 @@ func TestClassifyProviderError_BranchPolicyProtectedPush(t *testing.T) {
 				t.Fatalf("code = %q, want %q", code, errorCodeBranchPolicyProtected)
 			}
 			if code == errorCodeAuthFailed {
-				t.Fatal("code classified as auth failure, want the distinct branch_policy_protected code")
+				t.Fatal("code classified as auth failure, want the distinct provider_branch_policy_protected code")
+			}
+			if class := telemetry.ClassifyError(code); class != telemetry.ErrorClassProvider {
+				t.Fatalf("telemetry class of %q = %q, want %q", code, class, telemetry.ErrorClassProvider)
 			}
 			if retryable {
 				t.Fatal("retryable = true, want false")
@@ -96,8 +61,8 @@ func TestClassifyProviderError_BranchPolicyProtectedPush(t *testing.T) {
 // TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush is the
 // pushBranchWithRetry acceptance case: a real bare origin whose pre-receive
 // hook rejects every push with ADO's TF402455 text. Because that rejection
-// also contains isPushRaceError's own "failed to push some refs" marker, a
-// regression that checked isPushRaceError first (or omitted the policy check
+// also contains pushrejection.IsRace's own "failed to push some refs" marker, a
+// regression that checked pushrejection.IsRace first (or omitted the policy check
 // entirely) would fetch, rebase, and push again — driving the hook a second
 // time. The hook counts its own invocations, so this asserts exactly one.
 func TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush(t *testing.T) {
@@ -140,9 +105,9 @@ func TestPushBranchWithRetrySingleAttemptOnPolicyProtectedPush(t *testing.T) {
 	if pushErr == nil {
 		t.Fatal("pushBranchWithRetry: err = nil, want a policy-protected push error")
 	}
-	var policyErr *policyProtectedPushError
+	var policyErr *pushrejection.PolicyProtectedError
 	if !errors.As(pushErr, &policyErr) {
-		t.Fatalf("pushBranchWithRetry err = %v, want it to be (or wrap) a policyProtectedPushError", pushErr)
+		t.Fatalf("pushBranchWithRetry err = %v, want it to be (or wrap) a pushrejection.PolicyProtectedError", pushErr)
 	}
 
 	attempts, readErr := os.ReadFile(counterFile)

@@ -27,6 +27,13 @@ a live same-owner renewal retains the original observation time. A lease acquire
 after release or expiry starts unverified. Recording failures are reported but
 do not alter the existing provider arbitration or claim rollback behavior.
 
+For GitHub local claims, the durable claim breadcrumb and the local lease are
+authoritative; the `goobers:claimed` label is a provider projection for human
+visibility. After a successful claim write, the provider rereads the item
+through a bounded convergence window before handing the item to the next stage.
+If the label projection still has not appeared, the stage surfaces retryable
+`claim_metadata_drift` instead of treating the item as a product/scope decision.
+
 Local stages record through the existing locked ledger; remote stages use
 `POST /api/v1/claims/verify` through the claims plane. The request identifies the
 calling run separately from the observed owner. Pod callers may report only

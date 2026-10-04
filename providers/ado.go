@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
 
 const (
@@ -52,6 +50,9 @@ type ADOProvider struct {
 	// zero value means the default Resolved, Completed and Removed
 	// categories.
 	doneStates ADODoneStates
+	// ciEvidenceBounds caps CI failure-evidence collection (#5652); the zero
+	// value means defaultADOCIEvidenceBounds.
+	ciEvidenceBounds ADOCIEvidenceBounds
 
 	// requirementTypeMu guards requirementTypes, the per-project cache of the
 	// Requirement category's default work item type (ADO-N27): the create
@@ -105,24 +106,38 @@ func (p *ADOProvider) recordMutation(ctx context.Context, kind, id, operation st
 // recorded effect carries one, including the paths whose response shape does not
 // include links. Mirrors workItemURL's constructed-URL approach on the GitHub
 // side. Returns "" when the identity needed to build it is absent, so an
-// unknown URL stays empty rather than becoming a link that 404s.
+// unknown URL stays empty rather than becoming a link that 404s. Path
+// segments are escaped, so a project or repository name with spaces still
+// yields a link that works in markdown.
 func (p *ADOProvider) entityWebURL(repo RepositoryRef, kind, id string) string {
 	project := p.project(repo)
 	if p.Organization == "" || project == "" || strings.TrimSpace(id) == "" {
 		return ""
-	}
-	base := strings.TrimSuffix(p.BaseURL, "/")
-	if base == "" {
-		base = "https://dev.azure.com"
 	}
 	if kind == "pr" {
 		name := adoRepositoryName(repo)
 		if name == "" {
 			return ""
 		}
-		return base + "/" + p.Organization + "/" + project + "/_git/" + name + "/pullrequest/" + id
+		return p.webURL(project, "_git", name, "pullrequest", id)
 	}
-	return base + "/" + p.Organization + "/" + project + "/_workitems/edit/" + id
+	return p.webURL(project, "_workitems", "edit", id)
+}
+
+// webURL joins the organization and segments onto the web base URL, path
+// escaping each one.
+func (p *ADOProvider) webURL(segments ...string) string {
+	base := strings.TrimSuffix(p.BaseURL, "/")
+	if base == "" {
+		base = "https://dev.azure.com"
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	for _, segment := range append([]string{p.Organization}, segments...) {
+		b.WriteString("/")
+		b.WriteString(url.PathEscape(segment))
+	}
+	return b.String()
 }
 
 // adoRepositoryName prefers the declared repository name over its opaque id:
@@ -137,17 +152,18 @@ func adoRepositoryName(repo RepositoryRef) string {
 
 // NewADOProvider constructs an Azure DevOps provider with optional overrides.
 func NewADOProvider(organization, project, token string, opts ...func(*ADOProvider)) *ADOProvider {
+	defaults := newProviderConstructorDefaults()
 	p := &ADOProvider{
 		Organization:     organization,
 		Project:          project,
 		BaseURL:          "https://dev.azure.com",
 		Token:            token,
 		Username:         "goobers",
-		maxRetries:       defaultRateLimitRetries,
-		maxRateLimitWait: defaultRateLimitMaxWait,
-		now:              time.Now,
-		sleep:            contextSleep,
-		jitter:           randomJitter,
+		maxRetries:       defaults.maxRetries,
+		maxRateLimitWait: defaults.maxRateLimitWait,
+		now:              defaults.now,
+		sleep:            defaults.sleep,
+		jitter:           defaults.jitter,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -157,15 +173,7 @@ func NewADOProvider(organization, project, token string, opts ...func(*ADOProvid
 	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
-	if p.now == nil {
-		p.now = time.Now
-	}
-	if p.sleep == nil {
-		p.sleep = contextSleep
-	}
-	if p.jitter == nil {
-		p.jitter = randomJitter
-	}
+	p.now, p.sleep, p.jitter = defaults.runtimeOrDefaults(p.now, p.sleep, p.jitter)
 	if p.secretRegistrar != nil && p.Token != "" {
 		p.secretRegistrar.Register([]byte(p.Token))
 		p.secretRegistrar.Register([]byte(strings.TrimPrefix(basicAuth(p.Username, p.Token), "Basic ")))
@@ -261,7 +269,7 @@ func (p *ADOProvider) CloneRepository(ctx context.Context, req CloneRequest) (Cl
 		if authErr != nil {
 			return CloneResult{}, fmt.Errorf("resolve ADO clone credential: %w", authErr)
 		}
-		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL, bearer), "git", args...)
+		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL, bearer, nil), "git", args...)
 	}
 	if err != nil {
 		return CloneResult{}, fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
@@ -293,7 +301,7 @@ func (p *ADOProvider) RepositoryReachable(ctx context.Context, repo RepositoryRe
 	if err != nil {
 		return fmt.Errorf("resolve ADO repository credential: %w", err)
 	}
-	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo), bearer), "git", args...); err != nil {
+	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo), bearer, nil), "git", args...); err != nil {
 		return fmt.Errorf("git ls-remote: %w", err)
 	}
 	return nil
@@ -576,11 +584,13 @@ func (p *ADOProvider) identitiesBaseURL() string {
 	return strings.TrimRight(u.String(), "/")
 }
 
-// resolveIdentityID resolves a reviewer string (a UPN, an email, or a
-// display name) to the Azure DevOps identity GUID RequestReview's reviewers
-// endpoint requires. A reviewer that already looks like a GUID passes through
-// untouched, skipping the lookup. It errors — rather than silently skipping
-// the reviewer — when nothing resolves.
+// resolveIdentityID resolves a reviewer string (a UPN or an email) to the
+// Azure DevOps identity GUID RequestReview's reviewers endpoint requires. A
+// reviewer that already looks like a GUID passes through untouched, skipping
+// the lookup. It errors — rather than silently skipping the reviewer — when
+// nothing resolves, and rather than guessing when the search matches more
+// than one identity (as a shared display name can), since adding the wrong
+// person as a reviewer would pass unnoticed.
 func (p *ADOProvider) resolveIdentityID(ctx context.Context, reviewer string) (string, error) {
 	if adoIdentityGUID.MatchString(reviewer) {
 		return reviewer, nil
@@ -601,10 +611,31 @@ func (p *ADOProvider) resolveIdentityID(ctx context.Context, reviewer string) (s
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
 		return "", err
 	}
-	if len(out.Value) == 0 || strings.TrimSpace(out.Value[0].ID) == "" {
+	ids := adoDistinctIdentityIDs(out)
+	switch len(ids) {
+	case 0:
 		return "", fmt.Errorf("ado: reviewer %q did not resolve to an identity", reviewer)
+	case 1:
+		return ids[0], nil
+	default:
+		return "", fmt.Errorf("ado: reviewer %q matched %d identities; name the reviewer by a unique UPN, email or identity id", reviewer, len(ids))
 	}
-	return out.Value[0].ID, nil
+}
+
+// adoDistinctIdentityIDs returns the non-empty identity ids of a lookup, each
+// once, in response order.
+func adoDistinctIdentityIDs(out adoIdentitiesLookup) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, identity := range out.Value {
+		id := strings.TrimSpace(identity.ID)
+		if id == "" || seen[strings.ToLower(id)] {
+			continue
+		}
+		seen[strings.ToLower(id)] = true
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (p *ADOProvider) project(repo RepositoryRef) string {
@@ -631,89 +662,48 @@ func (p *ADOProvider) doPatch(ctx context.Context, method, endpoint string, body
 }
 
 func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body interface{}, contentType string) (*http.Response, error) {
-	maxWait := p.maxRateLimitWait
-	if maxWait <= 0 {
-		maxWait = defaultRateLimitMaxWait
-	}
-	var waited time.Duration
-	rateAttempt := 0
-	transientAttempt := 0
-	authRetried := false
-	for {
-		req, err := newJSONRequest(ctx, method, endpoint, body)
-		if err != nil {
-			return nil, err
-		}
-		if contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-		header, bearer, err := p.authorizationHeader(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if header != "" {
-			req.Header.Set("Authorization", header)
-		}
-		if bearer {
-			req.Header.Set(adoForceMsaPassThroughHeader, adoForceMsaPassThroughValue)
-		}
-		featureusage.RecordProviderHTTP("ado")
-		resp, err := httpClientOrDefault(p.Client).Do(req)
-		if err != nil {
-			// A transport failure (connection reset, DNS blip, timeout) is only
-			// safe to retry automatically for an idempotent method (#2026): a
-			// POST/PATCH may have already committed server-side before its
-			// response was lost, and ADO has no transport-level dedup marker
-			// (unlike GitHub issue creation's footer check, #140) to make a
-			// blind retry safe for those.
-			if adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
-				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
-					return nil, serr
-				}
-				transientAttempt++
-				continue
+	return sendJSONWithPolicy(ctx, restSendPolicy{
+		client:              p.Client,
+		providerHTTPName:    "ado",
+		maxTransientRetries: p.maxRetries,
+		maxRateLimitRetries: p.maxRetries,
+		maxRateLimitWait:    p.maxRateLimitWait,
+		retryable:           adoRetryableRequest(method, endpoint),
+		sleep:               p.sleep,
+		decorate: func(ctx context.Context, req *http.Request) error {
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
 			}
-			return nil, fmt.Errorf("send request: %w", err)
-		}
-		p.observeQuota(ctx, resp)
-		p.observeRateLimitDelay(ctx, resp, endpoint)
-		if err := p.deliveredCredentialRejected(resp, method, endpoint); err != nil {
-			return nil, err
-		}
-		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
-			_ = resp.Body.Close()
-			authRetried = true
-			continue
-		}
-		if resp.StatusCode >= 500 && adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
-			_ = resp.Body.Close()
-			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
-				return nil, err
+			header, bearer, err := p.authorizationHeader(ctx)
+			if err != nil {
+				return err
 			}
-			transientAttempt++
-			continue
-		}
-		if resp.StatusCode != http.StatusTooManyRequests {
+			if header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			if bearer {
+				req.Header.Set(adoForceMsaPassThroughHeader, adoForceMsaPassThroughValue)
+			}
+			return nil
+		},
+		normalizeResponse: normalizeADOSignInResponse,
+		observeResponse: func(ctx context.Context, resp *http.Response) {
+			p.observeQuota(ctx, resp)
+			p.observeRateLimitDelay(ctx, resp, endpoint)
+		},
+		refreshRejectedAuth: p.invalidateCredential,
+		validateResponse: func(resp *http.Response, authRetried bool) error {
+			return p.deliveredCredentialRejected(resp, method, endpoint, authRetried)
+		},
+		isRateLimited: func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusTooManyRequests
+		},
+		planRateLimit:    p.rateLimitPlan,
+		observeRateLimit: p.observeRateLimit,
+		handleExhaustedRateLimit: func(resp *http.Response, _ RateLimitEvent) (*http.Response, error) {
 			return resp, nil
-		}
-
-		wait, ev := p.rateLimitPlan(resp, endpoint, rateAttempt)
-		if rateAttempt >= p.maxRetries || wait > maxWait-waited {
-			ev.Outcome = RateLimitOutcomeExhausted
-			p.observeRateLimit(ctx, ev)
-			return resp, nil
-		}
-		_ = resp.Body.Close()
-		if err := p.sleep(ctx, wait); err != nil {
-			ev.Outcome = RateLimitOutcomeCanceled
-			p.observeRateLimit(ctx, ev)
-			return nil, err
-		}
-		ev.Outcome = RateLimitOutcomeRetry
-		p.observeRateLimit(ctx, ev)
-		waited += wait
-		rateAttempt++
-	}
+		},
+	}, method, endpoint, body)
 }
 
 // authorizationHeader resolves the current credential's Authorization header.
@@ -746,14 +736,20 @@ func (p *ADOProvider) authorizationHeader(ctx context.Context) (header string, b
 // response (status and body, so it still classifies as an authentication
 // failure, including after it crosses a process boundary as text) and adds
 // which delivered credential was rejected. Any other response returns nil.
-func (p *ADOProvider) deliveredCredentialRejected(resp *http.Response, method, endpoint string) error {
-	source, ok := p.credentialSource.(*adoDeliveredCredentialSource)
+func (p *ADOProvider) deliveredCredentialRejected(resp *http.Response, method, endpoint string, refreshed bool) error {
+	source, ok := p.credentialSource.(deliveredADOCredential)
 	if !ok || resp.StatusCode != http.StatusUnauthorized {
 		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &adoDeliveredCredentialRejectedError{label: source.label, cause: newProviderResponseError(resp, method, endpoint, body)}
+	return &adoDeliveredCredentialRejectedError{
+		label:     source.deliveredLabel(),
+		cause:     newProviderResponseError(resp, method, endpoint, body),
+		expiresAt: source.deliveredExpiry(),
+		at:        p.now(),
+		refreshed: refreshed,
+	}
 }
 
 func (p *ADOProvider) invalidateCredential() bool {
@@ -921,4 +917,35 @@ type adoIdentity struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	UniqueName  string `json:"uniqueName"`
+}
+
+// normalizeADOSignInResponse rewrites ADO's rejected-credential response to
+// the 401 it means. ADO does not answer a rejected or expired bearer with
+// 401: it redirects (302) to its sign-in service, and a client that follows
+// the redirect lands on a 203 Non-Authoritative Information HTML page. Left
+// as-is, that 2xx page is decoded as JSON ("invalid character '<'") and the
+// 401 paths — the one-shot credential refresh and the delivered-credential
+// rejection — never run, so a token that merely expired fails the stage
+// instead of being refreshed.
+func normalizeADOSignInResponse(resp *http.Response) {
+	switch {
+	case resp.StatusCode == http.StatusNonAuthoritativeInfo:
+	case resp.StatusCode >= 300 && resp.StatusCode < 400 && adoSignInLocation(resp.Header.Get("Location")):
+	default:
+		return
+	}
+	resp.StatusCode = http.StatusUnauthorized
+	resp.Status = fmt.Sprintf("%d %s (ADO sign-in redirect)", http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+}
+
+// adoSignInLocation reports whether a redirect target is ADO's sign-in flow.
+func adoSignInLocation(location string) bool {
+	u, err := url.Parse(location)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return strings.HasSuffix(host, ".vssps.visualstudio.com") ||
+		host == "login.microsoftonline.com" ||
+		strings.Contains(strings.ToLower(u.Path), "/_signin")
 }

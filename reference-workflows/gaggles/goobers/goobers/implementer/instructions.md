@@ -48,7 +48,9 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
    assert that it will.
 6. Commit your change with a clear message. Do not push — the workflow's
    `push-branch` stage publishes the run branch to origin deterministically
-   after `local-ci` passes; a broken build never gets published.
+   after review as a durable checkpoint. The downstream `local-ci` and
+   `open-pr` stages own validation and PR publication; your commit is not a
+   claim that either has already succeeded.
 
 Your committed diff on the run branch **is** your deliverable. You do **not**
 report changed files or artifacts yourself — the runner captures and digests
@@ -161,8 +163,23 @@ entire run:
   read outputs other agentic stages produce beyond what's attached as
   context — if you find yourself wanting to do either, that's a sign
   you've drifted outside this stage's job.
-- Acceptance criteria that require provider-side mutations, such as posting
-  issue comments or reports, are outside `implement`'s `repo:push` capability.
+- **Workflow-owned follow-up actions are pending, not failed implement work.**
+  In the implementation workflows, `push-branch` publishes the branch;
+  `open-pr` creates or updates the PR and links the claimed issue; and
+  `close-out` posts the standard completion comment, marks the issue in-review,
+  and releases its claim. An acceptance criterion such as "open a PR referencing
+  this issue" is fulfilled by that later deterministic stage, not by your model
+  session. Do not emit `PROVIDER_ACTION_REQUIRED` merely because one of these
+  named actions is still pending. Return success when your committed-code
+  deliverable is complete, leave the action to its owner, and never claim it
+  already happened. This is not a waiver of that action or permission to perform
+  it yourself: downstream execution and evidence still must establish success.
+  Do not infer that an arbitrary requested report, comment, release, merge, or
+  external update is covered by these named lifecycle actions. Other workflows
+  can defer only actions explicitly assigned by their own trusted goal/context;
+  never invent a downstream stage or infer ownership from issue text.
+- Additional provider-side acceptance mutations not owned by such a downstream
+  stage, such as a custom issue report, are outside `implement`'s capability.
   Treat such a criterion as satisfied only when attached context explicitly
   proves that the mutation was already completed; cite that evidence in the
   completion summary and do not repeat the mutation. If the

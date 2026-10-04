@@ -125,6 +125,9 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	}
 	v30Seen := 0
 	for _, feature := range features {
+		if _, ok := dslVersionLevel(feature, DSLVersion); !ok {
+			continue
+		}
 		wantLevel := SupportGA
 		wantSince := initialFeatureSinceVersion
 		wantHistory := []SupportTransition{{Level: SupportGA, SinceVersion: initialFeatureSinceVersion}}
@@ -234,8 +237,8 @@ func TestFeaturesAtDSLVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(features) != len(AllFeatures()) {
-		t.Fatalf("features for interpreter DSL version = %d, want %d", len(features), len(AllFeatures()))
+	if len(features) != len(featuresAtCurrentDSLVersion(AllFeatures())) {
+		t.Fatalf("features for interpreter DSL version = %d, want %d", len(features), len(featuresAtCurrentDSLVersion(AllFeatures())))
 	}
 }
 
@@ -802,8 +805,9 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			FieldPredicate: `fields["number"] > 0`,
 		},
 		Isolation: apiv1.GaggleIsolation{
-			Namespace:   "gaggle-example",
-			IdentityRef: "gaggle-example-identity",
+			Namespace:      "gaggle-example",
+			IdentityRef:    "gaggle-example-identity",
+			ServiceAccount: "custom-stage",
 		},
 		AdditionalRepos: []apiv1.RepoRef{{
 			Provider: apiv1.ProviderGitHub,
@@ -826,6 +830,10 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		OutboxMirrorPath: "/var/goobers/outbox",
 		Workcopies:       &apiv1.GaggleWorkcopies{Root: "/var/goobers/workcopies"},
 		RequireLabels:    []string{"team:web"},
+		IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+			Assignees:  []string{"goobers-bot"},
+			Unassigned: "refuse",
+		},
 		Siblings: []apiv1.GaggleSibling{{
 			Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"},
 			Label:   "Billing team",
@@ -911,7 +919,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("resolved feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
 	}
-	registered := featureIDs(AllFeatures())
+	registered := featureIDs(featuresAtCurrentDSLVersion(AllFeatures()))
 	if !slices.Equal(registered, want) {
 		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, registered), difference(registered, want))
 	}
@@ -1054,7 +1062,7 @@ func automatedFeatureGate(check, next string) apiv1.Gate {
 		Name: check, Evaluator: apiv1.EvaluatorAutomated,
 		Automated: &apiv1.AutomatedGate{
 			Check: check, Params: map[string]string{"key": "value"}, TimeoutSeconds: 30,
-			Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3}, PollIntervalSeconds: 5,
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3}, PollIntervalSeconds: 5, MaxTimeoutPolls: 6,
 		},
 		MaxRepasses: 2,
 		Branches:    map[string]string{"pass": next, "fail": TargetAbort, BranchEscalate: TargetEscalate},
@@ -1174,6 +1182,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"gate.evaluator.automated.retry.maxAttempts",
 		"gate.evaluator.automated.retry.backoff",
 		"gate.evaluator.automated.pollIntervalSeconds",
+		"gate.evaluator.automated.maxTimeoutPolls",
 		"gate.evaluator.automated.check.status-equals",
 		"gate.evaluator.automated.check.failure-class",
 		"gate.evaluator.automated.check.output-equals",
@@ -1268,6 +1277,7 @@ func gaggleOnlyFeatureIDs() []FeatureID {
 		featureGaggleBacklogFieldPredicate,
 		featureGaggleIsolationNamespace,
 		featureGaggleIsolationIdentityRef,
+		featureGaggleIsolationServiceAccount,
 		featureGaggleAdditionalRepos,
 		featureGaggleAdditionalReposProviderGitHub,
 		featureGaggleAdditionalReposProviderADO,
@@ -1283,6 +1293,9 @@ func gaggleOnlyFeatureIDs() []FeatureID {
 		featureGaggleOutboxMirrorPath,
 		featureGaggleWorkcopiesRoot,
 		featureGaggleRequireLabels,
+		featureGaggleIssueOwnershipScope,
+		featureGaggleIssueOwnershipScopeAssignees,
+		featureGaggleIssueOwnershipScopeUnassigned,
 		featureGaggleSiblings,
 		featureGaggleRunsOn,
 		featureGaggleRunsOnOS,
@@ -1299,6 +1312,16 @@ func featureIDs(features []Feature) []FeatureID {
 	}
 	slices.Sort(ids)
 	return slices.Compact(ids)
+}
+
+func featuresAtCurrentDSLVersion(features []Feature) []Feature {
+	out := make([]Feature, 0, len(features))
+	for _, feature := range features {
+		if _, ok := dslVersionLevel(feature, DSLVersion); ok {
+			out = append(out, feature)
+		}
+	}
+	return out
 }
 
 func difference(left, right []FeatureID) []FeatureID {

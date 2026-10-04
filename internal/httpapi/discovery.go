@@ -34,6 +34,7 @@ type discoveryState struct {
 	authentication string
 	openAPI        []byte
 	openAPISHA256  string
+	routes         []apicontract.Route
 	config         handlerConfig
 }
 
@@ -63,7 +64,11 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 		}
 	}
 
-	openAPI, err := apicontract.OpenAPIDocument(authentication != "none")
+	routes := discoveryRoutes(config)
+	openAPI, err := apicontract.OpenAPIDocument(
+		authentication != "none",
+		routes[len(apicontract.V1Routes()):]...,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +80,7 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 		authentication: authentication,
 		openAPI:        openAPI,
 		openAPISHA256:  sha256Hex(openAPI),
+		routes:         routes,
 		config:         config,
 	}
 
@@ -82,6 +88,19 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 	router.Handle(apicontract.RouteOpenAPI, state.serveOpenAPI)
 	router.Handle(apicontract.RouteCapabilities, state.serveCapabilities)
 	return state, nil
+}
+
+func discoveryRoutes(config handlerConfig) []apicontract.Route {
+	routes := apicontract.V1Routes()
+	if config.configAuthoring == nil {
+		return routes
+	}
+	for _, route := range apicontract.V1ConfigAuthoringRoutes() {
+		if route.Method == http.MethodGet {
+			routes = append(routes, route)
+		}
+	}
+	return routes
 }
 
 func (s *discoveryState) serveDiscovery(w http.ResponseWriter, request *http.Request) {
@@ -199,8 +218,8 @@ func (s *discoveryState) capabilitiesETag() (string, error) {
 
 func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 	recovering := s.config.recoveryGate != nil && !s.config.recoveryGate()
-	routes := make([]apicontract.RouteCapability, 0, len(apicontract.V1Routes()))
-	for _, route := range apicontract.V1Routes() {
+	routes := make([]apicontract.RouteCapability, 0, len(s.routes))
+	for _, route := range s.routes {
 		available, code, reason := routeAvailability(route.ID, s.config)
 		if available && recovering && !route.RecoverySafe {
 			available = false
@@ -248,6 +267,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.interventions != nil
 	case apicontract.RouteWorkflowEnabled:
 		available = config.workflowMutations != nil
+	case apicontract.RouteGaggleBundleExport, apicontract.RouteGaggleBundleImport:
+		available = config.gaggleBundles != nil
 	case apicontract.RouteClaimAcquire, apicontract.RouteClaimRenew, apicontract.RouteClaimRelease,
 		apicontract.RouteClaimSettle, apicontract.RouteClaimList,
 		apicontract.RouteClaimRecover:
@@ -268,16 +289,22 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.runJournal != nil
 	case apicontract.RouteCredentialResolve:
 		available = config.credentials != nil
+	case apicontract.RouteCredentialRefresh:
+		_, available = config.credentials.(CredentialRefreshService)
 	case apicontract.RouteBlobGet, apicontract.RouteBlobPut:
 		available = config.blobs != nil
 	case apicontract.RouteRunRecovery:
 		available = config.recovery != nil
 	case apicontract.RouteStageSurrender:
 		available = config.surrenders != nil
+	case apicontract.RouteStageSurrenderGet, apicontract.RouteStageSurrenderSeen:
+		_, available = config.surrenders.(SurrenderReader)
 	case apicontract.RouteGaggleStateGet, apicontract.RouteGaggleStatePut:
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
+	case apicontract.RouteClaimsActive:
+		available = config.activeClaimsAvailable
 	case apicontract.RouteTelemetryCosts, apicontract.RouteTelemetryStats,
 		apicontract.RouteTelemetryErrorSignatures, apicontract.RouteTelemetryErrors,
 		apicontract.RouteTelemetryImplementationOutcomes, apicontract.RouteWorkItems,

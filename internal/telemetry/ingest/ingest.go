@@ -111,14 +111,15 @@ func RunIntake(watermarks *intake.Store, l instance.Layout, runID string, log *j
 	}
 }
 
-// RunIntakeObserver returns the journal-advance hook that records an intake
-// watermark as a run progresses, or nil when no watermark store is wired.
-func RunIntakeObserver(watermarks *intake.Store, log *journal.InstanceLog) func(string, uint64) {
+// RunIntakeObserverContext reports cancellable derived intake failures without
+// making them execution failures. Journals coalesce calls per open run; failed
+// watermarks remain discoverable by the normal journal repair sweep.
+func RunIntakeObserverContext(watermarks *intake.Store, log *journal.InstanceLog) func(context.Context, string, uint64) {
 	if watermarks == nil {
 		return nil
 	}
-	return func(runID string, seq uint64) {
-		if err := watermarks.Observed(context.Background(), runID, seq); err != nil {
+	return func(ctx context.Context, runID string, seq uint64) {
+		if err := watermarks.Observed(ctx, runID, seq); err != nil {
 			LogFailure(log, runID, "read_model_intake_failed", err)
 		}
 	}
@@ -183,6 +184,6 @@ func LogFailure(log *journal.InstanceLog, runID, code string, cause error) {
 	}
 	log.AppendBestEffort(journal.Event{
 		Type: journal.EventError, RunID: runID,
-		Error: &journal.ErrorDetail{Code: code, Message: cause.Error()},
+		Error: journal.ErrorDetailFor(code, cause),
 	})
 }

@@ -4,6 +4,7 @@ import type {
   DaemonClient,
   MaintenanceStatus,
   RecoveryInventoryStatus,
+  StartupStatus,
   RunSummary,
 } from "../api/types";
 import { useAttentionCollapsed } from "../attentionCollapse";
@@ -24,6 +25,21 @@ import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useFailureReasons, type FailureReasons } from "../overviewFailures";
 import { configurationWarningKey } from "../configurationWarnings";
+
+const attentionSelectionStorageKey = "goobers-overview-attention-selection";
+
+function readAttentionSelection(): ReadonlySet<string> {
+  try {
+    const parsed: unknown = JSON.parse(
+      window.sessionStorage.getItem(attentionSelectionStorageKey) ?? "[]",
+    );
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((value): value is string => typeof value === "string"))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
 
 export function OverviewPage({
   client,
@@ -104,7 +120,8 @@ function Overview({
 
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
   const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
-  const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [selectedRunIds, setSelectedRunIds] =
+    useState<ReadonlySet<string>>(readAttentionSelection);
   const [expandedAttentionGroups, setExpandedAttentionGroups] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -121,6 +138,17 @@ function Overview({
   );
   const allVisibleSelected =
     activeAttention.length > 0 && visibleSelectedRunIds.length === activeAttention.length;
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        attentionSelectionStorageKey,
+        JSON.stringify([...selectedRunIds]),
+      );
+    } catch {
+      // Selection remains available until this page unmounts when storage is unavailable.
+    }
+  }, [selectedRunIds]);
 
   const toggleSelected = (runId: string) => {
     setSelectedRunIds((current) => {
@@ -171,7 +199,7 @@ function Overview({
   };
 
   return (
-    <>
+    <div className="overview-page">
       <header className="page-heading">
         <div className="overview-heading-copy">
           {overview.instance.rootIdentity?.decommissionedAt && (
@@ -180,6 +208,7 @@ function Overview({
           {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
           {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
           <h1>
+            Overview -{" "}
             {overview.loadingSections?.inventory || overview.loadingSections?.runs
               ? (
                 <span aria-label="Loading overview" className="overview-loading-title" role="status">
@@ -188,26 +217,12 @@ function Overview({
                   <span aria-hidden="true">.</span>
                 </span>
               )
-              : emptyInstance
-                ? standalone
-                  ? overview.health.ready
-                    ? "Instance is ready — Healthy."
-                    : "Instance is starting."
-                  : starting
-                    ? "Daemon is starting."
-                    : !healthy
-                    ? "Daemon is unhealthy."
-                    : overview.health.ready
-                      ? "Daemon is running — Healthy."
-                      : "Daemon is starting."
-                : starting
-                  ? "Daemon is starting."
-                  : !healthy
-                  ? "Daemon is unhealthy."
-                  : activeAttention.length === 0
-                    ? standalone
-                      ? "Instance is ready — Healthy."
-                      : "Daemon is running — Healthy."
+              : starting
+                ? "Starting"
+                : !healthy
+                  ? "Unhealthy"
+                  : !overview.health.ready
+                    ? "Starting"
                     : attentionHeading(activeAttention.length)}
           </h1>
           {emptyInstance && (
@@ -216,6 +231,7 @@ function Overview({
         </div>
       </header>
 
+      <div className="overview-notices">
       {/* A failed health or instance refresh falls back to the previous data so
           the page keeps rendering something, but that fallback must say it's
           stale — otherwise degraded daemon health or instance state reads as
@@ -283,6 +299,7 @@ function Overview({
           {incompleteRunPhasesMessage(groups.incomplete)}
         </p>
       )}
+      </div>
 
       <InstanceSummaryPanel
         configurationWarningCount={activeConfigurationWarningCount}
@@ -492,8 +509,9 @@ function Overview({
         </section>
       )}
 
-      {!inventoryLoaded ? null : emptyInstance ? (
-        <section className="empty-state">
+      <div className="overview-activity">
+        {!inventoryLoaded ? null : emptyInstance ? (
+          <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
             <h2>No gaggles configured</h2>
@@ -522,8 +540,8 @@ function Overview({
             <RecoveryCommand command="goobers run <workflow> <instance>" />
           </div>
         </section>
-      ) : (
-        <>
+        ) : (
+          <>
           <RunSection
             ariaLabel="Active runs"
             overview={overview}
@@ -536,11 +554,14 @@ function Overview({
             runs={groups.recent}
             title="Recent outcomes"
           />
-        </>
-      )}
+          </>
+        )}
+      </div>
 
-      <ConfigurationWarnings context="instance" {...configurationWarnings} />
-    </>
+      <div className="overview-configuration">
+        <ConfigurationWarnings context="instance" {...configurationWarnings} />
+      </div>
+    </div>
   );
 }
 
@@ -562,6 +583,15 @@ function InstanceSummaryPanel({
   const maintenance = overview.instance.maintenance;
   const recoveryInventory = overview.instance.recoveryInventory;
   const telemetryRetention = overview.instance.telemetryRetention;
+  const diagnosticsRequireAttention =
+    (recoveryInventory !== undefined && recoveryInventory.state !== "healthy") ||
+    maintenance?.state === "failed";
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(
+    () =>
+      diagnosticsRequireAttention ||
+      typeof window.matchMedia !== "function" ||
+      !window.matchMedia("(max-width: 1024px)").matches,
+  );
   const daemonTitle = standalone
     ? overview.health.ready
       ? "Healthy"
@@ -598,19 +628,14 @@ function InstanceSummaryPanel({
             </span>
             {configurationWarningCount > 0 && (
               <span className="daemon-summary-notices">
-                <button
+                <a
                   className="instance-warning-link"
-                  onClick={() =>
-                    document.getElementById("instance-configuration-warnings")?.scrollIntoView({
-                      behavior: "smooth",
-                      block: "start",
-                    })
-                  }
-                  type="button"
+                  data-focus-restore="instance-configuration-warnings"
+                  href={routeHash({ page: "instance-detail", detail: "warnings" })}
                 >
                   {configurationWarningCount} configuration{" "}
                   {configurationWarningCount === 1 ? "warning" : "warnings"}
-                </button>
+                </a>
               </span>
             )}
           </span>
@@ -628,70 +653,150 @@ function InstanceSummaryPanel({
               {overview.instance.counts.activeRuns === 0 ? "None executing" : "Currently executing"}
             </span>
           </div>
+          <div>
+            <dt>Data freshness</dt>
+            <dd className="daemon-freshness-value">
+              {tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}
+              <button aria-label="Refresh instance status" onClick={retry} type="button">
+                <Icon name="refresh" size={18} />
+              </button>
+            </dd>
+            <span>
+              {lastTickAt
+                ? <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>
+                : "Latest scheduler tick unavailable"}
+            </span>
+          </div>
         </dl>
-        <div className="daemon-last-checked">
-          <Icon name="clock" size={20} />
-          <span>
-            <span>Last checked</span>
-            <strong>{tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}</strong>
-            {lastTickAt && <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>}
-          </span>
-          <button aria-label="Refresh instance status" onClick={retry} type="button">
-            <Icon name="refresh" size={22} />
-          </button>
-        </div>
       </div>
 
-      {recoveryInventory && <RecoveryInventorySummary inventory={recoveryInventory} />}
+      {overview.health.startup && <StartupRecoverySummary startup={overview.health.startup} />}
 
-      {maintenance && <MaintenanceSummary maintenance={maintenance} />}
-
-      {telemetryRetention && (
-        <div
-          aria-label={`Telemetry retention ${telemetryRetention.enabled ? "enabled" : "disabled"}`}
-          className="instance-summary-row"
-          role="status"
-        >
-          <div className="instance-summary-kind">
-            <span aria-hidden="true" className="instance-summary-icon">
-              <Icon name="chart" size={24} />
-            </span>
-            <span className="instance-summary-copy">
-              <strong>Telemetry retention</strong>
-              <span>Run history and diagnostics</span>
-            </span>
-          </div>
-          <div className="instance-summary-result">
-            <strong>
-              <span aria-hidden="true" className="result-check"><Icon name="check" size={16} /></span>
-              {telemetryRetention.enabled ? "Enabled" : "Disabled"}
-            </strong>
+      <details
+        className="overview-diagnostics"
+        onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
+        open={diagnosticsRequireAttention || diagnosticsOpen}
+      >
+        <summary>
+          <span>
+            <strong>Diagnostics and capacity</strong>
             <span>
-              {formatRetentionWindow(telemetryRetention.window)} · Max {telemetryRetention.maxRuns} runs
+              {diagnosticsRequireAttention
+                ? "Operator attention required"
+                : "Recovery and retention"}
             </span>
-            {telemetryRetention.enabled && telemetryRetention.enforceAt && (
-              <span>Enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
-            )}
-            {telemetryRetention.lastPassAt && (
-              <span>
-                Last pass {telemetryRetention.lastPassMode ?? "completed"} ·{" "}
-                {telemetryRetention.candidateCount} candidates ·{" "}
-                {formatTimestamp(telemetryRetention.lastPassAt)}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
+          </span>
+          <Icon name="chevron" size={14} />
+        </summary>
+        <div className="overview-diagnostics-content">
+          {recoveryInventory && <RecoveryInventorySummary inventory={recoveryInventory} />}
 
+          {maintenance && <MaintenanceSummary maintenance={maintenance} />}
+
+          {telemetryRetention && (
+            <div
+              aria-label={`Telemetry retention ${telemetryRetention.enabled ? "enabled" : "disabled"}`}
+              className="instance-summary-row"
+              role="status"
+            >
+              <div className="instance-summary-kind">
+                <span aria-hidden="true" className="instance-summary-icon">
+                  <Icon name="chart" size={24} />
+                </span>
+                <span className="instance-summary-copy">
+                  <strong>Telemetry retention</strong>
+                  <span>Run history and diagnostics</span>
+                </span>
+              </div>
+              <div className="instance-summary-result">
+                <strong>
+                  <span aria-hidden="true" className="result-check"><Icon name="check" size={16} /></span>
+                  {telemetryRetention.enabled ? "Enabled" : "Disabled"}
+                </strong>
+                <span>
+                  {formatRetentionWindow(telemetryRetention.window)} · Max {telemetryRetention.maxRuns} runs
+                </span>
+                {telemetryRetention.enabled && telemetryRetention.enforceAt && (
+                  <span>Enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
+                )}
+                {telemetryRetention.lastPassAt && (
+                  <span>
+                    Last pass {telemetryRetention.lastPassMode ?? "completed"} ·{" "}
+                    {telemetryRetention.candidateCount} candidates ·{" "}
+                    {formatTimestamp(telemetryRetention.lastPassAt)}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </details>
     </section>
   );
+}
+
+function StartupRecoverySummary({ startup }: { startup: StartupStatus }) {
+  const candidate = startup.blockingCandidate;
+  const progress = candidate?.progress;
+  return (
+    <div aria-label="Startup recovery progress" className="instance-summary-row" role="status">
+      <div className="instance-summary-kind">
+        <span aria-hidden="true" className="instance-summary-icon instance-summary-icon-warning">
+          <Icon name="clock" size={24} />
+        </span>
+        <span className="instance-summary-copy">
+          <strong>Startup recovery</strong>
+          <span>
+            API plane is available; scheduler readiness is waiting on {startup.phase}
+            {startup.target ? ` (${startup.target})` : ""}.
+          </span>
+        </span>
+      </div>
+      <div className="instance-summary-result">
+        <strong>
+          {progress
+            ? `${progress.examined}/${progress.total} candidates examined`
+            : "Recovery in progress"}
+        </strong>
+        <span>
+          Elapsed {formatSeconds(startup.elapsedSeconds)} · Budget{" "}
+          {formatSeconds(startup.budgetSeconds)}
+          {startup.budgetState ? ` · ${startup.budgetState}` : ""}
+        </span>
+        {candidate ? (
+          <span>
+            Blocking{" "}
+            {candidate.runId ? `run ${candidate.runId}` : "candidate"}
+            {candidate.gaggle || candidate.workflow
+              ? ` (${candidate.gaggle ?? "-"}/${candidate.workflow ?? "-"})`
+              : ""}
+            {candidate.disposition ? ` · ${candidate.disposition}` : ""}
+            {candidate.phase ? ` · ${candidate.phase}` : ""}
+            {candidate.operation ? ` · ${candidate.operation}` : ""}
+          </span>
+        ) : startup.phase === "crash-resume" ? (
+          <span>Waiting for the resumeComplete gate after candidate classification.</span>
+        ) : null}
+        {candidate?.lastProgressAt && (
+          <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(candidate.lastProgressAt)))} ago</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatSeconds(seconds: number | undefined): string {
+  if (!Number.isFinite(seconds)) {
+    return "unavailable";
+  }
+  return formatDuration(Math.max(0, Math.round((seconds ?? 0) * 1000)));
 }
 
 /**
  * Recovery-snapshot inventory occupancy (#5343).
  *
- * This is on Overview rather than on a recovery page because of what a full
- * inventory actually does: worktree cleanup cannot complete without a durable
+ * This remains summarized on Overview because of what a full inventory does:
+ * worktree cleanup cannot complete without a durable
  * recovery handoff, an uncleaned worktree cannot be reused, and stages then
  * fail at `create worktree` - so the runs that break are unrelated to whatever
  * filled the inventory, and the only symptom an operator sees today is a
@@ -732,7 +837,8 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
           <span>Durable handoffs for worktree cleanup</span>
         </span>
       </div>
-      <div className="instance-summary-result">
+      <div className="instance-summary-result instance-summary-result-with-actions">
+        <div className="instance-summary-result-copy">
         <strong>
           <span aria-hidden="true" className="result-check">
             <Icon name={elevated ? "alert" : "check"} size={16} />
@@ -763,6 +869,8 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
           <span>Earliest retention deadline {formatTimestamp(inventory.earliestRetainUntil)}</span>
         )}
         {inventory.error && <span>{inventory.error}</span>}
+        </div>
+        <div className="instance-summary-actions">
         <a
           className="instance-warning-link"
           href={RECOVERY_INVENTORY_DOCS}
@@ -771,6 +879,14 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
         >
           Recovery capacity and operator actions
         </a>
+        <a
+          className="instance-warning-link"
+          data-focus-restore="instance-recovery-detail"
+          href={routeHash({ page: "instance-detail", detail: "recovery" })}
+        >
+          View recovery metadata
+        </a>
+        </div>
       </div>
     </div>
   );
@@ -841,7 +957,8 @@ function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus })
           <span>Periodic cleanup of run data</span>
         </span>
       </div>
-      <div className="instance-summary-result">
+      <div className="instance-summary-result instance-summary-result-with-actions">
+        <div className="instance-summary-result-copy">
         <strong>
           <span aria-hidden="true" className="result-check">
             <Icon name={state === "failed" ? "alert" : "check"} size={16} />
@@ -867,6 +984,16 @@ function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus })
         {maintenance.lastProgressAt && state === "running" && (
           <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago</span>
         )}
+        </div>
+        <div className="instance-summary-actions">
+        <a
+          className="instance-warning-link"
+          data-focus-restore="instance-retention-detail"
+          href={routeHash({ page: "instance-detail", detail: "retention" })}
+        >
+          View retention details
+        </a>
+        </div>
       </div>
     </div>
   );

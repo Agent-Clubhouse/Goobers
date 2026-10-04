@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/releaseversion"
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
@@ -320,31 +320,14 @@ type releaseVersion struct {
 }
 
 func parseReleaseVersion(value string, allowDevelopment bool) (releaseVersion, error) {
-	if value == initialFeatureSinceVersion {
-		if allowDevelopment {
-			return releaseVersion{}, nil
-		}
-		return releaseVersion{}, fmt.Errorf("%q is only valid for the initial pre-release baseline", value)
+	parsed, err := releaseversion.Parse(value, releaseversion.Options{
+		DevelopmentSentinel: initialFeatureSinceVersion,
+		AllowDevelopment:    allowDevelopment,
+	})
+	if err != nil {
+		return releaseVersion{}, err
 	}
-	if value != strings.TrimSpace(value) || !strings.HasPrefix(value, "v") {
-		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-	}
-	parts := strings.Split(strings.TrimPrefix(value, "v"), ".")
-	if len(parts) != 3 {
-		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-	}
-	numbers := make([]uint64, len(parts))
-	for i, part := range parts {
-		if part == "" || (len(part) > 1 && part[0] == '0') {
-			return releaseVersion{}, fmt.Errorf("must use canonical vMAJOR.MINOR.PATCH")
-		}
-		number, err := strconv.ParseUint(part, 10, 64)
-		if err != nil {
-			return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-		}
-		numbers[i] = number
-	}
-	return releaseVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, nil
+	return releaseVersion{major: parsed.Major, minor: parsed.Minor, patch: parsed.Patch}, nil
 }
 
 func compareReleaseVersions(left, right releaseVersion) int {
@@ -422,133 +405,143 @@ func FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error)
 }
 
 const (
-	featureWorkflowGaggle                 FeatureID = "workflow.spec.gaggle"
-	featureWorkflowDisplayName            FeatureID = "workflow.spec.displayName"
-	featureWorkflowTriggers               FeatureID = "workflow.spec.triggers"
-	featureWorkflowReadiness              FeatureID = "workflow.spec.readiness"
-	featureWorkflowClaimVisibility        FeatureID = "workflow.spec.readiness.claimVisibility"
-	featureWorkflowRunControls            FeatureID = "workflow.spec.runControls"
-	featureWorkflowDesiredConcurrentRuns  FeatureID = "workflow.spec.readiness.desiredConcurrentRuns"
-	featureWorkflowMaxConcurrentRuns      FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
-	featureWorkflowMaxRunsPerHour         FeatureID = "workflow.spec.readiness.maxRunsPerHour"
-	featureWorkflowMaxRunsPerDay          FeatureID = "workflow.spec.readiness.maxRunsPerDay"
-	featureWorkflowMaxChainDepth          FeatureID = "workflow.spec.readiness.maxChainDepth"
-	featureWorkflowMaxOpenPRs             FeatureID = "workflow.spec.readiness.maxOpenPRs"
-	featureWorkflowStart                  FeatureID = "workflow.spec.start"
-	featureWorkflowTasks                  FeatureID = "workflow.spec.tasks"
-	featureWorkflowGates                  FeatureID = "workflow.spec.gates"
-	featureWorkflowParallels              FeatureID = "workflow.spec.parallels"
-	featureParallelFailurePolicy          FeatureID = "workflow.spec.parallels.failurePolicy"
-	featureParallelBranches               FeatureID = "workflow.spec.parallels.branches"
-	featureParallelJoin                   FeatureID = "workflow.spec.parallels.join"
-	featureParallelOnFailure              FeatureID = "workflow.spec.parallels.onFailure"
-	featureParallelBranchTimeout          FeatureID = "workflow.spec.parallels.branchTimeoutSeconds"
-	featureParallelMaxConcurrentBranches  FeatureID = "workflow.spec.parallels.maxConcurrentBranches"
-	featureWorkflowTerminalComplete       FeatureID = "workflow.terminal.complete"
-	featureWorkflowTerminalAbort          FeatureID = "workflow.terminal.abort"
-	featureWorkflowTerminalEscalate       FeatureID = "workflow.terminal.escalate"
-	featureGaggleCheckoutSparse           FeatureID = "gaggle.spec.project.checkout.sparse"
-	featureGooberGaggle                   FeatureID = "goober.spec.gaggle"
-	featureGooberRole                     FeatureID = "goober.spec.role"
-	featureGooberDisplayName              FeatureID = "goober.spec.displayName"
-	featureGooberInstructions             FeatureID = "goober.spec.instructions"
-	featureGooberHarnessCopilot           FeatureID = "goober.spec.harness.copilot"
-	featureGooberHarnessClaudeCode        FeatureID = "goober.spec.harness.claude-code"
-	featureGooberHarnessCodex             FeatureID = "goober.spec.harness.codex"
-	featureGooberModel                    FeatureID = "goober.spec.model"
-	featureGooberHarnessOptions           FeatureID = "goober.spec.harnessOptions"
-	featureGooberTimeoutSeconds           FeatureID = "goober.spec.timeoutSeconds"
-	featureGooberCapabilities             FeatureID = "goober.spec.capabilities"
-	featureGooberSkills                   FeatureID = "goober.spec.skills"
-	featureGooberTools                    FeatureID = "goober.spec.tools"
-	featureGooberMCPServers               FeatureID = "goober.spec.mcpServers"
-	featureGooberScaleFactor              FeatureID = "goober.spec.scaleFactor"
-	featureGooberWorkflows                FeatureID = "goober.spec.workflows"
-	featureTriggerManual                  FeatureID = "trigger.manual"
-	featureTriggerBacklogItem             FeatureID = "trigger.backlog-item"
-	featureTriggerBacklogItemSelector     FeatureID = "trigger.backlog-item.selector"
-	featureTriggerBacklogItemTrustLabel   FeatureID = "trigger.backlog-item.trustLabel"
-	featureTriggerLabelPredicate          FeatureID = "trigger.labelPredicate"
-	featureTriggerFieldPredicate          FeatureID = "trigger.fieldPredicate"
-	featureTriggerSchedule                FeatureID = "trigger.schedule"
-	featureTriggerSignal                  FeatureID = "trigger.signal"
-	featureTriggerWebhook                 FeatureID = "trigger.webhook"
-	featureTriggerEnabled                 FeatureID = "trigger.enabled"
-	featureTaskName                       FeatureID = "task.name"
-	featureTaskDeterministic              FeatureID = "task.deterministic"
-	featureTaskAgentic                    FeatureID = "task.agentic"
-	featureTaskGoal                       FeatureID = "task.goal"
-	featureTaskGoober                     FeatureID = "task.goober"
-	featureTaskInputs                     FeatureID = "task.inputs"
-	featureTaskInputFieldOrder            FeatureID = "task.inputs.fieldOrder"
-	featureTaskInputsFrom                 FeatureID = "task.inputsFrom"
-	featureTaskInputsFromQualified        FeatureID = "task.inputsFrom.stageQualified"
-	featureTaskCapabilities               FeatureID = "task.capabilities"
-	featureTaskMinimumIntegrity           FeatureID = "task.minimumIntegrity"
-	featureTaskContextFrom                FeatureID = "task.contextFrom"
-	featureTaskPolicyActions              FeatureID = "task.policyActions"
-	featureTaskNestedAgentPolicy          FeatureID = "task.nestedAgentPolicy"
-	featureTaskRetry                      FeatureID = "task.retry"
-	featureTaskRetryMaxAttempts           FeatureID = "task.retry.maxAttempts"
-	featureTaskRetryBackoff               FeatureID = "task.retry.backoff"
-	featureTaskTimeoutSeconds             FeatureID = "task.timeoutSeconds"
-	featureTaskLimits                     FeatureID = "task.limits"
-	featureTaskLimitMaxDurationSeconds    FeatureID = "task.limits.maxDurationSeconds"
-	featureTaskLimitMaxTokens             FeatureID = "task.limits.maxTokens"
-	featureTaskLimitMaxCostUSD            FeatureID = "task.limits.maxCostUSD"
-	featureTaskTimeoutFail                FeatureID = "task.onTimeout.fail"
-	featureTaskTimeoutSalvage             FeatureID = "task.onTimeout.salvage"
-	featureTaskExpectedOutputs            FeatureID = "task.expectedOutputs"
-	featureTaskContinueOnError            FeatureID = "task.continueOnError"
-	featureTaskNext                       FeatureID = "task.next"
-	featureStageShell                     FeatureID = "stage.shell"
-	featureStageCIPoll                    FeatureID = "stage.ci-poll"
-	featureStageExternalTelemetry         FeatureID = "stage.external-telemetry"
-	featureStageCommand                   FeatureID = "stage.run.command"
-	featureStageScript                    FeatureID = "stage.run.script"
-	featureStageEnv                       FeatureID = "stage.run.env"
-	featureStageWorkspaceRepo             FeatureID = "stage.run.workspace.repo"
-	featureStageWorkspaceScratch          FeatureID = "stage.run.workspace.scratch"
-	featureStageWorkspaceRepoReadOnly     FeatureID = "stage.workspace.repo-readonly"
-	featureStageWorkspace                 FeatureID = "stage.workspace"
-	featureGateAgenticWorkspace           FeatureID = "gate.evaluator.agentic.workspace"
-	featureStageSyncBase                  FeatureID = "stage.run.syncBase"
-	featureStageInjectRunContext          FeatureID = "stage.run.injectRunContext"
-	featureStageResultFile                FeatureID = "stage.resultFile"
-	featureGateName                       FeatureID = "gate.name"
-	featureGateBranches                   FeatureID = "gate.branches"
-	featureGateEscalationBranch           FeatureID = "gate.branch.escalate"
-	featureEvaluatorAutomated             FeatureID = "gate.evaluator.automated"
-	featureEvaluatorAutomatedCheck        FeatureID = "gate.evaluator.automated.check"
-	featureEvaluatorAutomatedParams       FeatureID = "gate.evaluator.automated.params"
-	featureEvaluatorAutomatedTimeout      FeatureID = "gate.evaluator.automated.timeoutSeconds"
-	featureEvaluatorAutomatedRetry        FeatureID = "gate.evaluator.automated.retry"
-	featureEvaluatorAutomatedRetryMax     FeatureID = "gate.evaluator.automated.retry.maxAttempts"
-	featureEvaluatorAutomatedRetryBackoff FeatureID = "gate.evaluator.automated.retry.backoff"
-	featureEvaluatorAutomatedPoll         FeatureID = "gate.evaluator.automated.pollIntervalSeconds"
-	featureEvaluatorStatusEquals          FeatureID = "gate.evaluator.automated.check.status-equals"
-	featureEvaluatorFailureClass          FeatureID = "gate.evaluator.automated.check.failure-class"
-	featureEvaluatorOutputEquals          FeatureID = "gate.evaluator.automated.check.output-equals"
-	featureEvaluatorOutputNotEquals       FeatureID = "gate.evaluator.automated.check.output-not-equals"
-	featureEvaluatorOutputNumericGTE      FeatureID = "gate.evaluator.automated.check.output-numeric-gte"
-	featureEvaluatorOutputNumericLTE      FeatureID = "gate.evaluator.automated.check.output-numeric-lte"
-	featureEvaluatorOutputNumericLT       FeatureID = "gate.evaluator.automated.check.output-numeric-lt"
-	featureEvaluatorOutputMatches         FeatureID = "gate.evaluator.automated.check.output-matches"
-	featureEvaluatorCIStatus              FeatureID = "gate.evaluator.automated.check.ci-status"
-	featureEvaluatorLandOutcome           FeatureID = "gate.evaluator.automated.check.land-outcome"
-	featureEvaluatorQueueOutcome          FeatureID = "gate.evaluator.automated.check.queue-outcome"
-	featureEvaluatorAgentic               FeatureID = "gate.evaluator.agentic"
-	featureEvaluatorAgenticGoober         FeatureID = "gate.evaluator.agentic.goober"
-	featureEvaluatorAgenticTimeout        FeatureID = "gate.evaluator.agentic.timeoutSeconds"
-	featureEvaluatorAgenticRetry          FeatureID = "gate.evaluator.agentic.retry"
-	featureEvaluatorAgenticRetryMax       FeatureID = "gate.evaluator.agentic.retry.maxAttempts"
-	featureEvaluatorAgenticRetryBackoff   FeatureID = "gate.evaluator.agentic.retry.backoff"
-	featureEvaluatorHuman                 FeatureID = "gate.evaluator.human"
-	featureEvaluatorHumanApprovers        FeatureID = "gate.evaluator.human.approvers"
-	featureEvaluatorHumanTimeout          FeatureID = "gate.evaluator.human.timeout"
-	featureEvaluatorHumanTimeoutRemind    FeatureID = "gate.evaluator.human.onTimeout.remind"
-	featureEvaluatorHumanTimeoutEscalate  FeatureID = "gate.evaluator.human.onTimeout.escalate"
-	featureEvaluatorHumanTimeoutReject    FeatureID = "gate.evaluator.human.onTimeout.reject"
+	featureWorkflowGaggle                    FeatureID = "workflow.spec.gaggle"
+	featureWorkflowDisplayName               FeatureID = "workflow.spec.displayName"
+	featureWorkflowTriggers                  FeatureID = "workflow.spec.triggers"
+	featureWorkflowReadiness                 FeatureID = "workflow.spec.readiness"
+	featureWorkflowClaimVisibility           FeatureID = "workflow.spec.readiness.claimVisibility"
+	featureWorkflowRunControls               FeatureID = "workflow.spec.runControls"
+	featureWorkflowDesiredConcurrentRuns     FeatureID = "workflow.spec.readiness.desiredConcurrentRuns"
+	featureWorkflowMaxConcurrentRuns         FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
+	featureWorkflowMaxRunsPerHour            FeatureID = "workflow.spec.readiness.maxRunsPerHour"
+	featureWorkflowMaxRunsPerDay             FeatureID = "workflow.spec.readiness.maxRunsPerDay"
+	featureWorkflowMaxChainDepth             FeatureID = "workflow.spec.readiness.maxChainDepth"
+	featureWorkflowMaxOpenPRs                FeatureID = "workflow.spec.readiness.maxOpenPRs"
+	featureWorkflowStart                     FeatureID = "workflow.spec.start"
+	featureWorkflowTasks                     FeatureID = "workflow.spec.tasks"
+	featureWorkflowGates                     FeatureID = "workflow.spec.gates"
+	featureWorkflowParallels                 FeatureID = "workflow.spec.parallels"
+	featureParallelFailurePolicy             FeatureID = "workflow.spec.parallels.failurePolicy"
+	featureParallelBranches                  FeatureID = "workflow.spec.parallels.branches"
+	featureParallelJoin                      FeatureID = "workflow.spec.parallels.join"
+	featureParallelOnFailure                 FeatureID = "workflow.spec.parallels.onFailure"
+	featureParallelBranchTimeout             FeatureID = "workflow.spec.parallels.branchTimeoutSeconds"
+	featureParallelMaxConcurrentBranches     FeatureID = "workflow.spec.parallels.maxConcurrentBranches"
+	featureWorkflowTerminalComplete          FeatureID = "workflow.terminal.complete"
+	featureWorkflowTerminalAbort             FeatureID = "workflow.terminal.abort"
+	featureWorkflowTerminalEscalate          FeatureID = "workflow.terminal.escalate"
+	featureGaggleCheckoutSparse              FeatureID = "gaggle.spec.project.checkout.sparse"
+	featureGooberGaggle                      FeatureID = "goober.spec.gaggle"
+	featureGooberRole                        FeatureID = "goober.spec.role"
+	featureGooberDisplayName                 FeatureID = "goober.spec.displayName"
+	featureGooberInstructions                FeatureID = "goober.spec.instructions"
+	featureGooberHarnessCopilot              FeatureID = "goober.spec.harness.copilot"
+	featureGooberHarnessClaudeCode           FeatureID = "goober.spec.harness.claude-code"
+	featureGooberHarnessCodex                FeatureID = "goober.spec.harness.codex"
+	featureGooberModel                       FeatureID = "goober.spec.model"
+	featureGooberHarnessOptions              FeatureID = "goober.spec.harnessOptions"
+	featureGooberTimeoutSeconds              FeatureID = "goober.spec.timeoutSeconds"
+	featureGooberCapabilities                FeatureID = "goober.spec.capabilities"
+	featureGooberSkills                      FeatureID = "goober.spec.skills"
+	featureGooberTools                       FeatureID = "goober.spec.tools"
+	featureGooberMCPServers                  FeatureID = "goober.spec.mcpServers"
+	featureGooberScaleFactor                 FeatureID = "goober.spec.scaleFactor"
+	featureGooberWorkflows                   FeatureID = "goober.spec.workflows"
+	featureTriggerManual                     FeatureID = "trigger.manual"
+	featureTriggerBacklogItem                FeatureID = "trigger.backlog-item"
+	featureTriggerBacklogItemSelector        FeatureID = "trigger.backlog-item.selector"
+	featureTriggerBacklogItemTrustLabel      FeatureID = "trigger.backlog-item.trustLabel"
+	featureTriggerLabelPredicate             FeatureID = "trigger.labelPredicate"
+	featureTriggerFieldPredicate             FeatureID = "trigger.fieldPredicate"
+	featureTriggerSchedule                   FeatureID = "trigger.schedule"
+	featureTriggerSignal                     FeatureID = "trigger.signal"
+	featureTriggerWebhook                    FeatureID = "trigger.webhook"
+	featureTriggerEnabled                    FeatureID = "trigger.enabled"
+	featureTaskName                          FeatureID = "task.name"
+	featureTaskDeterministic                 FeatureID = "task.deterministic"
+	featureTaskAgentic                       FeatureID = "task.agentic"
+	featureTaskGoal                          FeatureID = "task.goal"
+	featureTaskGoober                        FeatureID = "task.goober"
+	featureTaskInputs                        FeatureID = "task.inputs"
+	featureTaskInputFieldOrder               FeatureID = "task.inputs.fieldOrder"
+	featureTaskInputsFrom                    FeatureID = "task.inputsFrom"
+	featureTaskInputsFromQualified           FeatureID = "task.inputsFrom.stageQualified"
+	featureTaskCapabilities                  FeatureID = "task.capabilities"
+	featureTaskMinimumIntegrity              FeatureID = "task.minimumIntegrity"
+	featureTaskContextFrom                   FeatureID = "task.contextFrom"
+	featureTaskPolicyActions                 FeatureID = "task.policyActions"
+	featureTaskNestedAgentPolicy             FeatureID = "task.nestedAgentPolicy"
+	featureTaskRetry                         FeatureID = "task.retry"
+	featureTaskRetryMaxAttempts              FeatureID = "task.retry.maxAttempts"
+	featureTaskRetryBackoff                  FeatureID = "task.retry.backoff"
+	featureTaskTimeoutSeconds                FeatureID = "task.timeoutSeconds"
+	featureTaskLimits                        FeatureID = "task.limits"
+	featureTaskLimitMaxDurationSeconds       FeatureID = "task.limits.maxDurationSeconds"
+	featureTaskLimitMaxTokens                FeatureID = "task.limits.maxTokens"
+	featureTaskLimitMaxCostUSD               FeatureID = "task.limits.maxCostUSD"
+	featureTaskTimeoutFail                   FeatureID = "task.onTimeout.fail"
+	featureTaskTimeoutSalvage                FeatureID = "task.onTimeout.salvage"
+	featureTaskExpectedOutputs               FeatureID = "task.expectedOutputs"
+	featureTaskArtifactSlots                 FeatureID = "task.artifactSlots"
+	featureTaskArtifactSlotsName             FeatureID = "task.artifactSlots.name"
+	featureTaskArtifactSlotsMediaType        FeatureID = "task.artifactSlots.mediaType"
+	featureTaskArtifactSlotsSchemaPath       FeatureID = "task.artifactSlots.schemaPath"
+	featureTaskArtifactSlotsMaxSize          FeatureID = "task.artifactSlots.maxSize"
+	featureTaskArtifactInputs                FeatureID = "task.artifactInputs"
+	featureTaskArtifactInputsFrom            FeatureID = "task.artifactInputs.from"
+	featureTaskContinueOnError               FeatureID = "task.continueOnError"
+	featureTaskNext                          FeatureID = "task.next"
+	featureStageShell                        FeatureID = "stage.shell"
+	featureStageCIPoll                       FeatureID = "stage.ci-poll"
+	featureStageExternalTelemetry            FeatureID = "stage.external-telemetry"
+	featureStageCommand                      FeatureID = "stage.run.command"
+	featureStageScript                       FeatureID = "stage.run.script"
+	featureStageEnv                          FeatureID = "stage.run.env"
+	featureStageWorkspaceRepo                FeatureID = "stage.run.workspace.repo"
+	featureStageWorkspaceScratch             FeatureID = "stage.run.workspace.scratch"
+	featureStageWorkspaceRepoReadOnly        FeatureID = "stage.workspace.repo-readonly"
+	featureStageWorkspace                    FeatureID = "stage.workspace"
+	featureGateAgenticWorkspace              FeatureID = "gate.evaluator.agentic.workspace"
+	featureStageSyncBase                     FeatureID = "stage.run.syncBase"
+	featureStageInjectRunContext             FeatureID = "stage.run.injectRunContext"
+	featureStageResultFile                   FeatureID = "stage.resultFile"
+	featureGateName                          FeatureID = "gate.name"
+	featureGateBranches                      FeatureID = "gate.branches"
+	featureGateEscalationBranch              FeatureID = "gate.branch.escalate"
+	featureEvaluatorAutomated                FeatureID = "gate.evaluator.automated"
+	featureEvaluatorAutomatedCheck           FeatureID = "gate.evaluator.automated.check"
+	featureEvaluatorAutomatedParams          FeatureID = "gate.evaluator.automated.params"
+	featureEvaluatorAutomatedTimeout         FeatureID = "gate.evaluator.automated.timeoutSeconds"
+	featureEvaluatorAutomatedRetry           FeatureID = "gate.evaluator.automated.retry"
+	featureEvaluatorAutomatedRetryMax        FeatureID = "gate.evaluator.automated.retry.maxAttempts"
+	featureEvaluatorAutomatedRetryBackoff    FeatureID = "gate.evaluator.automated.retry.backoff"
+	featureEvaluatorAutomatedPoll            FeatureID = "gate.evaluator.automated.pollIntervalSeconds"
+	featureEvaluatorAutomatedMaxTimeoutPolls FeatureID = "gate.evaluator.automated.maxTimeoutPolls"
+	featureTaskArtifactInputsMediaType       FeatureID = "task.artifactInputs.mediaType"
+	featureTaskArtifactInputsSchema          FeatureID = "task.artifactInputs.schemaPath"
+	featureEvaluatorStatusEquals             FeatureID = "gate.evaluator.automated.check.status-equals"
+	featureEvaluatorFailureClass             FeatureID = "gate.evaluator.automated.check.failure-class"
+	featureEvaluatorOutputEquals             FeatureID = "gate.evaluator.automated.check.output-equals"
+	featureEvaluatorOutputNotEquals          FeatureID = "gate.evaluator.automated.check.output-not-equals"
+	featureEvaluatorOutputNumericGTE         FeatureID = "gate.evaluator.automated.check.output-numeric-gte"
+	featureEvaluatorOutputNumericLTE         FeatureID = "gate.evaluator.automated.check.output-numeric-lte"
+	featureEvaluatorOutputNumericLT          FeatureID = "gate.evaluator.automated.check.output-numeric-lt"
+	featureEvaluatorOutputMatches            FeatureID = "gate.evaluator.automated.check.output-matches"
+	featureEvaluatorCIStatus                 FeatureID = "gate.evaluator.automated.check.ci-status"
+	featureEvaluatorLandOutcome              FeatureID = "gate.evaluator.automated.check.land-outcome"
+	featureEvaluatorQueueOutcome             FeatureID = "gate.evaluator.automated.check.queue-outcome"
+	featureEvaluatorAgentic                  FeatureID = "gate.evaluator.agentic"
+	featureEvaluatorAgenticGoober            FeatureID = "gate.evaluator.agentic.goober"
+	featureEvaluatorAgenticTimeout           FeatureID = "gate.evaluator.agentic.timeoutSeconds"
+	featureEvaluatorAgenticRetry             FeatureID = "gate.evaluator.agentic.retry"
+	featureEvaluatorAgenticRetryMax          FeatureID = "gate.evaluator.agentic.retry.maxAttempts"
+	featureEvaluatorAgenticRetryBackoff      FeatureID = "gate.evaluator.agentic.retry.backoff"
+	featureEvaluatorHuman                    FeatureID = "gate.evaluator.human"
+	featureEvaluatorHumanApprovers           FeatureID = "gate.evaluator.human.approvers"
+	featureEvaluatorHumanTimeout             FeatureID = "gate.evaluator.human.timeout"
+	featureEvaluatorHumanTimeoutRemind       FeatureID = "gate.evaluator.human.onTimeout.remind"
+	featureEvaluatorHumanTimeoutEscalate     FeatureID = "gate.evaluator.human.onTimeout.escalate"
+	featureEvaluatorHumanTimeoutReject       FeatureID = "gate.evaluator.human.onTimeout.reject"
 
 	// The #3292 backfill: every author-facing field of the versioned YAML
 	// contract is registered — the PO-ruled reversal of #3003's
@@ -589,6 +582,7 @@ const (
 	featureGaggleBacklogLabels                  FeatureID = "gaggle.spec.backlog.labels"
 	featureGaggleBacklogLabelPredicate          FeatureID = "gaggle.spec.backlog.labelPredicate"
 	featureGaggleBacklogFieldPredicate          FeatureID = "gaggle.spec.backlog.fieldPredicate"
+	featureGaggleIsolationServiceAccount        FeatureID = "gaggle.spec.isolation.serviceAccount"
 	featureGaggleIsolationNamespace             FeatureID = "gaggle.spec.isolation.namespace"
 	featureGaggleIsolationIdentityRef           FeatureID = "gaggle.spec.isolation.identityRef"
 	featureGaggleAdditionalRepos                FeatureID = "gaggle.spec.additionalRepos"
@@ -606,6 +600,9 @@ const (
 	featureGaggleOutboxMirrorPath               FeatureID = "gaggle.spec.outboxMirrorPath"
 	featureGaggleWorkcopiesRoot                 FeatureID = "gaggle.spec.workcopies.root"
 	featureGaggleRequireLabels                  FeatureID = "gaggle.spec.requireLabels"
+	featureGaggleIssueOwnershipScope            FeatureID = "gaggle.spec.issueOwnershipScope"
+	featureGaggleIssueOwnershipScopeAssignees   FeatureID = "gaggle.spec.issueOwnershipScope.assignees"
+	featureGaggleIssueOwnershipScopeUnassigned  FeatureID = "gaggle.spec.issueOwnershipScope.unassigned"
 	featureGaggleSiblings                       FeatureID = "gaggle.spec.siblings"
 
 	// The DSL 3.0 surface (dsl-3.0.md §2/§4/§8, issue #3505): the runsOn
@@ -665,6 +662,8 @@ func mustFeatureRegistry(features []Feature) FeatureRegistry {
 	}
 	return registry
 }
+
+var gaggleIsolationFeatureIDs = []FeatureID{featureGaggleIsolationNamespace, featureGaggleIsolationIdentityRef, featureGaggleIsolationServiceAccount}
 
 func currentFeatures(sinceVersion string) []Feature {
 	ids := []FeatureID{
@@ -771,7 +770,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureEvaluatorAutomatedRetry,
 		featureEvaluatorAutomatedRetryMax,
 		featureEvaluatorAutomatedRetryBackoff,
-		featureEvaluatorAutomatedPoll,
+		featureEvaluatorAutomatedPoll, featureEvaluatorAutomatedMaxTimeoutPolls,
 		featureEvaluatorStatusEquals,
 		featureEvaluatorFailureClass,
 		featureEvaluatorOutputEquals,
@@ -829,8 +828,6 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleBacklogLabels,
 		featureGaggleBacklogLabelPredicate,
 		featureGaggleBacklogFieldPredicate,
-		featureGaggleIsolationNamespace,
-		featureGaggleIsolationIdentityRef,
 		featureGaggleAdditionalRepos,
 		featureGaggleAdditionalReposProviderGitHub,
 		featureGaggleAdditionalReposProviderADO,
@@ -845,7 +842,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleRunControlsMaxRunDuration,
 		featureGaggleOutboxMirrorPath,
 		featureGaggleWorkcopiesRoot,
-		featureGaggleRequireLabels,
+		featureGaggleRequireLabels, featureGaggleIssueOwnershipScope, featureGaggleIssueOwnershipScopeAssignees, featureGaggleIssueOwnershipScopeUnassigned,
 		featureGaggleSiblings,
 		featureTaskRunsOn,
 		featureTaskRunsOnOS,
@@ -871,6 +868,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGateRunsOnWindowsAdmin,
 		featureGaggleRunsOnWindowsAdmin,
 	}
+	ids = append(ids, gaggleIsolationFeatureIDs...)
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
 		if promotedVersion, promoted := gaPromotions[id]; promoted {
@@ -908,6 +906,39 @@ func currentFeatures(sinceVersion string) []Feature {
 			History: []SupportTransition{{
 				Level:        level,
 				SinceVersion: since,
+			}},
+		})
+	}
+	return append(features, v31OnlyArtifactFeatures()...)
+}
+
+const v31ArtifactFeatureSinceVersion = "v0.5.0"
+
+func v31OnlyArtifactFeatures() []Feature {
+	ids := []FeatureID{
+		featureTaskArtifactSlots,
+		featureTaskArtifactSlotsName,
+		featureTaskArtifactSlotsMediaType,
+		featureTaskArtifactSlotsSchemaPath,
+		featureTaskArtifactSlotsMaxSize,
+		featureTaskArtifactInputs,
+		featureTaskArtifactInputsFrom,
+		featureTaskArtifactInputsMediaType,
+		featureTaskArtifactInputsSchema,
+	}
+	features := make([]Feature, 0, len(ids))
+	for _, id := range ids {
+		features = append(features, Feature{
+			ID:           id,
+			Level:        SupportPreview,
+			SinceVersion: v31ArtifactFeatureSinceVersion,
+			DSLVersions: []DSLFeatureSupport{{
+				Version: supportmatrix.V31DSLVersion,
+				Level:   SupportPreview,
+			}},
+			History: []SupportTransition{{
+				Level:        SupportPreview,
+				SinceVersion: v31ArtifactFeatureSinceVersion,
 			}},
 		})
 	}
@@ -1261,6 +1292,9 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 	if spec.Isolation.Namespace != "" {
 		used.add(featureGaggleIsolationNamespace)
 	}
+	if spec.Isolation.ServiceAccount != "" {
+		used.add(featureGaggleIsolationServiceAccount)
+	}
 	if spec.Isolation.IdentityRef != "" {
 		used.add(featureGaggleIsolationIdentityRef)
 	}
@@ -1296,10 +1330,24 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 	if spec.RequireLabels != nil {
 		used.add(featureGaggleRequireLabels)
 	}
+	addGaggleIssueOwnershipFeatures(used, spec.IssueOwnershipScope)
 	if spec.Siblings != nil {
 		used.add(featureGaggleSiblings)
 	}
 	return currentFeatureRegistry.resolve(used.ids())
+}
+
+func addGaggleIssueOwnershipFeatures(used featureSet, scope *apiv1.IssueOwnershipScope) {
+	if scope == nil {
+		return
+	}
+	used.add(featureGaggleIssueOwnershipScope)
+	if scope.Assignees != nil {
+		used.add(featureGaggleIssueOwnershipScopeAssignees)
+	}
+	if scope.Unassigned != "" {
+		used.add(featureGaggleIssueOwnershipScopeUnassigned)
+	}
 }
 
 // addParallelFeatures records the GA DSL fields used by a parallel state.
@@ -1661,6 +1709,9 @@ func addGateFeatures(used featureSet, gate apiv1.Gate) {
 		})
 		if gate.Automated.PollIntervalSeconds != 0 {
 			used.add(featureEvaluatorAutomatedPoll)
+		}
+		if gate.Automated.MaxTimeoutPolls != 0 {
+			used.add(featureEvaluatorAutomatedMaxTimeoutPolls)
 		}
 		if feature, ok := automatedCheckFeatures[gate.Automated.Check]; ok {
 			used.add(feature)

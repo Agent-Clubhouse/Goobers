@@ -19,7 +19,9 @@ Finish the single-repository path before adding another gaggle.
 `goobers init --guided` follows the
 same convention: it loads the canonical work-nomination, backlog-curation, and
 implementation modules from
-`config-examples/gaggles/acme-web`, then adapts repository identity, branch,
+`config-examples/gaggles/acme-web` (on Azure DevOps it offers merge-review
+instead of work-nomination, whose `file-issues` stage files GitHub issues
+only; guided merge-review is Azure DevOps-only), then adapts repository identity, branch,
 issue scope, harness, CI command, and required capabilities from the choices
 and evidence collected by the wizard. It does not reuse the deliberately
 simplified `quickstart@v1` tutorial workflow.
@@ -552,29 +554,31 @@ machines, or independent journals and budgets — not because of a repository
 count. See [Choose where an instance and its config
 live](instance-placement.md) for that decision.
 
-Two constraints apply to either shape. Goober and workflow names are
-instance-global, not gaggle-scoped, so a copied gaggle that keeps a name such
-as `coder` fails validation with a duplicate-name error; prefix names per
-gaggle as in step 2 below. And a new gaggle only claims work its backlog
-labels actually match: the `goobers init` scaffold defaults the backlog labels
+Two constraints apply to either shape. Goober names are instance-global, not
+gaggle-scoped, so a copied gaggle that keeps a name such as `coder` fails
+validation with a duplicate-name error; prefix goober names per gaggle as in
+step 2 below. Workflow names are deduplicated per gaggle (by gaggle and name),
+so two gaggles may ship workflows with the same `metadata.name`. And a new
+gaggle only claims work its backlog labels actually match: the `goobers init` scaffold defaults the backlog labels
 and `trustLabel` to `goobers`, which a real repository often does not carry,
 and a workflow whose labels match nothing claims nothing without an error —
 check `gh label list --repo <owner>/<name>` and set the trust label from
 section 5 before the first cycle.
 
-### Current single-repo residue
+### Per-gaggle repository scoping
 
-Three built-in behaviors still resolve through the first `repos` entry
-regardless of gaggle. Account for them when a second repository shares the
-instance:
+The daemon's background behaviors follow each gaggle's own `project`
+repository and that repository's own `repos` entry and credential:
 
-- The open-PR poll behind `readiness.maxOpenPRs` counts the first repository's
-  open PRs only, so the cap throttles every gaggle by that one count.
-- Terminal branch-delete cleanup targets the first repository only; branches
-  left by terminal runs against another repository are not deleted.
+- The open-PR poll behind `readiness.maxOpenPRs` runs once per repository, so
+  each gaggle's cap counts its own repository's open PRs.
+- Terminal branch-delete cleanup deletes a run's branch in its gaggle's
+  project repository, with that repository's credential.
 - The backlog counter that sizes scheduled work queries the gaggle's own
-  repository but resolves its credential from the first `repos` entry; a
-  second repository readable only by a different token can fail to count.
+  repository and resolves that repository's credential.
+
+A gaggle with no `project` still falls back to the first `repos` entry, as a
+single-repository instance always has.
 
 ### Worked example: a documentation gaggle for the same repository
 

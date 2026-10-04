@@ -250,7 +250,7 @@ remain governed by the separate config source.
 | You do not own the target or cannot add files and enforce CODEOWNER review. | Separate config repository | Goobers adds nothing to the target and config governance remains under your control. |
 | You own the target but require a credential-level boundary between autonomous config changes and project code. | Separate config repository | A credential scoped only to the config repository cannot reach project code. |
 | Several operators maintain the workforce. | Separate config repository | Normal repository access, review, and audit rules protect desired state. |
-| You operate several target repositories together under one operator and credential posture. | One outside instance root with one gaggle per repository | Repository selection is gaggle-aware: each gaggle's `project` and `backlog` connections select their own `repos` entry. A few built-in behaviors still bind to the first `repos` entry — see the [single-repo residue](arbitrary-repo-onboarding.md#current-single-repo-residue) note. |
+| You operate several target repositories together under one operator and credential posture. | One outside instance root with one gaggle per repository | Repository selection is gaggle-aware: each gaggle's `project` and `backlog` connections select their own `repos` entry. Background behaviors (the `maxOpenPRs` poll, terminal branch cleanup, the backlog counter) are scoped per gaggle too — see [per-gaggle repository scoping](arbitrary-repo-onboarding.md#per-gaggle-repository-scoping). |
 | You need an isolation boundary between target repositories — different credentials, trust postures, or machines. | One outside instance root and config source per target | Separate roots isolate credentials, journals, budgets, and workcopies. |
 
 Several gaggles may share one configured target, and separate gaggles may
@@ -339,3 +339,54 @@ instance still creates its managed `Agent-Clubhouse/Goobers` copy and run
 worktrees beneath the outside instance root. See the
 [self-hosting runbook](../../reference-workflows/README.md) for the repository-specific
 setup and guardrails.
+
+## Deny execution on the daemon
+
+Local and single-machine instances default to `placement.selfExecution: allow`.
+Hosted deployments should use the explicit `deny` policy shipped in
+[`deploy/reference/instance.yaml`](../../deploy/reference/instance.yaml):
+
+```yaml
+placement:
+  selfExecution: deny # allow | deny; omitted means allow
+```
+
+`runners` remains the runner inventory list. The policy lives under `placement`
+so existing inventories keep their schema. `deny` excludes every `host: self`
+entry, including entries with a different name, from workflow work. It governs
+all agentic tasks, deterministic workflow tasks (shell, `ci-poll`, external
+telemetry, and commands invoking builtins), and agentic reviewer gates. There
+is no exemption based on a task name or builtin command. Human gate waiting
+and automated checks over existing results remain control-plane decisions.
+Daemon-internal claim cleanup, parking, notifications, journal writes,
+scheduling, and reconciliation continue normally; declaring those operations
+as workflow tasks makes them workflow work subject to this policy.
+
+Run `goobers status` before migrating: its engine fallback explanation names
+self-pinned tasks and agentic gates without `runsOn`. Configure a non-self
+runner with the required OS, shell/harness and capability claims, and add
+`runsOn` to agentic gates (which requires DSL 3.0). Then set `deny` and run
+`goobers validate` on the deployed instance. Drain existing work and restart the
+daemon and workers to apply the policy: daemon instance settings are pinned at
+startup, so editing the file does not stop an already running process.
+Validation reports an error with
+the stage name if only self could execute it. It also rejects instance-root-only
+builtin commands: they must be migrated to remote-safe equivalents before this
+policy can be enabled. Do not grant a self exception to make validation pass.
+
+At runtime a lost pin or local fallback is refused before workspace creation
+or invocation, with code `placement_refused_self_denied`. The existing blocked
+terminal hooks park the item and report the reason; daemon bookkeeping can
+still release its claim. Engine starts pin the policy along with placements.
+Worker activity admission also checks current instance policy, covering older
+runs started before `deny` was enabled.
+
+Status JSON and health expose `selfExecution` with the policy, actual local
+placements and refused attempts. `observed: false` means an offline reader
+cannot observe another process's counters. Counters cover the current live
+configuration/process, not historical or fleet-wide totals; journals retain
+historical placement evidence. A refusal, or any nonzero self placement under
+`deny`, marks live health unhealthy. Telemetry publishes
+`goobers.placement.self_denied`, `goobers.placement.self`, and
+`goobers.placement.self_refused`; alert on either counter being nonzero under
+`deny`. A healthy deny instance has zero self placements.

@@ -207,6 +207,15 @@ floor, the contentless justifications - apply to an overflow entry exactly as
 to a retained one, and retiring one unpins the ref and deletes the record.
 Nothing is ever discarded for sitting in this tier.
 
+Pod-side issue selection through the claims-plane API needs a bundle. When its
+selected snapshot is still in overflow, restore reports `overflow-pending`
+with the daemon's promotion state: `waiting-for-capacity`, `awaiting-promotion`,
+`dry-run`, or `retention-disabled`. Retry after promotion; this response does
+not consume or discard the snapshot. The authenticated download route returns
+HTTP 409 with error code `recovery_overflow_pending` and the
+`X-Goobers-Recovery-Promotion-State` header. The state describes the current
+capacity and retention settings, not a guarantee that the next sweep succeeds.
+
 `retention.recovery.onFull` selects the behaviour. The default, `overflow`, is
 the above. `refuse` restores the pre-#5370 fail-closed behaviour: the publish
 fails with `recovery inventory is full: 130 of 128 slots used in

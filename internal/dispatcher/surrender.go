@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -94,6 +96,8 @@ type SurrenderedMutation struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // SurrenderedResult is the wire shape of one attempt's surrendered outcome:
@@ -193,10 +197,10 @@ func (r SurrenderedResult) Validate() error {
 }
 
 // ReadSurrenderedResult fetches, decodes, and validates one attempt's
-// surrendered result. A document that decodes but does not validate is
-// refused: the engine treats an unreadable surrender as an infrastructure
-// fault and retries the attempt on a fresh pod, which is the right outcome
-// for a garbled or substituted document too.
+// surrendered result. Unavailable, garbled, or structurally invalid documents
+// remain infrastructure faults. A complete document with a malformed revision
+// control preserves its typed semantic error so the engine refuses it without
+// dispatching another pod.
 func ReadSurrenderedResult(ctx context.Context, plane SurrenderPlane, runID, stage string, attempt int) (SurrenderedResult, error) {
 	if plane == nil {
 		return SurrenderedResult{}, fmt.Errorf("dispatcher: no surrender plane configured for run %s stage %s attempt %d", runID, stage, attempt)
@@ -207,6 +211,9 @@ func ReadSurrenderedResult(ctx context.Context, plane SurrenderPlane, runID, sta
 	}
 	var result SurrenderedResult
 	if err := json.Unmarshal(data, &result); err != nil {
+		if revisionErr := workspacerevision.FromError(err); revisionErr != nil {
+			return SurrenderedResult{}, fmt.Errorf("dispatcher: malformed surrendered revision: %w", revisionErr)
+		}
 		return SurrenderedResult{}, fmt.Errorf("dispatcher: decode surrendered result for run %s stage %s attempt %d: %w", runID, stage, attempt, err)
 	}
 	if err := result.Validate(); err != nil {
@@ -343,32 +350,28 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("dispatcher: create surrender dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".surrender-*")
-	if err != nil {
-		return fmt.Errorf("dispatcher: stage surrendered result: %w", err)
-	}
-	staged := tmp.Name()
-	defer func() { _ = os.Remove(staged) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("dispatcher: write surrendered result: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("dispatcher: sync surrendered result: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("dispatcher: close surrendered result: %w", err)
-	}
-	if err := durability.ReplaceFile(staged, path); err != nil {
-		if _, statErr := os.Stat(path); statErr == nil {
-			// The same pod's retry already landed the identical document.
-			return nil
+	if err := durability.WriteFileAtomic(path, data, 0o600,
+		durability.WithTempPattern(".surrender-*"),
+		durability.WithPublishRaceCheck(func(path string) error {
+			_, err := os.Stat(path)
+			return err
+		})); err != nil {
+		var writeErr *durability.AtomicWriteError
+		if errors.As(err, &writeErr) {
+			switch writeErr.Operation {
+			case durability.AtomicWriteCreateTemp:
+				return fmt.Errorf("dispatcher: stage surrendered result: %w", err)
+			case durability.AtomicWriteWrite:
+				return fmt.Errorf("dispatcher: write surrendered result: %w", err)
+			case durability.AtomicWriteSync:
+				return fmt.Errorf("dispatcher: sync surrendered result: %w", err)
+			case durability.AtomicWriteClose:
+				return fmt.Errorf("dispatcher: close surrendered result: %w", err)
+			case durability.AtomicWriteSyncDir:
+				return fmt.Errorf("dispatcher: sync surrender dir: %w", err)
+			}
 		}
 		return fmt.Errorf("dispatcher: publish surrendered result: %w", err)
-	}
-	if err := durability.SyncDir(dir); err != nil {
-		return fmt.Errorf("dispatcher: sync surrender dir: %w", err)
 	}
 	return nil
 }

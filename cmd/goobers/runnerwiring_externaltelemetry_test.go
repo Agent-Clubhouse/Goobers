@@ -63,7 +63,7 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 	if err != nil {
 		t.Fatalf("load fixture workflow: %v (report: %+v)", err, report)
 	}
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil, nil)
 	if err != nil {
 		t.Fatalf("compile fixture workflow: %v", err)
 	}
@@ -164,6 +164,51 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 		return
 	}
 	t.Fatal("query-health stage output was not journaled")
+}
+
+// TestCompiledMachinesRejectsUnconfiguredExternalTelemetryConnector is #4475:
+// a workflow naming a connector the instance does not configure fails at
+// compile time (the daemon/validate/status path) with a diagnostic naming the
+// task and the connector, instead of only when a run reaches the stage.
+func TestCompiledMachinesRejectsUnconfiguredExternalTelemetryConnector(t *testing.T) {
+	set, report, err := instance.LoadConfigDir("testdata/external-telemetry-workflow")
+	if err != nil {
+		t.Fatalf("load fixture workflow: %v (report: %+v)", err, report)
+	}
+	configured := func(names ...string) *instance.Config {
+		cfg := &instance.Config{}
+		for _, name := range names {
+			cfg.ExternalTelemetry.Connectors = append(cfg.ExternalTelemetry.Connectors, externaltelemetry.ConnectorConfig{Name: name})
+		}
+		return cfg
+	}
+	for _, tc := range []struct {
+		name    string
+		cfg     *instance.Config
+		wantErr bool
+	}{
+		{name: "configured connector compiles", cfg: configured("other", "fixture")},
+		{name: "other connector only", cfg: configured("other"), wantErr: true},
+		{name: "no connectors configured", cfg: configured(), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil,
+				tc.cfg.ExternalTelemetryConnectorNames())
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("compile with configured connector: %v", err)
+				}
+				return
+			}
+			var compileErr *workflowCompileError
+			if !errors.As(err, &compileErr) || compileErr.Workflow != "query-health" {
+				t.Fatalf("compile error = %v, want a workflowCompileError for query-health", err)
+			}
+			if msg := err.Error(); !strings.Contains(msg, `task "query-health"`) || !strings.Contains(msg, `unknown external telemetry connector "fixture"`) {
+				t.Fatalf("compile error = %q, want it to name the task and the unknown connector", msg)
+			}
+		})
+	}
 }
 
 func TestBuildExternalTelemetryRegistryValidatesPluginConfigBeforeRun(t *testing.T) {

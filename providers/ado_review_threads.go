@@ -236,6 +236,14 @@ func adoThreadIteration(thread adoPullRequestThread) int {
 // listADOPullRequestThreads reads every thread on a pull request, following
 // x-ms-continuationtoken when ADO pages the response.
 func (p *ADOProvider) listADOPullRequestThreads(ctx context.Context, repo RepositoryRef, pullID string) ([]adoPullRequestThread, error) {
+	return p.listADOPullRequestThreadPages(ctx, repo, pullID, 0)
+}
+
+// listADOPullRequestThreadPages is listADOPullRequestThreads with an explicit
+// page bound: maxPages > 0 fails the read, rather than returning a partial
+// thread set, when ADO still offers a continuation token after that many
+// pages. Zero means unbounded.
+func (p *ADOProvider) listADOPullRequestThreadPages(ctx context.Context, repo RepositoryRef, pullID string, maxPages int) ([]adoPullRequestThread, error) {
 	base, err := p.repoURL(repo, "pullrequests", pullID, "threads")
 	if err != nil {
 		return nil, err
@@ -243,7 +251,7 @@ func (p *ADOProvider) listADOPullRequestThreads(ctx context.Context, repo Reposi
 	var all []adoPullRequestThread
 	seen := map[string]bool{}
 	endpoint := base
-	for {
+	for pages := 1; ; pages++ {
 		resp, err := p.send(ctx, http.MethodGet, endpoint, nil, "")
 		if err != nil {
 			return nil, err
@@ -259,6 +267,9 @@ func (p *ADOProvider) listADOPullRequestThreads(ctx context.Context, repo Reposi
 		}
 		if seen[next] {
 			return nil, fmt.Errorf("ado pull request %s threads: continuation token repeated", pullID)
+		}
+		if maxPages > 0 && pages >= maxPages {
+			return nil, fmt.Errorf("ado pull request %s threads: more than %d pages; refusing a partial thread set", pullID, maxPages)
 		}
 		seen[next] = true
 		endpoint, err = addQuery(base, url.Values{"continuationToken": []string{next}})

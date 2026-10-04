@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: curate-resweep
+  annotations:
+    goobers.dev/purpose: "Periodically re-examines already-curated backlog items for drift and unblocked dependencies so stale or newly actionable issues are corrected without claiming forward work."
 spec:
   gaggle: acme-web
   displayName: Scheduled backlog re-sweep
@@ -28,7 +30,10 @@ spec:
         filterParkLabels: "true"
         # Forward candidates reserve capacity but are never claimed here.
         maxItems: "20"
+        # Independent lane budgets (#4884): ready-drift reviews, and the
+        # cheap native-blocker rechecks of blocked-on-sibling items.
         resweepMaxItems: "5"
+        resweepDependencyMaxItems: "25"
         resweepReadyLabel: "goobers:ready"
         resultFile: "claimed-items.json"
         staleAfterDays: "90"

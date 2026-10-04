@@ -3,9 +3,9 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
-	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -78,46 +78,88 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 	}
 	printValidationWarnings(stderr, report.CLIWarnings())
 	for _, wf := range set.Workflows {
-		if wf.Name == name {
-			if *dot {
-				// Preview authorization is per-Workflow (#4220): wf's OWN
-				// annotations, never the Manifest's or its gaggle's.
-				machine, err := workflow.Compile(workflow.Definition{
-					Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
-				}, workflow.WithPreviewFeatures(
-					workflow.PreviewFeaturesEnabled(wf.Annotations),
-				))
-				if err != nil {
-					pf(stderr, "error: compile workflow %q: %v\n", wf.Name, err)
-					return 1
-				}
-				printWorkflowDOT(stdout, machine.Graph())
-			} else {
-				printWorkflowDAG(stdout, wf)
-			}
-			return 0
+		if wf.Name != name {
+			continue
 		}
+		// Both projections render the compiled machine, so the text view
+		// agrees with --dot and neither prints a DAG that `goobers validate`
+		// rejects (#2738). Preview authorization is per-Workflow (#4220):
+		// wf's OWN annotations, never the Manifest's or its gaggle's.
+		machine, err := workflow.Compile(workflow.Definition{
+			Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
+		}, workflow.WithPreviewFeatures(
+			workflow.PreviewFeaturesEnabled(wf.Annotations),
+		))
+		if err != nil {
+			pf(stderr, "error: compile workflow %q: %v\n", wf.Name, err)
+			return 1
+		}
+		if *dot {
+			printWorkflowDOT(stdout, machine.Graph())
+		} else {
+			printWorkflowDAG(stdout, wf, machine.Graph())
+		}
+		return 0
 	}
 
 	pf(stderr, "error: no workflow named %q in %s\n", name, l.ConfigDir())
 	return 1
 }
 
-func printWorkflowDAG(w io.Writer, wf apiv1.Workflow) {
+// printWorkflowDAG renders the compiled graph as text. Nodes and edges are
+// the same projection --dot draws, so a parallel is listed with its fan-out
+// and failure route, and a branch's "@join" shows as its concrete join stage
+// rather than a dead end.
+func printWorkflowDAG(w io.Writer, wf apiv1.Workflow, graph workflow.Graph) {
 	pf(w, "workflow: %s\n", wf.Name)
 	if len(wf.Spec.Triggers) == 1 && wf.Spec.Triggers[0].Type == apiv1.TriggerManual {
 		pf(w, "triggers: manual-only\n")
 	}
-	pf(w, "start: %s\nstages:\n", wf.Spec.Start)
-	for _, task := range wf.Spec.Tasks {
-		pf(w, "  %s (kind: %s) -> %s\n", task.Name, task.Type, displayWorkflowTarget(task.Next))
+	pf(w, "start: %s\nstages:\n", graph.Start)
+	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
+	for _, e := range graph.Edges {
+		outgoing[e.Source] = append(outgoing[e.Source], e)
 	}
-	for _, gate := range wf.Spec.Gates {
-		pf(w, "  %s (kind: gate, evaluator: %s)\n", gate.Name, gate.Evaluator)
-		for _, outcome := range orderedGateOutcomes(gate.Branches) {
-			pf(w, "    %s target: %s\n", outcome, displayWorkflowTarget(gate.Branches[outcome]))
+	for _, node := range graph.Nodes {
+		out := outgoing[node.ID]
+		switch node.Kind {
+		case workflow.GraphNodeGate:
+			pf(w, "  %s (kind: gate, evaluator: %s)\n", node.ID, node.Evaluator)
+		case workflow.GraphNodeParallel:
+			pf(w, "  %s (kind: parallel, %s)\n", node.ID, parallelConcurrency(wf.Spec.Parallels, node.ID))
+		default:
+			for _, e := range out {
+				pf(w, "  %s (kind: %s) -> %s\n", node.ID, node.Kind, displayWorkflowTarget(e.Target))
+			}
+			continue
+		}
+		for _, e := range out {
+			if e.Branch != "" {
+				pf(w, "    branch %s start: %s\n", e.Branch, e.Target)
+				continue
+			}
+			pf(w, "    %s target: %s\n", e.Outcome, displayWorkflowTarget(e.Target))
 		}
 	}
+}
+
+// parallelConcurrency describes how many of a parallel's branches run at
+// once. Unset maxConcurrentBranches means 1: the branches run sequentially.
+func parallelConcurrency(parallels []apiv1.Parallel, name string) string {
+	for _, p := range parallels {
+		if p.Name != name {
+			continue
+		}
+		switch p.MaxConcurrentBranches {
+		case 0:
+			return "maxConcurrentBranches unset: branches run sequentially"
+		case 1:
+			return "maxConcurrentBranches: 1, branches run sequentially"
+		default:
+			return fmt.Sprintf("maxConcurrentBranches: %d", p.MaxConcurrentBranches)
+		}
+	}
+	return "maxConcurrentBranches: unknown"
 }
 
 func printWorkflowDOT(w io.Writer, graph workflow.Graph) {
@@ -142,24 +184,6 @@ func printWorkflowDOT(w io.Writer, graph workflow.Graph) {
 		}
 	}
 	pf(w, "}\n")
-}
-
-func orderedGateOutcomes(branches map[string]string) []string {
-	outcomes := make([]string, 0, len(branches))
-	for _, outcome := range []string{"pass", "fail"} {
-		if _, ok := branches[outcome]; ok {
-			outcomes = append(outcomes, outcome)
-		}
-	}
-
-	var remaining []string
-	for outcome := range branches {
-		if outcome != "pass" && outcome != "fail" {
-			remaining = append(remaining, outcome)
-		}
-	}
-	sort.Strings(remaining)
-	return append(outcomes, remaining...)
 }
 
 func displayWorkflowTarget(target string) string {

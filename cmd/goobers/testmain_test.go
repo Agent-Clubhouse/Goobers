@@ -59,6 +59,14 @@ func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([
 	}, nil
 }
 
+// init makes every stage provider in this suite attribute its writes the way a
+// daemon stage does (defaultTestStageAttribution). It is an init, not part of
+// TestMain, so the default is already armed when TestMain re-execs this binary
+// as a stage subprocess below.
+func init() {
+	stageAttributionFor = defaultTestStageAttribution
+}
+
 // TestMain arms the whole-suite seams before running any cmd/goobers test:
 //
 //  1. It neutralizes harness preflight and model discovery. These tests drive

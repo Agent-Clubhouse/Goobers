@@ -87,3 +87,115 @@ func TestNormalizeArtifactIntegrityUsesRunnerOwnedAgenticGrade(t *testing.T) {
 		})
 	}
 }
+
+// #2979: a deterministic stage with no graded input whose executor stamps its
+// own envelope unapproved (as external-telemetry does) finishes unapproved in
+// the journaled stage.finished — not trusted — and a downstream stage that
+// requires derived refuses to bind its output through inputsFrom.
+func TestRunnerKeepsExecutorStampedStageIntegrity(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "query",
+		Tasks: []apiv1.Task{
+			{
+				Name: "query", Type: apiv1.TaskDeterministic, Goal: "query",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: "consume",
+			},
+			{
+				Name: "consume", Type: apiv1.TaskDeterministic, Goal: "consume",
+				MinimumIntegrity: apiv1.IntegrityDerived,
+				Run:              &apiv1.DeterministicRun{Command: []string{"true"}},
+				InputsFrom:       map[string]string{"value": "query.value"},
+			},
+		},
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "executor-grade", Version: 1, Spec: spec},
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+		"run-executor-grade:query": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"value": "42"},
+			resultIntegrity: apiv1.IntegrityUnapproved,
+		},
+		"run-executor-grade:consume": {status: apiv1.ResultSuccess},
+	}, nil)
+	_, err = r.Start(context.Background(), StartInput{
+		RunID: "run-executor-grade", Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err == nil || !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("Start error = %v, want an integrity refusal of the consumer", err)
+	}
+
+	reader, err := journal.OpenRead(runsDir + "/run-executor-grade")
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var finished *journal.Event
+	for i := range events {
+		if events[i].Type == journal.EventStageFinished && events[i].Stage == "query" {
+			finished = &events[i]
+		}
+		if events[i].Type == journal.EventStageStarted && events[i].Stage == "consume" {
+			t.Fatalf("consumer dispatched despite an unapproved input: %+v", events[i])
+		}
+	}
+	if finished == nil || finished.Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("query stage.finished = %+v, want integrity %q", finished, apiv1.IntegrityUnapproved)
+	}
+}
+
+// Regression guard: a stage whose executor stamps nothing keeps the
+// input-derived grade, so an ungraded deterministic producer still finishes
+// trusted and its consumer is admitted.
+func TestRunnerUnstampedStageKeepsProducedIntegrity(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "query",
+		Tasks: []apiv1.Task{
+			{
+				Name: "query", Type: apiv1.TaskDeterministic, Goal: "query",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: "consume",
+			},
+			{
+				Name: "consume", Type: apiv1.TaskDeterministic, Goal: "consume",
+				MinimumIntegrity: apiv1.IntegrityTrusted,
+				Run:              &apiv1.DeterministicRun{Command: []string{"true"}},
+				InputsFrom:       map[string]string{"value": "query.value"},
+			},
+		},
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "unstamped-grade", Version: 1, Spec: spec},
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		"run-unstamped:query":   {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"value": "42"}},
+		"run-unstamped:consume": {status: apiv1.ResultSuccess},
+	}, nil)
+	res, err := r.Start(context.Background(), StartInput{
+		RunID: "run-unstamped", Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+}

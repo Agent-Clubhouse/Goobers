@@ -65,6 +65,10 @@ func TestUpAPIReadyBeforeRetentionSweepCompletes(t *testing.T) {
 		t.Fatalf("remove branch fixture worktree: %v", err)
 	}
 	createTerminalRun(t, gaggleLayout, runID)
+	recordRetentionItem(t, layout, runID)
+	previousLookup := retentionItemParked
+	retentionItemParked = func(context.Context, string, string, recordedItemRepo) (bool, error) { return false, nil }
+	t.Cleanup(func() { retentionItemParked = previousLookup })
 
 	deleteStarted := make(chan struct{}, 1)
 	release := make(chan struct{})

@@ -110,6 +110,26 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.isolation.serviceAccount",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.issueOwnershipScope",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.issueOwnershipScope.assignees",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.issueOwnershipScope.unassigned",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.outboxMirrorPath",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -301,6 +321,11 @@
     },
     {
       "name": "gate.evaluator.automated.check.status-equals",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.maxTimeoutPolls",
       "stability": "ga",
       "sinceVersion": "dev"
     },

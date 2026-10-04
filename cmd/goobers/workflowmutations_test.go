@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gagglebundle"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -272,6 +274,60 @@ func (f *fakeConfigReloadHandle) pollOnce(now time.Time) (bool, string, string, 
 		f.pollOnceHook(now)
 	}
 	return f.pollApplied, f.pollOld, f.pollNew, f.pollReject, f.pollErr
+}
+
+func TestImportGaggleCommitsWhenLiveEngineRequiresRestart(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	entries, err := os.ReadDir(filepath.Join(layout.ConfigDir(), "gaggles"))
+	if err != nil {
+		t.Fatalf("read source gaggles: %v", err)
+	}
+	var source string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			source = entry.Name()
+			break
+		}
+	}
+	if source == "" {
+		t.Fatal("demo instance has no gaggle to export")
+	}
+	bundle, err := gagglebundle.Export(layout.ConfigDir(), source, time.Now())
+	if err != nil {
+		t.Fatalf("export source gaggle: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(layout.ConfigDir(), "gaggles", source)); err != nil {
+		t.Fatalf("remove source gaggle from destination fixture: %v", err)
+	}
+	manifestPath := filepath.Join(layout.ConfigDir(), "manifest.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read destination manifest: %v", err)
+	}
+	manifest = bytes.Replace(manifest, []byte("gaggles:\n    - "+source), []byte("gaggles: []"), 1)
+	if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
+		t.Fatalf("write destination manifest: %v", err)
+	}
+	handle := &fakeConfigReloadHandle{pollReject: engineTopologyRestartMessage}
+	svc := newWorkflowMutationService(layout)
+	svc.AttachReloader(handle)
+
+	result, err := svc.ImportGaggle(t.Context(), apiv1.GaggleBundleImportRequest{
+		Name: "imported-copy", Bundle: bundle,
+	})
+	if err != nil {
+		t.Fatalf("ImportGaggle: %v", err)
+	}
+	if !result.RestartRequired {
+		t.Fatal("RestartRequired = false, want true for an engine topology change")
+	}
+	if handle.pollCalls != 1 {
+		t.Fatalf("pollOnce calls = %d, want one live reload attempt", handle.pollCalls)
+	}
+	if _, err := os.Stat(filepath.Join(layout.ConfigDir(), "gaggles", "imported-copy")); err != nil {
+		t.Fatalf("imported gaggle was not committed for restart: %v", err)
+	}
 }
 
 // TestSetWorkflowEnabledRejectsBlankIdentifiers covers the input-validation

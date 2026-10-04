@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspacedelta"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -155,6 +156,15 @@ func TestPodCredentialResolverHandlesOneRefBackingManyCapabilities(t *testing.T)
 	}
 	if got != "ghs_stage_token" {
 		t.Fatalf("Resolve(%q) = %q, want the materialised token", ref, got)
+	}
+	expiresAt := time.Date(2026, 10, 2, 20, 45, 0, 0, time.UTC)
+	resolver.expiries = map[string]time.Time{"repo:push": expiresAt}
+	got, expiry, err := resolver.ResolveWithExpiry(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ResolveWithExpiry(%q) = error %v", ref, err)
+	}
+	if got != "ghs_stage_token" || !expiry.Equal(expiresAt) {
+		t.Fatalf("ResolveWithExpiry(%q) = %q, %v; want token with expiry %v", ref, got, expiry, expiresAt)
 	}
 
 	// An ungranted ref must still be refused rather than silently empty.
@@ -320,6 +330,11 @@ func TestSubstrateRetryable(t *testing.T) {
 			name: "503 credentials_unavailable stays retryable (the plane's own state, not its judgement)",
 			err:  &dispatcher.CredentialResolveRefusal{Status: http.StatusServiceUnavailable},
 			want: true,
+		},
+		{
+			name: "a wrapped workspace-delta divergence is not retryable (#5948: a fresh pod clones the same moved branch)",
+			err:  fmt.Errorf("checkout: %w (the workspace is on branch %q)", &workspacedelta.DivergedError{Digest: "sha256:ab", Current: "c1", Tip: "t1"}, "goobers/implementation/x"),
+			want: false,
 		},
 		{
 			name: "a dial error (never reached the plane) stays retryable",

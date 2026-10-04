@@ -1,5 +1,7 @@
-import type { DaemonClient } from "../api/types";
-import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import type { DaemonClient, TelemetryUsageStats } from "../api/types";
+import { DaemonErrorState } from "../components/DaemonQueryState";
+import { SectionQueryStatus } from "../components/SectionQueryStatus";
+import { InsightScopePicker } from "../components/InsightScopePicker";
 import {
   type InsightWindow,
   useInsightCostRollup,
@@ -28,6 +30,15 @@ import {
   InstanceCostRollup,
   UsageAnalytics,
 } from "./InsightPage";
+
+const LOADING_USAGE: TelemetryUsageStats = {
+  scope: "instance",
+  totalAttempts: 0,
+  tokenSamples: 0,
+  premiumRequestSamples: 0,
+  costSamples: 0,
+  retryWasteAttempts: 0,
+};
 
 export function CostPage({
   client,
@@ -59,43 +70,51 @@ export function CostPage({
     scope.stage,
   );
 
-  if (query.state.status === "loading") {
-    return <DaemonLoadingState standalone={standalone} />;
-  }
-  if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
-  }
-  if (query.state.status !== "ready" && query.state.status !== "stale") {
-    return null;
-  }
-
-  const snapshot = query.state.data;
-  const availableScopes = insightScopeOptions(snapshot.stats);
+  const snapshot = query.state.status === "ready" || query.state.status === "stale" ? query.state.data : undefined;
+  const availableScopes = snapshot ? insightScopeOptions(snapshot.stats) : [insightScopeOption({ kind: "instance" })];
   const scopes = availableScopes.some((option) => option.key === insightScopeKey(requestedScope))
     ? availableScopes
     : [...availableScopes, insightScopeOption(requestedScope)];
-  const view = deriveInsightViewModel(requestedScope, snapshot);
+  const view = snapshot ? deriveInsightViewModel(requestedScope, snapshot) : undefined;
   const costTrendView = deriveInsightCostTrendState(requestedScope, costTrend.state);
 
   return (
     <>
       <header className="page-heading">
-        <h1>Cost</h1>
+        <div className="cost-summary-heading">
+          <h1>Cost</h1>
+          <div className="section-heading-meta">
+            <SectionQueryStatus
+              error={query.state.status === "stale" && Boolean(query.state.error)}
+              loading={query.state.status === "loading" || query.refreshing}
+              message={
+                query.state.status === "stale" && query.state.error
+                  ? "Cost refresh failed."
+                  : query.state.status === "loading"
+                    ? "Loading cost summary…"
+                    : query.refreshing
+                      ? "Refreshing cost summary…"
+                      : undefined
+              }
+              retry={query.retry}
+            />
+          </div>
+        </div>
         <p>
-          Instance spend, selected-scope AI cost, retry waste, and attributed pull request and
+          Instance spend, selected-scope cost, retry waste, and attributed pull request and
           issue costs.
         </p>
       </header>
 
       <div className="insight-controls" aria-label="Cost filters">
-        <label>
+        <div className="insight-control">
           <span>Scope</span>
-          <CostScopeSelect
+          <InsightScopePicker
             onChange={(key) => setScope(insightScopeFromKey(key))}
             scopes={scopes}
             value={insightScopeKey(requestedScope)}
           />
-        </label>
+        </div>
         <label>
           <span>Time window</span>
           <select
@@ -112,39 +131,43 @@ export function CostPage({
         </label>
       </div>
 
-      {query.state.status === "stale" && query.state.error && (
-        <div className="insight-stale-error" role="alert">
-          Cost telemetry refresh failed. Showing the last successful snapshot for this window.
-        </div>
-      )}
-
-      {view.usage && (
         <section className="content-section">
-          <div className="section-heading">
-            <h2>Cost summary</h2>
-            <span className="section-count">Measured attempts only</span>
+          <div className="cost-summary-metrics">
+            <div aria-hidden={!view?.usage || undefined} className={!view?.usage ? "cost-summary-placeholder" : undefined}>
+              <UsageAnalytics
+                filters={view?.filters ?? {}}
+                mode="cost"
+                totalRuns={requestedScope.kind === "stage" ? undefined : view?.summary?.total ?? (snapshot ? undefined : 0)}
+                usage={view?.usage ?? LOADING_USAGE}
+              />
+            </div>
+            {snapshot && !view?.usage && (
+              <div className="cost-summary-status">
+                <SectionQueryStatus
+                  message="No cost measurements in this scope."
+                />
+              </div>
+            )}
+            {query.state.status === "error" && (
+              <div className="cost-summary-status">
+                <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
+              </div>
+            )}
           </div>
-          <p className="usage-description">
-            Cost measurements are aggregated for the selected scope. Runners that do not report
-            usage remain unmeasured.
-          </p>
-          <UsageAnalytics filters={view.filters} mode="cost" usage={view.usage} />
           <CostTrend
             costTrend={costTrendView}
-            currentUsage={view.usage}
+            currentUsage={view?.usage ?? LOADING_USAGE}
             refreshing={costTrend.refreshing}
             retry={costTrend.retry}
             window={window}
           />
         </section>
-      )}
 
       {requestedScope.kind === "instance" && (
         <InstanceCostRollup
           costRollup={costRollup.state}
           refreshing={costRollup.refreshing}
           retry={costRollup.retry}
-          window={window}
         />
       )}
 
@@ -154,66 +177,5 @@ export function CostPage({
         retry={externalCosts.retry}
       />
     </>
-  );
-}
-
-function CostScopeSelect({
-  onChange,
-  scopes,
-  value,
-}: {
-  onChange: (value: string) => void;
-  scopes: { key: string; label: string }[];
-  value: string;
-}) {
-  const parsed = scopes.map((option) => ({
-    ...option,
-    scope: insightScopeFromKey(option.key),
-  }));
-  const instance = parsed.find(({ scope }) => scope.kind === "instance");
-  const gaggles = [...new Set(
-    parsed
-      .flatMap(({ scope }) => scope.kind === "instance" ? [] : [scope.gaggle]),
-  )].sort((left, right) => left.localeCompare(right));
-
-  return (
-    <select aria-label="Scope" onChange={(event) => onChange(event.target.value)} value={value}>
-      {instance && <option value={instance.key}>Instance</option>}
-      {gaggles.map((gaggle) => {
-        const gaggleOption = parsed.find(
-          ({ scope }) => scope.kind === "gaggle" && scope.gaggle === gaggle,
-        );
-        const descendants = parsed.filter(
-          ({ scope }) => scope.kind !== "instance" && scope.gaggle === gaggle,
-        );
-        return (
-          <optgroup key={gaggle} label={gaggle}>
-            {gaggleOption && (
-              <option value={gaggleOption.key}>All {gaggle}</option>
-            )}
-            {descendants
-              .filter(({ scope }) => scope.kind === "workflow")
-              .map(({ key, scope }) => {
-                if (scope.kind !== "workflow") return null;
-                return (
-                  <option key={key} value={key}>
-                    Workflow · {scope.workflow}
-                  </option>
-                );
-              })}
-            {descendants
-              .filter(({ scope }) => scope.kind === "stage")
-              .map(({ key, scope }) => {
-                if (scope.kind !== "stage") return null;
-                return (
-                  <option key={key} value={key}>
-                    Stage · {scope.workflow} / {scope.stage}
-                  </option>
-                );
-              })}
-          </optgroup>
-        );
-      })}
-    </select>
   );
 }

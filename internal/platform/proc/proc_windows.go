@@ -37,6 +37,8 @@ var (
 	restartManagerRegisterResources = restartManagerDLL.NewProc("RmRegisterResources")
 	restartManagerGetList           = restartManagerDLL.NewProc("RmGetList")
 	restartManagerEndSession        = restartManagerDLL.NewProc("RmEndSession")
+	openProcessForTerminate         = windows.OpenProcess
+	terminateTreeJob                = windows.TerminateJobObject
 )
 
 type restartManagerUniqueProcess struct {
@@ -59,14 +61,28 @@ type restartManagerProcessInfo struct {
 // Configure-only caller that never routed through newTree), in which case kill
 // degrades to terminating the lone pid.
 type Tree struct {
-	pid int
-	job windows.Handle
+	pid    int
+	job    windows.Handle
+	closed bool
 }
 
 type processIdentity struct {
 	pid       int
 	startTime time.Time
 }
+
+type terminationTarget struct {
+	identity processIdentity
+	handle   windows.Handle
+}
+
+type identityState int
+
+const (
+	identityGone identityState = iota
+	identityStatePresent
+	identityUnknown
+)
 
 // configure detaches the child into its own process group so a console signal
 // (Ctrl+C / Ctrl+Break) delivered to `goobers up` is not propagated into the
@@ -201,16 +217,35 @@ func vanishedThread(err error) bool {
 // terminate descendants after closing the job to cover descendants created
 // while the first snapshot was being processed.
 func (t *Tree) kill() error {
+	if t.closed {
+		return nil
+	}
 	if t.job == 0 {
+		t.closed = true
 		return terminatePID(t.pid)
 	}
 	descendants, snapshotErr := snapshotDescendants(t.pid)
-	err := windows.TerminateJobObject(t.job, 1)
+	targets := make([]terminationTarget, 0, len(descendants))
+	// Pin verified process objects while the job is still active. WSL teardown
+	// can reject new PROCESS_TERMINATE opens even though an escaped descendant
+	// remains alive; a handle acquired first preserves both access and identity.
+	for _, descendant := range descendants {
+		target, err := openIdentityForTerminate(descendant)
+		if err == nil && target.handle != 0 {
+			targets = append(targets, target)
+		}
+	}
+	err := terminateTreeJob(t.job, 1)
 	runtime.SetFinalizer(t, nil)
 	_ = windows.CloseHandle(t.job)
 	t.job = 0
+	t.closed = true
 	if err != nil {
 		snapshotErr = errors.Join(snapshotErr, fmt.Errorf("proc: terminate job for %d: %w", t.pid, err))
+	}
+	targetErrs := make([]error, len(targets))
+	for i := len(targets) - 1; i >= 0; i-- {
+		targetErrs[i] = targets[i].terminate()
 	}
 	// WSL broker processes can continue rejecting termination briefly while
 	// the job's members are being torn down. Keep retrying long enough for
@@ -248,6 +283,13 @@ func (t *Tree) kill() error {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	for i := range targets {
+		if targetErrs[i] != nil &&
+			identityStateForHandle(targets[i].handle, targets[i].identity.startTime) != identityGone {
+			terminateErr = errors.Join(terminateErr, targetErrs[i])
+		}
+		targets[i].close()
+	}
 	return errors.Join(snapshotErr, terminateErr)
 }
 
@@ -278,21 +320,30 @@ func snapshotDescendants(root int) ([]processIdentity, error) {
 	for _, process := range processes {
 		children[process.parent] = append(children[process.parent], process.pid)
 	}
+	return identifyDescendants(root, children), nil
+}
+
+func identifyDescendants(root int, children map[int][]int) []processIdentity {
+	return identifyDescendantsWithStartTime(root, children, startTime)
+}
+
+func identifyDescendantsWithStartTime(root int, children map[int][]int, readStartTime func(int) (time.Time, bool)) []processIdentity {
 	// The walk is shared with the unix collectors and is cycle-safe: a
 	// Windows entry's parent pid is its creator's pid at creation time and
 	// survives that creator's exit, so a recycled pid can make the recorded
 	// parentage point back into the subtree and an unguarded walk never
 	// terminates (#3922).
 	var descendants []processIdentity
-	var identityErr error
 	for _, pid := range collectDescendants(root, children) {
-		if started, ok := startTime(pid); ok {
-			descendants = append(descendants, processIdentity{pid: pid, startTime: started})
-		} else if alive(pid) {
-			identityErr = errors.Join(identityErr, fmt.Errorf("proc: read start time for descendant %d", pid))
+		// ParentProcessID is stale once the creator exits; an unreadable pid is
+		// not safe proof that the original tree still owns that process.
+		started, ok := readStartTime(pid)
+		if !ok {
+			continue
 		}
+		descendants = append(descendants, processIdentity{pid: pid, startTime: started})
 	}
-	return descendants, identityErr
+	return descendants
 }
 
 // terminateExitWait bounds how long a terminated process is waited on. The
@@ -302,6 +353,10 @@ func snapshotDescendants(root int) ([]processIdentity, error) {
 // test binary died on its ten-minute package timeout instead (#3922). A
 // bounded wait turns that into a named error the caller can report.
 const terminateExitWait = 30 * time.Second
+
+// accessDeniedExitWait bounds the Windows teardown race where a process that is
+// already exiting rejects new terminate access before it disappears.
+const accessDeniedExitWait = 5 * time.Second
 
 // terminatePID force-terminates a single process by pid — the degraded path when
 // no Job Object was assigned, and for callers that identified their target by
@@ -327,58 +382,147 @@ func terminatePID(pid int) error {
 // ERROR_ACCESS_DENIED was always reported as a live descendant this package
 // had failed to kill — the reported flake, on a pid whose WSL-brokered owner
 // had already recycled it. Re-reading the identity with query-only access
-// separates the two: a pid that no longer answers as the recorded process, or
-// no longer answers at all, is not ours to kill and is not an error; one that
-// still answers as the recorded process and refuses TERMINATE is a genuine
-// permission failure and is reported.
+// separates the cases: a pid that no longer answers as the recorded process, or
+// no longer answers at all, is not ours to kill and is not an error. A process
+// that still answers as the recorded identity but refuses TERMINATE may also be
+// in Windows job-object teardown; if it disappears within a bounded wait, Kill
+// succeeded. If the same identity remains, the permission failure is genuine
+// and is reported.
 func terminateIdentity(pid int, started time.Time) error {
 	if pid <= 0 {
 		return nil
 	}
+	target, err := openIdentityForTerminate(processIdentity{pid: pid, startTime: started})
+	if err != nil || target.handle == 0 {
+		return err
+	}
+	defer target.close()
+	return target.terminate()
+}
+
+func openIdentityForTerminate(identity processIdentity) (terminationTarget, error) {
 	access := uint32(windows.PROCESS_TERMINATE | windows.SYNCHRONIZE | windows.PROCESS_QUERY_LIMITED_INFORMATION)
-	h, err := windows.OpenProcess(access, false, uint32(pid))
+	h, err := openProcessForTerminate(access, false, uint32(identity.pid))
 	if err != nil {
-		if !started.IsZero() && !identityPresent(pid, started) {
-			return nil
+		if !identity.startTime.IsZero() {
+			state := identityStateForPID(identity.pid, identity.startTime)
+			if state == identityGone {
+				return terminationTarget{}, nil
+			}
+			if errors.Is(err, windows.ERROR_ACCESS_DENIED) && waitForIdentityExit(identity.pid, identity.startTime, accessDeniedExitWait) {
+				return terminationTarget{}, nil
+			}
+			state = identityStateForPID(identity.pid, identity.startTime)
+			return terminationTarget{}, fmt.Errorf(
+				"proc: open %d for terminate: recorded start %s, identity %s: %w",
+				identity.pid, identity.startTime.Format(time.RFC3339Nano), state, err,
+			)
 		}
-		return fmt.Errorf("proc: open %d for terminate: %w", pid, err)
+		return terminationTarget{}, fmt.Errorf("proc: open %d for terminate: %w", identity.pid, err)
 	}
-	defer func() { _ = windows.CloseHandle(h) }()
-	if !started.IsZero() {
-		current, ok := handleStartTime(h)
-		if !ok || !current.Equal(started) {
-			// The pid was recycled between the snapshot and this open. The
-			// process we recorded is already gone, and whatever holds the
-			// number now is not a descendant of this tree.
-			return nil
+	target := terminationTarget{identity: identity, handle: h}
+	if !identity.startTime.IsZero() && identityStateForHandle(h, identity.startTime) != identityStatePresent {
+		target.close()
+		return terminationTarget{}, nil
+	}
+	return target, nil
+}
+
+func (t terminationTarget) terminate() error {
+	if err := windows.TerminateProcess(t.handle, 1); err != nil {
+		if !t.identity.startTime.IsZero() {
+			state := identityStateForHandle(t.handle, t.identity.startTime)
+			if state == identityGone {
+				return nil
+			}
+			if errors.Is(err, windows.ERROR_ACCESS_DENIED) && waitForProcessExit(t.handle, accessDeniedExitWait) {
+				return nil
+			}
+			state = identityStateForHandle(t.handle, t.identity.startTime)
+			return fmt.Errorf(
+				"proc: terminate %d: recorded start %s, identity %s: %w",
+				t.identity.pid, t.identity.startTime.Format(time.RFC3339Nano), state, err,
+			)
 		}
+		return fmt.Errorf("proc: terminate %d: %w", t.identity.pid, err)
 	}
-	if err := windows.TerminateProcess(h, 1); err != nil {
-		if !started.IsZero() && !identityPresent(pid, started) {
-			return nil
-		}
-		return fmt.Errorf("proc: terminate %d: %w", pid, err)
-	}
-	status, err := windows.WaitForSingleObject(h, uint32(terminateExitWait/time.Millisecond))
+	status, err := windows.WaitForSingleObject(t.handle, uint32(terminateExitWait/time.Millisecond))
 	if err != nil {
-		return fmt.Errorf("proc: wait for %d to terminate: %w", pid, err)
+		return fmt.Errorf("proc: wait for %d to terminate: %w", t.identity.pid, err)
 	}
 	if status == uint32(windows.WAIT_TIMEOUT) {
-		return fmt.Errorf("proc: process %d did not exit within %s of being terminated", pid, terminateExitWait)
+		return fmt.Errorf("proc: process %d did not exit within %s of being terminated", t.identity.pid, terminateExitWait)
 	}
 	if status != windows.WAIT_OBJECT_0 {
-		return fmt.Errorf("proc: wait for %d to terminate returned status %#x", pid, status)
+		return fmt.Errorf("proc: wait for %d to terminate returned status %#x", t.identity.pid, status)
 	}
 	return nil
 }
 
-// identityPresent reports whether pid still names the process that started at
-// started, read through a query-only handle — the weakest access this package
-// can ask for, so a "no" covers both "the process is gone" and "the process is
-// not ours to look at".
-func identityPresent(pid int, started time.Time) bool {
-	current, ok := startTime(pid)
-	return ok && current.Equal(started)
+func (t *terminationTarget) close() {
+	if t.handle != 0 {
+		_ = windows.CloseHandle(t.handle)
+		t.handle = 0
+	}
+}
+
+func (s identityState) String() string {
+	switch s {
+	case identityGone:
+		return "gone"
+	case identityStatePresent:
+		return "present"
+	default:
+		return "unknown"
+	}
+}
+
+func identityStateForPID(pid int, started time.Time) identityState {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return identityGone
+		}
+		return identityUnknown
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	return identityStateForHandle(h, started)
+}
+
+func identityStateForHandle(h windows.Handle, started time.Time) identityState {
+	var code uint32
+	if err := windows.GetExitCodeProcess(h, &code); err != nil {
+		return identityUnknown
+	}
+	if code != stillActive {
+		return identityGone
+	}
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(h, &creation, &exit, &kernel, &user); err != nil {
+		return identityUnknown
+	}
+	if time.Unix(0, creation.Nanoseconds()).Equal(started) {
+		return identityStatePresent
+	}
+	return identityGone
+}
+
+func waitForIdentityExit(pid int, started time.Time, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if identityStateForPID(pid, started) == identityGone {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForProcessExit(h windows.Handle, timeout time.Duration) bool {
+	status, err := windows.WaitForSingleObject(h, uint32(timeout/time.Millisecond))
+	return err == nil && status == windows.WAIT_OBJECT_0
 }
 
 // requestDump reports unsupported (supported=false): a Job Object cannot deliver

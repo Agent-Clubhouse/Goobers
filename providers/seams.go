@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
+
+	"github.com/goobers/goobers/internal/mutationreceipt"
 )
 
 // These seams let a provider report facts to higher layers (the run journal and
@@ -20,6 +22,15 @@ import (
 // is configured the provider falls back to its statically injected token string.
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
+}
+
+// RefreshableTokenSource is a TokenSource whose value can be rejected and
+// re-resolved (Goobers#6120): a stage's delivered credential backed by its
+// credential-refresh grant. A provider that receives HTTP 401 calls
+// Invalidate and retries the request once; the next Token re-resolves.
+type RefreshableTokenSource interface {
+	TokenSource
+	Invalidate()
 }
 
 // MutationRecorder records "external ref touched" facts (ARCHITECTURE.md §4) so a
@@ -101,6 +112,8 @@ type ExternalRef struct {
 	Outcome           string                 `json:"outcome,omitempty"`       // success, failure, or contention for claim attempts
 	ErrorCode         string                 `json:"errorCode,omitempty"`     // stable classification; never raw provider error text
 	ProviderRunID     string                 `json:"providerRunId,omitempty"` // provider owner on claim contention or ledger mismatch
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // RateLimitEvent describes a single rate-limit backoff decision.

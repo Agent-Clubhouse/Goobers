@@ -257,7 +257,7 @@ func checkNetworkPolicySupport(_ context.Context, client kubernetes.Interface, _
 			// stays a warn, not a pass, until such a probe runs.
 			result.Status = StatusWarn
 			result.Detail = "networking.k8s.io/v1 networkpolicies served, but enforcement is unverified by this read-only check"
-			result.Hint = "a served API is only a correlate — a CNI can serve NetworkPolicy and still ignore it silently; enforcement can only be proven by a denied attempt (an in-cluster negative control, e.g. the Goobernetes S9 probe), not by this check"
+			result.Hint = "a served API is only a correlate — a CNI can serve NetworkPolicy and still ignore it silently; enforcement can only be proven by a denied attempt (an in-cluster negative control, e.g. the Goobernetes S9 probe), not by this check; the control must prove the specific policy denies, not that some default-deny does (docs/design/networkpolicy-composition.md, fact 3)"
 			return result
 		}
 	}

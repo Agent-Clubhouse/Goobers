@@ -264,36 +264,11 @@ func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo Reposito
 // exact line. It scans the authoritative issues listing rather than GitHub's
 // eventually-consistent search index.
 func (p *GitHubProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
-		return nil, fmt.Errorf("single-line work item marker is required")
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues")
-	if err != nil {
-		return nil, err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{"state": []string{"all"}})
-	if err != nil {
-		return nil, err
-	}
-	var matches []WorkItem
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var issues []githubIssue
-		if err := json.Unmarshal(page, &issues); err != nil {
-			return fmt.Errorf("decode issues page: %w", err)
-		}
-		for _, issue := range issues {
-			if issue.PullRequest == nil && containsExactLine(issue.Body, marker) {
-				matches = append(matches, mapGitHubIssue(issue))
-			}
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return matches, nil
+	return findRESTWorkItemsByMarker(ctx, p, p.BaseURL, repo, marker,
+		url.Values{"state": []string{"all"}}, mapGitHubIssue,
+		func(issue githubIssue) restMarkerIssue {
+			return restMarkerIssue{Body: issue.Body, IsPullRequest: issue.PullRequest != nil}
+		})
 }
 
 // AttachWorkItemChild attaches child to parent through GitHub's native
@@ -551,14 +526,14 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 		return EnsureWorkItemLabelsResult{}, err
 	}
 
-	existing := make(map[string]bool)
+	var existing []string
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var pageLabels []githubLabel
 		if err := json.Unmarshal(page, &pageLabels); err != nil {
 			return fmt.Errorf("decode labels page: %w", err)
 		}
 		for _, label := range pageLabels {
-			existing[strings.ToLower(label.Name)] = true
+			existing = append(existing, label.Name)
 		}
 		return nil
 	}); err != nil {
@@ -569,14 +544,12 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 		Created: []string{},
 		Skipped: []string{},
 	}
-	for _, label := range labels {
-		label.Name = strings.TrimSpace(label.Name)
-		label.Color = strings.TrimPrefix(strings.TrimSpace(label.Color), "#")
+	for _, step := range planLabelEnsure(existing, labels, lowerLabelName) {
+		label := step.Label
 		if label.Name == "" || label.Color == "" {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("label name and color are required")
 		}
-		key := strings.ToLower(label.Name)
-		if existing[key] {
+		if !step.Create {
 			result.Skipped = append(result.Skipped, label.Name)
 			continue
 		}
@@ -588,7 +561,6 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 		}, &created); err != nil {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("create label %q: %w", label.Name, err)
 		}
-		existing[key] = true
 		result.Created = append(result.Created, label.Name)
 	}
 	return result, nil
@@ -624,62 +596,9 @@ func (p *GitHubProvider) findRunItem(ctx context.Context, repo RepositoryRef, ru
 
 // UpdateWorkItemStatus mirrors Goobers processing status to GitHub labels.
 func (p *GitHubProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkItemStatusRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	// Swap only the status label via the label sub-API (add new, remove any
-	// stale status labels) rather than PATCHing the whole label set. A
-	// read-modify-write of all labels would silently clobber a label a human or
-	// the curator added between our GET above and the write — the status mirror
-	// has no business overwriting unrelated labels (#140).
-	newLabel := statusLabel(req.Status)
-	var remove []string
-	for _, l := range current.Labels {
-		if strings.HasPrefix(l, statusLabelPrefix) && l != newLabel {
-			remove = append(remove, l)
-		}
-	}
-	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{newLabel}, remove); err != nil {
-		return WorkItem{}, err
-	}
-	if req.Status == WorkItemStatusDone {
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		// state-only PATCH — labels are handled above, so closing never
-		// round-trips (and races) the label set.
-		if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"state": "closed"}, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if req.Comment != "" {
-		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, req.Comment, "state-change"); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	item, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	operation := "status"
-	if req.Status == WorkItemStatusDone {
-		operation = "close"
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.ID),
-		URL:       item.URL,
-		Operation: operation,
-		Fields: map[string]FieldDigest{
-			"status": {Before: digestString(string(statusFromLabels(current.Labels, current.State))), After: digestString(string(req.Status))},
-		},
+	return updateRESTWorkItemStatus(ctx, p, ProviderGitHub, p.BaseURL, req, func(body string) error {
+		return postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, body, "state-change")
 	})
-	return item, nil
 }
 
 // Subscribe emits GitHub backlog item availability events.

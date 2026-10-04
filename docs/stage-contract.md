@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha9` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha11` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -269,6 +269,18 @@ scrubber first.
   whose source states an expiry, such as an App or Microsoft Entra token,
   carries it in the response.
 
+A value whose source states an expiry has at least 20 minutes left when it is
+delivered, local or in a pod: the daemon refreshes one with less first (a
+GitHub App token is re-minted; an Entra source is rebuilt so the Azure SDK's
+own cache is bypassed). If the refresh fails, or the source can only return the
+same token (the Azure CLI's cache), the daemon delivers the still-valid value
+and logs that it did (never the value); a refresh that returned the same token
+is not repeated for that token.
+Such a value is delivered with its expiry as the non-secret
+`GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`, an RFC 3339 UTC timestamp. The name
+is deliberately outside the `GOOBERS_CRED_` prefix, whose values are secrets. A
+value with no stated expiry, such as a PAT, gets no expiry variable.
+
 A repository grant is backed by the repository's own configured source: a
 GitHub App mints an installation token, and any other static token is read.
 Every Azure DevOps auth kind resolves in the daemon, so `repo:push` and
@@ -279,8 +291,8 @@ credential the stage also receives the non-secret `GOOBERS_REPO_AUTH_SCHEME`
 Authorization header without inferring it from the token. The rule is the same
 for a local stage and a stage pod: a deterministic stage that received at least
 one `GOOBERS_CRED_<CAPABILITY>` also receives the scheme. Agentic stages do not
-receive it. The stage does not receive the token's expiry. See "Where the
-credential resolves" in `docs/guides/ado-authentication.md`.
+receive it. An Entra token also carries its `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>`.
+See "Where the credential resolves" in `docs/guides/ado-authentication.md`.
 
 A built-in stage command authenticates only with what it was delivered, on
 every provider. On Azure DevOps a declared `github:*` capability selects the
@@ -292,12 +304,49 @@ connection from that capability's `GOOBERS_CRED_<CAPABILITY>` and
 so an undeclared capability means no credential on Azure DevOps too, and the
 command runs the same in a stage pod, which has no instance config. A
 `GOOBERS_CRED_<CAPABILITY>` set without a scheme (a standalone invocation) is
-sent as a PAT (`basic`). A delivered value cannot be refreshed by the stage: if
-Azure DevOps rejects it with HTTP 401, the request fails without a retry, with
-an "expired, revoked, or without access to this resource" error naming the
-capability that keeps the 401 response and reports `github_auth_failed`. A new
-attempt receives a new value, which helps when the value expired but not when it
-lacks scope or project access.
+sent as a PAT (`basic`). If Azure DevOps rejects a delivered value with HTTP
+401 (or the sign-in redirect that means the same thing), the request fails with
+an error naming the capability that keeps the 401 response and reports
+`provider_auth_failed` (before #6120 it reported `github_auth_failed`; consumers
+that react to auth failures match both). An HTML sign-in page in the response is
+summarized in the error, not embedded. With a delivered expiry the error says
+the credential "expired at" that time when the 401 arrives at or after it, and
+"revoked or without access to this resource" before it; without one it says
+"expired, revoked, or without access to this resource". A new attempt receives
+a new value, which helps when the value expired but not when it lacks scope or
+project access.
+
+#### Mid-stage refresh (deterministic stages)
+
+A stage can run for hours, longer than a delivered token lives. So a
+deterministic goobers-CLI stage whose delivered credentials state an expiry
+also receives a **stage credential-refresh grant** (#6120):
+
+- `GOOBERS_CREDENTIAL_ENDPOINT`: the daemon API root to present it to (the
+  loopback API for a local stage, the daemon API for a stage pod);
+- `GOOBERS_CREDENTIAL_GRANT`: the grant itself, a secret registered with the
+  scrubber like any `GOOBERS_CRED_*` value.
+
+The grant is a signed bearer scoped to the run, the stage, the attempt and
+exactly the declared capabilities whose value expires. It expires with the
+stage (its timeout plus ten minutes, at most 24 hours), a local grant is
+revoked when its attempt returns, and every grant dies with the daemon process
+that minted it. The stage presents it to `POST /api/v1/credentials/refresh`
+with one capability and receives a freshly minted value. The route accepts only
+a grant: no operator, pod or worker token reaches it. Each refresh is re-checked
+against the run's pinned definition, journaled with the attempt, and
+rate-limited per grant.
+
+The stage's built-in commands use the grant themselves: a value within five
+minutes of its stated expiry is refreshed before it is sent, and a provider 401
+(on GitHub or Azure DevOps) re-resolves it once and resends. Git commands build
+their credential per invocation, so a long push or rebase sends the current
+value. A value with no stated expiry (a PAT) and a stage with no grant behave
+exactly as before: the delivered value is final. The in-process `ci-poll` kind
+re-resolves the same way, through the daemon's own injector locally and through
+the credential plane in a pod.
+
+Agentic stages receive no grant (phase 2 of #6120 covers harness tokens).
 Agentic stages fail closed on a missing grant on Azure DevOps as on GitHub;
 only a capability the harness marks optional (such as `agent:model`) is
 skipped.
@@ -1153,7 +1202,92 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha9` (`StageContractVersion`). The Go types retain
+### Optional workspace revision authority
+
+`workspaceRevision` is an optional, closed object on invocation and result
+envelopes. It contains the canonical provider, service or repository URL, owner, optional
+Azure DevOps project, repository name, native ID, and a full lowercase
+40- or 64-character object ID in `commitSha`. Optional `sourceRef`,
+`sourceId`, `baseRepository`, and `baseSha` retain provenance. Branches,
+credentials, checkout policy, and writable deltas are not part of this
+authority.
+
+Only a successful deterministic result can establish the value. A declared
+top-level `workspaceRevision` in its result file is promoted to the typed
+field, never to scalar `outputs`. Absent controls preserve legacy behavior.
+Local and pod stages use the same result-file parser. Every supplied control
+must have a valid shape before the system considers its producer or status.
+Decoding rejects explicit `null`, wrong types, missing required members,
+unknown members, duplicate members, and incorrect member capitalization.
+These rules also cover nested identities, optional members, and the outer
+`workspaceRevision` member. Unrelated envelope extensions keep their existing behavior.
+
+A malformed control fails with `workspace_revision_invalid`, regardless of
+the producer or status. A valid agentic control fails with
+`workspace_revision_unauthorized`. A deterministic `failure`, `blocked`, or
+`no-work` result loses its valid control and keeps its original status.
+Only a deterministic success proceeds to repository authorization and acceptance.
+
+The runner copies the first accepted value and keeps it unchanged.
+Identical re-emission succeeds, and a changed value conflicts.
+Acceptance preserves all supplied identity and provenance fields.
+Provider metadata does not rewrite the accepted value or enrich it with new fields.
+
+The configured base stays separate from the selected repository.
+Repeated authorization uses that original base, and invocation `baseBranch`
+continues to describe its branch. Selected repository routing, credentials,
+and checkout policy come only from configuration.
+
+Authorization reads repository metadata through the configured provider route
+and credentials. Stage data never supplies a lookup address or credential.
+GitHub and Gitea use their repository metadata endpoints.
+ADO uses `_apis/git/repositories/{configured-name-or-id}`.
+Every supplied name, native ID, owner, and project must agree with the trusted
+metadata. More than one matching configuration entry is an authorization error.
+
+A supplied URL can identify the configured service root or the trusted repository.
+Repository URLs must also agree with the provider identity.
+URL comparison preserves self-hosted path prefixes and accepts standard ports,
+escaped path characters, trailing slashes, and an optional repository `.git` suffix.
+An omitted URL is valid only for default GitHub and ADO service roots.
+The provider metadata must agree with the configured route before it can
+authorize a candidate.
+
+Local scratch stages receive the accepted value on subsequent invocations.
+Resume and operator rerun reconstruct it from successful deterministic
+`stage.finished` events in the pinned workflow. Invalid producers, malformed
+values, and repositories that configuration no longer authorizes stop recovery
+before dispatch. Recovery repeats the configured metadata lookup.
+It does not poll a pull request or resolve a moving branch.
+Parallel branches inherit the pre-parallel value and their
+own accepted history. They do not inherit a sibling's selection before the
+join. The join refuses conflicting selections.
+
+Selected revisions do not enable repository checkout in this foundation.
+Local repository and pinned workspace requests fail before provisioning.
+Distributed execution refuses selected invocation fields before workerhost
+provisioning or pod dispatch. It also refuses successful emitted selections
+before recording `stage.finished` or dispatching a downstream stage.
+Provider selection, exact checkout, branch ownership, publication, and
+distributed execution remain follow-up work.
+
+The stable failure codes are `workspace_revision_invalid`,
+`workspace_revision_unauthorized`, `workspace_revision_conflict`,
+`workspace_revision_acquisition`, `workspace_revision_object_type`, and
+`workspace_revision_sha_mismatch`. Only acquisition is retryable.
+Authentication failures, missing repositories, permission denials, and identity
+mismatches are non-retryable authorization failures.
+Only failures that the provider classifies as transient use the acquisition code.
+Metadata requests use the provider's bounded retry policy within a two-minute
+authorization window. These retries never rerun the producing stage.
+
+Malformed surrendered controls retain their canonical code through the activity
+boundary. Both manual task retry loops stop on permanent revision errors.
+The engine records the revision refusal instead of another dispatch or an
+accepted `stage.finished` event. Missing, unavailable, or syntactically broken
+surrender documents keep their existing transport retry behavior.
+
+- The contract version is `v1alpha11` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -1168,8 +1302,42 @@ from the diff alone.
   `checkoutCones` invocation field declaring a stage's sparse-checkout cones
   (project.checkout.sparse, #649); `v1alpha9` adds attempt, ownership,
   policy-action, nested-policy, and runner-authored parent-authority fields for
-  mechanically enforced nested agents.
+  mechanically enforced nested agents. Version `v1alpha10` adds optional
+  `workspaceRevision` authority with shared identity constraints across
+  invocation, result, and journal schemas.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a
   schema. Validate an envelope with `api/validate.(*Validator).ValidateEnvelope`.
+
+### Named artifact publication (DSL 3.1)
+
+A task with `artifactSlots` publishes through `inputs.artifactManifestFile`.
+This applies to agentic and deterministic producers. Every declared slot is
+required. Manifest entry names select slots; the runner reads contained workspace
+files, sanitizes the bytes, and computes each journal pointer. Model-supplied
+paths or digests in completion pointers cannot bind a declared slot.
+
+The invocation's `artifactPublication` contract is pinned by the runner. Its
+stage and visit match `stage.started`'s `runner.artifactVisit`; the logical
+invocation attempt is recorded alongside them in the published index. Contract
+version `v1alpha11` adds this optional invocation field. Named indexes use
+`goobers.dev/stage-artifact-set/v1alpha2` and record `bindings` with stage, visit,
+attempt, slot, and the complete `ArtifactPointer`. The index is itself a durable
+artifact referenced by `stage.finished`, so retries and graph re-entry cannot
+silently retarget an earlier binding. The visit is an opaque run/stage-scoped
+identity, not a portable event sequence across runner implementations.
+
+Payload order and unrelated diagnostic artifacts cannot change a named binding.
+Legacy index schema, generated names, and positional `artifact[N]` aliases remain
+available. `missing_artifact_slot` identifies a required slot absent from a
+publication; `invalid_artifact_slot_publication` identifies a refused binding.
+Malformed staging manifests retain `invalid_declared_artifact_set`. These are
+producer publication failures; consumer dispatch enforcement is separate.
+
+Remote deterministic commands receive the pinned publication contract through
+the dispatcher's privileged environment. The pod runtime keeps this authority
+out of the child command's environment and publishes the prepared payloads and
+index through durable blob storage and journal adoption before returning their
+pointers. Publication I/O failures return `artifact_publication_failed`; missing
+or invalid slots retain the typed publication codes above.

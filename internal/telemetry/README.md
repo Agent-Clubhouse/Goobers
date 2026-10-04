@@ -83,6 +83,9 @@ pipeline is configured against:
 | `goobers.recovery.restore.failures` | counter (int64) | `{failure}` | cumulative, monotonic | `goobers.recovery.reason` (`archive_invalid`/`base_missing`/`import_failed`) |
 | `goobers.storage.free_bytes` | gauge (int64) | `By` | current value | none |
 | `goobers.storage.health.tier_changes` | counter (int64) | `{transition}` | cumulative, monotonic | `goobers.storage.tier` (`healthy`/`warning`/`admission-stopped`/`measurement-unavailable`) |
+| `goobers.queue.depth` | gauge (int64) | `{item}` | current value | `goobers.queue.kind` (`schedule`/`backlog`/`refill`), `goobers.os` |
+| `goobers.queue.oldest_age` | gauge (int64) | `s` | current value | `goobers.queue.kind` (`schedule`/`backlog`/`refill`), `goobers.os` |
+| `goobers.workers.available` | gauge (int64) | `{worker}` | current value | `goobers.os` |
 
 The collector-compatibility fixtures generated from the real OTLP metric
 reader/export path live at `internal/telemetry/testdata/metric_compatibility_fixtures.json`.
@@ -133,48 +136,44 @@ The default `go test ./test/scale/...` runs a fast, merge-safe correctness check
 oversized records proving resilience) and asserts no wall-clock threshold. The
 target-scale latency measurement is opt-in: set `GOOBERS_SCALE_LARGE=<mult>`
 (e.g. `1`, `10`, `100`) to run `TestMeasureLargeScale`. See the `test/scale`
-package doc for the full flag reference.
+package doc for the full flag reference. `.github/workflows/scale-suite.yml`
+runs that measurement weekly (and on `workflow_dispatch`) at 3× and 10×, and
+publishes each report as a `scale-results-<mult>x` artifact and job summary.
 
-## OTLP collector to ADX
+## OTLP collector
 
-Production instances send OTLP traces to an OpenTelemetry Collector running in
-the cluster. The collector uses the contrib `azuredataexplorer` exporter to
-write the goober-run store provisioned by `infra/bicep/modules/adx.bicep`.
+Production instances send OTLP **traces and metrics** to an OpenTelemetry
+Collector running in the cluster. The maintained reference configuration is
+[`deploy/monitoring/otel-collector.yaml`](../../deploy/monitoring/otel-collector.yaml):
+an `otlp` receiver, a `batch` processor, and one pipeline per signal.
 
 ```yaml
-receivers:
-  otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-
-processors:
-  batch: {}
-
-exporters:
-  azuredataexplorer:
-    cluster_uri: "${env:GOOBERS_ADX_CLUSTER_URI}"
-    db_name: "gooberrun"
-    managed_identity_id: "system"
-    traces_table_name: "OTELTraces"
-    ingestion_type: "queued"
-
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [azuredataexplorer]
+      exporters: [debug]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [azuredataexplorer]
+      exporters: [prometheus]
 ```
 
-The metrics pipeline is the follow-up Goobernetes-Infra change; the instruments
-it carries are the ones in the metric catalog above.
+The metrics pipeline is required, not optional. The daemon exports every
+instrument in the metric catalog above; a collector with no `metrics` pipeline
+answers each export with `Unimplemented`, which the daemon reports as an
+export-error log line and nothing more (export stays best-effort and never fails
+a run). The example publishes metrics for Prometheus to scrape; swap the `debug`
+trace exporter and the `prometheus` metrics exporter for whatever stores you
+run. Any contrib exporter works, for example `azuredataexplorer`, whose target
+database and tables must exist before ingest.
 
-The ADX exporter expects the target database and tables to exist before ingest.
-Use the provisioned ADX database output (`gooberrun` by default) rather than any
-project telemetry database. For v1, partition queries by
-`TraceAttributes.goobers.gaggle` to preserve gaggle isolation.
+For gaggle isolation in v1, partition trace queries by
+`TraceAttributes.goobers.gaggle`.
+
+Self execution policy exports `goobers.placement.self_denied` (1 for deny, 0
+for allow), `goobers.placement.self` (actual local workflow work), and
+`goobers.placement.self_refused` (refused local work). These are daemon process
+observations, without stage or workflow dimensions. Under deny, alert on any
+self placement or refusal; both counter series begin explicitly at zero.

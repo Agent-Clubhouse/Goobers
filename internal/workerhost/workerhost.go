@@ -16,6 +16,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // ErrAbandonedWork reports a drain that expired with activities still in
@@ -45,6 +47,10 @@ type Config struct {
 	HostPort string
 	// Namespace is the Temporal namespace.
 	Namespace string
+	// TLS is the frontend transport security (#5289); nil dials plaintext.
+	TLS *temporaldial.TLS
+	// DataConverter is shared with all instance clients and memo readers.
+	DataConverter converter.DataConverter
 	// TaskQueues are the queues this process serves — one Temporal worker per
 	// queue, all registering the identical engine workflow/activity set.
 	TaskQueues []string
@@ -54,6 +60,13 @@ type Config struct {
 	// BuildVersion is stamped into the worker identity so Temporal visibility
 	// alone answers "which build serves this queue".
 	BuildVersion string
+	// Versioning opts the pollers into Temporal worker-deployment versioning
+	// as deployment "goobers", version BuildVersion (#5950). Off, the worker
+	// polls unversioned. It has no effect without a BuildVersion.
+	Versioning bool
+	// Logf receives the non-fatal deployment-routing health reports (#5950).
+	// Nil writes them to the process's stderr.
+	Logf func(format string, args ...any)
 	// Deps are the engine execution seams registered on every worker.
 	Deps bootstrap.EngineDeps
 }
@@ -71,8 +84,12 @@ type Host struct {
 
 	// Seams for hermetic tests: dialing Temporal and constructing one
 	// registered worker per queue.
-	dial      func(hostPort, namespace string) (client.Client, error)
+	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
+	// describeRouting and its cadence back the #5950 routing health check.
+	describeRouting func(ctx context.Context, c client.Client) (client.WorkerDeploymentRoutingConfig, error)
+	routingDelay    time.Duration
+	routingInterval time.Duration
 }
 
 // New validates cfg and builds a Host.
@@ -92,12 +109,17 @@ func New(cfg Config) (*Host, error) {
 		buildID: cfg.BuildVersion,
 		worker:  Identity(cfg.BuildVersion),
 	}}
-	h.dial = bootstrap.DialTemporal
+	h.dial = func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error) {
+		return bootstrap.DialTemporal(hostPort, namespace, tls, cfg.DataConverter)
+	}
 	h.newWorker = func(c client.Client, taskQueue string, opts worker.Options) managedWorker {
 		w := worker.New(c, taskQueue, opts)
 		bootstrap.RegisterEngine(w, c, cfg.Deps)
 		return w
 	}
+	h.describeRouting = describeDeploymentRouting
+	h.routingDelay = routingCheckDelay
+	h.routingInterval = routingCheckInterval
 	return h, nil
 }
 
@@ -119,13 +141,13 @@ func (h *Host) workerOptions() worker.Options {
 		WorkerStopTimeout: h.cfg.DrainTimeout,
 		Interceptors:      []interceptor.WorkerInterceptor{h.tracker},
 	}
-	if h.cfg.BuildVersion == "" {
+	if !h.versioned() {
 		return opts
 	}
 	opts.DeploymentOptions = worker.DeploymentOptions{
 		UseVersioning: true,
 		Version: worker.WorkerDeploymentVersion{
-			DeploymentName: "goobers",
+			DeploymentName: DeploymentName,
 			BuildID:        h.cfg.BuildVersion,
 		},
 		DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
@@ -133,12 +155,17 @@ func (h *Host) workerOptions() worker.Options {
 	return opts
 }
 
+// versioned reports whether this process polls as a versioned worker.
+func (h *Host) versioned() bool {
+	return h.cfg.Versioning && h.cfg.BuildVersion != ""
+}
+
 // Run serves the configured task queues until ctx is cancelled (SIGTERM/
 // SIGINT via the caller's signal context), then drains: workers stop polling
 // and in-flight activities get up to DrainTimeout to complete. Returns nil on
 // a clean drain and ErrAbandonedWork when work was cut short.
 func (h *Host) Run(ctx context.Context) error {
-	c, err := h.dial(h.cfg.HostPort, h.cfg.Namespace)
+	c, err := h.dial(h.cfg.HostPort, h.cfg.Namespace, h.cfg.TLS)
 	if err != nil {
 		return fmt.Errorf("workerhost: dial temporal %s (namespace %s): %w", h.cfg.HostPort, h.cfg.Namespace, err)
 	}
@@ -190,7 +217,16 @@ func (h *Host) Run(ctx context.Context) error {
 		started = append(started, w)
 	}
 
+	// #5950: a routing mismatch leaves every poll succeeding with nothing to
+	// do, so report it rather than let the engine stall silently.
+	routingDone := make(chan struct{})
+	go func() {
+		defer close(routingDone)
+		h.checkRoutingLoop(ctx, c)
+	}()
+
 	<-ctx.Done()
+	<-routingDone
 	stopAll()
 	if n := h.tracker.inFlight(); n > 0 {
 		return fmt.Errorf("%w: %d abandoned", ErrAbandonedWork, n)

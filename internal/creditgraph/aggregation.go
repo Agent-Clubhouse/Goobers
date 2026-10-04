@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // CohortKey identifies one cohort of repeated attribution evidence.
@@ -51,9 +54,14 @@ type CohortAggregation struct {
 type AttributionObservation struct {
 	RunID            string                    `json:"runId"`
 	Workflow         string                    `json:"workflow,omitempty"`
+	WorkflowDigest   string                    `json:"workflowDigest,omitempty"`
+	GooberDigest     string                    `json:"gooberDigest,omitempty"`
 	EffectiveVersion string                    `json:"effectiveVersion,omitempty"`
 	Workload         string                    `json:"workload,omitempty"`
+	Environments     []string                  `json:"environments,omitempty"`
+	ObservedAt       time.Time                 `json:"observedAt,omitempty"`
 	Status           RecordStatus              `json:"status,omitempty"`
+	RunPhase         journal.RunPhase          `json:"runPhase,omitempty"`
 	Failure          string                    `json:"failure,omitempty"`
 	Attribution      Attribution               `json:"attribution"`
 	Evidence         []AttributionEvidenceLink `json:"evidence,omitempty"`

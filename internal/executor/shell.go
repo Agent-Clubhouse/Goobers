@@ -23,8 +23,10 @@ import (
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/activetime"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -89,6 +91,12 @@ const (
 	// InputMaxOutputBytes is a decimal integer overriding the per-stream
 	// output cap.
 	InputMaxOutputBytes = "maxOutputBytes"
+	// InputOwnershipAssignees scopes provider-visible issue writes to these
+	// assignees when inherited from a gaggle or overridden by a task.
+	InputOwnershipAssignees = "ownershipAssignees"
+	// InputOwnershipUnassigned controls whether unassigned issues are in scope
+	// for provider-visible issue writes.
+	InputOwnershipUnassigned = "ownershipUnassigned"
 )
 
 // OutputNoWork is the well-known InputResultFile output key a deterministic
@@ -281,6 +289,11 @@ type ShellExecutor struct {
 	// to a stage pod. Empty for every other provider, and by default, which
 	// stamps nothing.
 	RepoAuthScheme string
+	// CredentialGrants mints the stage credential-refresh grant a
+	// goobers-CLI stage with an expiring credential receives (Goobers#6120,
+	// appendCredentialGrant). Nil — every caller but the daemon's own local
+	// runner — delivers no grant, which is the pre-grant behavior.
+	CredentialGrants StageCredentialGrants
 }
 
 type builtinErrorReport struct {
@@ -788,7 +801,8 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 // minimum a caller of that helper can add.
 //
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
-func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
+	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	if env.Workspace == "" {
 		// exec.Cmd treats Dir == "" as "run in the daemon's own working
 		// directory" — a silent, surprising fallback (#122) rather than the
@@ -811,8 +825,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	resultFile, implicitResultFile := effectiveResultFile(env, command)
 	ExcludeStageArtifacts(ctx, env.Workspace, resultFile)
 
-	registry, scrubber := journal.DefaultScrubber()
-	registerJournalPlane(ctx, registry)
+	registry, scrubber := publicationScrubber(ctx)
+	defer e.publishNamedResult(ctx, env, scrubber, &outcome, &retErr)
 	// Only a stage whose command IS the goobers CLI receives the run's
 	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
 	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
@@ -821,10 +835,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	//
-	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that
-	// WRAPS the goobers CLI in another process (command[0] names the
-	// wrapper, not "goobers") but still needs the same context its nested
-	// invocation does — declared per-stage rather than guessed from argv[0].
+	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that WRAPS the goobers CLI
+	// (command[0] names the wrapper) but needs the same context its nested invocation does.
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
 	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
@@ -839,6 +851,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
 	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext)
+	stageEnv, revokeGrant := e.appendCredentialGrant(stageEnv, env, injectRunContext, resolvedTimeout.Duration, registry)
+	defer revokeGrant()
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
 	}
@@ -890,7 +904,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, resolvedTimeout.Duration)
+	runCtx, cancel := activetime.WithTimeout(ctx, resolvedTimeout.Duration)
 	defer cancel()
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
@@ -932,7 +946,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
-			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},
+			Error:   journal.ErrorInfoFor("exec_start", err, false),
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
@@ -1060,7 +1074,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
 	if stdout.Truncated() {
-		result.Outputs["stdoutTruncated"] = true
+		result.Outputs[StdoutTruncatedOutput] = true
 	}
 
 	stderrRef, err := e.Journal.RecordArtifact(env.TaskID+"/stderr.log", errBytes)
@@ -1069,7 +1083,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
 	if stderr.Truncated() {
-		result.Outputs["stderrTruncated"] = true
+		result.Outputs[StderrTruncatedOutput] = true
 	}
 
 	if timedOut {
@@ -1180,7 +1194,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-					mergeResultFileOutputs(&result, data)
+					if err := MergeResultFileOutputs(&result, data); err != nil {
+						result.Status = apiv1.ResultFailure
+						result.Error = journal.ErrorInfoFor("workspace_revision_invalid", err, false)
+						result.Summary = "declared result file contains an invalid workspace revision"
+						return result, nil
+					}
 					code, message, retryable := consumeErrorOutputs(result.Outputs)
 					if code != "" {
 						if message == "" {
@@ -1220,11 +1239,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			)))
 		}
 		result.Status = apiv1.ResultFailure
-		result.Error = &apiv1.ErrorInfo{
-			Code:      "provider_error",
-			Message:   providerErr.Error(),
-			Retryable: false,
-		}
+		result.Error = journal.ErrorInfoFor("provider_error", providerErr, false)
 		result.Summary = fmt.Sprintf("provider stage %q failed", command[1])
 		return result, nil
 	}
@@ -1243,7 +1258,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
-				mergeResultFileOutputs(&result, data)
+				if err := MergeResultFileOutputs(&result, data); err != nil {
+					result.Status = apiv1.ResultFailure
+					result.Error = journal.ErrorInfoFor("workspace_revision_invalid", err, false)
+					result.Summary = "declared result file contains an invalid workspace revision"
+					return result, nil
+				}
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
 				result.Error = missingResultFileError(resultFile, exitCode, waitErr, errBytes)
@@ -1270,11 +1290,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			// Untrusted declared path (#120): escapes the workspace lexically
 			// or via a symlink. Fail the stage closed, never follow it.
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{
-				Code:      "result_file_path_escape",
-				Message:   fmt.Sprintf("declared result file %q escapes the workspace: %v", resultFile, perr),
-				Retryable: false,
-			}
+			result.Error = journal.ErrorInfoFor("result_file_path_escape", fmt.Errorf("declared result file %q escapes the workspace: %w", resultFile, perr), false)
 			result.Summary = "declared result file path escapes the workspace"
 			return result, nil
 		default:
@@ -1401,24 +1417,49 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 	return s
 }
 
-// mergeResultFileOutputs best-effort-parses a declared result file's bytes as
+// MergeResultFileOutputs best-effort-parses a declared result file's bytes as
 // a flat JSON object and merges its string/number/bool fields into
-// result.Outputs — see InputResultFile's doc comment. data that isn't JSON,
-// or isn't a flat object, is silently left alone: the artifact/presence-check
-// contract InputResultFile already provides holds either way, and not every
-// declared result file is meant to carry structured outputs.
-func mergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) {
+// result.Outputs — see InputResultFile's doc comment. Invalid JSON remains
+// legacy-compatible, while a declared workspaceRevision is decoded strictly
+// and validated because it is a control, not a scalar output.
+//
+// A leading UTF-8 byte-order mark is stripped first (#5175). Some writers emit
+// one by default (Windows PowerShell 5.1's `Set-Content -Encoding utf8`), and
+// encoding/json rejects it, so a BOM-prefixed file was silently treated as
+// non-JSON and every output it declared was dropped.
+func MergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+	data = bytes.TrimPrefix(data, utf8BOM)
+	if first := bytes.TrimSpace(data); len(first) == 0 || first[0] != '{' {
+		return nil
+	}
 	var m map[string]interface{}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return
+		return nil
+	}
+	revision, err := apiv1.DecodeWorkspaceRevisionField(data)
+	if err != nil {
+		return err
+	}
+	if revision != nil {
+		result.WorkspaceRevision = revision
 	}
 	for k, v := range m {
+		if k == "workspaceRevision" {
+			continue
+		}
 		switch v.(type) {
 		case string, float64, bool:
+			if result.Outputs == nil {
+				result.Outputs = make(map[string]interface{})
+			}
 			result.Outputs[k] = v
 		}
 	}
+	return nil
 }
+
+// utf8BOM is the UTF-8 encoding of U+FEFF, the byte-order mark.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 func exitCodeOf(err error) int {
 	if err == nil {
@@ -1537,6 +1578,14 @@ func providerResultIntegrity(data []byte) (apiv1.Integrity, error) {
 	var result interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return "", fmt.Errorf("decode JSON: %w", err)
+	}
+	// An empty top-level array is a provider's "nothing to claim" result
+	// (e.g. forward curation with no claimable backlog item, #6199). It
+	// carries no provider-sourced item, so there is nothing to label and no
+	// attacker-controllable content: the artifact is the provider's own
+	// derived output. Any other unlabeled shape still fails closed.
+	if list, ok := result.([]interface{}); ok && len(list) == 0 {
+		return apiv1.IntegrityDerived, nil
 	}
 	var grades []apiv1.Integrity
 	var walk func(interface{}) error

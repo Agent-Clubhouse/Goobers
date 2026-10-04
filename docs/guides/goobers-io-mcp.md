@@ -190,6 +190,37 @@ report per-server connection state (claude-code does; Copilot's session
 transcript carries no equivalent), and never when no report was observed
 at all.
 
+### Copilot enterprise customization lockdown is unsupported
+
+goobers-io is a native, invocation-scoped MCP server: Goobers registers it
+for each Copilot invocation rather than installing it as a plugin or a
+managed server. A Copilot enterprise customization lockdown that permits
+only plugin or managed MCP servers therefore refuses it, and the CLI logs:
+
+```text
+Skipping MCP server "goobers-io": blocked by enterprise customization lockdown (only plugin/managed MCP servers are permitted)
+```
+
+Running goobers-io under that lockdown is **not supported**, and Goobers
+does not try to work around the policy. Stages that need goobers-io must
+run where the lockdown does not apply: an account or organization without
+it, or the claude-code adapter.
+
+When the Copilot CLI's run log shows that refusal, the stage fails with
+`HARNESS_REQUIRED_MCP_ENTERPRISE_BLOCKED` ("blocked by enterprise
+policy"), whatever the agent itself reported. The failure is not retryable,
+because the lockdown refuses the server on every attempt. It is distinct
+from `HARNESS_REQUIRED_MCP_REJECTED` (the third-party MCP policy, which an
+organization can enable) and from `HARNESS_REQUIRED_MCP_UNAVAILABLE` (a
+launch or handshake fault worth retrying). Harness preflight does not
+detect the lockdown ahead of time, because doing so would need a model
+session, so the failure surfaces on the stage's first invocation.
+
+The same refusal has also been seen after a Copilot sign-in failure left
+the CLI unable to read its policy, so it failed closed. If you do not
+expect a lockdown on the account, sign out of Copilot, close its other
+sessions and sign in again before treating the lockdown as real.
+
 A related and much quieter config shape is a `spec.skills` entry whose
 package directory does not exist. `goobers validate` reports it as
 `SKILL002`; a dangling declaration contributes nothing at runtime, so

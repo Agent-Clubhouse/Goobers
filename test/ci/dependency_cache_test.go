@@ -35,6 +35,12 @@ const (
 )
 
 type ciWorkflow struct {
+	On          map[string]yaml.Node `yaml:"on"`
+	Permissions map[string]string    `yaml:"permissions"`
+	Concurrency struct {
+		Group            string `yaml:"group"`
+		CancelInProgress bool   `yaml:"cancel-in-progress"`
+	} `yaml:"concurrency"`
 	Env  map[string]string `yaml:"env"`
 	Jobs map[string]ciJob  `yaml:"jobs"`
 }

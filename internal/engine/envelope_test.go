@@ -446,6 +446,54 @@ func TestEnvelopeInputsFromOverlaysUpstreamOutputs(t *testing.T) {
 	})
 }
 
+func TestEnvelopeInputsFromCannotReplaceGaggleBacklogScope(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{Name: "select", Type: apiv1.TaskDeterministic, Goal: "select labels",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: "query-backlog"},
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "query backlog",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}},
+				Capabilities: []string{"github:issues:write"},
+				InputsFrom: map[string]string{
+					"requireLabels":  "requireLabels",
+					"labelPredicate": "labelPredicate",
+				}},
+		},
+	}
+	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
+		Status: apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{
+			"requireLabels":  "goobers:ready",
+			"labelPredicate": `"size:s" in labels`,
+		},
+	}}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t)})
+	in := runInput("backlog-scope-inputsfrom", spec)
+	in.BacklogQueryBacklogLabels = "area:web"
+	in.BacklogQueryLabelPredicate = `"team:web" in labels`
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	envs := det.captured()
+	if len(envs) != 2 {
+		t.Fatalf("dispatches = %d, want 2", len(envs))
+	}
+	got := envs[1].Inputs
+	if got["requireLabels"] != "area:web,goobers:ready" {
+		t.Fatalf("requireLabels = %q, want gaggle label unioned with inputsFrom value", got["requireLabels"])
+	}
+	if want := `("team:web" in labels) && ("size:s" in labels)`; got["labelPredicate"] != want {
+		t.Fatalf("labelPredicate = %q, want %q", got["labelPredicate"], want)
+	}
+}
+
 // TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers: an agentic gate's
 // envelope carries the reviewer goober's pinned capability grants (#294
 // parity) and the upstream evidence pointers; goal naming matches the local

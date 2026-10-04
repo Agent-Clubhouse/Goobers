@@ -30,8 +30,13 @@ escalated. The submission-only --no-wait mode exits 0 on durable API
 acceptance, before dispatch.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
-back to files. --no-api explicitly selects local execution/file delegation
+back to files. When TLS publishes only a wildcard bind address, the CLI
+reports that no certificate-valid client endpoint exists and uses same-root
+file delegation. --no-api explicitly selects local execution/file delegation
 and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.
+Without a live daemon, workflows with an effective runControls.maxRunDuration
+are rejected before dispatch, including inherited limits and --no-wait runs.
+Start `goobers up` for that instance and submit through the daemon instead.
 Targeted --pr runs currently require --no-api from the instance root.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
@@ -54,10 +59,13 @@ drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
 retry use the same acceptance identity. --api-timeout bounds remote validation
-and acceptance (default 30s; must be positive). A timed-out submission has
+and acceptance (default 30s; must be positive), including any wait for a
+daemon that is still starting after a restart. A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
-a remote client cannot watch the run's journal.
+a remote client cannot watch the run's journal. For local file delegation,
+--no-wait returns after dispatch, or after workflow/PR validation succeeds
+and the live daemon durably accepts a capacity-queued request.
 .fi
 .SH EXAMPLES
 .nf

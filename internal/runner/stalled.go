@@ -257,15 +257,6 @@ func (r *activeRun) requestInterrupt(request stalledRequest) (requested bool) {
 	return r.request.kind == request.kind
 }
 
-func (r *activeRun) requestCancel(now time.Time) (requested bool) {
-	return r.requestInterrupt(stalledRequest{
-		kind:  interruptCancel,
-		now:   now,
-		phase: journal.PhaseAborted,
-		cause: errCanceledRun,
-	})
-}
-
 func (r *activeRun) requestHardShutdown() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -552,7 +543,7 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 	}
 
 	_, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(context.Background()))
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: recover stalled run %q: %w", runID, err)
 	}
@@ -614,37 +605,13 @@ func (r *Runner) CancelRun(runID string, now time.Time) (Result, bool, error) {
 		return Result{Phase: phase}, false, nil
 	}
 
-	active.requestCancel(now)
-
-	grace := r.stalledCancelGrace
-	if grace <= 0 {
-		grace = StalledCancellationGrace
-	}
-	if outcome, ok := active.waitFor(grace); ok {
-		return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
-	}
-	outcome, claim := active.claimTakeover()
-	switch claim {
-	case takeoverReady:
-		return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
-	case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
-		terminalGrace := r.stalledTerminalGrace
-		if terminalGrace <= 0 {
-			terminalGrace = StalledTerminalizationGrace
-		}
-		if outcome, ok := active.waitFor(terminalGrace); ok {
-			return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
-		}
-		return Result{}, false, fmt.Errorf("runner: cancelled run %q did not finish terminalization within %s", runID, grace+terminalGrace)
-	}
-	result, finishErr := r.finishStalledTakeover(runID, active.journal, finalState, 0, stalledRequest{
+	request := stalledRequest{
 		kind:  interruptCancel,
 		now:   now,
 		phase: journal.PhaseAborted,
 		cause: errCanceledRun,
-	})
-	active.completeTakeover(activeRunResult{result: result, err: finishErr})
-	return result, result.Phase == journal.PhaseAborted, finishErr
+	}
+	return r.interruptActiveRun(runID, active, finalState, request, journal.PhaseAborted, "cancelled")
 }
 
 // InterruptStage stops the active attempt of a single running stage at operator
@@ -711,32 +678,7 @@ func (r *Runner) InterruptStage(runID, stage, actor string, now time.Time) (Resu
 		stage: stage,
 		actor: actor,
 	}
-	active.requestInterrupt(request)
-
-	grace := r.stalledCancelGrace
-	if grace <= 0 {
-		grace = StalledCancellationGrace
-	}
-	if outcome, ok := active.waitFor(grace); ok {
-		return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
-	}
-	outcome, claim := active.claimTakeover()
-	switch claim {
-	case takeoverReady:
-		return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
-	case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
-		terminalGrace := r.stalledTerminalGrace
-		if terminalGrace <= 0 {
-			terminalGrace = StalledTerminalizationGrace
-		}
-		if outcome, ok := active.waitFor(terminalGrace); ok {
-			return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
-		}
-		return Result{}, false, fmt.Errorf("runner: interrupted run %q did not finish terminalization within %s", runID, grace+terminalGrace)
-	}
-	result, finishErr := r.finishStalledTakeover(runID, active.journal, finalState, 0, request)
-	active.completeTakeover(activeRunResult{result: result, err: finishErr})
-	return result, result.Phase == journal.PhaseEscalated, finishErr
+	return r.interruptActiveRun(runID, active, finalState, request, journal.PhaseEscalated, "interrupted")
 }
 
 // ExpireRun aborts a running journal whose total wall-clock age exceeds
@@ -768,41 +710,53 @@ func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.
 		cause:        errRunDurationExceeded,
 	}
 	if active := r.activeRun(runID); active != nil {
-		active.requestInterrupt(request)
-		grace := r.stalledCancelGrace
-		if grace <= 0 {
-			grace = StalledCancellationGrace
-		}
-		if outcome, ok := active.waitFor(grace); ok {
-			return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
-		}
-		outcome, claim := active.claimTakeover()
-		switch claim {
-		case takeoverReady:
-			return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
-		case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
-			terminalGrace := r.stalledTerminalGrace
-			if terminalGrace <= 0 {
-				terminalGrace = StalledTerminalizationGrace
-			}
-			if outcome, ok := active.waitFor(terminalGrace); ok {
-				return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
-			}
-			return Result{}, false, fmt.Errorf("runner: expired run %q did not finish terminalization within %s", runID, grace+terminalGrace)
-		}
-		result, finishErr := r.finishStalledTakeover(runID, active.journal, finalState, 0, request)
-		active.completeTakeover(activeRunResult{result: result, err: finishErr})
-		return result, result.Phase == journal.PhaseAborted, finishErr
+		return r.interruptActiveRun(runID, active, finalState, request, journal.PhaseAborted, "expired")
 	}
 
 	_, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(context.Background()))
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: recover expired run %q: %w", runID, err)
 	}
 	defer func() { _ = jr.Close() }()
 	result, err := r.finishStalled(runID, jr, finalState, 0, request)
 	return result, result.Phase == journal.PhaseAborted, err
+}
+
+func (r *Runner) interruptActiveRun(
+	runID string,
+	active *activeRun,
+	finalState string,
+	request stalledRequest,
+	success journal.RunPhase,
+	actionPast string,
+) (Result, bool, error) {
+	active.requestInterrupt(request)
+
+	grace := r.stalledCancelGrace
+	if grace <= 0 {
+		grace = StalledCancellationGrace
+	}
+	if outcome, ok := active.waitFor(grace); ok {
+		return outcome.result, outcome.result.Phase == success, outcome.err
+	}
+	outcome, claim := active.claimTakeover()
+	switch claim {
+	case takeoverReady:
+		return outcome.result, outcome.result.Phase == success, outcome.err
+	case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
+		terminalGrace := r.stalledTerminalGrace
+		if terminalGrace <= 0 {
+			terminalGrace = StalledTerminalizationGrace
+		}
+		if outcome, ok := active.waitFor(terminalGrace); ok {
+			return outcome.result, outcome.result.Phase == success, outcome.err
+		}
+		return Result{}, false, fmt.Errorf("runner: %s run %q did not finish terminalization within %s", actionPast, runID, grace+terminalGrace)
+	}
+	result, finishErr := r.finishStalledTakeover(runID, active.journal, finalState, 0, request)
+	active.completeTakeover(activeRunResult{result: result, err: finishErr})
+	return result, result.Phase == success, finishErr
 }
 
 // runPhaseAndState reads a run's reconstructed terminal phase and its last

@@ -28,6 +28,22 @@ type SecretRegistrar interface {
 	Register(secret []byte)
 }
 
+// expiringRegistrar mirrors journal.ExpiringRegistrar without importing the
+// journal: a registrar that can retire a value after its stated expiry (#2656).
+type expiringRegistrar interface {
+	RegisterUntil(secret []byte, expiresAt time.Time)
+}
+
+// registerUntil registers secret with its issuer-stated expiry when r supports
+// one, and permanently otherwise.
+func registerUntil(r SecretRegistrar, secret []byte, expiresAt time.Time) {
+	if e, ok := r.(expiringRegistrar); ok {
+		e.RegisterUntil(secret, expiresAt)
+		return
+	}
+	r.Register(secret)
+}
+
 // Grant maps one goober's credential key to the token ref that backs it. Keys
 // are canonical capabilities or invocation-internal named MCP keys. Goober is
 // empty only for runner-owned deterministic work.
@@ -162,9 +178,10 @@ func (i *Injector) MaterializeRestricted(ctx context.Context, admitted []string)
 
 func (i *Injector) materialize(ctx context.Context, keys []string) (*Set, error) {
 	s := &Set{
-		declared: make(map[string]bool, len(keys)),
-		tokens:   make(map[string]string, len(keys)),
-		expiries: make(map[string]time.Time, len(keys)),
+		declared:   make(map[string]bool, len(keys)),
+		tokens:     make(map[string]string, len(keys)),
+		expiries:   make(map[string]time.Time, len(keys)),
+		refreshing: make(map[string]*RefreshingToken, len(keys)),
 	}
 	expiring, _ := i.resolver.(ExpiringResolver)
 	for _, key := range keys {
@@ -184,10 +201,20 @@ func (i *Injector) materialize(ctx context.Context, keys []string) (*Set, error)
 		if err != nil {
 			return nil, fmt.Errorf("credentials: materialize credential key %q: %w", key, err)
 		}
-		i.registrar.Register([]byte(token))
+		registerUntil(i.registrar, []byte(token), expiresAt)
 		s.tokens[key] = token
 		if !expiresAt.IsZero() {
 			s.expiries[key] = expiresAt
+			refreshing, err := NewRefreshingToken(key, token, expiresAt, func(ctx context.Context) (string, time.Time, error) {
+				if expiring == nil {
+					return "", time.Time{}, errors.New("credentials: expiring resolver is unavailable")
+				}
+				return expiring.ResolveWithExpiry(ctx, ref)
+			}, i.registrar)
+			if err != nil {
+				return nil, fmt.Errorf("credentials: materialize credential key %q: %w", key, err)
+			}
+			s.refreshing[key] = refreshing
 		}
 	}
 	return s, nil
@@ -202,7 +229,8 @@ type Set struct {
 	// expiries carries each materialized value's stated expiry when the
 	// backing source reported one (ExpiringResolver). Absent entries mean the
 	// source stated none — a static token whose life is unknowable here.
-	expiries map[string]time.Time
+	expiries   map[string]time.Time
+	refreshing map[string]*RefreshingToken
 }
 
 // Token returns the credential for capability, fail closed: it is an error
@@ -216,6 +244,9 @@ func (s *Set) Token(ctx context.Context, capability string) (string, error) {
 	if !s.declared[capability] {
 		return "", fmt.Errorf("%w: %q", ErrUndeclaredCapability, capability)
 	}
+	if refreshing, ok := s.refreshing[capability]; ok {
+		return refreshing.Token(ctx)
+	}
 	tok, ok := s.tokens[capability]
 	if !ok {
 		return "", fmt.Errorf("%w: %q", ErrNoCredentialForCapability, capability)
@@ -223,11 +254,31 @@ func (s *Set) Token(ctx context.Context, capability string) (string, error) {
 	return tok, nil
 }
 
+// Refresh re-resolves capability when its materialized value came from an
+// expiring source, then returns the value that should be used for a retry. A
+// static token is returned unchanged.
+func (s *Set) Refresh(ctx context.Context, capability string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if !s.declared[capability] {
+		return "", fmt.Errorf("%w: %q", ErrUndeclaredCapability, capability)
+	}
+	if refreshing, ok := s.refreshing[capability]; ok {
+		refreshing.Invalidate()
+		return refreshing.Token(ctx)
+	}
+	return s.Token(ctx, capability)
+}
+
 // Expiry reports the stated expiry of the credential materialized for
 // capability. ok is false when no credential was materialized for it or when
 // the backing source stated no expiry (DS10: only sources that know a value's
 // life report one; nothing is invented).
 func (s *Set) Expiry(capability string) (time.Time, bool) {
+	if refreshing, ok := s.refreshing[capability]; ok {
+		return refreshing.Expiry(), true
+	}
 	expiresAt, ok := s.expiries[capability]
 	return expiresAt, ok
 }

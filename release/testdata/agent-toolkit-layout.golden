@@ -10,6 +10,7 @@ payload/.goobers/agent-toolkit/api/schemas/config-source-action.schema.json
 payload/.goobers/agent-toolkit/api/schemas/diagnostics.schema.json
 payload/.goobers/agent-toolkit/api/schemas/explain.schema.json
 payload/.goobers/agent-toolkit/api/schemas/features.schema.json
+payload/.goobers/agent-toolkit/api/schemas/gaggle-bundle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/goober.schema.json
 payload/.goobers/agent-toolkit/api/schemas/hosted-progress.schema.json
@@ -37,8 +38,10 @@ payload/.goobers/agent-toolkit/api/schemas/schema-output.schema.json
 payload/.goobers/agent-toolkit/api/schemas/security-alerts-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/stage-artifact-manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/stage-artifact-set.schema.json
+payload/.goobers/agent-toolkit/api/schemas/support-triage-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/verdict.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workflow.schema.json
+payload/.goobers/agent-toolkit/api/schemas/workspace-revision.schema.json
 payload/.goobers/agent-toolkit/config-examples/README.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/gaggle.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/goobers/claude-coder/goober.yaml
@@ -108,6 +111,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/py
 payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-reviewer/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/workflows/python-implementation.yaml
 payload/.goobers/agent-toolkit/config-examples/manifest.yaml
+payload/.goobers/agent-toolkit/config-examples/temporal-codec/provision-key.sh
 payload/.goobers/agent-toolkit/docs/ARCHITECTURE.md
 payload/.goobers/agent-toolkit/docs/VISION.md
 payload/.goobers/agent-toolkit/docs/adr/0001-agentic-sandbox-mechanism.md

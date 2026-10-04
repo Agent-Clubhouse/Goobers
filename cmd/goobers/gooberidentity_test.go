@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -49,13 +50,14 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 		},
 	}}}
 	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
-	firstInstructions, err := loadGooberInstructions(configDir, goobers)
+	firstInstructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first, firstDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, firstInstructions, harness.EnvironmentConfig{}, nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -65,13 +67,14 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err := os.WriteFile(instructionsPath, []byte("second instructions"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	secondInstructions, err := loadGooberInstructions(configDir, goobers)
+	secondInstructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, secondDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, secondInstructions, harness.EnvironmentConfig{}, nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -82,6 +85,47 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	}
 	if first[identity].Digest() != second[identity].Digest() {
 		t.Fatalf("workflow digest changed with instruction content: %s != %s", first[identity].Digest(), second[identity].Digest())
+	}
+}
+
+func TestLoadGooberInstructionsUsesDefinitionSourceDirectory(t *testing.T) {
+	root := initDemo(t)
+	configDir := instance.NewLayout(root).ConfigDir()
+	canonicalDir := filepath.Join(configDir, "gaggles", "example", "goobers", "coder")
+	sourceDir := filepath.Join(configDir, "gaggles", "example", "goobers", "deps-coder")
+	if err := os.Rename(canonicalDir, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sourceDir, gooberassets.SourceDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, gooberassets.SourceDir, "notes.txt"), []byte("asset\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := instance.LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	goobers := goobersByName(set)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
+	if err != nil {
+		t.Fatalf("loadGooberInstructions: %v", err)
+	}
+	if instructions["coder"] == "" {
+		t.Fatal("coder instructions were not loaded from the goober definition source directory")
+	}
+	// Assets live beside the definition too; the runner and the agentic kit
+	// writer load them through the same resolution.
+	if got := resolvedGooberDefinitionDir(configDir, set, goobers["coder"], "coder"); got != sourceDir {
+		t.Fatalf("resolved goober definition dir = %q, want %q", got, sourceDir)
+	}
+	bundle, err := gooberassets.Load(filepath.Join(resolvedGooberDefinitionDir(configDir, set, goobers["coder"], "coder"), gooberassets.SourceDir))
+	if err != nil {
+		t.Fatalf("load assets: %v", err)
+	}
+	if bundle == nil {
+		t.Fatal("coder assets were not loaded from the goober definition source directory")
 	}
 }
 
@@ -125,13 +169,14 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 		},
 	}}}
 	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, before, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -143,6 +188,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 	_, after, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -237,13 +283,14 @@ func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
 			}},
 		},
 	}}}
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	machines, digests, resolvedGoobers, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harness.EnvironmentConfig{}, nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {

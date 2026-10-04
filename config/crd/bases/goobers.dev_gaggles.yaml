@@ -54,8 +54,7 @@ spec:
               active mode-3 worker routes every stage pod for this gaggle into its
               declared isolation.namespace, and verifies that namespace's existence and
               this worker's RBAC access to it before polling or dispatching any work
-              (#4897). IdentityRef is not yet consumed — every gaggle's stage pods still
-              run under their namespace's default ServiceAccount.
+              (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
             properties:
               additionalRepos:
                 description: |-
@@ -71,7 +70,8 @@ spec:
                       description: |-
                         BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                         required when provider=gitea (self-hosted Gitea has no fixed host) and
-                        omitted for github/ado.
+                        omitted for ado. goobers validate rejects it for github: GitHub Enterprise Server is
+                        unsupported, so a github reference always means github.com (#6347).
                       type: string
                     branch:
                       default: main
@@ -140,7 +140,8 @@ spec:
                     description: |-
                       BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                       required when provider=gitea (self-hosted Gitea has no fixed host) and
-                      omitted for github/ado.
+                      omitted for ado. goobers validate rejects it for github: GitHub Enterprise Server is
+                      unsupported, so a github reference always means github.com (#6347).
                     type: string
                   connectionRef:
                     description: |-
@@ -283,8 +284,7 @@ spec:
                     description: |-
                       IdentityRef names the target per-gaggle Azure workload identity
                       (managed-identity federation). The active dispatcher does not consume
-                      it yet — every gaggle's stage pods still run under their namespace's
-                      default ServiceAccount (#4897 scoped namespace routing only).
+                      it yet; ServiceAccount selects the Kubernetes account independently.
                     type: string
                   namespace:
                     description: |-
@@ -297,8 +297,37 @@ spec:
                       gaggles may declare the SAME namespace deliberately; that shared
                       topology is supported.
                     type: string
+                  serviceAccount:
+                    description: |-
+                      ServiceAccount selects the stage pod account. Empty defaults to goobers-stage;
+                      default is an explicit opt-out. The account must disable token automount.
+                    type: string
                 required:
                 - namespace
+                type: object
+              issueOwnershipScope:
+                description: |-
+                  IssueOwnershipScope is the default ownership policy every workflow task
+                  in this gaggle inherits for provider-visible issue writes. A task may
+                  override the policy with ownershipAssignees / ownershipUnassigned inputs.
+                  Empty leaves writes unrestricted, preserving legacy behavior.
+                properties:
+                  assignees:
+                    description: |-
+                      Assignees are provider identities this gaggle may mutate. Empty means no
+                      assigned-owner restriction, though Unassigned may still refuse unassigned
+                      issues.
+                    items:
+                      type: string
+                    type: array
+                  unassigned:
+                    description: |-
+                      Unassigned controls whether unassigned issues are in scope. Empty behaves
+                      as "allow" when Assignees is empty and "refuse" when Assignees is set.
+                    enum:
+                    - allow
+                    - refuse
+                    type: string
                 type: object
               outboxMirrorPath:
                 description: |-
@@ -315,7 +344,8 @@ spec:
                     description: |-
                       BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                       required when provider=gitea (self-hosted Gitea has no fixed host) and
-                      omitted for github/ado.
+                      omitted for ado. goobers validate rejects it for github: GitHub Enterprise Server is
+                      unsupported, so a github reference always means github.com (#6347).
                     type: string
                   branch:
                     default: main
@@ -530,7 +560,8 @@ spec:
                           description: |-
                             BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                             required when provider=gitea (self-hosted Gitea has no fixed host) and
-                            omitted for github/ado.
+                            omitted for ado. goobers validate rejects it for github: GitHub Enterprise Server is
+                            unsupported, so a github reference always means github.com (#6347).
                           type: string
                         branch:
                           default: main

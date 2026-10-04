@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,17 +10,16 @@ import (
 
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
-	schedulepb "go.temporal.io/api/schedule/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
-	"google.golang.org/grpc"
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // enginerunid_test.go is decision 005 D2 (#3877) at the daemon and CLI seams:
@@ -352,7 +349,7 @@ func newEngineCLIFixture(t *testing.T, open map[string]string) *engineCLIFixture
 		fixture.engine.workflowIDs[workflowID] = workflowID
 	}
 	previousDial := dialDaemonEngine
-	dialDaemonEngine = func(string, string) (client.Client, error) {
+	dialDaemonEngine = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 		return &fakeTemporalClient{workflows: fixture.engine, lister: fixture.lister}, nil
 	}
 	t.Cleanup(func() { dialDaemonEngine = previousDial })
@@ -517,121 +514,4 @@ func TestRunAbortRefusesAnEngineRunWithNoEngineConfigured(t *testing.T) {
 		t.Fatalf("run journal grew from %d to %d events", before, got)
 	}
 	assertWatchdogPhase(t, l.RunsDir(), runID, journal.PhaseRunning)
-}
-
-// fakeScheduleLister answers the boot invariant's ListSchedules.
-type fakeScheduleLister struct {
-	ids   []string
-	err   error
-	pages int
-	calls int
-}
-
-func (f *fakeScheduleLister) ListSchedules(_ context.Context, _ *workflowservice.ListSchedulesRequest, _ ...grpc.CallOption) (*workflowservice.ListSchedulesResponse, error) {
-	f.calls++
-	if f.err != nil {
-		return nil, f.err
-	}
-	if f.pages > 0 {
-		return &workflowservice.ListSchedulesResponse{NextPageToken: []byte("more")}, nil
-	}
-	resp := &workflowservice.ListSchedulesResponse{}
-	for _, id := range f.ids {
-		resp.Schedules = append(resp.Schedules, &schedulepb.ScheduleListEntry{ScheduleId: id})
-	}
-	return resp, nil
-}
-
-// TestEngineScheduleInvariantPassesWhenNoSchedulesAreConfigured is the state
-// every instance is in today: nothing in cmd/goobers constructs a
-// ScheduleReconciler, so the check is a regression guard rather than a fix.
-// It must therefore be silent, or an operator learns to ignore it.
-func TestEngineScheduleInvariantPassesWhenNoSchedulesAreConfigured(t *testing.T) {
-	lister := &fakeScheduleLister{}
-	if err := assertNoEngineScheduleReconciliation(context.Background(), lister, "default"); err != nil {
-		t.Fatalf("assertNoEngineScheduleReconciliation = %v, want nil on a namespace with no schedules", err)
-	}
-	// A namespace holding somebody else's schedules is not a violation of
-	// OUR invariant: the check is scoped to the ids this tree mints.
-	foreign := &fakeScheduleLister{ids: []string{"someone-elses-schedule", "cron-thing"}}
-	if err := assertNoEngineScheduleReconciliation(context.Background(), foreign, "default"); err != nil {
-		t.Fatalf("assertNoEngineScheduleReconciliation = %v, want nil for non-Goobers schedules", err)
-	}
-	// And an instance with no engine at all never even asks.
-	if err := assertNoEngineScheduleReconciliation(context.Background(), nil, ""); err != nil {
-		t.Fatalf("assertNoEngineScheduleReconciliation = %v, want nil with no engine configured", err)
-	}
-}
-
-// TestEngineScheduleInvariantFailsOnAConfiguredSchedule: a materialized
-// Schedule makes RunScheduled the start path again, which makes the bounded
-// open-workflow inverse the NORMAL path for every re-attach and cancel rather
-// than the exceptional one — a capacity decision nobody took. The refusal
-// names the schedules, because "delete the schedule" is unactionable without
-// knowing which.
-func TestEngineScheduleInvariantFailsOnAConfiguredSchedule(t *testing.T) {
-	scheduleID := engine.ScheduleID("instance-a", "web", "implementation", 0)
-	lister := &fakeScheduleLister{ids: []string{"unrelated", scheduleID}}
-	err := assertNoEngineScheduleReconciliation(context.Background(), lister, "production")
-	if err == nil {
-		t.Fatal("a Goobers-owned Temporal Schedule did not trip the invariant")
-	}
-	if errors.Is(err, errEngineScheduleCheckUnknown) {
-		t.Fatalf("violation reported as unknown: %v", err)
-	}
-	for _, want := range []string{scheduleID, "production", "decision 005"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("invariant failure = %q, want it to name %q", err, want)
-		}
-	}
-}
-
-// TestEngineScheduleInvariantTreatsAFailedCheckAsUnknown: an unreachable
-// frontend proves nothing either way. Refusing to boot on it would turn a
-// transient Temporal outage into a daemon outage, so the two are kept apart at
-// the type level rather than by reading the message.
-func TestEngineScheduleInvariantTreatsAFailedCheckAsUnknown(t *testing.T) {
-	for name, lister := range map[string]*fakeScheduleLister{
-		"frontend unavailable": {err: errors.New("connection refused")},
-		"page cap exceeded":    {pages: 1},
-	} {
-		t.Run(name, func(t *testing.T) {
-			err := assertNoEngineScheduleReconciliation(context.Background(), lister, "production")
-			if !errors.Is(err, errEngineScheduleCheckUnknown) {
-				t.Fatalf("err = %v, want it to be errEngineScheduleCheckUnknown", err)
-			}
-		})
-	}
-}
-
-// TestDaemonWiresNoTemporalScheduleReconciliation is the SOURCE-level half of
-// the invariant, and the one the critic's correction rests on: "No caller of
-// internal/engine/schedule*.go exists in cmd/goobers". The runtime check
-// above catches a namespace that already has schedules; this catches the
-// commit that would put them there.
-func TestDaemonWiresNoTemporalScheduleReconciliation(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		source, err := os.ReadFile(filepath.Join(".", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, symbol := range []string{
-			"NewScheduleReconciler", "ScheduleReconciler{", "ScheduleSnapshot",
-			"engine.ReconcileSchedules",
-		} {
-			if strings.Contains(string(source), symbol) {
-				t.Errorf("cmd/goobers/%s references %s: decision 005 requires this daemon's own scheduler to be the "+
-					"only trigger source for engine runs, because a Temporal Schedule fire rewrites the run's id and "+
-					"makes the bounded open-workflow inverse load-bearing for every re-attach and cancel", name, symbol)
-			}
-		}
-	}
 }

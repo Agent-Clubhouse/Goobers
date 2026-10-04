@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -210,13 +211,17 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	}
 	attemptEnv := env
 	attemptEnv.Attempt = int32(podAttempt)
+	physicalAttempt := dispatchPodAttempt(ctx, g.Name, podAttempt)
+	if number, ok := reviewerNumber(ctx); ok && physicalAttempt > 0 {
+		attemptEnv.Attempt = int32(number)
+	}
 	var result stageActivityResult
 	// OwningWorkflowID is read here, inside the workflow, for the same reason
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
 	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
-		PodAttempt:       dispatchPodAttempt(ctx, g.Name, podAttempt),
+		PodAttempt:       physicalAttempt,
 		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
 		Placement:        placement,
@@ -226,7 +231,11 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		Review:           true,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}).Get(ctx, &result)
-	recordGatePlacement(ctx, rec, g.Name, podAttempt, class, result, err)
+	placementAttempt := podAttempt
+	if number, ok := reviewerNumber(ctx); ok {
+		placementAttempt = number
+	}
+	recordGatePlacement(ctx, rec, g.Name, placementAttempt, class, result, err)
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}
@@ -333,8 +342,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		taskDispatches[t.Name]++
-		attemptEnv := env
-		attemptEnv.Attempt = int32(attempt)
+		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
@@ -350,7 +358,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		}).Get(ctx, &result)
-		result.Integrity = produced
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
 }
@@ -482,6 +490,30 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 	return run != nil && (executor.StageInvokesGoobersCLI(run.Command) || run.InjectRunContext)
 }
 
+func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
+	if err := refuseSelectedRevisionDispatch(input.Envelope); err != nil {
+		return err
+	}
+	if err := validatePodAttempt(input.PodAttempt); err != nil {
+		return err
+	}
+	if a.Dispatcher == nil || a.Surrenders == nil {
+		return classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
+	}
+	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
+		return err
+	}
+	if input.Placement.Self {
+		if a.AdmitSelfExecution != nil {
+			if err := a.AdmitSelfExecution(input.Envelope.TaskID); err != nil {
+				return classifySelfAdmissionError(err)
+			}
+		}
+		return classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
+	}
+	return nil
+}
+
 // DispatchStage executes one mode-3 stage attempt: it hands the attempt to
 // the dispatcher (which creates, supervises, and disposes the pod) and then
 // marshals the pod's surrendered blob back into the stageActivityResult the
@@ -493,22 +525,11 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
 func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
+	if err := a.validateStageDispatch(input); err != nil {
+		return stageActivityResult{}, err
+	}
 	stopHeartbeat := heartbeatDispatch(ctx)
 	defer stopHeartbeat()
-	if err := validatePodAttempt(input.PodAttempt); err != nil {
-		return stageActivityResult{}, err
-	}
-	if a.Dispatcher == nil || a.Surrenders == nil {
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
-	}
-	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
-		return stageActivityResult{}, err
-	}
-	if input.Placement.Self {
-		// The workflow routes self placements to the local arms; reaching this
-		// activity with one means the routing was tampered with or mis-built.
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
-	}
 	// input.Run is set exactly for a deterministic dispatch (agentic stages
 	// carry a nil Run and are unaffected below). Re-assert
 	// dispatchRemoteTask's v1-scope guards here too — the same "trust the
@@ -563,6 +584,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		RunsOnCapabilities: input.Placement.Capabilities,
 	}
 	stampDeterministicRun(&attempt, input.Run)
+	attempt.ArtifactPublication = input.Envelope.ArtifactPublication
 	// Declared credential capabilities travel as NAMES; the pod resolves them
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
@@ -721,10 +743,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return unconfirmedDispatchFailure(ctx, err, report)
 	}
 	if err == nil && report.Local {
-		// SelectRunner resolved self inside an eligible set the workflow routed
-		// remotely — the pin and the dispatcher disagree. Fail closed rather
-		// than silently executing nothing.
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q resolved to the self runner inside DispatchStage; the pinned placement and the dispatcher's selection disagree (fail closed)", input.Envelope.TaskID))
+		return stageActivityResult{}, a.refuseLocalDispatch(input.Envelope.TaskID)
 	}
 
 	// ErrStageFailed arrives with surrender CONFIRMED (the dispatcher checks
@@ -735,6 +754,9 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// than an error.
 	surrendered, rerr := a.readDispatchSurrender(ctx, attempt, report.SurrenderConfirmed)
 	if rerr != nil {
+		if rejection := workspaceRevisionRejection(rerr); rejection != nil {
+			return dispatchFailureResult(classifySeamError(rejection), report)
+		}
 		// The gate confirmed surrender yet the result is unreadable: the
 		// substrate lost or garbled the outputs after the stage did its work.
 		// Infra-classed — the attempt retries on a fresh pod (D1), never
@@ -746,6 +768,9 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	}
 	if surrendered.Result.Status == "" {
 		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
+	}
+	if rejection := admitDistributedRevision(&surrendered.Result, input.Run != nil); rejection != nil {
+		return dispatchFailureResult(classifySeamError(rejection), report)
 	}
 	if input.Review {
 		result, reviewErr := a.reviewActivityResult(ctx, input, attempt.Number, surrendered, report)
@@ -939,6 +964,7 @@ func surrenderedMutationFacts(mutations []dispatcher.SurrenderedMutation) []muta
 	facts := make([]mutationFact, 0, len(mutations))
 	for _, m := range mutations {
 		facts = append(facts, mutationFact{
+			SemanticMutation:  m.SemanticMutation,
 			LandingIntent:     m.LandingIntent,
 			QueueAdmission:    m.QueueAdmission,
 			MergeConfirmation: m.MergeConfirmation,
@@ -1001,4 +1027,14 @@ func renderInputValue(value any) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func (a *Activities) refuseLocalDispatch(stage string) error {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(stage); err != nil {
+			return classifySelfAdmissionError(err)
+		}
+	}
+	// The pin and dispatcher disagree: never silently execute nothing.
+	return classifySeamError(fmt.Errorf("engine: stage %q resolved to the self runner inside DispatchStage; the pinned placement and the dispatcher's selection disagree (fail closed)", stage))
 }

@@ -19,7 +19,7 @@ Use `goobers help all` for advanced operator commands or
 generate a shell completion script
 .TP
 \fBgoobers connect\fR
-connect an instance to your own GitHub repository
+connect an instance to your own GitHub or Azure DevOps repository
 .TP
 \fBgoobers cost\fR
 show bounded cost attribution by pull request or issue
@@ -79,6 +79,9 @@ inspect workflows
 show a workflow as a text DAG
 .SS Advanced operator commands
 .TP
+\fBgoobers advisory-pr-reset\fR
+clear one private advisory disposition by explicit operator action
+.TP
 \fBgoobers agent-kit\fR
 install, inspect, or update the release-matched agent toolkit
 .TP
@@ -108,6 +111,9 @@ print the learned blocked-item ledger (scheduler/blocked.json)
 .TP
 \fBgoobers claims\fR
 inspect and force-release claim leases
+.TP
+\fBgoobers claims active\fR
+print what is actively claimed now: item, workflow, run, holder, and age
 .TP
 \fBgoobers claims list\fR
 print current claim leases, optionally only expired leases
@@ -161,10 +167,13 @@ merge template changes into the user's config source
 seed a private worker instance from a rendered configuration mirror
 .TP
 \fBgoobers diagnostics\fR
-collect a portable, redacted support bundle
+collect redacted support evidence or classify one run
 .TP
 \fBgoobers diagnostics bundle\fR
 write a portable, redacted support bundle
+.TP
+\fBgoobers diagnostics triage\fR
+classify one run before filing a Goobers defect
 .TP
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
@@ -219,6 +228,33 @@ remove this instance's Fleet association and protected secrets (experimental; su
 .TP
 \fBgoobers fleet status\fR
 show durable Fleet registration and connection state (experimental; superseded)
+.TP
+\fBgoobers gaggle\fR
+export or import sanitized portable gaggle bundles
+.TP
+\fBgoobers gaggle export\fR
+export a sanitized portable gaggle bundle
+.TP
+\fBgoobers gaggle import\fR
+atomically create a gaggle from a validated bundle
+.TP
+\fBgoobers harness\fR
+inspect or manage harness lifecycle operations
+.TP
+\fBgoobers harness auth\fR
+inspect or manage harness authentication
+.TP
+\fBgoobers harness auth copilot\fR
+inspect or manage Copilot harness authentication
+.TP
+\fBgoobers harness auth copilot login\fR
+delegate to the native Copilot login flow
+.TP
+\fBgoobers harness auth copilot logout\fR
+report whether native Copilot logout is supported
+.TP
+\fBgoobers harness auth copilot status\fR
+report Copilot harness authentication without exposing credentials
 .TP
 \fBgoobers journal\fR
 the one sanctioned edit to the append-only journal
@@ -353,7 +389,7 @@ check the configured local speech engine without emitting sound
 speak the fixed local readiness phrase
 .TP
 \fBgoobers telemetry\fR
-configure, test, query, export, prune, or compact telemetry
+configure, test, query, export, mark fixes, prune, or compact telemetry
 .TP
 \fBgoobers telemetry compact\fR
 drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -366,6 +402,9 @@ recent errors across runs, by class, with run/stage refs
 .TP
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
+.TP
+\fBgoobers telemetry mark-fix\fR
+mark a Backprop finding for post-fix verification
 .TP
 \fBgoobers telemetry merges\fR
 confirmed PR landings and daily counts by originating instance
@@ -382,6 +421,12 @@ success rate and duration aggregates per workflow and stage
 \fBgoobers telemetry test\fR
 send one secret-safe Application Insights connectivity probe
 .TP
+\fBgoobers temporal\fR
+operate Temporal payload services
+.TP
+\fBgoobers temporal codec-server\fR
+serve authenticated Temporal payload decoding over TLS
+.TP
 \fBgoobers versions\fR
 print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
 .TP
@@ -397,6 +442,12 @@ explicitly recover pinned repository workspaces
 \fBgoobers workspace reset\fR
 tear down and re-materialize a pinned repository workspace
 .SS Workflow-stage and connector commands
+.TP
+\fBgoobers advisory-pr-publish\fR
+publish an advisory observation or private skip (a workflow stage)
+.TP
+\fBgoobers advisory-pr-select\fR
+select one open PR for a private advisory review (a workflow stage)
 .TP
 \fBgoobers apply-verdict\fR
 publish a managed or advisory merge-review verdict (a workflow stage)
@@ -421,6 +472,9 @@ enforce fail-first evidence for a new workflow gate (a workflow stage)
 .TP
 \fBgoobers check-issue-staleness\fR
 route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+.TP
+\fBgoobers config-checkout\fR
+clone the instance config repository for a config-repo-targeted stage (a workflow stage)
 .TP
 \fBgoobers docs-churn\fR
 emit the docs-drift churn digest since the watermark (a connector stage)
@@ -539,6 +593,9 @@ API-update a clean behind-base PR, else route to remediation (a workflow stage)
 \fBgoobers validate-plan\fR
 validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
 .SH SEE ALSO
+\fBgoobers-advisory-pr-publish\fR(1),
+\fBgoobers-advisory-pr-reset\fR(1),
+\fBgoobers-advisory-pr-select\fR(1),
 \fBgoobers-agent-kit\fR(1),
 \fBgoobers-agent-kit-check\fR(1),
 \fBgoobers-agent-kit-install\fR(1),
@@ -557,6 +614,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-check-fail-first\fR(1),
 \fBgoobers-check-issue-staleness\fR(1),
 \fBgoobers-claims\fR(1),
+\fBgoobers-claims-active\fR(1),
 \fBgoobers-claims-list\fR(1),
 \fBgoobers-claims-release\fR(1),
 \fBgoobers-completion\fR(1),
@@ -574,12 +632,14 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-config-templates-import\fR(1),
 \fBgoobers-config-templates-status\fR(1),
 \fBgoobers-config-templates-update\fR(1),
+\fBgoobers-config-checkout\fR(1),
 \fBgoobers-config-seed\fR(1),
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-diagnostics\fR(1),
 \fBgoobers-diagnostics-bundle\fR(1),
+\fBgoobers-diagnostics-triage\fR(1),
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
@@ -604,6 +664,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-fleet-join\fR(1),
 \fBgoobers-fleet-leave\fR(1),
 \fBgoobers-fleet-status\fR(1),
+\fBgoobers-gaggle\fR(1),
+\fBgoobers-gaggle-export\fR(1),
+\fBgoobers-gaggle-import\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
@@ -611,6 +674,12 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-gather-pr-context\fR(1),
 \fBgoobers-gather-review-threads\fR(1),
 \fBgoobers-gather-sibling-context\fR(1),
+\fBgoobers-harness\fR(1),
+\fBgoobers-harness-auth\fR(1),
+\fBgoobers-harness-auth-copilot\fR(1),
+\fBgoobers-harness-auth-copilot-login\fR(1),
+\fBgoobers-harness-auth-copilot-logout\fR(1),
+\fBgoobers-harness-auth-copilot-status\fR(1),
 \fBgoobers-help\fR(1),
 \fBgoobers-init\fR(1),
 \fBgoobers-ios-simulator-test\fR(1),
@@ -694,12 +763,15 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-telemetry-configure\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-mark-fix\fR(1),
 \fBgoobers-telemetry-merges\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
 \fBgoobers-telemetry-prune-orphans\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
 \fBgoobers-telemetry-test\fR(1),
 \fBgoobers-telemetry-query\fR(1),
+\fBgoobers-temporal\fR(1),
+\fBgoobers-temporal-codec-server\fR(1),
 \fBgoobers-trace\fR(1),
 \fBgoobers-up\fR(1),
 \fBgoobers-update-behind-pr\fR(1),

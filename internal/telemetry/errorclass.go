@@ -41,6 +41,10 @@ const (
 	// ErrorClassExecutor is a genuine runner/executor defect — the residual
 	// left once every recognized external cause has its own class.
 	ErrorClassExecutor ErrorClass = "executor"
+	// ErrorClassOperator is an explicit human/operator action such as a live
+	// run cancel. It is expected/external control flow, not evidence of runner
+	// loss or work failure.
+	ErrorClassOperator ErrorClass = "operator"
 	// ErrorClassItemJudgment is a stage's correct terminal conclusion about
 	// the ITEM it was handed, not a failure of the work (#3363): the item is
 	// stale, already done, or otherwise not applicable. Re-running the stage
@@ -85,15 +89,43 @@ const (
 	ErrCodeProviderFailed = "provider_error"
 	ErrCodePollProvider   = "poll_provider_error"
 	ErrCodeGitHubAuth     = "github_auth_failed"
+	// ErrCodeProviderAuth is the provider-neutral auth failure (an Azure
+	// DevOps delivered credential rejected, Goobers#6120); it classifies
+	// exactly as ErrCodeGitHubAuth.
+	ErrCodeProviderAuth = "provider_auth_failed"
 	// ErrCodeCredentialUnavailable identifies a declared credential whose
 	// configured source cannot currently be materialized.
 	ErrCodeCredentialUnavailable = "credential_unavailable"
+	// ErrCodeRunCanceled identifies an explicit operator-requested live run
+	// cancellation. It is emitted by internal/runner's cancel path and should
+	// remain distinct from unexpected run loss.
+	ErrCodeRunCanceled = "run_canceled"
 	// ErrCodeNoWorkUnsubstantiated is the runner's refusal of a no-work claim
 	// no upstream stage delivered evidence for (#2736). Spelled here so the
 	// refusal is reportable in operator health numbers instead of landing in
 	// the unknown bucket; internal/runner.NoWorkUnsubstantiatedCode is this
 	// same constant.
 	ErrCodeNoWorkUnsubstantiated = "NO_WORK_UNSUBSTANTIATED"
+)
+
+// Substrate codes an agentic stage reports when it never got an agent turn
+// (#5638): the harness's required MCP control process never became ready, or
+// the stage pod could not resolve its credential, provision its workspace,
+// materialize its context, fetch its kit, or build its executor. Nothing the
+// work item contains makes any of these fail, so they classify as infra and
+// never accumulate failure-streak strikes against the item. The literals are
+// owned by internal/harness (HARNESS_REQUIRED_MCP_UNAVAILABLE),
+// internal/dispatcher (agentic_kit_*) and the pod entrypoint in cmd/goobers;
+// they are spelled here, like the codes above, so this package imports none
+// of them.
+const (
+	ErrCodeHarnessRequiredMCPUnavailable = "HARNESS_REQUIRED_MCP_UNAVAILABLE"
+	ErrCodeCredentialResolveFailed       = "credential_resolve_failed"
+	ErrCodeWorkspaceProvisionFailed      = "workspace_provision_failed"
+	ErrCodeContextMaterializeFailed      = "context_materialize_failed"
+	ErrCodeAgenticExecutorUnavailable    = "agentic_executor_unavailable"
+	ErrCodeAgenticKitMissing             = "agentic_kit_missing"
+	ErrCodeAgenticKitUnavailable         = "agentic_kit_unavailable"
 )
 
 // Agent-authored item-judgment codes (#3363). Spelled here so the runner's
@@ -108,15 +140,16 @@ const (
 )
 
 var wellKnownErrorCodes = map[string]ErrorClass{
-	ErrCodeProviderRateLimit: ErrorClassProviderRateLimit,
-	ErrCodeTimeout:           ErrorClassTimeout,
-	ErrCodeHarnessFailure:    ErrorClassHarnessFailure,
-	ErrCodeValidationFailed:  ErrorClassValidation,
-	ErrCodeInfraFailure:      ErrorClassInfra,
-	ErrCodeInfraGit:          ErrorClassInfraGit,
-	ErrCodeInfraNet:          ErrorClassInfraNet,
-	ErrCodeInfraWorkspace:    ErrorClassInfra,
-	ErrCodeInfraJournal:      ErrorClassInfra,
+	ErrCodeProviderRateLimit:        ErrorClassProviderRateLimit,
+	ErrCodeTimeout:                  ErrorClassTimeout,
+	ErrCodeHarnessFailure:           ErrorClassHarnessFailure,
+	ErrCodeValidationFailed:         ErrorClassValidation,
+	"placement_refused_self_denied": ErrorClassValidation,
+	ErrCodeInfraFailure:             ErrorClassInfra,
+	ErrCodeInfraGit:                 ErrorClassInfraGit,
+	ErrCodeInfraNet:                 ErrorClassInfraNet,
+	ErrCodeInfraWorkspace:           ErrorClassInfra,
+	ErrCodeInfraJournal:             ErrorClassInfra,
 	// Exact, so it beats the "timeout" substring heuristic below: waiting out
 	// another process's claims lock is contention, not a stage running long,
 	// and the two want different remedies.
@@ -125,11 +158,21 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeProviderFailed:        ErrorClassProvider,
 	ErrCodePollProvider:          ErrorClassProvider,
 	ErrCodeGitHubAuth:            ErrorClassProvider,
+	ErrCodeProviderAuth:          ErrorClassProvider,
 	ErrCodeCredentialUnavailable: ErrorClassInfra,
+	ErrCodeRunCanceled:           ErrorClassOperator,
 	ErrCodeIssueNotApplicable:    ErrorClassItemJudgment,
 	// The run's evidence contract, not the work: the claim did not hold up
 	// against what the journal says its upstream produced.
 	ErrCodeNoWorkUnsubstantiated: ErrorClassValidation,
+	// No agent turn happened: the substrate, not the work, failed (#5638).
+	ErrCodeHarnessRequiredMCPUnavailable: ErrorClassInfra,
+	ErrCodeCredentialResolveFailed:       ErrorClassInfra,
+	ErrCodeWorkspaceProvisionFailed:      ErrorClassInfra,
+	ErrCodeContextMaterializeFailed:      ErrorClassInfra,
+	ErrCodeAgenticExecutorUnavailable:    ErrorClassInfra,
+	ErrCodeAgenticKitMissing:             ErrorClassInfra,
+	ErrCodeAgenticKitUnavailable:         ErrorClassInfra,
 }
 
 // InfraFault reports whether c names an infrastructure fault — a failure of

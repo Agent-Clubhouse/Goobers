@@ -14,6 +14,8 @@ import (
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 )
 
+const engineTopologyRestartMessage = "adding or removing a gaggle requires a daemon restart while the engine is enabled (the live journal writer and projection reconciler are pinned to the boot-time gaggle set)"
+
 // engineTopologyChanged reports whether next's gaggle set differs from
 // current's (#3642). buildLiveJournalWriter's runsDirs and
 // launchEngineProjection's runsDirs (engineprojection.go) are each computed
@@ -90,11 +92,11 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 			opts = append(opts, livejournal.WithArtifactSource(bounded))
 		}
 	}
-	if observer := telemetryingest.RunIntakeObserver(watermarks, instanceLog); observer != nil {
+	if observer := telemetryingest.RunIntakeObserverContext(watermarks, instanceLog); observer != nil {
 		// The same read-model intake the local runner notifies per append —
 		// which is what makes a live engine run's stage transitions reach SSE
 		// and the portal through the existing machinery, mid-run.
-		opts = append(opts, livejournal.WithObserver(observer))
+		opts = append(opts, livejournal.WithContextObserver(observer))
 	}
 	// #3876 (decision 005 D1): an engine-driven stage's rate-limited failure
 	// reaches this daemon only as a journal append, and the scheduler's quota

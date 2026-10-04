@@ -51,6 +51,9 @@ func TestFailedRunProjectsTerminalReason(t *testing.T) {
 		detail.TerminalCause.Selector.Name != "implement" {
 		t.Fatalf("detail terminal cause = %+v", detail.TerminalCause)
 	}
+	if detail.TerminalCauseStatus != "unavailable" || detail.TerminalCause.Record != nil {
+		t.Fatalf("legacy cause must be unavailable: %+v", detail.TerminalCause)
+	}
 	if detail.TerminalCause.CausalEventSeq == 0 {
 		t.Error("terminal cause carries no causal event seq")
 	}
@@ -158,5 +161,30 @@ func TestReadModelSummaryDegradesToLastRecordedError(t *testing.T) {
 	completed.Phase = journal.PhaseCompleted
 	if got := summaryFromReadModel(completed, observedAt).TerminalReason; got != "" {
 		t.Fatalf("completed row terminal reason = %q, want empty", got)
+	}
+}
+
+func TestRecordedTerminalCauseOverridesLegacyHeuristics(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, _ := createFixtureRun(t, layout, machine, "recorded-cause", machine.Def.Name, "goobers", time.Now(), journal.Trigger{Kind: journal.TriggerManual}, false)
+	if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Status: "failure", Error: &journal.ErrorDetail{Code: "OLD_FAILURE"}}); err != nil {
+		t.Fatal(err)
+	}
+	cause := &journal.TerminalCause{Schema: journal.TerminalCauseSchema, Phase: journal.PhaseFailed, Classification: journal.TerminalInfrastructureFailure, SelectorKind: "condition", Code: "transport_failed", Message: "later infrastructure failure", CausalEventSeq: run.Seq() + 1, Retry: &journal.TerminalBudget{Consumed: 2, Allowed: 2}}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), TerminalCause: cause}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "CLEANUP_FAILED"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.GetRun(context.Background(), "recorded-cause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.TerminalCauseStatus != "recorded" || detail.TerminalCause.Record == nil || detail.TerminalCause.Record.Code != "transport_failed" || detail.TerminalCause.TerminalReason != cause.Message || detail.TerminalCause.RetryCount != 2 || detail.TerminalCause.CausalEventSeq != cause.CausalEventSeq {
+		t.Fatalf("cause=%+v status=%s", detail.TerminalCause, detail.TerminalCauseStatus)
 	}
 }

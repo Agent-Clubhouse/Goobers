@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/platform/activetime"
 )
 
 // ErrClosed is returned by writer operations after Close.
@@ -30,12 +32,14 @@ var ErrImmutableSourceLockMissing = errors.New("immutable source journal lock is
 // a single line, and fsyncs before returning, so a completed event is never lost
 // to a crash. All methods are safe for concurrent use.
 type Run struct {
-	dir      string
-	id       RunIdentity
-	scrubber Scrubber
-	now      func() time.Time
-	observer func(runID string, seq uint64)
-	commits  *commitTarget
+	dir              string
+	id               RunIdentity
+	scrubber         Scrubber
+	now              func() time.Time
+	observer         func(runID string, seq uint64)
+	pendingObserver  *appendObserver
+	observerStartSeq uint64
+	commits          *commitTarget
 
 	mu           sync.Mutex
 	events       *os.File
@@ -47,8 +51,11 @@ type Run struct {
 	branches     []BranchCursor
 	reason       string
 	lastActivity time.Time
-	appendErr    error
-	closed       bool
+	// lastActivityMark is taken with lastActivity so IfLastActivityBefore can
+	// discount time the host spent suspended since then (#5875).
+	lastActivityMark activetime.Mark
+	appendErr        error
+	closed           bool
 }
 
 // acquireRunLock takes a blocking exclusive lock on dir's lock file,
@@ -96,6 +103,8 @@ type config struct {
 	inputIntegrity         map[string]apiv1.Integrity
 	inputSource            map[string]string
 	appendObserver         func(runID string, seq uint64)
+	observerContext        context.Context
+	asyncObserver          func(context.Context, string, uint64)
 	instanceDropObserver   InstanceAppendDropObserver
 }
 
@@ -121,8 +130,10 @@ func WithClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
 }
 
-// WithAppendObserver reports each event after its checkpoint is durable.
-// Observers maintain derived state and must handle their own failures.
+// WithAppendObserver reports checkpointed event progress synchronously. Some
+// write paths call it under the writer mutex; it must not block or reenter the
+// journal. Calls may arrive out of order, so derived consumers retain the highest
+// sequence and handle their own failures. Use WithAsyncAppendObserver for intake.
 func WithAppendObserver(observer func(runID string, seq uint64)) Option {
 	return func(c *config) { c.appendObserver = observer }
 }
@@ -479,7 +490,7 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 			recordedSHA = event.ExternalRef.CommitSHA
 		}
 	}
-	id, err := reader.Identity()
+	id, err := continuationSourceIdentity(reader, events)
 	if err != nil {
 		return nil, fmt.Errorf("journal: read continuation source identity: %w", err)
 	}
@@ -577,7 +588,13 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 // assigned by the journal — any values set by the caller are overwritten.
 func (r *Run) Append(ev Event) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var observedSeq uint64
+	defer func() {
+		r.mu.Unlock()
+		if observedSeq != 0 && r.observer != nil {
+			r.observer(r.id.RunID, observedSeq)
+		}
+	}()
 	if r.closed {
 		return ErrClosed
 	}
@@ -609,9 +626,7 @@ func (r *Run) Append(ev Event) error {
 	if err := r.checkpoint(); err != nil {
 		return err
 	}
-	if r.observer != nil {
-		r.observer(r.id.RunID, r.seq)
-	}
+	observedSeq = r.seq
 	return nil
 }
 
@@ -619,7 +634,13 @@ func (r *Run) Append(ev Event) error {
 // committed event matches match. It makes a check-and-append operation atomic.
 func (r *Run) AppendIfAbsent(ev Event, match func(Event) bool) (bool, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var observedSeq uint64
+	defer func() {
+		r.mu.Unlock()
+		if observedSeq != 0 && r.observer != nil {
+			r.observer(r.id.RunID, observedSeq)
+		}
+	}()
 	if r.closed {
 		return false, ErrClosed
 	}
@@ -638,9 +659,7 @@ func (r *Run) AppendIfAbsent(ev Event, match func(Event) bool) (bool, error) {
 	if err := r.checkpoint(); err != nil {
 		return false, err
 	}
-	if r.observer != nil {
-		r.observer(r.id.RunID, r.seq)
-	}
+	observedSeq = r.seq
 	return true, nil
 }
 
@@ -648,7 +667,13 @@ func (r *Run) AppendIfAbsent(ev Event, match func(Event) bool) (bool, error) {
 // a completed or unresolved claim for the same idempotency key and sink.
 func (r *Run) ClaimNotificationDelivery(pending apiv1.NotificationReceipt) (*apiv1.NotificationReceipt, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var observedSeq uint64
+	defer func() {
+		r.mu.Unlock()
+		if observedSeq != 0 && r.observer != nil {
+			r.observer(r.id.RunID, observedSeq)
+		}
+	}()
 	if r.closed {
 		return nil, ErrClosed
 	}
@@ -678,9 +703,7 @@ func (r *Run) ClaimNotificationDelivery(pending apiv1.NotificationReceipt) (*api
 	if err := r.checkpoint(); err != nil {
 		return nil, err
 	}
-	if r.observer != nil {
-		r.observer(r.id.RunID, r.seq)
-	}
+	observedSeq = r.seq
 	return nil, nil
 }
 
@@ -707,9 +730,15 @@ func (r *Run) append(ev Event) error {
 		r.appendErr = err
 	} else {
 		r.lastActivity = stamped.Time
+		r.lastActivityMark = activetime.NewMark()
 	}
 	return err
 }
+
+// suspendedSince reports how long the host was suspended since mark was taken.
+// It is a variable only so tests can model a suspend the test host cannot
+// perform.
+var suspendedSince = activetime.Mark.SuspendedSince
 
 // IfLastActivityBefore runs claim while holding the writer mutex only when no
 // event has been appended at or after cutoff. It lets a live owner atomically
@@ -735,13 +764,21 @@ func (r *Run) append(ev Event) error {
 // of inactivity, and the cost of the two mistakes is not symmetric: declining
 // to escalate delays detection of a genuinely hung run, while escalating on an
 // unknown kills healthy work and cannot be configured away.
+//
+// Time the host spent SUSPENDED since the last activity is not inactivity
+// either (#5875). Go's monotonic clock already excludes it on Linux and macOS,
+// but on Windows it keeps counting through a sleep, so a stage that went
+// quiet shortly before a suspend longer than the stall timeout was escalated
+// on the first sweep after resume. The comparison therefore shifts
+// lastActivity forward by the suspended interval; activetime reports zero on
+// platforms where there is nothing to subtract, so they are unchanged.
 func (r *Run) IfLastActivityBefore(cutoff time.Time, claim func(time.Time)) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.lastActivity.IsZero() {
 		return false
 	}
-	if !r.lastActivity.Before(cutoff) {
+	if !r.lastActivity.Add(suspendedSince(r.lastActivityMark)).Before(cutoff) {
 		return false
 	}
 	claim(r.lastActivity)
@@ -757,6 +794,7 @@ func (r *Run) ObserveActivity() {
 	now := r.now()
 	if r.lastActivity.Before(now) {
 		r.lastActivity = now
+		r.lastActivityMark = activetime.NewMark()
 	}
 }
 
@@ -1097,13 +1135,23 @@ func (r *Run) recordSpanEventExpectedDigest(ev Event, data []byte, expectedDiges
 // so the terminal status is part of the log.
 func (r *Run) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed {
+		r.mu.Unlock()
 		return nil
 	}
 	r.closed = true
 	err := r.events.Close()
 	releaseRunLock(r.lock)
+	pending := r.pendingObserver
+	// Closing an unchanged recovered handle must not initiate derived intake.
+	// Rehydration of terminal live journals can hold the writer-wide mutex.
+	if pending != nil && r.seq > r.observerStartSeq {
+		pending.enqueue(r.id.RunID, r.seq)
+	}
+	r.mu.Unlock()
+	if pending != nil {
+		pending.close()
+	}
 	return err
 }
 

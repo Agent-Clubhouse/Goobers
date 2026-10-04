@@ -63,6 +63,11 @@
     }
   ],
   "properties": {
+    "terminalCause": {
+      "description": "Versioned diagnostic explanation committed atomically with run.finished; absent in legacy journals.",
+      "$ref": "#/$defs/terminalCause",
+      "x-conformance": "excluded"
+    },
     "schema": {
       "description": "Versioned envelope id. A reader branches on this; a newer version is read leniently (unknown fields/types tolerated).",
       "const": "goobers.dev/journal/event/v1",
@@ -97,6 +102,8 @@
         "redaction",
         "repaired",
         "runner.annotation",
+        "runner.reviewer.started",
+        "runner.reviewer.finished",
         "runner.isolation.posture",
         "runner.placement",
         "runner.workspace.delta",
@@ -128,6 +135,7 @@
         "claims_lock_timeout",
         "config.reloaded",
         "config.reload.rejected",
+        "runner.cluster_check.completed",
         "runner.config_divergence",
         "daemon.started",
         "daemon.clean_shutdown",
@@ -272,6 +280,11 @@
       "items": { "$ref": "#/$defs/ref" },
       "x-conformance": "conditional: each entry's digest and integrity are normative, path/size/mediaType are not"
     },
+    "workspaceRevision": {
+      "description": "Verified immutable authority promoted from a successful deterministic stage result.",
+      "$ref": "workspace-revision.schema.json",
+      "x-conformance": "normative"
+    },
     "integrity": {
       "description": "Provenance grade on an input snapshot, artifact, or integrity-admission refusal.",
       "type": "string",
@@ -411,6 +424,141 @@
     }
   },
   "$defs": {
+    "terminalBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consumed",
+        "allowed"
+      ],
+      "properties": {
+        "consumed": {
+          "description": "Additional executions actually consumed; excludes the initial execution.",
+          "type": "integer",
+          "minimum": 0,
+          "x-conformance": "excluded"
+        },
+        "allowed": {
+          "description": "Additional executions allowed by the pinned policy.",
+          "type": "integer",
+          "minimum": 0,
+          "x-conformance": "excluded"
+        }
+      }
+    },
+    "terminalCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "phase",
+        "classification",
+        "selectorKind",
+        "code"
+      ],
+      "properties": {
+        "schema": {
+          "description": "Terminal cause record version.",
+          "type": "string",
+          "const": "goobers.dev/journal/terminal-cause/v1",
+          "x-conformance": "excluded"
+        },
+        "phase": {
+          "description": "Recorded terminal phase.",
+          "type": "string",
+          "enum": [
+            "failed",
+            "aborted",
+            "escalated"
+          ],
+          "x-conformance": "excluded"
+        },
+        "classification": {
+          "description": "Machine-readable terminal cause taxonomy.",
+          "type": "string",
+          "enum": [
+            "escalation",
+            "defined-abort",
+            "operator-abort",
+            "drain",
+            "signal",
+            "resume-refused",
+            "retry-exhaustion",
+            "policy-exhaustion",
+            "infrastructure-failure",
+            "stage-failure"
+          ],
+          "x-conformance": "excluded"
+        },
+        "selectorKind": {
+          "description": "Kind of causal selector.",
+          "type": "string",
+          "enum": [
+            "stage",
+            "gate",
+            "condition"
+          ],
+          "x-conformance": "excluded"
+        },
+        "selector": {
+          "description": "Name of the causal gate, stage or condition.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "branch": {
+          "description": "Causal parallel branch identifier.",
+          "type": "integer",
+          "minimum": 0,
+          "x-conformance": "excluded"
+        },
+        "verdict": {
+          "description": "Actual gate verdict selected.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "code": {
+          "description": "Stable machine-readable causal code.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "message": {
+          "description": "Human explanation scrubbed through journal policy.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "target": {
+          "description": "Actual selected branch target.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "retry": {
+          "description": "Consumed and allowed dispatch retries.",
+          "$ref": "#/$defs/terminalBudget",
+          "x-conformance": "excluded"
+        },
+        "poll": {
+          "description": "Consumed and allowed timeout polls, separate from policy repasses.",
+          "$ref": "#/$defs/terminalBudget",
+          "x-conformance": "excluded"
+        },
+        "repass": {
+          "description": "Consumed and allowed gate re-entries.",
+          "$ref": "#/$defs/terminalBudget",
+          "x-conformance": "excluded"
+        },
+        "causalEventSeq": {
+          "description": "Sequence of the decisive event in this journal.",
+          "type": "integer",
+          "minimum": 1,
+          "x-conformance": "excluded"
+        },
+        "causalEmitKey": {
+          "description": "Deterministic engine op key resolved to the actual sequence by a live writer.",
+          "type": "string",
+          "x-conformance": "excluded"
+        }
+      }
+    },
     "ref": {
       "type": "object",
       "additionalProperties": false,
@@ -583,8 +731,42 @@
           "description": "Human-facing detail. Excluded (varies run to run).",
           "type": "string",
           "x-conformance": "excluded"
+        },
+        "causes": {
+          "description": "Ordered wrapped-error cause chain derived from structured error wrapping, absent when unavailable for legacy events.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/errorCause" },
+          "x-conformance": "excluded"
         }
       }
+    },
+    "errorCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Stable machine-readable cause code when the cause exposes one.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "excluded"
+        },
+        "class": {
+          "description": "Stable cause class when the cause exposes one.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "excluded"
+        },
+        "message": {
+          "description": "Human-facing cause-layer message.",
+          "type": "string",
+          "x-conformance": "excluded"
+        }
+      },
+      "anyOf": [
+        { "required": ["code"] },
+        { "required": ["class"] },
+        { "required": ["message"] }
+      ]
     },
     "redactionInfo": {
       "type": "object",

@@ -125,6 +125,25 @@ func TestRunDeclaredStageTimeoutIsAFailure(t *testing.T) {
 	}
 }
 
+func TestDispatchRecoveryCustodyTimeoutUsesStampedValueAndDefault(t *testing.T) {
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "")
+	if got := dispatchRecoveryCustodyTimeout(); got != dispatcher.DefaultRecoveryCustodyTimeout {
+		t.Fatalf("unset recovery custody timeout = %s, want %s", got, dispatcher.DefaultRecoveryCustodyTimeout)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "27m")
+	if got := dispatchRecoveryCustodyTimeout(); got != 27*time.Minute {
+		t.Fatalf("configured recovery custody timeout = %s, want 27m", got)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "90s")
+	if got := dispatchRecoveryCustodyTimeout(); got != 90*time.Second {
+		t.Fatalf("explicit 90s recovery custody timeout = %s, want 90s", got)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "not-a-duration")
+	if got := dispatchRecoveryCustodyTimeout(); got != dispatcher.DefaultRecoveryCustodyTimeout {
+		t.Fatalf("malformed recovery custody timeout = %s, want default %s", got, dispatcher.DefaultRecoveryCustodyTimeout)
+	}
+}
+
 // A malformed GOOBERS_STAGE_COMMAND payload (a version-skewed dispatcher, a
 // corrupted env var) fails the STAGE, not the wrapper — dispatch-exec still
 // has a well-formed envelope to surrender.
@@ -412,7 +431,11 @@ func TestDispatchExecLiftsResultFileIntoOutputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	mergeResultFileOutputs(outputs, data)
+	result := apiv1.ResultEnvelope{Outputs: outputs}
+	applyDeclaredStageResultFile(&result, "r.json", data, nil, true)
+	if result.Error != nil {
+		t.Fatalf("result file: %+v", result.Error)
+	}
 
 	if outputs["verdict"] != "pass" {
 		t.Fatalf("verdict = %v, want pass — a gate reading this key is the reason it matters", outputs["verdict"])
@@ -435,9 +458,46 @@ func TestDispatchExecLiftsResultFileIntoOutputs(t *testing.T) {
 // exit status.
 func TestDispatchExecIgnoresUnparseableResultFile(t *testing.T) {
 	outputs := map[string]interface{}{}
-	mergeResultFileOutputs(outputs, []byte("not json at all"))
+	result := apiv1.ResultEnvelope{Outputs: outputs}
+	applyDeclaredStageResultFile(&result, "r.json", []byte("not json at all"), nil, true)
+	if result.Error != nil {
+		t.Fatalf("legacy non-JSON result file: %+v", result.Error)
+	}
 	if len(outputs) != 0 {
 		t.Fatalf("unparseable result file must contribute nothing, got %v", outputs)
+	}
+}
+
+func TestApplyDeclaredStageResultFilePreservesDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name, data, code string
+		readErr          error
+		completed        bool
+	}{
+		{name: "invalid-control", data: `{"workspaceRevision":null}`, code: "workspace_revision_invalid"},
+		{name: "missing-after-success", readErr: os.ErrNotExist, completed: true, code: "missing_result_file"},
+		{name: "missing-after-failure", readErr: os.ErrNotExist},
+		{name: "unreadable", readErr: os.ErrPermission, code: "result_file_unreadable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifact := apiv1.ArtifactPointer{Path: "artifacts/stage/stderr", Digest: apiv1.Digest([]byte("diagnostic"))}
+			result := apiv1.ResultEnvelope{
+				Outputs:   map[string]interface{}{"stderr": "diagnostic"},
+				Artifacts: []apiv1.ArtifactPointer{artifact},
+				Metrics:   map[string]float64{"exitCode": 3},
+			}
+			applyDeclaredStageResultFile(&result, "out.json", []byte(tc.data), tc.readErr, tc.completed)
+			if tc.code == "" {
+				if result.Error != nil || result.Status != "" {
+					t.Fatalf("file absence overrode the stage failure: %+v", result)
+				}
+			} else if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != tc.code || result.Error.Retryable || result.Summary == "" {
+				t.Fatalf("result = %+v, want nonretryable failure %s", result, tc.code)
+			}
+			if result.Outputs["stderr"] != "diagnostic" || result.Metrics["exitCode"] != 3 || len(result.Artifacts) != 1 || result.Artifacts[0] != artifact {
+				t.Fatalf("failure diagnostics were lost: %+v", result)
+			}
+		})
 	}
 }
 

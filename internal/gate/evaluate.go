@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -22,6 +23,10 @@ const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
 // DefaultMaxInfrastructureRepasses bounds gate-driven retries for retryable
 // infrastructure outcomes without consuming the policy repass budget.
 const DefaultMaxInfrastructureRepasses = runcontrol.DefaultMaxInfrastructureRepasses
+
+// DefaultMaxTimeoutPolls bounds consecutive timeout polls when a gate does not
+// declare automated.maxTimeoutPolls.
+const DefaultMaxTimeoutPolls = runcontrol.DefaultMaxTimeoutPolls
 
 // Result is the outcome of one gate evaluation.
 type Result struct {
@@ -47,6 +52,10 @@ type Result struct {
 	// GateAttempt is this gate's consecutive non-pass evaluation count. It is
 	// retained separately to recover dangling gate evaluations after a crash.
 	GateAttempt int
+	// PollAttempt is this gate's consecutive timeout-poll count for PollTarget.
+	PollAttempt int
+	// PollTarget is the configured timeout branch target charged by PollAttempt.
+	PollTarget string
 	// Escalated is true when Target was overridden by the runner because the
 	// repass budget was exhausted or evaluation cannot make progress.
 	Escalated bool
@@ -120,13 +129,14 @@ type Result struct {
 
 // RepassCause is the machine-readable upstream reason for a repass.
 type RepassCause struct {
-	Kind         string `json:"kind"`
-	Gate         string `json:"gate,omitempty"`
-	Outcome      string `json:"outcome,omitempty"`
-	Stage        string `json:"stage,omitempty"`
-	ErrorCode    string `json:"errorCode,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
-	Rationale    string `json:"rationale,omitempty"`
+	Kind         string          `json:"kind"`
+	Gate         string          `json:"gate,omitempty"`
+	Outcome      string          `json:"outcome,omitempty"`
+	Stage        string          `json:"stage,omitempty"`
+	ErrorCode    string          `json:"errorCode,omitempty"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+	Rationale    string          `json:"rationale,omitempty"`
+	Findings     []apiv1.Finding `json:"findings,omitempty"`
 	// Infrastructure is true when Kind is "stage-failure" and the failed
 	// attempt that triggered this repass was itself classified as an
 	// infrastructure/environment failure rather than an ordinary
@@ -173,6 +183,7 @@ const ReasonRemediationEvidenceNotInspected = "REMEDIATION_EVIDENCE_NOT_INSPECTE
 const (
 	ReasonRepassBudgetExhausted         = runcontrol.ReasonRepassBudgetExhausted
 	ReasonInfrastructureBudgetExhausted = runcontrol.ReasonInfrastructureBudgetExhausted
+	ReasonPollingBudgetExhausted        = runcontrol.ReasonPollingBudgetExhausted
 )
 
 func (c RepassCause) String() string {
@@ -220,6 +231,9 @@ type Evaluator struct {
 	// RecoveryVerdict resolves the latest durable review in this execution
 	// scope. Called only for an opted-in interrupted-budget recovery.
 	RecoveryVerdict func(gateName string) (*apiv1.Verdict, error)
+	// ReviewerContinuation reads the last dispatch of an interrupted gate.
+	// It affects lifecycle numbering only, never the existing retry budget.
+	ReviewerContinuation func(gateName string) (int, error)
 	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
@@ -241,6 +255,8 @@ type Evaluator struct {
 	// infrastructure retries bounded and crash-resumable.
 	InfrastructureAttempts       map[string]int
 	InfrastructureRepassAttempts map[string]int
+	// PollAttempts is the per-target timeout polling budget.
+	PollAttempts map[string]int
 
 	// IsReentry reports whether a configured branch target is a stage that has
 	// already completed in this run. Nil preserves the historical assumption
@@ -567,6 +583,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	r := Result{
 		Gate: g.Name, Outcome: outcome, Target: target, Attempt: charge.Attempt,
 		RepassTarget: charge.RepassTarget, GateAttempt: charge.GateAttempt, Escalated: escalated,
+		PollAttempt: charge.PollAttempt, PollTarget: charge.PollTarget,
 		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
 		ResolvedFindingIDs: resolution.Resolved, SuppressedFindingIDs: resolution.Suppressed,
 		ReopenedFindingIDs: resolution.Reopened, DisprovenFindingIDs: resolution.Disproven,
@@ -690,6 +707,7 @@ func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) RepassChar
 		InfrastructureAttempts:       e.InfrastructureAttempts,
 		RepassAttempts:               e.RepassAttempts,
 		InfrastructureRepassAttempts: e.InfrastructureRepassAttempts,
+		PollAttempts:                 e.PollAttempts,
 	}
 	charge := budget.Charge(g, outcome, target, reentry, e.MaxRepasses)
 	// Charge allocates any map it has to touch, so the lazily-created ones are
@@ -699,6 +717,7 @@ func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) RepassChar
 	e.InfrastructureAttempts = budget.InfrastructureAttempts
 	e.RepassAttempts = budget.RepassAttempts
 	e.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
+	e.PollAttempts = budget.PollAttempts
 	return charge
 }
 
@@ -726,15 +745,32 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 	_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 	env.ReviewerMechanicalEscalationAllowed = StructuredMechanicalEscalation(g)
 	maxAttempts, backoff := retryBounds(policy)
+	previous, err := e.reviewerContinuation(gateName)
+	if err != nil {
+		return false, err
+	}
+	class := journal.AttemptClass("")
+	if previous > 0 {
+		class = journal.AttemptInfra
+	}
 	for attempt := 1; ; attempt++ {
-		attemptCtx := ctx
+		number := previous + attempt
+		env.Attempt = int32(number)
+		if err := recordReviewerStart(e.Journal, g, number, class); err != nil {
+			return false, err
+		}
+		attemptCtx := context.WithValue(ctx, reviewerAttemptClassKey{}, class)
 		var cancel context.CancelFunc
 		if timeoutSeconds > 0 {
-			attemptCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+			attemptCtx, cancel = context.WithTimeout(attemptCtx, time.Duration(timeoutSeconds)*time.Second)
 		}
 		current, err := e.Reviewer.Review(attemptCtx, *env, subjectStage, subject)
 		if cancel != nil {
 			cancel()
+		}
+		invalid := err == nil && e.invalidNeedsHumanVerdict(g, current)
+		if jerr := recordReviewerFinish(e.Journal, gateName, number, class, current, err, invalid); jerr != nil {
+			return false, jerr
 		}
 		if err != nil {
 			if !invoke.IsInfrastructureFailure(err) {
@@ -746,9 +782,10 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 			if attempt >= maxAttempts {
 				return false, err
 			}
+			class = journal.AttemptInfra
 		} else {
 			*verdict = current
-			if !e.invalidNeedsHumanVerdict(g, current) {
+			if !invalid {
 				return false, nil
 			}
 			invalidErr := fmt.Errorf("%s", needsHumanRationaleFeedback)
@@ -758,6 +795,7 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 			if attempt >= maxAttempts {
 				return true, nil
 			}
+			class = journal.AttemptPolicy
 			env.InstructionAddendum = strings.TrimSpace(env.InstructionAddendum + "\n\n" + needsHumanRationaleFeedback)
 		}
 		if backoff > 0 {

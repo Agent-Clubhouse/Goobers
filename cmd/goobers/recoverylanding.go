@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -42,28 +41,76 @@ func recoveryLandingRoute(repo apiv1.RepoRef) (string, error) {
 	return url.JoinPath(base, parts...)
 }
 
+// recoveryLandingScanBudget bounds how many run journals ONE landing scan
+// opens. It was a hard ceiling on the runs directory itself (#4672): any
+// instance that had ever held more than 256 runs failed every landing scan
+// with "recovery landing run scan exceeds budget", once per recovery snapshot
+// per sweep, so landing-proof retirement never ran again on exactly the
+// long-lived instances that accumulate snapshots (#5943). The bound still caps
+// the per-scan journal work; it no longer caps the instance's history.
+const recoveryLandingScanBudget = 256
+
+// recoveryLandingCursors makes an over-budget scan resumable (#5943). Each
+// (runs root, recovery record) pair scans the next budget-sized window of the
+// name-sorted run directories and advances, so successive sweeps cover every
+// run while no single scan opens more than the budget. Partial coverage is
+// safe by construction: a scan only ever PRODUCES landed heads, each of which
+// must still pass VerifyLandedRestoration before anything is retired, so an
+// unscanned run can delay a retirement but never cause one. The cursor is
+// process memory: a restart (or a one-shot CLI sweep) starts from the first
+// window again, which only delays coverage.
+var recoveryLandingCursors = struct {
+	sync.Mutex
+	next map[string]int
+}{next: map[string]int{}}
+
+// recoveryLandingCursorLimit bounds the cursor map. Keys are per snapshot, so
+// the map grows only with snapshots seen over the process lifetime; clearing
+// it merely restarts every rotation.
+const recoveryLandingCursorLimit = 4096
+
+// recoveryLandingWindow returns the run directories this scan should read:
+// all of them when they fit the budget, otherwise the next rotating window.
+func recoveryLandingWindow(runsRoot, recordRunID string, candidates []string) []string {
+	if len(candidates) <= recoveryLandingScanBudget {
+		return candidates
+	}
+	key := runsRoot + "\x00" + recordRunID
+	recoveryLandingCursors.Lock()
+	if len(recoveryLandingCursors.next) >= recoveryLandingCursorLimit {
+		clear(recoveryLandingCursors.next)
+	}
+	start := recoveryLandingCursors.next[key] % len(candidates)
+	recoveryLandingCursors.next[key] = (start + recoveryLandingScanBudget) % len(candidates)
+	recoveryLandingCursors.Unlock()
+	window := make([]string, 0, recoveryLandingScanBudget)
+	for i := 0; i < recoveryLandingScanBudget; i++ {
+		window = append(window, candidates[(start+i)%len(candidates)])
+	}
+	return window
+}
+
+// recoveryLandingHeads scans the instance's run journals for a landing receipt
+// of record's content. os.ReadDir sorts by name, so a rotating window is
+// stable across passes apart from runs created or removed in between, which
+// can shift one window's edge and are picked up on a later rotation.
 func recoveryLandingHeads(ctx context.Context, runsRoot string, record recovery.Record, route string) ([]recovery.LandedHead, error) {
-	directory, err := os.Open(runsRoot)
+	entries, err := os.ReadDir(runsRoot)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = directory.Close() }()
-	entries, err := directory.ReadDir(257)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	if len(entries) > 256 {
-		return nil, fmt.Errorf("recovery landing run scan exceeds budget")
+	candidates := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() != record.RunID {
+			candidates = append(candidates, entry.Name())
+		}
 	}
 	var heads []recovery.LandedHead
-	for _, entry := range entries {
+	for _, name := range recoveryLandingWindow(runsRoot, record.RunID, candidates) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !entry.IsDir() || entry.Name() == record.RunID {
-			continue
-		}
-		path := filepath.Join(runsRoot, entry.Name())
+		path := filepath.Join(runsRoot, name)
 		reader, err := journal.OpenReadOnly(path)
 		if err != nil {
 			return nil, err
@@ -72,7 +119,7 @@ func recoveryLandingHeads(ctx context.Context, runsRoot string, record recovery.
 		if err != nil {
 			return nil, err
 		}
-		if identity.RunID != entry.Name() || identity.WorkspaceRepository == nil {
+		if identity.RunID != name || identity.WorkspaceRepository == nil {
 			continue
 		}
 		repo := identity.WorkspaceRepository

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -15,6 +15,7 @@ import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
+import { InsightScopePicker } from "../components/InsightScopePicker";
 import {
   type InsightCostRollupSnapshot,
   type InsightErrorSignaturesSnapshot,
@@ -114,27 +115,18 @@ export function InsightPage({
     <>
       <header className="page-heading">
         <h1>Insight</h1>
-        <p>
-          Success, backlog health, failure-reason, AI usage, and latency diagnostics for
-          the selected operational scope. Run-backed metrics open their source history.
-        </p>
+        <p>Run outcomes, usage, and latency.</p>
       </header>
 
       <div className="insight-controls" aria-label="Insight filters">
-        <label>
+        <div className="insight-control">
           <span>Scope</span>
-          <select
-            aria-label="Scope"
-            onChange={(event) => setScope(insightScopeFromKey(event.target.value))}
+          <InsightScopePicker
+            onChange={(key) => setScope(insightScopeFromKey(key))}
+            scopes={scopes}
             value={insightScopeKey(requestedScope)}
-          >
-            {scopes.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          />
+        </div>
         <label>
           <span>Time window</span>
           <select
@@ -250,11 +242,12 @@ function InsightContent({
 
       {usage && (
         <InsightReportSection title="Tokens and retry waste">
-          <p className="usage-description">
-            Attempt measurements are aggregated for the selected scope. Runners that do not
-            report usage remain unmeasured.
-          </p>
-          <UsageAnalytics filters={filters} mode="insight" usage={usage} />
+          <UsageAnalytics
+            filters={filters}
+            mode="insight"
+            totalRuns={summary?.unit === "runs" ? summary.total : undefined}
+            usage={usage}
+          />
         </InsightReportSection>
       )}
 
@@ -611,12 +604,15 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
 export function UsageAnalytics({
   filters,
   mode,
+  totalRuns,
   usage,
 }: {
   filters: TelemetryStatsOptions;
   mode: "cost" | "insight";
+  totalRuns?: number;
   usage: TelemetryUsageStats;
 }) {
+  const cost = mode === "cost";
   const label = usageMetricLabel(usage);
   const tokenHref = routeHash({
     page: "runs",
@@ -627,17 +623,6 @@ export function UsageAnalytics({
       usage.stage,
       undefined,
       "token-measured",
-    ),
-  });
-  const costHref = routeHash({
-    page: "runs",
-    filters: insightRunFilters(
-      filters,
-      usage.gaggle,
-      usage.workflow,
-      usage.stage,
-      undefined,
-      "cost-measured",
     ),
   });
   const wasteHref = routeHash({
@@ -651,168 +636,41 @@ export function UsageAnalytics({
       "retry-waste",
     ),
   });
-  return (
-    <div className="data-table-shell usage-analytics usage-analytics-split">
-      <div aria-hidden="true" className="data-table-header usage-header">
-        <span>Scope</span>
-        <span>{mode === "insight" ? "Tokens" : "AI cost"}</span>
-        <span>Retry waste</span>
-      </div>
-      <div className="usage-row">
-        <span className="distribution-name">
-          <strong>{usageMetricName(usage)}</strong>
-          <small>
-            {usageMetricContext(usage)} · {usage.totalAttempts}{" "}
-            {usage.totalAttempts === 1 ? "attempt" : "attempts"}
-          </small>
-        </span>
-        {mode === "insight" ? (
-          <UsagePercentiles
-            ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
-            formatter={formatMeasuredTokens}
-            href={tokenHref}
-            label="Tokens"
-            p50={usage.p50Tokens}
-            p95={usage.p95Tokens}
-            samples={usage.tokenSamples}
-          />
-        ) : (
-          <UsagePercentiles
-            ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatRunCount(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
-            countFormatter={formatRunCount}
-            formatter={formatMeasuredCost}
-            label="AI cost"
-            p50={usage.p50CostUSD}
-            p95={usage.p95CostUSD}
-            samples={usage.costSamples}
-            total={usage.costUSD}
-          />
-        )}
-        <RetryWasteMetric
-          href={mode === "insight" ? wasteHref : undefined}
-          includeCost={mode === "cost"}
-          label={label}
-          usage={usage}
-        />
-      </div>
+  const formatUsage = cost ? formatMeasuredAIC : formatMeasuredTokens;
+  const metric = (name: string, value: string, href?: string, ariaLabel?: string) => (
+    <div>
+      <dt>{name}</dt>
+      <dd>{href ? <a aria-label={ariaLabel} className="usage-summary-link" href={href}>{value}</a> : value}</dd>
     </div>
   );
-}
-
-function UsagePercentiles({
-  ariaLabel,
-  countFormatter = formatSamples,
-  formatter,
-  href,
-  label,
-  p50,
-  p95,
-  samples,
-  total,
-}: {
-  ariaLabel: string;
-  countFormatter?: (value: number) => string;
-  formatter: (value: number | undefined) => string;
-  href?: string;
-  label: string;
-  p50?: number;
-  p95?: number;
-  samples: number;
-  total?: number;
-}) {
-  const content = (
-    <>
-      <span className="usage-metric-heading">
-        <strong>{label}</strong>
-        <small>{countFormatter(samples)}</small>
-      </span>
-      <span className={`usage-percentiles${total !== undefined ? " usage-percentiles-with-total" : ""}`}>
-        {total !== undefined && (
-          <span>
-            <small>Total</small>
-            <strong>{formatter(total)}</strong>
-          </span>
-        )}
-        <span>
-          <small>P50</small>
-          <strong>{formatter(p50)}</strong>
-        </span>
-        <span>
-          <small>P95</small>
-          <strong>{formatter(p95)}</strong>
-        </span>
-      </span>
-    </>
-  );
-  return href ? (
-    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>{content}</a>
-  ) : (
-    <div className="usage-metric-link usage-metric-static">{content}</div>
-  );
-}
-
-function RetryWasteMetric({
-  href,
-  includeCost,
-  label,
-  usage,
-}: {
-  href?: string;
-  includeCost: boolean;
-  label: string;
-  usage: TelemetryUsageStats;
-}) {
-  const description =
-    usage.retryWasteAttempts === 0
-      ? "no superseded attempts"
-      : [
-          `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}`,
-          formatMeasuredTokens(usage.retryWasteTokens),
-          ...(includeCost ? [formatMeasuredCost(usage.retryWasteCostUSD)] : []),
-        ].join(", ");
-  const content = (
-    <>
-      <span className="usage-metric-heading">
-        <strong>Retry waste</strong>
-        <small>
-          {usage.retryWasteAttempts} superseded{" "}
-          {usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}
-        </small>
-      </span>
-      {usage.retryWasteAttempts === 0 ? (
-        <span className="usage-no-waste">
-          <strong>No retry waste</strong>
-        </span>
-      ) : (
-        <span className="usage-waste-values">
-          <span>
-            <small>Attempts</small>
-            <strong>{usage.retryWasteAttempts}</strong>
-          </span>
-          <span>
-            <small>Tokens</small>
-            <strong>{formatMeasuredTokens(usage.retryWasteTokens)}</strong>
-          </span>
-          {includeCost && (
-            <span>
-              <small>Cost</small>
-              <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
-            </span>
-          )}
-        </span>
-      )}
-    </>
-  );
-  return href ? (
-    <a
-      aria-label={`View retry-waste runs behind ${label}: ${description}`}
-      className="usage-metric-link usage-waste-link"
-      href={href}
+  return (
+    <div
+      aria-label={`${cost ? "Cost" : "Token"} measurements: ${cost ? usage.costSamples : usage.tokenSamples} of ${usage.totalAttempts} stage executions, including retries`}
+      className={`cost-usage-summary${cost ? "" : " usage-summary-tokens"}`}
+      role="group"
     >
-      {content}
-    </a>
-  ) : (
-    <div className="usage-metric-link usage-metric-static usage-waste-link">{content}</div>
+      <div className="cost-usage-panels">
+        <dl className={`cost-usage-spend${totalRuns !== undefined ? " cost-usage-spend-with-runs" : ""}`}>
+          {cost && metric("Total cost", formatMeasuredAIC(usage.costAIC))}
+          {totalRuns !== undefined && (
+            metric("Total runs", totalRuns.toLocaleString())
+          )}
+          {metric("P50 / stage attempt", formatUsage(cost ? usage.p50CostAIC : usage.p50Tokens),
+            cost ? undefined : tokenHref, `View P50 token usage runs behind ${label}`)}
+          {metric("P95 / stage attempt", formatUsage(cost ? usage.p95CostAIC : usage.p95Tokens),
+            cost ? undefined : tokenHref, `View P95 token usage runs behind ${label}`)}
+        </dl>
+        <div className="cost-usage-waste">
+          <dl>
+            {metric("Superseded attempts", usage.retryWasteAttempts.toLocaleString(),
+              cost ? undefined : wasteHref, `View superseded stage attempts behind ${label}`)}
+            {metric(cost ? "Retry waste cost" : "Retry waste tokens",
+              usage.retryWasteAttempts === 0 ? "No retry waste" : formatUsage(cost ? usage.retryWasteCostAIC : usage.retryWasteTokens),
+              cost ? undefined : wasteHref, `View retry-waste runs behind ${label}`)}
+          </dl>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -836,57 +694,51 @@ export function CostTrend({
       </p>
     );
   }
-  if (costTrend.status === "loading") {
-    return (
-      <div className="usage-trend">
-        <SectionQueryStatus loading message="Loading cost trend…" />
-      </div>
-    );
-  }
-  if (costTrend.status === "error") {
-    const unavailable = isMissingCostCapability(costTrend.error);
-    return (
-      <SectionQueryStatus
-        error
-        message={
-          unavailable
-            ? "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section."
-            : "Unable to load the cost trend."
-        }
-        retry={unavailable ? undefined : retry}
-      />
-    );
-  }
-  if (costTrend.status !== "ready" && costTrend.status !== "stale") {
-    return null;
-  }
-  const data = costTrend.data;
-  const points = data.points;
+  const data = costTrend.status === "ready" || costTrend.status === "stale" ? costTrend.data : undefined;
+  const points = data?.points ?? [];
   const hasSamples = points.some((point) => (point.usage?.costSamples ?? 0) > 0);
+  const error = costTrend.status === "error" || costTrend.status === "stale" ? costTrend.error : undefined;
+  const unavailable = error && isMissingCostCapability(error);
+  const loading = costTrend.status === "loading";
 
   return (
     <div className="usage-trend">
-      {(refreshing || (costTrend.status === "stale" && Boolean(costTrend.error))) && (
+      <div className="usage-trend-status">
         <SectionQueryStatus
-          error={costTrend.status === "stale" && Boolean(costTrend.error)}
-          loading={refreshing}
+          error={Boolean(error)}
+          loading={loading || refreshing}
           message={
-            costTrend.status === "stale" && costTrend.error
-              ? "Cost trend refresh failed. Showing the last successful read."
-              : "Refreshing cost trend…"
+            unavailable
+              ? "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section."
+              : error
+                ? data
+                  ? "Cost trend refresh failed. Showing the last successful read."
+                  : "Unable to load the cost trend."
+                : loading
+                  ? "Loading cost trend…"
+                  : refreshing
+                    ? "Refreshing cost trend…"
+                    : !hasSamples
+                      ? "No cost samples across buckets in this scope."
+                      : undefined
           }
-          retry={retry}
+          retry={unavailable ? undefined : retry}
         />
-      )}
+      </div>
       <div className="usage-trend-heading">
         <h3>Cost over time</h3>
+        <p className="usage-trend-note">Total cost per 24-hour day in the selected rolling window.</p>
       </div>
       {hasSamples ? (
         <CostTrendSparkline points={points} window={window} />
       ) : (
-        <p className="usage-trend-note">No cost samples across buckets in this scope.</p>
+        <div aria-hidden="true" className="usage-trend-placeholder">
+          <CostTrendSparkline points={[]} window={window} />
+        </div>
       )}
-      <CostTrendComparison current={currentUsage} previous={data.previousUsage} window={window} />
+      {data && (
+        <CostTrendComparison current={currentUsage} previous={data.previousUsage} window={window} />
+      )}
     </div>
   );
 }
@@ -898,74 +750,142 @@ function CostTrendSparkline({
   points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[];
   window: InsightWindow;
 }) {
+  const tooltipId = useId();
+  const plotRef = useRef<HTMLDivElement>(null);
+  const [tooltip, setTooltip] = useState<{
+    since: string;
+    day: string;
+    name: string;
+    value: number;
+    x: number;
+    y: number;
+  }>();
   const width = 720;
-  const height = 220;
-  const margin = { top: 14, right: 18, bottom: 42, left: 64 };
+  const height = 240;
+  const margin = { top: 34, right: 80, bottom: 42, left: 80 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-  let cumulativeCost = 0;
+  const slotWidth = plotWidth / Math.max(1, points.length);
+  const barWidth = Math.min(44, slotWidth * 0.65);
   const chartPoints = points.map((point, index) => {
-    const x =
-      margin.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
-    cumulativeCost += point.usage?.costUSD ?? 0;
+    const measured = (point.usage?.costSamples ?? 0) > 0;
     return {
       ...point,
-      cumulativeCost,
-      p95: point.usage?.p95CostUSD ?? 0,
-      x,
+      dailyCost: measured ? point.usage?.costAIC : undefined,
+      p50: measured ? point.usage?.p50CostAIC : undefined,
+      p95: measured ? point.usage?.p95CostAIC : undefined,
+      x: margin.left + (index + 0.5) * slotWidth,
     };
   });
-  const scaleMax = Math.max(
-    ...chartPoints.flatMap((point) => [point.cumulativeCost, point.p95]),
-    0.0001,
-  );
+  const totalMax = Math.max(...chartPoints.map((point) => point.dailyCost ?? 0), 0.0001);
+  const percentileMax = Math.max(...chartPoints.flatMap((point) => [point.p50 ?? 0, point.p95 ?? 0]), 0.0001);
+  const baseline = margin.top + plotHeight;
   const plottedPoints = chartPoints.map((point) => ({
     ...point,
-    cumulativeY: margin.top + plotHeight - (point.cumulativeCost / scaleMax) * plotHeight,
-    p95Y: margin.top + plotHeight - (point.p95 / scaleMax) * plotHeight,
+    totalY: point.dailyCost === undefined ? undefined : baseline - (point.dailyCost / totalMax) * plotHeight,
+    p50Y: point.p50 === undefined ? undefined : baseline - (point.p50 / percentileMax) * plotHeight,
+    p95Y: point.p95 === undefined ? undefined : baseline - (point.p95 / percentileMax) * plotHeight,
   }));
-  const baseline = margin.top + plotHeight;
-  const cumulativeArea = areaPath(
-    plottedPoints.map((point) => [point.x, point.cumulativeY]),
-    baseline,
-  );
-  const cumulativeLine = linePath(plottedPoints.map((point) => [point.x, point.cumulativeY]));
-  const p95Line = linePath(plottedPoints.map((point) => [point.x, point.p95Y]));
+  const series = [
+    { key: "p50", name: "P50 per attempt" },
+    { key: "p95", name: "P95 per attempt" },
+  ] as const;
   const xTickIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
-  const yTicks = [scaleMax, scaleMax / 2, 0];
+  const yTicks = [1, 0.5, 0];
+  const showTooltip = (since: string, name: string, value: number, target: SVGGraphicsElement) => {
+    if (!plotRef.current) return;
+    const plot = plotRef.current.getBoundingClientRect();
+    const mark = target.getBoundingClientRect();
+    setTooltip({
+      since,
+      day: new Date(since).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      name,
+      value,
+      x: (mark.left + mark.width / 2 - plot.left) / Math.max(1, plot.width) * 100,
+      y: (mark.top - plot.top) / Math.max(1, plot.height) * 100,
+    });
+  };
 
   return (
-    <div className="usage-trend-chart">
+    <div className="usage-trend-chart" onKeyDown={(event) => {
+      if (event.key === "Escape") setTooltip(undefined);
+    }}>
+      <div className="usage-trend-plot-wrap" onMouseLeave={() => setTooltip(undefined)} ref={plotRef}>
       <svg
         aria-label={sparklineAriaLabel(points)}
         className="usage-trend-chart-plot"
         role="img"
         viewBox={`0 0 ${width} ${height}`}
       >
-        <title>{sparklineAriaLabel(points)}</title>
-        {yTicks.map((tick) => {
-          const y = margin.top + plotHeight - (tick / scaleMax) * plotHeight;
+        <text className="usage-trend-axis-title" x={margin.left} y="16">Total / day (AIC)</text>
+        <text className="usage-trend-axis-title" textAnchor="end" x={width - margin.right} y="16">P50 / P95 per attempt (AIC)</text>
+        {yTicks.map((fraction) => {
+          const y = baseline - fraction * plotHeight;
           return (
-            <g className="usage-trend-gridline" key={tick}>
+            <g className="usage-trend-gridline" key={fraction}>
               <line x1={margin.left} x2={width - margin.right} y1={y} y2={y} />
               <text x={margin.left - 10} y={y + 4}>
-                {formatMeasuredCost(tick)}
+                {formatMeasuredAIC(totalMax * fraction)}
+              </text>
+              <text className="usage-trend-secondary-tick" x={width - margin.right + 10} y={y + 4}>
+                {formatMeasuredAIC(percentileMax * fraction)}
               </text>
             </g>
           );
         })}
-        <path className="usage-trend-area usage-trend-area-cumulative" d={cumulativeArea} />
-        <path className="usage-trend-line usage-trend-line-cumulative" d={cumulativeLine} />
-        <path className="usage-trend-line usage-trend-line-p95" d={p95Line} />
-        {plottedPoints.map((point) => (
-          <g key={point.since}>
-            <circle className="usage-trend-point usage-trend-point-cumulative" cx={point.x} cy={point.cumulativeY} r="3">
-              <title>{`${formatMeasuredCost(point.cumulativeCost)} · ${formatBucketTick(point.since, window)}`}</title>
-            </circle>
-            <circle className="usage-trend-point usage-trend-point-p95" cx={point.x} cy={point.p95Y} r="3">
-              <title>{`${formatMeasuredCost(point.p95)} · ${formatBucketTick(point.since, window)}`}</title>
-            </circle>
+        {plottedPoints.map((point) => {
+          const { dailyCost, totalY } = point;
+          if (dailyCost === undefined || totalY === undefined) return null;
+          return (
+          <rect
+            aria-describedby={tooltip?.since === point.since && tooltip.name === "Total per day" ? tooltipId : undefined}
+            aria-label={`Total per day: ${formatMeasuredAIC(point.dailyCost)}`}
+            className="usage-trend-bar"
+            height={baseline - totalY}
+            key={point.since}
+            onBlur={() => setTooltip(undefined)}
+            onFocus={(event) => showTooltip(point.since, "Total per day", dailyCost, event.currentTarget)}
+            onMouseEnter={(event) => showTooltip(point.since, "Total per day", dailyCost, event.currentTarget)}
+            onMouseLeave={() => setTooltip(undefined)}
+            tabIndex={0}
+            width={barWidth}
+            x={point.x - barWidth / 2}
+            y={totalY}
+          />
+          );
+        })}
+        {series.map(({ key, name }) => (
+          <g key={key}>
+            <path className={`usage-trend-line usage-trend-line-${key}`} d={costLinePath(
+              plottedPoints.map((point) => ({ x: point.x, y: key === "p50" ? point.p50Y : point.p95Y })),
+            )} />
+            {plottedPoints.map((point) => {
+              const y = key === "p50" ? point.p50Y : point.p95Y;
+              const value = point[key];
+              if (y === undefined || value === undefined) return null;
+              return (
+            <g key={point.since}>
+              <circle className={`usage-trend-point usage-trend-point-${key}`} cx={point.x} cy={y} r="3" />
+              <circle
+                aria-describedby={tooltip?.since === point.since && tooltip.name === name ? tooltipId : undefined}
+                aria-label={`${name}: ${formatMeasuredAIC(value)}`}
+                className="usage-trend-hit-target"
+                cx={point.x}
+                cy={y}
+                onBlur={() => setTooltip(undefined)}
+                onFocus={(event) => showTooltip(point.since, name, value, event.currentTarget)}
+                onMouseEnter={(event) => showTooltip(point.since, name, value, event.currentTarget)}
+                onMouseLeave={() => setTooltip(undefined)}
+                r="10"
+                tabIndex={0}
+              />
+            </g>
+              );
+            })}
           </g>
+        ))}
+        {[margin.left, width - margin.right].map((x) => (
+          <line className="usage-trend-axis" key={x} x1={x} x2={x} y1={margin.top} y2={baseline} />
         ))}
         <line
           className="usage-trend-axis"
@@ -989,36 +909,56 @@ function CostTrendSparkline({
           ) : null;
         })}
       </svg>
-      <div className="usage-trend-legend" aria-hidden="true">
-        <span><i className="usage-trend-key usage-trend-key-cumulative" />Cumulative cost</span>
-        <span><i className="usage-trend-key usage-trend-key-p95" />P95 run cost</span>
+      {tooltip && (
+        <div
+          className="usage-trend-tooltip"
+          id={tooltipId}
+          role="tooltip"
+          style={{
+            left: `${Math.min(80, Math.max(20, tooltip.x))}%`,
+            top: `${tooltip.y}%`,
+          }}
+        >
+          <span className="usage-trend-tooltip-day">{tooltip.day}</span>
+          <span className="usage-trend-tooltip-value">
+            <span>{tooltip.name}</span>
+            <strong>{formatMeasuredAIC(tooltip.value)}</strong>
+          </span>
+        </div>
+      )}
+      </div>
+      <div aria-label="Cost chart legend" className="usage-trend-legend" role="list">
+        <span role="listitem"><i aria-hidden="true" className="usage-trend-key usage-trend-key-total" />Total per day (AIC, left axis)</span>
+        <span role="listitem"><i aria-hidden="true" className="usage-trend-key usage-trend-key-p50" />P50 per attempt (AIC, right axis)</span>
+        <span role="listitem"><i aria-hidden="true" className="usage-trend-key usage-trend-key-p95" />P95 per attempt (AIC, right axis)</span>
       </div>
     </div>
   );
 }
 
-function linePath(points: [number, number][]): string {
-  return points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ");
-}
-
-function areaPath(points: [number, number][], baseline: number): string {
-  if (points.length === 0) {
-    return "";
-  }
-  return `${linePath(points)} L ${points.at(-1)![0]} ${baseline} L ${points[0][0]} ${baseline} Z`;
+function costLinePath(points: { x: number; y: number | undefined }[]): string {
+  let previousMeasured = false;
+  return points.map(({ x, y }) => {
+    if (y === undefined) {
+      previousMeasured = false;
+      return "";
+    }
+    const command = previousMeasured ? "L" : "M";
+    previousMeasured = true;
+    return `${command} ${x} ${y}`;
+  }).join(" ");
 }
 
 function sparklineAriaLabel(
   points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[],
 ): string {
-  let cumulativeCost = 0;
   const summary = points
     .map((point) => {
-      cumulativeCost += point.usage?.costUSD ?? 0;
-      return `${formatBucketLabel(point.since, point.until)}: cumulative ${formatMeasuredCost(cumulativeCost)}, P95 ${formatMeasuredCost(point.usage?.p95CostUSD)}`;
+      const measured = (point.usage?.costSamples ?? 0) > 0;
+      return `${formatBucketLabel(point.since, point.until)}: total ${formatMeasuredAIC(measured ? point.usage?.costAIC : undefined)}, P50 ${formatMeasuredAIC(measured ? point.usage?.p50CostAIC : undefined)}, P95 ${formatMeasuredAIC(measured ? point.usage?.p95CostAIC : undefined)}`;
     })
     .join("; ");
-  return `AI cost trend by bucket. ${summary}`;
+  return `Daily cost: total bars on the left axis, P50 and P95 per-attempt lines on the right axis. ${summary}`;
 }
 
 function formatBucketLabel(since: string, until: string): string {
@@ -1027,9 +967,6 @@ function formatBucketLabel(since: string, until: string): string {
 
 function formatBucketTick(since: string, window: InsightWindow): string {
   const date = new Date(since);
-  // Buckets for the 24h window are only hours apart, so a date-only tick
-  // (e.g. "Jul 22") renders identically for every bar. Buckets for 7d/30d
-  // are always at least a day apart, where the date is the meaningful axis.
   return window === "24h"
     ? date.toLocaleTimeString("en-US", { hour: "numeric" })
     : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -1046,15 +983,15 @@ function CostTrendComparison({
 }) {
   const duration = windowDurationLabel(window);
   if (!previous || previous.costSamples === 0) {
-    return <p className="usage-trend-note">No prior {duration} to compare against in this scope.</p>;
+    return null;
   }
   return (
     <dl className="usage-trend-comparison">
       <div>
-        <dt>AI cost vs. previous {duration}</dt>
+        <dt>Cost vs. previous {duration}</dt>
         <dd>
-          {formatMeasuredCost(current.p50CostUSD)}
-          <DeltaBadge current={current.p50CostUSD} previous={previous.p50CostUSD} />
+          {formatMeasuredAIC(current.p50CostAIC)}
+          <DeltaBadge current={current.p50CostAIC} previous={previous.p50CostAIC} />
         </dd>
       </div>
       <div>
@@ -1108,7 +1045,7 @@ export function ExternalCostBreakdown({
 }) {
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState<"all" | "pr" | "issue">("all");
-  const [sortKey, setSortKey] = useState<ExternalCostSortKey>("native");
+  const [sortKey, setSortKey] = useState<ExternalCostSortKey>("aic");
   const [sortDirection, setSortDirection] = useState<ExternalCostSortDirection>("desc");
   const [openRuns, setOpenRuns] = useState<{
     label: string;
@@ -1176,7 +1113,6 @@ export function ExternalCostBreakdown({
   return (
     <section className="content-section cost-section-stable cost-section-attribution">
       <ExternalCostHeading
-        loadedAt={costs.data.loadedAt}
         statusMessage={refreshing ? "Refreshing attributed costs…" : undefined}
       />
       {costs.status === "stale" && costs.error && (
@@ -1220,26 +1156,29 @@ export function ExternalCostBreakdown({
           {visibleRows.length === 0 ? (
             <p className="inline-empty">No attributed costs match the current filters.</p>
           ) : (
-            <div className="data-table-shell external-cost-table-wrap">
-              <div className="external-cost-table" role="table">
-                <div className="data-table-header external-cost-grid external-cost-header" role="row">
+            <>
+              <div
+                aria-label="Attributed costs comparison"
+                className="data-table-shell external-cost-table-wrap"
+                role="region"
+                tabIndex={0}
+              >
+                <div aria-label="Attributed costs" className="external-cost-table" role="table">
+                  <div className="data-table-header external-cost-grid external-cost-header" role="row">
                     <span aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Work item", "work-item")}
                     </span>
                     <span aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Provider", "provider")}
                     </span>
-                    <span aria-sort={sortKey === "native" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
-                      {sortHeading("Provider-native", "native")}
-                    </span>
-                    <span aria-sort={sortKey === "normalized" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
-                      {sortHeading("Normalized estimate", "normalized")}
+                    <span aria-sort={sortKey === "aic" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("AIC", "aic")}
                     </span>
                     <span aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Runs / models", "runs")}
                     </span>
-                </div>
-                {visibleRows.map((row) => (
+                  </div>
+                  {visibleRows.map((row) => (
                     <div className="external-cost-grid external-cost-row" key={row.key} role="row">
                       <span className="work-item-identity external-cost-item" role="cell">
                           {row.repository ? (
@@ -1264,8 +1203,7 @@ export function ExternalCostBreakdown({
                       </span>
                       <span className="external-cost-provider" role="cell">{row.provider}</span>
                       <span className="external-cost-values" role="cell">
-                        <strong className="data-table-number">{row.native}</strong>
-                        <strong className="data-table-number">{row.normalized}</strong>
+                        <strong className="data-table-number">{row.aic}</strong>
                         <small className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}>
                           {row.coverage}
                         </small>
@@ -1291,9 +1229,10 @@ export function ExternalCostBreakdown({
                           )}
                       </span>
                     </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
+            </>
           )}
           {openRuns && (
             <div className="artifact-dialog-backdrop">
@@ -1314,14 +1253,25 @@ export function ExternalCostBreakdown({
                     <Icon name="close" size={16} />
                   </button>
                 </header>
-                <div className="external-cost-run-table-wrap">
+                <p className="local-scroll-affordance" id="external-cost-run-scroll-hint">
+                  Scroll sideways to compare every run column.
+                </p>
+                <div
+                  aria-describedby="external-cost-run-scroll-hint"
+                  aria-label={`${openRuns.label} run comparison`}
+                  className="external-cost-run-table-wrap"
+                  role="region"
+                  tabIndex={0}
+                >
                   <table aria-label={`${openRuns.label} run breakdown`}>
                     <thead>
                       <tr>
                         <th scope="col">Run</th>
+                        <th scope="col">Gaggle / workflow</th>
+                        <th scope="col">Status</th>
                         <th scope="col">Started</th>
                         <th scope="col">Attempts</th>
-                        <th scope="col">Provider-native</th>
+                        <th scope="col">AIC</th>
                         <th scope="col">Models</th>
                       </tr>
                     </thead>
@@ -1332,10 +1282,15 @@ export function ExternalCostBreakdown({
                             <a href={routeHash({ page: "run", id: run.runId })}>{run.runId}</a>
                           </td>
                           <td>
+                            <strong>{run.gaggle || "Unknown gaggle"}</strong>
+                            <small className="data-table-meta">{run.workflow || "Workflow unavailable"}</small>
+                          </td>
+                          <td>{run.status || "Status unavailable"}</td>
+                          <td>
                             <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
                           </td>
                           <td>{run.measuredAttempts}/{run.usageAttempts} measured</td>
-                          <td>{formatCostAmounts(run.nativeTotals, "Unmeasured")}</td>
+                          <td>{formatAICAmounts(run.nativeTotals, run.normalizedTotals, "Unmeasured")}</td>
                           <td>
                             {run.models.map((model) => model.model).join(", ") ||
                               run.billingModels.join(", ") ||
@@ -1356,10 +1311,8 @@ export function ExternalCostBreakdown({
 }
 
 function ExternalCostHeading({
-  loadedAt,
   statusMessage,
 }: {
-  loadedAt?: string;
   statusMessage?: string;
 }) {
   return (
@@ -1368,9 +1321,6 @@ function ExternalCostHeading({
         <h2>Cost by pull request and issue</h2>
       </div>
       <div className="section-heading-meta">
-        <span className="section-count">
-          Exact recorded usage{loadedAt ? ` · Loaded ${formatTimestamp(loadedAt)}` : ""}
-        </span>
         {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
       </div>
     </div>
@@ -1381,24 +1331,22 @@ export function InstanceCostRollup({
   costRollup,
   refreshing,
   retry,
-  window,
 }: {
   costRollup: QueryState<InsightCostRollupSnapshot>;
   refreshing: boolean;
   retry: () => void;
-  window: InsightWindow;
 }) {
   if (costRollup.status === "loading") {
     return (
       <section className="content-section cost-section-stable">
-        <RollupHeading statusMessage="Loading instance spend…" window={window} />
+        <RollupHeading statusMessage="Loading instance spend…" />
       </section>
     );
   }
   if (costRollup.status === "error") {
     return (
       <section className="content-section cost-section-stable">
-        <RollupHeading window={window} />
+        <RollupHeading />
         <SectionQueryStatus error message="Unable to load instance spend." retry={retry} />
       </section>
     );
@@ -1413,7 +1361,6 @@ export function InstanceCostRollup({
     <section className="content-section cost-section-stable">
       <RollupHeading
         statusMessage={refreshing ? "Refreshing instance spend…" : undefined}
-        window={window}
       />
       {costRollup.status === "stale" && costRollup.error && (
         <SectionQueryStatus
@@ -1423,15 +1370,15 @@ export function InstanceCostRollup({
         />
       )}
       {rankedGaggles.length === 0 ? (
-        <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
+        <p className="inline-empty">No gaggle has measured AIC in this window.</p>
       ) : (
         <div className="data-table-shell gaggle-spend-table">
           <div aria-hidden="true" className="data-table-header gaggle-spend-header">
             <span>Gaggle</span>
-            <span>Total cost</span>
-            <span>P50 cost</span>
-            <span>P95 cost</span>
-            <span>Runs</span>
+            <span>Total AIC</span>
+            <span>P50 AIC</span>
+            <span>P95 AIC</span>
+            <span>Measured attempts</span>
           </div>
           {rankedGaggles.map((entry) => (
             <GaggleSpendRow entry={entry} filters={data.filters} key={entry.gaggle} />
@@ -1444,16 +1391,13 @@ export function InstanceCostRollup({
 
 function RollupHeading({
   statusMessage,
-  window,
 }: {
   statusMessage?: string;
-  window: InsightWindow;
 }) {
   return (
     <div className="section-heading">
       <h2>Cost by gaggle</h2>
       <div className="section-heading-meta">
-        <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
         {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
       </div>
     </div>
@@ -1481,43 +1425,35 @@ function GaggleSpendRow({
   });
   return (
     <a
-      aria-label={`View instance spend for gaggle ${entry.gaggle}: total ${formatMeasuredCost(usage?.costUSD)}, ${formatRunCount(usage?.costSamples ?? 0)}, P50 ${formatMeasuredCost(usage?.p50CostUSD)}, P95 ${formatMeasuredCost(usage?.p95CostUSD)}`}
+      aria-label={`View instance cost for gaggle ${entry.gaggle}: total ${formatMeasuredAIC(usage?.costAIC)}, ${formatMeasuredAttemptCount(usage?.costSamples ?? 0)}, P50 ${formatMeasuredAIC(usage?.p50CostAIC)}, P95 ${formatMeasuredAIC(usage?.p95CostAIC)}`}
       className="gaggle-spend-row"
       href={href}
     >
       <span className="distribution-name">
         <strong>{entry.gaggle}</strong>
       </span>
-      <span>{formatMeasuredCost(usage?.costUSD)}</span>
-      <span>{formatMeasuredCost(usage?.p50CostUSD)}</span>
-      <span>{formatMeasuredCost(usage?.p95CostUSD)}</span>
-      <span>{formatRunCount(usage?.costSamples ?? 0)}</span>
+      <span data-label="Total AIC">{formatMeasuredAIC(usage?.costAIC)}</span>
+      <span data-label="P50 AIC">{formatMeasuredAIC(usage?.p50CostAIC)}</span>
+      <span data-label="P95 AIC">{formatMeasuredAIC(usage?.p95CostAIC)}</span>
+      <span data-label="Measured attempts">{formatMeasuredAttemptCount(usage?.costSamples ?? 0)}</span>
     </a>
   );
 }
 
-function formatRunCount(value: number): string {
-  return `${value.toLocaleString()} ${value === 1 ? "run" : "runs"}`;
+function formatMeasuredAttemptCount(value: number): string {
+  return `${value.toLocaleString()} measured ${value === 1 ? "attempt" : "attempts"}`;
 }
 
-function formatCostAmounts(
-  amounts: readonly TelemetryCostAmount[],
+function formatAICAmounts(
+  native: readonly TelemetryCostAmount[],
+  normalized: readonly TelemetryCostAmount[],
   empty: string,
 ): string {
-  if (amounts.length === 0) {
+  const amount = [...native, ...normalized].find((item) => item.unit === "aiCredits");
+  if (!amount) {
     return empty;
   }
-  return amounts
-    .map((amount) => {
-      if (amount.unit === "usd") {
-        return formatMeasuredCost(amount.value);
-      }
-      if (amount.unit === "aiCredits") {
-        return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC`;
-      }
-      return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} ${amount.unit}`;
-    })
-    .join(" · ");
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC${amount.estimated ? " estimated" : ""}`;
 }
 
 function StageDistributions({
@@ -1665,32 +1601,6 @@ function usageMetricLabel(usage: TelemetryUsageStats): string {
   }
 }
 
-function usageMetricName(usage: TelemetryUsageStats): string {
-  switch (usage.scope) {
-    case "instance":
-      return "Instance";
-    case "gaggle":
-      return usage.gaggle ?? "Gaggle";
-    case "workflow":
-      return usage.workflow ?? "Workflow";
-    case "stage":
-      return usage.stage ?? "Stage";
-  }
-}
-
-function usageMetricContext(usage: TelemetryUsageStats): string {
-  switch (usage.scope) {
-    case "instance":
-      return "All gaggles";
-    case "gaggle":
-      return "Gaggle";
-    case "workflow":
-      return usage.gaggle ?? "Workflow";
-    case "stage":
-      return [usage.gaggle, usage.workflow].filter(Boolean).join(" / ");
-  }
-}
-
 function metricHref(
   metric: OutcomeMetric,
   outcome: RunRouteFilters["outcome"] = "finished",
@@ -1717,18 +1627,9 @@ function formatMeasuredTokens(value: number | undefined): string {
   return value === undefined ? "Unmeasured" : `${value.toLocaleString("en-US")} tokens`;
 }
 
-function formatMeasuredCost(value: number | undefined): string {
+function formatMeasuredAIC(value: number | undefined): string {
   if (value === undefined) {
     return "Unmeasured";
   }
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
-function formatSamples(samples: number): string {
-  return samples === 0 ? "Unmeasured" : `${samples} ${samples === 1 ? "sample" : "samples"}`;
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value)} AIC`;
 }

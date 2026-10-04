@@ -6,7 +6,7 @@ goobers push-branch \- push the worktree's checked-out branch to origin (a workf
 \fBgoobers push-branch\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers push-branch [path]
+Usage: goobers push-branch [--config-repo] [path]
 
 Push the worktree's checked-out branch to origin, authenticated via the
 configured repository credential — never the host's ambient git
@@ -15,7 +15,18 @@ A push rejected as a ref race (non-fast-forward, "failed to push some
 refs") fetches the remote tip, rebases the local branch onto it, and
 retries up to 2 more times before failing, so a fully-validated diff is
 not discarded because a concurrent writer advanced the branch (#3366).
+A push the remote refuses outright (an ADO branch policy, or a GitHub
+App lacking the `workflows` permission for a .github/workflows change)
+fails immediately without retrying.
 [path] defaults to the current directory (the stage's worktree).
+
+Flag --config-repo (TUT-A8) pushes the instance CONFIG repository
+checkout instead — [path] defaults to the configRepoDir input (default
+"config-repo", as created by `goobers config-checkout`) — authenticated
+with the stage's declared configrepo:write credential, never repo:push. The
+checkout's origin must be the workflowSource repository. Other inputs:
+configRepo (owner/name) and configRepoBase, used only where no instance
+config is readable (a stage pod).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 .fi
 .SH EXAMPLES

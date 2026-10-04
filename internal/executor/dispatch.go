@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -130,7 +132,7 @@ func NewCIPollKindExecutor(executor *CIPollExecutor) KindExecutor {
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	required := string(capability.ProviderPRWrite)
-	if !containsString(env.Capabilities, required) {
+	if !slices.Contains(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindCIPoll, required)
 	}
 	if e.executor == nil {
@@ -144,7 +146,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	if err == nil {
 		return result, nil
 	}
-	if providers.IsTransientError(err) {
+	if providers.IsTransientError(err) || IsCIPollInfrastructureError(err) {
 		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(CIPollFailureCode(err), err))
 	}
 	var providerErr *ciPollProviderError
@@ -152,10 +154,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Summary: "ci-poll provider request failed",
-			Error: &apiv1.ErrorInfo{
-				Code:    CIPollProviderErrorCode,
-				Message: err.Error(),
-			},
+			Error:   journal.ErrorInfoFor(CIPollProviderErrorCode, err, false),
 		}, nil
 	}
 	return result, err
@@ -213,13 +212,4 @@ func CIPollRateLimitReset(err error) (string, bool) {
 		return "", false
 	}
 	return rateLimited.Reset.UTC().Format(time.RFC3339), true
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

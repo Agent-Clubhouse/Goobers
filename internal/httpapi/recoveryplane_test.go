@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/recovery"
@@ -92,4 +94,89 @@ func TestRecoveryRouteAbortsPartialDelivery(t *testing.T) {
 		}
 	}()
 	recoveryArchiveHandler(service, discardLogger()).ServeHTTP(response, request)
+}
+
+func TestRecoveryRouteReportsOverflowPending(t *testing.T) {
+	service := recoveryServiceFunc(func(context.Context, string, string, string, io.Writer) error {
+		return recovery.PendingPromotion(true, false, 0)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/?repositoryKey=repo&issue=7", nil)
+	request.SetPathValue("run", "run-1")
+	response := httptest.NewRecorder()
+	recoveryArchiveHandler(service, discardLogger()).ServeHTTP(response, request)
+	var envelope ErrorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || envelope.Error.Code != recovery.OverflowPendingCode || response.Header().Get(recovery.PromotionStateHeader) != recovery.PromotionCapacity {
+		t.Fatalf("pending response: %d %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Content-Type") != "application/json" || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("pending headers: %v", response.Header())
+	}
+}
+
+func TestRecoveryRoutesValidateScopeBeforeQueryAndReportAvailability(t *testing.T) {
+	streamOnly := recoveryServiceFunc(func(context.Context, string, string, string, io.Writer) error {
+		return nil
+	})
+	for _, test := range []struct {
+		name    string
+		method  string
+		handler http.HandlerFunc
+	}{
+		{"delivery", http.MethodGet, recoveryArchiveHandler(nil, discardLogger())},
+		{"publication", http.MethodPost, recoveryPublishHandler(streamOnly, discardLogger())},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, "/?repositoryKey=repo", nil)
+			request.SetPathValue("run", "run-1")
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, Principal{
+				Subject: "run:another-run",
+				Issuer:  PodPrincipalIssuer,
+			}))
+			response := httptest.NewRecorder()
+			test.handler.ServeHTTP(response, request)
+			assertRecoveryError(t, response, http.StatusForbidden, "run_mismatch", "pod principal may only read its own run's recovery")
+
+			for _, invalid := range []struct {
+				name, run, target string
+			}{
+				{"invalid run", "../run", "/?repositoryKey=repo&issue=7"},
+				{"missing key", "run-1", "/?issue=7"},
+				{"oversized key", "run-1", "/?repositoryKey=" + strings.Repeat("r", 4097) + "&issue=7"},
+				{"missing issue", "run-1", "/?repositoryKey=repo"},
+				{"oversized issue", "run-1", "/?repositoryKey=repo&issue=" + strings.Repeat("7", 257)},
+			} {
+				t.Run(invalid.name, func(t *testing.T) {
+					request = httptest.NewRequest(test.method, invalid.target, nil)
+					request.SetPathValue("run", invalid.run)
+					response = httptest.NewRecorder()
+					test.handler.ServeHTTP(response, request)
+					assertRecoveryError(t, response, http.StatusBadRequest, CodeInvalidRequest, "recovery requires bounded run, repository, and issue identities")
+				})
+			}
+
+			request = httptest.NewRequest(test.method, "/?repositoryKey=repo&issue=7", nil)
+			request.SetPathValue("run", "run-1")
+			response = httptest.NewRecorder()
+			test.handler.ServeHTTP(response, request)
+			message := "recovery delivery is unavailable"
+			if test.name == "publication" {
+				message = "recovery publication is unavailable"
+			}
+			assertRecoveryError(t, response, http.StatusServiceUnavailable, "recovery_unavailable", message)
+		})
+	}
+}
+
+func assertRecoveryError(t *testing.T, response *httptest.ResponseRecorder, status int, code, message string) {
+	t.Helper()
+	var envelope ErrorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != status || envelope.Error.Code != code || envelope.Error.Message != message {
+		t.Fatalf("response = %d %+v, want %d %s %q", response.Code, envelope.Error, status, code, message)
+	}
 }

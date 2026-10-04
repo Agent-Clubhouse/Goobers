@@ -24,9 +24,10 @@ type schemaFixture struct {
 
 func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	fixtures := map[string]schemaFixture{
+		"workspace-revision":      {schema: "workspace-revision.schema.json", value: completeWorkspaceRevision()},
 		"pr-queue-eligibility":    {schema: schemas.PRQueueEligibility, value: completePRQueueEligibility()},
 		"stage-artifact-manifest": {schema: schemas.StageArtifactManifest, value: artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "reproduction.bundle", Path: "output/bundle.tar", MediaType: "application/x-tar"}}}},
-		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.Entry{{Name: "reproduction.bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}}},
+		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.NamedSchemaVersion, Entries: []artifactset.Entry{{Name: "bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}, Bindings: []artifactset.SlotBinding{{Stage: "producer", Visit: 1, Attempt: 1, Slot: "bundle", Artifact: completeArtifactPointer("artifacts/bundle")}}}},
 		"investigation-evidence":  {schema: schemas.InvestigationEvidence, value: completeInvestigationEvidence()},
 		"artifact": {
 			schema: schemas.Envelope["artifact"],
@@ -106,6 +107,7 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
 		TaskID:                              "implement",
+		ArtifactPublication:                 &apiv1.ArtifactPublication{Stage: "implement", Visit: 1, Slots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.json", MaxSize: 100}}},
 		Attempt:                             1,
 		WorkflowID:                          "implementation",
 		RunID:                               "run-123",
@@ -132,6 +134,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 			Branch:        "main",
 			ConnectionRef: "origin",
 		},
+		WorkspaceRevision: completeWorkspaceRevision(),
 		AdditionalWorkspaces: []apiv1.AdditionalWorkspace{{
 			Name: "reference",
 			Path: "/workspace-reference",
@@ -232,9 +235,28 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 		Error: &apiv1.ErrorInfo{
 			Code:      "RETRY",
 			Message:   "a retryable failure",
+			Causes:    []apiv1.ErrorCause{{Code: "transient", Class: "infra", Message: "temporary provider failure"}},
 			Retryable: true,
 		},
-		Integrity: apiv1.IntegrityDerived,
+		Integrity:         apiv1.IntegrityDerived,
+		WorkspaceRevision: completeWorkspaceRevision(),
+	}
+}
+
+func completeWorkspaceRevision() *apiv1.WorkspaceRevision {
+	return &apiv1.WorkspaceRevision{
+		Repository: apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
+			Owner: "agent-clubhouse", Project: "project", Name: "goobers", ID: "123",
+		},
+		CommitSHA: strings.Repeat("a", 40),
+		SourceRef: "refs/heads/main",
+		SourceID:  "source-1",
+		BaseRepository: &apiv1.RepositoryIdentity{
+			Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
+			Owner: "agent-clubhouse", Project: "project", Name: "goobers", ID: "456",
+		},
+		BaseSHA: strings.Repeat("b", 40),
 	}
 }
 
@@ -352,6 +374,33 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				URL:       "https://example.test/issues/1704",
 				Integrity: apiv1.IntegrityMaintainer,
 			}},
+			Ancestry: &apiv1.RemediationAncestry{
+				Status:       "incomplete",
+				Provider:     "ado",
+				MaxDepth:     3,
+				MaxItems:     10,
+				CrossProject: "deny",
+				IncludeTypes: []string{"Feature", "Initiative"},
+				Items: []apiv1.RemediationAncestor{{
+					QualifiedID: "ado:project:1700",
+					Provider:    "ado",
+					Project:     "project",
+					ID:          "1700",
+					Depth:       1,
+					ParentOf:    []string{"ado:project:1704"},
+					Type:        "Initiative",
+					Title:       "Schema discipline",
+					State:       "Active",
+					URL:         "https://example.test/workitems/1700",
+					Fields: []apiv1.RemediationAncestorField{{
+						Name: "System.Description", Value: "Keep every schema closed.", Truncated: true,
+					}},
+					Integrity: apiv1.IntegrityUnapproved,
+				}},
+				Omissions: []apiv1.RemediationAncestryOmission{{
+					Child: "ado:project:1700", Parent: "1600", Depth: 2, Reason: "access-denied", Detail: "forbidden",
+				}},
+			},
 		},
 	}
 }
@@ -400,11 +449,22 @@ func completeJournalEvent() journal.Event {
 		Escalated:           true,
 		Status:              "success",
 		Disposition:         journal.RunDispositionProduced,
-		WorkflowVersion:     1,
-		WorkflowDigest:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		SourceRunID:         "0af7651916cd43dd8448eb211c80319c",
-		SourceTerminalSeq:   7,
-		Outputs:             map[string]any{"ciStatus": "success"},
+		TerminalCause: &journal.TerminalCause{
+			Schema: journal.TerminalCauseSchema, Phase: journal.PhaseEscalated,
+			Classification: journal.TerminalPolicyExhaustion,
+			SelectorKind:   "gate", Selector: "review", Branch: 1,
+			Verdict: "needs-changes", Target: journal.TargetEscalate,
+			Retry:  &journal.TerminalBudget{Consumed: 1, Allowed: 2},
+			Poll:   &journal.TerminalBudget{Consumed: 2, Allowed: 3},
+			Repass: &journal.TerminalBudget{Consumed: 3, Allowed: 3},
+			Code:   "REPASS_BUDGET_EXHAUSTED", Message: "review budget exhausted",
+			CausalEmitKey: "review-1", CausalEventSeq: 1,
+		},
+		WorkflowVersion:   1,
+		WorkflowDigest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SourceRunID:       "0af7651916cd43dd8448eb211c80319c",
+		SourceTerminalSeq: 7,
+		Outputs:           map[string]any{"ciStatus": "success"},
 		Artifacts: []journal.Ref{{
 			Path:      "artifacts/sha256/aa/plan.txt",
 			Digest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -412,6 +472,19 @@ func completeJournalEvent() journal.Event {
 			MediaType: "text/plain",
 			Integrity: apiv1.IntegrityTrusted,
 		}},
+		WorkspaceRevision: &apiv1.WorkspaceRevision{
+			Repository: apiv1.RepositoryIdentity{
+				Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
+				Owner: "agent-clubhouse", Project: "goobers-project", Name: "goobers", ID: "repo-id",
+			},
+			CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			SourceRef: "refs/pull/42/head", SourceID: "42",
+			BaseRepository: &apiv1.RepositoryIdentity{
+				Provider: apiv1.ProviderADO, URL: "https://dev.azure.com",
+				Owner: "agent-clubhouse", Project: "goobers-project", Name: "goobers", ID: "repo-id",
+			},
+			BaseSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
 		Integrity:        apiv1.IntegrityTrusted,
 		MinimumIntegrity: apiv1.IntegrityMaintainer,
 		Ref: &journal.Ref{
@@ -428,7 +501,11 @@ func completeJournalEvent() journal.Event {
 		// telemetry.GenAIEventSchema whenever the adapter leaves it empty).
 		DataSchema:  "goobers.dev/telemetry/genai-event/v1",
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42", URL: "https://example.test/pr/42", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-		Error:       &journal.ErrorDetail{Code: "boom", Message: "detail"},
+		Error: &journal.ErrorDetail{
+			Code:    "boom",
+			Message: "detail",
+			Causes:  []journal.ErrorCause{{Code: "wrapped", Class: "workflow", Message: "wrapped detail"}},
+		},
 		Redaction: &journal.RedactionInfo{
 			Target:    "artifacts/sha256/cc/leak.txt",
 			OldDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

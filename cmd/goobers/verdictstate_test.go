@@ -183,12 +183,15 @@ func TestVerdictStateMalformedLegacyMarkerDoesNotMigrate(t *testing.T) {
 	}
 }
 
-// TestVerdictStateDecodeRejectsForeignKeyedRecord guards the integrity
-// posture verdictDocument shares with remediationNoopDocument and
-// failureStreakDocument: a document whose embedded key does not match the key
-// it was read at is a decode error, never silently accepted.
+// TestVerdictStateDecodeRejectsForeignKeyedRecord guards the shared keyed
+// state helper's integrity posture: a document whose embedded key does not
+// match the key it was read at is a decode error, never silently accepted.
 func TestVerdictStateDecodeRejectsForeignKeyedRecord(t *testing.T) {
-	data, err := encodeVerdictRecord("github|host|~|acme|web|~#1", apiv1.Verdict{Decision: apiv1.VerdictPass})
+	data, err := encodeKeyedStateRecord(
+		"github|host|~|acme|web|~#1",
+		apiv1.Verdict{Decision: apiv1.VerdictPass},
+		verdictRecordSpec,
+	)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

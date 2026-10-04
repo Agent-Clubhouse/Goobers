@@ -28,12 +28,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/configsync"
 )
 
 const (
 	// Label keys applied to operator-managed worker objects.
 	managedByLabel = "app.kubernetes.io/managed-by"
 	gaggleLabel    = "goobers.dev/gaggle"
+	// gaggleResourceLabel records the actual Gaggle CR name. It can differ from
+	// gaggleLabel when config-sync publishes generation-versioned resources.
+	gaggleResourceLabel = "goobers.dev/gaggle-resource"
 	// gaggleNamespaceLabel records the namespace of the owning Gaggle CR (the
 	// control/config namespace), which differs from the worker's own isolation
 	// namespace. Used to map Deployment events back to the correct Gaggle.
@@ -65,6 +69,7 @@ type GaggleReconciler struct {
 // +kubebuilder:rbac:groups=goobers.dev,resources=gaggles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=goobers.dev,resources=gaggles/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=goobers.dev,resources=goobers,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create
 
@@ -77,12 +82,19 @@ func (r *GaggleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// Not found => deleted; nothing to do (cleanup is left to a future finalizer).
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	authoritative, err := r.isAuthoritativeGeneration(ctx, &gaggle)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !authoritative {
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.ensureNamespace(ctx, &gaggle); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
 	}
 
-	goobers, err := r.goobersFor(ctx, gaggle.Namespace, gaggle.Name)
+	goobers, err := r.goobersFor(ctx, &gaggle)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("list goobers: %w", err)
 	}
@@ -107,7 +119,7 @@ func (r *GaggleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Workflow registration is best-effort: a registration failure must not wedge
 	// the rest of the reconcile (the engine may not be up yet).
-	if err := r.Registrar.EnsureRegistered(ctx, gaggle.Name, workflowNames(goobers)); err != nil {
+	if err := r.Registrar.EnsureRegistered(ctx, logicalName(&gaggle), workflowNames(goobers)); err != nil {
 		logger.Error(err, "workflow registration failed (continuing)")
 	}
 
@@ -119,6 +131,18 @@ func (r *GaggleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+func (r *GaggleReconciler) isAuthoritativeGeneration(ctx context.Context, gaggle *v1alpha1.Gaggle) (bool, error) {
+	generation := gaggle.GetLabels()[configsync.GenerationLabel]
+	if generation == "" {
+		return true, nil
+	}
+	authoritative, err := configsync.AuthoritativeGeneration(ctx, r.Client, gaggle.Namespace)
+	if err != nil {
+		return false, err
+	}
+	return authoritative == generation, nil
 }
 
 // ensureNamespace creates the gaggle's isolation namespace if it does not exist.
@@ -138,14 +162,18 @@ func (r *GaggleReconciler) ensureNamespace(ctx context.Context, g *v1alpha1.Gagg
 // goobersFor returns the Goobers bound to the named gaggle. Goobers are matched
 // only within the Gaggle CR's own namespace, so a same-named gaggle in another
 // namespace cannot pull in foreign Goobers.
-func (r *GaggleReconciler) goobersFor(ctx context.Context, namespace, gaggle string) ([]v1alpha1.Goober, error) {
+func (r *GaggleReconciler) goobersFor(ctx context.Context, gaggle *v1alpha1.Gaggle) ([]v1alpha1.Goober, error) {
 	var list v1alpha1.GooberList
-	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+	opts := []client.ListOption{client.InNamespace(gaggle.Namespace)}
+	if generation := gaggle.GetLabels()[configsync.GenerationLabel]; generation != "" {
+		opts = append(opts, configsync.GenerationSelector(generation))
+	}
+	if err := r.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 	var mine []v1alpha1.Goober
 	for i := range list.Items {
-		if list.Items[i].Spec.Gaggle == gaggle {
+		if list.Items[i].Spec.Gaggle == gaggle.Name {
 			mine = append(mine, list.Items[i])
 		}
 	}
@@ -179,7 +207,7 @@ func (r *GaggleReconciler) pruneWorkers(ctx context.Context, g *v1alpha1.Gaggle,
 	var list appsv1.DeploymentList
 	if err := r.List(ctx, &list,
 		client.InNamespace(g.Spec.Isolation.Namespace),
-		client.MatchingLabels{managedByLabel: managedByValue, gaggleLabel: g.Name},
+		client.MatchingLabels{managedByLabel: managedByValue, gaggleLabel: logicalName(g)},
 	); err != nil {
 		return err
 	}
@@ -207,8 +235,38 @@ func (r *GaggleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Gaggle{}).
 		Watches(&v1alpha1.Goober{}, handler.EnqueueRequestsFromMapFunc(gooberToGaggle)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.generationPointerToGaggles)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(workerToGaggle)).
 		Complete(r)
+}
+
+func (r *GaggleReconciler) generationPointerToGaggles(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetName() != configsync.GenerationConfigMapName {
+		return nil
+	}
+	cm, ok := obj.(*corev1.ConfigMap)
+	if !ok {
+		return nil
+	}
+	generation := cm.Data[configsync.GenerationConfigMapKey]
+	if generation == "" {
+		return nil
+	}
+	var gaggles v1alpha1.GaggleList
+	if err := r.List(ctx, &gaggles,
+		client.InNamespace(cm.Namespace),
+		configsync.GenerationSelector(generation),
+	); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(gaggles.Items))
+	for i := range gaggles.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Namespace: gaggles.Items[i].Namespace,
+			Name:      gaggles.Items[i].Name,
+		}})
+	}
+	return reqs
 }
 
 // gooberToGaggle maps a Goober change to a reconcile request for its gaggle.
@@ -228,10 +286,17 @@ func gooberToGaggle(_ context.Context, obj client.Object) []reconcile.Request {
 // readiness events enqueue the actual Gaggle.
 func workerToGaggle(_ context.Context, obj client.Object) []reconcile.Request {
 	labels := obj.GetLabels()
-	if labels[managedByLabel] != managedByValue || labels[gaggleLabel] == "" || labels[gaggleNamespaceLabel] == "" {
+	if labels[managedByLabel] != managedByValue || labels[gaggleNamespaceLabel] == "" {
 		return nil
 	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: labels[gaggleNamespaceLabel], Name: labels[gaggleLabel]}}}
+	name := labels[gaggleResourceLabel]
+	if name == "" {
+		name = labels[gaggleLabel]
+	}
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: labels[gaggleNamespaceLabel], Name: name}}}
 }
 
 // ---------------------------------------------------------------------------
@@ -244,10 +309,11 @@ func workerName(gooberName string) string { return "goober-" + gooberName }
 // workerLabels are the labels applied to a goober's worker Deployment + pods.
 // gaggleNamespace is the namespace of the owning Gaggle CR (not the worker's
 // isolation namespace) so Deployment events can be mapped back to it.
-func workerLabels(gaggleName, gaggleNamespace, gooberName, role string) map[string]string {
+func workerLabels(gaggleName, gaggleResourceName, gaggleNamespace, gooberName, role string) map[string]string {
 	return map[string]string{
 		managedByLabel:                managedByValue,
 		gaggleLabel:                   gaggleName,
+		gaggleResourceLabel:           gaggleResourceName,
 		gaggleNamespaceLabel:          gaggleNamespace,
 		gooberLabel:                   gooberName,
 		roleLabel:                     role,
@@ -259,12 +325,13 @@ func workerLabels(gaggleName, gaggleNamespace, gooberName, role string) map[stri
 
 // gaggleNamespaceObject builds the per-gaggle namespace (SEC-001).
 func gaggleNamespaceObject(g *v1alpha1.Gaggle) *corev1.Namespace {
+	gaggleName := logicalName(g)
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: g.Spec.Isolation.Namespace,
 			Labels: map[string]string{
 				managedByLabel:              managedByValue,
-				gaggleLabel:                 g.Name,
+				gaggleLabel:                 gaggleName,
 				"app.kubernetes.io/part-of": "goobers",
 			},
 		},
@@ -278,12 +345,14 @@ func desiredWorkerDeployment(g *v1alpha1.Gaggle, gb *v1alpha1.Goober, image stri
 	if replicas < 1 {
 		replicas = 1
 	}
-	labels := workerLabels(g.Name, g.Namespace, gb.Name, gb.Spec.Role)
-	selector := map[string]string{gaggleLabel: g.Name, gooberLabel: gb.Name}
+	gaggleName := logicalName(g)
+	gooberName := logicalName(gb)
+	labels := workerLabels(gaggleName, g.Name, g.Namespace, gooberName, gb.Spec.Role)
+	selector := map[string]string{gaggleLabel: gaggleName, gooberLabel: gooberName}
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      workerName(gb.Name),
+			Name:      workerName(gooberName),
 			Namespace: g.Spec.Isolation.Namespace,
 			Labels:    labels,
 		},
@@ -297,8 +366,8 @@ func desiredWorkerDeployment(g *v1alpha1.Gaggle, gb *v1alpha1.Goober, image stri
 						Name:  "goober",
 						Image: image,
 						Env: []corev1.EnvVar{
-							{Name: "GOOBER_GAGGLE", Value: g.Name},
-							{Name: "GOOBER_NAME", Value: gb.Name},
+							{Name: "GOOBER_GAGGLE", Value: gaggleName},
+							{Name: "GOOBER_NAME", Value: gooberName},
 							{Name: "GOOBER_ROLE", Value: gb.Spec.Role},
 						},
 					}},
@@ -306,6 +375,13 @@ func desiredWorkerDeployment(g *v1alpha1.Gaggle, gb *v1alpha1.Goober, image stri
 			},
 		},
 	}
+}
+
+func logicalName(obj client.Object) string {
+	if name := obj.GetAnnotations()[configsync.OriginalNameAnnotation]; name != "" {
+		return name
+	}
+	return obj.GetName()
 }
 
 // deploymentReady reports whether a Deployment has all desired replicas available.

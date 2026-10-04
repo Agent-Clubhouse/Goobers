@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/goobers/goobers/internal/intsplit"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -175,6 +175,38 @@ func (r adoPRThreadCostReader) ListComments(ctx context.Context, repo providers.
 	return adoAttributeCommentsByID(comments, r.self), nil
 }
 
+// adoAttributingCommentReader lists work-item comments with their authors
+// attributed by identity GUID, the work-item counterpart of
+// adoPRThreadCostReader: a comment from another identity that shares the
+// Goobers display name is never trusted as a cost receipt.
+type adoAttributingCommentReader struct {
+	provider postMergeCostCommentReader
+	self     providers.ADOIdentity
+}
+
+func (r adoAttributingCommentReader) ListComments(ctx context.Context, repo providers.RepositoryRef, id string) ([]providers.Comment, error) {
+	comments, err := r.provider.ListComments(ctx, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	return adoAttributeCommentsByID(comments, r.self), nil
+}
+
+// adoWorkItemCostIdentity is the identity whose work-item receipts are
+// trusted: the work-item provider's own when it can report one (it may run
+// under a different credential than the PR provider), otherwise prSelf.
+func adoWorkItemCostIdentity(ctx context.Context, issueProvider adoWorkItemCloser, prSelf providers.ADOIdentity) providers.ADOIdentity {
+	reader, ok := issueProvider.(adoIdentityReader)
+	if !ok {
+		return prSelf
+	}
+	self, err := reader.AuthenticatedIdentity(ctx)
+	if err != nil || (strings.TrimSpace(self.ID) == "" && strings.TrimSpace(self.DisplayName) == "") {
+		return prSelf
+	}
+	return self
+}
+
 func collectADOPostMergeCostReport(
 	ctx context.Context,
 	issueProvider adoWorkItemCloser,
@@ -189,18 +221,20 @@ func collectADOPostMergeCostReport(
 		pf(stderr, "warning: resolve cost receipt author: %v\n", err)
 		return postMergeCostReport{}
 	}
-	// PR threads are attributed by GUID in the reader; work-item comments
-	// keep the display-name comparison (their author ids are not mapped).
+	// Both sides are attributed by identity GUID in their readers (ADO-N5):
+	// PR threads against the PR identity, work-item comments against the
+	// identity of the provider that wrote them.
+	issueSelf := adoWorkItemCostIdentity(ctx, issueProvider, self)
 	report, collectErr := collectPostMergeCostReport(
 		ctx,
 		adoPRThreadCostReader{provider: prProvider, self: self},
-		issueProvider,
+		adoAttributingCommentReader{provider: issueProvider, self: issueSelf},
 		repo,
 		backlogRepo,
 		pullNumber,
 		issueIDs,
 		self.DisplayName,
-		self.DisplayName,
+		issueSelf.DisplayName,
 	)
 	if collectErr != nil {
 		pf(stderr, "warning: %v\n", collectErr)
@@ -248,6 +282,7 @@ func addCostReceipt(dst *providers.CostReceipt, src providers.CostReceipt) {
 	addFloatMeasure(&dst.CopilotPremiumRequests, src.CopilotPremiumRequests)
 	addInt64Measure(&dst.NanoAIU, src.NanoAIU)
 	addFloatMeasure(&dst.CostUSD, src.CostUSD)
+	dst.VendorEstimated = dst.VendorEstimated || src.VendorEstimated
 }
 
 func addInt64Measure(dst **int64, src *int64) {
@@ -320,7 +355,7 @@ func allocateIssueNanoAIU(receipts map[string]postMergeCostReceipt, issueIDs []s
 		}
 		return allocations
 	}
-	for issueID, value := range splitInt64ByWeight(prOnly, issueIDs, weights, weightTotal) {
+	for issueID, value := range splitInt64ByWeight(prOnly, issueIDs, weights) {
 		allocations[issueID] += value
 	}
 	return allocations
@@ -343,35 +378,10 @@ func splitInt64Evenly(total int64, keys []string) map[string]int64 {
 	return out
 }
 
-func splitInt64ByWeight(total int64, keys []string, weights map[string]int64, weightTotal int64) map[string]int64 {
-	sort.Strings(keys)
-	out := make(map[string]int64, len(keys))
-	type remainder struct {
-		key       string
-		remainder *big.Int
-	}
-	remainders := make([]remainder, 0, len(keys))
-	var assigned int64
-	divisor := big.NewInt(weightTotal)
-	for _, key := range keys {
-		product := new(big.Int).Mul(big.NewInt(total), big.NewInt(weights[key]))
-		quotient, rem := new(big.Int), new(big.Int)
-		quotient.QuoRem(product, divisor, rem)
-		out[key] = quotient.Int64()
-		assigned += out[key]
-		remainders = append(remainders, remainder{key: key, remainder: rem})
-	}
-	sort.SliceStable(remainders, func(i, j int) bool {
-		if cmp := remainders[i].remainder.Cmp(remainders[j].remainder); cmp != 0 {
-			return cmp > 0
-		} else {
-			return remainders[i].key < remainders[j].key
-		}
+func splitInt64ByWeight(total int64, keys []string, weights map[string]int64) map[string]int64 {
+	return intsplit.LargestRemainder(total, keys, func(key string) int64 {
+		return weights[key]
 	})
-	for i := int64(0); i < total-assigned; i++ {
-		out[remainders[i%int64(len(remainders))].key]++
-	}
-	return out
 }
 
 func mergedPullRequestComment(pullNumber string, report postMergeCostReport, issueID string) string {
@@ -386,18 +396,18 @@ func mergedPullRequestCommentAt(pullRef string, report postMergeCostReport, issu
 	if report.Total.NanoAIU == nil {
 		return comment
 	}
-	comment += "\n\n**Total Goobers cost for this PR:** " + formatNanoAIU(*report.Total.NanoAIU)
+	comment += "\n\n**Total Goobers cost for this PR:** " + formatPostMergeCost(*report.Total.NanoAIU, report.Total.VendorEstimated)
 	if issueID != "" {
-		comment += "\n**Cost attributed to this issue:** " + formatNanoAIU(report.IssueNanoAIU[issueID])
+		comment += "\n**Cost attributed to this issue:** " + formatPostMergeCost(report.IssueNanoAIU[issueID], report.Total.VendorEstimated)
 	}
-	return comment
+	return comment + postMergeCostDisclosures(report)
 }
 
 func renderPostMergeCostSummary(report postMergeCostReport) string {
 	if report.Total.NanoAIU == nil {
 		return ""
 	}
-	body := "Thanks for using Goobers. Your cost for this PR was **" + formatNanoAIU(*report.Total.NanoAIU) + "**."
+	body := "Thanks for using Goobers. Your cost for this PR was **" + formatPostMergeCost(*report.Total.NanoAIU, report.Total.VendorEstimated) + "**."
 	if len(report.ByWorkflow) > 0 {
 		workflows := make([]string, 0, len(report.ByWorkflow))
 		for workflow := range report.ByWorkflow {
@@ -408,11 +418,46 @@ func renderPostMergeCostSummary(report postMergeCostReport) string {
 		for _, workflow := range workflows {
 			receipt := report.ByWorkflow[workflow]
 			if receipt.NanoAIU != nil {
-				body += fmt.Sprintf("\n- `%s`: %s", workflow, formatNanoAIU(*receipt.NanoAIU))
+				body += fmt.Sprintf("\n- `%s`: %s", workflow, formatPostMergeCost(*receipt.NanoAIU, receipt.VendorEstimated))
 			}
 		}
 	}
-	return body + "\n\n" + postMergeCostSummaryMarker
+	return body + postMergeCostDisclosures(report) + "\n\n" + postMergeCostSummaryMarker
+}
+
+// postMergeCostCoverage counts the receipted runs whose cost is known. Every
+// run that did agent work publishes a receipt; one without a measured AIC
+// (its agents reported nothing, or tokens without a cost) makes the total a
+// lower bound. Runs with no agent work publish no receipt and cost nothing.
+func postMergeCostCoverage(report postMergeCostReport) (known, total int) {
+	for _, receipt := range report.Receipts {
+		if receipt.Attribution.Cost.NanoAIU != nil {
+			known++
+		}
+	}
+	return known, len(report.Receipts)
+}
+
+// postMergeCostDisclosures renders the epic #4383 disclosures (#6353): partial
+// run coverage, and the footnote for amounts that include a vendor-reported
+// estimate. It returns "" when the total is complete and fully billed.
+func postMergeCostDisclosures(report postMergeCostReport) string {
+	var out string
+	if known, total := postMergeCostCoverage(report); known < total {
+		out += fmt.Sprintf("\n\nCost known for %d of %d runs, so this total is a lower bound.", known, total)
+	}
+	if report.Total.VendorEstimated {
+		out += "\n\n\\* Includes Claude costs, which are vendor-reported estimates normalized to AIC for totals."
+	}
+	return out
+}
+
+// formatPostMergeCost is formatNanoAIU with the estimate footnote marker.
+func formatPostMergeCost(nanoAIU int64, estimated bool) string {
+	if estimated {
+		return formatNanoAIU(nanoAIU) + "\\*"
+	}
+	return formatNanoAIU(nanoAIU)
 }
 
 func formatNanoAIU(nanoAIU int64) string {

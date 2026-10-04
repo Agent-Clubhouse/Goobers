@@ -650,7 +650,7 @@ export function TranscriptView({ text }: { text: string }) {
             Show conversation
           </button>
         </div>
-        <pre className="artifact-content code-block">{text}</pre>
+        <ScrollableCode label="Raw transcript">{text}</ScrollableCode>
       </div>
     );
   }
@@ -732,7 +732,9 @@ function TranscriptTurnRow({ turn }: { turn: TranscriptTurn }) {
       {turn.content && <p className="transcript-content">{turn.content}</p>}
 
       {turn.toolCall?.arguments && (
-        <pre className="transcript-code code-block">{turn.toolCall.arguments}</pre>
+        <ScrollableCode className="transcript-code" label="Tool arguments">
+          {turn.toolCall.arguments}
+        </ScrollableCode>
       )}
 
       {turn.toolResult !== undefined && (
@@ -745,10 +747,40 @@ function TranscriptTurnRow({ turn }: { turn: TranscriptTurn }) {
           >
             {showResult ? "Hide result" : "Show result"}
           </button>
-          {showResult && <pre className="transcript-code code-block">{turn.toolResult}</pre>}
+          {showResult && (
+            <ScrollableCode className="transcript-code" label="Tool result">
+              {turn.toolResult}
+            </ScrollableCode>
+          )}
         </>
       )}
     </li>
+  );
+}
+
+function ScrollableCode({
+  children,
+  className = "artifact-content",
+  label,
+}: {
+  children: string;
+  className?: string;
+  label: string;
+}) {
+  return (
+    <div className="local-scroll-region">
+      <span aria-hidden="true" className="local-scroll-affordance">
+        Scroll horizontally for full content
+      </span>
+      <pre
+        aria-label={`${label}; scroll horizontally for full content`}
+        className={`${className} code-block`}
+        role="region"
+        tabIndex={0}
+      >
+        {children}
+      </pre>
+    </div>
   );
 }
 
@@ -796,10 +828,20 @@ function AttemptDetail({
         </div>
       )}
       {attempt.error && (
-        <p className="artifact-load-error">
-          {attempt.error.code}
-          {attempt.error.message ? `: ${attempt.error.message}` : ""}
-        </p>
+        <div className="artifact-load-error">
+          <p>
+            {attempt.error.code}
+            {attempt.error.message ? `: ${attempt.error.message}` : ""}
+          </p>
+          {attempt.error.causes && attempt.error.causes.length > 0 && (
+            <ol aria-label="Attempt failure cause chain" className="failure-reason-chain">
+              {attempt.error.causes.map((cause, index) => {
+                const label = cause.message || cause.code || cause.class || "Unknown cause";
+                return <li key={`${index}-${label}`}>{label}</li>;
+              })}
+            </ol>
+          )}
+        </div>
       )}
       {outputs.length > 0 && (
         <details className="definition-disclosure" open>
@@ -966,13 +1008,14 @@ function ArtifactRow({
         </button>
       </div>
       {content && (
-        <pre
-          className={`artifact-content code-block${
+        <ScrollableCode
+          className={`artifact-content${
             isLargeArtifactPreview(content.bytes) ? " artifact-content-bounded" : ""
           }`}
+          label="Artifact content"
         >
           {new TextDecoder().decode(content.bytes)}
-        </pre>
+        </ScrollableCode>
       )}
       {state === "error" && (
         <p className="artifact-load-error" role="alert">

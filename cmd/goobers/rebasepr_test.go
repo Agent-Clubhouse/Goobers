@@ -74,6 +74,9 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 				"id": i + 1, "user": map[string]string{"login": login},
 				"body": comment, "created_at": createdAt,
 			}
+			if login == "goobers-bot" {
+				out[i]["body"] = stampOwnFixtureBody(comment, "comment")
+			}
 		}
 		writeFakeJSON(w, out)
 	})
@@ -1071,6 +1074,19 @@ func TestRebasePRFailingCIPushesCleanRebaseAndDefersToCheckpoint(t *testing.T) {
 	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
 	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err != nil {
 		t.Fatalf("origin's branch missing clean rebase before checkpoint routing: %v", err)
+	}
+
+	// #6128: the run continues past this push, so the revision guards need
+	// the exact head it published to tell this run's own rebase apart from a
+	// stale selection.
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode rebase-result.json: %v", err)
+	}
+	remoteTip := strings.TrimSpace(runGitOutputT(t, filepath.Join(verify, "check"), "rev-parse", "HEAD"))
+	if result[rebasePushedHeadOutput] != remoteTip || result[rebasePushedHeadOutput] == result["attemptedHeadSha"] {
+		t.Fatalf("pushedHeadSha = %q, attemptedHeadSha = %q, want the pushed rebase tip %q",
+			result[rebasePushedHeadOutput], result["attemptedHeadSha"], remoteTip)
 	}
 }
 

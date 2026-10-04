@@ -22,7 +22,10 @@ func TestIngestRunCostAttributionAndExactUsageReplacement(t *testing.T) {
 		costRefEvent(6, fixtureStart.Add(5*time.Second), "issue", "41", "claim"),
 		costRefEvent(7, fixtureStart.Add(6*time.Second), "pr", "90", "open"),
 	}, []costAttemptFixture{
-		{attempt: 1, status: "failure", nanoAIU: int64Pointer(0), input: int64Pointer(0), model: "gpt-a"},
+		{
+			attempt: 1, status: "failure", nanoAIU: int64Pointer(0), input: int64Pointer(0),
+			model: "gpt-a", billingModel: "included", costBasis: "metered",
+		},
 		{
 			attempt: 2, status: "success", nanoAIU: int64Pointer(125), input: int64Pointer(11),
 			cacheRead: int64Pointer(7), cacheWrite: int64Pointer(3), reasoning: int64Pointer(5),
@@ -86,6 +89,20 @@ func TestIngestRunCostAttributionAndExactUsageReplacement(t *testing.T) {
 		prs[0].Models[0].Model != "gpt-a" || prs[0].Models[0].NanoAIU == nil || *prs[0].Models[0].NanoAIU != 0 ||
 		prs[0].Models[1].Model != "gpt-b" || prs[0].Models[1].NanoAIU == nil || *prs[0].Models[1].NanoAIU != 125 {
 		t.Fatalf("model aggregates = %#v", prs)
+	}
+	if prs[0].TotalAttempts != 2 || prs[0].MeasuredAttempts != 2 ||
+		prs[0].CacheReadTokens == nil || *prs[0].CacheReadTokens != 7 ||
+		prs[0].CacheWriteTokens == nil || *prs[0].CacheWriteTokens != 3 ||
+		prs[0].Models[0].CacheReadTokens != nil ||
+		prs[0].Models[0].InputTokens == nil || *prs[0].Models[0].InputTokens != 0 ||
+		prs[0].Models[0].UsageAttempts != 1 || prs[0].Models[0].MeasuredAttempts != 1 {
+		t.Fatalf("attempt/model nil and zero semantics = %#v", prs[0])
+	}
+	if got := strings.Join(prs[0].BillingModels, ","); got != "ai_credits,included" {
+		t.Fatalf("billing models = %q", got)
+	}
+	if got := strings.Join(prs[0].CostBases, ","); got != "metered,vendor_reported" {
+		t.Fatalf("cost bases = %q", got)
 	}
 
 	writeCostFixture(t, runsDir, runID, []string{
@@ -193,6 +210,9 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	if len(pr.Runs) != 4 || pr.Runs[0].RunID != "run-a" || pr.Runs[3].RunID != "run-d" {
 		t.Fatalf("PR run breakdown = %#v", pr.Runs)
 	}
+	if pr.Runs[0].Gaggle != "test" || pr.Runs[0].Workflow != "implement" || pr.Runs[0].Status != "completed" {
+		t.Fatalf("PR run metadata = %#v", pr.Runs[0])
+	}
 
 	issues, err := db.IssueCosts(context.Background(), "github")
 	if err != nil {
@@ -211,6 +231,9 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	}
 	if len(issues[0].Runs) != 4 || len(issues[1].Runs) != 3 {
 		t.Fatalf("issue run breakdown = %#v", issues)
+	}
+	if issues[0].Runs[0].Gaggle != "test" || issues[0].Runs[0].Workflow != "implement" || issues[0].Runs[0].Status != "completed" {
+		t.Fatalf("issue run metadata = %#v", issues[0].Runs[0])
 	}
 }
 
@@ -429,8 +452,8 @@ type costUsage struct {
 func seedCostRow(t *testing.T, db *DB, runID string, started time.Time, refs []costRef, usage []costUsage) {
 	t.Helper()
 	if _, err := db.sql.Exec(`
-		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
-		VALUES (?, 'implement', 1, 'test', ?)`, runID, formatTime(started)); err != nil {
+		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+		VALUES (?, 'implement', 1, 'test', 'completed', ?)`, runID, formatTime(started)); err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
 	for _, ref := range refs {

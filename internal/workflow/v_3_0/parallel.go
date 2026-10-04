@@ -2,6 +2,7 @@ package v30
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -44,6 +45,23 @@ func parallelProblems(m *Machine) []string {
 
 	sort.Strings(problems)
 	return problems
+}
+
+// parallelWarnings flags a parallel that leaves maxConcurrentBranches unset.
+// Unset means 1, so a construct named "parallel" runs its branches one at a
+// time, and nothing else at author time says so (#2738). Declaring the field,
+// including an explicit 1, acknowledges the schedule and silences this.
+func parallelWarnings(def Definition) []string {
+	var warnings []string
+	for _, p := range def.Spec.Parallels {
+		if p.MaxConcurrentBranches != 0 || len(p.Branches) < 2 {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"parallel %q: maxConcurrentBranches is unset, so its %d branches run sequentially, one at a time; set maxConcurrentBranches above 1 to run them concurrently, or to 1 to keep sequential execution explicitly",
+			p.Name, len(p.Branches)))
+	}
+	return warnings
 }
 
 type branchInputReference struct {
@@ -182,7 +200,7 @@ func branchInputsFromProblems(m *Machine) []string {
 					"task %q inputsFrom %q references stage %q in parallel %q branch %q, but that stage does not run on every successful path to @join",
 					task.Name, inputKey, ref.stage, ref.parallel, ref.branch))
 			}
-			if len(producer.ExpectedOutputs) > 0 && !containsString(producer.ExpectedOutputs, ref.key) {
+			if len(producer.ExpectedOutputs) > 0 && !slices.Contains(producer.ExpectedOutputs, ref.key) {
 				problems = append(problems, fmt.Sprintf(
 					"task %q inputsFrom %q references output %q from parallel %q branch %q stage %q, but that stage declares outputs %v",
 					task.Name, inputKey, ref.key, ref.parallel, ref.branch, ref.stage, producer.ExpectedOutputs))

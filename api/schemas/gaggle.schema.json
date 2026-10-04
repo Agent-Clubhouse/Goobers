@@ -46,7 +46,8 @@
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
               "description": "Kubernetes namespace this gaggle's stage pods are created in. The active mode-3 dispatcher routes each stage pod here from its Attempt's gaggle — never a worker-wide default — and refuses to start if the namespace does not exist or this worker's credentials lack the RBAC grants dispatch needs there (#4897). Two gaggles may declare the SAME namespace deliberately; that shared topology is supported."
             },
-            "identityRef": { "type": "string", "description": "Target per-gaggle Azure workload identity for external services. The active dispatcher does not yet consume this declaration — every gaggle's stage pods still run under their namespace's default ServiceAccount (#4897 scoped namespace routing only; workload identity federation is tracked separately)." }
+            "serviceAccount": { "type": "string", "description": "Stage pod ServiceAccount; defaults to goobers-stage. Set default explicitly to opt out. The account must exist and disable token automount." },
+            "identityRef": { "type": "string", "description": "Target per-gaggle Azure workload identity for external services. The active dispatcher does not yet consume this declaration — isolation.serviceAccount independently selects the Kubernetes account; workload identity federation is tracked separately." }
           }
         },
         "additionalRepos": {
@@ -121,6 +122,23 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
+        "issueOwnershipScope": {
+          "description": "Default ownership policy every workflow task in this gaggle inherits for provider-visible issue writes. A task may override it with ownershipAssignees and ownershipUnassigned inputs. Omitted leaves issue writes unrestricted.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "assignees": {
+              "description": "Provider identities this gaggle may mutate. Empty means no assigned-owner restriction, though unassigned may still refuse unassigned issues.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "unassigned": {
+              "description": "Whether unassigned issues are inside this gaggle's write scope. Empty behaves as allow when assignees is empty and refuse when assignees is set.",
+              "type": "string",
+              "enum": ["allow", "refuse"]
+            }
+          }
+        },
         "siblings": {
           "description": "Other gaggles/instances known to independently work the same target repo, for the sibling-overlap validation warning (MIRC-2, #1901).",
           "type": "array",
@@ -151,7 +169,7 @@
       "required": ["provider", "owner", "name"],
       "properties": {
         "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Repository provider." },
-        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
+        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host. Rejected when provider is github: GitHub Enterprise Server is unsupported, so a github reference always means github.com." },
         "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, Gitea owner, or Azure DevOps organization." },
         "project": { "type": "string", "minLength": 1, "description": "Azure DevOps project. Omit for GitHub repositories." },
         "name": { "type": "string", "minLength": 1, "description": "Repository name." },
@@ -169,7 +187,9 @@
             }
           }
         }
-      }
+      },
+      "if": { "properties": { "provider": { "const": "github" } }, "required": ["provider"] },
+      "then": { "properties": { "baseUrl": false } }
     },
     "gaggleSibling": {
       "type": "object",
@@ -208,7 +228,7 @@
       "required": ["provider", "project"],
       "properties": {
         "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Backlog provider." },
-        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
+        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host. Rejected when provider is github: GitHub Enterprise Server is unsupported, so a github reference always means github.com." },
         "project": { "type": "string", "minLength": 1, "description": "GitHub owner/repository or Azure DevOps project that scopes the backlog." },
         "labels": { "type": "array", "description": "Required labels used to narrow candidate work items.", "items": { "type": "string" } },
         "labelPredicate": {
@@ -240,7 +260,9 @@
             }
           }
         }
-      }
+      },
+      "if": { "properties": { "provider": { "const": "github" } }, "required": ["provider"] },
+      "then": { "properties": { "baseUrl": false } }
     }
   }
 }

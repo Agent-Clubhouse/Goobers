@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -128,18 +129,18 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		claimed[entry.ItemID] = true
 	}
 
-	repo, err := providerRepo(root)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
+		return 1
+	}
+	backlogRepo := env.backlogRepoRef()
+	issueProvider, ctx, cancel, err := openBacklogProviderAs[providers.BacklogProvider](
+		env, true, withStageProviderCache(),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
-	issueProvider, err := backlogDedupeProvider(root, backlogProviderRepo(repo, backlogRepo))
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	ctx, cancel := providerCommandContext()
 	defer cancel()
 
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
@@ -191,10 +192,6 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "surfaced %d likely-duplicate candidate pair(s) from %d open item(s)\n", len(candidates), len(openItems))
 	return 0
-}
-
-func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	return newProviderForStage(root, repo, true, withStageProviderCache())
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {
@@ -250,6 +247,7 @@ func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]b
 }
 
 func duplicateSignals(a, b providers.WorkItem, internalRefPrefixes map[string]bool) dedupeSignals {
+	a.Body, b.Body = dedupeAuthoredBody(a.Body), dedupeAuthoredBody(b.Body)
 	return dedupeSignals{
 		TitleSimilarity:          dedupeTextSimilarity(a.Title, b.Title),
 		BodySimilarity:           dedupeTextSimilarity(a.Body, b.Body),
@@ -278,6 +276,20 @@ func duplicateCandidateScore(signals dedupeSignals) (int, bool) {
 		likely = true
 	}
 	return score, likely
+}
+
+// dedupeAuthoredBody returns the part of a backlog item's body that its author
+// wrote. Items Goobers files carry a provider attribution footer and, when the
+// create had a run id, a run-id footer; every Goobers-filed item shares those
+// tokens, so comparing them would score unrelated siblings as duplicates.
+func dedupeAuthoredBody(body string) string {
+	body = providers.StripAttribution(body)
+	start := strings.LastIndex("\n"+body, "\n"+providers.RunIDFooterPrefix)
+	if start < 0 || strings.Contains(body[start:], "\n") {
+		return body
+	}
+	head := strings.TrimRight(body[:start], " \t\r\n")
+	return strings.TrimSpace(strings.TrimSuffix(head, "---"))
 }
 
 func dedupeTextSimilarity(a, b string) int {
@@ -396,17 +408,14 @@ func sharedStrings(a, b []string, prefix string) []string {
 }
 
 func distinctSortedStrings(values []string) []string {
-	seen := make(map[string]bool, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		if value == "" || seen[value] {
-			continue
+		if value != "" {
+			out = append(out, value)
 		}
-		seen[value] = true
-		out = append(out, value)
 	}
-	sort.Strings(out)
-	return out
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func candidateItem(item providers.WorkItem, claimed bool) dedupeCandidateItem {

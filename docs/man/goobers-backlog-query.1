@@ -25,7 +25,8 @@ provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
 a plain list (no --claim) does not require it. --read-only also bypasses
 claim locks, blocked-record reconciliation, scan cursors, and read caches,
-and uses only the github:issues:read capability. When inputs.resultFile
+and uses only the github:issues:read capability routed to the configured
+backlog provider (GitHub, Azure DevOps, or Gitea). When inputs.resultFile
 is declared, it also writes a read-only candidate report with scan coverage;
 candidates are for inspection, not claims or permission to re-ready work.
 
@@ -66,11 +67,15 @@ whichever appears earliest in selectionPriority. Unset (the default)
 preserves plain FIFO exactly. fieldOrder is an optional comma-separated
 field[:asc|desc] list applied within each label-priority tier before FIFO.
 
-A separate scheduled workflow uses --claim --resweep with bounded
-resweepMaxItems to recheck blocked dependencies and ready items. Forward
+A separate scheduled workflow uses --claim --resweep to recheck blocked
+dependencies and ready items; a bounded resweepMaxItems enables it. Forward
 candidates reserve maxItems capacity first but are never claimed by this
 mode. The sweep uses leftover capacity and rotates within selectionPriority
-tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and
+tiers. The two lanes have independent budgets: resweepMaxItems bounds
+ready-drift reviews, and resweepDependencyMaxItems (default 25, at most
+250) bounds how many blocked items have their native blockers rechecked.
+Both lanes share the leftover batch capacity, dependency rechecks first.
+Cadence belongs to workflow schedule/readiness; resweepInterval and
 inline re-sweep inputs on ordinary --claim runs are retired. Ready items
 already in implementation/review are emitted as read-only context and are
 never claimed.

@@ -39,6 +39,24 @@ func TestAdmitReleaseFreesSlot(t *testing.T) {
 	}
 }
 
+func TestWorkerAvailabilityDistinguishesUnobservableFromZero(t *testing.T) {
+	c := NewConditions()
+	if available, observable := c.WorkerAvailability(); observable || available != 0 {
+		t.Fatalf("unconfigured availability = (%d, %t), want unobservable", available, observable)
+	}
+
+	c.SetInstanceLimits(1, nil, nil)
+	if available, observable := c.WorkerAvailability(); !observable || available != 1 {
+		t.Fatalf("empty configured availability = (%d, %t), want 1 observable", available, observable)
+	}
+	if ok, reason := c.Admit("wf", apiv1.ReadinessConditions{MaxConcurrentRuns: 2}, time.Now()); !ok {
+		t.Fatalf("Admit = false: %s", reason)
+	}
+	if available, observable := c.WorkerAvailability(); !observable || available != 0 {
+		t.Fatalf("saturated configured availability = (%d, %t), want zero observable", available, observable)
+	}
+}
+
 // TestMaxParallelHoldsUnderSimultaneousTicks is the concurrency acceptance
 // criterion: N goroutines race Admit for the same workflow with
 // MaxConcurrentRuns=K; exactly K must succeed, never more (the check-and-

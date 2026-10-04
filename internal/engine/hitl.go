@@ -98,7 +98,7 @@ const (
 )
 
 // HITL resolutions for HITLResolveEscalation, matching the daemon's
-// intervention verbs one for one (cmd/goobers/interventions.go).
+// intervention verbs one for one (internal/intervention/service.go).
 const (
 	// HITLResolutionApprove clears the escalation on the gate's own branch.
 	// Permitted for human and agentic gates.
@@ -390,6 +390,9 @@ func newHITLSession(in RunInput, m *wf.Machine, rec *runJournal) *hitlSession {
 // registration emits a history event, so this is invisible to replay of
 // histories recorded before the protocol existed.
 func (s *hitlSession) register(ctx workflow.Context) error {
+	if err := registerOperatorMessages(ctx, s.runID); err != nil {
+		return err
+	}
 	s.mu = workflow.NewMutex(ctx)
 	err := workflow.SetUpdateHandlerWithOptions(
 		ctx, HITLUpdateName, s.handle,
@@ -871,7 +874,7 @@ func (s *hitlSession) startsOf(stage string) int {
 // evaluatedInSegment reports whether a gate produced a verdict in the CURRENT
 // run segment — since the last operator resume, or since the run started if
 // there has not been one. It is gateEvaluatedInCurrentSegment's rule
-// (cmd/goobers/interventions.go): an operator may only resolve a gate whose
+// (internal/intervention/service.go): an operator may only resolve a gate whose
 // verdict belongs to the escalation in front of them, never one from a
 // segment an earlier intervention already closed.
 func (s *hitlSession) evaluatedInSegment(gate string) bool {
@@ -917,7 +920,9 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 		return hitlResumePlan{}, false, false, nil
 	}
 	s.terminal = out
-	s.recordTerminal(ctx, out)
+	if err := s.recordTerminal(ctx, out); err != nil {
+		return hitlResumePlan{}, false, false, err
+	}
 	s.wroteTerminal = true
 	s.phase = hitlPhaseAwaiting
 	s.deadline = workflow.Now(ctx).Add(s.policy.wait())
@@ -960,7 +965,7 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 // generation. It is the same pair of writes run() makes, lifted here so a
 // terminal that is about to be held open is journaled before the hold rather
 // than after it.
-func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) {
+func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) error {
 	if out.Status == StatusFailed {
 		s.rec.runFailedCause(ctx, out.FinalState, out.FailureCode, out.FailureMessage)
 	}
@@ -970,9 +975,12 @@ func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) {
 		// which map. Defensive only.
 		phase = journal.PhaseFailed
 	}
-	s.rec.runFinished(ctx, phase, journal.RunDispositionProduced)
+	if err := s.rec.runFinished(ctx, phase, journal.RunDispositionProduced, out.FinalState); err != nil {
+		return err
+	}
 	s.generation++
 	s.rec.emitTerminal(ctx)
+	return nil
 }
 
 // noteTerminal records a terminal run() wrote itself, so the generation the

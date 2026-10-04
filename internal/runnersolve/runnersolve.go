@@ -234,6 +234,8 @@ type StageRequirement struct {
 // Inventory is the resolved runner inventory a solve runs against — pinned at
 // daemon start (accept-and-pin, decision record D4/D9).
 type Inventory struct {
+	// SelfExecutionDenied removes self from workflow work, including local-only agentic gates.
+	SelfExecutionDenied bool
 	// Runners is the resolved inventory (declared runners:, or the implicit
 	// self entry), in declaration order.
 	Runners []Runner
@@ -279,7 +281,7 @@ func (inv Inventory) LocalMode() bool {
 // the dispatch-reachable runner set and the checkpoints widen with it,
 // without touching the match.
 func (inv Inventory) ExecutableSubstrate() Inventory {
-	substrate := Inventory{Mandates: inv.Mandates, ClassMandates: inv.ClassMandates}
+	substrate := Inventory{Mandates: inv.Mandates, ClassMandates: inv.ClassMandates, SelfExecutionDenied: inv.SelfExecutionDenied}
 	for _, r := range inv.Runners {
 		if r.Self {
 			substrate.Runners = append(substrate.Runners, r)
@@ -443,6 +445,9 @@ func solveStage(inv Inventory, stage StageRequirement, localMode bool) StagePlac
 	restrictions = effectiveRestrictions(restrictions, inv.ClassMandates[stage.StageClass])
 	matches := make([]runnerMatch, 0, len(inv.Runners))
 	for _, runner := range inv.Runners {
+		if inv.SelfExecutionDenied && runner.Self && (!stage.ControlPlane || stage.StageClass != "deterministic") {
+			continue
+		}
 		matches = append(matches, evaluateRunner(runner, stage, restrictions))
 	}
 
@@ -474,6 +479,9 @@ func solveStage(inv Inventory, stage StageRequirement, localMode bool) StagePlac
 		placement.Unsat = &Unsat{Kind: UnsatQuantity, Diagnostic: quantityDiagnostic(stage, matches)}
 	} else {
 		placement.Unsat = &Unsat{Kind: UnsatRequirement, Diagnostic: requirementDiagnostic(stage, restrictions, matches)}
+	}
+	if inv.SelfExecutionDenied {
+		placement.Unsat.Diagnostic += "; placement.selfExecution: deny excludes the daemon self runner; declare a non-self runner providing the stage requirements and agentic gate runsOn"
 	}
 	return placement
 }

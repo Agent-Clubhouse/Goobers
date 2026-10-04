@@ -30,7 +30,7 @@ func TestCheckoutAuthMaterialStaysOutOfTheWorkspace(t *testing.T) {
 	ws := t.TempDir()
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
 
-	if _, err := checkoutGitAuthEnv(ws, creds); err != nil {
+	if _, err := checkoutGitAuthEnv(context.Background(), ws, creds, adoCheckoutAuth{}); err != nil {
 		t.Fatalf("build git auth env: %v", err)
 	}
 
@@ -54,7 +54,7 @@ func TestCheckoutRefusesToSubstituteAnUnrelatedCredential(t *testing.T) {
 	ws := t.TempDir()
 	creds := []dispatcher.MintedCredential{{Capability: "github:issues:read", Value: "issues-only"}}
 
-	env, err := checkoutGitAuthEnv(ws, creds)
+	env, err := checkoutGitAuthEnv(context.Background(), ws, creds, adoCheckoutAuth{})
 	if err != nil {
 		t.Fatalf("build git auth env: %v", err)
 	}
@@ -124,8 +124,11 @@ func TestCheckoutClonesRepoWorkspaceOntoTheRunBranch(t *testing.T) {
 	// reached the cluster is invisible. Verified by ablation — with creds nil
 	// this test passes against the broken code.
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
+	}
+	if strings.Contains(errOut.String(), "Remote branch") || strings.Contains(errOut.String(), "not found in upstream origin") {
+		t.Fatalf("missing run-branch fallback leaked git's expected clone miss to stderr:\n%s", errOut.String())
 	}
 
 	if _, err := os.Stat(filepath.Join(ws, "README.md")); err != nil {
@@ -163,7 +166,7 @@ func TestCheckoutRepoReadOnlyDetachesAtBase(t *testing.T) {
 
 	ws := t.TempDir()
 	var errOut strings.Builder
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
 	out, err := testgit.Command("-C", ws, "rev-parse", "--abbrev-ref", "HEAD").Output()
@@ -181,7 +184,7 @@ func TestCheckoutScratchLeavesWorkspaceUntouched(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceScratch))
 	ws := t.TempDir()
 	var errOut strings.Builder
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 		t.Fatalf("scratch must be a no-op: %v", err)
 	}
 	entries, err := os.ReadDir(ws)
@@ -224,7 +227,7 @@ func TestCheckoutFallbackSurvivesDirtyWorkspace(t *testing.T) {
 
 	var errOut strings.Builder
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("fallback must clear and re-clone: %v\nstderr: %s", err, errOut.String())
 	}
 	if _, err := os.Stat(filepath.Join(ws, "README.md")); err != nil {
@@ -326,7 +329,7 @@ func TestCheckoutHonoursTheReboundWorkspaceBranch(t *testing.T) {
 	ws := t.TempDir()
 	var errOut strings.Builder
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
 
@@ -356,7 +359,7 @@ func TestCheckoutLeavesBaseResolvableForRecoveryCustodyOnAnExistingRunBranch(t *
 	ws := t.TempDir()
 	var errOut strings.Builder
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
 	// No local "main" branch: single-branch clone of prBranch never created one.
@@ -384,7 +387,7 @@ func TestCheckoutRefusesAReboundBranchThatDoesNotExist(t *testing.T) {
 	t.Setenv(dispatcher.EnvWorkspaceBranch, "goobers/impl/vanished")
 
 	var errOut strings.Builder
-	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil)
+	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil, "")
 	if err == nil {
 		t.Fatal("checkout created a rebound branch at base; push-remediated would force-push base over the PR head")
 	}
@@ -395,10 +398,10 @@ func TestCheckoutRefusesAReboundBranchThatDoesNotExist(t *testing.T) {
 	}
 }
 
-// The refusal must not INVENT the cause. `clone --branch <b>` fails for a
-// missing branch and equally for a bad credential, an unreachable host, or a
-// repository that is gone; the refusal is right in all of them, but the error
-// it surrenders is the record that outlives the pod, so it has to say what git
+// The refusal must not INVENT the cause. The quiet branch probe distinguishes
+// a missing branch from a bad credential, an unreachable host, or a repository
+// that is gone; the refusal is right in all of them, but the error it
+// surrenders is the record that outlives the pod, so it has to say what git
 // said rather than assert absence it never checked.
 //
 // This drives the failure with an unreachable remote — the branch question is
@@ -413,7 +416,7 @@ func TestCheckoutReboundRefusalCarriesTheCloneFailuresCause(t *testing.T) {
 	t.Setenv(dispatcher.EnvWorkspaceBranch, "goobers/impl/remediation-364")
 
 	var errOut strings.Builder
-	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil)
+	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil, "")
 	if err == nil {
 		t.Fatal("checkout succeeded against a remote that does not exist")
 	}
@@ -437,7 +440,7 @@ func TestCheckoutRefusesAReboundBranchOutsideTheNamespace(t *testing.T) {
 	t.Setenv(dispatcher.EnvWorkspaceBranch, "main")
 
 	var errOut strings.Builder
-	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil)
+	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil, "")
 	if err == nil || !strings.Contains(err.Error(), "outside branch namespace") {
 		t.Fatalf("error = %v, want a refusal naming the namespace", err)
 	}
@@ -461,7 +464,7 @@ func TestCheckoutSyncsBaseIntoTheReboundBranch(t *testing.T) {
 		}
 		ws := t.TempDir()
 		var errOut strings.Builder
-		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 			t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 		}
 		if got := checkedOutBranch(t, ws); got != prBranch {
@@ -513,7 +516,7 @@ func TestCheckoutSyncBaseConflictFailsClosed(t *testing.T) {
 
 	ws := t.TempDir()
 	var errOut strings.Builder
-	err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil)
+	err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, "")
 	if err == nil {
 		t.Fatal("a conflicting base sync was accepted; the stage would run against a half-merged tree")
 	}
@@ -558,7 +561,7 @@ func TestCheckoutWithoutAReboundBranchStillDerivesTheRunBranch(t *testing.T) {
 	ws := t.TempDir()
 	var errOut strings.Builder
 	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
 	if got, want := checkedOutBranch(t, ws), "goobers/pr-remediation/run-392"; got != want {

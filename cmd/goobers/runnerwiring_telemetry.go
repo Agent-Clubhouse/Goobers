@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -30,24 +32,25 @@ func buildTelemetryClient(
 	registry *journal.RegistryScrubber,
 	telemetryConfig instance.TelemetryConfig,
 	stores credentials.StoreResolver,
+	exporterHealth *telemetry.ExporterHealth,
+	// Nil keeps one-shot setup immediate; the daemon supplies its readiness signal.
+	replayStart <-chan struct{},
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
-		ServiceName:    "goobers",
-		ServiceVersion: version.Get().Version,
-		BuildCommit:    version.Get().Commit,
-		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
-		Scrubber:       scrubber,
-		Batch:          true,
-		JournalRoot:    l.Root,
+		ServiceName:             "goobers",
+		ServiceVersion:          version.Get().Version,
+		BuildCommit:             version.Get().Commit,
+		SpanExporter:            telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
+		Scrubber:                scrubber,
+		Batch:                   true,
+		JournalRoot:             l.Root,
+		AzureMonitorReplayStart: replayStart,
+		ExporterHealth:          exporterHealth,
 	}
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
 	// Carry it on every signal as a resource attribute so operators can correlate
 	// process restarts with the same customer-managed instance and its journals.
-	if instanceID, err := l.ReadIdentity(); err == nil {
-		cfg.JournalInstanceID = instanceID
-		cfg.ResourceAttributes = append(cfg.ResourceAttributes,
-			attribute.String("goobers.instance.id", instanceID))
-	}
+	cfg.JournalInstanceID, cfg.ResourceAttributes = telemetryInstanceIdentities(l.Root)
 	if telemetryConfig.OTLP != nil {
 		if err := configureOTLP(ctx, &cfg, *telemetryConfig.OTLP, registry, stores); err != nil {
 			return nil, err
@@ -63,7 +66,9 @@ func buildTelemetryClient(
 	// still usable for local-only telemetry, so callers must not treat every
 	// non-nil error here as a construction failure. See daemon.go's call
 	// site for the degrade handling.
-	return telemetry.New(ctx, cfg)
+	namedErr := configureNamedTelemetry(ctx, &cfg, telemetryConfig, l.Root, registry, stores, false)
+	client, err := telemetry.New(ctx, cfg)
+	return client, errors.Join(namedErr, err)
 }
 
 func configureAzureMonitor(
@@ -92,7 +97,16 @@ func configureAzureMonitor(
 	cfg.AzureMonitorJournalLogs = profile.IncludesJournal()
 	cfg.AzureMonitorHostIdentity = profile.IncludesHostIdentity()
 	if azure.Replay.EnabledEffective() && instanceRoot != "" {
-		cfg.AzureMonitorReplayRoot = filepath.Join(instanceRoot, "telemetry-export", "azure-monitor")
+		// #6058: the replay spool and journal-export cursor store open SQLite
+		// through sqliteuri.File, whose contract is an absolute path. A
+		// relative instance root (`goobers up .`) became "file:///telemetry-
+		// export/…" at the filesystem root, so journal catch-up could never
+		// open its cursor store and no run journal was exported.
+		spoolRoot, err := filepath.Abs(filepath.Join(instanceRoot, "telemetry-export", "azure-monitor"))
+		if err != nil {
+			return fmt.Errorf("resolve Azure Monitor replay root: %w", err)
+		}
+		cfg.AzureMonitorReplayRoot = spoolRoot
 		cfg.AzureMonitorReplayMaxAge = azure.Replay.MaxAgeDuration()
 		cfg.AzureMonitorReplayMaxBytes = azure.Replay.MaxBytesEffective()
 	}
@@ -149,6 +163,15 @@ type teeRegistrar struct {
 func (t teeRegistrar) Register(secret []byte) {
 	t.run.Register(secret)
 	t.shared.Register(secret)
+}
+
+// RegisterUntil forwards an issuer-stated expiry so the instance-lifetime
+// shared registry can retire the value (#2656). The run's own registry is
+// bounded by the run's lifetime already, so it keeps the value permanently: a
+// parked run that resumes long after the token expired still redacts it.
+func (t teeRegistrar) RegisterUntil(secret []byte, expiresAt time.Time) {
+	t.run.Register(secret)
+	t.shared.RegisterUntil(secret, expiresAt)
 }
 
 func configureOTLP(ctx context.Context, cfg *telemetry.Config, otlp instance.OTLPConfig, registry *journal.RegistryScrubber, stores credentials.StoreResolver) error {

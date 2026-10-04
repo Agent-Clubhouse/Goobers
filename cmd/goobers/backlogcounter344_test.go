@@ -66,6 +66,8 @@ func TestBuildBacklogCounter(t *testing.T) {
 
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
 		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{Backlog: apiv1.BacklogRef{
+			Labels:         []string{"area:web"},
+			LabelPredicate: `"team:web" in labels`,
 			FieldPredicate: `fields["state"] == "open"`,
 		}}}
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
@@ -98,7 +100,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if bc.repo.Owner != "acme" || bc.repo.Name != "web" {
 			t.Fatalf("repo = %+v, want acme/web", bc.repo)
 		}
-		if got, want := bc.labels, []string{"goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
+		if got, want := bc.labels, []string{"area:web", "goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
 			t.Fatalf("labels = %v, want canonical order %v", got, want)
 		}
 		if bc.schedulerDir != "/instance/scheduler" {
@@ -107,9 +109,18 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if bc.quota == nil {
 			t.Fatal("provider quota observer was not wired")
 		}
-		matched, err := bc.labelPredicate.Matches([]string{"goobers:ready", "goobers:approved", "size:m"})
+		matched, err := bc.labelPredicate.Matches([]string{"area:web", "team:web", "goobers:ready", "goobers:approved", "size:m"})
 		if err != nil || !matched {
 			t.Fatalf("compiled predicate match = %v, err = %v, want true", matched, err)
+		}
+		for _, labels := range [][]string{
+			{"team:web", "goobers:ready", "goobers:approved", "size:m"},
+			{"area:web", "goobers:ready", "goobers:approved", "size:m"},
+		} {
+			matched, err = bc.labelPredicate.Matches(labels)
+			if err != nil || matched {
+				t.Fatalf("compiled predicate match for labels %v = %v, err = %v, want false", labels, matched, err)
+			}
 		}
 		matched, err = bc.fieldPredicate.Matches(fieldpredicate.Fields{"state": "open", "number": int64(10)})
 		if err != nil || !matched {
@@ -154,7 +165,13 @@ func TestBuildBacklogCounter(t *testing.T) {
 	})
 
 	t.Run("desired refill derives schedule workflow backlog eligibility", func(t *testing.T) {
-		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{RequireLabels: []string{"gaggle-default"}}}
+		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+			RequireLabels: []string{"gaggle-default"},
+			Backlog: apiv1.BacklogRef{
+				Labels:         []string{"area:web"},
+				LabelPredicate: `"team:web" in labels`,
+			},
+		}}
 		wf := &apiv1.Workflow{
 			ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
 			Spec: apiv1.WorkflowSpec{
@@ -184,17 +201,25 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if !ok {
 			t.Fatalf("counter type = %T, want *backlogCounter", counter)
 		}
-		if got, want := refill.labels, []string{"goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
+		if got, want := refill.labels, []string{"area:web", "goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
 			t.Fatalf("labels = %v, want %v", got, want)
 		}
 		if !refill.respectAssignee || refill.assignedTo != "goobersbot" {
 			t.Fatalf("assignee scope = enabled:%v value:%q, want goobersbot", refill.respectAssignee, refill.assignedTo)
 		}
-		matched, err := refill.labelPredicate.Matches([]string{"goobers:approved", "goobers:ready"})
+		matched, err := refill.labelPredicate.Matches([]string{"area:web", "team:web", "goobers:approved", "goobers:ready"})
 		if err != nil || !matched {
 			t.Fatalf("eligible labels match = %v, err = %v, want true", matched, err)
 		}
-		matched, err = refill.labelPredicate.Matches([]string{"goobers:approved", "goobers:ready", providers.LabelClaimed})
+		matched, err = refill.labelPredicate.Matches([]string{"team:web", "goobers:approved", "goobers:ready"})
+		if err != nil || matched {
+			t.Fatalf("missing gaggle backlog label match = %v, err = %v, want false", matched, err)
+		}
+		matched, err = refill.labelPredicate.Matches([]string{"area:web", "goobers:approved", "goobers:ready"})
+		if err != nil || matched {
+			t.Fatalf("missing gaggle labelPredicate label match = %v, err = %v, want false", matched, err)
+		}
+		matched, err = refill.labelPredicate.Matches([]string{"area:web", "team:web", "goobers:approved", "goobers:ready", providers.LabelClaimed})
 		if err != nil || matched {
 			t.Fatalf("claimed labels match = %v, err = %v, want false", matched, err)
 		}
@@ -346,6 +371,60 @@ func TestBacklogCounterResolvesTokenPerCallAndQueriesProvider(t *testing.T) {
 	}
 	if len(reg.registered) == 0 || string(reg.registered[0]) != "backlog-token-value" {
 		t.Fatalf("registered secrets = %v, want the resolved token registered for scrubbing", reg.registered)
+	}
+}
+
+func TestBacklogCounterRealListWorkItemsOmitReadyTimeWhenProviderLacksReadyAt(t *testing.T) {
+	t.Setenv("BACKLOG_TOK", "backlog-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "acme", "web")
+	server.addIssue(1, "Old issue newly eligible")
+	createdAt := time.Now().Add(-30 * 24 * time.Hour).UTC()
+	enqueuedAt := time.Now().Add(-5 * time.Minute).UTC()
+	server.mu.Lock()
+	server.issues[1].createdAt = createdAt
+	server.issues[1].updatedAt = enqueuedAt
+	server.issues[1].labels = append(server.issues[1].labels, "goobers:ready")
+	server.appendLabelEventLocked(1, "goobers:ready", true, enqueuedAt)
+	server.mu.Unlock()
+	prev := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	counter := &backlogCounter{
+		ref:      "acme/web",
+		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		labels:   []string{"goobers:ready"},
+		resolver: resolver,
+		reg:      &backlogTestRegistrar{},
+	}
+
+	snapshot, err := counter.EligibleSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("EligibleSnapshot: %v", err)
+	}
+	if snapshot.Count != 1 {
+		t.Fatalf("snapshot count = %d, want 1", snapshot.Count)
+	}
+	if !snapshot.OldestReadyAt.IsZero() {
+		t.Fatalf("OldestReadyAt = %s, want omitted when provider did not expose an authoritative ready time", snapshot.OldestReadyAt)
+	}
+}
+
+func TestBacklogItemReadyAtUsesAuthoritativeReadyAtOnly(t *testing.T) {
+	createdAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	readyAt := time.Date(2026, 9, 30, 12, 0, 0, 0, time.FixedZone("offset", -7*60*60))
+
+	if got := backlogItemReadyAt(providers.WorkItem{CreatedAt: &createdAt}); !got.IsZero() {
+		t.Fatalf("readyAt from CreatedAt-only item = %s, want omitted", got)
+	}
+	got := backlogItemReadyAt(providers.WorkItem{CreatedAt: &createdAt, ReadyAt: &readyAt})
+	if !got.Equal(readyAt.UTC()) {
+		t.Fatalf("readyAt = %s, want authoritative ready time %s", got, readyAt.UTC())
 	}
 }
 
@@ -641,6 +720,43 @@ type counterResolverProbe struct{ calls []string }
 func (r *counterResolverProbe) Resolve(_ context.Context, name string) (string, error) {
 	r.calls = append(r.calls, name)
 	return "repo-secret", nil
+}
+
+// TestScheduleDemandCounterIsUnsizedOnADO: on Azure DevOps the schedule is
+// pr-remediation's only autonomous trigger, and the GitHub-only demand count
+// could only error, sizing every tick to zero so the lane never ran. The ADO
+// repository therefore gets no counter (each due tick fires unsized, bounded
+// by readiness), while a GitHub repository in the same instance keeps its
+// claim-aware count.
+func TestScheduleDemandCounterIsUnsizedOnADO(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "web"},
+		{Provider: "github", Owner: "acme", Name: "api", Token: instance.TokenRef{Env: "GH_TOK"}},
+	}}
+	wf := &apiv1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-remediation"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "goobers",
+			Start:    "select",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "37 * * * *", Priority: 100}},
+			Tasks: []apiv1.Task{{
+				Name: "select",
+				Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "update-behind-pr"}},
+			}},
+		},
+	}
+	probe := &counterResolverProbe{}
+	adoRef := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "web"}
+	if counter := buildScheduleDemandCounter(cfg, wf, adoRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil); counter != nil {
+		t.Fatalf("ADO schedule demand counter = %T, want none so due ticks fire unsized", counter)
+	}
+	if len(probe.calls) != 0 {
+		t.Fatalf("credential resolved while wiring the ADO schedule: %v", probe.calls)
+	}
+	githubRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "api"}
+	if _, ok := buildScheduleDemandCounter(cfg, wf, githubRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil).(*remediationDemandCounter); !ok {
+		t.Fatal("GitHub schedule demand counter was dropped; only Azure DevOps runs unsized")
+	}
 }
 
 // Demand counters carry the counted repository's own provider, so a non-GitHub

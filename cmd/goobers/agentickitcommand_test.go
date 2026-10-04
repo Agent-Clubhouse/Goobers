@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -60,6 +62,7 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 						cfg.Runner.HarnessPreflightArgs = map[string][]string{
 							string(selected): {"--minimal-preflight"},
 						}
+						cfg.Runner.RequiredMCPSettleTimeout = "75s"
 					}
 				}
 				if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
@@ -118,6 +121,9 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 					}
 					if !slices.Equal(kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)]) {
 						t.Fatalf("kit harness preflight args = %v, want %v", kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)])
+					}
+					if kit.RequiredMCPSettleTimeout != cfg.Runner.RequiredMCPSettleTimeout {
+						t.Fatalf("kit required-MCP settle timeout = %q, want %q", kit.RequiredMCPSettleTimeout, cfg.Runner.RequiredMCPSettleTimeout)
 					}
 					assertPodLauncher(t, kit, selected, declared, cfg.Runner.HarnessEnvUnset)
 				}
@@ -206,6 +212,13 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 	defer func() { podHarnessRegistry = previous }()
 	fake := &harnesstest.FakeAdapter{}
 	podHarnessRegistry = func(caps map[string]string, environment harness.EnvironmentConfig, commands map[string][]string, root, bin string, deferDiscovery bool, credential func(context.Context) (string, error), ephemeral bool) (*harness.Registry, error) {
+		selfBin, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bin != selfBin {
+			t.Fatalf("pod harness self binary = %q, want %q for goobers-io", bin, selfBin)
+		}
 		if !slices.Equal(environment.Unset, envUnset) {
 			t.Fatalf("pod harness env unset = %v, want %v", environment.Unset, envUnset)
 		}
@@ -239,6 +252,9 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 			}
 			if a.RequireLauncherContract != (len(declared) > 0 && !slices.Equal(declared, []string{"copilot"})) {
 				t.Fatal("launcher contract admission changed")
+			}
+			if wantSettle, _ := time.ParseDuration(kit.RequiredMCPSettleTimeout); a.RequiredMCPSettleTimeout != wantSettle {
+				t.Fatalf("pod required-MCP settle timeout = %s, want %s", a.RequiredMCPSettleTimeout, wantSettle)
 			}
 		case *harness.ClaudeAdapter:
 			argv = a.Command

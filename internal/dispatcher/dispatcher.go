@@ -41,10 +41,21 @@ const (
 	// container executing indefinitely. Kubernetes retains the stopped Pod
 	// object until an explicit deletion.
 	DefaultDeadlineMargin = 10 * time.Minute
+	// DefaultHeldPodRetention bounds how long the orphan sweep keeps a
+	// writable stage pod whose recovery custody was never confirmed after its
+	// owning workflow is terminal and its stage container has stopped (#6571).
+	// The hold keeps the only copy of unsurrendered work salvageable for a day;
+	// past it the pod is reaped so held pods cannot accumulate indefinitely.
+	DefaultHeldPodRetention = 24 * time.Hour
 	// DefaultStageTimeout backs a stage that declares no timeout, so every
 	// pod still carries a finite activeDeadlineSeconds (the execution bound is
 	// always-on, never conditional on declaration).
 	DefaultStageTimeout = time.Hour
+	// DefaultRecoveryCustodyTimeout bounds the pod-side recovery custody work
+	// that runs after a stage exits but before surrender. It must comfortably
+	// cover slow-container-FS git scans and archive publication while still
+	// staying finite; publishPodRecovery also clamps it to the claim expiry.
+	DefaultRecoveryCustodyTimeout = 10 * time.Minute
 	// DefaultSupervisionInterval paces the supervise loop's pod polls and
 	// liveness relays.
 	DefaultSupervisionInterval = 15 * time.Second
@@ -72,6 +83,9 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 
 // Config is the dispatcher's per-instance wiring.
 type Config struct {
+	// NetworkNoneHostAliases carries verified Service IPs for pure pod rendering.
+	// The live dispatcher refreshes these from the API server on each dispatch.
+	NetworkNoneHostAliases []corev1.HostAlias
 	// GaggleNamespaces maps each gaggle name this dispatcher serves to the
 	// Kubernetes namespace its stage pods are created in — Gaggle.spec.
 	// isolation.namespace, keyed by gaggle name (#4897). A stage pod's
@@ -82,6 +96,8 @@ type Config struct {
 	// silently placing a pod in the wrong gaggle's namespace is exactly the
 	// isolation break this map exists to close.
 	GaggleNamespaces map[string]string
+	// GaggleServiceAccounts overrides the default unprivileged stage account per gaggle.
+	GaggleServiceAccounts map[string]string
 	// InstanceID is the durable identity of the Goobers instance. It scopes
 	// orphan sweeps across worker generations without crossing into another
 	// instance that happens to share a Kubernetes namespace.
@@ -126,6 +142,9 @@ type Config struct {
 	// WriteAPIBase is the daemon write API base URL stage pods emit journal
 	// events to and resolve credentials from (GOOBERS_DAEMON_API).
 	WriteAPIBase string
+	// RecoveryCustodyTimeout is the resolved runner.recoveryCustodyTimeout
+	// stamped into every stage pod. Zero uses DefaultRecoveryCustodyTimeout.
+	RecoveryCustodyTimeout time.Duration
 	// EnvPassthrough is the instance's RunnerConfig.EnvPassthrough (#736): the
 	// operator-declared env var NAMES carried into a stage subprocess on top of
 	// procenv's built-in default-deny allowlist.
@@ -181,6 +200,8 @@ type Config struct {
 	TmpfsSizeLimit resource.Quantity
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.
 	DeadlineMargin time.Duration
+	// HeldPodRetention overrides DefaultHeldPodRetention; zero uses the default.
+	HeldPodRetention time.Duration
 	// LinuxScheduleToStart / WindowsScheduleToStart override the capacity
 	// wait bounds; zero uses the defaults.
 	LinuxScheduleToStart   time.Duration
@@ -220,6 +241,13 @@ func (c Config) tmpfsSizeLimit() resource.Quantity {
 		return DefaultTmpfsSizeLimit.DeepCopy()
 	}
 	return c.TmpfsSizeLimit
+}
+
+func (c Config) heldPodRetention() time.Duration {
+	if c.HeldPodRetention <= 0 {
+		return DefaultHeldPodRetention
+	}
+	return c.HeldPodRetention
 }
 
 func (c Config) deadlineMargin() time.Duration {
@@ -440,6 +468,10 @@ type Attempt struct {
 	// on a pod spec, where the run's goal and ownership boundary would be
 	// readable by anything with namespace read.
 	Envelope *apiv1.InvocationEnvelope
+	// ArtifactPublication is the runner-owned named-output contract for a
+	// deterministic command. It travels separately because those pods do not
+	// consume an agentic invocation kit.
+	ArtifactPublication *apiv1.ArtifactPublication
 	// KitDigest is the published kit's content address, set by Dispatch for an
 	// agentic attempt and stamped on the pod. Never set by a caller.
 	KitDigest string
@@ -461,6 +493,13 @@ func (a Attempt) stageTimeout() time.Duration {
 		return DefaultStageTimeout
 	}
 	return a.Timeout
+}
+
+func (c Config) recoveryCustodyTimeout() time.Duration {
+	if c.RecoveryCustodyTimeout <= 0 {
+		return DefaultRecoveryCustodyTimeout
+	}
+	return c.RecoveryCustodyTimeout
 }
 
 // RunnerSpec is the dispatcher's view of one resolved runner: the inventory
@@ -1052,12 +1091,16 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 }
 
 func (d *Dispatcher) renderHost(ctx context.Context, attempt Attempt, runner RunnerSpec) (*corev1.Pod, error) {
+	cfg, err := d.configWithServiceAliases(ctx, runner)
+	if err != nil {
+		return nil, err
+	}
 	switch runner.HostKind {
 	case instance.RunnerHostImage:
 		if err := VerifySkew(d.cfg.EmbeddedCommit, d.cfg.EmbeddedVersion, runner.Host); err != nil {
 			return nil, err
 		}
-		return RenderPod(d.cfg, attempt, runner)
+		return RenderPod(cfg, attempt, runner)
 	case instance.RunnerHostDeployment:
 		namespace, err := d.cfg.namespaceFor(attempt.Gaggle)
 		if err != nil {
@@ -1072,7 +1115,7 @@ func (d *Dispatcher) renderHost(ctx context.Context, attempt Attempt, runner Run
 				return nil, err
 			}
 		}
-		return RenderFromTemplate(d.cfg, attempt, runner, deployment)
+		return RenderFromTemplate(cfg, attempt, runner, deployment)
 	default:
 		return nil, fmt.Errorf("dispatcher: runner %q host kind %q cannot be rendered as a pod", runner.Name, runner.HostKind)
 	}

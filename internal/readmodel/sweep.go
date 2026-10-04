@@ -121,47 +121,42 @@ func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
 // that have received repair budget. A configured root absent from this result
 // has not been visited yet and starts at the beginning.
 func (s *Store) SweepRootCursors(ctx context.Context) ([]SweepRootCursor, error) {
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var cursors []SweepRootCursor
+	err := s.withReadRows(ctx, `
 		SELECT root, after_name, cycle_started_at, last_cycle_completed_at,
 		       entries_this_cycle
 		FROM sweep_root_cursor
-		ORDER BY root`)
+		ORDER BY root`,
+		nil,
+		"readmodel: read sweep root cursors",
+		"readmodel: read sweep root cursor rows",
+		func(rows *sql.Rows) error {
+			var (
+				cursor    SweepRootCursor
+				started   sql.NullString
+				completed sql.NullString
+			)
+			if err := rows.Scan(
+				&cursor.Root,
+				&cursor.AfterName,
+				&started,
+				&completed,
+				&cursor.EntriesThisCycle,
+			); err != nil {
+				return fmt.Errorf("readmodel: scan sweep root cursor: %w", err)
+			}
+			var err error
+			if cursor.CycleStartedAt, err = optionalTimeValue(started); err != nil {
+				return err
+			}
+			if cursor.LastCycleCompletedAt, err = optionalTimeValue(completed); err != nil {
+				return err
+			}
+			cursors = append(cursors, cursor)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: read sweep root cursors: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var cursors []SweepRootCursor
-	for rows.Next() {
-		var (
-			cursor    SweepRootCursor
-			started   sql.NullString
-			completed sql.NullString
-		)
-		if err := rows.Scan(
-			&cursor.Root,
-			&cursor.AfterName,
-			&started,
-			&completed,
-			&cursor.EntriesThisCycle,
-		); err != nil {
-			return nil, fmt.Errorf("readmodel: scan sweep root cursor: %w", err)
-		}
-		if cursor.CycleStartedAt, err = optionalTimeValue(started); err != nil {
-			return nil, err
-		}
-		if cursor.LastCycleCompletedAt, err = optionalTimeValue(completed); err != nil {
-			return nil, err
-		}
-		cursors = append(cursors, cursor)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: read sweep root cursor rows: %w", err)
+		return nil, err
 	}
 	return cursors, nil
 }
@@ -255,30 +250,34 @@ func (s *Store) SetProjectionFloor(ctx context.Context, floor time.Time) error {
 	return nil
 }
 
-// IsUnpublished reports whether a directory is remembered as having no run.yaml
-// AT THIS MTIME.
+// An unchanged directory mtime is not proof that no file was published: two
+// directory updates can land in the same filesystem timestamp tick. Expire the
+// memo periodically so a promoted run is eventually examined even then.
+const unpublishedMemoMaxAge = time.Hour
+
+// IsUnpublished reports whether a directory is recently remembered as having
+// no run.yaml at this mtime.
 //
 // The mtime comparison is the whole mechanism. 10,906 of 40,665 directories on
 // the live instance are unpublished and can never be ingested; remembering them
-// makes each cost one stat per cycle. Keying on mtime is what keeps that from
-// becoming permanent: writing run.yaml bumps the directory's mtime, so a
-// promoted run no longer matches its memo and is examined again.
+// makes each cost one stat per cycle. Mtime changes invalidate immediately;
+// age invalidates after one hour even when the filesystem reused a timestamp.
 func (s *Store) IsUnpublished(ctx context.Context, runID string, mtime time.Time) (bool, error) {
-	var recorded string
+	var recorded, seenAt string
 	db, release, err := s.readHandle()
 	if err != nil {
 		return false, err
 	}
 	defer release()
 	err = db.QueryRowContext(ctx,
-		`SELECT dir_mtime FROM unpublished WHERE run_id = ?`, runID).Scan(&recorded)
+		`SELECT dir_mtime, seen_at FROM unpublished WHERE run_id = ?`, runID).Scan(&recorded, &seenAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("readmodel: read unpublished %s: %w", runID, err)
 	}
-	return recorded == formatTime(mtime), nil
+	return recorded == formatTime(mtime) && seenAt > formatTime(s.now().Add(-unpublishedMemoMaxAge)), nil
 }
 
 // MarkUnpublished remembers a directory as carrying no run.yaml.
@@ -362,39 +361,33 @@ func (s *Store) ProjectedRunIDsBefore(ctx context.Context, before time.Time, lim
 		limit = defaultListLimit
 	}
 
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var out []RunRow
+	err := s.withReadRows(ctx, `
 		SELECT run_id, started_at FROM run
 		WHERE started_at <= ?
 		ORDER BY started_at ASC, run_id ASC
-		LIMIT ?`, formatTime(before), limit)
+		LIMIT ?`,
+		[]any{formatTime(before), limit},
+		"readmodel: read projected runs",
+		"readmodel: projected run rows",
+		func(rows *sql.Rows) error {
+			var (
+				row       RunRow
+				startedAt string
+			)
+			if err := rows.Scan(&row.RunID, &startedAt); err != nil {
+				return fmt.Errorf("readmodel: scan projected run: %w", err)
+			}
+			parsed, err := time.Parse(timeFormat, startedAt)
+			if err != nil {
+				return fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
+			}
+			row.StartedAt = parsed
+			out = append(out, row)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: read projected runs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunRow
-	for rows.Next() {
-		var (
-			row       RunRow
-			startedAt string
-		)
-		if err := rows.Scan(&row.RunID, &startedAt); err != nil {
-			return nil, fmt.Errorf("readmodel: scan projected run: %w", err)
-		}
-		parsed, err := time.Parse(timeFormat, startedAt)
-		if err != nil {
-			return nil, fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
-		}
-		row.StartedAt = parsed
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: projected run rows: %w", err)
+		return nil, err
 	}
 	return out, nil
 }
@@ -410,47 +403,41 @@ func (s *Store) ProjectedRunIDsAfter(
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var out []RunRow
+	err := s.withReadRows(ctx, `
 		SELECT run_id, started_at FROM run
 		WHERE started_at <= ?
 		  AND (? = '' OR started_at > ? OR (started_at = ? AND run_id > ?))
 		ORDER BY started_at ASC, run_id ASC
 		LIMIT ?`,
-		formatTime(before),
-		afterRunID,
-		formatTime(afterStartedAt),
-		formatTime(afterStartedAt),
-		afterRunID,
-		limit,
-	)
+		[]any{
+			formatTime(before),
+			afterRunID,
+			formatTime(afterStartedAt),
+			formatTime(afterStartedAt),
+			afterRunID,
+			limit,
+		},
+		"readmodel: read projected runs after cursor",
+		"readmodel: projected run rows after cursor",
+		func(rows *sql.Rows) error {
+			var (
+				row       RunRow
+				startedAt string
+			)
+			if err := rows.Scan(&row.RunID, &startedAt); err != nil {
+				return fmt.Errorf("readmodel: scan projected run after cursor: %w", err)
+			}
+			parsed, err := time.Parse(timeFormat, startedAt)
+			if err != nil {
+				return fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
+			}
+			row.StartedAt = parsed
+			out = append(out, row)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: read projected runs after cursor: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunRow
-	for rows.Next() {
-		var (
-			row       RunRow
-			startedAt string
-		)
-		if err := rows.Scan(&row.RunID, &startedAt); err != nil {
-			return nil, fmt.Errorf("readmodel: scan projected run after cursor: %w", err)
-		}
-		parsed, err := time.Parse(timeFormat, startedAt)
-		if err != nil {
-			return nil, fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
-		}
-		row.StartedAt = parsed
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: projected run rows after cursor: %w", err)
+		return nil, err
 	}
 	return out, nil
 }

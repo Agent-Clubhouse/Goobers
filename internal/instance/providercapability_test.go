@@ -96,9 +96,11 @@ func TestUpdateBehindPRDerivesNoCapabilityOnADO(t *testing.T) {
 // TestBacklogQueryAloneDerivesNoProviderCapabilityRequirement pins the fix
 // for CONF-6's original over-broad requirement: backlog-query's
 // HasOpenWorkItemBlocker call only fires when a work item's BlockedByCount
-// != 0, and only GitHub's ListWorkItems ever sets that field, so requiring
-// CapBacklogBlockers for every backlog-query-using workflow refused
-// backlog providers (e.g. ADO) over a codepath they can never reach. A
+// != 0, and only a provider whose ListWorkItems sets that field (GitHub, and
+// ADO from its predecessor links since ADO-N32) ever reaches it; a provider
+// that sets it and lacks the checker fails the item closed at the call site.
+// Requiring CapBacklogBlockers for every backlog-query-using workflow
+// refused backlog providers over a codepath they might never reach. A
 // backlog-query-only workflow must derive zero provider-capability
 // requirements and never be refused at config-load regardless of backlog
 // provider.

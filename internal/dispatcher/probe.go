@@ -51,6 +51,10 @@ func (o ProbeOutcome) String() string {
 // egress reaches only the allowed set" takes THREE observations, never a bare
 // denial — a bare denial is also what a down host or a partition produces.
 type EgressTriple struct {
+	// NetworkNone requires DNS-denial evidence in addition to the TCP triple.
+	NetworkNone    bool
+	DNSFromHere    ProbeOutcome
+	DNSFromControl ProbeOutcome
 	// DeniedHostFromHere is the probe of a non-allowed host FROM the
 	// component under test — must be ProbeTimedOut (the policy DROP).
 	DeniedHostFromHere ProbeOutcome
@@ -82,6 +86,9 @@ func (t EgressTriple) Verdict() (bool, string) {
 		return false, fmt.Sprintf(
 			"denial leg failed: the non-allowed host probed %s from the component — a deny-first policy DROP times out; anything else means the policy did not drop the traffic",
 			t.DeniedHostFromHere)
+	}
+	if t.NetworkNone && (t.DNSFromHere != ProbeTimedOut || t.DNSFromControl != ProbeReachable) {
+		return false, fmt.Sprintf("DNS denial UNVERIFIED: network:none requires DNS timeout from the selected pod and a reachable DNS server from the control vantage (pod=%s, control=%s)", t.DNSFromHere, t.DNSFromControl)
 	}
 	return true, "egress posture confirmed: non-allowed host dropped from the component, same host up from the control vantage, allowed host reachable from the component"
 }

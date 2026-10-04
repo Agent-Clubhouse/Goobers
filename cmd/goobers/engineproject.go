@@ -12,6 +12,8 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/temporalcodec"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 const engineProjectHelp = "Usage: goobers engine-project [flags] <run-id> [path]\n\n" +
@@ -41,16 +43,15 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 	hostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port")
 	namespace := fs.String("temporal-namespace", "", "Temporal namespace")
 	fs.Usage = helpUsage(stderr, "engine-project")
-	if err := fs.Parse(args); err != nil {
+	runID, root, ok := parseRequiredArgOptionalRootWithUsage(fs, args, func() {
+		pf(stderr, "usage: goobers engine-project --gaggle <name> [flags] <run-id> [path]\n")
+	})
+	if !ok {
 		return 2
 	}
-	if fs.NArg() < 1 || fs.NArg() > 2 || *gaggle == "" {
+	if *gaggle == "" {
 		pf(stderr, "usage: goobers engine-project --gaggle <name> [flags] <run-id> [path]\n")
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 	l := instance.NewLayout(root)
 	if err := prepareManualRoot(l, stderr); err != nil {
@@ -78,15 +79,25 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	c, err := dialEngineProject(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		pf(stderr, "error: temporal payload codec: %v\n", err)
+		return 2
+	}
+	opts, err := temporaldial.Options(*hostPort, *namespace, engineConfig.TLS, dc)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	c, err := dialEngineProject(ctx, opts)
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1
 	}
 	defer c.Close()
-	dir, err := engine.ProjectCompletedRunForGaggle(ctx, c, fs.Arg(0), *gaggle, l.ForGaggle(*gaggle).RunsDir(), watermarks.Observed)
+	dir, err := engine.ProjectCompletedRunForGaggle(ctx, c, runID, *gaggle, l.ForGaggle(*gaggle).RunsDir(), watermarks.Observed)
 	if err != nil {
-		pf(stderr, "error: project run %s: %v\n", fs.Arg(0), err)
+		pf(stderr, "error: project run %s: %v\n", runID, err)
 		return 1
 	}
 	pf(stdout, "journal written: %s\n", dir)

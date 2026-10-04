@@ -93,6 +93,26 @@ func readErrorEvents(t *testing.T, run *journal.Run) []journal.Event {
 	return errs
 }
 
+func causeMessages(causes []journal.ErrorCause) []string {
+	out := make([]string, len(causes))
+	for i, cause := range causes {
+		out[i] = cause.Message
+	}
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestEvaluateRetriesTransientReviewerErrorThenSucceeds (#765 AC 1+2): a
 // transient reviewer-harness error retries within the declared bound and the
 // gate then evaluates normally on the successful attempt, with the failed
@@ -120,6 +140,13 @@ func TestEvaluateRetriesTransientReviewerErrorThenSucceeds(t *testing.T) {
 	}
 	if errEvents[0].Error == nil || errEvents[0].Error.Code != "evaluator_transient" {
 		t.Errorf("retry event error = %+v, want code evaluator_transient", errEvents[0].Error)
+	}
+	if got := causeMessages(errEvents[0].Error.Causes); !equalStrings(got, []string{
+		"harness: copilot-cli: harness: no completion file written: .goobers/verdict.json",
+		"harness: copilot-cli: harness: no completion file written: .goobers/verdict.json",
+		"harness: no completion file written",
+	}) {
+		t.Fatalf("retry event causes = %#v, want wrapped evaluator chain", got)
 	}
 	// Runner annotations round-trip through JSON, so the attempt number reads
 	// back as a float64.

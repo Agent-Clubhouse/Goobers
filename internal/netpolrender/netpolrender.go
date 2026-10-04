@@ -28,6 +28,7 @@ package netpolrender
 import (
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 
@@ -117,6 +118,8 @@ func DefaultBlobEndpoint() BlobEndpoint {
 
 // Input is everything one render consumes.
 type Input struct {
+	// KeepDNSForNetworkNone is a deprecated one-release migration escape hatch.
+	KeepDNSForNetworkNone bool
 	// Runners are the pod-hosted inventory entries (self entries already
 	// filtered out by the caller).
 	Runners []Runner
@@ -141,7 +144,7 @@ type Class struct {
 	// Runners are the inventory entries that resolve to this class, sorted.
 	Runners []string
 	// NetworkNone is true when the set contains network:none — the class
-	// gets only DNS and the blob data path.
+	// gets only the blob data path.
 	NetworkNone bool
 }
 
@@ -187,7 +190,7 @@ func Classes(runners []Runner) []Class {
 				Value:        value,
 				Restrictions: canonical,
 				Preimage:     runnercap.RunnerClassPreimage(canonical),
-				NetworkNone:  contains(canonical, string(runnercap.RestrictionNetworkNone)),
+				NetworkNone:  slices.Contains(canonical, string(runnercap.RestrictionNetworkNone)),
 			}
 			byValue[value] = class
 		}
@@ -219,7 +222,7 @@ func Render(input Input) (*Result, error) {
 	}
 
 	for _, class := range classes {
-		policy := classPolicy(class, input.Allowlist, blob)
+		policy := classPolicy(class, input.Allowlist, blob, input.KeepDNSForNetworkNone)
 		content, err := marshalPolicy(class, input.Allowlist, policy)
 		if err != nil {
 			return nil, err
@@ -285,12 +288,15 @@ func refusePlaceholderCIDR(cidr string) error {
 }
 
 // classPolicy builds one class's NetworkPolicy object. Every class —
-// network:none INCLUDED — carries the DNS row and the blob-endpoint row
+// carries the blob-endpoint row; network:none omits DNS by default
 // (decision 012: the blob path is the class's own data path, not a grant to
 // withhold; without it a restricted stage hangs at materialize). Classes
 // without network:none additionally carry every configured allowlist group.
-func classPolicy(class Class, groups []AllowlistGroup, blob BlobEndpoint) *networkingv1.NetworkPolicy {
-	egress := []networkingv1.NetworkPolicyEgressRule{dnsEgressRule(), blobEgressRule(blob)}
+func classPolicy(class Class, groups []AllowlistGroup, blob BlobEndpoint, keepDNS bool) *networkingv1.NetworkPolicy {
+	egress := []networkingv1.NetworkPolicyEgressRule{blobEgressRule(blob)}
+	if !class.NetworkNone || keepDNS {
+		egress = append([]networkingv1.NetworkPolicyEgressRule{dnsEgressRule()}, egress...)
+	}
 	if !class.NetworkNone {
 		for _, group := range groups {
 			egress = append(egress, groupEgressRule(group))
@@ -426,15 +432,6 @@ func kustomizationFile(classes []Class) File {
 		fmt.Fprintf(&b, "  - %s\n", classFileName(class.Value))
 	}
 	return File{Name: "kustomization.yaml", Content: []byte(b.String())}
-}
-
-func contains(list []string, want string) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 var (

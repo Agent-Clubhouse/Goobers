@@ -220,24 +220,24 @@ func TestSchedulerDefinitionsPinResolvedRunControls(t *testing.T) {
 	t.Cleanup(func() { _ = log.Close() })
 
 	var wg sync.WaitGroup
-	definitions, err := buildSchedulerDefinitions(
-		layout,
-		cfg,
-		set,
-		nil,
-		&wg,
-		newDaemonRunnerRegistry(),
-		nil,
-		nil,
-		nil,
-		log,
-		journal.NewRegistryScrubber(),
-		nil,
-		localscheduler.NewProviderQuotaState(),
-		nil,
-		nil,
-		nil,
-	)
+	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
+		Layout:           layout,
+		Config:           cfg,
+		Definitions:      set,
+		Validation:       nil,
+		WaitGroup:        &wg,
+		RunnerRegistry:   newDaemonRunnerRegistry(),
+		Telemetry:        nil,
+		RollupDB:         nil,
+		Watermarks:       nil,
+		InstanceLog:      log,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		WorktreeManagers: nil,
+		ProviderQuota:    localscheduler.NewProviderQuotaState(),
+		TerminalNotifier: nil,
+		CredentialStores: nil,
+		StartupProgress:  nil,
+	})
 	if err != nil {
 		t.Fatalf("build scheduler definitions: %v", err)
 	}

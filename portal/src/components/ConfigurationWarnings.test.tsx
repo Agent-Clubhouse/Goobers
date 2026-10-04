@@ -143,6 +143,21 @@ describe("ConfigurationWarnings", () => {
       .toBeInTheDocument();
   });
 
+  it("keeps the warning count and refresh control grouped above visible details", () => {
+    renderWarnings({ status: "ready", data: [modelWarning] });
+
+    const count = screen.getByText("1 active warning");
+    const actions = count.parentElement;
+    if (!actions) {
+      throw new Error("Expected configuration warning actions.");
+    }
+
+    expect(window.getComputedStyle(actions).display).toBe("flex");
+    expect(window.getComputedStyle(actions).alignItems).toBe("center");
+    expect(actions).toContainElement(screen.getByRole("button", { name: "Refresh warnings" }));
+    expect(screen.getByText(modelWarning.explanation)).toBeVisible();
+  });
+
   it("presents shared remediation once and supports group expansion and dismissal", async () => {
     const user = userEvent.setup();
 

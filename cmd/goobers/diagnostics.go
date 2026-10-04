@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/supporttriage"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -48,12 +50,23 @@ const diagnosticsBundleHelp = "Usage: goobers diagnostics bundle [--run <id>] [-
 	"bytes apart from the collection timestamp.\n\n" +
 	"Exit codes: 0 = bundle written, 1 = collection failed, 2 = usage error.\n"
 
+const diagnosticsTriageHelp = "Usage: goobers diagnostics triage --run <id> [--json] [path]\n\n" +
+	"Classify one failed run from the redacted diagnostics evidence Goobers can\n" +
+	"collect from an instance directory. The output is a provider-neutral support\n" +
+	"case verdict for intake surfaces; it does not file, comment on, or mutate any\n" +
+	"issue. Ambiguous, contradictory, or incomplete evidence fails closed to\n" +
+	"`insufficient_evidence` rather than becoming a Goobers defect candidate.\n\n" +
+	"--json writes the versioned support-triage contract. Without --json, a short\n" +
+	"human-readable verdict is printed.\n\n" +
+	"Exit codes: 0 = triage written, 1 = collection failed, 2 = usage error.\n"
+
 const diagnosticsHelp = "Usage: goobers diagnostics <subcommand> [flags] [path]\n\n" +
 	"Collect portable, redacted support evidence from this binary and an instance\n" +
 	"directory alone — reading Goobers' own source must never be a prerequisite\n" +
 	"for reading a Goobers incident.\n\n" +
 	"Subcommands:\n" +
 	"  bundle  write a redacted diagnostics archive (or --json to stdout)\n\n" +
+	"  triage  classify one run before filing a Goobers defect\n\n" +
 	"Default path is \".\".\n"
 
 func runDiagnostics(args []string, stdout, stderr io.Writer) int {
@@ -74,11 +87,8 @@ func runDiagnosticsBundle(args []string, stdout, stderr io.Writer) int {
 		output  = fs.String("output", "", "write the archive to this path")
 		asJSON  = fs.Bool("json", false, "write the machine-readable document to stdout instead of an archive")
 	)
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
 	}
 	if *maxRuns < 1 {
@@ -88,10 +98,6 @@ func runDiagnosticsBundle(args []string, stdout, stderr io.Writer) int {
 	if *runID != "" && *pr > 0 {
 		pf(stderr, "error: --run and --pr select different scopes; pass one\n")
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -147,6 +153,49 @@ func runDiagnosticsBundle(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runDiagnosticsTriage(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("diagnostics triage", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "diagnostics triage")
+	runID := fs.String("run", "", "run id to classify")
+	asJSON := fs.Bool("json", false, "write the machine-readable support-triage contract")
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
+		return 2
+	}
+	if strings.TrimSpace(*runID) == "" {
+		pf(stderr, "error: --run is required\n")
+		return 2
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		pf(stderr, "error: resolve instance path: %v\n", err)
+		return 2
+	}
+	bundle, err := diagnosticsCollector().Collect(diagnostics.Options{
+		Root:    absRoot,
+		Now:     time.Now().UTC(),
+		RunID:   *runID,
+		MaxRuns: 1,
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	result := supporttriage.Classify(bundle)
+	if *asJSON {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(result); err != nil {
+			pf(stderr, "error: encode support triage: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	pf(stdout, "disposition: %s\nconfidence: %s\nnext: %s\n", result.Disposition, result.Confidence, result.NextAction)
+	return 0
+}
+
 // diagnosticsCollector wires the collector to this binary's own identity and
 // to the instance readers that live in package main.
 func diagnosticsCollector() diagnostics.Collector {
@@ -184,24 +233,11 @@ func diagnosticsContract() diagnostics.ContractInfo {
 		for _, use := range entry.Capabilities {
 			command.Capabilities = append(command.Capabilities, string(use.Capability))
 		}
-		sort.Strings(command.Capabilities)
-		command.Capabilities = dedupeStrings(command.Capabilities)
+		slices.Sort(command.Capabilities)
+		command.Capabilities = slices.Compact(command.Capabilities)
 		info.StageCommands = append(info.StageCommands, command)
 	}
 	return info
-}
-
-func dedupeStrings(values []string) []string {
-	out := values[:0]
-	var previous string
-	for i, value := range values {
-		if i > 0 && value == previous {
-			continue
-		}
-		previous = value
-		out = append(out, value)
-	}
-	return out
 }
 
 // diagnosticsRunDirs enumerates individual run directories across every

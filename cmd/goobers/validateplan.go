@@ -88,7 +88,7 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 	live := decomposition.LiveParentSnapshot{
 		ID:     item.ID,
 		Title:  item.Title,
-		Body:   item.Body,
+		Body:   item.BodyWithAcceptanceCriteria(),
 		Labels: decompositionDigestLabels(item.Labels),
 		State:  item.State,
 	}

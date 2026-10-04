@@ -149,6 +149,12 @@ const (
 // differently-cased digest) is admitted.
 var scanCursorKeyPattern = regexp.MustCompile(`^backlog-scan-[0-9a-f]{64}\.json$`)
 
+// reconcileCursorKeyPattern matches the per-reconciliation backlog cursor,
+// backlog-reconcile-<sha256 of the reconcile shape>.json. Reconciliation has
+// its own cursor because it walks both open and recently closed trusted items,
+// not the claim-selection query shape that backlog-scan-* tracks.
+var reconcileCursorKeyPattern = regexp.MustCompile(`^backlog-reconcile-[0-9a-f]{64}\.json$`)
+
 // resweepStateKeyPattern matches the per-scan-shape backlog RE-SWEEP state,
 // backlog-resweep-<sha256 of the re-sweep's shape key>.json, pinned to the
 // same 64-lowercase-hex digest for the same reason.
@@ -222,6 +228,9 @@ var noWorkStreakKeyPattern = regexp.MustCompile(`^no-work-streak-[0-9a-f]{64}\.j
 // that drives remediation routing/budgets, previously carried only as a
 // `<!-- verdict-json: ... -->` payload embedded in a PR comment.
 var verdictStateKeyPattern = regexp.MustCompile(`^remediation-verdict-[0-9a-f]{64}\.json$`)
+
+// One private disposition per repository, review type, and PR number.
+var advisoryPRKeyPattern = regexp.MustCompile(`^advisory-pr-[0-9a-f]{64}\.json$`)
 
 // The backlog-health READY-TRANSITION cursor (Goobers#3948), the one key in
 // this namespace that does not live directly in the scheduler directory and
@@ -336,6 +345,12 @@ func ScanCursorKey(digest string) string {
 	return "backlog-scan-" + digest + ".json"
 }
 
+// ReconcileCursorKey names the backlog metadata reconciliation cursor for a
+// reconcile-shape digest.
+func ReconcileCursorKey(digest string) string {
+	return "backlog-reconcile-" + digest + ".json"
+}
+
 // ResweepStateKey names the backlog re-sweep state for a shape digest.
 func ResweepStateKey(digest string) string {
 	return "backlog-resweep-" + digest + ".json"
@@ -365,6 +380,11 @@ func RemediationVerdictKey(digest string) string {
 	return "remediation-verdict-" + digest + ".json"
 }
 
+// AdvisoryPRKey names a private advisory review disposition.
+func AdvisoryPRKey(digest string) string {
+	return "advisory-pr-" + digest + ".json"
+}
+
 // ValidKey reports whether key is one of the closed scheduler-state keys.
 func ValidKey(key string) bool {
 	switch key {
@@ -372,12 +392,14 @@ func ValidKey(key string) bool {
 		return true
 	}
 	return scanCursorKeyPattern.MatchString(key) ||
+		reconcileCursorKeyPattern.MatchString(key) ||
 		resweepStateKeyPattern.MatchString(key) ||
 		prRemediationNoopKeyPattern.MatchString(key) ||
 		backlogHealthCursorKeyPattern.MatchString(key) ||
 		failureStreakKeyPattern.MatchString(key) ||
 		noWorkStreakKeyPattern.MatchString(key) ||
-		verdictStateKeyPattern.MatchString(key)
+		verdictStateKeyPattern.MatchString(key) ||
+		advisoryPRKeyPattern.MatchString(key)
 }
 
 // Value is one scheduler-state read: the bytes and the ETag that addresses

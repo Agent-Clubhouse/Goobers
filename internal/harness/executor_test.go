@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
@@ -403,6 +404,36 @@ func TestExecutorJournalsGoobersIOInputInspectionReceipts(t *testing.T) {
 	if event.Type != journal.EventRunnerAnnotation || event.Stage != "implement" ||
 		event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
 		t.Fatalf("receipt annotation = %+v", event)
+	}
+}
+
+func TestExecutorAddsHandoffValidationOutput(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+		})
+	}}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := handoffcheck.WithReport(context.Background(), handoffcheck.Report{InputValid: handoffcheck.InputValidTrue})
+	result, err := exec.Invoke(ctx, testEnvelope(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, ok := handoffcheck.ReportFromOutputs(result.Outputs)
+	if !ok || report.InputValid != handoffcheck.InputValidTrue {
+		t.Fatalf("handoff validation output = %#v", result.Outputs[handoffcheck.OutputKey])
 	}
 }
 
@@ -1540,8 +1571,147 @@ func TestExecutorInvokeFailsClosedOnMissingDeclaredArtifactFile(t *testing.T) {
 	if result.Error == nil || result.Error.Code != "missing_declared_artifact" {
 		t.Fatalf("Error = %+v, want code missing_declared_artifact", result.Error)
 	}
+	if !result.Error.Retryable {
+		t.Fatalf("Error.Retryable = false, want true so the runner spends the stage retry budget")
+	}
+	if got := errorCauseMessages(result.Error.Causes); !containsCauseMessage(got, ErrDeclaredArtifactMissing.Error()) {
+		t.Fatalf("Error.Causes = %#v, want declared artifact missing leaf", got)
+	}
 	if len(rec.artifacts) != 0 {
 		t.Fatalf("expected no artifact recorded, got %d", len(rec.artifacts))
+	}
+}
+
+func errorCauseMessages(causes []apiv1.ErrorCause) []string {
+	out := make([]string, len(causes))
+	for i, cause := range causes {
+		out[i] = cause.Message
+	}
+	return out
+}
+
+func containsCauseMessage(messages []string, want string) bool {
+	for _, message := range messages {
+		if message == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestExecutorInvokeNoWorkToleratesMissingDeclaredArtifactFile is the
+// regression test for #5332: a stage that declares InputArtifactFile and
+// correctly concludes no-work has nothing to write into it, so the missing
+// file must not overwrite the no-work result with missing_declared_artifact.
+func TestExecutorInvokeNoWorkToleratesMissingDeclaredArtifactFile(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status:  apiv1.ResultNoWork,
+				Outputs: map[string]interface{}{"proposedCount": float64(0)},
+				Summary: "nothing actionable",
+			})
+		},
+	}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(t.TempDir())
+	env.Inputs = map[string]interface{}{InputArtifactFile: "nominations.json"}
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultNoWork {
+		t.Fatalf("Status = %q (error %+v), want no-work (a no-work completion has nothing to write into its declared artifact)", result.Status, result.Error)
+	}
+	if result.Error != nil {
+		t.Fatalf("Error = %+v, want nil", result.Error)
+	}
+	if result.Summary != "nothing actionable" || result.Outputs["proposedCount"] != float64(0) {
+		t.Fatalf("result = %+v, want the stage's own summary and outputs preserved", result)
+	}
+	if len(rec.artifacts) != 0 {
+		t.Fatalf("expected no artifact recorded, got %d", len(rec.artifacts))
+	}
+}
+
+// TestExecutorInvokeNoWorkStillLiftsDeclaredArtifactFile pins that the #5332
+// tolerance is only for absence: a no-work stage that does write its declared
+// artifact still has it lifted normally.
+func TestExecutorInvokeNoWorkStillLiftsDeclaredArtifactFile(t *testing.T) {
+	const content = `{"nominations":[]}`
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			if err := os.WriteFile(filepath.Join(req.Workspace, "nominations.json"), []byte(content), 0o644); err != nil {
+				return err
+			}
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultNoWork})
+		},
+	}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(t.TempDir())
+	env.Inputs = map[string]interface{}{InputArtifactFile: "nominations.json"}
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultNoWork {
+		t.Fatalf("Status = %q, want no-work", result.Status)
+	}
+	if len(result.Artifacts) != 1 || result.Artifacts[0].Digest != journal.Digest([]byte(content)) {
+		t.Fatalf("artifacts = %+v, want the declared file lifted", result.Artifacts)
+	}
+}
+
+// TestExecutorInvokeNoWorkFailsClosedOnArtifactFilePathEscape pins that the
+// #5332 no-work tolerance never extends to a declared path that escapes the
+// workspace (#120): that still fails the stage closed.
+func TestExecutorInvokeNoWorkFailsClosedOnArtifactFilePathEscape(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "secret.txt"), []byte("leaked-secret-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{
+		Act: func(ctx context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultNoWork})
+		},
+	}
+	injector := testInjector(t, "", "", noopRegistrar{})
+	exec, err := NewExecutor(adapter, injector, rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	env := testEnvelope(workspace)
+	env.Inputs = map[string]interface{}{InputArtifactFile: "../secret.txt"}
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("Status = %q, want failure", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "declared_artifact_path_escape" {
+		t.Fatalf("Error = %+v, want code declared_artifact_path_escape", result.Error)
+	}
+	if len(rec.artifacts) != 0 {
+		t.Fatalf("expected no artifact recorded, got %+v", rec.artifacts)
 	}
 }
 

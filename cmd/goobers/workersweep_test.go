@@ -13,9 +13,11 @@ import (
 	workflowpb "go.temporal.io/api/workflow/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // fakeSweepDescriber answers DescribeWorkflowExecution from a table keyed by
@@ -194,14 +196,14 @@ func TestTemporalRunStatesLeavesPodWithoutStampedDriver(t *testing.T) {
 
 // recordingSweeper captures the resolver the wiring hands to SweepOrphans.
 type recordingSweeper struct {
-	disposed []string
-	err      error
-	states   dispatcher.RunStates
+	reaped []dispatcher.OrphanReap
+	err    error
+	states dispatcher.RunStates
 }
 
-func (r *recordingSweeper) SweepOrphans(_ context.Context, states dispatcher.RunStates) ([]string, error) {
+func (r *recordingSweeper) SweepOrphansWithReport(_ context.Context, states dispatcher.RunStates) ([]dispatcher.OrphanReap, error) {
 	r.states = states
-	return r.disposed, r.err
+	return r.reaped, r.err
 }
 
 type recurringSweepCall struct {
@@ -214,23 +216,31 @@ type recurringSweeper struct {
 	next  int
 }
 
-func (r *recurringSweeper) SweepOrphans(ctx context.Context, _ dispatcher.RunStates) ([]string, error) {
+func (r *recurringSweeper) SweepOrphansWithReport(ctx context.Context, _ dispatcher.RunStates) ([]dispatcher.OrphanReap, error) {
 	r.next++
 	call := recurringSweepCall{number: r.next, ctx: ctx}
 	r.calls <- call
 	if call.number == 1 {
 		return nil, errors.New("temporary apiserver failure")
 	}
-	return []string{"terminal-from-prior-worker"}, nil
+	return []dispatcher.OrphanReap{{
+		Namespace: "gaggle",
+		Pod:       "terminal-from-prior-worker",
+		Reason:    "owning workflow terminal",
+	}}, nil
 }
 
 // The boot wiring: the worker sweeps with a Temporal-backed resolver and
 // reports what it disposed.
 func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
-	sweeper := &recordingSweeper{disposed: []string{"gbn-open-pr-run1-a2"}}
+	sweeper := &recordingSweeper{reaped: []dispatcher.OrphanReap{{
+		Namespace: "gaggle-e2e",
+		Pod:       "gbn-open-pr-run1-a2",
+		Reason:    "owning workflow terminal",
+	}}}
 	withFakeSweepDial(t, &fakeSweepDescriber{})
 	var stdout, stderr bytes.Buffer
-	sweepWorkerStageOrphans(sweeper, "127.0.0.1:7233", "default", &stdout, &stderr)
+	sweepWorkerStageOrphans(sweeper, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 	states, ok := sweeper.states.(temporalRunStates)
 	if !ok {
 		t.Fatalf("sweep ran with resolver %T, want temporalRunStates — a sweep with any other basis is not asking the engine", sweeper.states)
@@ -245,6 +255,9 @@ func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
 	if !strings.Contains(stdout.String(), "gbn-open-pr-run1-a2") {
 		t.Fatalf("stdout %q does not name the disposed pod", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "owning workflow terminal") {
+		t.Fatalf("stdout %q does not log the disposal reason", stdout.String())
+	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr %q", stderr.String())
 	}
@@ -255,12 +268,12 @@ func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
 func TestSweepWorkerStageOrphansIsNeverFatal(t *testing.T) {
 	t.Run("dial fails", func(t *testing.T) {
 		previous := dialWorkerSweepTemporal
-		dialWorkerSweepTemporal = func(string, string) (client.Client, error) {
+		dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 			return nil, errors.New("connection refused")
 		}
 		t.Cleanup(func() { dialWorkerSweepTemporal = previous })
 		var stdout, stderr bytes.Buffer
-		sweepWorkerStageOrphans(&recordingSweeper{}, "127.0.0.1:7233", "default", &stdout, &stderr)
+		sweepWorkerStageOrphans(&recordingSweeper{}, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 		if !strings.Contains(stderr.String(), "orphan sweep skipped") {
 			t.Fatalf("stderr %q does not report the skipped sweep", stderr.String())
 		}
@@ -268,14 +281,14 @@ func TestSweepWorkerStageOrphansIsNeverFatal(t *testing.T) {
 	t.Run("sweep errors", func(t *testing.T) {
 		withFakeSweepDial(t, &fakeSweepDescriber{})
 		var stdout, stderr bytes.Buffer
-		sweepWorkerStageOrphans(&recordingSweeper{err: errors.New("apiserver conflict")}, "127.0.0.1:7233", "default", &stdout, &stderr)
+		sweepWorkerStageOrphans(&recordingSweeper{err: errors.New("apiserver conflict")}, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 		if !strings.Contains(stderr.String(), "apiserver conflict") {
 			t.Fatalf("stderr %q does not report the sweep failure", stderr.String())
 		}
 	})
 	t.Run("no dispatcher", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		sweepWorkerStageOrphans(nil, "127.0.0.1:7233", "default", &stdout, &stderr)
+		sweepWorkerStageOrphans(nil, "127.0.0.1:7233", "default", nil, &stdout, &stderr)
 		if stdout.Len() != 0 || stderr.Len() != 0 {
 			t.Fatalf("a worker with no dispatcher must not sweep at all; stdout=%q stderr=%q", stdout.String(), stderr.String())
 		}
@@ -288,7 +301,7 @@ func TestPeriodicWorkerStageOrphanSweepRetriesAndStopsWithWorker(t *testing.T) {
 	sweeper := &recurringSweeper{calls: make(chan recurringSweepCall, 8)}
 	var stdout, stderr synchronizedBuffer
 	done := startPeriodicWorkerStageOrphanSweeps(
-		ctx, sweeper, "127.0.0.1:7233", "default", &stdout, &stderr, 25*time.Millisecond,
+		ctx, sweeper, "127.0.0.1:7233", "default", nil, &stdout, &stderr, 25*time.Millisecond,
 	)
 
 	first := <-sweeper.calls
@@ -343,7 +356,7 @@ func (c *sweepStubClient) Close() {}
 func withFakeSweepDial(t *testing.T, describer *fakeSweepDescriber) {
 	t.Helper()
 	previous := dialWorkerSweepTemporal
-	dialWorkerSweepTemporal = func(string, string) (client.Client, error) {
+	dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 		return &sweepStubClient{describer: describer}, nil
 	}
 	t.Cleanup(func() { dialWorkerSweepTemporal = previous })

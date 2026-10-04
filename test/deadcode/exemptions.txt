@@ -28,12 +28,12 @@ github.com/goobers/goobers/internal/workflow/v_2_0.CheckGaggleFeatureSupport # N
 github.com/goobers/goobers/internal/workflow/v_2_0.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
-github.com/goobers/goobers/providers.WithGiteaSecretRegistrar # Public Gitea secret-registrar option retained for external provider consumers; mirrors WithADOSecretRegistrar.
 github.com/goobers/goobers/providers.WithGiteaHTTPClient # Public Gitea HTTP-client injection option retained for external provider consumers and custom transports.
 github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea retry option retained for external provider consumers; mirrors WithADOMaxRateLimitRetries.
 github.com/goobers/goobers/providers.WithGiteaMaxTransientRetries # Public Gitea transient-retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithGiteaRateLimitMaxWait # Public Gitea rate-limit wait-budget option retained for external provider consumers; mirrors WithRateLimitMaxWait.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
+github.com/goobers/goobers/providers.StampAttribution # Test-only fixture helper that stamps bodies with the attribution footer production provider writes store, so fakes model daemon runs (#5748); only _test.go callers.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
@@ -69,7 +69,6 @@ github.com/goobers/goobers/internal/workflow/ir.ports # Canonical port-ordering 
 github.com/goobers/goobers/internal/workflow/ir.sideEffect # Side-effect classifier retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.taskInputs # Canonical task-input extraction retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.taskSchema # Canonical task-schema builder retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.unique # Deduplicating helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.validateSourceDefinition # Persisted-source consistency validator retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.validateTriggers # Trigger validation helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.validatePorts # Port validation helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
@@ -130,15 +129,6 @@ github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # 
 
 # Quarantined, reserved, and extension seams required by the architecture.
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
-github.com/goobers/goobers/internal/configsync.AuthoritativeGeneration # Generation-barrier read side (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's authoritative-generation assertions.
-github.com/goobers/goobers/internal/configsync.GenerationSelector # Single-generation label selector (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's single-generation consistency assertions.
-github.com/goobers/goobers/internal/engine.NewRegistryWithPreviewFeatures # Test-only registry constructor that forces every registered definition preview-acknowledged, bypassing each definition's own annotation; production wiring uses NewRegistry since preview authorization is per-Workflow (#4220).
-github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
-github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
-github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
-github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
-github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
-github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
@@ -281,7 +271,28 @@ github.com/goobers/goobers/internal/e2e.ReadBundle # Bundle.Encode's round-trip 
 github.com/goobers/goobers/internal/creditgraph.Graph.Children # Credit-graph child accessor, part of the traversal contract retained for run-graph consumers (#4077).
 github.com/goobers/goobers/internal/creditgraph.Graph.Descendants # Credit-graph descendant enumeration, part of the traversal contract retained for run-graph consumers (#4077).
 github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Simplest concrete TargetLeaser, retained as the generic exercise double for Publisher/Primitives contract tests; its one production caller (publish-batch) moved to cmd/goobers's claims-plane-backed leaser for pod execution support (#4340).
-github.com/goobers/goobers/internal/workflow.WithKnownExternalTelemetryConnectors # Public compile Option threaded through v_2_0/v_3_0 admission (#4341 PR 2); no production caller yet — the daemon-side wiring (compiledMachinesWithWarnings/compiledMachinesWithGooberDigests) is tracked separately as #4475 to keep this PR's blast radius to the pod-execution fix.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.stageCgroup.exceeded # Per-stage memory-bound cgroup reader (#4070): constructed only by the linux startBounded, dead on targets with no cgroups.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.rlimitBound.exceeded # Per-stage memory-bound RLIMIT_AS arm (#4070): constructed only by the linux startBounded, dead on targets with no prlimit fallback.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.rlimitBound.release # Per-stage memory-bound RLIMIT_AS arm (#4070): constructed only by the linux startBounded, dead on targets with no prlimit fallback.
+
+# Decision-model (System One) client (#6073): internal/decider lands ahead of its first
+# caller, the optional semantic check after the deterministic handoff validator. The
+# whole package is exercised only by its own tests until that gate wires it; remove
+# these entries in the PR that adds the caller.
+github.com/goobers/goobers/internal/decider.Choice # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Score # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+[windows] github.com/goobers/goobers/internal/sandbox.validateReadDenials # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
+[windows] github.com/goobers/goobers/internal/sandbox.resolveReadDenial # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
+[windows] github.com/goobers/goobers/internal/sandbox.pathContains # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
+[windows] github.com/goobers/goobers/internal/sandbox.singleLink # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
+[windows] github.com/goobers/goobers/internal/sandbox.validateReadDeniedDirectory # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
+github.com/goobers/goobers/internal/decisiongate.RetryBudget.Run # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
+
+# #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
+# capture activation before all three approved slices land. Remove on activation.
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01

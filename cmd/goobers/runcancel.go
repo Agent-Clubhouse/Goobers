@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // runcancel.go implements #831's live `goobers run cancel <id>`. Unlike
@@ -57,6 +55,16 @@ const (
 // const, so tests aren't slow.
 var cancelDelegationTimeout = 60 * time.Second
 
+func cancelDelegateFileProtocol() delegateFileProtocol {
+	return delegateFileProtocol{
+		pendingDir:     pendingCancelsDir,
+		requestSuffix:  cancelRequestSuffix,
+		responseSuffix: cancelResponseSuffix,
+		errorPrefix:    "cancel delegate",
+		staleAfter:     cancelDelegationTimeout,
+	}
+}
+
 type cancelRequest struct {
 	RunID     string    `json:"runId"`
 	Workflow  string    `json:"workflow,omitempty"`
@@ -78,69 +86,24 @@ type cancelResponse struct {
 // rename) so the daemon's sweep never reads a torn request, returning the
 // request id that names its response file.
 func writeCancelRequest(schedulerDir string, req cancelRequest) (string, error) {
-	reqDir := filepath.Join(schedulerDir, pendingCancelsDir)
-	if err := os.MkdirAll(reqDir, 0o755); err != nil {
-		return "", fmt.Errorf("cancel delegate: create request dir: %w", err)
-	}
-	f, err := os.CreateTemp(reqDir, ".pending-*")
-	if err != nil {
-		return "", fmt.Errorf("cancel delegate: create request: %w", err)
-	}
-	tmpPath := f.Name()
-	cleanup := func() {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-	}
-
-	req.CreatedAt = time.Now().UTC()
-	data, err := json.Marshal(req)
-	if err != nil {
-		cleanup()
-		return "", err
-	}
-	if _, err := f.Write(data); err != nil {
-		cleanup()
-		return "", fmt.Errorf("cancel delegate: write request: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("cancel delegate: close request: %w", err)
-	}
-	requestID := strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
-	finalPath := filepath.Join(reqDir, requestID+cancelRequestSuffix)
-	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("cancel delegate: publish request: %w", err)
-	}
-	return requestID, nil
+	return writeDelegateRequest(schedulerDir, cancelDelegateFileProtocol(), req, func(req *cancelRequest) {
+		req.CreatedAt = time.Now().UTC()
+	})
 }
 
 // pollCancelResponse waits for the daemon's sweep to answer requestID, tolerant
 // of torn reads, bounded by timeout.
 func pollCancelResponse(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (cancelResponse, error) {
-	respPath := filepath.Join(schedulerDir, pendingCancelsDir, requestID+cancelResponseSuffix)
-	deadline := time.Now().Add(timeout)
-	for {
-		if data, err := os.ReadFile(respPath); err == nil {
-			var resp cancelResponse
-			if err := json.Unmarshal(data, &resp); err == nil {
-				_ = os.Remove(respPath)
-				return resp, nil
-			}
-		}
-		if time.Now().After(deadline) {
-			return cancelResponse{}, fmt.Errorf(
+	return pollDelegateResponse[cancelResponse](
+		ctx, schedulerDir, requestID, cancelDelegateFileProtocol(), timeout,
+		func(requestPath string) string {
+			return fmt.Sprintf(
 				"cancel delegate: timed out after %s waiting for the live `goobers up` daemon to cancel run %s "+
 					"(request left at %s — is the daemon still running and healthy?)",
-				timeout, requestID, filepath.Join(schedulerDir, pendingCancelsDir, requestID+cancelRequestSuffix),
+				timeout, requestID, requestPath,
 			)
-		}
-		select {
-		case <-ctx.Done():
-			return cancelResponse{}, ctx.Err()
-		case <-time.After(delegationPollInterval):
-		}
-	}
+		},
+	)
 }
 
 // sweepPendingCancelRequests is the daemon-side half of #831's cancel protocol,
@@ -157,69 +120,26 @@ func sweepPendingCancelRequests(
 	release func(runID, workflow string),
 	now func() time.Time,
 ) error {
-	reqDir := filepath.Join(schedulerDir, pendingCancelsDir)
-	entries, err := os.ReadDir(reqDir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("cancel delegate: read pending requests: %w", err)
-	}
-
-	var sweepErr error
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		path := filepath.Join(reqDir, entry.Name())
-		if strings.HasSuffix(entry.Name(), cancelResponseSuffix) {
-			info, err := entry.Info()
-			if err == nil && now().Sub(info.ModTime()) > cancelDelegationTimeout {
-				_ = os.Remove(path)
+	return sweepDelegateRequests(
+		schedulerDir,
+		cancelDelegateFileProtocol(),
+		now,
+		func(requestID string, req cancelRequest, decodeErr error) (cancelResponse, bool) {
+			switch {
+			case decodeErr != nil:
+				return cancelResponse{Error: "cancel delegate: malformed request"}, false
+			case req.CreatedAt.IsZero():
+				return cancelResponse{Error: fmt.Sprintf("cancel delegate: request %s has no creation time; refusing to dispatch", requestID)}, false
+			case now().Sub(req.CreatedAt) > cancelDelegationTimeout:
+				return cancelResponse{Error: fmt.Sprintf("cancel delegate: stale request %s; refusing to dispatch", requestID)}, false
+			default:
+				return cancelResponse{}, true
 			}
-			continue
-		}
-		if !strings.HasSuffix(entry.Name(), cancelRequestSuffix) {
-			continue
-		}
-		requestID := strings.TrimSuffix(entry.Name(), cancelRequestSuffix)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("cancel delegate: read request %s: %w", requestID, err))
-			}
-			continue
-		}
-		if err := os.Remove(path); err != nil {
-			if !os.IsNotExist(err) {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("cancel delegate: consume request %s: %w", requestID, err))
-			}
-			continue
-		}
-
-		var req cancelRequest
-		resp := cancelResponse{}
-		switch {
-		case json.Unmarshal(data, &req) != nil:
-			resp.Error = "cancel delegate: malformed request"
-		case req.CreatedAt.IsZero():
-			resp.Error = fmt.Sprintf("cancel delegate: request %s has no creation time; refusing to dispatch", requestID)
-		case now().Sub(req.CreatedAt) > cancelDelegationTimeout:
-			resp.Error = fmt.Sprintf("cancel delegate: stale request %s; refusing to dispatch", requestID)
-		default:
-			resp = executeCancelRequest(runners, release, req, now())
-		}
-
-		respData, err := json.Marshal(resp)
-		if err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("cancel delegate: encode response %s: %w", requestID, err))
-			continue
-		}
-		if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+cancelResponseSuffix), respData, 0o644); err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("cancel delegate: write response %s: %w", requestID, err))
-		}
-	}
-	return sweepErr
+		},
+		func(req cancelRequest) cancelResponse {
+			return executeCancelRequest(runners, release, req, now())
+		},
+	)
 }
 
 // executeCancelRequest resolves the owning Runner and cancels the run. It frees
@@ -377,11 +297,23 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 			return 2
 		}
 	}
-	var result httpapi.CancelRunResult
-	apiErr, err := callDaemonMutationAPIWithKey(
-		instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
-		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, &result, key,
-	)
+	call := func(ctx context.Context) (httpapi.CancelRunResult, *apicontract.APIError, error) {
+		return callDaemonMutationAPIWithKeyContext[httpapi.CancelRunRequest, httpapi.CancelRunResult](
+			ctx, instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
+			map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, key,
+		)
+	}
+	result, apiErr, err := call(context.Background())
+	if cancelAnswerMayBeLost(err) || cancelInFlight(apiErr) {
+		// #5118: the request may have landed even though its answer did not,
+		// or an earlier delivery of this key is still in flight. Re-ask under
+		// the same key before declaring the outcome unknown.
+		if apiErr != nil {
+			err = fmt.Errorf("%s: %s", apiErr.Code, apiErr.Message)
+		}
+		pf(stderr, "warning: %v; confirming cancellation outcome with request ID %q\n", err, key)
+		result, apiErr, err = reconcileRemoteCancel(call, err)
+	}
 	if err != nil {
 		pf(stderr, "error: %v; cancellation outcome may be unknown; retry run cancel with --request-id=%q and the same target\n", err, key)
 		return 2
@@ -411,4 +343,76 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 		pf(stderr, "error: unexpected cancel response for run %s\n", runID)
 		return 1
 	}
+}
+
+// cancelOutcomeUnknownCode is the daemon's answer to a replayed cancellation
+// key whose first delivery has not finished: the cancel is still in flight.
+// cancelReceiptUnavailableCode means the daemon could not record the outcome
+// it reached and asks for a replay under the same key.
+const (
+	cancelOutcomeUnknownCode     = "cancel_outcome_unknown"
+	cancelReceiptUnavailableCode = "cancel_receipt_unavailable"
+)
+
+// cancelReconcileWindow bounds how long `run cancel` keeps re-asking the daemon
+// under the original request ID after a lost or late response, and
+// cancelReconcileInterval spaces those asks. Vars, not consts, so tests aren't
+// slow.
+var (
+	cancelReconcileWindow   = 30 * time.Second
+	cancelReconcileInterval = 2 * time.Second
+)
+
+// reconcileRemoteCancel (#5118) re-issues a cancellation whose response was
+// lost (client timeout, connection dropped after sending) under the same
+// idempotency key. A daemon with a cancellation receipt store (every `goobers
+// up` daemon) answers a completed key with the original outcome and an
+// in-flight key with cancel_outcome_unknown, so the replay does not cancel
+// twice; it only learns what the first request did. It returns the
+// first definite answer, or lastErr once the window closes without one.
+func reconcileRemoteCancel(
+	call func(context.Context) (httpapi.CancelRunResult, *apicontract.APIError, error),
+	lastErr error,
+) (httpapi.CancelRunResult, *apicontract.APIError, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cancelReconcileWindow)
+	defer cancel()
+	ticker := time.NewTicker(cancelReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return httpapi.CancelRunResult{}, nil, lastErr
+		case <-ticker.C:
+		}
+		result, apiErr, err := call(ctx)
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				lastErr = err
+			}
+		case cancelInFlight(apiErr):
+			lastErr = fmt.Errorf("%s: %s", apiErr.Code, apiErr.Message)
+		default:
+			return result, apiErr, nil
+		}
+	}
+}
+
+// cancelInFlight reports whether the daemon asked for the same key to be
+// replayed because the cancellation's outcome is not yet recorded.
+func cancelInFlight(apiErr *apicontract.APIError) bool {
+	return apiErr != nil && (apiErr.Code == cancelOutcomeUnknownCode || apiErr.Code == cancelReceiptUnavailableCode)
+}
+
+// cancelAnswerMayBeLost reports whether err means the cancel request may have
+// reached the daemon but its answer never came back: a client timeout or a
+// connection dropped after sending. A failed dial never sent the request, and
+// a received-but-malformed answer is not improved by asking again.
+func cancelAnswerMayBeLost(err error) bool {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return false
+	}
+	var opErr *net.OpError
+	return !errors.As(err, &opErr) || opErr.Op != "dial"
 }

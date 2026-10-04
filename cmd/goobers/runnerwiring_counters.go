@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"sync"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/apireadcache"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
@@ -20,10 +22,28 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// newOpenPRProvider builds the GitHub client the open-PR lister polls; a package
-// var so tests substitute a fake (mirrors newPRPoller / newEscalationPoster).
-var newOpenPRProvider = func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
-	return providers.NewGitHubProvider(token, opts...)
+// openPRListerDeps is the runtimeDeps family that builds the forge clients the
+// #353 open-PR-count refreshers poll. Tests substitute fakes by copying
+// productionRuntimeDeps() and replacing a field, never by reassigning shared
+// state.
+type openPRListerDeps struct {
+	// github builds the GitHub client a resolvingOpenPRLister lists through,
+	// authenticated with that poll's freshly resolved token.
+	github func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister
+	// ado builds the provider an adoOpenPRLister polls, from the configured
+	// repository's own auth block.
+	ado func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error)
+}
+
+func productionOpenPRListerDeps() openPRListerDeps {
+	return openPRListerDeps{
+		github: func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+			return providers.NewGitHubProvider(token, opts...)
+		},
+		ado: func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error) {
+			return adoauth.Provider(repo, nil, reg, nil, nil, stores)
+		},
+	}
 }
 
 // resolvingOpenPRLister resolves the org-repo token per poll — honoring
@@ -36,6 +56,8 @@ type resolvingOpenPRLister struct {
 	resolver     credentials.Resolver
 	reg          runner.SecretRegistrar
 	schedulerDir string
+	// newProvider is openPRListerDeps.github, fixed when the lister is built.
+	newProvider func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister
 }
 
 func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
@@ -44,14 +66,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 		return nil, fmt.Errorf("resolve open-pr-list token for %s: %w", l.ref, err)
 	}
 	l.reg.Register([]byte(token))
-	return newOpenPRProvider(token, apiReadCacheOptionForSnapshot(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
-}
-
-// newADOOpenPRProvider builds the ADO provider the open-PR lister polls from
-// the configured repository's own auth block; a package var so tests
-// substitute a fake.
-var newADOOpenPRProvider = func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error) {
-	return adoauth.Provider(repo, nil, reg, nil, nil, stores)
+	return l.newProvider(token, apireadcache.Option(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
 }
 
 // adoOpenPRLister lists an Azure DevOps repository's active PRs for the
@@ -63,6 +78,8 @@ type adoOpenPRLister struct {
 	repo   instance.RepoRef
 	reg    runner.SecretRegistrar
 	stores credentials.StoreResolver
+	// newProvider is openPRListerDeps.ado, fixed when the lister is built.
+	newProvider func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error)
 
 	mu       sync.Mutex
 	provider localscheduler.OpenPRLister
@@ -82,7 +99,7 @@ func (l *adoOpenPRLister) ensureProvider() (localscheduler.OpenPRLister, error) 
 	if l.provider != nil {
 		return l.provider, nil
 	}
-	provider, err := newADOOpenPRProvider(l.repo, l.reg, l.stores)
+	provider, err := l.newProvider(l.repo, l.reg, l.stores)
 	if err != nil {
 		return nil, fmt.Errorf("build ADO open-pr-list provider for %s/%s/%s: %w", l.repo.Owner, l.repo.Project, l.repo.Name, err)
 	}
@@ -90,14 +107,14 @@ func (l *adoOpenPRLister) ensureProvider() (localscheduler.OpenPRLister, error) 
 	return provider, nil
 }
 
-// openPRListerForRepo picks the open-PR lister for the repository a capped
+// forRepo picks the open-PR lister for the repository a capped
 // gaggle is bound to, with the RepositoryRef it polls and the key that
 // deduplicates refreshers. GitHub resolves the owner/name token per poll; ADO
 // uses the configured repo's own auth and addresses the PR list by project.
 // A nil lister means the gaggle gets no refresher, so its count stays unknown
 // and Admit fails open: that is an ADO project with no configured binding,
 // whose auth cannot be known. Any other provider is refused.
-func openPRListerForRepo(gaggle string, repo instance.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, stores credentials.StoreResolver) (localscheduler.OpenPRLister, providers.RepositoryRef, string, error) {
+func (d openPRListerDeps) forRepo(gaggle string, repo instance.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, stores credentials.StoreResolver) (localscheduler.OpenPRLister, providers.RepositoryRef, string, error) {
 	switch repo.Provider {
 	case string(providers.ProviderADO):
 		if repo.Project == "" {
@@ -105,10 +122,10 @@ func openPRListerForRepo(gaggle string, repo instance.RepoRef, resolver credenti
 		}
 		repoRef := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
 		key := repo.Provider + ":" + repo.Owner + "/" + repo.Project + "/" + repo.Name
-		return &adoOpenPRLister{repo: repo, reg: reg, stores: stores}, repoRef, key, nil
+		return &adoOpenPRLister{repo: repo, reg: reg, stores: stores, newProvider: d.ado}, repoRef, key, nil
 	case "", string(providers.ProviderGitHub):
 		credentialRef := repo.Owner + "/" + repo.Name
-		lister := &resolvingOpenPRLister{ref: credentialRef, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
+		lister := &resolvingOpenPRLister{ref: credentialRef, resolver: resolver, reg: reg, schedulerDir: schedulerDir, newProvider: d.github}
 		repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 		return lister, repoRef, repo.Provider + ":" + credentialRef, nil
 	default:
@@ -132,8 +149,14 @@ func openPRListerForRepo(gaggle string, repo instance.RepoRef, resolver credenti
 // such gaggles. Only the `up` daemon starts/wires the returned set; a single
 // `goobers run` has no accretion to throttle. resolver is a fresh credential
 // resolver over cfg (buildCredentials is read-only and idempotent), used only
-// to authenticate the polls.
+// to authenticate the polls. It builds with productionRuntimeDeps; tests pass
+// their own runtimeDeps to openPRRefresher instead.
 func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gaggleProjects map[string]apiv1.RepoRef, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresherSet, error) {
+	return productionRuntimeDeps().openPRRefresher(cfg, workflows, gaggleProjects, reg, branchNamespaces, schedulerDir, stores)
+}
+
+// openPRRefresher is buildOpenPRRefresher over an explicit runtimeDeps.
+func (d runtimeDeps) openPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gaggleProjects map[string]apiv1.RepoRef, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresherSet, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -163,7 +186,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 			// the first repo's PRs.
 			repo = instance.RepoRef{Owner: project.Owner, Name: project.Name, Provider: string(project.Provider)}
 		}
-		lister, repoRef, key, err := openPRListerForRepo(gaggle, repo, resolver, reg, schedulerDir, stores)
+		lister, repoRef, key, err := d.openPRListers.forRepo(gaggle, repo, resolver, reg, schedulerDir, stores)
 		if err != nil {
 			return nil, err
 		}
@@ -272,11 +295,16 @@ func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr error) {
+	snapshot, err := b.EligibleSnapshot(ctx)
+	return snapshot.Count, err
+}
+
+func (b *backlogCounter) EligibleSnapshot(ctx context.Context) (snapshot localscheduler.BacklogSnapshot, pollErr error) {
 	observation := backlogPollObservation{}
-	defer func() { b.retainBacklogObservation(observation, count, pollErr) }()
+	defer func() { b.retainBacklogObservation(observation, snapshot.Count, pollErr) }()
 	provider, cleanup, err := b.newCounterProvider(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
+		return localscheduler.BacklogSnapshot{}, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
 	defer cleanup()
 
@@ -288,6 +316,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 	pageInfo := &providers.ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		// The predicate below compares labels exactly; ADO folds a read tag
+		// equal to one of these ignoring case onto this spelling.
+		CompareLabels: b.labelPredicate.Labels(),
 		Assignee: func() string {
 			if b.respectAssignee && b.assignedTo != "" {
 				return b.assignedTo
@@ -297,7 +328,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
 	})
 	if err != nil {
-		return 0, err
+		return localscheduler.BacklogSnapshot{}, err
 	}
 	b.mu.Lock()
 	if pageInfo.HasNext {
@@ -313,19 +344,30 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
 		if err != nil {
-			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
+			return localscheduler.BacklogSnapshot{}, fmt.Errorf("evaluate backlog label predicate: %w", err)
 		}
 		if matched {
 			matched, err = b.fieldPredicate.Matches(item.Fields)
 			if err != nil {
-				return 0, fmt.Errorf("evaluate backlog field predicate: %w", err)
+				return localscheduler.BacklogSnapshot{}, fmt.Errorf("evaluate backlog field predicate: %w", err)
 			}
 			if matched {
-				count++
+				snapshot.Count++
+				if readyAt := backlogItemReadyAt(item); !readyAt.IsZero() &&
+					(snapshot.OldestReadyAt.IsZero() || readyAt.Before(snapshot.OldestReadyAt)) {
+					snapshot.OldestReadyAt = readyAt
+				}
 			}
 		}
 	}
-	return count, nil
+	return snapshot, nil
+}
+
+func backlogItemReadyAt(item providers.WorkItem) time.Time {
+	if item.ReadyAt != nil && !item.ReadyAt.IsZero() {
+		return item.ReadyAt.UTC()
+	}
+	return time.Time{}
 }
 
 func newCounterGitHubProvider(
@@ -355,7 +397,7 @@ func newCounterGitHubProvider(
 	}
 	reg.Register([]byte(token))
 	opts := []func(*providers.GitHubProvider){
-		apiReadCacheOptionForSnapshot(schedulerDir, providersnapshot.ID(ctx)),
+		apireadcache.Option(schedulerDir, providersnapshot.ID(ctx)),
 	}
 	if accounting != nil {
 		opts = append(opts,
@@ -428,12 +470,12 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 	if !found {
 		return nil, nil
 	}
-	labels := make([]string, 0, len(selector))
+	labels := append([]string(nil), gaggle.Spec.Backlog.Labels...)
 	for k := range selector {
 		labels = append(labels, k)
 	}
-	sort.Strings(labels)
-	predicate, err := labelpredicate.Compile(expression, labels, nil)
+	labels = uniqueSortedLabels(labels)
+	predicate, err := labelpredicate.Compile(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, expression), labels, nil)
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
 	}
@@ -506,13 +548,14 @@ func buildRefillDemandCounter(
 	if configured, ok := task.Inputs["requireLabels"]; ok {
 		requireLabels = splitLabelList(configured)
 	}
+	requireLabels = append(requireLabels, gaggle.Spec.Backlog.Labels...)
 	if trust := task.Inputs["trustLabel"]; trust != "" {
 		requireLabels = append(requireLabels, trust)
 	}
 	excludeLabels := append(splitLabelList(task.Inputs["excludeLabels"]), providers.LabelClaimed)
 	requireLabels = uniqueSortedLabels(requireLabels)
 	excludeLabels = uniqueSortedLabels(excludeLabels)
-	predicate, _, err := compileBacklogLabelSelection(task.Inputs["labelPredicate"], requireLabels, excludeLabels, task.Inputs["parkLabels"], task.Inputs["filterParkLabels"])
+	predicate, _, err := compileBacklogLabelSelection(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, task.Inputs["labelPredicate"]), requireLabels, excludeLabels, task.Inputs["parkLabels"], task.Inputs["filterParkLabels"])
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q refill label predicate: %w", wf.Name, err)
 	}
@@ -566,9 +609,20 @@ func buildScheduleDemandCounter(
 	if !hasSchedule || !ok {
 		return nil
 	}
+	repo := backlogCounterRepoRef(cfg, repoRef)
+	if repo.Provider == providers.ProviderADO {
+		// Azure DevOps has no webhook ingestion, so the schedule is its only
+		// autonomous pr-remediation trigger, and update-behind-pr is
+		// not-applicable there (ADO-N15), so behind-ness is not its
+		// eligibility. The demand count is GitHub-only; a counter that can
+		// only error would size every tick to zero. Without one each due
+		// tick fires unsized, bounded by readiness, and gather-pr-context
+		// ends a run with no eligible pull request as ordinary no-work.
+		return nil
+	}
 	return &remediationDemandCounter{
 		ref:          repoRef.Owner + "/" + repoRef.Name,
-		repo:         backlogCounterRepoRef(cfg, repoRef),
+		repo:         repo,
 		base:         base,
 		headPrefix:   headPrefix,
 		gaggle:       wf.Spec.Gaggle,

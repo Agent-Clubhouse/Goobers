@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/pushrejection"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -32,7 +32,7 @@ import (
 // provider pushes with the runner-injected repo:push token; an Azure DevOps
 // origin must be the routed repository and gets the ADO header in the scheme
 // the daemon delivered beside the token (pushBranchEnvironment).
-const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
+const pushBranchHelp = "Usage: goobers push-branch [--config-repo] [path]\n\n" +
 	"Push the worktree's checked-out branch to origin, authenticated via the\n" +
 	"configured repository credential — never the host's ambient git\n" +
 	"credentials, and never persisted to .git/config.\n" +
@@ -40,13 +40,24 @@ const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"refs\") fetches the remote tip, rebases the local branch onto it, and\n" +
 	"retries up to 2 more times before failing, so a fully-validated diff is\n" +
 	"not discarded because a concurrent writer advanced the branch (#3366).\n" +
-	"[path] defaults to the current directory (the stage's worktree).\n" +
+	"A push the remote refuses outright (an ADO branch policy, or a GitHub\n" +
+	"App lacking the `workflows` permission for a .github/workflows change)\n" +
+	"fails immediately without retrying.\n" +
+	"[path] defaults to the current directory (the stage's worktree).\n\n" +
+	"Flag --config-repo (TUT-A8) pushes the instance CONFIG repository\n" +
+	"checkout instead — [path] defaults to the configRepoDir input (default\n" +
+	"\"config-repo\", as created by `goobers config-checkout`) — authenticated\n" +
+	"with the stage's declared configrepo:write credential, never repo:push. The\n" +
+	"checkout's origin must be the workflowSource repository. Other inputs:\n" +
+	"configRepo (owner/name) and configRepoBase, used only where no instance\n" +
+	"config is readable (a stage pod).\n" +
 	"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n"
 
 func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("push-branch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "push-branch")
+	configRepo := fs.Bool(configRepoFlag, false, "push the instance config repository checkout with configrepo:write")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -59,12 +70,35 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		dir = fs.Arg(0)
 	}
 
+	// Opt-in config-repo target (TUT-A8): push the config-repo checkout with
+	// the configrepo:write credential instead of the worktree with repo:push.
+	// Everything else — empty-branch handling, race retry, receipt — is shared.
+	baseBranch := ""
+	var env pushBranchAuthEnv
+	factDir := dir
+	configTarget, isConfig, err := configRepoTargetFor(*configRepo, providerStageRoot(""))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if isConfig {
+		if fs.NArg() == 0 {
+			dir = configRepoDir()
+		}
+		factDir = "."
+		baseBranch = configTarget.Base
+	}
+
 	branch, err := currentBranch(dir)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	env, err := pushBranchEnvironment(dir)
+	if isConfig {
+		env, err = configRepoPushAuth(dir, configTarget)
+	} else {
+		env, err = pushBranchAuth(dir)
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -88,7 +122,13 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	// empty branch — and failing the stage would regress the first case on
 	// substrates where it is legitimate. So the stage still succeeds; what it
 	// stops doing is claiming a push that did not happen.
-	empty, emptyErr := branchHasNoCommitsBeyondBase(dir, branch)
+	var empty bool
+	var emptyErr error
+	if isConfig {
+		empty, emptyErr = branchHasNoCommitsBeyondBaseBranch(dir, branch, baseBranch)
+	} else {
+		empty, emptyErr = branchHasNoCommitsBeyondBase(dir, branch)
+	}
 	if emptyErr != nil {
 		// Cannot tell: preserve today's behaviour exactly rather than guess.
 		pf(stderr, "warning: could not determine whether %q has commits to push (%v); pushing anyway\n", branch, emptyErr)
@@ -107,7 +147,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	// re-claim discovery reads it back: a prior run whose journal shows a
 	// pushed branch did not strand its diff, so gather-implement-context must
 	// not offer that run's work as recoverable.
-	appendBranchPushFact(dir, branch)
+	appendBranchPushFact(factDir, branch)
 
 	pf(stdout, "pushed %s to origin\n", branch)
 	return 0
@@ -126,51 +166,72 @@ const pushRaceAttempts = 3
 // apply cleanly aborts and surfaces the original push rejection: conflict
 // resolution is agentic work, not a push-layer concern. Any non-race failure
 // (auth, missing remote) fails immediately, exactly as before.
-func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) error {
+func pushBranchWithRetry(dir, branch string, auth pushBranchAuthEnv, stderr io.Writer) error {
 	var err error
 	for attempt := 1; ; attempt++ {
-		err = gitPushBranch(dir, branch, env)
+		err = gitPushBranchWithAuth(dir, branch, auth)
 		if err == nil {
 			return nil
 		}
-		// Checked ahead of isPushRaceError: a policy-protected rejection also
-		// prints "failed to push some refs" (git's own generic trailer for
-		// ANY rejected update), which isPushRaceError alone would misread as
-		// a ref race worth a fetch-rebase-retry. Rebasing onto the same
-		// protected branch and pushing again hits the identical policy, so
-		// this returns immediately instead of spending the retry budget.
-		var policyErr *policyProtectedPushError
-		if errors.As(err, &policyErr) {
+		// Checked ahead of pushrejection.IsRace: a policy-protected or
+		// workflow-permission rejection also prints "failed to push some
+		// refs" (git's own generic trailer for ANY rejected update), which
+		// pushrejection.IsRace alone would misread as a ref race worth a
+		// fetch-rebase-retry. Rebasing and pushing again hits the identical
+		// refusal, so this returns immediately instead of spending the retry
+		// budget (and, for a never-created branch, failing the rebase with a
+		// "couldn't find remote ref" that buries the real cause, #5502).
+		if pushrejection.IsTerminal(err) {
 			return err
 		}
-		if attempt >= pushRaceAttempts || !isPushRaceError(err) {
+		if attempt >= pushRaceAttempts || !pushrejection.IsRace(err) {
 			return err
 		}
 		pf(stderr, "warning: push attempt %d rejected as a ref race; rebasing onto the remote tip and retrying: %v\n", attempt, err)
-		if rebaseErr := rebaseOntoRemoteBranch(dir, branch, env); rebaseErr != nil {
+		if rebaseErr := rebaseOntoRemoteBranchWithAuth(dir, branch, auth); rebaseErr != nil {
 			pf(stderr, "warning: rebase onto remote %q failed (%v); surfacing the original push rejection\n", branch, rebaseErr)
 			return err
 		}
 	}
 }
 
-// isPushRaceError classifies a push failure as a ref race worth a
-// fetch-rebase-retry, from git's own stable rejection phrasing. Everything
-// else (auth failures, unreachable remotes, missing refs) is not retryable
-// at this layer.
-func isPushRaceError(err error) bool {
-	msg := err.Error()
-	for _, marker := range []string{
-		"failed to push some refs",
-		"fetch first",
-		"non-fast-forward",
-		"cannot lock ref",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
+// pushBranchAuthEnv yields the credentialed git environment for ONE git
+// invocation. push-branch resolves it per push, fetch and rebase rather than
+// once at command start, so a delivered credential that expires during a
+// long push-rebase-retry loop is refreshed (Goobers#6120). A nil value means
+// no credential (the environment the git helpers compose on their own).
+type pushBranchAuthEnv func() ([]string, error)
+
+func (auth pushBranchAuthEnv) env() ([]string, error) {
+	if auth == nil {
+		return nil, nil
 	}
-	return false
+	return auth()
+}
+
+func gitPushBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
+	env, err := auth.env()
+	if err != nil {
+		return err
+	}
+	return gitPushBranch(dir, branch, env)
+}
+
+func rebaseOntoRemoteBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
+	env, err := auth.env()
+	if err != nil {
+		return err
+	}
+	return rebaseOntoRemoteBranch(dir, branch, env)
+}
+
+// pushBranchAuth is pushBranchEnvironment resolved per invocation: the origin
+// checks run once, the credential is read each time it is used.
+func pushBranchAuth(dir string) (pushBranchAuthEnv, error) {
+	if _, err := pushBranchEnvironment(dir); err != nil {
+		return nil, err
+	}
+	return func() ([]string, error) { return pushBranchEnvironment(dir) }, nil
 }
 
 // rebaseOntoRemoteBranch fetches branch's current remote tip and rebases the
@@ -414,7 +475,13 @@ func stageBaseBranch() string {
 // a wrong "empty" verdict would silently drop a real diff, which is worse than
 // the problem being fixed.
 func branchHasNoCommitsBeyondBase(dir, branch string) (bool, error) {
-	base := stageBaseBranch()
+	return branchHasNoCommitsBeyondBaseBranch(dir, branch, stageBaseBranch())
+}
+
+// branchHasNoCommitsBeyondBaseBranch is branchHasNoCommitsBeyondBase against an
+// explicit base: the config-repo target's base is workflowSource's ref, not the
+// gaggle's product base branch.
+func branchHasNoCommitsBeyondBaseBranch(dir, branch, base string) (bool, error) {
 	// Two substrates store the base under different refs and BOTH must resolve,
 	// or the check silently degrades to "cannot tell" on one of them. A pod's
 	// `git clone --branch <base>` yields a remote-tracking origin/<base>; the
@@ -462,48 +529,10 @@ func gitPushBranch(dir, branch string, env []string) error {
 	cmd.Env = composeGitEnv(dir, env)
 	out, err := workspaceGitCombinedOutput(cmd)
 	if err != nil {
-		wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-		if isADOPolicyProtectedPush(string(out)) {
-			return &policyProtectedPushError{branch: branch, err: wrapped}
-		}
-		return wrapped
+		return pushrejection.Classify(branch, string(out), err)
 	}
 	return nil
 }
-
-// isADOPolicyProtectedPush reports whether output — git's combined
-// stdout+stderr from a rejected push — carries the markers ADO's Git provider
-// attaches to a push refused by an enabled branch policy: TF402455 in the
-// human-readable "remote rejected" line, and
-// GitRefUpdateRejectedByPolicyException in the underlying exception name.
-// Neither ever appears in a GitHub or Gitea rejection, so this never fires
-// for those remotes.
-//
-// Design §5 ADO-N26 (F8): any enabled blocking policy makes the ref
-// PR-only — a direct push (or force-push) to it is refused outright, not
-// merely delayed by a race, so this is checked ahead of isPushRaceError
-// rather than folded into it.
-func isADOPolicyProtectedPush(output string) bool {
-	return strings.Contains(output, "TF402455") ||
-		strings.Contains(output, "GitRefUpdateRejectedByPolicyException")
-}
-
-// policyProtectedPushError reports that a push (or force-push) was refused
-// because the target branch is protected by an enabled ADO branch policy —
-// never a credential problem. Its message names the policy, not the
-// credential, so a caller does not misdiagnose it as an auth failure; see
-// classifyProviderError, which maps it to a distinct non-retryable code and
-// never sends it through an auth retry.
-type policyProtectedPushError struct {
-	branch string
-	err    error
-}
-
-func (e *policyProtectedPushError) Error() string {
-	return fmt.Sprintf("branch %q is protected by an ADO branch policy and cannot be pushed to directly (land the change through a pull request instead): %v", e.branch, e.err)
-}
-
-func (e *policyProtectedPushError) Unwrap() error { return e.err }
 
 // pushBranchEnvironment is the Git environment push-branch pushes with: the
 // repo:push credential the stage was delivered, sent the way origin's forge
@@ -589,7 +618,8 @@ func pushBranchADOOrigin(dir string, routed providers.RepositoryRef, isRouted bo
 // dev.azure.com remote for the same repository would. The configured
 // Owner/Project/Name are compared as-is (case-insensitively) against the
 // origin's decoded coordinates; no name character class is imposed. An origin
-// that embeds a password never matches: push-branch would otherwise place it
+// that embeds a password, or a username other than the organization or "git"
+// (which may be a token), never matches: push-branch would otherwise place it
 // on argv (`git push <url>`) and in the scoped extraheader config key, so it
 // fails closed instead.
 func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bool) {
@@ -611,9 +641,10 @@ func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bo
 // adoOriginMatches reports whether remote addresses the Azure DevOps
 // repository organization/project/name, by the rules adoRepoForOrigin
 // documents: any spelling providers.ParseADORemoteURL accepts, compared
-// case-insensitively, and never an origin that embeds a password.
+// case-insensitively, and never an origin whose userinfo may carry a
+// credential (remoteEmbedsCredential).
 func adoOriginMatches(remote, organization, project, name string) bool {
-	if remoteHasPassword(remote) {
+	if remoteEmbedsCredential(remote) {
 		return false
 	}
 	org, remoteProject, remoteName, ok := providers.ParseADORemoteURL(remote)
@@ -634,12 +665,42 @@ func remoteHasPassword(remote string) bool {
 	return set
 }
 
+// remoteHasCredentialUsername reports whether a URL-form Azure DevOps remote
+// carries something other than an identity in its userinfo username. The
+// forms Azure DevOps itself produces name the organization
+// (https://<org>@dev.azure.com/..., ssh://<org>@vs-ssh.visualstudio.com/...)
+// or "git" (ssh://git@ssh.dev.azure.com/...); any other username may be a
+// token (https://<PAT>@dev.azure.com/...), which push-branch would otherwise
+// place on argv and in the scoped extraheader config key.
+func remoteHasCredentialUsername(remote string) bool {
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.User == nil {
+		return false
+	}
+	username := parsed.User.Username()
+	if username == "" || username == "git" {
+		return false
+	}
+	org, _, _, ok := providers.ParseADORemoteURL(remote)
+	return !ok || !strings.EqualFold(username, org)
+}
+
+// remoteEmbedsCredential reports whether a remote's userinfo may carry a
+// credential: a password, or a username that is not an identity
+// (remoteHasCredentialUsername). Such an origin is never routed.
+func remoteEmbedsCredential(remote string) bool {
+	return remoteHasPassword(remote) || remoteHasCredentialUsername(remote)
+}
+
 // adoOriginMismatchError is push-branch's fail-closed error for an ADO origin
 // adoRepoForOrigin did not route. The remote is rendered with any embedded
-// password masked, and a password-bearing origin gets its own explanation.
+// credential masked, and a credential-bearing origin gets its own explanation.
 func adoOriginMismatchError(remote string) error {
 	if remoteHasPassword(remote) {
 		return fmt.Errorf("ADO origin %q embeds a password; remove it from the remote and configure the repository's auth instead", redactedRemote(remote))
+	}
+	if remoteHasCredentialUsername(remote) {
+		return fmt.Errorf("ADO origin %q embeds a credential in its username; remove it from the remote (only the organization name or \"git\" is accepted there) and configure the repository's auth instead", redactedRemote(remote))
 	}
 	return fmt.Errorf("ADO origin %q does not match any configured repository", redactedRemote(remote))
 }
@@ -648,18 +709,26 @@ func adoOriginMismatchError(remote string) error {
 // the origin is not the repository the stage was routed to, so the stage's
 // repo:push credential is not sent to it.
 func adoOriginRoutedMismatchError(remote string, routed providers.RepositoryRef) error {
-	if remoteHasPassword(remote) {
+	if remoteEmbedsCredential(remote) {
 		return adoOriginMismatchError(remote)
 	}
 	return fmt.Errorf("ADO origin %q does not match the routed repository %s/%s/%s", redactedRemote(remote), routed.Owner, routed.Project, routed.Name)
 }
 
 // redactedRemote renders a remote for an error message with any embedded
-// password masked.
+// password masked, and a username that may be a credential
+// (remoteHasCredentialUsername) masked too.
 func redactedRemote(remote string) string {
 	parsed, err := url.Parse(remote)
 	if err != nil {
 		return remote
+	}
+	if remoteHasCredentialUsername(remote) {
+		if _, set := parsed.User.Password(); set {
+			parsed.User = url.UserPassword("xxxxx", "xxxxx")
+		} else {
+			parsed.User = url.User("xxxxx")
+		}
 	}
 	return parsed.Redacted()
 }
@@ -682,7 +751,21 @@ func isADORemote(remote string) bool {
 // `ps`) and is never written to any file. GitHub's HTTPS token convention is
 // basic auth with the token as the password and any non-empty username;
 // "x-access-token" is GitHub's own documented placeholder for that username.
+//
+// It is built per git invocation: a repo:push value the stage holds a
+// credential-refresh grant for is refreshed here when it nears its stated
+// expiry (Goobers#6120), so a long remediation does not push with the value
+// it was handed at stage start.
 func gitAuthEnv(token string) []string {
+	return gitAuthEnvFor(capability.RepoPush, token)
+}
+
+// gitAuthEnvFor is gitAuthEnv for the credential delivered under cap. The
+// capability only selects which refreshing grant (if any) re-resolves the
+// value; the config-repo target uses it so configrepo:write is refreshed as
+// itself and never as repo:push.
+func gitAuthEnvFor(cap capability.Capability, token string) []string {
+	token = currentStageToken(cap, token)
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	return append(os.Environ(),
 		"GIT_CONFIG_COUNT=1",

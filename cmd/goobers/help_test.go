@@ -79,3 +79,24 @@ func TestUsageFooterLinksOnboardingPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderHelpIsNotGitHubOnly(t *testing.T) {
+	t.Run("connect summary", func(t *testing.T) {
+		_, stdout, _ := runArgs(t, "help")
+		if !strings.Contains(stdout, "connect           Connect an instance to a GitHub or Azure DevOps repository.") {
+			t.Fatalf("connect help summary is not provider-aware:\n%s", stdout)
+		}
+	})
+
+	t.Run("backlog read-only capability", func(t *testing.T) {
+		_, stdout, _ := runArgs(t, "help", "backlog-query")
+		for _, want := range []string{
+			"github:issues:read capability routed to the configured",
+			"backlog provider (GitHub, Azure DevOps, or Gitea)",
+		} {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("backlog-query help missing %q:\n%s", want, stdout)
+			}
+		}
+	})
+}

@@ -202,12 +202,13 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 			"rev": 3,
 			"url": "https://dev.azure.com/org/project/_workitems/edit/42",
 			"fields": map[string]interface{}{
-				"System.WorkItemType": "User Story",
-				"System.Title":        "Fix API",
-				"System.Description":  "Make it pass",
-				"System.State":        "Active",
-				"System.Tags":         "route/backend; goobers/status:claimed",
-				"System.AssignedTo":   map[string]interface{}{"displayName": "Mona"},
+				"System.WorkItemType":                      "User Story",
+				"System.Title":                             "Fix API",
+				"System.Description":                       "Make it pass",
+				"Microsoft.VSTS.Common.AcceptanceCriteria": "Return the expected response.",
+				"System.State":                             "Active",
+				"System.Tags":                              "route/backend; goobers/status:claimed",
+				"System.AssignedTo":                        map[string]interface{}{"displayName": "Mona"},
 			},
 			"relations": []map[string]interface{}{
 				{"rel": "System.LinkTypes.Hierarchy-Reverse", "url": "https://dev.azure.com/org/_apis/wit/workItems/41"},
@@ -237,8 +238,74 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	if !item.HasLabel("route/backend") {
 		t.Fatalf("expected scheduler routing label to be preserved: %#v", item.Labels)
 	}
+	if item.AcceptanceCriteria != "Return the expected response." {
+		t.Fatalf("AcceptanceCriteria = %q", item.AcceptanceCriteria)
+	}
+	if item.Body != "Make it pass\n\n## Acceptance Criteria\n\nReturn the expected response." {
+		t.Fatalf("Body = %q", item.Body)
+	}
+	if got := item.BodyWithAcceptanceCriteria(); got != "Make it pass\n\n## Acceptance Criteria\n\nReturn the expected response." {
+		t.Fatalf("BodyWithAcceptanceCriteria = %q", got)
+	}
 	if item.Parent == nil || item.Parent.Type != "parent" || item.Parent.ID != "41" {
 		t.Fatalf("expected hierarchy parent to be preserved: %#v", item.Parent)
+	}
+}
+
+func TestADOWorkItemComposesAcceptanceCriteriaBody(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		description string
+		criteria    string
+		want        string
+	}{
+		{
+			name:        "description only",
+			description: "Implement the thing.",
+			want:        "Implement the thing.",
+		},
+		{
+			name:     "criteria only",
+			criteria: "- It handles the edge case.",
+			want:     "## Acceptance Criteria\n\n- It handles the edge case.",
+		},
+		{
+			name:        "description and criteria",
+			description: "Implement the thing.",
+			criteria:    "- It handles the edge case.",
+			want:        "Implement the thing.\n\n## Acceptance Criteria\n\n- It handles the edge case.",
+		},
+		{
+			name:        "description already has criteria section",
+			description: "Implement the thing.\n\n## Acceptance Criteria\n\n- Existing criteria.",
+			criteria:    "- Existing criteria.",
+			want:        "Implement the thing.\n\n## Acceptance Criteria\n\n- Existing criteria.",
+		},
+		{
+			name:        "description criteria section differs from dedicated criteria",
+			description: "Implement the thing.\n\n## Acceptance Criteria\n\n- Existing criteria.\n\n## Notes\nDone.",
+			criteria:    "- Dedicated criteria.",
+			want:        "Implement the thing.\n\n## Acceptance Criteria\n\n- Existing criteria.\n\n- Dedicated criteria.\n\n## Notes\nDone.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := mapADOWorkItemState(adoWorkItem{
+				ID: 42,
+				Fields: map[string]interface{}{
+					"System.WorkItemType":                      "User Story",
+					"System.Title":                             "Fix API",
+					"System.Description":                       tc.description,
+					"Microsoft.VSTS.Common.AcceptanceCriteria": tc.criteria,
+				},
+			}, "open", WorkItemStatusOpen)
+
+			if item.Body != tc.want {
+				t.Fatalf("Body = %q, want %q", item.Body, tc.want)
+			}
+			if got := item.BodyWithAcceptanceCriteria(); got != tc.want {
+				t.Fatalf("BodyWithAcceptanceCriteria = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

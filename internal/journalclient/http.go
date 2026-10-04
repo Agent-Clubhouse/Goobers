@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/daemonclient"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -91,7 +92,7 @@ func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
 		return nil, fmt.Errorf("journalclient: %q is not a valid run id", cfg.RunID)
 	}
 	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: DefaultHTTPTimeout}
+		cfg.Client = daemonclient.NewHTTP(DefaultHTTPTimeout)
 	}
 	return &HTTP{cfg: cfg}, nil
 }

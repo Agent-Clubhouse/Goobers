@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/flake"
 )
 
@@ -59,6 +60,20 @@ type Request struct {
 	// FailureText is the stage's bounded failure evidence (summary, error
 	// message, captured diagnostic) the signature is derived from.
 	FailureText string
+	// FailureDigest is the stage's full failure roster (its failureDigest
+	// output, internal/executor FailureDigest). FailureText carries one
+	// window of the output; the roster carries every failure line, so a
+	// finding outside the window cannot pass as identical. Empty when the
+	// stage recorded none, which leaves the window comparison alone.
+	FailureDigest string
+	// FailureCount is how many distinct failure lines the stage found (its
+	// failureCount output). The digest is size-bounded; a digest holding fewer
+	// distinct failure lines than this was cut and is not a complete roster.
+	FailureCount int
+	// OutputTruncated reports that the stage kept only the head of its
+	// output, so everything derived from it — window, digest, count — is
+	// blind to what followed, and identity with the baseline is unprovable.
+	OutputTruncated bool
 	// RunID and Waiter identify who is waiting on a shared blocker: the run,
 	// and the durable subject (backlog item or pull request) to release when
 	// the baseline recovers. Both may be empty for a classification-only call.
@@ -73,6 +88,11 @@ type Decision struct {
 	BaseSHA     string
 	Fingerprint string
 	Signature   string
+	// Platforms names the target platforms the run's failure findings are
+	// qualified to (FailurePlatforms), nil when it is not platform-specific.
+	// It is recorded for every class as structured context; on a shared
+	// baseline failure it marks an inherited platform-specific one.
+	Platforms []string
 	// BlockerKey names the durable shared blocker this failure belongs to,
 	// set only for ClassSharedBaselineFailure.
 	BlockerKey string
@@ -93,8 +113,17 @@ type Decision struct {
 type ProbeResult struct {
 	// Green reports that the command succeeded on the untouched base.
 	Green bool
-	// Output is the failure evidence when Green is false.
+	// Output is the failure evidence when Green is false: the command's
+	// stdout, or its whole combined transcript when a prober cannot separate
+	// the streams.
 	Output string
+	// Stderr is the command's stderr, kept apart from Output so the failure
+	// diagnostic and roster are extracted exactly as the shell executor
+	// extracts the run's own (#4477). Empty when the prober combined them.
+	Stderr string
+	// Truncated reports that a stream was cut at the prober's size bound, so
+	// the base's failure roster is incomplete.
+	Truncated bool
 }
 
 // Prober runs a command against the target branch at a pinned base SHA. It is
@@ -147,12 +176,27 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	if e == nil || e.Store == nil {
 		return Decision{}, ErrNoStore
 	}
-	signature := flake.NormalizeSignature(FailureSignatureText(req.FailureText))
+	signature := failureSignature(req.FailureText)
 	fingerprint := Fingerprint(req.Command, signature)
-	decision := Decision{Class: ClassUnknown, BaseSHA: req.BaseSHA, Fingerprint: fingerprint, Signature: signature}
+	decision := Decision{
+		Class: ClassUnknown, BaseSHA: req.BaseSHA, Fingerprint: fingerprint, Signature: signature,
+		Platforms: FailurePlatforms(req.FailureText),
+	}
 	if strings.TrimSpace(req.BaseSHA) == "" || len(req.Command) == 0 {
 		decision.Reason = "no pinned base SHA or command to compare against"
 		return decision, nil
+	}
+	if req.OutputTruncated {
+		decision.Reason = "the run kept only the head of its output, so its failures cannot be shown identical to the baseline"
+		return decision, nil
+	}
+	if !hasRoster(req) {
+		// Only the window can be compared, so a window that cannot carry an
+		// identity is settled before paying for a probe.
+		if reason := windowUnusable(signature); reason != "" {
+			decision.Reason = reason
+			return decision, nil
+		}
 	}
 
 	observation, ok := e.Store.Baseline(req.Repo, req.BaseSHA, req.Command)
@@ -173,12 +217,70 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 		decision.Reason = fmt.Sprintf("baseline %s is green for this command", short(req.BaseSHA))
 		return decision, nil
 	}
-	if observation.Fingerprint != fingerprint {
-		decision.Class = ClassPRIntroduced
-		decision.Reason = fmt.Sprintf("baseline %s fails with a different signature", short(req.BaseSHA))
+	compare := compareRosters
+	if !hasRoster(req) {
+		compare = compareWindows
+	}
+	if class, reason := compare(req, fingerprint, observation); class != ClassSharedBaselineFailure {
+		decision.Class, decision.Reason = class, reason
 		return decision, nil
 	}
+	return e.park(decision, req, observation)
+}
 
+// hasRoster reports whether the run recorded its full failure roster.
+func hasRoster(req Request) bool {
+	return strings.TrimSpace(req.FailureDigest) != ""
+}
+
+// windowUnusable explains why a run's window signature cannot establish
+// identity on its own, or returns "".
+func windowUnusable(signature string) string {
+	switch {
+	case signatureTruncated(signature):
+		return "the run's failure diagnostic was truncated at its size bound, so it cannot be shown identical to the baseline"
+	case strings.HasPrefix(signature, flake.NoStableSignature):
+		// Only runner boilerplate (a bare "FAIL\tpkg" verdict): no defect
+		// identity, so two of them matching proves nothing.
+		return "the run's failure carries no stable signature to compare with the baseline"
+	}
+	return ""
+}
+
+// compareWindows decides from the window signatures alone — the comparison a
+// run that recorded no failure roster gets.
+func compareWindows(req Request, fingerprint string, observation Observation) (Class, string) {
+	switch {
+	case signatureTruncated(observation.Signature):
+		return ClassUnknown, fmt.Sprintf("baseline %s's failure diagnostic was truncated at its size bound, so it cannot be shown identical", short(req.BaseSHA))
+	case observation.Fingerprint != fingerprint:
+		return ClassPRIntroduced, fmt.Sprintf("baseline %s fails with a different signature", short(req.BaseSHA))
+	}
+	return ClassSharedBaselineFailure, ""
+}
+
+// compareRosters decides from the complete failure rosters. The window
+// signature is drawn from one window of the output, so a finding outside it —
+// added by the branch, or swapped for one the base fails — is invisible
+// there, and a window cut at its size bound proves nothing; the roster holds
+// every failure line, so when both sides have one it decides alone (#4477).
+// Either roster missing or incomplete leaves identity unprovable.
+func compareRosters(req Request, _ string, observation Observation) (Class, string) {
+	runRoster, complete := failureRoster(req.FailureDigest, req.FailureCount)
+	switch {
+	case !complete:
+		return ClassUnknown, "the run's failure roster is incomplete, so it cannot be shown identical to the baseline"
+	case observation.Roster == "":
+		return ClassUnknown, fmt.Sprintf("baseline %s has no complete failure roster to compare", short(req.BaseSHA))
+	case runRoster != observation.Roster:
+		return ClassPRIntroduced, fmt.Sprintf("baseline %s fails, but with a different set of failures", short(req.BaseSHA))
+	}
+	return ClassSharedBaselineFailure, ""
+}
+
+// park records req's waiter on observation's shared blocker and completes the
+// shared-baseline decision.
+func (e *Evaluator) park(decision Decision, req Request, observation Observation) (Decision, error) {
 	decision.Class = ClassSharedBaselineFailure
 	decision.Park = !e.RepairLane
 	blocker, err := e.Store.Park(observation, Waiter{
@@ -195,6 +297,9 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	decision.Reason = fmt.Sprintf(
 		"identical failure on the target branch at base %s (%s); shared blocker %s has %d waiting subject(s)",
 		short(req.BaseSHA), observation.Signature, blocker.Key, decision.Waiting)
+	if len(decision.Platforms) > 0 {
+		decision.Reason += fmt.Sprintf("; platform-specific to %s", strings.Join(decision.Platforms, ","))
+	}
 	if !decision.Park {
 		decision.Reason += "; the shared repair lane is enabled, so this branch may carry the repair"
 	}
@@ -248,8 +353,12 @@ func (e *Evaluator) probe(ctx context.Context, req Request) (Observation, error)
 		ObservedAt: e.now(),
 	}
 	if !result.Green {
-		observation.Signature = flake.NormalizeSignature(FailureSignatureText(result.Output))
+		observation.Signature = probeSignature(result)
 		observation.Fingerprint = Fingerprint(req.Command, observation.Signature)
+		if !result.Truncated {
+			digest, count := executor.FailureDigest([]byte(result.Output), []byte(result.Stderr))
+			observation.Roster, _ = failureRoster(digest, count)
+		}
 	}
 	if err := e.Store.Record(observation); err != nil {
 		return Observation{}, err

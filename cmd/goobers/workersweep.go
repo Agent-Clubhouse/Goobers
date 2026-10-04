@@ -35,9 +35,11 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/converter"
 
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 const (
@@ -68,7 +70,7 @@ var dialWorkerSweepTemporal = bootstrap.DialTemporal
 // stageOrphanSweeper is the sweep half of *dispatcher.Dispatcher, named as an
 // interface so the wiring can be exercised with a fake.
 type stageOrphanSweeper interface {
-	SweepOrphans(ctx context.Context, runs dispatcher.RunStates) ([]string, error)
+	SweepOrphansWithReport(ctx context.Context, runs dispatcher.RunStates) ([]dispatcher.OrphanReap, error)
 }
 
 // temporalRunStates answers dispatcher.SweepOrphans from the engine.
@@ -181,18 +183,18 @@ func (r temporalRunStates) status(ctx context.Context, workflowID string) sweepS
 // workerhost: the host dials inside Run, which has not been called yet, and a
 // boot-time connection that lives for the length of one sweep costs nothing to
 // reason about.
-func sweepWorkerStageOrphans(sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) {
-	sweepWorkerStageOrphansContext(context.Background(), sweeper, hostPort, namespace, stdout, stderr)
+func sweepWorkerStageOrphans(sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer, dc ...converter.DataConverter) {
+	sweepWorkerStageOrphansContext(context.Background(), sweeper, hostPort, namespace, tls, stdout, stderr, dc...)
 }
 
-func sweepWorkerStageOrphansContext(parent context.Context, sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) {
+func sweepWorkerStageOrphansContext(parent context.Context, sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer, dc ...converter.DataConverter) {
 	if sweeper == nil {
 		return
 	}
 	if err := parent.Err(); err != nil {
 		return
 	}
-	c, err := dialWorkerSweepTemporal(hostPort, namespace)
+	c, err := dialWorkerSweepTemporal(hostPort, namespace, tls, dc...)
 	if err != nil {
 		pf(stderr, "goobers worker: orphan sweep skipped: dial temporal %s (namespace %s): %v\n", hostPort, namespace, err)
 		return
@@ -200,13 +202,19 @@ func sweepWorkerStageOrphansContext(parent context.Context, sweeper stageOrphanS
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(parent, workerSweepBudget)
 	defer cancel()
-	disposed, err := sweeper.SweepOrphans(ctx, temporalRunStates{client: c})
+	reaped, err := sweeper.SweepOrphansWithReport(ctx, temporalRunStates{client: c})
 	if err != nil {
 		pf(stderr, "goobers worker: orphan sweep: %v\n", err)
 	}
-	if len(disposed) == 0 {
+	if len(reaped) == 0 {
 		pf(stdout, "goobers worker: orphan sweep: nothing settled to dispose\n")
 		return
+	}
+	disposed := make([]string, 0, len(reaped))
+	for _, reap := range reaped {
+		pf(stdout, "goobers worker: orphan sweep disposed stage pod %s/%s: %s\n",
+			reap.Namespace, reap.Pod, reap.Reason)
+		disposed = append(disposed, reap.Pod)
 	}
 	pf(stdout, "goobers worker: orphan sweep disposed %d settled stage pod(s): %s\n",
 		len(disposed), strings.Join(disposed, ", "))
@@ -222,8 +230,10 @@ func startPeriodicWorkerStageOrphanSweeps(
 	ctx context.Context,
 	sweeper stageOrphanSweeper,
 	hostPort, namespace string,
+	tls *temporaldial.TLS,
 	stdout, stderr io.Writer,
 	interval time.Duration,
+	dc ...converter.DataConverter,
 ) <-chan struct{} {
 	done := make(chan struct{})
 	if sweeper == nil || interval <= 0 {
@@ -242,7 +252,7 @@ func startPeriodicWorkerStageOrphanSweeps(
 				if ctx.Err() != nil {
 					return
 				}
-				sweepWorkerStageOrphansContext(ctx, sweeper, hostPort, namespace, stdout, stderr)
+				sweepWorkerStageOrphansContext(ctx, sweeper, hostPort, namespace, tls, stdout, stderr, dc...)
 			}
 		}
 	}()

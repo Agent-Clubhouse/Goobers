@@ -30,7 +30,7 @@ type daemonEngineCancelService struct {
 func newDaemonEngineCancelService(layout instance.Layout, definitions *interventionDefinitionRegistry, client *daemonEngineClient, guards *engineRunGuards, log *journal.InstanceLog) *daemonEngineCancelService {
 	service := &daemonEngineCancelService{layout: layout, definitions: definitions, guards: guards, log: log}
 	if client != nil && client.Temporal() != nil {
-		service.liveness = engine.NewWorkflowLiveness(client.Temporal(), client.Namespace())
+		service.liveness = engine.NewWorkflowLiveness(client.Temporal(), client.Namespace(), client.DataConverter())
 	}
 	return service
 }

@@ -81,6 +81,9 @@ func TestProviderInputSchemasAreWellFormed(t *testing.T) {
 					if strings.TrimSpace(input.RetiredSince) == "" || strings.TrimSpace(input.Replacement) == "" {
 						t.Errorf("retired input %s/%s lacks actionable metadata", command, input.Name)
 					}
+					if input.UnsetDefault != "" {
+						t.Errorf("retired input %s/%s declares an unset default", command, input.Name)
+					}
 				default:
 					t.Errorf("input %s/%s has invalid state %q", command, input.Name, input.State)
 				}
@@ -111,11 +114,11 @@ func TestInputSchemaForVersionHonorsDSLWindow(t *testing.T) {
 	t.Cleanup(func() { delete(inputSchemas, command) })
 
 	v2 := knownInputSchema(t, command, "2.0")
-	if got := inputNames(v2); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "timeout", "transitioned"}) || v2[3].State != InputCurrent {
+	if got := inputNames(v2); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "ownershipAssignees", "ownershipUnassigned", "timeout", "transitioned"}) || v2[5].State != InputCurrent {
 		t.Fatalf("2.0 inputs = %q", got)
 	}
 	v3 := knownInputSchema(t, command, "3.0")
-	if got := inputNames(v3); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "timeout", "transitioned", "v3-only"}) || v3[3].State != InputRetired {
+	if got := inputNames(v3); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "ownershipAssignees", "ownershipUnassigned", "timeout", "transitioned", "v3-only"}) || v3[5].State != InputRetired {
 		t.Fatalf("3.0 inputs = %q", got)
 	}
 }

@@ -83,7 +83,7 @@ func implicitDeterministicTaskWorkspaceWarning(workflow, stage string) string {
 
 func implicitAgenticGateWorkspaceWarning(workflow, stage string) string {
 	return fmt.Sprintf(
-		`workflow %q agentic gate %q omits agentic.workspace; it defaults to writable workspace: repo (a run-branch worktree). Set agentic.workspace; for example, agentic: {goober: reviewer, workspace: repo-readonly}. Choose scratch when no repository is needed, repo-readonly when only inspecting repository contents, or repo when writable repository state is intentional`,
+		`workflow %q agentic gate %q omits agentic.workspace; it defaults to writable workspace: repo (a run-branch worktree). Set agentic.workspace; for example, agentic: {goober: reviewer, workspace: repo}. Choose scratch when no repository is needed, repo-readonly only when intentionally inspecting the pinned base, or repo when writable repository state is intentional; gates that review subject commits should use repo`,
 		workflow, stage,
 	)
 }

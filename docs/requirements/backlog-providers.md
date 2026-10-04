@@ -8,13 +8,13 @@ The **Backlog** is the external system of record for work items, and **Providers
 abstraction over the team's repo + backlog tooling (GitHub and ADO). This is how work
 enters the system and how goobers act on code. The **GitHub provider is the V0 workload**
 (`ARCHITECTURE.md §12`): the V0 workflows — backlog curation, work nomination,
-implementation — run entirely on GitHub issues and PRs. **ADO lands in V1** behind the
+implementation — run entirely on GitHub issues and PRs. **ADO followed in V1 and ships** behind the
 same abstraction, whose shape is unchanged.
 
 ## Model
 
 - **Provider abstraction over GitHub + ADO**, for both the **repo** and the **backlog**,
-  from day one (`VISION §8`). GitHub ships first (V0); ADO follows (V1); definitions
+  from day one (`VISION §8`). GitHub shipped first (V0); ADO followed (V1, shipped); definitions
   never change to switch provider.
 - The **backlog is external** — a system of record the team already owns — not stored
   inside the instance (`ARCHITECTURE.md §2`).
@@ -31,7 +31,7 @@ same abstraction, whose shape is unchanged.
 
 - **BL-001 (MUST):** *(All tiers)* The platform MUST support a backlog via a provider
   abstraction over GitHub and ADO. The GitHub provider is the **V0 workload**; the ADO
-  provider is **V1** (`BL-033`). The abstraction's shape is fixed from day one.
+  provider is **V1 and ships** (`BL-033`; the `ado:*` capabilities in `internal/capability/capability.go`). The abstraction's shape is fixed from day one.
 - **BL-002 (MUST):** A **common work-item model** MUST map across providers (id, title,
   body, labels, state, assignee, links, optional parent-ref). The model is **flat for
   scheduling** — routing/claiming operate on individual items.
@@ -82,7 +82,7 @@ same abstraction, whose shape is unchanged.
   (label and/or assignee) on items so concurrent runs observing the backlog never
   double-process (`WF-031`); the runner's claim ledger remains the claim source of truth
   (`BL-005`).
-- **BL-033 (MUST):** *(V1)* The ADO provider MUST reach parity (work items + PRs +
+- **BL-033 (MUST):** *(V1, shipped)* The ADO provider MUST reach parity (work items + PRs +
   claiming markers) behind the same abstraction, with no change to workflow or goober
   definitions. Work-item creation is **process-agnostic**: with no type named, the
   create type is the project's Requirement-category default work item type
@@ -98,7 +98,9 @@ same abstraction, whose shape is unchanged.
     labels, `stale` and `tracking`), and, on the backlog selection scan, the
     trust label, `requireLabels`, `excludeLabels` and the labels a
     `labelPredicate` names. So a tag first written as, say, `GOOBERS:READY` or
-    `Needs-Design` matches those. Any other label keeps ADO's casing and is
+    `Needs-Design` matches those. The same fold applies where one item is re-read
+    and re-checked on its own: a continuation's eligibility re-check and the
+    decomposition parent's trust label. Any other label keeps ADO's casing and is
     compared exactly, as before. The claim label is compared ignoring case, and
     adding a label already present in another casing is a no-op.
   - *ADO ready-label timing:* a label's add/remove history (for example when
@@ -107,14 +109,23 @@ same abstraction, whose shape is unchanged.
     `$top`/`$skip`): each update that changes `System.Tags` is diffed old against
     new, matching the label ignoring case, and timed by that update's
     `System.ChangedDate`. A work item whose history reaches ADO's 10,000-revision
-    cap fails closed rather than returning a truncated history (`ADO-N21`).
+    cap, or whose tag change carries no `System.ChangedDate`, fails closed rather
+    than returning a truncated history (`ADO-N21`). The claim stage then releases
+    and skips that one item, with a warning, and goes on to the next; it does not
+    fail the whole stage.
   - *ADO blockers:* a work item's predecessors
     (`System.LinkTypes.Dependency-Reverse` links) block it until each is in a
     done state, and the ADO provider declares `backlog.blockers`. By default the
     Resolved, Completed and Removed state categories are done, so a Resolved Bug
     (its code has landed) no longer blocks. A gaggle can set
     `backlog.doneStates.categories`, and `backlog.doneStates.byType` state names
-    that take precedence for one work item type. A predecessor whose state cannot
+    that take precedence for one work item type. Names are trimmed of surrounding
+    whitespace, and `byType` keys that differ only in case are merged. The
+    setting governs only predecessor blocking; Goobers' own close always drives
+    an item to the Completed category. A stage that cannot read its gaggle's
+    instance config (a brokered or Goobernetes stage pod) warns on stderr that
+    `doneStates` and the backlog project are not applied there and uses the
+    defaults. A predecessor whose state cannot
     be read still blocks. GitHub and Gitea accept `doneStates` and ignore it
     (`ADO-N32`).
   - *ADO partial label add:* ADO adds one PR label per request. When some labels

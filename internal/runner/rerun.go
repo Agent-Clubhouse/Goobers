@@ -70,7 +70,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q for stage rerun: %w", in.RunID, err)
 	}
@@ -85,6 +85,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 		}
+		ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
 		phase, err := rd.Phase()
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
@@ -135,17 +136,6 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			requestAttempt:      attempt,
 			instructionAddendum: addendum,
 		}
-		if err := jr.Append(journal.Event{
-			Type:                journal.EventStageRerunRequested,
-			Stage:               in.Stage,
-			Attempt:             rerun.attempt,
-			AttemptClass:        journal.AttemptHuman,
-			Actor:               actor,
-			InstructionAddendum: addendum,
-		}); err != nil {
-			return Result{}, fmt.Errorf("runner: journal stage rerun for %q: %w", in.Stage, err)
-		}
-
 		startIn := StartInput{
 			configGeneration: id.ConfigGeneration,
 			instanceID:       id.InstanceID,
@@ -157,6 +147,26 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			RepoRef:          in.RepoRef,
 			Item:             item,
 			RunControls:      runControls,
+		}
+		branch := 0
+		if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 {
+			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
+				branch = owner.id
+			}
+		}
+		startIn, err = r.restoreResumeWorkspaceRevision(ctx, startIn, events, activeParallel, parallelStart, branch)
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
+		}
+		if err := jr.Append(journal.Event{
+			Type:                journal.EventStageRerunRequested,
+			Stage:               in.Stage,
+			Attempt:             rerun.attempt,
+			AttemptClass:        journal.AttemptHuman,
+			Actor:               actor,
+			InstructionAddendum: addendum,
+		}); err != nil {
+			return Result{}, fmt.Errorf("runner: journal stage rerun for %q: %w", in.Stage, err)
 		}
 		_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
 		if err != nil {
@@ -192,6 +202,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(seedEvents), gateDiffDigests
 		ws.infraGateAttempts = gateInfrastructureSeed(seedEvents)
 		ws.infraRepassAttempts = infrastructureTargetRepassSeed(seedEvents)
+		ws.pollAttempts = pollingTargetSeed(seedEvents)
 		ws.rerun = rerun
 
 		ctx, span := r.startRunSpan(ctx, startIn)

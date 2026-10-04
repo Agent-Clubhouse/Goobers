@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -171,12 +172,19 @@ const (
 	// EnvStageScript carries the stage's DeterministicRun.Script verbatim,
 	// when set.
 	EnvStageScript = "GOOBERS_STAGE_SCRIPT"
+	// EnvArtifactPublication carries runner-authored named-output authority.
+	// It is privileged and never inherited by the stage command.
+	EnvArtifactPublication = "GOOBERS_ARTIFACT_PUBLICATION"
 	// EnvStageTimeout carries the stage's effective timeout (Go duration
 	// string) so dispatch-exec bounds the command the same way the local
 	// executor bounds it, independent of the pod's activeDeadlineSeconds
 	// execution bound (which stops an orphan's container after the margin,
 	// rather than defining the stage's own timeout or deleting its Pod object).
 	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
+	// EnvRecoveryCustodyTimeout carries the post-stage recovery custody budget
+	// (Go duration string). dispatch-exec also clamps custody to the claim
+	// expiry, so this is an upper bound, not authority to retain work longer.
+	EnvRecoveryCustodyTimeout = "GOOBERS_RECOVERY_CUSTODY_TIMEOUT"
 	// EnvStageCapabilities carries the stage's declared credential capability
 	// NAMES as a JSON array. Names only: the pod resolves them against the
 	// credential plane itself, so no secret ever rides a pod spec — which is
@@ -338,7 +346,8 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
-	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
+	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
+	EnvArtifactPublication,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
@@ -459,11 +468,23 @@ const (
 	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
 	// LinuxGoCachePath / WindowsGoCachePath is the durable module cache volume
 	// stage pods mount outside tmp:ephemeral so fresh pods reuse downloaded
-	// modules. GOCACHE remains under the attempt-private temp root.
+	// modules.
 	LinuxGoCachePath   = "/var/goobers/cache"
 	WindowsGoCachePath = `C:\var\goobers\cache`
 	goBuildCacheVolume = "go-build-cache"
 	goBuildCacheClaim  = "goobers-go-build-cache"
+	// LinuxGoBuildCachePath / WindowsGoBuildCachePath is where GOCACHE points
+	// in a stage pod: a disk-backed per-pod emptyDir, deliberately NOT the
+	// shared claim above and NOT /tmp. Images (the operator's goobers-ci
+	// overlay) set GOCACHE=/tmp/gocache, and under tmp:ephemeral /tmp is a
+	// size-limited tmpfs, so any Go build filled it and starved everything
+	// else that needs temp space (recovery custody's git dir). The shared claim
+	// is avoided because a build cache that outlives its pods grows without
+	// bound (the 10 GB history in internal/ephemeraltmp); a per-pod emptyDir is
+	// reclaimed with the pod, exactly as the tmpfs copy was.
+	LinuxGoBuildCachePath   = "/var/goobers/gocache"
+	WindowsGoBuildCachePath = `C:\var\goobers\gocache`
+	goCompileCacheVolume    = "go-compile-cache"
 )
 
 // Node scheduling contract.
@@ -692,6 +713,8 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 			RestartPolicy:                corev1.RestartPolicyNever,
 			ActiveDeadlineSeconds:        ptr.To(activeDeadlineSeconds(cfg, attempt)),
 			AutomountServiceAccountToken: ptr.To(false),
+			ServiceAccountName:           cfg.serviceAccountFor(attempt.Gaggle),
+			OS:                           &corev1.PodOS{Name: corev1.OSName(nodeSelectorOS(runner.OS))},
 			NodeSelector:                 map[string]string{NodeSelectorOSKey: nodeSelectorOS(runner.OS)},
 		},
 	}
@@ -705,6 +728,9 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		pod.Spec.Tolerations = append(pod.Spec.Tolerations, windowsTolerations()...)
 	}
 
+	if err := stampServiceAliases(cfg, &pod.Spec, runner); err != nil {
+		return nil, err
+	}
 	pod.Spec.Containers = []corev1.Container{container}
 	return pod, nil
 }
@@ -770,6 +796,9 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	// whose template/SA leaves automount on yields a stage pod with a live
 	// token, silently defeating the invariant the image path asserts.
 	spec.AutomountServiceAccountToken = ptr.To(false)
+	spec.ServiceAccountName = cfg.serviceAccountFor(attempt.Gaggle)
+	spec.DeprecatedServiceAccount = ""
+	spec.OS = &corev1.PodOS{Name: corev1.OSName(nodeSelectorOS(runner.OS))}
 	if spec.NodeSelector == nil {
 		spec.NodeSelector = map[string]string{}
 	}
@@ -825,6 +854,9 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 
 	stampClassRestrictionsAnnotation(annotations, runner)
 	stampIdentityAnnotations(annotations, attempt)
+	if err := stampServiceAliases(cfg, spec, runner); err != nil {
+		return nil, err
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
@@ -1133,6 +1165,8 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		{Name: EnvAttemptClass, Value: literalPodEnv(string(attempt.Class))},
 		// Explicit empty shadows template EnvFrom for legacy dispatches.
 		{Name: EnvPodAttempt, Value: attempt.podAttemptEnv()},
+		// Explicit empty also shadows a template's EnvFrom for legacy stages.
+		{Name: EnvArtifactPublication, Value: literalPodEnv(artifactPublicationEnv(attempt))},
 	}
 
 	if cfg.BlobEndpoint != "" {
@@ -1158,6 +1192,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		env = append(env, corev1.EnvVar{Name: EnvStageScript, Value: literalPodEnv(attempt.Script)})
 	}
 	env = append(env, corev1.EnvVar{Name: EnvStageTimeout, Value: attempt.stageTimeout().String()})
+	env = append(env, corev1.EnvVar{Name: EnvRecoveryCustodyTimeout, Value: cfg.recoveryCustodyTimeout().String()})
 	for _, key := range sortedKeys(attempt.Env) {
 		env = append(env, corev1.EnvVar{Name: key, Value: attempt.Env[key]})
 	}
@@ -1400,7 +1435,7 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// GOMODCACHE is stamped after this allowlist is generated when the
 	// durable cache volume is mounted. Keep it through env:default-deny's
 	// in-pod rebuild so restricted stage pods reuse the durable module cache.
-	names = append(names, "GOMODCACHE")
+	names = append(names, "GOMODCACHE", "GOCACHE")
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
@@ -1545,6 +1580,24 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 	container.Env = append(container.Env,
 		corev1.EnvVar{Name: "GOMODCACHE", Value: cachePath},
 	)
+
+	// GOCACHE moves off /tmp (see LinuxGoBuildCachePath) onto disk-backed
+	// pod-local storage, overriding any image-baked GOCACHE=/tmp/gocache.
+	buildCachePath := LinuxGoBuildCachePath
+	if windows {
+		buildCachePath = WindowsGoBuildCachePath
+	}
+	spec.Volumes = append(spec.Volumes, corev1.Volume{
+		Name:         goCompileCacheVolume,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name: goCompileCacheVolume, MountPath: buildCachePath,
+	})
+	container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
+		return env.Name == "GOCACHE"
+	})
+	container.Env = append(container.Env, corev1.EnvVar{Name: "GOCACHE", Value: buildCachePath})
 }
 
 // stampSecurity applies the restriction bindings by OS (decisions 006/007,
@@ -1629,12 +1682,7 @@ func copyStringMap(m map[string]string) map[string]string {
 // (and any test asserting on it) is deterministic despite Go's randomized
 // map iteration.
 func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // InputEnvVar renders a declared input key as its stage environment variable.

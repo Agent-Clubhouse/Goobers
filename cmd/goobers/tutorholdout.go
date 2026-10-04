@@ -72,20 +72,25 @@ type tutorHoldoutTarget struct {
 }
 
 type tutorHoldoutRecord struct {
-	Schema         string               `json:"schema"`
-	ID             string               `json:"id"`
-	FindingDigest  string               `json:"findingDigest"`
-	Gaggle         string               `json:"gaggle"`
-	AuthoringRunID string               `json:"authoringRunId"`
-	PRNumber       int                  `json:"prNumber,omitempty"`
-	PRURL          string               `json:"prUrl,omitempty"`
-	MergedAt       *time.Time           `json:"mergedAt,omitempty"`
-	ChangeTypes    []tutorChangeType    `json:"changeTypes"`
-	Targets        []tutorHoldoutTarget `json:"targets"`
-	State          string               `json:"state"`
-	CreatedAt      time.Time            `json:"createdAt"`
-	LastCheckedAt  *time.Time           `json:"lastCheckedAt,omitempty"`
-	ClosedAt       *time.Time           `json:"closedAt,omitempty"`
+	Schema         string `json:"schema"`
+	ID             string `json:"id"`
+	FindingDigest  string `json:"findingDigest"`
+	Gaggle         string `json:"gaggle"`
+	AuthoringRunID string `json:"authoringRunId"`
+	PRNumber       int    `json:"prNumber,omitempty"`
+	PRURL          string `json:"prUrl,omitempty"`
+	// ConfigRepo is the owner/name of the instance config repository the PR
+	// was opened in (TUT-A8); empty means the gaggle's own repository. The
+	// merge-state refresh polls the PR number in this repository, never the
+	// product repository's same-numbered PR.
+	ConfigRepo    string               `json:"configRepo,omitempty"`
+	MergedAt      *time.Time           `json:"mergedAt,omitempty"`
+	ChangeTypes   []tutorChangeType    `json:"changeTypes"`
+	Targets       []tutorHoldoutTarget `json:"targets"`
+	State         string               `json:"state"`
+	CreatedAt     time.Time            `json:"createdAt"`
+	LastCheckedAt *time.Time           `json:"lastCheckedAt,omitempty"`
+	ClosedAt      *time.Time           `json:"closedAt,omitempty"`
 }
 
 type tutorHoldoutSummary struct {
@@ -104,7 +109,6 @@ type tutorLiveVerificationArtifact struct {
 	Findings     []tutorHoldoutSummary `json:"findings"`
 	PendingCount int                   `json:"pendingCount"`
 	CanProceed   bool                  `json:"canProceed"`
-	NoWork       bool                  `json:"noWork,omitempty"`
 	Note         string                `json:"note,omitempty"`
 }
 
@@ -367,13 +371,15 @@ func tutorConfigVersions(configDir, gaggle string, names []string, environment h
 		return nil, &configReportError{report: report, err: err}
 	}
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		return nil, err
 	}
 	machines, gooberDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, environment, harnessCommand,
-		false, modelCredential,
+		// nil: this computes version axes for configs the daemon already
+		// admitted; connector authority lives at the daemon/validate gate.
+		false, modelCredential, nil,
 	)
 	if err != nil {
 		return nil, err
@@ -466,33 +472,63 @@ func refreshTutorHoldoutMergeStateFromProvider(root, gaggle string) error {
 	if err != nil {
 		return err
 	}
-	needsPoll := false
+	needsProduct := false
+	configRepos := map[string]bool{}
 	for _, record := range records {
-		if record.PRNumber != 0 && record.MergedAt == nil {
-			needsPoll = true
-			break
+		if record.PRNumber == 0 || record.MergedAt != nil {
+			continue
+		}
+		if record.ConfigRepo == "" {
+			needsProduct = true
+		} else {
+			configRepos[record.ConfigRepo] = true
 		}
 	}
-	if !needsPoll {
+	if needsProduct {
+		repo, err := providerRepo(root)
+		if err != nil {
+			return err
+		}
+		provider, err := newProviderForStage(root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
+		if err != nil {
+			return err
+		}
+		ctx, cancel := providerCommandContext()
+		defer cancel()
+		if err := refreshTutorHoldoutMergeState(ctx, root, gaggle, repo, provider); err != nil {
+			return err
+		}
+	}
+	for slug := range configRepos {
+		if err := refreshConfigRepoHoldouts(root, gaggle, slug); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refreshConfigRepoHoldouts polls the holdouts whose PR lives in the config
+// repository slug (owner/name) through the configrepo:write credential. Without
+// that credential in this stage the merge state cannot be learned, so the
+// holdouts are left unmerged (pending, which blocks proceeding) and the gap is
+// stated, rather than guessing from the product repository's same-numbered PR.
+func refreshConfigRepoHoldouts(root, gaggle, slug string) error {
+	owner, name, ok := strings.Cut(slug, "/")
+	if !ok || owner == "" || name == "" {
+		return fmt.Errorf("holdout has malformed config repository %q", slug)
+	}
+	if _, err := configRepoWriteToken(); err != nil {
+		pf(os.Stderr, "note: Tutor live holdouts for config repository %s stay pending: this stage cannot read their merge state without the configrepo:write credential (%v)\n", slug, err)
 		return nil
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		return err
-	}
-	provider, err := newProviderForStage(root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: owner, Name: name}
+	provider, err := newProviderForStage(root, repo, true, withStageProviderCapability(capability.ConfigRepoWrite))
 	if err != nil {
 		return err
 	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	return refreshTutorHoldoutMergeState(
-		ctx,
-		root,
-		gaggle,
-		repo,
-		provider,
-	)
+	return refreshTutorHoldoutRecords(ctx, root, gaggle, repo, provider, func(r tutorHoldoutRecord) bool { return r.ConfigRepo == slug })
 }
 
 func refreshTutorHoldoutMergeState(
@@ -501,13 +537,23 @@ func refreshTutorHoldoutMergeState(
 	repo providers.RepositoryRef,
 	poller tutorPullRequestPoller,
 ) error {
+	return refreshTutorHoldoutRecords(ctx, root, gaggle, repo, poller, func(r tutorHoldoutRecord) bool { return r.ConfigRepo == "" })
+}
+
+func refreshTutorHoldoutRecords(
+	ctx context.Context,
+	root, gaggle string,
+	repo providers.RepositoryRef,
+	poller tutorPullRequestPoller,
+	owns func(tutorHoldoutRecord) bool,
+) error {
 	records, err := loadTutorHoldouts(root, gaggle)
 	if err != nil {
 		return err
 	}
 	for i := range records {
 		record := &records[i]
-		if record.PRNumber == 0 || record.MergedAt != nil {
+		if record.PRNumber == 0 || record.MergedAt != nil || !owns(*record) {
 			continue
 		}
 		poll, err := poller.PollPullRequest(ctx, providers.PullRequestPollRequest{
@@ -560,7 +606,8 @@ func verifyTutorHoldouts(
 		return artifact, err
 	}
 	if len(records) == 0 {
-		artifact.NoWork = true
+		// Deliberately not noWork: the runner ends the whole run on any stage
+		// noWork, and "nothing to verify" must let Tutor proceed to analysis.
 		artifact.Note = "no Tutor findings await live verification"
 		return artifact, nil
 	}

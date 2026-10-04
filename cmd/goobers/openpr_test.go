@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -284,7 +285,12 @@ func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 	}
 }
 
-func TestOpenPRADOWorkItemLinkRequiresDedicatedCapability(t *testing.T) {
+// TestOpenPRADOWorkItemLinkUsesDedicatedCapabilityBestEffort pins #5925's
+// best-effort rule: without a delivered ado:work-items:write credential the
+// linker resolves to the text-only stand-in (the pull-request credential is
+// never used for the work-item write), and with one it resolves a native
+// linker from that credential.
+func TestOpenPRADOWorkItemLinkUsesDedicatedCapabilityBestEffort(t *testing.T) {
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
 	if err != nil {
@@ -305,18 +311,32 @@ func TestOpenPRADOWorkItemLinkRequiresDedicatedCapability(t *testing.T) {
 	t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "pr-only-token")
 	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "")
 
-	if _, err := openPRWorkItemLinker(root, repo, true, "42"); err == nil ||
-		!strings.Contains(err.Error(), string(capability.ADOWorkItemsWrite)) {
-		t.Fatalf("openPRWorkItemLinker error = %v, want missing dedicated work-item capability", err)
+	var stderr strings.Builder
+	linker, err := openPRWorkItemLinker(root, repo, true, "42", &stderr)
+	if err != nil {
+		t.Fatalf("openPRWorkItemLinker without dedicated capability: %v", err)
+	}
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); !textOnly {
+		t.Fatalf("openPRWorkItemLinker without dedicated capability = %T, want the text-only stand-in", linker)
+	}
+	if !strings.Contains(stderr.String(), "warning:") || !strings.Contains(stderr.String(), string(capability.ADOWorkItemsWrite)) {
+		t.Fatalf("stderr = %q, want a warning naming %s", stderr.String(), capability.ADOWorkItemsWrite)
 	}
 
 	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "work-item-token")
-	linker, err := openPRWorkItemLinker(root, repo, true, "42")
+	stderr.Reset()
+	linker, err = openPRWorkItemLinker(root, repo, true, "42", &stderr)
 	if err != nil {
 		t.Fatalf("openPRWorkItemLinker with dedicated capability: %v", err)
 	}
 	if linker == nil {
 		t.Fatal("openPRWorkItemLinker returned nil linker")
+	}
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
+		t.Fatal("openPRWorkItemLinker with a delivered credential returned the text-only stand-in")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no warning when the credential is delivered", stderr.String())
 	}
 }
 
@@ -324,7 +344,7 @@ func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("itemID"), "3295607")
 	t.Setenv(executor.InputEnvVar("itemTitle"), "Selected canary")
 
-	id, title, ok, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	id, title, ok, _, err := openPRIssueWithFallbackReason(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +356,7 @@ func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
 func TestOpenPRIssueRejectsTitleWithoutIdentity(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("itemTitle"), "Ambiguous item")
 
-	_, _, _, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	_, _, _, _, err := openPRIssueWithFallbackReason(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
 	if err == nil || !strings.Contains(err.Error(), "itemTitle requires itemID") {
 		t.Fatalf("openPRIssue error = %v, want itemTitle identity error", err)
 	}
@@ -363,12 +383,43 @@ func TestOpenPRIssueAcceptsMatchingClaimedIdentity(t *testing.T) {
 	}
 	t.Setenv(executor.InputEnvVar("itemID"), "42")
 
-	id, title, ok, err := openPRIssue(root, runID)
+	id, title, ok, _, err := openPRIssueWithFallbackReason(root, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok || id != "42" || title != "Claimed title" {
 		t.Fatalf("openPRIssue = (%q, %q, %t), want matching claimed item", id, title, ok)
+	}
+}
+
+func TestOpenPRIssueRecoversClaimedIdentityFromJournalPlane(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-claimed-item-plane"
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "6566", "title": "Recover claimed item in pod"},
+	}); err != nil {
+		t.Fatalf("record claimed item: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	plane := newFileIssuesPlane(t, root)
+	plane.stampPodEnv(t, runID, "goobers")
+
+	id, title, ok, _, err := openPRIssueWithFallbackReason(t.TempDir(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || id != "6566" || title != "Recover claimed item in pod" {
+		t.Fatalf("openPRIssue over journal plane = (%q, %q, %t), want claimed item", id, title, ok)
 	}
 }
 
@@ -393,7 +444,7 @@ func TestOpenPRIssueRejectsConflictingClaimedIdentity(t *testing.T) {
 	}
 	t.Setenv(executor.InputEnvVar("itemID"), "84")
 
-	_, _, _, err = openPRIssue(root, runID)
+	_, _, _, _, err = openPRIssueWithFallbackReason(root, runID)
 	if err == nil || !strings.Contains(err.Error(), `itemID "84" conflicts with claimed item "42"`) {
 		t.Fatalf("openPRIssue error = %v, want conflicting identity error", err)
 	}
@@ -408,7 +459,7 @@ func TestOpenPRGitHubDoesNotResolveADOWorkItemAuthority(t *testing.T) {
 	}
 	t.Cleanup(func() { newADOProviderForStage = previous })
 
-	linker, err := openPRWorkItemLinker("", providers.RepositoryRef{Provider: providers.ProviderGitHub}, true, "42")
+	linker, err := openPRWorkItemLinker("", providers.RepositoryRef{Provider: providers.ProviderGitHub}, true, "42", io.Discard)
 	if err != nil {
 		t.Fatalf("openPRWorkItemLinker for GitHub: %v", err)
 	}
@@ -489,8 +540,9 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 		Type: journal.EventStageFinished, Stage: "query-backlog", Attempt: 1, Status: "success",
 		Outputs: map[string]any{
 			"id": "42", "title": "Render rich PR bodies",
-			"body":      "## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
-			"updatedAt": "2026-08-01T12:00:00Z",
+			"body":               "## Problem\nPR bodies lack context.\n\n## Notes\nDone.",
+			"acceptanceCriteria": "- [x] Include journal evidence.",
+			"updatedAt":          "2026-08-01T12:00:00Z",
 		},
 	}); err != nil {
 		t.Fatalf("record claimed issue: %v", err)
@@ -600,7 +652,7 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 			"42",
 			"2026-08-01T12:00:00Z",
 			"Render rich PR bodies",
-			"## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
+			"## Problem\nPR bodies lack context.\n\n## Notes\nDone.\n\n## Acceptance Criteria\n\n- [x] Include journal evidence.",
 		),
 	} {
 		if !strings.Contains(pr.body, want) {
@@ -674,5 +726,19 @@ func TestOpenPRMissingRunIDFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}
+
+func TestOpenPRTitleWarnsWhenFallingBackToGenericTitle(t *testing.T) {
+	var stderr strings.Builder
+	title, _, _, haveIssue, err := openPRTitle(filepath.Join(t.TempDir(), "missing-root"), "run-no-claim", providers.RepositoryRef{}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if haveIssue || title != "Automated implementation" {
+		t.Fatalf("openPRTitle = (%q, %t), want generic title without issue", title, haveIssue)
+	}
+	if got := stderr.String(); !strings.Contains(got, `warning: using generic pull request title "Automated implementation"`) || !strings.Contains(got, "run journal") {
+		t.Fatalf("stderr = %q, want generic-title warning naming the journal failure", got)
 	}
 }

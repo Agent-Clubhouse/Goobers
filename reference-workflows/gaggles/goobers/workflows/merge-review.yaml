@@ -13,6 +13,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: merge-review
+  annotations:
+    goobers.dev/purpose: "Decides the fate of open pull requests by reviewing each one and then merging, queueing or sending it back, so green and approved changes land without a human."
 spec:
   gaggle: goobers
   displayName: Merge review (PR-lifecycle decider)
@@ -409,6 +411,10 @@ spec:
       goal: Watch an enqueued PR until it merges, is evicted, times out, or is dequeued after opting out.
       run:
         command: ["goobers", "merge-queue-poll"]
+      # Task-level ceiling matching inputs.timeout below: without it the
+      # stage's envelope carries no duration limit and the engine falls back
+      # to its 1-hour activity timeout (#3288).
+      timeoutSeconds: 1800
       inputsFrom:
         pullNumber: selectedNumber
       inputs:

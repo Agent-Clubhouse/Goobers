@@ -7,11 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
-	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
@@ -21,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
@@ -31,11 +30,10 @@ import (
 // decoupled from the concrete receiver instance; they must equal the method
 // names on Activities exactly (Temporal registers struct methods by name).
 const (
-	ActInvokeGoober       = "InvokeGoober"
-	ActReviewGoober       = "ReviewGoober"
-	ActRunDeterministic   = "RunDeterministic"
-	ActEvaluateAutomated  = "EvaluateAutomated"
-	ActReconcileSchedules = "ReconcileSchedules"
+	ActInvokeGoober      = "InvokeGoober"
+	ActReviewGoober      = "ReviewGoober"
+	ActRunDeterministic  = "RunDeterministic"
+	ActEvaluateAutomated = "EvaluateAutomated"
 	// ActDispatchStage is the mode-3 dispatch activity (#3588,
 	// dispatchstage.go): the stage executes in a dispatcher-created pod and
 	// its surrendered outputs marshal back into the same stageActivityResult
@@ -50,12 +48,11 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
-	Goober invoke.Goober
-	Det    invoke.Deterministic
-	Auto   invoke.Automated
-	// ScheduleService is required only by the quarantined tier-3 schedule
-	// reconciliation workflow.
-	ScheduleService workflowservice.WorkflowServiceClient
+	// AdmitSelfExecution checks current instance policy before any local stage side effect.
+	AdmitSelfExecution func(stage string) error
+	Goober             invoke.Goober
+	Det                invoke.Deterministic
+	Auto               invoke.Automated
 	// Workspaces provisions the fresh working copy each stage attempt runs
 	// in. Required for any stage that executes in a workspace (agentic tasks,
 	// deterministic tasks, agentic reviewer gates); an automated gate's checks
@@ -119,6 +116,8 @@ type Activities struct {
 // Placement is additive and omitempty, so a history written before it existed
 // decodes with a nil Placement rather than failing.
 type DispatchStageResult struct {
+	// Usage is trusted adapter accounting, independent of result metrics.
+	Usage *AttemptUsage `json:"usage,omitempty"`
 	// Embed the legacy activity result so its JSON stays flat and histories
 	// recorded before mutation metadata was added remain replay-decodable.
 	apiv1.ResultEnvelope
@@ -300,53 +299,13 @@ type MutationFact struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
 // same reason stageActivityResult is one.
 type mutationFact = MutationFact
-
-type scheduleReconcileActivityInput struct {
-	Namespace     string
-	TaskQueue     string
-	CatchupWindow time.Duration
-	Snapshot      ScheduleSnapshot
-}
-
-// ReconcileSchedules applies one snapshot inside the durable per-instance
-// reconciliation workflow.
-func (a *Activities) ReconcileSchedules(ctx context.Context, input scheduleReconcileActivityInput) error {
-	if a.ScheduleService == nil {
-		return fmt.Errorf("reconcile schedules: %w", ErrNotConfigured)
-	}
-	stopHeartbeat := make(chan struct{})
-	defer close(stopHeartbeat)
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				activity.RecordHeartbeat(ctx, input.Snapshot.ConfigGeneration)
-			case <-ctx.Done():
-				return
-			case <-stopHeartbeat:
-				return
-			}
-		}
-	}()
-	activity.RecordHeartbeat(ctx, input.Snapshot.ConfigGeneration)
-
-	reconciler, err := newScheduleReconciler(
-		newTemporalScheduleStore(a.ScheduleService, input.Namespace),
-		input.TaskQueue,
-		input.CatchupWindow,
-	)
-	if err != nil {
-		return err
-	}
-	return reconciler.reconcileDirect(ctx, input.Snapshot)
-}
 
 // ErrNotConfigured is returned by an activity whose backing seam was not wired.
 var ErrNotConfigured = errors.New("engine: activity dependency not configured")
@@ -361,6 +320,9 @@ func classifySeamError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if rejection := workspaceRevisionRejection(err); rejection != nil {
+		return temporal.NewNonRetryableApplicationError(rejection.Message, rejection.Code, err)
+	}
 	if invoke.IsInfrastructureFailure(err) {
 		options := temporal.ApplicationErrorOptions{}
 		if retryAt, ok := invoke.InfrastructureRetryAt(err); ok {
@@ -368,17 +330,17 @@ func classifySeamError(err error) error {
 		}
 		return temporal.NewApplicationErrorWithOptions(err.Error(), FailureTypeInfrastructure, options)
 	}
-	// A TRANSIENT worktree-provision failure (#3882, the engine drift-ledger
-	// entry this closes): a lock contended by a concurrent worktree operation,
-	// a fetch that lost its connection, a transiently-unavailable remote. The
-	// local runner already reclassifies these as infrastructure so the attempt
-	// retries instead of burning a repass on the AGENT for something the agent
-	// never touched; the engine classified every provision failure as a stage
-	// failure, which charged the run's own budget for the worker's disk.
+	// A RETRYABLE worktree-provision failure (#3882/#5446): a branch occupied
+	// by another managed worktree, a fetch that lost its connection, a
+	// transiently-unavailable remote. The local runner already reclassifies
+	// these as infrastructure so the attempt retries instead of burning a
+	// repass on the AGENT for something the agent never touched; the engine
+	// classified every provision failure as a stage failure, which charged the
+	// run's own budget for the worker's disk.
 	//
 	// Checked after the invoke marker, not before: an executor that has
 	// already declared its own failure class owns that answer.
-	if worktree.IsTransientProvisionError(err) {
+	if worktree.IsRetryableProvisionError(err) {
 		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
 	}
 	return temporal.NewApplicationError(err.Error(), FailureTypeStage)
@@ -396,6 +358,9 @@ func classifySeamError(err error) error {
 // read-only stage reads the pinned base by definition (the same gate the pod
 // arm applies in dispatchstage.go).
 func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch, workspaceDelta string) (Workspace, error) {
+	if err := refuseSelectedRevisionDispatch(*env); err != nil {
+		return nil, err
+	}
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
 	}
@@ -417,7 +382,7 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		WorkspaceDelta:   workspaceDelta,
 	})
 	if err != nil {
-		if worktree.IsTransientProvisionError(err) {
+		if worktree.IsRetryableProvisionError(err) {
 			return nil, invoke.InfrastructureFailure(fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err))
 		}
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
@@ -545,7 +510,16 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 // recorded with the two-argument shape replays under this code
 // (TestContinuityPreChangeHistoryReplays). A struct in the second position
 // would fail to decode those payloads.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (out stageActivityResult, outErr error) {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			var refusal *runner.SelfExecutionRefusal
+			if !errors.As(err, &refusal) {
+				return stageActivityResult{}, classifySeamError(err)
+			}
+			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
+		}
+	}
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -560,6 +534,16 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
+
+	var usage activityUsageCollector
+	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
+	defer func() {
+		snapshot := usage.snapshot()
+		out.Usage = &snapshot
+		if outErr != nil {
+			outErr = agenticUsageError(outErr, snapshot)
+		}
+	}()
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		// #724 salvage: an agentic session that ran out of wall clock has not
@@ -587,6 +571,9 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// the blob plane an activity can read and workflow code cannot. The walk
 	// routes on the rejection (contextNotInspectedRedispatch); this only
 	// decides whether there is one.
+	if rejection := admitDistributedRevision(&res, false); rejection != nil {
+		return stageActivityResult{}, classifySeamError(rejection)
+	}
 	res = a.validateDependencyResult(ctx, env, res)
 	result := stageActivityResult{ResultEnvelope: res}
 	// #3366: capture what the workspace is about to take to the grave. Taken
@@ -673,6 +660,11 @@ func captureUnpushedDiff(ctx context.Context, ws Workspace, mode apiv1.Workspace
 // commit. Both new arguments are trailing positionals for the replay reason
 // InvokeGoober documents.
 func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, subjectAgentic bool) (GateReviewResult, error) {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			return GateReviewResult{}, classifySelfAdmissionError(err)
+		}
+	}
 	if a.Goober == nil {
 		return GateReviewResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -809,6 +801,15 @@ func captureGateDiff(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode
 // this provisioner too. workspaceDelta is a trailing positional for the
 // replay reason InvokeGoober documents.
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			var refusal *runner.SelfExecutionRefusal
+			if !errors.As(err, &refusal) {
+				return stageActivityResult{}, classifySeamError(err)
+			}
+			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
+		}
+	}
 	if a.Det == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -849,11 +850,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 				ResultEnvelope: apiv1.ResultEnvelope{
 					Status:  apiv1.ResultFailure,
 					Summary: runner.BaseSyncConflictSummary,
-					Error: &apiv1.ErrorInfo{
-						Code:      runner.BaseSyncConflictErrorCode,
-						Message:   err.Error(),
-						Retryable: true,
-					},
+					Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
 				},
 				BaseSyncConflict: detail,
 				SelfPlacement:    selfStagePlacement(),
@@ -865,6 +862,9 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
+	}
+	if rejection := admitDistributedRevision(&res, true); rejection != nil {
+		return stageActivityResult{}, classifySeamError(rejection)
 	}
 	mutations, issues := readMutationSidecar(ws.Path())
 	result := stageActivityResult{ResultEnvelope: res, Mutations: mutations, MutationIssues: issues}
@@ -902,16 +902,21 @@ func selfStagePlacement() *journal.Placement {
 // publishWorkspaceDelta is the self arm's PUBLISH half (#3803): after a stage
 // SUCCEEDED on a writable repo workspace, ask the workspace to bundle what
 // the stage committed and stamp the digest on the result for the walk's
-// continuity record. Only success publishes — a failed stage's half-finished
-// commits are not a base for the next stage, and the engine retries it from
-// the last good delta — and only a workspace that implements DeltaPublisher
-// can (scratch and test fakes do not, and publish nothing).
+// continuity record. Success publishes for carry-forward. Declared-artifact
+// retry failures also publish so the failed attempt's work is preserved before
+// retry, but dispatchWithRetry still withholds that delta from downstream
+// continuity. Other failed stages do not publish their half-finished commits.
+// Only a workspace that implements DeltaPublisher can publish (scratch and
+// test fakes do not, and publish nothing).
 //
 // A publish FAILURE fails the stage: the commits exist and nothing else will
 // carry them to a pod, so reporting success would strand exactly the diff
 // this mechanism protects — the same rule the pod's dispatch-exec applies.
 func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode, result *stageActivityResult) error {
-	if result.Status != apiv1.ResultSuccess || !writableWorkspace(mode) {
+	if result.Status != apiv1.ResultSuccess && runner.DeclaredArtifactRetryFailure(result.ResultEnvelope) == nil {
+		return nil
+	}
+	if !writableWorkspace(mode) {
 		return nil
 	}
 	publisher, ok := ws.(DeltaPublisher)
@@ -969,32 +974,14 @@ func (a *Activities) scrubber() journal.Scrubber {
 }
 
 func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
-	data, err := mutationsidecar.Read(workspace)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, []string{fmt.Sprintf("read sidecar: %v", err)}
-	}
-	for i, line := range bytes.Split(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		var fact mutationFact
-		if err := json.Unmarshal(line, &fact); err != nil {
-			issues = append(issues, fmt.Sprintf("line %d: %v", i+1, err))
-			continue
-		}
+	return mutationsidecar.ReadFacts(workspace, func(_ int, fact mutationFact) string {
 		if fact.Provider == "" || fact.Kind == "" || fact.ID == "" {
 			// The provider action has already happened. Keep malformed
 			// provenance observable without converting success into failure.
-			issues = append(issues, fmt.Sprintf("line %d: provider, kind, and id are required", i+1))
-			continue
+			return "provider, kind, and id are required"
 		}
-		facts = append(facts, fact)
-	}
-	return facts, issues
+		return ""
+	})
 }
 
 // EvaluateAutomated runs an automated gate check. Scalar checks remain pure;

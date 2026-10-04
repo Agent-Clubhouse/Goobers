@@ -17,8 +17,15 @@ import (
 )
 
 type backlogResweepPolicy struct {
-	maxItems   int
-	readyLabel string
+	// maxItems is the ready-drift lane's per-run budget (resweepMaxItems).
+	maxItems int
+	// dependencyMaxItems is the dependency-recheck lane's independent per-run
+	// budget (resweepDependencyMaxItems, #4884): how many blocked-on-sibling
+	// items have their native blockers rechecked. A recheck is one cheap
+	// provider call, so it is sized well above the judgment-heavy ready-drift
+	// lane, and neither lane's selections count against the other's budget.
+	dependencyMaxItems int
+	readyLabel         string
 }
 
 type backlogResweepState struct {
@@ -63,15 +70,23 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 	if readyLabel == "" {
 		return backlogResweepPolicy{}, false, errors.New("resweepReadyLabel must not be empty")
 	}
-	return backlogResweepPolicy{maxItems: resweepMax, readyLabel: readyLabel}, true, nil
+	dependencyMax, err := readResweepDependencyMaxItems()
+	if err != nil {
+		return backlogResweepPolicy{}, false, err
+	}
+	return backlogResweepPolicy{
+		maxItems:           resweepMax,
+		dependencyMaxItems: dependencyMax,
+		readyLabel:         readyLabel,
+	}, true, nil
 }
 
 // backlogResweepStateKey is the scheduler-state key holding the re-sweep
 // state for one distinct re-sweep shape. A pure function of the shape —
-// repository, gaggle, trust label, ready label — so two differently-scoped
-// re-sweeps never share state, and the SAME shape reaches the same state
-// whether it runs in the daemon's process or in a stage pod talking to the
-// scheduler-state plane (Goobers#3898).
+// repository, gaggle, trust label, ready label, and assignee scope — so two
+// differently-scoped re-sweeps never share state, and the SAME shape reaches
+// the same state whether it runs in the daemon's process or in a stage pod
+// talking to the scheduler-state plane (Goobers#3898).
 //
 // This replaces backlogResweepStatePath, which joined the digest onto the
 // scheduler directory. The key namespace is a BARE FILENAME on both backends;
@@ -81,17 +96,24 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 func backlogResweepStateKey(
 	repo providers.RepositoryRef,
 	gaggle, trustLabel, readyLabel string,
+	scope backlogReconcileAssigneeScope,
 ) string {
 	key, _ := json.Marshal(struct {
-		Repository providers.RepositoryRef `json:"repository"`
-		Gaggle     string                  `json:"gaggle,omitempty"`
-		TrustLabel string                  `json:"trustLabel"`
-		ReadyLabel string                  `json:"readyLabel"`
+		Repository     providers.RepositoryRef `json:"repository"`
+		Gaggle         string                  `json:"gaggle,omitempty"`
+		TrustLabel     string                  `json:"trustLabel"`
+		ReadyLabel     string                  `json:"readyLabel"`
+		AssignedTo     string                  `json:"assignedTo,omitempty"`
+		ScopedAssignee bool                    `json:"scopedAssignee,omitempty"`
+		Ownership      ownershipScopeKey       `json:"ownership,omitempty"`
 	}{
-		Repository: repo,
-		Gaggle:     gaggle,
-		TrustLabel: trustLabel,
-		ReadyLabel: readyLabel,
+		Repository:     repo,
+		Gaggle:         gaggle,
+		TrustLabel:     trustLabel,
+		ReadyLabel:     readyLabel,
+		AssignedTo:     scope.assignedTo,
+		ScopedAssignee: scope.respectAssignee,
+		Ownership:      scope.key(),
 	})
 	sum := sha256.Sum256(key)
 	return stateclient.ResweepStateKey(fmt.Sprintf("%x", sum))
@@ -114,11 +136,7 @@ func decodeBacklogResweepState(value stateclient.Value) (backlogResweepState, er
 }
 
 func readBacklogResweepState(ctx context.Context, store stateclient.Store, key string) (backlogResweepState, error) {
-	value, err := store.Get(ctx, key)
-	if err != nil {
-		return backlogResweepState{}, err
-	}
-	return decodeBacklogResweepState(value)
+	return readJSONState(ctx, store, key, decodeBacklogResweepState)
 }
 
 // advanceBacklogResweepState publishes this cycle's re-sweep state, and does
@@ -137,22 +155,24 @@ func advanceBacklogResweepState(
 	observedGeneration uint64,
 	state backlogResweepState,
 ) error {
-	return store.Update(ctx, key, claimLockOperationBacklogResweep,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeBacklogResweepState(value)
-			if err != nil {
-				return nil, false, err
-			}
-			if current.Generation != observedGeneration {
-				return nil, false, nil
-			}
-			state.Generation = observedGeneration + 1
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogResweep,
+		decodeBacklogResweepState,
+		func(state backlogResweepState) ([]byte, error) {
 			data, err := json.Marshal(state)
 			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog re-sweep state: %w", err)
+				return nil, fmt.Errorf("marshal backlog re-sweep state: %w", err)
 			}
-			return data, true, nil
-		})
+			return data, nil
+		},
+		func(current backlogResweepState) (backlogResweepState, bool, error) {
+			if current.Generation != observedGeneration {
+				return current, false, nil
+			}
+			state.Generation = observedGeneration + 1
+			return state, true, nil
+		},
+	)
 }
 
 func sortBacklogResweepCandidates(

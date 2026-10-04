@@ -309,30 +309,23 @@ func snapshotBlockedRecordsForRepository(l instance.Layout, repo providers.Repos
 		return nil, err
 	}
 	var recs map[string]blockedRecord
-	err = store.Update(stateContext(), stateclient.KeyBlockedRecords, claimLockOperationBacklogFilterBlocked,
-		func(value stateclient.Value) ([]byte, bool, error) {
+	err = updateJSONState(
+		stateContext(), store, stateclient.KeyBlockedRecords, claimLockOperationBacklogFilterBlocked,
+		decodeBlockedRecords,
+		encodeBlockedRecords,
+		func(current map[string]blockedRecord) (map[string]blockedRecord, bool, error) {
 			// Recomputed from the observed value on every compare-and-swap
 			// attempt: the migration is a pure function of what is currently
 			// stored, so a retry after a lost swap migrates the winner's map
 			// rather than re-applying a stale one.
-			current, decodeErr := decodeBlockedRecords(value)
-			if decodeErr != nil {
-				return nil, false, decodeErr
-			}
 			recs = current
 			changed := migrateLegacyBlockedRecords(current, repo)
 			if repairMalformedBlockedRecordItemIDs(current) {
 				changed = true
 			}
-			if !changed {
-				return nil, false, nil
-			}
-			data, encodeErr := encodeBlockedRecords(current)
-			if encodeErr != nil {
-				return nil, false, encodeErr
-			}
-			return data, true, nil
-		})
+			return current, changed, nil
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -415,23 +408,16 @@ func reconcileBlockedEligibilityLocked(
 	// lost swap. The body is therefore written to be re-runnable: every
 	// decision is recomputed from the value it just observed, and nothing is
 	// accumulated across attempts.
-	err := store.Update(ctx, stateclient.KeyBlockedRecords, claimLockOperationBacklogFilterBlocked,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, decodeErr := decodeBlockedRecords(value)
-			if decodeErr != nil {
-				return nil, false, decodeErr
-			}
+	err := updateJSONState(
+		ctx, store, stateclient.KeyBlockedRecords, claimLockOperationBacklogFilterBlocked,
+		decodeBlockedRecords,
+		encodeBlockedRecords,
+		func(current map[string]blockedRecord) (map[string]blockedRecord, bool, error) {
 			changed := applyRefreshedBlockedRecords(current, observedRecords, refreshedRecords, verifiedSkips)
 			filtered, skipped = partitionBlockedEligibility(current, repo, eligible, verifiedSkips)
-			if !changed {
-				return nil, false, nil
-			}
-			data, encodeErr := encodeBlockedRecords(current)
-			if encodeErr != nil {
-				return nil, false, encodeErr
-			}
-			return data, true, nil
-		})
+			return current, changed, nil
+		},
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -734,23 +720,16 @@ func updateBlockedRecords(l instance.Layout, fn func(recs map[string]blockedReco
 	if err != nil {
 		return err
 	}
-	return store.Update(stateContext(), stateclient.KeyBlockedRecords, claimLockOperationBlockedUpdate,
-		func(value stateclient.Value) ([]byte, bool, error) {
+	return updateJSONState(
+		stateContext(), store, stateclient.KeyBlockedRecords, claimLockOperationBlockedUpdate,
+		decodeBlockedRecords,
+		encodeBlockedRecords,
+		func(recs map[string]blockedRecord) (map[string]blockedRecord, bool, error) {
 			// fn runs against the value observed on THIS attempt, so a lost
 			// compare-and-swap re-applies the caller's mutation to the winner's
 			// map rather than overwriting it — the lost-update this route
 			// exists to prevent.
-			recs, decodeErr := decodeBlockedRecords(value)
-			if decodeErr != nil {
-				return nil, false, decodeErr
-			}
-			if !fn(recs) {
-				return nil, false, nil
-			}
-			data, encodeErr := encodeBlockedRecords(recs)
-			if encodeErr != nil {
-				return nil, false, encodeErr
-			}
-			return data, true, nil
-		})
+			return recs, fn(recs), nil
+		},
+	)
 }

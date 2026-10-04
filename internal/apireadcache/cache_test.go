@@ -1,0 +1,808 @@
+package apireadcache
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/apireadstore"
+	"github.com/goobers/goobers/internal/sqliteuri"
+
+	"github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/providers"
+)
+
+func apiReadGet(t *testing.T, c *apiReadCache, url, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	return resp
+}
+
+func apiReadBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(b)
+}
+
+// TestAPIReadCacheConditionalGET is the core #1053 contract for strong ETags: a
+// repeated GET sends If-None-Match and a 304 is transparently replayed from the
+// cached body (with the Link pagination header preserved), and the cache
+// persists to disk so a fresh process (a later tick / sibling stage) reuses the
+// ETag.
+func TestAPIReadCacheConditionalGET(t *testing.T) {
+	const body = `[{"number":1}]`
+	const etag = `"abc123"`
+	const link = `<https://api.github.com/x?page=2>; rel="next"`
+
+	var conditionalSeen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == etag {
+			conditionalSeen = true
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Link", link)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cache := newAPIReadCache(dir, "", &http.Client{})
+
+	// First GET: full 200, stores the ETag + body.
+	if got := apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok")); got != body {
+		t.Fatalf("first GET body = %q, want %q", got, body)
+	}
+
+	// Second GET (same URL + token): conditional request, 304 replayed from cache.
+	resp := apiReadGet(t, cache, srv.URL, "tok")
+	if got := apiReadBody(t, resp); got != body {
+		t.Fatalf("replayed body = %q, want %q", got, body)
+	}
+	if !conditionalSeen {
+		t.Fatal("second GET did not send If-None-Match (no conditional request reached the server)")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("replayed status = %d, want 200", resp.StatusCode)
+	}
+	if resp.Header.Get("Link") != link {
+		t.Fatalf("Link header not replayed on 304: %q", resp.Header.Get("Link"))
+	}
+
+	// Cross-process: a fresh cache over the same dir loads the on-disk ETag and
+	// still issues a conditional request — this is the cross-tick/cross-stage win.
+	conditionalSeen = false
+	fresh := newAPIReadCache(dir, "", &http.Client{})
+	if got := apiReadBody(t, apiReadGet(t, fresh, srv.URL, "tok")); got != body {
+		t.Fatalf("fresh-instance body = %q, want %q", got, body)
+	}
+	if !conditionalSeen {
+		t.Fatal("fresh cache instance did not reuse the on-disk ETag")
+	}
+}
+
+func TestAcquireAPIReadCacheLockDeduplicatesBlockedFileOpen(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	acquire := func(string) (*lock.Handle, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-blocked
+		return nil, os.ErrClosed
+	}
+	manager := newAPIReadCacheLockManager(2)
+
+	begin := time.Now()
+	for range 3 {
+		handle, err := manager.acquire("blocked.lock", 20*time.Millisecond, acquire)
+		if handle != nil || err == nil {
+			t.Fatalf("blocked acquisition = (%v, %v), want timeout error", handle, err)
+		}
+	}
+	if elapsed := time.Since(begin); elapsed > time.Second {
+		t.Fatalf("blocked file opens returned after %s, want bounded fallback", elapsed)
+	}
+	<-started
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want one deduplicated attempt", got)
+	}
+	close(blocked)
+}
+
+func TestAcquireAPIReadCacheLockCapsBlockedFileOpens(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	acquire := func(string) (*lock.Handle, error) {
+		calls.Add(1)
+		close(started)
+		<-blocked
+		return nil, os.ErrClosed
+	}
+	manager := newAPIReadCacheLockManager(1)
+
+	if _, err := manager.acquire("first.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("first blocked acquisition returned no error")
+	}
+	<-started
+	if _, err := manager.acquire("second.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("acquisition beyond capacity returned no error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want capacity-limited single attempt", got)
+	}
+	close(blocked)
+}
+
+func TestAPIReadCacheLockDeadlineFallsBackToLiveRequest(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"number":420}`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	held, err := lock.TryAcquire(filepath.Join(dir, apiReadCacheLockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Release() }()
+
+	cache := newAPIReadCache(dir, "", &http.Client{})
+	begin := time.Now()
+	body := apiReadBody(t, apiReadGet(t, cache, srv.URL+"/repos/acme/widgets/issues/420", ""))
+	if body != `{"number":420}` {
+		t.Fatalf("body = %q, want live provider response", body)
+	}
+	if elapsed := time.Since(begin); elapsed > 3*apiReadCacheLockAcquireTimeout {
+		t.Fatalf("cache contention delayed live request for %s", elapsed)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("provider requests = %d, want 1 live fallback", got)
+	}
+}
+
+// TestAPIReadCacheReducesQuotaGETs quantifies the #1053 win for a strong ETag:
+// over N identical ticks against an unchanged resource, exactly ONE response is
+// a quota-costing 200 and the other N-1 are 304s (which do not count against
+// GitHub's primary REST quota). This is the before/after in one assertion:
+// O(ticks) quota GETs become O(1).
+func TestAPIReadCacheReducesQuotaGETs(t *testing.T) {
+	const etag = `"stable"`
+	var full, conditional int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == etag {
+			conditional++
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		full++
+		w.Header().Set("ETag", etag)
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer srv.Close()
+
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
+	const ticks = 10
+	for i := 0; i < ticks; i++ {
+		_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok"))
+	}
+	if full != 1 {
+		t.Fatalf("quota-costing (200) GETs = %d, want 1 over %d ticks", full, ticks)
+	}
+	if conditional != ticks-1 {
+		t.Fatalf("free (304) conditional GETs = %d, want %d", conditional, ticks-1)
+	}
+}
+
+// TestAPIReadCacheTokenScoped proves a different credential can never replay
+// another's cached body: the entry key includes an Authorization fingerprint, so
+// a mismatched token is a cache miss (a full, unconditional GET).
+func TestAPIReadCacheTokenScoped(t *testing.T) {
+	const etag = `"tok-scope"`
+	var lastConditional bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastConditional = r.Header.Get("If-None-Match") != ""
+		w.Header().Set("ETag", etag)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
+	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "token-a")) // primes token-a
+
+	lastConditional = false
+	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "token-b"))
+	if lastConditional {
+		t.Fatal("a different token must not send another token's If-None-Match")
+	}
+
+	lastConditional = false
+	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "token-a"))
+	if !lastConditional {
+		t.Fatal("the original token should still hit its own cached ETag")
+	}
+}
+
+// TestAPIReadCacheOnlyCachesGET confirms mutations and other verbs bypass the
+// cache entirely — never conditional, never stored.
+func TestAPIReadCacheOnlyCachesGET(t *testing.T) {
+	var conditionalSeen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "" {
+			conditionalSeen = true
+		}
+		w.Header().Set("ETag", `"post"`)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
+		resp, err := cache.Do(req)
+		if err != nil {
+			t.Fatalf("POST Do: %v", err)
+		}
+		_ = apiReadBody(t, resp)
+	}
+	if conditionalSeen {
+		t.Fatal("a POST must never carry If-None-Match")
+	}
+}
+
+// TestAPIReadCacheFailOpen: with no scheduler dir the wrapper is a pure
+// pass-through — it still serves the request, just without caching.
+func TestAPIReadCacheFailOpen(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "" {
+			t.Error("no cache dir means no conditional requests")
+		}
+		w.Header().Set("ETag", `"x"`)
+		_, _ = io.WriteString(w, "body")
+	}))
+	defer srv.Close()
+
+	cache := newAPIReadCache("", "", &http.Client{})
+	for i := 0; i < 2; i++ {
+		if got := apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok")); got != "body" {
+			t.Fatalf("pass-through body = %q, want %q", got, "body")
+		}
+	}
+}
+
+// TestAPIReadCacheNoETagNotCached: a 200 without an ETag is never stored, so a
+// repeat is a fresh unconditional GET.
+func TestAPIReadCacheNoETagNotCached(t *testing.T) {
+	var conditionalSeen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "" {
+			conditionalSeen = true
+		}
+		_, _ = io.WriteString(w, "no-etag")
+	}))
+	defer srv.Close()
+
+	cache := newAPIReadCache(t.TempDir(), "", &http.Client{})
+	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok"))
+	_ = apiReadBody(t, apiReadGet(t, cache, srv.URL, "tok"))
+	if conditionalSeen {
+		t.Fatal("a 200 without an ETag must not be cached")
+	}
+}
+
+func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
+	const body = `[{"number":1},{"number":2},{"number":3}]`
+	var requests atomic.Int32
+	firstFetch := make(chan struct{})
+	releaseFetch := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFetch) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(firstFetch)
+			select {
+			case <-releaseFetch:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	defer release()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/issues?state=open"
+	const consumers = 20
+	results := make(chan string, consumers)
+	// This test asserts successful coalescing, independently of the production
+	// fail-open deadline. A separate test below exercises that one-second budget.
+	lockBudget := time.Minute
+	if deadline, ok := t.Deadline(); ok {
+		lockBudget = time.Until(deadline)
+	}
+	start := make(chan struct{})
+	var entered sync.WaitGroup
+	entered.Add(consumers)
+	var wg sync.WaitGroup
+	for range consumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodGet, url, nil)
+			if err != nil {
+				results <- "request error: " + err.Error()
+				return
+			}
+			req.Header.Set("Authorization", "Bearer tok")
+			cache := newAPIReadCache(dir, "tick-1", &http.Client{})
+			cache.lockBudget = lockBudget
+			<-start
+			entered.Done()
+			resp, err := cache.Do(req)
+			if err != nil {
+				results <- "request error: " + err.Error()
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				results <- "body error: " + err.Error()
+				return
+			}
+			results <- string(got)
+		}()
+	}
+	close(start)
+	select {
+	case <-firstFetch:
+	case <-t.Context().Done():
+		t.Fatal("first snapshot fetch never started")
+	}
+	entered.Wait()
+	release()
+	wg.Wait()
+	close(results)
+	for got := range results {
+		if got != body {
+			t.Errorf("snapshot body = %q, want %q", got, body)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("provider list reads = %d for %d concurrent consumers, want 1", got, consumers)
+	}
+}
+
+func TestAPIReadCacheRefreshesListSnapshotConditionally(t *testing.T) {
+	const (
+		body = `[{"number":1}]`
+		etag = `"stable"`
+	)
+	requests := 0
+	conditional := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("If-None-Match") == etag {
+			conditional++
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/pulls?state=open"
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok")); got != body {
+		t.Fatalf("first snapshot body = %q, want %q", got, body)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != body {
+		t.Fatalf("not-modified snapshot body = %q, want %q", got, body)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != body {
+		t.Fatalf("shared second snapshot body = %q, want %q", got, body)
+	}
+	if requests != 2 || conditional != 1 {
+		t.Fatalf("requests = %d, conditional = %d; want 2 and 1", requests, conditional)
+	}
+}
+
+func TestAPIReadCachePersistsSnapshotBodiesOnce(t *testing.T) {
+	const (
+		body = `[{"number":1}]`
+		etag = `"stable"`
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/pulls?state=open"
+	_ = apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok"))
+	_ = apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok"))
+	db, err := sql.Open("sqlite", sqliteuri.File(filepath.Join(dir, apireadstore.FileName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var count, refs, size int
+	if err := db.QueryRow("SELECT count(*),sum(refs),sum(length(body)) FROM bodies").Scan(&count, &refs, &size); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || refs != 3 || size != len(body) {
+		t.Fatalf("body count=%d references=%d bytes=%d, want 1/3/%d", count, refs, size, len(body))
+	}
+}
+
+func TestAPIReadCacheKeepsOverlappingListSnapshotsStable(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("ETag", `"one"`)
+			_, _ = io.WriteString(w, `[{"number":1}]`)
+			return
+		}
+		w.Header().Set("ETag", `"two"`)
+		_, _ = io.WriteString(w, `[{"number":2}]`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/issues?state=open"
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok")); got != `[{"number":1}]` {
+		t.Fatalf("first snapshot body = %q", got)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != `[{"number":2}]` {
+		t.Fatalf("second snapshot body = %q", got)
+	}
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok")); got != `[{"number":1}]` {
+		t.Fatalf("reused first snapshot body = %q, want its original view", got)
+	}
+	if requests != 2 {
+		t.Fatalf("provider requests = %d, want 2", requests)
+	}
+}
+
+func TestAPIReadCacheListSnapshotDoesNotHideProviderErrors(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch requests {
+		case 1:
+			w.Header().Set("ETag", `"old"`)
+			_, _ = io.WriteString(w, `[{"number":1}]`)
+		case 2:
+			http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+		default:
+			w.Header().Set("ETag", `"new"`)
+			_, _ = io.WriteString(w, `[{"number":2}]`)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/repos/acme/app/issues?state=open"
+	_ = apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok"))
+
+	failed := apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")
+	if failed.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("failed refresh status = %d, want %d", failed.StatusCode, http.StatusServiceUnavailable)
+	}
+	_ = apiReadBody(t, failed)
+
+	if got := apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok")); got != `[{"number":2}]` {
+		t.Fatalf("retry body = %q, want fresh provider response", got)
+	}
+	if requests != 3 {
+		t.Fatalf("provider requests = %d, want 3 (failed refresh must not mark the snapshot valid)", requests)
+	}
+}
+
+func TestAPIReadCacheSnapshotPreservesPullRequestFilteringAndOrder(t *testing.T) {
+	const body = `[
+		{"number":1,"title":"first","state":"open","head":{"ref":"goobers/implementation/one","sha":"a"},"base":{"ref":"main"},"user":{"login":"bot"}},
+		{"number":2,"title":"second","state":"open","head":{"ref":"goobers/pr-remediation/two","sha":"b"},"base":{"ref":"main"},"user":{"login":"bot"}},
+		{"number":3,"title":"third","state":"open","head":{"ref":"goobers/implementation/three","sha":"c"},"base":{"ref":"main"},"user":{"login":"bot"}}
+	]`
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("ETag", `"prs"`)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	newProvider := func() *providers.GitHubProvider {
+		return providers.NewGitHubProvider("tok",
+			providers.WithHTTPClient(newAPIReadCache(dir, "tick-1", &http.Client{})),
+			func(p *providers.GitHubProvider) { p.BaseURL = srv.URL },
+		)
+	}
+	repo := providers.RepositoryRef{Owner: "acme", Name: "app"}
+	implementation, err := newProvider().ListPullRequests(context.Background(), providers.ListPullRequestsRequest{
+		Repository: repo, HeadPrefix: "goobers/implementation/", SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests implementation: %v", err)
+	}
+	remediation, err := newProvider().ListPullRequests(context.Background(), providers.ListPullRequestsRequest{
+		Repository: repo, HeadPrefix: "goobers/pr-remediation/", SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests remediation: %v", err)
+	}
+	if len(implementation) != 2 || implementation[0].Number != 1 || implementation[1].Number != 3 {
+		t.Fatalf("implementation snapshot = %+v, want PRs 1 then 3", implementation)
+	}
+	if len(remediation) != 1 || remediation[0].Number != 2 {
+		t.Fatalf("remediation snapshot = %+v, want PR 2", remediation)
+	}
+	if requests != 1 {
+		t.Fatalf("provider list reads = %d, want 1 shared raw snapshot", requests)
+	}
+}
+
+// TestNewAPIReadCacheCleansStaleListLocksAtStartup covers the per-list-key
+// lock file debris (apiReadListLockPath): acquiring a lock creates its file
+// with O_CREATE but Release only unlocks and closes it, never unlinking it, so
+// every distinct list-request key a scheduler dir has ever seen leaves a
+// permanent zero-byte file behind. newAPIReadCache's startup sweep must
+// remove only the ones old enough to be safely considered abandoned, leave a
+// fresh one untouched, and never touch the single shared cache-file lock
+// (same name, no per-key suffix).
+func TestNewAPIReadCacheCleansStaleListLocksAtStartup(t *testing.T) {
+	dir := t.TempDir()
+
+	stale := apiReadListLockPath(dir, "stale-key")
+	if err := os.WriteFile(stale, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(stale, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := apiReadListLockPath(dir, "fresh-key")
+	if err := os.WriteFile(fresh, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mainLock := filepath.Join(dir, apiReadCacheLockName)
+	if err := os.WriteFile(mainLock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(mainLock, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	newAPIReadCache(dir, "", &http.Client{})
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale list lock survived startup cleanup: err=%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh list lock was removed: %v", err)
+	}
+	if _, err := os.Stat(mainLock); err != nil {
+		t.Fatalf("shared cache-file lock (not a per-list-key lock) was removed: %v", err)
+	}
+}
+
+// TestNewAPIReadCacheCleanupSkipsHeldLock guards the TOCTOU-avoidance half
+// of the sweep: even a lock file old enough to pass the age check must
+// survive if a peer still holds it — CleanStaleLocks confirms
+// via a non-blocking lock.TryAcquire before removing anything.
+func TestNewAPIReadCacheCleanupSkipsHeldLock(t *testing.T) {
+	dir := t.TempDir()
+	held := apiReadListLockPath(dir, "held-key")
+	handle, err := lock.TryAcquire(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = handle.Release() }()
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(held, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	newAPIReadCache(dir, "", &http.Client{})
+
+	if _, err := os.Stat(held); err != nil {
+		t.Fatalf("held (even if old) list lock was removed out from under its holder: %v", err)
+	}
+}
+
+// TestCleanStaleAPIReadCacheLocksSweepsAcrossRepeatedCallsWithoutRestart is the
+// regression test for #4251: the sweep used to be gated by a per-schedulerDir
+// sync.Once, so only the FIRST call in a process's lifetime ever did
+// anything — a long-lived daemon whose own cache-construction call sites
+// (stage dispatch, open-PR polling, counter evaluation) recur throughout its
+// uptime, plus the new apiReadCacheLockSweepTicker (up.go), got no benefit
+// from any call after the first. This proves the sweep now does real work on
+// every call: a lock created fresh, then aged past the staleness cutoff
+// in-place (no process restart, no second newAPIReadCache — exactly what a
+// long-lived daemon between periodic ticks looks like), is reclaimed by a
+// SECOND direct call once it crosses the cutoff, and the directory stays
+// bounded across both passes.
+func TestCleanStaleAPIReadCacheLocksSweepsAcrossRepeatedCallsWithoutRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := apiReadListLockPath(dir, "aging-key")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First pass: fresh, so a sweep right after creation must leave it alone —
+	// this is what an already-once-per-process sweep already got right, and
+	// establishes there's nothing to clean up yet.
+	CleanStaleLocks(dir)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("fresh lock removed on first sweep: %v", err)
+	}
+
+	// Age it past the cutoff IN PLACE — no new process, no new newAPIReadCache
+	// call, just time passing while this same process keeps running, exactly
+	// the daemon-uptime shape the bug was about.
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(path, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second pass, same process, no restart: with the old sync.Once gate this
+	// would have been a silent no-op forever. It must now reclaim the file.
+	CleanStaleLocks(dir)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("lock aged past the cutoff survived a second sweep in the same process: err=%v", err)
+	}
+
+	// A third pass on an already-clean directory must stay a no-op — the
+	// sweep is safe to call as often as the ticker likes.
+	entriesBefore, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	CleanStaleLocks(dir)
+	entriesAfter, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entriesBefore) != len(entriesAfter) {
+		t.Fatalf("directory entry count changed on a no-op sweep: before=%d after=%d", len(entriesBefore), len(entriesAfter))
+	}
+}
+
+// A snapshot waiter may intentionally issue its own live request after the
+// production lock budget expires. That policy is separate from coalescing.
+func TestAPIReadCacheSnapshotDeadlineFallsBackToLiveRequest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var requests atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(entered)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		} else {
+			unblock()
+		}
+		_, _ = io.WriteString(w, `[{"number":1}]`)
+	}))
+	defer server.Close()
+	defer unblock()
+	dir := t.TempDir()
+	url := server.URL + "/repos/acme/app/issues?state=open"
+	client := &http.Client{Timeout: apiReadHTTPTimeout}
+	type fetchResult struct {
+		body string
+		err  error
+	}
+	fetch := func(cache *apiReadCache) <-chan fetchResult {
+		results := make(chan fetchResult, 1)
+		go func() {
+			result := fetchResult{}
+			defer func() { results <- result }()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				result.err = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer tok")
+			response, err := cache.Do(req)
+			if err != nil {
+				result.err = err
+				return
+			}
+			body, err := io.ReadAll(response.Body)
+			result.body = string(body)
+			result.err = errors.Join(err, response.Body.Close())
+		}()
+		return results
+	}
+	first := fetch(newAPIReadCache(dir, "tick-1", client))
+	select {
+	case <-entered:
+	case result := <-first:
+		t.Fatalf("first provider read ended before entering handler: %v", result.err)
+	case <-ctx.Done():
+		t.Fatalf("first provider read never started: %v", ctx.Err())
+	}
+	cache := newAPIReadCache(dir, "tick-1", client)
+	if cache.lockBudget != time.Second {
+		t.Fatalf("production lock budget=%s, want 1s", cache.lockBudget)
+	}
+	started := time.Now()
+	var second fetchResult
+	select {
+	case second = <-fetch(cache):
+		if second.err != nil {
+			t.Fatalf("fallback request: %v", second.err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("fallback request timed out: %v", ctx.Err())
+	}
+	if elapsed := time.Since(started); elapsed < cache.lockBudget {
+		t.Fatalf("fallback after %s, before lock budget %s", elapsed, cache.lockBudget)
+	}
+	var firstResult fetchResult
+	select {
+	case firstResult = <-first:
+		if firstResult.err != nil {
+			t.Fatalf("first request: %v", firstResult.err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("first request did not finish: %v", ctx.Err())
+	}
+	if firstResult.body != `[{"number":1}]` || second.body != firstResult.body {
+		t.Fatalf("snapshot bodies=%q %q", firstResult.body, second.body)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("provider reads=%d, want first plus bounded fallback", got)
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +15,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gagglebundle"
 	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -33,6 +36,13 @@ type configReloadHandle interface {
 	pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error)
 }
 
+func workflowMutationHandlerOptions(service *workflowMutationService) []httpapi.HandlerOption {
+	return []httpapi.HandlerOption{
+		httpapi.WithWorkflowMutations(service),
+		httpapi.WithGaggleBundles(service),
+	}
+}
+
 // workflowMutationService implements httpapi.WorkflowMutationService: it
 // rewrites a workflow's YAML source file's non-manual triggers' `enabled`
 // field and then hot-reloads the daemon from the edited config directory
@@ -41,7 +51,7 @@ type configReloadHandle interface {
 // automatically, so it drives reloader.pollOnce itself.
 //
 // reloader is attached after construction (AttachReloader), mirroring
-// runInterventionService.AttachScheduler — up.go wires the HTTP handler
+// intervention.Service.AttachScheduler — up.go wires the HTTP handler
 // before the reloader exists, so this service is constructed first and the
 // reloader filled in once it's built.
 type workflowMutationService struct {
@@ -69,6 +79,7 @@ func (s *workflowMutationService) SetWorkflowEnabled(ctx context.Context, input 
 		return httpapi.WorkflowEnabledResult{}, httpapi.NewInterventionError(
 			http.StatusServiceUnavailable, "workflow_mutations_unavailable", "workflow config mutations are not available yet", nil)
 	}
+
 	handle := *handlePtr
 	gaggle := strings.TrimSpace(input.Gaggle)
 	name := strings.TrimSpace(input.Workflow)
@@ -151,6 +162,59 @@ func (s *workflowMutationService) SetWorkflowEnabled(ctx context.Context, input 
 	}
 
 	return httpapi.WorkflowEnabledResult{Gaggle: gaggle, Workflow: name, Enabled: input.Enabled}, nil
+}
+
+func (s *workflowMutationService) ExportGaggle(_ context.Context, name string) (apiv1.GaggleBundle, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := gaggletemplate.LockConfig(s.layout.ConfigDir())
+	if err != nil {
+		return apiv1.GaggleBundle{}, fmt.Errorf("config is being replaced; retry gaggle export: %w", err)
+	}
+	defer func() { _ = release() }()
+	return gagglebundle.Export(s.layout.ConfigDir(), name, time.Now())
+}
+
+func (s *workflowMutationService) ImportGaggle(_ context.Context, input apiv1.GaggleBundleImportRequest) (apiv1.GaggleBundleImportResult, error) {
+	handlePtr := s.reloader.Load()
+	if handlePtr == nil {
+		return apiv1.GaggleBundleImportResult{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "gaggle_bundles_unavailable", "gaggle bundle import is not available yet", nil)
+	}
+	handle := *handlePtr
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	swap, err := gagglebundle.PrepareImport(s.layout, input.Name, input.Bundle)
+	if err != nil {
+		return apiv1.GaggleBundleImportResult{}, err
+	}
+	_, _, _, rejected, pollErr := handle.pollOnce(time.Now())
+	if pollErr != nil {
+		rollbackErr := swap.Rollback()
+		return apiv1.GaggleBundleImportResult{}, errors.Join(fmt.Errorf("reload config after gaggle import: %w", pollErr), rollbackErr)
+	}
+	if rejected != "" {
+		if rejected == engineTopologyRestartMessage {
+			if err := swap.Commit(); err != nil {
+				return apiv1.GaggleBundleImportResult{}, fmt.Errorf("commit imported gaggle pending daemon restart: %w", err)
+			}
+			return apiv1.GaggleBundleImportResult{
+				Name: input.Name, Source: input.Bundle.Source, ImportedAt: time.Now().UTC(), RestartRequired: true,
+			}, nil
+		}
+		rollbackErr := swap.Rollback()
+		return apiv1.GaggleBundleImportResult{}, errors.Join(
+			fmt.Errorf("%w: daemon rejected imported configuration: %s", gagglebundle.ErrInvalidBundle, rejected),
+			rollbackErr,
+		)
+	}
+	if err := swap.Commit(); err != nil {
+		return apiv1.GaggleBundleImportResult{}, fmt.Errorf("commit imported gaggle: %w", err)
+	}
+	return apiv1.GaggleBundleImportResult{
+		Name: input.Name, Source: input.Bundle.Source, ImportedAt: time.Now().UTC(), RestartRequired: false,
+	}, nil
 }
 
 // writeWorkflowSourceAtomically writes content to a sibling tmp file and

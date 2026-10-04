@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,11 +50,28 @@ func TestServiceHealthExportProductionWiring(t *testing.T) {
 	setup := &schedulerSetup{Config: cfg, SharedRegistry: journal.NewRegistryScrubber(), InstanceLog: log}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := startServiceHealth(ctx, t.TempDir(), &daemonIdentity{StartedAt: time.Now()}, setup, nil)
+	root := t.TempDir()
+	journalID, rootID := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	for name, id := range map[string]string{"instance-id": journalID, instance.RootIdentityFileName: rootID} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(id+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := startServiceHealth(ctx, root, &daemonIdentity{StartedAt: time.Now()}, setup, nil)
 	select {
 	case req := <-collector.requests:
 		if !strings.Contains(req.String(), "goobers.service.health") {
 			t.Fatalf("wrong export: %s", req)
+		}
+		if len(req.ResourceLogs) != 1 || req.ResourceLogs[0].Resource == nil {
+			t.Fatal("diagnostic resource missing")
+		}
+		attrs := map[string]string{}
+		for _, attr := range req.ResourceLogs[0].Resource.Attributes {
+			attrs[attr.Key] = attr.Value.GetStringValue()
+		}
+		if attrs["goobers.instance.id"] != journalID || attrs["goobers.root.id"] != rootID {
+			t.Fatalf("diagnostics cannot join journal/root identities: %v", attrs)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no startup export through production wiring")
@@ -85,6 +104,27 @@ func TestServiceHealthExportWhitelist(t *testing.T) {
 		t.Fatalf("diagnostic consent did not include host identity: %+v", diagnostic.Attributes)
 	}
 }
+
+// Root health records carry persisted delivery evidence (#5940): fixed class
+// and timestamps, no endpoint or error text.
+func TestAzureReplayHealthCarriesDeliveryEvidence(t *testing.T) {
+	root := t.TempDir()
+	spool := filepath.Join(root, "telemetry-export", "azure-monitor")
+	if err := os.MkdirAll(spool, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	status := `{"schema":"goobers.dev/telemetry/azure-delivery-status/v1","lastSuccess":"2026-10-01T12:00:00Z","lastFailure":"2026-10-01T12:05:00Z","failureClass":"tls"}`
+	if err := os.WriteFile(filepath.Join(spool, "status-journal.json"), []byte(status), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := telemetry.DiagnosticRecord{}
+	addAzureReplayHealth(&record, root)
+	if record.Attributes["azureReplayLastSuccess"] != "2026-10-01T12:00:00Z" || record.Attributes["azureReplayLastFailure"] != "2026-10-01T12:05:00Z" ||
+		record.Attributes["azureReplayFailureClass"] != "tls" || record.Attributes["azureReplayActiveFailure"] != false {
+		t.Fatalf("delivery evidence attributes = %+v", record.Attributes)
+	}
+}
+
 func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
 	disabled := false
 	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{Diagnostics: &instance.DiagnosticsConfig{OTLP: &instance.OTLPConfig{

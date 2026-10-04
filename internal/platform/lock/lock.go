@@ -28,6 +28,26 @@ func TryAcquireExisting(path string) (*Handle, error) {
 	return acquire(path, true, os.O_RDWR, false)
 }
 
+// TryAcquireExistingInRoot contains path resolution to root, including symlinks.
+// It only locks an existing regular file and never creates or truncates one.
+func TryAcquireExistingInRoot(root *os.Root, path string) (*Handle, error) {
+	file, err := root.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = errors.New("lock: existing lock must be a regular file")
+	}
+	if err == nil {
+		err = lockFile(file, true, false)
+	}
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return &Handle{file: file}, nil
+}
+
 // TryAcquireShared permits concurrent readers while excluding an exclusive
 // holder. Like exclusive locks, it is released automatically on process exit.
 func TryAcquireShared(path string) (*Handle, error) {

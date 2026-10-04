@@ -353,6 +353,12 @@ const (
 	// is already spent — or a fresh one — and the divergence reappears on the
 	// next interruption rather than on the next release.
 	rowInfraRepassBudgetResumed parityRow = "E11-infra-repass-budget-resumed"
+	// rowTimeoutPollingBudget is the timeout-polling half added by #5558: a
+	// pending-only CI poll sequence may exceed the policy maxRepasses budget
+	// without spending it, but is still bounded by the gate's own
+	// maxTimeoutPolls policy and journals POLLING_BUDGET_EXHAUSTED when that
+	// dedicated budget is spent.
+	rowTimeoutPollingBudget parityRow = "E11-timeout-polling-budget"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -579,6 +585,9 @@ type parityEnvelope struct {
 	// JSON-encoded. A stage that is handed the wrong repo, owner or base
 	// branch is the bluntest parity bug there is.
 	RepoRef string
+	// WorkspaceRevision is the verified immutable authority carried to
+	// downstream stages, JSON-encoded so missing or changed values diverge.
+	WorkspaceRevision string
 	// AdditionalWorkspaces encodes the read-only reference-repo checkouts by
 	// NAME, in order (paths excluded — see above).
 	AdditionalWorkspaces string
@@ -609,8 +618,9 @@ type parityEnvelope struct {
 // projected fields covers the envelope exactly, so a new envelope field cannot
 // join the exclusion set by being forgotten.
 var parityEnvelopeExcludedFields = map[string]string{
-	"Workspace": "absolute path minted per attempt by each side's provisioner; never the same string",
-	"Attempt":   "infra retries renumber attempts independently on each side; dispatch order is the slice's",
+	"ArtifactPublication": "optional named publication contract includes a backend-specific journal visit cursor; dedicated publication tests check the authority and bindings",
+	"Workspace":           "absolute path minted per attempt by each side's provisioner; never the same string",
+	"Attempt":             "infra retries renumber attempts independently on each side; dispatch order is the slice's",
 }
 
 // String prints EVERY compared field. A projection that compares a field it
@@ -621,11 +631,11 @@ func (e parityEnvelope) String() string {
 	return fmt.Sprintf("configGeneration=%s instanceId=%s stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
-		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s reviewerDeferralAllowed=%t reviewerMechanicalEscalationAllowed=%t",
+		"repoRef=%s workspaceRevision=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s reviewerDeferralAllowed=%t reviewerMechanicalEscalationAllowed=%t",
 		e.ConfigGeneration, e.InstanceID, e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
-		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
+		e.RepoRef, e.WorkspaceRevision, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
 		e.ParentPlatformPolicy, e.NestedAgentPolicy, e.ReviewerDeferralAllowed, e.ReviewerMechanicalEscalationAllowed)
 }
 
@@ -658,6 +668,7 @@ func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 		ContextPointers:                     encodeParityPointers(env.ContextPointers),
 		Item:                                encodeParityItem(env.Item),
 		RepoRef:                             encodeParityJSON(env.RepoRef),
+		WorkspaceRevision:                   encodeParityJSON(env.WorkspaceRevision),
 		AdditionalWorkspaces:                encodeParityAdditionalWorkspaces(env.AdditionalWorkspaces),
 		CheckoutCones:                       encodeParityJSON(env.CheckoutCones),
 		Limits:                              encodeParityJSON(env.Limits),
@@ -1501,7 +1512,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 		InstructionAddendum: "s-addendum",
 		Inputs:              "s-inputs", Capabilities: "s-caps", PolicyActions: "s-policy",
 		ContextPointers: "s-pointers", Item: "s-item",
-		RepoRef: "s-reporef", AdditionalWorkspaces: "s-additional", CheckoutCones: "s-cones",
+		RepoRef: "s-reporef", WorkspaceRevision: "s-revision", AdditionalWorkspaces: "s-additional", CheckoutCones: "s-cones",
 		Limits: "s-limits", ParentPlatformPolicy: "s-parentpolicy", NestedAgentPolicy: "s-nestedpolicy",
 		ReviewerDeferralAllowed: true, ReviewerMechanicalEscalationAllowed: true,
 	}
@@ -1510,7 +1521,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 		"s-configgeneration", "s-instanceid",
 		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
-		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
+		"s-pointers", "s-item", "s-reporef", "s-revision", "s-additional", "s-cones", "s-limits",
 		"s-parentpolicy", "s-nestedpolicy",
 		"reviewerDeferralAllowed=true", "reviewerMechanicalEscalationAllowed=true",
 	} {
@@ -1521,7 +1532,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 28; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 29; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }

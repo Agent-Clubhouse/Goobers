@@ -330,8 +330,9 @@ var commands = map[string]Command{
 	"open-pr": {
 		ResultFile: "pr-result.json",
 		Capabilities: []CapabilityUse{
-			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
-			optional(capability.ADOWorkItemsWrite, "the separately brokered Azure Boards credential is required at runtime only when an ADO pull request is linked to its work item"),
+			requiredUnlessAnyFlag(capability.ProviderPRWrite, []string{"config-repo"}, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
+			requiredWhenAnyFlag(capability.ConfigRepoWrite, []string{"config-repo"}, "the config-repository write credential is not available, so pull-request creation in the instance config repository fails at runtime"),
+			optional(capability.ADOWorkItemsWrite, "optional on Azure DevOps: when declared, the pull request is also linked natively to its claimed work item; without it the pull request opens with a text reference only"),
 			// Topology (b) (docs/design/ado-parity-dsl-2-0.md §7.2): the
 			// claimed-issue staleness re-check reads the backlog provider with
 			// an issue credential; without one it is skipped with a warning.
@@ -350,6 +351,10 @@ var commands = map[string]Command{
 		ResultFile: "comment-watch-result.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so PR comment watching fails at runtime"),
+			// On Azure DevOps the routing labels are native pull-request labels
+			// on the project provider, which github:pr:write authorizes there
+			// (docs/design/ado-parity-dsl-2-0.md §3.1).
+			optional(capability.GitHubPRWrite, "required on Azure DevOps: without it the pull-request comment read and label routing fail at runtime; unused on GitHub and Gitea"),
 		},
 	},
 	"pr-select": {
@@ -357,6 +362,19 @@ var commands = map[string]Command{
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+		},
+	},
+	"advisory-pr-select": {
+		ResultFile:         "advisory-selection.json",
+		mutatesClaimLedger: true,
+		Capabilities: []CapabilityUse{
+			requiredExact(capability.GitHubPRRead, "the read-only pull-request credential is not injected, so advisory selection fails at runtime"),
+		},
+	},
+	"advisory-pr-publish": {
+		ResultFile: "advisory-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the pull-request write credential is not injected, so advisory publication fails at runtime"),
 		},
 	},
 	"pr-claim": {
@@ -431,7 +449,13 @@ var commands = map[string]Command{
 	},
 	"push-branch": {
 		Capabilities: []CapabilityUse{
-			required(capability.RepoPush, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
+			requiredUnlessAnyFlag(capability.RepoPush, []string{"config-repo"}, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
+			requiredWhenAnyFlag(capability.ConfigRepoWrite, []string{"config-repo"}, "the config-repository write credential is not injected, so publishing the config-repo branch fails at runtime"),
+		},
+	},
+	"config-checkout": {
+		Capabilities: []CapabilityUse{
+			required(capability.ConfigRepoWrite, "the config-repository write credential is not injected, so the config repository cannot be cloned for a config-repo-targeted stage"),
 		},
 	},
 	"recovery-resume": {
@@ -466,6 +490,7 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.TelemetryRead, "telemetry access is not admitted, so the connector would read telemetry without declared authority at runtime"),
 			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
+			optional(capability.ConfigRepoWrite, "optional with --format tutor-live-verification: it lets the holdout merge-state refresh read PRs the Tutor opened in the instance config repository; without it those holdouts stay pending"),
 		},
 	},
 }
@@ -595,6 +620,20 @@ func ResultFile(command string) (string, bool) {
 		return "", false
 	}
 	return entry.ResultFile, true
+}
+
+// IsDefaultResultFile reports whether name is one of the exact default result
+// file names owned by a guarded provider-stage command.
+func IsDefaultResultFile(name string) bool {
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	for _, entry := range commands {
+		if entry.ResultFile == name {
+			return true
+		}
+	}
+	return false
 }
 
 // effectiveSupport resolves c's result-file support: an explicit

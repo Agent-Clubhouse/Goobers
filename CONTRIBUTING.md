@@ -208,6 +208,7 @@ command instead. **CI:** each validation job maps to the same contract:
 | GitHub Actions job | Tier correspondence |
 |---|---|
 | `preflight (lint · format · policy · vet · build)` | Fast source, policy, vet, build, and configuration admission gate |
+| `cmd/goobers growth ratchet` | Non-test Go line/file ceilings; run `make cmdgoobers-growth` locally |
 | `dead-code analysis` | Reachability checks for Go and portal production code |
 | `checks` | Portal, canvas-extension, generated-contract, and manifest slice of `make ci` |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
@@ -228,7 +229,41 @@ command instead. **CI:** each validation job maps to the same contract:
 The dedicated vulnerability, integration, sandbox, and Linux-node CI jobs invoke
 their corresponding Make targets. The vulnerability target also runs daily from
 `.github/workflows/vulnerability-scan.yml`, so newly disclosed findings surface
-without a code change.
+without a code change. That daily workflow also audits the non-Go dependency
+surfaces: the portal and sample API npm lockfiles (`npm audit`), the eval suite
+and monitoring exporter Python requirements (`pip-audit`), the Java e2e fixture
+POM (`osv-scanner`), and both .NET e2e fixture projects (`dotnet list package
+--vulnerable`).
+
+#### Frozen candidate CI
+
+`ci.yml` also supports `workflow_dispatch` on a dedicated validation branch.
+It runs the same complete required matrix as a pull request, including the
+fail-closed `make ci` aggregate. This is useful for release qualification:
+successive pushes to `main` otherwise cancel CI for an earlier frozen candidate.
+
+With repository-write authorization, create a uniquely named, non-release branch
+(for example, `qualification/ci-<campaign-id>`) at the campaign's recorded full
+commit SHA. Verify that exact ref before dispatching:
+
+```sh
+gh workflow run ci.yml --repo Agent-Clubhouse/Goobers --ref 'qualification/ci-<campaign-id>'
+```
+
+Do not update or force-push that branch during the campaign. Checkout uses the
+event's SHA, not the latest `main`; concurrency is per ref, so activity on other
+branches does not cancel this run. Avoid duplicate dispatches on the same ref,
+which can cancel each other. Record the returned/discovered run ID and attempt;
+independently verify its `workflow_dispatch` event, branch, exact `head_sha`, and
+successful required jobs before admitting its result. A cancelled, skipped,
+incomplete, or wrong-SHA run is not a pass. Dispatch adds no candidate secrets or
+repository-write permissions to validation jobs; existing failure-only handlers
+retain their authority to cancel their own failing run.
+
+This source-validation run does not publish a build, create a release tag, or
+prove a soak passed. Artifact admission and live qualification must still bind
+to the same source SHA. Native macOS runtime coverage remains the separate tier
+described below.
 
 #### macOS runtime runs nightly
 
@@ -646,3 +681,25 @@ versions, the answer is fix-forward-and-migrate.
 
 Use a short imperative subject (`area: do the thing`), a body explaining *why* when it's
 not obvious, and reference issues (`Closes #123`). Keep unrelated changes out of the commit.
+
+### cmd/goobers growth baseline
+
+`make cmdgoobers-growth` checks physical lines and file count of direct non-test
+Go files in `cmd/goobers`, including all build tags, comments, and blank lines.
+Decreases pass without editing the baseline; run `make cmdgoobers-growth-update`
+to retain a lower ceiling in `test/cmdgoobersgrowth/baseline.txt`.
+
+Growth requires a visible re-pin in the same PR. Add an exact-target directive
+for each growing dimension to the baseline (fields are separated by tabs):
+
+```text
+!non-test-line-count-justification<TAB><new count><TAB><why growth is needed>
+!non-test-file-count-justification<TAB><new count><TAB><why growth is needed>
+```
+
+Then run `make cmdgoobers-growth-update` and commit the resulting baseline.
+Justifications follow the complexity gate convention and authorize only their
+exact count. CI checks the baseline against the PR or merge-group base revision
+(and the previous main revision on pushes), so committing an unjustified larger
+baseline does not bypass the check. To reproduce that comparison locally, use
+`go run ./test/cmdgoobersgrowth -base-ref <base commit>`.

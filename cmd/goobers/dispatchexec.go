@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/daemonclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
@@ -23,7 +24,9 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // dispatchexec.go is the mode-3 in-pod stage runtime (#3699): the process a
@@ -112,7 +115,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	heartbeat.Stop()
 	if cause := context.Cause(stageCtx); cause != nil {
 		outcome.Verdict = nil
-		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: &apiv1.ErrorInfo{Code: "execution_authority_ended", Message: cause.Error()}}
+		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: journal.ErrorInfoFor("execution_authority_ended", cause, false)}
 	}
 	stopFence()
 	// Surrender authorizes pod disposal. Include the complete receipt set,
@@ -126,8 +129,14 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// Recovery is independent of stage success: a failed attempt can contain
 	// the only copy of reviewed implementation work. Surrender must follow the
 	// host's durable custody acknowledgment, even when the stage was canceled.
-	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 90*time.Second)
-	recoveryErr := publishPodRecovery(recoveryCtx, ".")
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), dispatchRecoveryCustodyTimeout())
+	recoveryErr := publishPodRecovery(recoveryCtx, ".", func(phase string, elapsed time.Duration, err error) {
+		if err != nil {
+			pf(stderr, "dispatch-exec: recovery phase %s failed after %s: %v\n", phase, elapsed.Round(time.Millisecond), err)
+			return
+		}
+		pf(stderr, "dispatch-exec: recovery phase %s completed in %s\n", phase, elapsed.Round(time.Millisecond))
+	})
 	cancelRecovery()
 	if recoveryErr != nil {
 		pf(stderr, "dispatch-exec: recovery custody: %v\n", recoveryErr)
@@ -157,7 +166,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 			envelope = apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "stage committed work that could not be carried to the next stage",
-				Error:   &apiv1.ErrorInfo{Code: "workspace_delta_failed", Message: derr.Error()},
+				Error:   journal.ErrorInfoFor("workspace_delta_failed", derr, false),
 			}
 		} else {
 			delta = published
@@ -196,6 +205,17 @@ func dispatchStageTimeout() time.Duration {
 		return declared
 	}
 	return dispatcher.DefaultStageTimeout
+}
+
+// dispatchRecoveryCustodyTimeout reads the post-stage custody budget stamped
+// by the dispatcher. Invalid or absent values keep the dispatcher default
+// rather than returning to the old narrow literal; publishPodRecovery also
+// clamps this context to the claim expiry.
+func dispatchRecoveryCustodyTimeout() time.Duration {
+	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvRecoveryCustodyTimeout)); err == nil && declared > 0 {
+		return declared
+	}
+	return dispatcher.DefaultRecoveryCustodyTimeout
 }
 
 // surrenderRetryFloor bounds how long the surrender PUT retries even for a
@@ -256,7 +276,8 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
-func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
+func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome apiv1.ResultEnvelope) {
+	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
 	// it is currently enforced by an ABSENCE and an absence is invisible to the
 	// next change: only the agentic branch (runStage) materializes this stage's
@@ -310,7 +331,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// plane and inject them exactly as the local executor does. Resolution
 	// happens HERE, at stage start, not at dispatch — so no secret ever rides
 	// a dispatch payload or a pod spec (DS9/DS10, #2931).
-	creds, repoAuthScheme, credErr := resolveStageCredentialsWithScheme(ctx)
+	resolved, credErr := resolveDeclaredStageCredentials(ctx)
 	if credErr != nil {
 		// Fail closed. A stage that declared capabilities and did not get them
 		// would run uncredentialed and fail far away, against the provider,
@@ -329,11 +350,11 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// The working directory IS the workspace (podspec stamps WorkingDir), so
 	// checking out into "." is what puts the stage's command inside the tree.
 	// The checkout may use a credential the stage itself never receives.
-	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, resolved.creds, resolved.scheme)
 	if checkoutErr != nil {
 		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
 	}
-	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
+	if err := checkoutRepoWorkspace(ctx, ".", stderr, checkoutCreds, checkoutScheme); err != nil {
 		// A genuine syncBase base-merge conflict is classified exactly as the
 		// self arms classify it (#813, internal/engine/activities.go's
 		// RunDeterministic and internal/runner/run.go): a business failure
@@ -347,11 +368,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
-				Error: &apiv1.ErrorInfo{
-					Code:      runner.BaseSyncConflictErrorCode,
-					Message:   err.Error(),
-					Retryable: true,
-				},
+				Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
 			}
 		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
@@ -369,7 +386,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// absent: it exists to provision the working tree, and exporting it here
 	// would hand repository authority to a stage that never declared it —
 	// the over-grant #3770 exists to avoid.
-	credEnv := stageCredentialEnv(creds, repoAuthScheme)
+	credEnv := resolved.env()
 	// A provider builtin writes its result to an IMPLICIT path when the stage
 	// declared no resultFile — the local executor derives it from the
 	// subcommand (shell.go), and so must the pod, or the builtin writes a file
@@ -447,10 +464,8 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// executor registers every token with a scrubber before the stage runs;
 	// without this a stage that echoes its token surrenders it into the
 	// journal, where it is durable and widely readable.
-	registry, scrubber := journal.DefaultScrubber()
-	for _, cred := range creds {
-		registry.Register([]byte(cred.Value))
-	}
+	scrubber := podStageScrubber(resolved.withGrant(checkoutCreds), checkoutScheme)
+	defer publishPodNamedResult(ctx, stderr, scrubber, &outcome)
 	outputs := map[string]interface{}{}
 	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
 	scrubbedErr := scrubber.Scrub([]byte(capturedStderr.String()))
@@ -522,43 +537,11 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		}
 	}
 	stageArtifacts := recordStageArtifactsTyped(ctx, stderr, streams, mediaTypes)
-	// Lift the declared result file into Outputs, exactly as the local
-	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
-	// so a gate reading an output key finds nothing and evaluates its FAILURE
-	// branch — measured on a live cluster: a stage emitted {"verdict":"pass"},
-	// the gate read no `verdict` key, and the run took the fail path three
-	// times before exhausting its repass budget. The run "completed" with the
-	// wrong control flow and nothing reported an error.
+	result := apiv1.ResultEnvelope{Outputs: outputs, Artifacts: stageArtifacts, Metrics: stageMetrics}
 	if resultFile != "" {
-		data, rerr := resultData, resultErr
-		switch {
-		case rerr == nil:
-			mergeResultFileOutputs(outputs, data)
-		case os.IsNotExist(rerr) && runErr == nil && !timedOut:
-			// A stage that succeeded but did not write its declared result
-			// file is a FAILURE, same as locally: the declaration is a
-			// contract, and honouring the exit code alone would report a
-			// success whose outputs the workflow cannot read.
-			return apiv1.ResultEnvelope{
-				Status:    apiv1.ResultFailure,
-				Outputs:   outputs,
-				Artifacts: stageArtifacts,
-				Metrics:   stageMetrics,
-				Summary:   "declared result file missing",
-				Error: &apiv1.ErrorInfo{
-					Code:    "missing_result_file",
-					Message: fmt.Sprintf("stage declared result file %q and exited 0 without writing it", resultFile),
-				},
-			}
-		case rerr != nil && !os.IsNotExist(rerr):
-			return apiv1.ResultEnvelope{
-				Status:    apiv1.ResultFailure,
-				Outputs:   outputs,
-				Artifacts: stageArtifacts,
-				Metrics:   stageMetrics,
-				Summary:   "declared result file unreadable",
-				Error:     &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
-			}
+		applyDeclaredStageResultFile(&result, resultFile, resultData, resultErr, runErr == nil && !timedOut)
+		if result.Error != nil {
+			return result
 		}
 	}
 
@@ -569,21 +552,13 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		// the workflow would take the did-work path on a pod and the no-work
 		// path on a self runner, from the same stage and the same outputs.
 		if v, ok := outputs[executor.OutputNoWork].(bool); ok && v {
-			return apiv1.ResultEnvelope{
-				Status:    apiv1.ResultNoWork,
-				Outputs:   outputs,
-				Artifacts: stageArtifacts,
-				Metrics:   stageMetrics,
-				Summary:   "stage found no work to do",
-			}
+			result.Status = apiv1.ResultNoWork
+			result.Summary = "stage found no work to do"
+		} else {
+			result.Status = apiv1.ResultSuccess
+			result.Summary = "stage completed"
 		}
-		return apiv1.ResultEnvelope{
-			Status:    apiv1.ResultSuccess,
-			Outputs:   outputs,
-			Artifacts: stageArtifacts,
-			Metrics:   stageMetrics,
-			Summary:   "stage completed",
-		}
+		return result
 	}
 
 	code, message := "stage_failed", "stage exited with an error"
@@ -591,7 +566,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		message = runErr.Error()
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), capturedStderr.String())
+			message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), scrubbedErr)
 		}
 	}
 	if timedOut {
@@ -615,22 +590,37 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		if typedMessage == "" {
 			typedMessage = message
 		}
-		return apiv1.ResultEnvelope{
-			Status:    apiv1.ResultFailure,
-			Outputs:   outputs,
-			Artifacts: stageArtifacts,
-			Metrics:   stageMetrics,
-			Summary:   typedMessage,
-			Error:     &apiv1.ErrorInfo{Code: typedCode, Message: typedMessage, Retryable: retryable},
-		}
+		result.Status = apiv1.ResultFailure
+		result.Summary = typedMessage
+		result.Error = &apiv1.ErrorInfo{Code: typedCode, Message: typedMessage, Retryable: retryable}
+		return result
 	}
-	return apiv1.ResultEnvelope{
-		Status:    apiv1.ResultFailure,
-		Outputs:   outputs,
-		Artifacts: stageArtifacts,
-		Metrics:   stageMetrics,
-		Summary:   message,
-		Error:     &apiv1.ErrorInfo{Code: code, Message: message},
+	result.Status = apiv1.ResultFailure
+	result.Summary = message
+	result.Error = &apiv1.ErrorInfo{Code: code, Message: message}
+	return result
+}
+
+func applyDeclaredStageResultFile(result *apiv1.ResultEnvelope, path string, data []byte, readErr error, completed bool) {
+	switch {
+	case readErr == nil:
+		if err := executor.MergeResultFileOutputs(result, data); err != nil {
+			result.Summary = "declared result file contains an invalid workspace revision"
+			result.Error = journal.ErrorInfoFor("workspace_revision_invalid", err, false)
+		}
+	case os.IsNotExist(readErr) && completed:
+		result.Summary = "declared result file missing"
+		result.Error = &apiv1.ErrorInfo{
+			Code:    "missing_result_file",
+			Message: fmt.Sprintf("stage declared result file %q and exited 0 without writing it", path),
+		}
+	case !os.IsNotExist(readErr):
+		result.Summary = "declared result file unreadable"
+		result.Error = journal.ErrorInfoFor("result_file_unreadable", fmt.Errorf("read result file %q: %w", path, readErr), false)
+	}
+	if result.Error != nil {
+		result.Status = apiv1.ResultFailure
+		result.WorkspaceRevision = nil
 	}
 }
 
@@ -679,24 +669,6 @@ func (b *boundedCapture) Write(p []byte) (int, error) {
 func (b *boundedCapture) Len() int { return len(b.buf) }
 
 func (b *boundedCapture) String() string { return string(b.buf) }
-
-// mergeResultFileOutputs merges a stage's declared result file into Outputs.
-// Mirrors executor.mergeResultFileOutputs deliberately, INCLUDING its rules:
-// invalid JSON is ignored rather than failing the stage, and only scalar
-// values are lifted. Any divergence here reappears as a gate that evaluates
-// differently depending on which substrate ran the stage.
-func mergeResultFileOutputs(outputs map[string]interface{}, data []byte) {
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return
-	}
-	for key, value := range parsed {
-		switch value.(type) {
-		case string, float64, bool:
-			outputs[key] = value
-		}
-	}
-}
 
 // stageEnvironment builds the environment a stage command actually receives.
 //
@@ -826,20 +798,86 @@ func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.Minted
 	return resolution.Credentials, resolution.RepoAuthScheme, err
 }
 
+// podStageCredentials is a deterministic pod stage's stage-start resolution:
+// its credentials, the stated Azure DevOps scheme, and — for a goobers-CLI
+// stage whose credentials expire — the credential-refresh grant the plane
+// minted for it (Goobers#6120).
+type podStageCredentials struct {
+	creds  []dispatcher.MintedCredential
+	scheme string
+	grant  *dispatcher.CredentialGrant
+}
+
+// resolveDeclaredStageCredentials is resolveStageCredentialsWithScheme for a
+// deterministic stage's command: a goobers-CLI child also asks for a
+// credential-refresh grant for this attempt. Any other child — the project's
+// own build, which never refreshes — asks for none.
+func resolveDeclaredStageCredentials(ctx context.Context) (podStageCredentials, error) {
+	capabilities, err := stageDeclaredCapabilities()
+	if err != nil || len(capabilities) == 0 {
+		return podStageCredentials{}, err
+	}
+	client, err := credentialPlaneClient(capabilities)
+	if err != nil {
+		return podStageCredentials{}, err
+	}
+	attempt, _ := strconv.ParseInt(strings.TrimSpace(os.Getenv(dispatcher.EnvAttempt)), 10, 32)
+	resolution, err := client.Resolve(ctx, dispatcher.CredentialResolveRequest{
+		RunID: os.Getenv(dispatcher.EnvRunID), Stage: os.Getenv(dispatcher.EnvStage), Capabilities: capabilities,
+		Grant: os.Getenv(dispatcher.EnvStageIsCLI) == "true", Attempt: int32(attempt),
+		TimeoutSeconds: int64(dispatchStageTimeout() / time.Second),
+	})
+	if err != nil {
+		return podStageCredentials{}, err
+	}
+	return podStageCredentials{creds: resolution.Credentials, scheme: resolution.RepoAuthScheme, grant: resolution.Grant}, nil
+}
+
+// env renders the child's credential environment: stageCredentialEnv plus,
+// with a grant, the endpoint and grant its refreshing sources present. The
+// endpoint is this pod's own daemon API; the pod token never leaves this
+// process.
+func (c podStageCredentials) env() []string {
+	env := stageCredentialEnv(c.creds, c.scheme)
+	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	if c.grant == nil || c.grant.Token == "" || daemonAPI == "" {
+		return env
+	}
+	env = append(env, executor.CredentialEndpointEnvVar+"="+daemonAPI, executor.CredentialGrantEnvVar+"="+c.grant.Token)
+	if ca := os.Getenv(daemonclient.CAEnv); strings.TrimSpace(ca) != "" {
+		// The child dials the same daemon, so it trusts the same CA; a
+		// default-deny runner class would otherwise drop the variable.
+		env = append(env, daemonclient.CAEnv+"="+ca)
+	}
+	return env
+}
+
+// withGrant adds the grant to the values the stage's scrubber redacts.
+func (c podStageCredentials) withGrant(creds []dispatcher.MintedCredential) []dispatcher.MintedCredential {
+	if c.grant == nil || c.grant.Token == "" {
+		return creds
+	}
+	return append(append([]dispatcher.MintedCredential{}, creds...), dispatcher.MintedCredential{Capability: executor.CredentialGrantEnvVar, Value: c.grant.Token})
+}
+
 // stageCredentialEnv renders the stage's own resolved credentials as the
 // GOOBERS_CRED_<capability> variables the local executor sets, plus
 // GOOBERS_REPO_AUTH_SCHEME when the plane stated the scheme of an Azure DevOps
 // repository credential. The scheme is not a secret; it tells the stage which
 // Authorization header the delivered token belongs in. The rule matches the
 // local executor's (executor.ShellExecutor.appendRepoEnv): the scheme travels
-// only with at least one credential. cred.ExpiresAt is not exported: a stage
-// that outlives its token gets Azure DevOps' 401, and the stage's ADO
-// credential source (providers.NewADODeliveredCredentialSource) turns that into
-// a clear "expired or revoked" failure instead of retrying the same value.
+// only with at least one credential. A credential whose source states an
+// expiry also gets GOOBERS_CREDENTIAL_EXPIRES_<capability>, the rule the local
+// executor applies too (#5905): the stage cannot refresh the value, and the
+// expiry lets its Azure DevOps credential source say "expired" rather than
+// "revoked or without access" when Azure DevOps answers 401.
 func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
-	env := make([]string, 0, len(creds)+1)
+	env := make([]string, 0, 2*len(creds)+1)
 	for _, cred := range creds {
 		env = append(env, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
+		if cred.ExpiresAt != nil && !cred.ExpiresAt.IsZero() {
+			env = append(env, capability.CredentialExpiryEnvVar(cred.Capability)+"="+capability.FormatCredentialExpiry(*cred.ExpiresAt))
+		}
 	}
 	if repoAuthScheme != "" && len(creds) > 0 {
 		env = append(env, executor.RepoAuthSchemeEnvVar+"="+repoAuthScheme)
@@ -873,20 +911,63 @@ func stageDeclaredCapabilities() ([]string, error) {
 // not gain repository authority merely by needing a working tree. Returns nil
 // when the stage already declares a repo-shaped capability — the checkout uses
 // that one, and minting a second would be pointless.
-func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+//
+// The scheme is the one the credential plane stated beside an Azure DevOps
+// repository credential ("" for every other provider), so the checkout sends
+// the credential in the header Azure DevOps expects for its kind.
+func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, string, error) {
 	capability := strings.TrimSpace(os.Getenv(dispatcher.EnvCheckoutCapability))
 	if capability == "" {
-		return nil, nil
+		return nil, "", nil
 	}
-	return resolveCapabilities(ctx, []string{capability})
+	client, err := credentialPlaneClient([]string{capability})
+	if err != nil {
+		return nil, "", err
+	}
+	resolution, err := client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), []string{capability})
+	return resolution.Credentials, resolution.RepoAuthScheme, err
 }
 
-func resolveCapabilities(ctx context.Context, capabilities []string) ([]dispatcher.MintedCredential, error) {
-	client, err := credentialPlaneClient(capabilities)
+// podCheckoutCredentials is every credential a pod's workspace checkout may
+// authenticate with: the stage's own first, then the checkout-only credential
+// the dispatcher named (#3770). The scheme is the stated Azure DevOps scheme
+// of either resolution; both describe the same repository credential, so the
+// stage's wins only because it was resolved first.
+func podCheckoutCredentials(ctx context.Context, stageCreds []dispatcher.MintedCredential, stageScheme string) ([]dispatcher.MintedCredential, string, error) {
+	checkoutCreds, checkoutScheme, err := resolveCheckoutCredential(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return client.Resolve(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
+	scheme := stageScheme
+	if scheme == "" {
+		scheme = checkoutScheme
+	}
+	return append(append([]dispatcher.MintedCredential{}, stageCreds...), checkoutCreds...), scheme, nil
+}
+
+// podStageScrubber is the scrubber for everything a pod stage surrenders: its
+// streams, its result file, and the failure envelope's message. It registers
+// every credential this pod held — the stage's and the checkout's — and, for
+// an Azure DevOps repository credential, every header form it can be sent in
+// (providers.ADOCredential.ScrubForms): a bare base64 Basic value has no
+// "Basic " prefix for the pattern net to key on. The daemon's minting source
+// registers the same forms, so a self runner and a pod redact the same bytes.
+func podStageScrubber(creds []dispatcher.MintedCredential, repoAuthScheme string) journal.Scrubber {
+	registry, scrubber := journal.DefaultScrubber()
+	kind := ""
+	if strings.TrimSpace(repoAuthScheme) != "" {
+		kind, _ = adoCredentialKindForScheme(repoAuthScheme)
+	}
+	for _, cred := range creds {
+		registry.Register([]byte(cred.Value))
+		if kind == "" {
+			continue
+		}
+		for _, form := range (providers.ADOCredential{Kind: kind, Secret: cred.Value}).ScrubForms() {
+			registry.Register([]byte(form))
+		}
+	}
+	return scrubber
 }
 
 // credentialPlaneClient is the pod's client for the daemon's credential plane,

@@ -25,12 +25,14 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
+	"github.com/goobers/goobers/internal/lifecycle"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/strictyaml"
@@ -109,7 +111,10 @@ const (
 	// WarningSiblingLabelOverlap identifies a gaggle whose declared sibling
 	// (MIRC-2, #1901) targets the same repo and has an effective
 	// requireLabels scope that is not disjoint from this gaggle's own, or this
-	// gaggle has no effective requireLabels partition at all. Non-fatal: it
+	// gaggle has no effective requireLabels partition at all, or a claiming
+	// task's requireLabels override drops the gaggle's partition label, or
+	// its require set is disjoint from the sibling's without excluding the
+	// sibling's label (#3286). Non-fatal: it
 	// does not change any two instances' actual runtime behavior by itself,
 	// it only surfaces the misconfiguration risk before it produces a live
 	// claim collision.
@@ -132,8 +137,8 @@ const (
 	WarningUnclaimedRunnerCapability WarningCode = "CAP003"
 	// WarningInertADOCapability (CAP006) identifies a DSL 2.0 task or goober
 	// that declares an ado:* capability no DSL 2.0 stage consumes
-	// (ado:code:read, ado:pr:comment, ado:pr:write, ado:work-items:write
-	// outside open-pr). Under the rebinding rule
+	// (ado:code:read, ado:pr:comment, ado:pr:write, ado:packaging:read,
+	// ado:work-items:write outside open-pr). Under the rebinding rule
 	// (docs/design/ado-parity-dsl-2-0.md §3.1) the github:* capability on a
 	// provider-dispatched stage authorizes the operation on Azure DevOps, and
 	// the warning names it. The ado:* names stay valid: no vocabulary is
@@ -281,6 +286,16 @@ const (
 	// on upgrade. An ADO backlog for non-ADO code is the hard error CFG010; a
 	// GitHub or Gitea backlog for ADO code is topology (b) and accepted.
 	WarningGaggleMixedProvider WarningCode = "CFG011"
+	// WarningCrossProviderCredentialOverride (CFG012) identifies an explicit
+	// instance credentials: entry for a pull-request or repository capability
+	// while a gaggle has its backlog on GitHub or Gitea and its code on Azure
+	// DevOps (topology (b)). The entry replaces the Azure DevOps repository's
+	// credential for that capability, so stages present its token to Azure
+	// DevOps; nothing in the entry says which service issued it. Honoured, and
+	// warned rather than refused (PO ruling 2026-09-27). Strict-neutral: an
+	// explicit operator choice that validated cleanly before must not turn a
+	// --strict pipeline red on upgrade.
+	WarningCrossProviderCredentialOverride WarningCode = "CFG012"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -291,6 +306,16 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
+	// WarningProviderInputDefaulted identifies a built-in provider stage that
+	// leaves unset an input whose command falls back to a policy default
+	// (providerstage.Input.UnsetDefault) — e.g. a remediation-checkpoint
+	// per-cause budget, which defaults to 2 (#2737). The stage runs fine on
+	// the default, so this is a warning: it surfaces the implicit policy
+	// choice without failing a config that validated cleanly before.
+	// STRICT-NEUTRAL for the same reason: a workflow that omitted the
+	// already-optional humanCommentBudget validated green under --strict and
+	// must not turn red purely on upgrade.
+	WarningProviderInputDefaulted WarningCode = "WF027"
 	// WarningSecretShapedInput identifies a stage `inputs:` literal (or an
 	// experiment arm's `variant:` overlay of one) that is shaped like a
 	// credential. Stage inputs are HISTORY-RESIDENT: they are merged into the
@@ -332,6 +357,7 @@ const (
 	errorWorkcopiesRoot           WarningCode = "CFG008"
 	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorGaggleMixedProviderADO   WarningCode = "CFG010"
+	errorGaggleGitHubBaseURL      WarningCode = "CFG013"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -387,6 +413,7 @@ const (
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
 	errorContextFromDuplicate     WarningCode = "CTX001"
+	errorLifecycleLabelContract   WarningCode = "LCL001"
 )
 
 const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
@@ -1162,6 +1189,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// non-ADO mismatch (e.g. GitHub project, Gitea backlog) is warned, not
 	// refused, so no existing non-ADO config breaks.
 	ix.checkGaggleProviderTopology(r)
+	// GitHub Enterprise Server is unsupported: a github ref takes no baseUrl (#6347).
+	ix.checkGaggleGitHubBaseURL(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1786,38 +1815,30 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 // regardless of label similarity. Warn-only: this never fails validation,
 // since the sibling's declared scope is this instance's own trusted
 // assertion about another instance it cannot directly observe.
+//
+// Two further partition traps are flagged per claiming task (#3286): a task
+// whose own requireLabels override drops the gaggle's partition label (the
+// override replaces the default, never merges with it), and a task whose
+// require set is merely disjoint from the sibling's. requireLabels is an AND
+// filter, so disjoint sets still both match an item carrying both labels;
+// only an exclusion of the sibling's label partitions the backlog.
 func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 	for name, g := range ix.gaggles {
 		if len(g.Spec.Siblings) == 0 {
 			continue
 		}
 		file := ix.gaggleFile[name]
-
-		type scope struct {
-			workflow string
-			labels   []string
+		scopes := ix.siblingClaimScopes(name, g)
+		sharesRepo := false
+		for _, sib := range g.Spec.Siblings {
+			sharesRepo = sharesRepo || sameRepo(sib.Project, g.Spec.Project)
 		}
-		var scopes []scope
-		for identity, indexed := range ix.workflows {
-			if identity.gaggle != name {
-				continue
+		for _, sc := range scopes {
+			if sharesRepo && len(sc.dropped) > 0 {
+				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+					"workflow %q task %q overrides requireLabels to %v, which replaces (never merges with) the gaggle's spec.requireLabels %v and drops partition label(s) %v — the task claims outside the partition its declared siblings rely on; add %v to its requireLabels",
+					sc.workflow, sc.task, sc.labels, g.Spec.RequireLabels, sc.dropped, sc.dropped)
 			}
-			for _, task := range indexed.definition.Spec.Tasks {
-				if !isBacklogQueryTask(task) {
-					continue
-				}
-				labels := g.Spec.RequireLabels
-				if v, overridden := task.Inputs["requireLabels"]; overridden {
-					labels = splitLabelInput(v)
-				}
-				scopes = append(scopes, scope{workflow: identity.name, labels: labels})
-			}
-		}
-		if len(scopes) == 0 {
-			// No backlog-query task anywhere in this gaggle yet — still check
-			// the bare gaggle-level default so a sibling misconfiguration
-			// surfaces before any workflow adopts it.
-			scopes = append(scopes, scope{labels: g.Spec.RequireLabels})
 		}
 
 		for _, sib := range g.Spec.Siblings {
@@ -1825,30 +1846,153 @@ func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 				continue
 			}
 			for _, sc := range scopes {
-				siblingDesc := sib.Label
-				if siblingDesc == "" {
-					siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
-				}
-				where := "spec.requireLabels"
-				if sc.workflow != "" {
-					where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
-				}
-				if len(sc.labels) == 0 {
-					r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
-						"%s is empty, so this gaggle has no label partition from declared sibling %q — both target %s/%s/%s, allowing either instance to claim the same item",
-						where, siblingDesc, sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
-					continue
-				}
-				overlap := intersectLabels(sc.labels, sib.RequireLabels)
-				if len(overlap) == 0 {
-					continue
-				}
-				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
-					"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
-					where, sc.labels, siblingDesc, sib.RequireLabels, overlap, sib.Project.Provider, sib.Project.Owner, sib.Project.Name, overlap)
+				checkSiblingScope(r, file, name, sib, sc)
 			}
 		}
 	}
+}
+
+// siblingClaimScope is one claiming task's effective backlog selection, as
+// SIB001 compares it against a declared sibling.
+type siblingClaimScope struct {
+	workflow string
+	task     string
+	// labels is the task's effective requireLabels: its own override, else
+	// the gaggle default.
+	labels []string
+	// dropped lists gaggle-level requireLabels a task override omits.
+	dropped []string
+	// filter is the task's full runtime label selection (effective require
+	// set plus spec.backlog.labels, its excludeLabels and the conjoined
+	// labelPredicates), or nil when no claiming task backs this scope.
+	filter *labelpredicate.Predicate
+}
+
+// siblingClaimScopes resolves every backlog-query task in gaggle name to its
+// effective claim filter. With no such task it returns the bare gaggle-level
+// default, so a sibling misconfiguration surfaces before any workflow adopts
+// it.
+func (ix *index) siblingClaimScopes(name string, g apiv1.Gaggle) []siblingClaimScope {
+	var scopes []siblingClaimScope
+	for identity, indexed := range ix.workflows {
+		if identity.gaggle != name {
+			continue
+		}
+		for _, task := range indexed.definition.Spec.Tasks {
+			if !isBacklogQueryTask(task) {
+				continue
+			}
+			sc := siblingClaimScope{workflow: identity.name, task: task.Name, labels: g.Spec.RequireLabels}
+			// spec.backlog.labels always conjoin onto the task's selector
+			// (backlogdefaults.ApplyBacklogScope), whatever it overrides.
+			if v, overridden := task.Inputs["requireLabels"]; overridden {
+				sc.labels = splitLabelInput(v)
+				sc.dropped = missingLabels(g.Spec.RequireLabels, append(append([]string(nil), sc.labels...), g.Spec.Backlog.Labels...))
+			}
+			required := append(append([]string(nil), sc.labels...), g.Spec.Backlog.Labels...)
+			expression := backlogdefaults.LabelPredicateConjunction(g.Spec.Backlog.LabelPredicate, task.Inputs["labelPredicate"])
+			// An uncompilable predicate is already reported by
+			// checkLabelPredicates; a nil filter is simply not judged here.
+			sc.filter, _ = labelpredicate.Compile(expression, required, splitLabelInput(task.Inputs["excludeLabels"]))
+			scopes = append(scopes, sc)
+		}
+	}
+	if len(scopes) == 0 {
+		scopes = append(scopes, siblingClaimScope{labels: g.Spec.RequireLabels})
+	}
+	return scopes
+}
+
+// checkSiblingScope reports one claiming scope's SIB001 finding against one
+// same-repo sibling: an empty partition, a shared required label, or a
+// disjoint require set that still matches the sibling's items because
+// nothing excludes them.
+func checkSiblingScope(r *Report, file, name string, sib apiv1.GaggleSibling, sc siblingClaimScope) {
+	siblingDesc := sib.Label
+	if siblingDesc == "" {
+		siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+	}
+	where := "spec.requireLabels"
+	if sc.workflow != "" {
+		where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
+	}
+	if len(sc.labels) == 0 {
+		r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+			"%s is empty, so this gaggle has no label partition from declared sibling %q — both target %s/%s/%s, allowing either instance to claim the same item",
+			where, siblingDesc, sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+		return
+	}
+	overlap := intersectLabels(sc.labels, sib.RequireLabels)
+	if len(overlap) > 0 {
+		r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+			"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
+			where, sc.labels, siblingDesc, sib.RequireLabels, overlap, sib.Project.Provider, sib.Project.Owner, sib.Project.Name, overlap)
+		return
+	}
+	if sc.filter == nil || len(sib.RequireLabels) == 0 {
+		return
+	}
+	contested, ok := contestedItem(sc.filter, sib.RequireLabels)
+	if !ok {
+		return
+	}
+	r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+		"workflow %q task %q requireLabels %v is disjoint from declared sibling %q's requireLabels %v, but requireLabels is an AND filter, so an item carrying %v is claimable by both instances — disjoint is not partitioned: add excludeLabels: %q to this task, and have the sibling exclude %v",
+		sc.workflow, sc.task, sc.labels, siblingDesc, sib.RequireLabels, contested, strings.Join(sib.RequireLabels, ","), sc.labels)
+}
+
+// maxContestedExtraLabels caps the predicate-referenced labels
+// contestedItem combines (2^n candidate items).
+const maxContestedExtraLabels = 8
+
+// contestedItem searches for an item that satisfies the sibling's AND
+// filter (it carries every sibling label) and that filter also accepts. The
+// candidates are both sides' required labels plus every combination of the
+// other labels filter's labelPredicate references, so a predicate that also
+// requires, say, a readiness label is still judged on an item carrying it.
+func contestedItem(filter *labelpredicate.Predicate, siblingLabels []string) ([]string, bool) {
+	base := append(filter.RequiredLabels(), siblingLabels...)
+	inBase := make(map[string]bool, len(base))
+	for _, label := range base {
+		inBase[label] = true
+	}
+	var extra []string
+	for _, label := range filter.Labels() {
+		if !inBase[label] {
+			extra = append(extra, label)
+		}
+	}
+	if len(extra) > maxContestedExtraLabels {
+		extra = extra[:maxContestedExtraLabels]
+	}
+	for mask := 0; mask < 1<<len(extra); mask++ {
+		item := append([]string(nil), base...)
+		for i, label := range extra {
+			if mask&(1<<i) != 0 {
+				item = append(item, label)
+			}
+		}
+		if matched, err := filter.Matches(item); err == nil && matched {
+			return item, true
+		}
+	}
+	return nil, false
+}
+
+// missingLabels returns the labels in want that are absent from have, sorted.
+func missingLabels(want, have []string) []string {
+	present := make(map[string]bool, len(have))
+	for _, label := range have {
+		present[label] = true
+	}
+	var out []string
+	for _, label := range want {
+		if !present[label] {
+			out = append(out, label)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // sameRepo reports whether a and b identify the same target repository —
@@ -1996,6 +2140,38 @@ func (ix *index) checkGaggleProviderTopology(r *Report) {
 					"provider than the project is not supported between these providers, and backlog stages "+
 					"query the project provider",
 				backlog, project)
+		}
+	}
+}
+
+// checkGaggleGitHubBaseURL refuses (CFG013) a baseUrl on any github repository
+// or backlog reference. GitHub Enterprise Server is out of scope (#6347): clone
+// URLs and git-auth matchers always address github.com, so a baseUrl there
+// would be silently ignored. The schema rejects it too, but a JSON-Schema
+// `not` renders only as "not failed"; this names the field and the reason.
+func (ix *index) checkGaggleGitHubBaseURL(r *Report) {
+	for _, name := range sortedGaggleNames(ix.gaggles) {
+		spec := ix.gaggles[name].Spec
+		var fields []string
+		if spec.Project.Provider == apiv1.ProviderGitHub && spec.Project.BaseURL != "" {
+			fields = append(fields, "spec.project.baseUrl")
+		}
+		if spec.Backlog.Provider == apiv1.ProviderGitHub && spec.Backlog.BaseURL != "" {
+			fields = append(fields, "spec.backlog.baseUrl")
+		}
+		for i, repo := range spec.AdditionalRepos {
+			if repo.Provider == apiv1.ProviderGitHub && repo.BaseURL != "" {
+				fields = append(fields, fmt.Sprintf("spec.additionalRepos[%d].baseUrl", i))
+			}
+		}
+		for i, sib := range spec.Siblings {
+			if sib.Project.Provider == apiv1.ProviderGitHub && sib.Project.BaseURL != "" {
+				fields = append(fields, fmt.Sprintf("spec.siblings[%d].project.baseUrl", i))
+			}
+		}
+		for _, field := range fields {
+			r.add(errorGaggleGitHubBaseURL, Error, ix.gaggleFile[name], "Gaggle", name,
+				"%s: %s", field, apiv1.GitHubBaseURLUnsupported)
 		}
 	}
 }
@@ -2413,9 +2589,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// reading an upstream output the stage actually preceding it on some
 	// branch does not produce. Reported as errors: both are unconditionally
 	// broken at runtime, on some path, every time.
-	for _, msg := range wf.CheckStageContracts(def) {
-		r.add(errorStageContract, Error, file, "Workflow", w.Name, "%s", msg)
-	}
+	ix.addStageContractFindings(r, def, file, w)
 	// Path simulation (#913, Tier 2 of the assurance ladder #903). Walks the
 	// compiled machine over every combination of gate outcomes, tracking what
 	// the immediately preceding task actually emits on each concrete path —
@@ -2425,6 +2599,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckPathSimulation(def) {
 		r.add(errorPathSimulation, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+
 	// Required-input contracts (#1061). The input-side analog of the above:
 	// a deterministic stage that invokes a `goobers` subcommand without
 	// wiring an input that subcommand hard-requires. This is what a
@@ -2435,7 +2610,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	checkProviderInputsAndTimeouts(r, def, file, w)
+	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w)
 	// A stage's own subprocess can carry a longer wall-clock ceiling than the
 	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
 	// under a 25-minute stage timeout. Warning, not error: detection only
@@ -2453,13 +2628,17 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// internal/workflow's stage-contract test).
 }
 
-func checkProviderInputsAndTimeouts(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
 	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
 	// defensive refusals, but a retired input is visible in the workflow and
 	// must be rejected here before the stage can claim work and fail a run.
 	for _, msg := range wf.CheckProviderStageInputs(def) {
 		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	for _, msg := range wf.CheckProviderStageUnsetDefaults(def) {
+		r.addWarning(WarningProviderInputDefaulted, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
+	}
+	checkLifecycleLabelContracts(r, w, file)
 	// Bounded waits must finish before the executor can terminate their stage;
 	// command-specific clamps are modeled by the workflow check itself.
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
@@ -2467,10 +2646,299 @@ func checkProviderInputsAndTimeouts(r *Report, def wf.Definition, file string, w
 	}
 }
 
+func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string) {
+	for _, task := range w.Spec.Tasks {
+		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
+			continue
+		}
+		command := task.Run.Command[1]
+		switch command {
+		case "backlog-health":
+			checkLifecycleLabelInput(r, file, w, task, "readyLabel", task.Inputs["readyLabel"], lifecycle.LabelReady)
+			if builtInBacklogHealthConsumer(w, task) {
+				checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+			} else {
+				checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+			}
+		case "backlog-query":
+			checkBacklogQueryLifecycleLabelContracts(r, file, w, task)
+		default:
+			checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+		}
+	}
+}
+
+func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Workflow, task apiv1.Task) {
+	inputs := task.Inputs
+	args := task.Run.Command[2:]
+	claim := commandHasArg(args, "--claim")
+	readOnly := commandHasArg(args, "--read-only")
+	resweep := commandHasArg(args, "--resweep")
+	curation := strings.EqualFold(strings.TrimSpace(inputs["curation"]), "true")
+	builtInReady := builtInReadyConsumer(w, task)
+	builtInRemediation := builtInRemediationConsumer(w, task)
+
+	if !resweep && !curation && !builtInReady && !builtInRemediation {
+		checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+	}
+	checkLifecycleLabelListNearMisses(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelReady, lifecycle.LabelNeedsRemediation)
+	checkLifecycleLabelListNearMisses(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady, lifecycle.LabelNeedsHuman, lifecycle.LabelNeedsRemediation, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
+	checkLifecycleLabelListNearMisses(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelNeedsRemediation, lifecycle.LabelBlockedOnSibling)
+
+	if resweep {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelInput(r, file, w, task, "resweepReadyLabel", inputs["resweepReadyLabel"], lifecycle.LabelReady)
+		checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady)
+		checkLifecycleLabelListContains(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelNeedsRemediation)
+		return
+	}
+	if curation {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady)
+		checkLifecycleLabelListContains(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelNeedsRemediation)
+		return
+	}
+	if builtInReady {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelListContains(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelReady)
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+	if builtInRemediation {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelListContains(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelNeedsRemediation)
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+	requireLabels := splitLifecycleLabelList(inputs["requireLabels"])
+	if containsLifecycleLabel(requireLabels, lifecycle.LabelReady) {
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+	if containsLifecycleLabel(requireLabels, lifecycle.LabelNeedsRemediation) && (claim || readOnly) {
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+}
+
+func builtInBacklogHealthConsumer(w apiv1.Workflow, task apiv1.Task) bool {
+	switch w.Name {
+	case "backlog-curation":
+		return task.Name == "implementation-feedback" || task.Name == "sample-ready-pool"
+	default:
+		return false
+	}
+}
+
+func builtInReadyConsumer(w apiv1.Workflow, task apiv1.Task) bool {
+	if task.Name != "query-backlog" {
+		return false
+	}
+	switch w.Name {
+	case "implementation", "implementation-pre-review-experiment", "backlog-assignment", "quickstart":
+		return true
+	default:
+		return false
+	}
+}
+
+func builtInRemediationConsumer(w apiv1.Workflow, task apiv1.Task) bool {
+	switch w.Name {
+	case "implementation-recovery":
+		return task.Name == "query-backlog"
+	case "parked-item-report":
+		return task.Name == "report-candidates"
+	default:
+		return false
+	}
+}
+
+func checkRequiredLifecycleLabelInput(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
+	if strings.TrimSpace(configured) == expected {
+		return
+	}
+	addLifecycleLabelContractIssue(r, file, w, task, input, configured, expected)
+}
+
+func checkLifecycleLabelInput(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
+	if strings.TrimSpace(configured) == "" || strings.TrimSpace(configured) == expected {
+		return
+	}
+	addLifecycleLabelContractIssue(r, file, w, task, input, configured, expected)
+}
+
+func checkLifecycleLabelListContains(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured string, expected ...string) {
+	labels := splitLifecycleLabelList(configured)
+	for _, label := range expected {
+		if containsLifecycleLabel(labels, label) {
+			continue
+		}
+		addLifecycleLabelContractIssue(r, file, w, task, input, configured, label)
+	}
+}
+
+func checkLifecycleLabelNearMisses(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured string, expected ...string) {
+	value := strings.TrimSpace(configured)
+	if value == "" {
+		return
+	}
+	for _, label := range expected {
+		if lifecycleLabelNearMiss(value, label) {
+			addLifecycleLabelContractIssue(r, file, w, task, input, value, label)
+			return
+		}
+	}
+}
+
+func checkLifecycleLabelListNearMisses(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured string, expected ...string) {
+	for _, value := range splitLifecycleLabelList(configured) {
+		for _, label := range expected {
+			if lifecycleLabelNearMiss(value, label) {
+				addLifecycleLabelContractIssue(r, file, w, task, input, value, label)
+				return
+			}
+		}
+	}
+}
+
+func lifecycleLabelNearMiss(value, expected string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == expected {
+		return false
+	}
+	return lifecycleLabelEditDistanceAtMost(value, expected, 1)
+}
+
+func lifecycleLabelEditDistanceAtMost(value, expected string, maxDistance int) bool {
+	if value == expected {
+		return true
+	}
+	if len(value)-len(expected) > maxDistance || len(expected)-len(value) > maxDistance {
+		return false
+	}
+	edits := 0
+	i, j := 0, 0
+	for i < len(value) && j < len(expected) {
+		if value[i] == expected[j] {
+			i++
+			j++
+			continue
+		}
+		edits++
+		if edits > maxDistance {
+			return false
+		}
+		switch {
+		case len(value) > len(expected):
+			i++
+		case len(value) < len(expected):
+			j++
+		default:
+			i++
+			j++
+		}
+	}
+	edits += len(value) - i
+	edits += len(expected) - j
+	return edits <= maxDistance
+}
+
+func splitLifecycleLabelList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	labels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		label := strings.TrimSpace(part)
+		if label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+func containsLifecycleLabel(labels []string, expected string) bool {
+	for _, label := range labels {
+		if label == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func commandHasArg(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func addLifecycleLabelContractIssue(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
+	r.add(
+		errorLifecycleLabelContract,
+		Error,
+		file,
+		"Workflow",
+		w.Name,
+		"workflow %q task %q input %q configured lifecycle label %q; expected %q",
+		w.Name,
+		task.Name,
+		input,
+		configured,
+		expected,
+	)
+}
+
 func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
 	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def, ix.gooberSpecs()) {
 		r.addWarning(WarningImplicitWritableWorkspace, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
+}
+
+func (ix *index) addStageContractFindings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	artifactDiagnostics := artifactDiagnosticsByMessage(def)
+	indexed := ix.indexedWorkflow(w)
+	for _, msg := range wf.CheckStageContracts(def) {
+		if diagnostic, ok := artifactDiagnostics[msg]; ok {
+			line, col := compilerDiagnosticPosition(indexed, diagnostic)
+			if line > 0 {
+				r.addLocated(errorStageContract, Error, file, line, col, "Workflow", w.Name, "%s", msg)
+				continue
+			}
+		}
+		r.add(errorStageContract, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+}
+
+func (ix *index) indexedWorkflow(w apiv1.Workflow) indexedWorkflow {
+	if ix == nil {
+		return indexedWorkflow{definition: w}
+	}
+	indexed, ok := ix.workflows[workflowIdentity{gaggle: w.Spec.Gaggle, name: w.Name}]
+	if !ok {
+		return indexedWorkflow{definition: w}
+	}
+	return indexed
+}
+
+func artifactDiagnosticsByMessage(def wf.Definition) map[string]wf.CompileDiagnostic {
+	diagnostics := wf.ArtifactContractDiagnostics(def)
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	byMessage := make(map[string]wf.CompileDiagnostic, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		byMessage[diagnostic.Message] = diagnostic
+	}
+	return byMessage
 }
 
 // checkWorkflowsCompile closes the admission gap between canonical config
@@ -2523,6 +2991,10 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec, Annotations: w.Annotations}
 		machine, err := wf.Compile(def, opts...)
 		if err != nil {
+			var compileErr *wf.CompileError
+			if errors.As(err, &compileErr) && ix.addWorkflowCompileDiagnostics(r, indexed, compileErr) {
+				continue
+			}
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
 			continue
 		}
@@ -2542,6 +3014,91 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 			})
 		}
 	}
+}
+
+func (ix *index) addWorkflowCompileDiagnostics(r *Report, indexed indexedWorkflow, err *wf.CompileError) bool {
+	if err == nil || len(err.Diagnostics) == 0 {
+		return false
+	}
+	w := indexed.definition
+	for _, diagnostic := range err.Diagnostics {
+		line, col := compilerDiagnosticPosition(indexed, diagnostic)
+		if line > 0 {
+			r.addLocated(errorWorkflowCompile, Error, indexed.file, line, col, "Workflow", w.Name, "%s", diagnostic.Message)
+			continue
+		}
+		r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%s", diagnostic.Message)
+	}
+	return true
+}
+
+func compilerDiagnosticPosition(indexed indexedWorkflow, diagnostic wf.CompileDiagnostic) (int, int) {
+	switch {
+	case diagnostic.TaskName != "" && diagnostic.ArtifactInput != "":
+		return artifactInputPosition(indexed, diagnostic.TaskName, diagnostic.ArtifactInput)
+	case diagnostic.SlotTaskName != "" && diagnostic.SlotName != "":
+		return artifactSlotPosition(indexed, diagnostic.SlotTaskName, diagnostic.SlotName)
+	default:
+		return 0, 0
+	}
+}
+
+func artifactInputPosition(indexed indexedWorkflow, taskName, localName string) (int, int) {
+	taskNode := workflowTaskNode(indexed, taskName)
+	if taskNode == nil {
+		return 0, 0
+	}
+	inputs := yamlNodeAt(taskNode, []string{"artifactInputs"})
+	if inputs == nil {
+		return nodePosition(indexed, taskNode)
+	}
+	if key := yamlMappingKey(inputs, localName); key != nil {
+		return key.Line + indexed.lineOffset, key.Column
+	}
+	return nodePosition(indexed, inputs)
+}
+
+func artifactSlotPosition(indexed indexedWorkflow, taskName, slotName string) (int, int) {
+	taskNode := workflowTaskNode(indexed, taskName)
+	if taskNode == nil {
+		return 0, 0
+	}
+	slots := yamlNodeAt(taskNode, []string{"artifactSlots"})
+	if slots == nil || slots.Kind != yamlv3.SequenceNode {
+		return nodePosition(indexed, taskNode)
+	}
+	var found *yamlv3.Node
+	for _, slot := range slots.Content {
+		name := yamlChild(slot, "name")
+		if name != nil && name.Value == slotName {
+			found = name
+		}
+	}
+	if found != nil {
+		return found.Line + indexed.lineOffset, found.Column
+	}
+	return nodePosition(indexed, slots)
+}
+
+func workflowTaskNode(indexed indexedWorkflow, taskName string) *yamlv3.Node {
+	tasks := yamlNodeAt(indexed.node, []string{"spec", "tasks"})
+	if tasks == nil || tasks.Kind != yamlv3.SequenceNode {
+		return nil
+	}
+	for _, task := range tasks.Content {
+		name := yamlChild(task, "name")
+		if name != nil && name.Value == taskName {
+			return task
+		}
+	}
+	return nil
+}
+
+func nodePosition(indexed indexedWorkflow, node *yamlv3.Node) (int, int) {
+	if node == nil {
+		return 0, 0
+	}
+	return node.Line + indexed.lineOffset, node.Column
 }
 
 func safetyPosition(indexed indexedWorkflow, stage string) (int, int) {

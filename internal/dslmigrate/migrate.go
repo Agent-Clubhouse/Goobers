@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -33,21 +35,24 @@ var ErrAlreadyAtTarget = errors.New("dslmigrate: workflow is already at the targ
 // (dsl-3.0.md §6 rules 3 and 5), rather than emitting a document that fails to
 // validate under 3.0.
 type Edge struct {
-	From  string
-	To    string
-	Apply func(source []byte, root *yaml.Node) (changed bool, notes []string, err error)
+	From        string
+	To          string
+	Apply       func(source []byte, root *yaml.Node) (changed bool, notes []string, err error)
+	ApplySource func(source []byte, root *yaml.Node, versionNode *yaml.Node, to string) (after []byte, notes []string, err error)
 }
 
 // edges is the registry of one-step migrations this binary knows how to
-// perform: the DVL-5 1.4→2.0 edge and the Goobernetes 2.0→3.0 edge
-// (dsl-3.0.md §6). 1.4 is dropped as a loadable version (D13), but the edge
+// perform: the DVL-5 1.4→2.0 edge, the Goobernetes 2.0→3.0 edge
+// (dsl-3.0.md §6), and the opt-in artifact-contract 3.0→3.1 edge.
+// 1.4 is dropped as a loadable version (D13), but the edge
 // survives as the recovery path DVL030 names — `goobers fix --to 2.0` on a
 // 1.4 document, then `--to 3.0` — so a stranded 1.4 config can still be
 // mechanically carried forward one step at a time. A future version bump
 // registers its own Edge here rather than extending an existing one.
 var edges = []Edge{
-	{From: supportmatrix.V1DSLVersion, To: supportmatrix.V2DSLVersion, Apply: applyV14ToV20},
+	{From: supportmatrix.V1DSLVersion, To: supportmatrix.V2DSLVersion, Apply: applyV14ToV20, ApplySource: applyV14ToV20SourcePreserving},
 	{From: supportmatrix.V2DSLVersion, To: supportmatrix.V3DSLVersion, Apply: applyV20ToV30},
+	{From: supportmatrix.V3DSLVersion, To: supportmatrix.V31DSLVersion, Apply: applyV30ToV31},
 }
 
 // FindEdge returns the registered migration from from to to, if any.
@@ -113,6 +118,14 @@ func Migrate(source []byte, to string) (*Result, error) {
 	}
 
 	before := string(source)
+	if edge.ApplySource != nil {
+		afterBytes, notes, err := edge.ApplySource(source, root, versionNode, to)
+		if err != nil {
+			return nil, fmt.Errorf("dslmigrate: migrate dslVersion %q→%q: %w", from, to, err)
+		}
+		after := string(afterBytes)
+		return &Result{Before: before, After: after, Changed: before != after, Notes: notes}, nil
+	}
 	transformed, notes, err := edge.Apply(source, root)
 	if err != nil {
 		return nil, fmt.Errorf("dslmigrate: migrate dslVersion %q→%q: %w", from, to, err)
@@ -168,28 +181,36 @@ func validateMigrationNodes(node *yaml.Node) error {
 }
 
 func pinVersion(source []byte, versionNode, root *yaml.Node, to string) ([]byte, error) {
+	edit, err := versionPinEdit(source, versionNode, root, to)
+	if err != nil {
+		return nil, err
+	}
+	return applySourceEdits(source, []sourceEdit{edit}), nil
+}
+
+func versionPinEdit(source []byte, versionNode, root *yaml.Node, to string) (sourceEdit, error) {
 	if versionNode == nil {
-		return insertVersionPin(source, root, to)
+		return insertVersionPinEdit(source, root, to)
 	}
 	if versionNode.Kind != yaml.ScalarNode || versionNode.Line < 1 || versionNode.Column < 1 {
-		return nil, errors.New("dslVersion must be a scalar")
+		return sourceEdit{}, errors.New("dslVersion must be a scalar")
 	}
 	if versionNode.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
-		return nil, errors.New("block-style dslVersion is not supported for source-preserving migration")
+		return sourceEdit{}, errors.New("block-style dslVersion is not supported for source-preserving migration")
 	}
 	if versionNode.Style&yaml.TaggedStyle != 0 {
-		return nil, errors.New("tagged dslVersion is not supported for source-preserving migration")
+		return sourceEdit{}, errors.New("tagged dslVersion is not supported for source-preserving migration")
 	}
 	if versionNode.Anchor != "" {
-		return nil, errors.New("anchored dslVersion is not supported for source-preserving migration")
+		return sourceEdit{}, errors.New("anchored dslVersion is not supported for source-preserving migration")
 	}
 	start, err := sourceOffset(source, versionNode.Line, versionNode.Column)
 	if err != nil {
-		return nil, err
+		return sourceEdit{}, err
 	}
 	end, err := scalarEnd(source, start, versionNode.Style)
 	if err != nil {
-		return nil, err
+		return sourceEdit{}, err
 	}
 	replacement := to
 	switch {
@@ -198,14 +219,10 @@ func pinVersion(source []byte, versionNode, root *yaml.Node, to string) ([]byte,
 	case versionNode.Style&yaml.SingleQuotedStyle != 0:
 		replacement = "'" + to + "'"
 	}
-	out := make([]byte, 0, len(source)-end+start+len(replacement))
-	out = append(out, source[:start]...)
-	out = append(out, replacement...)
-	out = append(out, source[end:]...)
-	return out, nil
+	return sourceEdit{start: start, end: end, replacement: []byte(replacement)}, nil
 }
 
-func insertVersionPin(source []byte, root *yaml.Node, to string) ([]byte, error) {
+func insertVersionPinEdit(source []byte, root *yaml.Node, to string) (sourceEdit, error) {
 	var anchor *yaml.Node
 	for _, name := range []string{"kind", "apiVersion"} {
 		if value, _ := mapValue(root, name); value != nil {
@@ -214,17 +231,14 @@ func insertVersionPin(source []byte, root *yaml.Node, to string) ([]byte, error)
 		}
 	}
 	if anchor == nil || anchor.Line < 1 {
-		return nil, errors.New("workflow without dslVersion must declare kind or apiVersion")
+		return sourceEdit{}, errors.New("workflow without dslVersion must declare kind or apiVersion")
 	}
 	lineStart, err := sourceOffset(source, anchor.Line, 1)
 	if err != nil {
-		return nil, err
+		return sourceEdit{}, err
 	}
 	lineEnd := bytes.IndexByte(source[lineStart:], '\n')
-	eol := []byte("\n")
-	if bytes.Contains(source, []byte("\r\n")) {
-		eol = []byte("\r\n")
-	}
+	eol := sourceEOL(source)
 	var offset int
 	var insertion []byte
 	if lineEnd < 0 {
@@ -234,11 +248,35 @@ func insertVersionPin(source []byte, root *yaml.Node, to string) ([]byte, error)
 		offset = lineStart + lineEnd + 1
 		insertion = append([]byte(`dslVersion: `+strconv.Quote(to)), eol...)
 	}
-	out := make([]byte, 0, len(source)+len(insertion))
-	out = append(out, source[:offset]...)
-	out = append(out, insertion...)
-	out = append(out, source[offset:]...)
-	return out, nil
+	return sourceEdit{start: offset, end: offset, replacement: insertion}, nil
+}
+
+type sourceEdit struct {
+	start       int
+	end         int
+	replacement []byte
+}
+
+func applySourceEdits(source []byte, edits []sourceEdit) []byte {
+	slices.SortFunc(edits, func(a, b sourceEdit) int {
+		return b.start - a.start
+	})
+	out := append([]byte(nil), source...)
+	for _, edit := range edits {
+		next := make([]byte, 0, len(out)-(edit.end-edit.start)+len(edit.replacement))
+		next = append(next, out[:edit.start]...)
+		next = append(next, edit.replacement...)
+		next = append(next, out[edit.end:]...)
+		out = next
+	}
+	return out
+}
+
+func sourceEOL(source []byte) []byte {
+	if bytes.Contains(source, []byte("\r\n")) {
+		return []byte("\r\n")
+	}
+	return []byte("\n")
 }
 
 func sourceOffset(source []byte, line, column int) (int, error) {
@@ -250,8 +288,17 @@ func sourceOffset(source []byte, line, column int) (int, error) {
 		}
 		offset += next + 1
 	}
-	offset += column - 1
-	if offset < 0 || offset >= len(source) {
+	// yaml.Node columns count Unicode code points, while source edits use
+	// byte offsets. A multibyte scalar earlier on a flow-mapping line must
+	// not move the version edit into the preceding key or value.
+	for current := 1; current < column; current++ {
+		if offset >= len(source) || source[offset] == '\n' {
+			return 0, fmt.Errorf("source has no column %d on line %d", column, line)
+		}
+		_, width := utf8.DecodeRune(source[offset:])
+		offset += width
+	}
+	if line < 1 || column < 1 || offset >= len(source) || source[offset] == '\n' {
 		return 0, fmt.Errorf("source has no column %d on line %d", column, line)
 	}
 	return offset, nil

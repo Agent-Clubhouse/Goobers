@@ -33,7 +33,11 @@ type Sanitize func(mediaType string, data []byte) ([]byte, error)
 
 // Prepared is a fully validated, sanitized set. Private fields prevent callers
 // from accidentally publishing an agent-authored pointer or unvalidated entry.
-type Prepared struct{ entries []preparedEntry }
+type Prepared struct {
+	entries     []preparedEntry
+	publication *apiv1.ArtifactPublication
+	attempt     int32
+}
 
 type preparedEntry struct {
 	name      string
@@ -77,6 +81,9 @@ func Prepare(ctx context.Context, workspace, manifestPath string, sanitize Sanit
 			return nil, err
 		}
 		rawTotal += int64(len(data))
+		if err := checkJSONHandoff(entry.Name, entry.MediaType, data); err != nil {
+			return nil, err
+		}
 		clean, err := sanitize(entry.MediaType, data)
 		if err != nil {
 			return nil, fmt.Errorf("%w: payload rejected by sanitization policy", ErrInvalid)

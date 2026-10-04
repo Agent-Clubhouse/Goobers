@@ -86,6 +86,27 @@ func NormalizeSignature(text string) string {
 	return boundSignature(strings.Join(signature, " | "))
 }
 
+// RosterLines returns EVERY non-boilerplate line of text, in order and NOT
+// de-duplicated, with run-specific values normalized but each source location
+// kept as basename:line. A caller comparing whole failure rosters
+// (internal/baseline, #4477) needs what NormalizeSignature discards: its
+// three-line cap, and the leading location plus de-duplication that make the
+// same lint message in two different files read as one line. Two outputs that
+// differ in any of those are different failures.
+func RosterLines(text string) []string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if failureBoilerplate(line) {
+			continue
+		}
+		if line = NormalizeVolatile(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // Fingerprint returns the ledger identity for a package, test, and normalized
 // failure signature.
 func Fingerprint(pkg, test, signature string) string {
@@ -171,8 +192,16 @@ func failureBoilerplate(line string) bool {
 }
 
 func normalizeLine(line string) string {
+	return NormalizeVolatile(leadingSourceLocation.ReplaceAllString(strings.TrimSpace(line), ""))
+}
+
+// NormalizeVolatile reduces every source path to its basename:line and
+// replaces run-specific values (addresses, durations, temp suffixes, ...),
+// keeping everything else — including a leading source location, which
+// NormalizeSignature strips first. It is the per-line normalization for a
+// caller comparing located failure rosters across checkouts (#4477).
+func NormalizeVolatile(line string) string {
 	line = strings.TrimSpace(line)
-	line = leadingSourceLocation.ReplaceAllString(line, "")
 	line = sourceLocation.ReplaceAllString(line, "$1:$2")
 	line = volatileTestFlagValue.ReplaceAllString(line, "${1}${2}<value>")
 	line = volatileTimestamp.ReplaceAllString(line, "<time>")

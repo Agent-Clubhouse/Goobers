@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // workerConfigReloadInterval is the default cadence `goobers worker` re-reads
@@ -142,6 +143,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 	if err != nil {
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
 	}
+	cfg.StartSelfExecutionAccounting()
 	snapshot := &workerConfigSnapshot{
 		configDir:     l.ConfigDir(),
 		digest:        digest,
@@ -262,7 +264,7 @@ func (w *workerSeams) gaggleFingerprint(snapshot *workerConfigSnapshot, gaggle s
 	if err != nil {
 		return "", err
 	}
-	return gaggleConfigFingerprint(snapshot.cfg, snapshot.set, gaggle, goobers, instructions)
+	return gaggleConfigFingerprint(snapshot.cfg, snapshot.set, gaggle, goobers, instructions, snapshot.skillPackages[gaggle])
 }
 
 // gaggleFingerprintInput is the exact input set buildGaggleSeams reads for one
@@ -278,13 +280,14 @@ func (w *workerSeams) gaggleFingerprint(snapshot *workerConfigSnapshot, gaggle s
 // a shared input costs a needless rebuild; under-including one reintroduces
 // exactly the silent staleness this reloader exists to remove.
 type gaggleFingerprintInput struct {
-	Config           *instance.Config            `json:"config"`
-	Manifest         *apiv1.Manifest             `json:"manifest"`
-	Gaggle           *apiv1.Gaggle               `json:"gaggle"`
-	Goobers          map[string]apiv1.GooberSpec `json:"goobers"`
-	Instructions     map[string]string           `json:"instructions"`
-	Workflows        []apiv1.Workflow            `json:"workflows"`
-	BranchNamespaces map[string]string           `json:"branchNamespaces"`
+	Config           *instance.Config                `json:"config"`
+	Manifest         *apiv1.Manifest                 `json:"manifest"`
+	Gaggle           *apiv1.Gaggle                   `json:"gaggle"`
+	Goobers          map[string]apiv1.GooberSpec     `json:"goobers"`
+	SkillPackages    map[string][]workflow.SkillFile `json:"skillPackages"`
+	Instructions     map[string]string               `json:"instructions"`
+	Workflows        []apiv1.Workflow                `json:"workflows"`
+	BranchNamespaces map[string]string               `json:"branchNamespaces"`
 }
 
 func gaggleConfigFingerprint(
@@ -293,12 +296,14 @@ func gaggleConfigFingerprint(
 	gaggle string,
 	goobers map[string]apiv1.GooberSpec,
 	instructions map[string]string,
+	skillPackages map[string][]workflow.SkillFile,
 ) (string, error) {
 	input := gaggleFingerprintInput{
 		Config:           cfg,
 		Manifest:         set.Manifest,
 		Goobers:          goobers,
 		Instructions:     instructions,
+		SkillPackages:    skillPackages,
 		BranchNamespaces: branchNamespacesByGaggle(set),
 	}
 	for i := range set.Gaggles {

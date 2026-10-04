@@ -28,6 +28,8 @@ type providerDispatchEvidence struct {
 // CONF-8 (#2497) and CONF-9 (#2498) landed before this gate, so their fixed
 // commands are coverage entries rather than stale allowlist entries.
 var providerDispatchCoverage = map[string]providerDispatchEvidence{
+	"advisory-pr-publish":      {test: TestAdvisoryPRPublishRefusesNonGitHubProviders},
+	"advisory-pr-select":       {test: TestAdvisoryPRSelectRefusesNonGitHubProviders},
 	"apply-verdict":            {test: TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass},
 	"backlog-assignment":       {test: TestBacklogAssignmentDispatchesFromCommand},
 	"backlog-dedupe":           {test: TestBacklogDedupeCommandDispatchesToADO},
@@ -67,6 +69,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 }
 
 var providerDispatchAllowlist = map[string]string{
+	"config-checkout":      "Clones the GitHub workflowSource repository over Git transport with the configrepo:write credential; config-repo targets are GitHub-only today (non-github.com workflowSource URLs are refused), covered by TestConfigCheckoutClonesBaseAndCreatesRunBranch.",
 	"recovery-restore":     "Uses configured Git transport and verified archives, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/record and /http-issue exercise the command against a Gitea identity with an exact local Git URL redirect.",
 	"recovery-resume":      "Uses claims-plane identity and configured Git transport, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/resume-issue exercises actual adoption for a Gitea repository.",
 	"preflight-repo-write": "Repository-write preflight (#4414) is a GitHub-only capability today (branch ruleset introspection has no ADO/Gitea equivalent); Dispatcher fails closed with ErrUnsupported for other providers.",
@@ -449,14 +452,11 @@ func setNonGitHubStageEnv(t *testing.T, kind providers.ProviderKind) {
 // the wrong one is caught by name.
 
 // everyCredentialedCapability is every capability the daemon can deliver as
-// GOOBERS_CRED_<capability> (credentialedCapabilities), so the probe can tell
-// any of them apart.
+// GOOBERS_CRED_<capability> from a repository credential
+// (repoCredentialedCapabilityNames, which on ADO includes
+// ado:work-items:write), so the probe can tell any of them apart.
 func everyCredentialedCapability() []string {
-	names := make([]string, 0, len(credentialedCapabilities))
-	for _, c := range credentialedCapabilities {
-		names = append(names, string(c))
-	}
-	return names
+	return repoCredentialedCapabilityNames()
 }
 
 // deliverEveryADOStageCapability delivers a distinct value for every
@@ -592,6 +592,7 @@ var (
 var adoStageCredentialCases = []adoStageCredentialCase{
 	{command: "backlog-health", inputs: map[string]string{"trustLabel": providers.LabelApproved}, want: []string{credIssuesRead}},
 	{command: "check-issue-staleness", inputs: map[string]string{"pullNumber": "77", "head": "goobers/implementation/run"}, want: []string{credPRWrite, credIssuesWrite}},
+	{command: "gather-issue-context", seed: seedADOGatherIssueContextRun, want: []string{credPRWrite, credIssuesRead}},
 	{command: "gather-pr-context", want: []string{credPRWrite}},
 	{command: "gather-review-threads", seed: seedADOGatherReviewThreadsRun, want: []string{credPRWrite}},
 	{command: "gather-sibling-context", inputs: map[string]string{"selectedNumber": "77"}, want: []string{credPRWrite}},
@@ -599,6 +600,7 @@ var adoStageCredentialCases = []adoStageCredentialCase{
 	{command: "merge-queue-poll", inputs: map[string]string{"pullNumber": "77"}, want: []string{string(capability.ADOPRComplete)}},
 	{command: "open-pr", want: []string{string(capability.ProviderPRWrite)}},
 	{command: "post-merge", inputs: map[string]string{"pullNumber": "77"}, want: []string{credPRWrite, credIssuesWrite}},
+	{command: "pr-comment-watch", want: []string{credPRWrite}},
 	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credPRWrite}},
 	{command: "push-remediated", want: []string{credPRWrite}},
 	{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{credPRWrite}},
@@ -628,6 +630,7 @@ var adoCredentialEvidence = map[string]func(*testing.T){
 	"pr-claim":                 TestPRClaimDispatchesFromCommand,
 	"publish-batch":            TestPublishBatchDispatchesFromCommand,
 	"report-pr-status":         TestReportPRStatusDispatchesFromCommand,
+	"respond-to-findings":      TestRespondToFindingsOnADOPostsOneThread,
 	"select-source":            TestSelectSourceDispatchesFromCommand,
 	"set-milestone":            TestSetMilestoneDispatchesFromCommand,
 	"validate-plan":            TestValidatePlanDispatchesFromCommand,
@@ -637,10 +640,9 @@ var adoCredentialEvidence = map[string]func(*testing.T){
 // capability but which build no Azure DevOps provider, so no ADO credential
 // is consumed at all.
 var adoCredentialExempt = map[string]string{
+	"advisory-pr-publish":   "Refuses non-GitHub repositories before building a provider (TestAdvisoryPRPublishRefusesNonGitHubProviders).",
+	"advisory-pr-select":    "Refuses non-GitHub repositories before building a provider (TestAdvisoryPRSelectRefusesNonGitHubProviders).",
 	"file-issues":           "Refuses every non-GitHub provider before building one (TestFileIssuesRefusesNonGitHubProviders).",
-	"gather-issue-context":  "Uses the broad remediation provider factory, whose Azure DevOps arm is an error, so no ADO provider is built.",
-	"pr-comment-watch":      "Refuses the ado repository provider before building one.",
-	"respond-to-findings":   "Uses the broad remediation provider factory, whose Azure DevOps arm is an error, so no ADO provider is built.",
 	"security-alerts-query": "Refuses every non-GitHub provider before building one (TestSecurityAlertsQueryRefusesNonGitHubProviders).",
 	"telemetry-query":       "Its only provider access is the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
 	"update-behind-pr":      "Reports not-applicable on Azure DevOps and routes to full remediation without building a provider (ADO-N15).",
@@ -757,6 +759,13 @@ func TestADOStageProvidersConsumeTheDeclaredCapability(t *testing.T) {
 func seedADOGatherReviewThreadsRun(t *testing.T, root, runID string) {
 	t.Helper()
 	seedReviewThreadsBrief(t, root, runID, reviewThreadsBrief())
+}
+
+// seedADOGatherIssueContextRun seeds the remediation brief
+// gather-issue-context reads before it builds its providers.
+func seedADOGatherIssueContextRun(t *testing.T, root, runID string) {
+	t.Helper()
+	seedRemediationBriefRun(t, root, runID, issueContextBrief())
 }
 
 // seedADOResolveReviewThreadsRun seeds a published resolve-review-threads run

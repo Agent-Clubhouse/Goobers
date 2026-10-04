@@ -467,8 +467,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			node.gateOpen[event.Branch] = false
 			node.Arm = event.Verdict
-			row.OutcomeVerdict = event.Verdict
-			row.OutcomeTarget = event.Target
+			row.observeGateOutcome(event, stages)
 			if event.Gate == "review" {
 				row.Operator.ReviewVerdict = event.Verdict
 				row.Operator.ReviewRationale = ""

@@ -11,12 +11,21 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 var (
 	errParallelFailFast = errors.New("parallel fail-fast cancellation")
 	errParallelTerminal = errors.New("parallel branch selected a run terminal")
 )
+
+func reposEqual(a, b *apiv1.RepoRef) bool {
+	return a.Provider == b.Provider &&
+		a.BaseURL == b.BaseURL &&
+		a.Owner == b.Owner &&
+		a.Project == b.Project &&
+		a.Name == b.Name
+}
 
 type branchJournal struct {
 	run             *journal.Run
@@ -90,6 +99,16 @@ func (j *branchJournal) RecordSpanWithSchema(stage, name, dataSchema string, dat
 func (j *branchJournal) ObserveActivity()            { j.run.ObserveActivity() }
 func (j *branchJournal) RepairAppendBoundary() error { return j.run.RepairAppendBoundary() }
 func (j *branchJournal) Dir() string                 { return j.run.Dir() }
+func (j *branchJournal) Seq() uint64                 { return j.run.Seq() }
+func (j *branchJournal) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
+	return j.run.AcceptOperatorMessage(request)
+}
+func (j *branchJournal) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error) {
+	return j.run.AcknowledgeOperatorMessage(ack)
+}
+func (j *branchJournal) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error) {
+	return j.run.CompleteOperatorMessage(outcome)
+}
 func (j *branchJournal) SetMachineState(state string) {
 	j.setMachineState(state)
 }
@@ -125,21 +144,23 @@ func appendInterruptedAttemptClosure(branchJournal *branchJournal, history []jou
 }
 
 type parallelBranchResult struct {
-	index          int
-	status         journal.BranchStatus
-	lastStage      string
-	lastResult     apiv1.ResultEnvelope
-	pointers       []apiv1.ContextPointer
-	completed      stageOutputs
-	artifacts      int
-	produced       bool
-	failed         bool
-	noOutput       bool
-	terminalTarget string
-	terminalTask   *parallelTaskTerminal
-	terminalGate   *parallelGateTerminal
-	paused         bool
-	err            error
+	index             int
+	status            journal.BranchStatus
+	lastStage         string
+	lastResult        apiv1.ResultEnvelope
+	pointers          []apiv1.ContextPointer
+	completed         stageOutputs
+	artifacts         int
+	produced          bool
+	failed            bool
+	noOutput          bool
+	workspaceRevision *apiv1.WorkspaceRevision
+	repoRef           *apiv1.RepoRef
+	terminalTarget    string
+	terminalTask      *parallelTaskTerminal
+	terminalGate      *parallelGateTerminal
+	paused            bool
+	err               error
 }
 
 type parallelTaskTerminal struct {
@@ -154,16 +175,18 @@ type parallelGateTerminal struct {
 }
 
 type concurrentParallelResult struct {
-	target       string
-	runJoin      bool
-	lastStage    string
-	lastResult   apiv1.ResultEnvelope
-	pointers     []apiv1.ContextPointer
-	completed    stageOutputs
-	parallel     *parallelExec
-	terminalTask *parallelTaskTerminal
-	terminalGate *parallelGateTerminal
-	paused       bool
+	target            string
+	runJoin           bool
+	lastStage         string
+	lastResult        apiv1.ResultEnvelope
+	pointers          []apiv1.ContextPointer
+	completed         stageOutputs
+	parallel          *parallelExec
+	terminalTask      *parallelTaskTerminal
+	terminalGate      *parallelGateTerminal
+	workspaceRevision *apiv1.WorkspaceRevision
+	repoRef           *apiv1.RepoRef
+	paused            bool
 }
 
 func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Parallel) error {
@@ -273,22 +296,11 @@ func (r *Runner) runConcurrentParallel(
 		branch := par.branchSnapshot(i)
 		history := branchEvents.events(branch.id)
 		if branch.settled {
-			lastStage, lastResult, _ := lastFinishedSubject(history)
-			terminalTarget, terminalTask, terminalGate := parallelBranchTerminal(history, in.Machine)
-			outcomes[i] = &parallelBranchResult{
-				index:          i,
-				status:         branch.status,
-				lastStage:      lastStage,
-				lastResult:     lastResult,
-				pointers:       branch.pointers,
-				completed:      branchStageOutputs(baseCompleted, history, in.Machine),
-				artifacts:      branch.artifacts,
-				produced:       branch.produced,
-				failed:         branch.failed,
-				noOutput:       branch.noOutput,
-				terminalTarget: terminalTarget,
-				terminalTask:   terminalTask,
-				terminalGate:   terminalGate,
+			var err error
+			var terminalTarget string
+			outcomes[i], terminalTarget, _, _, err = r.settledParallelBranchResult(ctx, branch, history, baseCompleted, in, i)
+			if err != nil {
+				return concurrentParallelResult{}, err
 			}
 			terminalTriggered = terminalTriggered || terminalTarget != ""
 			continue
@@ -331,43 +343,8 @@ func (r *Runner) runConcurrentParallel(
 		return nil
 	}
 
-	cancelQueued := func() error {
-		for next < len(queue) {
-			index := queue[next]
-			branch := par.branchSnapshot(index)
-			cursors := par.settleBranch(
-				branch.id, journal.BranchCancelled, branch.artifacts, branch.pointers,
-				branch.produced, branch.failed, branch.noOutput,
-			)
-			jr.SetBranchCursors(cursors)
-			if err := jr.Append(journal.Event{
-				Type:         journal.EventBranchFinished,
-				Branch:       branch.id,
-				Parallel:     p.Name,
-				BranchName:   branch.name,
-				BranchStatus: journal.BranchCancelled,
-			}); err != nil {
-				return err
-			}
-			outcomes[index] = &parallelBranchResult{
-				index:     index,
-				status:    journal.BranchCancelled,
-				pointers:  branch.pointers,
-				completed: branchStageOutputs(baseCompleted, branchEvents.events(branch.id), in.Machine),
-				artifacts: branch.artifacts,
-				produced:  branch.produced,
-				failed:    branch.failed,
-				noOutput:  branch.noOutput,
-			}
-			next++
-		}
-		return nil
-	}
-
-	if terminalTriggered {
-		if err := cancelQueued(); err != nil {
-			return concurrentParallelResult{}, err
-		}
+	if err := cancelQueuedWhenTriggered(terminalTriggered, jr, par, p, queue, &next, outcomes, baseCompleted, branchEvents, in); err != nil {
+		return concurrentParallelResult{}, err
 	}
 	for next < len(queue) && running < limit {
 		if err := launch(queue[next]); err != nil {
@@ -415,7 +392,7 @@ func (r *Runner) runConcurrentParallel(
 			cancel(errParallelFailFast)
 		}
 		if (firstErr != nil || terminalTriggered || failFast) && next < len(queue) {
-			if err := cancelQueued(); err != nil && firstErr == nil {
+			if err := cancelQueuedParallelBranches(jr, par, p, queue, &next, outcomes, baseCompleted, branchEvents, in); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
@@ -438,9 +415,25 @@ func (r *Runner) runConcurrentParallel(
 
 	mergedCompleted := cloneStageOutputs(baseCompleted)
 	lastStage, lastResult := baseLastStage, baseLastResult
+	workspaceRevision := in.workspaceRevision.DeepCopy()
+	var repoRef *apiv1.RepoRef
 	for _, outcome := range outcomes {
 		if outcome == nil {
 			continue
+		}
+		if outcome.workspaceRevision != nil {
+			var err error
+			workspaceRevision, err = workspacerevision.Accept(workspaceRevision, outcome.workspaceRevision)
+			if err != nil {
+				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel workspace revision: %w", err)
+			}
+		}
+		if outcome.repoRef != nil {
+			if repoRef == nil {
+				repoRef = outcome.repoRef
+			} else if !reposEqual(repoRef, outcome.repoRef) {
+				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel repository: conflicting configured repositories selected by parallel branches")
+			}
 		}
 		for stage, outputs := range outcome.completed {
 			mergedCompleted.put(stage, outputs)
@@ -450,17 +443,7 @@ func (r *Runner) runConcurrentParallel(
 		}
 	}
 
-	var terminalTarget string
-	var terminalTask *parallelTaskTerminal
-	var terminalGate *parallelGateTerminal
-	for _, outcome := range outcomes {
-		if outcome != nil && outcome.terminalTarget != "" {
-			terminalTarget = outcome.terminalTarget
-			terminalTask = outcome.terminalTask
-			terminalGate = outcome.terminalGate
-			break
-		}
-	}
+	terminalTarget, terminalTask, terminalGate := parallelTerminalOutcome(outcomes)
 	target, runJoin := par.route()
 	if terminalTarget != "" {
 		target, runJoin = terminalTarget, false
@@ -479,16 +462,39 @@ func (r *Runner) runConcurrentParallel(
 		mergedPointers = par.joinPointers(basePointers)
 	}
 	return concurrentParallelResult{
-		target:       target,
-		runJoin:      runJoin,
-		lastStage:    lastStage,
-		lastResult:   lastResult,
-		pointers:     mergedPointers,
-		completed:    mergedCompleted,
-		parallel:     par,
-		terminalTask: terminalTask,
-		terminalGate: terminalGate,
+		target:            target,
+		runJoin:           runJoin,
+		lastStage:         lastStage,
+		lastResult:        lastResult,
+		pointers:          mergedPointers,
+		completed:         mergedCompleted,
+		parallel:          par,
+		terminalTask:      terminalTask,
+		terminalGate:      terminalGate,
+		workspaceRevision: workspaceRevision,
+		repoRef:           repoRef,
 	}, nil
+}
+
+func newParallelGateEvaluator(r *Runner, in StartInput, branchJournal gate.Journal, history []journal.Event, visitedStages map[string]bool) *gate.Evaluator {
+	return &gate.Evaluator{
+		Automated:   r.cfg.Automated,
+		Journal:     branchJournal,
+		MaxRepasses: int(in.RunControls.MaxRepasses),
+		Attempts:    gateRepassSeed(history),
+		IsNeedsHumanTarget: func(target string) bool {
+			task, ok := in.Machine.Task(target)
+			return ok && task.Inputs["status"] == "needs-human"
+		},
+		RepassAttempts:               targetRepassSeed(history),
+		InfrastructureAttempts:       gateInfrastructureSeed(history),
+		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
+		PollAttempts:                 pollingTargetSeed(history),
+		IsReentry: func(target string) bool {
+			return visitedStages[target]
+		},
+		LastDiffDigest: gateDiffSeed(history),
+	}
 }
 
 func (r *Runner) runParallelBranch(
@@ -505,17 +511,16 @@ func (r *Runner) runParallelBranch(
 	reg SecretRegistrar,
 	history []journal.Event,
 	stepBudget *atomic.Int64,
-) parallelBranchResult {
-	result := parallelBranchResult{
-		index:      branch.id - 1,
-		lastStage:  baseLastStage,
-		lastResult: baseLastResult,
-		completed:  branchStageOutputs(baseCompleted, history, in.Machine),
-		pointers:   append([]apiv1.ContextPointer(nil), branch.pointers...),
-		artifacts:  branch.artifacts,
-		produced:   branch.produced,
-		failed:     branch.failed,
-		noOutput:   branch.noOutput,
+) (result parallelBranchResult) {
+	initialRepoRef := in.RepoRef
+	defer func() {
+		captureParallelBranchBinding(&result, &initialRepoRef, &in.RepoRef, &in.workspaceRevision)
+	}()
+	result = initialParallelBranchResult(branch, baseLastStage, baseLastResult, baseCompleted, in, history)
+	in, result.err = r.restoreWorkspaceRevision(ctx, in, history)
+	if result.err != nil {
+		result.status = journal.BranchFailed
+		return result
 	}
 	branchJournal := &branchJournal{
 		run:    jr,
@@ -526,23 +531,7 @@ func (r *Runner) runParallelBranch(
 	}
 	ex := newExecutors(r.cfg, branchJournal, reg)
 	visitedStages := stageVisitSeed(history)
-	gateEval := &gate.Evaluator{
-		Automated:   r.cfg.Automated,
-		Journal:     branchJournal,
-		MaxRepasses: int(in.RunControls.MaxRepasses),
-		Attempts:    gateRepassSeed(history),
-		IsNeedsHumanTarget: func(target string) bool {
-			task, ok := in.Machine.Task(target)
-			return ok && task.Inputs["status"] == "needs-human"
-		},
-		RepassAttempts:               targetRepassSeed(history),
-		InfrastructureAttempts:       gateInfrastructureSeed(history),
-		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
-		IsReentry: func(target string) bool {
-			return visitedStages[target]
-		},
-		LastDiffDigest: gateDiffSeed(history),
-	}
+	gateEval := newParallelGateEvaluator(r, in, branchJournal, history, visitedStages)
 	state := branch.machine
 	if state == "" {
 		state = branch.start
@@ -655,6 +644,8 @@ func (r *Runner) runParallelBranch(
 						upstreamResult:  result.lastResult,
 						completed:       result.completed,
 						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
+						workspaceRevision: &in.workspaceRevision,
+						repoRef:           &in.RepoRef,
 					},
 					branch.id, startAttempt, firstClass, "",
 					nil, committedWorkOnInfra, resumeAccounting,

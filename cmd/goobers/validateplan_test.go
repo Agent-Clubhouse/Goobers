@@ -91,8 +91,9 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 	// Provider stage inputs may be inherited from the local-ci stage; this
-	// integration test intentionally exercises the command defaults.
+	// integration test must replace them with its own deterministic result.
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", "")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(workDir, "selection.json"))
 
 	if code, stdout, stderr := runArgs(t, "select-source", root); code != 0 {
 		t.Fatalf("select-source: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -116,6 +117,8 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Setenv("GOOBERS_INPUT_SELECTIONFILE", filepath.Join(workDir, "selection.json"))
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(workDir, "plan-validation.json"))
 	code, stdout, stderr := runArgs(t, "validate-plan", root)
 	if code != 0 {
 		t.Fatalf("validate-plan: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -159,6 +162,7 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 	// Keep the artifact in this test's working directory even when the test
 	// process inherits a stage-level resultFile input.
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", "")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(workDir, "selection.json"))
 	if code, _, stderr := runArgs(t, "select-source", root); code != 0 {
 		t.Fatalf("select-source: code = %d, stderr = %q", code, stderr)
 	}
@@ -183,6 +187,8 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 	// validated — a maintainer retitled it while decomposition was in flight.
 	server.setIssueTitle(420, "A retitled issue since selection")
 
+	t.Setenv("GOOBERS_INPUT_SELECTIONFILE", filepath.Join(workDir, "selection.json"))
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(workDir, "plan-validation.json"))
 	code, stdout, stderr := runArgs(t, "validate-plan", root)
 	if code != 0 {
 		t.Fatalf("validate-plan: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)

@@ -19,6 +19,9 @@ import (
 // here deliberately. Read-only pools are listed too: they validate or inherit
 // the schema version established by their package's writer.
 var auditedSQLOpeners = []string{
+	// Disposable HTTP response cache uses versioned migrations and refuses
+	// future schemas; callers fail open to the authoritative daemon response.
+	"internal/apireadstore/store.go:Open:Open",
 	"internal/cancelreceipt/store.go:Open:Open",
 	"internal/readmodel/existing_reader.go:OpenExistingReader:Open",
 	"internal/readmodel/intake/existing_reader.go:OpenExistingReader:Open",
@@ -26,6 +29,16 @@ var auditedSQLOpeners = []string{
 	"internal/readmodel/rebuild.go:reopenLocked:Open",
 	"internal/readmodel/store.go:Open:Open",
 	"internal/readmodel/store.go:openReaderPool:Open",
+	// Both telemetry stores use versioned sqliteschema migrations and reject
+	// newer versions. The read-only manifest inspector accepts supported
+	// versions 1 through len(replayIndexMigrations), without migrating them.
+	"internal/telemetry/azuremonitor_index.go:inspectReplayIndex:Open",
+	"internal/telemetry/azuremonitor_index.go:open:Open",
+	// Second open in this function: a mode=ro accounting pool. It is created
+	// only after the writer's versioned migration and reconciliation succeed,
+	// inherits that established schema, and performs no DDL or migrations.
+	"internal/telemetry/azuremonitor_index.go:open:Open",
+	"internal/telemetry/journalcatchup_store.go:openJournalCursorStore:Open",
 	"internal/telemetry/rollup/db.go:Open:Open",
 	"internal/telemetry/rollup/db.go:OpenExistingReader:Open",
 	"internal/telemetry/rollup/db.go:openReaderPool:Open",

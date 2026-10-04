@@ -135,6 +135,12 @@ type transcriptCapture struct {
 	// for the invocation but missing from this map did not appear in the
 	// CLI's report at all.
 	mcpServerStatus map[string]string
+	// mcpToolsUsed records the MCP tools, by their full
+	// mcp__<server>__<tool> name, the session demonstrably reached: the call
+	// returned a non-error result. Only claude-code populates it; it lets a
+	// server the init report caught mid-handshake ("pending") count as
+	// connected once the turn has proven it (#5397).
+	mcpToolsUsed map[string]bool
 }
 
 func readCopilotSessionTranscript(path string, limit int64) (transcriptCapture, bool) {

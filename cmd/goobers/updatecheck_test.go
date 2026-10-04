@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonheartbeat"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/selfupdate"
 )
 
@@ -23,7 +23,7 @@ func newTestChecker(t *testing.T, check func(context.Context, selfupdate.CheckOp
 		interval: time.Hour,
 		current:  "v0.4.0",
 		check:    check,
-		pending:  &updatePending{},
+		pending:  &daemonheartbeat.PendingUpdate{},
 	}
 }
 
@@ -140,8 +140,8 @@ func TestStartUpdateCheckDisabled(t *testing.T) {
 	// special case; it simply never reports a version.
 	if pending == nil {
 		t.Error("startUpdateCheck(disabled) returned a nil pending holder")
-	} else if clause := pending.clause(); clause != "" {
-		t.Errorf("pending.clause() = %q for a disabled check, want empty", clause)
+	} else if clause := pending.Clause(); clause != "" {
+		t.Errorf("pending.Clause() = %q for a disabled check, want empty", clause)
 	}
 }
 
@@ -174,7 +174,7 @@ func TestUpdatePendingConditionLifetime(t *testing.T) {
 	})
 
 	checker.once(context.Background())
-	if got := checker.pending.clause(); got != "; update v0.5.0 available" {
+	if got := checker.pending.Clause(); got != "; update v0.5.0 available" {
 		t.Fatalf("clause after first check = %q", got)
 	}
 
@@ -182,7 +182,7 @@ func TestUpdatePendingConditionLifetime(t *testing.T) {
 	if _, ok := checker.once(context.Background()); ok {
 		t.Error("second check re-announced")
 	}
-	if got := checker.pending.clause(); got != "; update v0.5.0 available" {
+	if got := checker.pending.Clause(); got != "; update v0.5.0 available" {
 		t.Errorf("clause after a non-announcing tick = %q, want it to persist", got)
 	}
 
@@ -190,7 +190,7 @@ func TestUpdatePendingConditionLifetime(t *testing.T) {
 	// announces nothing either.
 	available = false
 	checker.once(context.Background())
-	if got := checker.pending.clause(); got != "" {
+	if got := checker.pending.Clause(); got != "" {
 		t.Errorf("clause after the build caught up = %q, want empty", got)
 	}
 }
@@ -209,84 +209,9 @@ func TestUpdatePendingSurvivesCheckFailure(t *testing.T) {
 	checker.once(context.Background())
 	fail = true
 	checker.once(context.Background())
-	if got := checker.pending.clause(); got != "; update v0.5.0 available" {
+	if got := checker.pending.Clause(); got != "; update v0.5.0 available" {
 		t.Errorf("clause after a failed check = %q, want the earlier condition retained", got)
 	}
-}
-
-func TestUpdatePendingClause(t *testing.T) {
-	var pending updatePending
-	if got := pending.clause(); got != "" {
-		t.Errorf("zero-value clause() = %q, want empty", got)
-	}
-	pending.set("v1.2.3")
-	if got := pending.clause(); got != "; update v1.2.3 available" {
-		t.Errorf("clause() = %q", got)
-	}
-	pending.set("")
-	if got := pending.clause(); got != "" {
-		t.Errorf("cleared clause() = %q, want empty", got)
-	}
-	// A nil holder is valid for a heartbeat with no checker wired up.
-	if got := updateClause(nil); got != "" {
-		t.Errorf("updateClause(nil) = %q, want empty", got)
-	}
-}
-
-// The point of the clause is that it survives in a stream the one-shot notice
-// scrolls out of, so assert it reaches the rendered heartbeat line itself —
-// and that a current build leaves that line byte-identical to before.
-func TestHeartbeatCarriesUpdateClause(t *testing.T) {
-	tests := []struct {
-		name    string
-		pending *updatePending
-		want    string
-		absent  string
-	}{
-		{name: "update pending", pending: pendingAt("v0.5.0"), want: "; update v0.5.0 available"},
-		{name: "build current", pending: &updatePending{}, absent: "update"},
-		{name: "no checker wired", pending: nil, absent: "update"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			dir := t.TempDir()
-			log, _, err := journal.OpenInstanceLog(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = log.Close() })
-			tail, err := journal.OpenInstanceLogTail(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			ctx, cancel := context.WithCancel(context.Background())
-			stdout := newDaemonOutput()
-			done := make(chan struct{})
-			go emitHeartbeats(ctx, stdout, dir, func() int { return 1 }, tail, nil, 10*time.Millisecond, test.pending, done)
-			select {
-			case <-stdout.heartbeat:
-			case <-time.After(10 * time.Second):
-				t.Error("heartbeat was not emitted")
-			}
-			cancel()
-			<-done
-
-			output := stdout.String()
-			if test.want != "" && !strings.Contains(output, test.want) {
-				t.Errorf("heartbeat = %q, want it to contain %q", output, test.want)
-			}
-			if test.absent != "" && strings.Contains(output, test.absent) {
-				t.Errorf("heartbeat = %q, want no %q clause", output, test.absent)
-			}
-		})
-	}
-}
-
-func pendingAt(version string) *updatePending {
-	pending := &updatePending{}
-	pending.set(version)
-	return pending
 }
 
 // A cache write that fails leaves the heartbeat correct and `goobers status`
@@ -312,7 +237,7 @@ func TestUpdateCheckCacheFailureNamesTheDivergence(t *testing.T) {
 		t.Errorf("warning = %q, want it to name the stale status surface", result.warning)
 	}
 	// The heartbeat keeps the accurate condition despite the failed write.
-	if got := checker.pending.clause(); got != "; update v0.5.0 available" {
+	if got := checker.pending.Clause(); got != "; update v0.5.0 available" {
 		t.Errorf("clause after a failed cache write = %q, want the condition retained", got)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 	connectorapi "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
@@ -80,6 +81,56 @@ var credentialedCapabilities = []capability.Capability{
 	capability.ADOPRComplete,
 }
 
+// adoRepoCredentialedCapabilities are backed by a repository's own credential
+// only when that repository is on Azure DevOps (#5925, #6581). The ADO
+// repository credential backs ado:work-items:write and ado:packaging:read, so
+// a stage that declares either needs no separate credentials: entry; a GitHub
+// or Gitea repository credential never backs an Azure DevOps capability. Only
+// a stage that declares the capability receives its credential, which keeps
+// work-item mutation and package-feed reads separate from pull-request
+// creation and completion.
+var adoRepoCredentialedCapabilities = []capability.Capability{
+	capability.ADOWorkItemsWrite,
+	capability.ADOPackagingRead,
+}
+
+// repoCredentialedCapabilityNames is the capability set credentials.RunnerGrants
+// binds to a repository credential: credentialedCapabilities plus
+// adoRepoCredentialedCapabilities. Callers pass the grants through
+// withoutNonADORepoGrants, which drops the ADO-only ones for a repository on
+// another provider.
+func repoCredentialedCapabilityNames() []string {
+	names := make([]string, 0, len(credentialedCapabilities)+len(adoRepoCredentialedCapabilities))
+	for _, c := range credentialedCapabilities {
+		names = append(names, string(c))
+	}
+	for _, c := range adoRepoCredentialedCapabilities {
+		names = append(names, string(c))
+	}
+	return names
+}
+
+// withoutNonADORepoGrants drops each grant of an adoRepoCredentialedCapabilities
+// capability whose credential is a GitHub or Gitea repository's own. Grants
+// from credentials: entries and the daemon identity are kept: an explicit
+// entry is the operator's decision.
+func withoutNonADORepoGrants(repos []instance.RepoRef, grants []credentials.Grant) []credentials.Grant {
+	nonADORepoRefs := make(map[string]bool, len(repos))
+	for _, repo := range repos {
+		if repo.Provider != string(apiv1.ProviderADO) {
+			nonADORepoRefs[repo.Owner+"/"+repo.Name] = true
+		}
+	}
+	kept := grants[:0:0]
+	for _, grant := range grants {
+		if nonADORepoRefs[grant.Ref] && slices.Contains(adoRepoCredentialedCapabilities, capability.Capability(grant.Capability)) {
+			continue
+		}
+		kept = append(kept, grant)
+	}
+	return kept
+}
+
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
 // credential (static token or App-minted) is registered under (#1780),
 // namespaced away from repo refs ("owner/name") and explicit credentials:
@@ -109,6 +160,7 @@ func buildEnvCapabilities() map[string]string {
 	for _, c := range credentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
+	envCaps[string(capability.ADOPackagingRead)] = executor.CredentialEnvVar(string(capability.ADOPackagingRead))
 	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
 	envCaps[string(capability.GitHubMilestonesWrite)] = executor.CredentialEnvVar(string(capability.GitHubMilestonesWrite))
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
@@ -229,11 +281,7 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	caps := make([]string, len(credentialedCapabilities))
-	for i, c := range credentialedCapabilities {
-		caps[i] = string(c)
-	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, role, caps, overrides)
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, project.Name, role, repoCredentialedCapabilityNames(), overrides))
 	result := make(map[string]bool, len(grants))
 	for _, grant := range grants {
 		result[grant.Capability] = true
@@ -244,11 +292,15 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 var copilotModelLister harness.CopilotModelLister
 
 func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConfig {
+	// Validated at load; an unparseable value cannot reach here, and zero
+	// keeps the adapter default.
+	settle, _ := cfg.RequiredMCPSettleTimeoutDuration()
 	return harness.EnvironmentConfig{
-		ExtraAllowlist: cfg.EnvPassthrough,
-		Unset:          cfg.HarnessEnvUnset,
-		SessionArgs:    cfg.HarnessSessionArgs,
-		PreflightArgs:  cfg.HarnessPreflightArgs,
+		ExtraAllowlist:           cfg.EnvPassthrough,
+		Unset:                    cfg.HarnessEnvUnset,
+		SessionArgs:              cfg.HarnessSessionArgs,
+		PreflightArgs:            cfg.HarnessPreflightArgs,
+		RequiredMCPSettleTimeout: settle,
 	}
 }
 
@@ -261,9 +313,9 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 	customLauncher := requiresCopilotLauncherContract(harnessCommand)
 	sessionArgs := environment.SessionArgs[string(apiv1.HarnessCopilot)]
 	preflightArgs := slices.Clone(environment.PreflightArgs[string(apiv1.HarnessCopilot)])
-	authCheckArgs := slices.Clone(copilotAuthCheckArgs)
+	authCheckArgs, authCheckSuccessLine := slices.Clone(copilotAuthCheckArgs), copilotAuthCheckSuccessLine
 	if customLauncher {
-		authCheckArgs = forwardingLauncherAuthCheckArgs()
+		authCheckArgs, authCheckSuccessLine = forwardingLauncherAuthCheckArgs(), ""
 	}
 	authCheckArgs = append(authCheckArgs, preflightArgs...)
 	copilotAdapter := &harness.CopilotAdapter{
@@ -273,6 +325,7 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		VerifyAdapterManagedSession: customLauncher,
 		DisableUsageOutput:          customLauncher,
 		AuthCheckArgs:               authCheckArgs,
+		AuthCheckSuccessLine:        authCheckSuccessLine,
 		AuthProbeExtraArgs:          preflightArgs,
 		ModelLister:                 copilotModelLister,
 		EnvCapabilities:             envCaps,
@@ -287,6 +340,8 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		DeferDiscovery:      deferModelDiscovery,
 		ModelCredential:     modelCredential,
 		EphemeralTmp:        ephemeralTmp,
+
+		RequiredMCPSettleTimeout: environment.RequiredMCPSettleTimeout,
 	}
 	if customLauncher {
 		copilotAdapter.RequiredTools = []string{"task_complete"}
@@ -399,6 +454,9 @@ type deterministicExecutorInput struct {
 	// daemon-side ci-poll provider an Azure DevOps gaggle builds from its
 	// configured credential.
 	CredentialStores credentials.StoreResolver
+	// CredentialGrants mints mid-stage credential-refresh grants for the
+	// executor's goobers-CLI stages (Goobers#6120); nil outside a daemon.
+	CredentialGrants executor.StageCredentialGrants
 }
 
 func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Deterministic, error) {
@@ -415,6 +473,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.AppliedConfigDigest = input.AppliedConfigDigest
 	shell.ConfigDirectory = input.ConfigDirectory
 	shell.ScratchDir = input.ScratchDir
+	shell.CredentialGrants = input.CredentialGrants
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
 	// #4070: bound what one stage subprocess may take, so a heavy stage
 	// cannot evict the daemon it shares a memory cgroup with. Resolved (and
@@ -492,6 +551,7 @@ type agenticExecutorInput struct {
 	GooberName       string
 	Goobers          map[string]apiv1.GooberSpec
 	Instructions     map[string]string
+	SkillPackages    map[string][]workflow.SkillFile
 	Assets           map[string]*gooberassets.Bundle
 	HarnessInfo      harnessPreflightInfo
 	AdapterRegistry  *harness.Registry
@@ -501,9 +561,13 @@ type agenticExecutorInput struct {
 	SharedRegistry   *journal.RegistryScrubber
 	RunsDir          string
 	SandboxPosture   instance.SandboxPosture
+	Observer         harness.Observer
 	ArtifactRecorder runner.ArtifactRecorder
 	SecretRegistrar  runner.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
+
+	// Local runner only; worker pods do not inherit daemon-host paths.
+	GuardedCredentialPaths []string
 }
 
 func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
@@ -563,9 +627,11 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 		return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 	}
 	opts := []harness.Option{
+		harness.WithGuardedCredentialPaths(input.GuardedCredentialPaths),
 		harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
 		harness.WithHarnessVersion(input.HarnessInfo[harnessName].Version),
 		harness.WithAssetBundle(input.Assets[input.GooberName]),
+		harness.WithSkills(harnessName, workflow.ResolvedSkillFiles(spec, input.SkillPackages)),
 		harness.WithMCPServers(spec.MCPServers),
 		harness.WithTools(spec.Tools),
 	}
@@ -574,6 +640,9 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 	}
 	if input.SandboxPosture == instance.SandboxEnforced {
 		opts = append(opts, harness.WithSandboxEnforcement())
+	}
+	if input.Observer != nil {
+		opts = append(opts, harness.WithObserver(input.Observer))
 	}
 	return harness.NewExecutor(
 		adapter,
@@ -632,19 +701,13 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		}
 		poller = providers.NewGiteaProvider(e.giteaRepo.BaseURL, token)
 	default:
-		set, err := e.injector.Materialize(ctx, env.Capabilities)
+		// Not a snapshot (#3489, Goobers#6120): an expiring token is
+		// re-resolved through the injector near its expiry and after a 401.
+		githubPoller, err := localCIPollGitHubPoller(ctx, e.injector, required, e.registrar)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
+			return apiv1.ResultEnvelope{}, err
 		}
-		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
-		if err != nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
-		}
-		if newPRPoller != nil {
-			poller = newPRPoller(token)
-		} else {
-			poller = providers.NewGitHubProvider(token)
-		}
+		poller = githubPoller
 	}
 	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)
 	if err != nil {

@@ -7,6 +7,43 @@ import (
 	"strings"
 )
 
+func parseOptionalRoot(fs *flag.FlagSet, args []string) (string, bool) {
+	if err := fs.Parse(args); err != nil {
+		return "", false
+	}
+	return optionalRoot(fs)
+}
+
+func parseRequiredArgOptionalRoot(fs *flag.FlagSet, args []string) (string, string, bool) {
+	return parseRequiredArgOptionalRootWithUsage(fs, args, fs.Usage)
+}
+
+func parseRequiredArgOptionalRootWithUsage(fs *flag.FlagSet, args []string, usage func()) (string, string, bool) {
+	if err := fs.Parse(args); err != nil {
+		return "", "", false
+	}
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		usage()
+		return "", "", false
+	}
+	root := "."
+	if fs.NArg() == 2 {
+		root = fs.Arg(1)
+	}
+	return fs.Arg(0), root, true
+}
+
+func optionalRoot(fs *flag.FlagSet) (string, bool) {
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return "", false
+	}
+	if fs.NArg() == 1 {
+		return fs.Arg(0), true
+	}
+	return ".", true
+}
+
 func parseFlagsBeforePath(fs *flag.FlagSet, args []string, stderr io.Writer) bool {
 	if err := fs.Parse(args); err != nil {
 		return false

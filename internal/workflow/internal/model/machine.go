@@ -72,12 +72,25 @@ type Definition struct {
 // Machine is a compiled, validated view of a Definition with O(1) state lookup
 // and a stable content digest.
 type Machine struct {
-	Def       Definition
-	tasks     map[string]apiv1.Task
-	gates     map[string]apiv1.Gate
-	parallels map[string]apiv1.Parallel
-	graph     Graph
-	digest    string
+	Def              Definition
+	tasks            map[string]apiv1.Task
+	gates            map[string]apiv1.Gate
+	parallels        map[string]apiv1.Parallel
+	graph            Graph
+	digest           string
+	artifactBindings map[string]map[string]ArtifactBinding
+}
+
+// ArtifactBinding is the compiler-lowered DSL 3.1 semantic artifact edge for
+// one consumer-local input name.
+type ArtifactBinding struct {
+	ConsumerTask string `json:"consumerTask"`
+	LocalName    string `json:"localName"`
+	ProducerTask string `json:"producerTask"`
+	SlotName     string `json:"slotName"`
+	MediaType    string `json:"mediaType,omitempty"`
+	SchemaPath   string `json:"schemaPath,omitempty"`
+	MaxSize      int64  `json:"maxSize,omitempty"`
 }
 
 // NewMachine stores interpreter-built runtime state and atomically pins its
@@ -106,6 +119,52 @@ func NewMachine(def Definition, tasks map[string]apiv1.Task, gates map[string]ap
 // It is stable across processes and runs: the same definition always digests to
 // the same value, so a run can record and complete on a pinned digest (WF-016).
 func (m *Machine) Digest() string { return m.digest }
+
+// SetArtifactBindings stores compiler-lowered semantic artifact bindings.
+// Callers pass consumer task -> local input -> binding; the machine clones it.
+func (m *Machine) SetArtifactBindings(bindings map[string]map[string]ArtifactBinding) {
+	m.artifactBindings = cloneArtifactBindings(bindings)
+}
+
+// ArtifactBindings returns the semantic artifact bindings for a consumer task,
+// keyed by consumer-local input name.
+func (m *Machine) ArtifactBindings(task string) map[string]ArtifactBinding {
+	if m == nil {
+		return nil
+	}
+	return cloneArtifactBindingMap(m.artifactBindings[task])
+}
+
+// AllArtifactBindings returns every semantic artifact binding keyed by
+// consumer task and then consumer-local input name.
+func (m *Machine) AllArtifactBindings() map[string]map[string]ArtifactBinding {
+	if m == nil {
+		return nil
+	}
+	return cloneArtifactBindings(m.artifactBindings)
+}
+
+func cloneArtifactBindings(in map[string]map[string]ArtifactBinding) map[string]map[string]ArtifactBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]ArtifactBinding, len(in))
+	for task, bindings := range in {
+		out[task] = cloneArtifactBindingMap(bindings)
+	}
+	return out
+}
+
+func cloneArtifactBindingMap(in map[string]ArtifactBinding) map[string]ArtifactBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]ArtifactBinding, len(in))
+	for local, binding := range in {
+		out[local] = binding
+	}
+	return out
+}
 
 // ComputeDigest returns a stable digest of the pinned definition.
 func ComputeDigest(def Definition) (string, error) {

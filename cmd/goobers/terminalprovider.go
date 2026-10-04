@@ -78,3 +78,28 @@ func terminalGiteaBaseURLForProject(cfg *instance.Config, project apiv1.RepoRef)
 	}
 	return repo.BaseURL, nil
 }
+
+func terminalProviderForProject[T any](
+	cfg *instance.Config,
+	project apiv1.RepoRef,
+	source providers.TokenSource,
+	github func(providers.TokenSource) T,
+	gitea func(string, providers.TokenSource) T,
+	unsupported func(providers.ProviderKind) error,
+) (T, error) {
+	repo := terminalRepositoryRefForProject(cfg, project)
+	switch repo.Provider {
+	case providers.ProviderGitea:
+		baseURL, err := terminalGiteaBaseURLForProject(cfg, project)
+		if err != nil {
+			var zero T
+			return zero, err
+		}
+		return gitea(baseURL, source), nil
+	case providers.ProviderGitHub:
+		return github(source), nil
+	default:
+		var zero T
+		return zero, unsupported(repo.Provider)
+	}
+}

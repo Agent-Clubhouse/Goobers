@@ -8,4 +8,3 @@ resources:
 patches:
   - path: daemon.yaml
   - path: worker-linux.yaml
-  - path: worker-windows.yaml

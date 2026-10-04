@@ -16,7 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 const (
@@ -42,6 +42,17 @@ const (
 )
 
 var claimAdminDelegationTimeout = 30 * time.Second
+
+func claimAdminDelegateFileProtocol() delegateFileProtocol {
+	return delegateFileProtocol{
+		pendingDir:                  pendingClaimsDir,
+		requestSuffix:               claimAdminRequestSuffix,
+		responseSuffix:              claimAdminResponseSuffix,
+		errorPrefix:                 "claims delegate",
+		staleAfter:                  claimAdminDelegationTimeout,
+		distinguishNonDirectoryPath: true,
+	}
+}
 
 type claimAdminRequest struct {
 	Operation         string    `json:"operation"`
@@ -72,6 +83,7 @@ const claimsHelp = "Usage: goobers claims <command> [flags] [path]\n\n" +
 	"daemon. Operations delegate to `goobers up` when it is running.\n\n" +
 	"Commands:\n" +
 	"  list       print current claim leases\n" +
+	"  active     print what is actively claimed now\n" +
 	"  release    force-release one item by id\n"
 
 func runClaims(args []string, stdout, stderr io.Writer) int {
@@ -99,16 +111,9 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "show only claims in this gaggle")
 	provider := fs.String("provider", "", "show only claims from this provider")
 	fs.Usage = helpUsage(stderr, "claims list")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	resp, err := runClaimAdmin(root, claimAdminRequest{
@@ -174,6 +179,46 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const claimsActiveHelp = "Usage: goobers claims active [--json] [--gaggle=name] [--provider=name] [path]\n\n" +
+	"Print what this instance has actively claimed now: item, workflow, run,\n" +
+	"holder, and age, oldest first. Expired, released, and revoked leases are\n" +
+	"omitted (`goobers claims list --stale` shows expired ones). Holder is the owning instance\n" +
+	"for a shared-visibility claim, otherwise \"local\". The daemon API serves\n" +
+	"the same view at GET /api/v1/claims/active. Default path is \".\".\n"
+
+func runClaimsActive(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("claims active", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOutput := fs.Bool("json", false, "emit active claims as JSON")
+	gaggle := fs.String("gaggle", "", "show only claims in this gaggle")
+	provider := fs.String("provider", "", "show only claims from this provider")
+	fs.Usage = helpUsage(stderr, "claims active")
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
+		return 2
+	}
+
+	resp, err := runClaimAdmin(root, claimAdminRequest{
+		Operation: claimAdminOperationList,
+		Gaggle:    *gaggle,
+		Provider:  *provider,
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if resp.Error != "" {
+		pf(stderr, "error: %s\n", resp.Error)
+		return 2
+	}
+	view := readservice.ActiveClaimListAt(resp.Entries, time.Now().UTC())
+	if err := readservice.WriteActiveClaims(stdout, view, *jsonOutput); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	return 0
+}
+
 const claimsReleaseHelp = "Usage: goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n\n" +
 	"Print the claim holder, age, and expiry, then force-release the item.\n" +
 	"--force is required while the holding run is non-terminal. The override\n" +
@@ -189,20 +234,13 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	provider := fs.String("provider", "", "provider owning the claim")
 	force := fs.Bool("force", false, "release a claim held by a non-terminal run")
 	fs.Usage = helpUsage(stderr, "claims release")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() < 1 || fs.NArg() > 2 {
-		fs.Usage()
+	itemID, root, ok := parseRequiredArgOptionalRoot(fs, args)
+	if !ok {
 		return 2
 	}
 	if (*gaggle == "") != (*provider == "") {
 		pf(stderr, "error: --gaggle and --provider must be supplied together\n")
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 
 	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
@@ -223,7 +261,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	entry, code, message := selectClaimForRelease(previewResp.Entries, claimAdminRequest{
-		ItemID:   fs.Arg(0),
+		ItemID:   itemID,
 		Gaggle:   *gaggle,
 		Provider: *provider,
 	})
@@ -249,7 +287,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	defer stopTelemetry()
 	resp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation:         claimAdminOperationRelease,
-		ItemID:            fs.Arg(0),
+		ItemID:            itemID,
 		Gaggle:            *gaggle,
 		Provider:          *provider,
 		ExpectedRunID:     entry.RunID,
@@ -502,68 +540,23 @@ func selectClaimForRelease(entries []localscheduler.ClaimEntry, req claimAdminRe
 }
 
 func writeClaimAdminRequest(schedulerDir string, req claimAdminRequest) (string, error) {
-	reqDir := filepath.Join(schedulerDir, pendingClaimsDir)
-	if err := os.MkdirAll(reqDir, 0o755); err != nil {
-		return "", fmt.Errorf("claims delegate: create request dir: %w", err)
-	}
-	f, err := os.CreateTemp(reqDir, ".pending-*")
-	if err != nil {
-		return "", fmt.Errorf("claims delegate: create request: %w", err)
-	}
-	tmpPath := f.Name()
-	cleanup := func() {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-	}
-
-	req.CreatedAt = time.Now().UTC()
-	data, err := json.Marshal(req)
-	if err != nil {
-		cleanup()
-		return "", err
-	}
-	if _, err := f.Write(data); err != nil {
-		cleanup()
-		return "", fmt.Errorf("claims delegate: write request: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("claims delegate: close request: %w", err)
-	}
-	requestID := strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
-	finalPath := filepath.Join(reqDir, requestID+claimAdminRequestSuffix)
-	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("claims delegate: publish request: %w", err)
-	}
-	return requestID, nil
+	return writeDelegateRequest(schedulerDir, claimAdminDelegateFileProtocol(), req, func(req *claimAdminRequest) {
+		req.CreatedAt = time.Now().UTC()
+	})
 }
 
 func pollClaimAdminResponse(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (claimAdminResponse, error) {
-	respPath := filepath.Join(schedulerDir, pendingClaimsDir, requestID+claimAdminResponseSuffix)
-	deadline := time.Now().Add(timeout)
-	for {
-		if data, err := os.ReadFile(respPath); err == nil {
-			var resp claimAdminResponse
-			if err := json.Unmarshal(data, &resp); err == nil {
-				_ = os.Remove(respPath)
-				return resp, nil
-			}
-		}
-		if time.Now().After(deadline) {
-			return claimAdminResponse{}, fmt.Errorf(
+	return pollDelegateResponse[claimAdminResponse](
+		ctx, schedulerDir, requestID, claimAdminDelegateFileProtocol(), timeout,
+		func(requestPath string) string {
+			return fmt.Sprintf(
 				"claims delegate: timed out after %s waiting for the live `goobers up` daemon; "+
 					"the operation may have completed, so inspect the claim ledger before retrying (request left at %s)",
 				timeout,
-				filepath.Join(schedulerDir, pendingClaimsDir, requestID+claimAdminRequestSuffix),
+				requestPath,
 			)
-		}
-		select {
-		case <-ctx.Done():
-			return claimAdminResponse{}, ctx.Err()
-		case <-time.After(delegationPollInterval):
-		}
-	}
+		},
+	)
 }
 
 // startClaimAdminSweep keeps delegated claim operations available through the
@@ -590,76 +583,36 @@ func sweepPendingClaimAdminRequests(
 	now func() time.Time,
 	recover daemonStaleClaimSweep,
 ) error {
-	reqDir := filepath.Join(schedulerDir, pendingClaimsDir)
-	entries, exists, err := readDirectory(reqDir)
-	if !exists {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("claims delegate: read pending requests: %w", err)
-	}
-
-	var sweepErr error
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		path := filepath.Join(reqDir, entry.Name())
-		if strings.HasSuffix(entry.Name(), claimAdminResponseSuffix) {
-			info, err := entry.Info()
-			if err == nil && now().Sub(info.ModTime()) > claimAdminDelegationTimeout {
-				_ = os.Remove(path)
-			}
-			continue
-		}
-		if !strings.HasSuffix(entry.Name(), claimAdminRequestSuffix) {
-			continue
-		}
-		requestID := strings.TrimSuffix(entry.Name(), claimAdminRequestSuffix)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("claims delegate: read request %s: %w", requestID, err))
-			}
-			continue
-		}
-		if err := os.Remove(path); err != nil {
-			if !os.IsNotExist(err) {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("claims delegate: consume request %s: %w", requestID, err))
-			}
-			continue
-		}
-
-		var req claimAdminRequest
-		resp := claimAdminResponse{}
-		if err := json.Unmarshal(data, &req); err != nil {
-			resp.Error = fmt.Sprintf("claims delegate: malformed request: %v", err)
-		} else {
+	return sweepDelegateRequests(
+		schedulerDir,
+		claimAdminDelegateFileProtocol(),
+		now,
+		func(requestID string, req claimAdminRequest, decodeErr error) (claimAdminResponse, bool) {
 			switch {
+			case decodeErr != nil:
+				return claimAdminResponse{Error: fmt.Sprintf("claims delegate: malformed request: %v", decodeErr)}, false
 			case req.CreatedAt.IsZero():
-				resp.Error = "claims delegate: request has no creation time"
+				return claimAdminResponse{Error: "claims delegate: request has no creation time"}, false
 			case now().Sub(req.CreatedAt) > claimAdminDelegationTimeout:
-				resp.Error = fmt.Sprintf("claims delegate: stale request %s; refusing to execute", requestID)
-			case req.Operation == claimAdminOperationRecover:
-				resp, err = executeDelegatedStaleClaimSweep(recover, now())
-				if err != nil {
-					resp.Error = err.Error()
-				}
+				return claimAdminResponse{Error: fmt.Sprintf("claims delegate: stale request %s; refusing to execute", requestID)}, false
 			default:
-				resp, err = executeClaimAdminRequest(schedulerDir, log, req)
-				if err != nil {
-					resp.Error = err.Error()
-				}
+				return claimAdminResponse{}, true
 			}
-		}
-		respData, err := json.Marshal(resp)
-		if err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("claims delegate: encode response %s: %w", requestID, err))
-			continue
-		}
-		if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+claimAdminResponseSuffix), respData, 0o644); err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("claims delegate: write response %s: %w", requestID, err))
-		}
-	}
-	return sweepErr
+		},
+		func(req claimAdminRequest) claimAdminResponse {
+			var (
+				resp claimAdminResponse
+				err  error
+			)
+			if req.Operation == claimAdminOperationRecover {
+				resp, err = executeDelegatedStaleClaimSweep(recover, now())
+			} else {
+				resp, err = executeClaimAdminRequest(schedulerDir, log, req)
+			}
+			if err != nil {
+				resp.Error = err.Error()
+			}
+			return resp
+		},
+	)
 }

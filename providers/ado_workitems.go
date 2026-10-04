@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	adoCommentPageSize = 200
-	adoWIQLPageSize    = 20000
-	adoClaimRetries    = 4
-	adoLinkRetries     = 4
-	adoMaxTagLength    = 400
-	adoClaimTagPrefix  = "goobers:claim-run:"
+	adoCommentPageSize         = 200
+	adoWIQLPageSize            = 20000
+	adoClaimRetries            = 4
+	adoLinkRetries             = 4
+	adoMaxTagLength            = 400
+	adoClaimTagPrefix          = "goobers:claim-run:"
+	adoAcceptanceCriteriaField = "Microsoft.VSTS.Common.AcceptanceCriteria"
 
 	// adoRequirementCategory is the process-agnostic category ADO-N27 resolves
 	// a default create type from: its defaultWorkItemType is "User Story" on
@@ -318,14 +319,9 @@ func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo Repository
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
 			return nil, err
 		}
-		page, err := p.listWorkItemsBatch(ctx, repo, result.WorkItems)
+		matches, err = p.appendMarkerMatches(ctx, repo, result.WorkItems, marker, matches)
 		if err != nil {
 			return nil, err
-		}
-		for _, item := range page {
-			if containsExactLine(item.Body, marker) {
-				matches = append(matches, item)
-			}
 		}
 		if len(result.WorkItems) < pageSize {
 			return matches, nil
@@ -336,6 +332,25 @@ func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo Repository
 		}
 		afterID = nextID
 	}
+}
+
+// appendMarkerMatches hydrates refs one workitemsbatch chunk at a time and
+// appends the items whose body carries marker as an exact line. Only one
+// chunk of full items (descriptions included) is held at once, so a WIQL
+// page of up to 20,000 ids never sits in memory whole.
+func (p *ADOProvider) appendMarkerMatches(ctx context.Context, repo RepositoryRef, refs []adoWorkItemRef, marker string, matches []WorkItem) ([]WorkItem, error) {
+	for start := 0; start < len(refs); start += adoWorkItemsBatchSize {
+		chunk, err := p.listWorkItemsBatch(ctx, repo, refs[start:min(start+adoWorkItemsBatchSize, len(refs))])
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range chunk {
+			if containsExactLine(item.Body, marker) {
+				matches = append(matches, item)
+			}
+		}
+	}
+	return matches, nil
 }
 
 // CreateWorkItem creates an Azure Boards work item.
@@ -401,29 +416,76 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	return p.mapADOWorkItem(ctx, req.Repository, out)
 }
 
+// findRunItem finds the work item an earlier attempt of this run created: one
+// whose description carries the run-id footer. It is what makes CreateWorkItem
+// idempotent across a retry (#140).
+//
+// The footer search alone is not enough. WIQL's CONTAINS WORDS runs against
+// Azure Boards' full-text index, which is updated asynchronously, so an item
+// created moments ago is not yet findable through it, and a retry inside
+// that window filed a duplicate (seen live by the ADO write leg). The second
+// query filters only on fields the work-item store answers consistently on
+// write: the items this identity created since yesterday, newest first.
+// Together they cover a fresh item (recency) and an old one (full text).
 func (p *ADOProvider) findRunItem(ctx context.Context, repo RepositoryRef, runID string) (WorkItem, bool, error) {
+	item, found, err := p.findRunItemByQuery(ctx, repo, adoRunItemFullTextQuery(runID), adoRunItemFullTextTop, runID)
+	if err != nil || found {
+		return item, found, err
+	}
+	return p.findRunItemByQuery(ctx, repo, adoRunItemRecentQuery, adoRunItemRecentTop, runID)
+}
+
+// adoRunItemFullTextQuery searches descriptions for runID's footer through
+// the full-text index.
+func adoRunItemFullTextQuery(runID string) string {
+	return fmt.Sprintf(
+		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Description] CONTAINS WORDS '%s' ORDER BY [System.Id] ASC",
+		escapeWIQLString(runFooter(runID)),
+	)
+}
+
+const (
+	// adoRunItemFullTextTop bounds the footer full-text search.
+	adoRunItemFullTextTop = 20
+	// adoRunItemRecentTop bounds the recency window. The retry that matters
+	// lands moments after the create it repeats, so the item is among the
+	// newest this identity created, even in a busy project.
+	adoRunItemRecentTop = 200
+	// adoRunItemRecentQuery lists the items this identity created since
+	// yesterday, newest first. @today has day precision and follows the
+	// project's time zone; the extra day keeps a just-created item inside the
+	// window whatever the hour. No clause touches the full-text index.
+	adoRunItemRecentQuery = "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.CreatedBy] = @me AND [System.CreatedDate] >= @today - 1 ORDER BY [System.Id] DESC"
+)
+
+// findRunItemByQuery runs one bounded WIQL query and returns the first hit
+// whose body carries runID's footer exactly.
+func (p *ADOProvider) findRunItemByQuery(ctx context.Context, repo RepositoryRef, query string, top int, runID string) (WorkItem, bool, error) {
 	endpoint, err := p.workURL(p.project(repo), "wiql")
 	if err != nil {
 		return WorkItem{}, false, err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{"20"}})
+	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(top)}})
 	if err != nil {
 		return WorkItem{}, false, err
 	}
-	footer := runFooter(runID)
-	query := fmt.Sprintf(
-		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Description] CONTAINS WORDS '%s' ORDER BY [System.Id] ASC",
-		escapeWIQLString(footer),
-	)
 	var result adoWIQLResponse
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
 		return WorkItem{}, false, err
 	}
-	candidates, err := p.getWorkItemsBatch(ctx, repo, adoRefIDs(result.WorkItems))
+	refs := result.WorkItems[:min(top, len(result.WorkItems))]
+	candidates, err := p.getWorkItemsBatch(ctx, repo, adoRefIDs(refs))
 	if err != nil {
 		return WorkItem{}, false, err
 	}
+	footer := runFooter(runID)
 	for _, raw := range candidates {
+		// Match on the raw description before mapping: the mapped body embeds
+		// it verbatim, and mapping reads the item type's states, so an
+		// unrelated recent item can neither cost a lookup nor fail the create.
+		if !strings.Contains(stringField(raw.Fields, "System.Description"), footer) {
+			continue
+		}
 		item, err := p.mapADOWorkItem(ctx, repo, raw)
 		if err != nil {
 			return WorkItem{}, false, err
@@ -699,8 +761,9 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	return updated, nil
 }
 
-// ClaimWorkItem atomically adds the visible claim tag and an internal owner tag.
-// The /rev test makes concurrent read-modify-write attempts settle on one winner.
+// ClaimWorkItem posts a claim breadcrumb comment, settles concurrent claimers
+// on the earliest own-identity breadcrumb (adoClaimWinner), and then adds the
+// visible claim tag in a /rev-tested patch.
 func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
 	result, err := p.claimWorkItem(ctx, req)
 	p.recordClaimAttempt(ctx, req, "claim", claimAttemptOutcome(result.Claimed), result.ClaimedBy, err)
@@ -708,67 +771,53 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 }
 
 func (p *ADOProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
-	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
-		return ClaimResult{}, err
-	}
-	if err := validateADOWorkItemID(req.ID); err != nil {
-		return ClaimResult{}, err
-	}
-	if strings.TrimSpace(req.RunID) == "" {
-		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-	if err := validateADOTags([]string{label}); err != nil {
-		return ClaimResult{}, err
-	}
-
-	// Fast path: an existing claim (breadcrumb, or a legacy owner tag) settles
-	// this without writing anything. The winner may be us on a re-claim.
-	winner, claimed, err := p.adoClaimWinner(ctx, req.Repository, req.ID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if claimed {
-		item, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
-		if getErr != nil {
-			return ClaimResult{}, getErr
-		}
-		return ClaimResult{Claimed: winner == req.RunID, ClaimedBy: winner, Item: item}, nil
-	}
-
-	// Stake ours, then re-read to settle a race deterministically by comment
-	// order — the same protocol the GitHub provider uses.
-	if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
-		return ClaimResult{}, err
-	}
-	winner, claimed, err = p.adoClaimWinner(ctx, req.Repository, req.ID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if !claimed {
-		return ClaimResult{}, fmt.Errorf("claim breadcrumb for run %q is not visible after write", req.RunID)
-	}
-	if winner != req.RunID {
-		item, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
-		if getErr != nil {
-			return ClaimResult{}, getErr
-		}
-		return ClaimResult{Claimed: false, ClaimedBy: winner, Item: item}, nil
-	}
-
-	// Mirror the win as the fixed visible label. The rev test keeps the tag
-	// write safe against a concurrent edit; it is not what decides the claim.
-	item, err := p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if !adoHasLabel(item.Labels, label) {
-		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
-	}
-	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
+	var labeled WorkItem
+	return claimWithProtocol(ctx, req.RunID, claimProtocolHooks{
+		validate: func() (string, error) {
+			if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
+				return "", err
+			}
+			if err := validateADOWorkItemID(req.ID); err != nil {
+				return "", err
+			}
+			if strings.TrimSpace(req.RunID) == "" {
+				return "", fmt.Errorf("run id is required to claim an item")
+			}
+			label := req.ClaimLabel
+			if label == "" {
+				label = LabelClaimed
+			}
+			if err := validateADOTags([]string{label}); err != nil {
+				return "", err
+			}
+			return label, nil
+		},
+		winner: func(ctx context.Context) (string, bool, error) {
+			return p.adoClaimWinner(ctx, req.Repository, req.ID)
+		},
+		postClaim: func(ctx context.Context) error {
+			return p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim")
+		},
+		addLabel: func(ctx context.Context, label string) error {
+			item, err := p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
+			labeled = item
+			return err
+		},
+		finish: func(ctx context.Context, winner, label string) (ClaimResult, error) {
+			item := labeled
+			if winner != req.RunID || item.ID == "" {
+				var err error
+				item, err = p.GetWorkItem(ctx, req.Repository, req.ID)
+				if err != nil {
+					return ClaimResult{}, err
+				}
+			}
+			if labeled.ID != "" && !adoHasLabel(item.Labels, label) {
+				return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
+			}
+			return ClaimResult{Claimed: winner == req.RunID, ClaimedBy: winner, Item: item}, nil
+		},
+	})
 }
 
 // setADOClaimLabel adds and removes work-item tags under the optimistic
@@ -823,42 +872,21 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 // ownClaimComments), matching the GitHub provider's filter to the
 // authenticated login.
 func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
-	comments, err := p.ownClaimComments(ctx, repo, id)
+	epochs, err := p.OpenClaimEpochs(ctx, repo, id)
 	if err != nil {
 		return "", false, err
 	}
-	sort.SliceStable(comments, func(i, j int) bool {
-		left, leftErr := strconv.Atoi(comments[i].ID)
-		right, rightErr := strconv.Atoi(comments[j].ID)
-		if leftErr != nil || rightErr != nil {
-			return comments[i].ID < comments[j].ID
-		}
-		return left < right
-	})
-	winner := ""
-	for _, comment := range comments {
-		if releasedBy := claimReleaseRunID(comment.Body); releasedBy != "" {
-			if winner == releasedBy {
-				winner = ""
-			}
-			continue
-		}
-		if winner == "" {
-			winner = claimRunID(comment.Body)
+	for _, epoch := range epochs {
+		if epoch.Trusted {
+			return epoch.RunID, true, nil
 		}
 	}
-	return winner, winner != "", nil
+	return "", false, nil
 }
 
-// ownClaimComments lists the work item's comments written by the identity the
-// provider's credential authenticates as. Authorship is keyed on the stable
-// identity GUID (createdBy.id equals connectionData authenticatedUser.id),
-// never the display name, so a project member cannot take or end a claim by
-// posting the breadcrumb text themselves. When the identity cannot be resolved
-// the read fails; it never falls back to an unfiltered scan. Breadcrumbs
-// written under a previous credential identity stop counting once the
-// identity changes.
-func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, id string) ([]Comment, error) {
+// OpenClaimEpochs lists the work item's open provider claim epochs, including
+// the ones authored by identities the claim election does not trust.
+func (p *ADOProvider) OpenClaimEpochs(ctx context.Context, repo RepositoryRef, id string) ([]ClaimEpoch, error) {
 	self, err := p.AuthenticatedIdentity(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve claim marker author: %w", err)
@@ -867,13 +895,66 @@ func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, 
 	if err != nil {
 		return nil, err
 	}
-	own := make([]Comment, 0, len(comments))
-	for _, comment := range comments {
-		if comment.AuthorID != "" && strings.EqualFold(comment.AuthorID, self.ID) {
-			own = append(own, comment)
-		}
+	sort.SliceStable(comments, func(i, j int) bool {
+		return adoCommentOrderLess(comments[i].ID, comments[j].ID)
+	})
+	return scanADOClaimEpochs(comments, self.ID), nil
+}
+
+func scanADOClaimEpochs(comments []Comment, markerAuthorID string) []ClaimEpoch {
+	type openEpoch struct {
+		epoch  ClaimEpoch
+		opened int
 	}
-	return own, nil
+	open := map[string]openEpoch{}
+	for index, comment := range comments {
+		authorID := strings.ToLower(strings.TrimSpace(comment.AuthorID))
+		if authorID == "" {
+			continue
+		}
+		current, hasOpen := open[authorID]
+		if releasedBy := claimReleaseRunID(comment.Body); releasedBy != "" {
+			if hasOpen && current.epoch.RunID == releasedBy {
+				delete(open, authorID)
+			}
+			continue
+		}
+		runID := claimRunID(comment.Body)
+		if hasOpen || runID == "" {
+			continue
+		}
+		epoch := ClaimEpoch{
+			Author:  comment.Author,
+			Trusted: strings.EqualFold(comment.AuthorID, markerAuthorID),
+			RunID:   runID,
+		}
+		if comment.CreatedAt != nil {
+			epoch.CreatedAt = *comment.CreatedAt
+		}
+		if attribution, ok, err := ParseAttribution(comment.Body); err == nil && ok {
+			epoch.InstanceID = attribution.InstanceID
+		}
+		open[authorID] = openEpoch{epoch: epoch, opened: index}
+	}
+	ordered := make([]openEpoch, 0, len(open))
+	for _, entry := range open {
+		ordered = append(ordered, entry)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].opened < ordered[j].opened })
+	epochs := make([]ClaimEpoch, 0, len(ordered))
+	for _, entry := range ordered {
+		epochs = append(epochs, entry.epoch)
+	}
+	return epochs
+}
+
+func adoCommentOrderLess(leftID, rightID string) bool {
+	left, leftErr := strconv.Atoi(leftID)
+	right, rightErr := strconv.Atoi(rightID)
+	if leftErr != nil || rightErr != nil {
+		return leftID < rightID
+	}
+	return left < right
 }
 
 // ReleaseWorkItemClaim ends the current ADO claim epoch: it posts a release
@@ -896,44 +977,42 @@ func (p *ADOProvider) recordClaimAttempt(ctx context.Context, req ClaimWorkItemR
 }
 
 func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
-	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOWorkItemID(req.ID); err != nil {
-		return WorkItem{}, err
-	}
-	if strings.TrimSpace(req.RunID) == "" {
-		return WorkItem{}, fmt.Errorf("run id is required to release an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	winner, claimed, err := p.adoClaimWinner(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if claimed && winner != req.RunID && !req.LedgerAuthorized {
-		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
-	}
-
-	if claimed {
-		// The breadcrumb lands first so a successful release never leaves a later
-		// claimer stuck behind the previous owner's durable marker.
-		if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if !adoHasLabel(current.Labels, label) {
-		return current, nil
-	}
-	remove := []string{label}
-	return p.setADOClaimLabel(ctx, req.Repository, req.ID, nil, remove)
+	_, final, _, err := releaseClaimWithProtocol(ctx, req, releaseClaimProtocolHooks{
+		validate: func() (string, error) {
+			if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
+				return "", err
+			}
+			if err := validateADOWorkItemID(req.ID); err != nil {
+				return "", err
+			}
+			if strings.TrimSpace(req.RunID) == "" {
+				return "", fmt.Errorf("run id is required to release an item")
+			}
+			if req.ClaimLabel == "" {
+				return LabelClaimed, nil
+			}
+			return req.ClaimLabel, nil
+		},
+		winner: func(ctx context.Context) (string, bool, error) {
+			return p.adoClaimWinner(ctx, req.Repository, req.ID)
+		},
+		getItem: func(ctx context.Context) (WorkItem, error) {
+			return p.GetWorkItem(ctx, req.Repository, req.ID)
+		},
+		postRelease: func(ctx context.Context, winner string) error {
+			return p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release")
+		},
+		hasLabel: func(item WorkItem, label string) bool {
+			return adoHasLabel(item.Labels, label)
+		},
+		removeLabel: func(ctx context.Context, label string) (WorkItem, error) {
+			return p.setADOClaimLabel(ctx, req.Repository, req.ID, nil, []string{label})
+		},
+		restoreLabel: func(ctx context.Context, label string) (WorkItem, error) {
+			return p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
+		},
+	})
+	return final, err
 }
 
 // Subscribe emits Azure Boards backlog item availability events.
@@ -1004,29 +1083,32 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 	labels := canonicalADOLabels(adoVisibleLabels(adoRawTags(item)), nil)
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
+	acceptanceCriteria := stringField(item.Fields, adoAcceptanceCriteriaField)
 	return WorkItem{
-		Provider:        ProviderADO,
-		ID:              strconv.Itoa(item.ID),
-		ExternalID:      strconv.Itoa(item.Rev),
-		Revision:        strconv.Itoa(item.Rev),
-		Type:            stringField(item.Fields, "System.WorkItemType"),
-		Title:           stringField(item.Fields, "System.Title"),
-		Body:            stringField(item.Fields, "System.Description"),
-		Labels:          labels,
-		State:           state,
-		Status:          statusFromLabels(labels, string(status)),
-		Assignee:        stringField(item.Fields, "System.AssignedTo"),
-		AssigneeAliases: identityAliases(item.Fields, "System.AssignedTo"),
-		Links:           links,
-		Parent:          parent,
-		Hierarchy:       hierarchy,
-		URL:             item.URL,
-		CreatedAt:       timeField(item.Fields, "System.CreatedDate"),
-		UpdatedAt:       updated,
-		Fields:          adoWorkItemFields(item),
-		BlockedByCount:  adoBlockedByCount(item.Relations),
-		Raw:             item,
-		Integrity:       apiintegrity.Unapproved,
+		Provider:           ProviderADO,
+		ID:                 strconv.Itoa(item.ID),
+		ExternalID:         strconv.Itoa(item.Rev),
+		Revision:           strconv.Itoa(item.Rev),
+		Type:               stringField(item.Fields, "System.WorkItemType"),
+		Title:              stringField(item.Fields, "System.Title"),
+		Body:               ComposeWorkItemBody(stringField(item.Fields, "System.Description"), acceptanceCriteria),
+		AcceptanceCriteria: acceptanceCriteria,
+		Description:        stringField(item.Fields, "System.Description"),
+		Labels:             labels,
+		State:              state,
+		Status:             statusFromLabels(labels, string(status)),
+		Assignee:           stringField(item.Fields, "System.AssignedTo"),
+		AssigneeAliases:    identityAliases(item.Fields, "System.AssignedTo"),
+		Links:              links,
+		Parent:             parent,
+		Hierarchy:          hierarchy,
+		URL:                item.URL,
+		CreatedAt:          timeField(item.Fields, "System.CreatedDate"),
+		UpdatedAt:          updated,
+		Fields:             adoWorkItemFields(item),
+		BlockedByCount:     adoBlockedByCount(item.Relations),
+		Raw:                item,
+		Integrity:          apiintegrity.Unapproved,
 	}
 }
 
@@ -1081,10 +1163,10 @@ func adoLabels(tags string) []string {
 
 // adoVisibleLabels drops legacy goobers:claim-run:* tags from the labels a
 // work item reports. The claim-tag fallback that read and cleared these tags
-// was removed in #1990, but items claimed before that change may still carry
-// a stale tag until it is naturally overwritten or the item is next released;
-// hiding the prefix keeps that garbage from surfacing as a routing label in
-// the meantime. Safe to drop this filter once no pre-#1990 tags remain.
+// was removed in #1990, and nothing clears them now: an item claimed before
+// that change keeps its stale tag until someone removes it by hand. Hiding
+// the prefix keeps that garbage from surfacing as a routing label, so the
+// filter stays.
 func adoVisibleLabels(labels []string) []string {
 	visible := make([]string, 0, len(labels))
 	for _, label := range labels {

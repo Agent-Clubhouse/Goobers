@@ -6,6 +6,8 @@ import type {
   TriggerStatusResponse,
   CancelRunRequest,
   CancelRunResult,
+  OperatorMessageSubmitRequest,
+  OperatorMessageSubmitResponse,
   QueueEligibilityView,
   Health,
   Instance,
@@ -41,6 +43,8 @@ export interface GoWireFixtures {
   triggerStatus: TriggerStatusResponse;
   cancelRequest: CancelRunRequest;
   cancelResult: CancelRunResult;
+  operatorMessageRequest: OperatorMessageSubmitRequest;
+  operatorMessageResponse: OperatorMessageSubmitResponse;
   queueEligibility: QueueEligibilityView;
   health: Health;
   instance: Instance;
@@ -96,6 +100,34 @@ export const goWireFixtures = {
   "cancelResult": {
     "code": "cancellation_requested"
   },
+  "operatorMessageRequest": {
+    "gaggle": "goobers",
+    "targetAddress": "terminal:operator",
+    "purpose": "approval-required",
+    "content": {
+      "text": "Please review the run."
+    },
+    "deliveryMode": "terminal"
+  },
+  "operatorMessageResponse": {
+    "accepted": true,
+    "record": {
+      "request": {
+        "schema": "goobers.dev/operator-message/request/v1",
+        "requestId": "message-1",
+        "idempotencyKey": "key-1",
+        "targetAddress": "terminal:operator",
+        "principalRef": "user:operator",
+        "requestedAt": "2026-07-18T12:34:56Z",
+        "purpose": "approval-required",
+        "content": {
+          "text": "Please review the run."
+        },
+        "deliveryMode": "terminal"
+      },
+      "state": "accepted"
+    }
+  },
   "queueEligibility": {
     "gaggle": "goobers",
     "workflow": "review",
@@ -130,6 +162,12 @@ export const goWireFixtures = {
     }
   },
   "health": {
+    "selfExecution": {
+      "policy": "",
+      "observed": false,
+      "placements": 0,
+      "refusals": 0
+    },
     "apiVersion": "v1",
     "schemaVersion": "v1",
     "build": {
@@ -157,12 +195,128 @@ export const goWireFixtures = {
       "watching": true,
       "state": "rejected"
     },
+    "startup": {
+      "phase": "crash-resume",
+      "target": "candidates=6",
+      "since": "2026-07-18T12:32:56Z",
+      "elapsedSeconds": 120,
+      "worktreeCount": 1,
+      "recoveryRunCount": 6,
+      "accumulationCount": 7,
+      "budgetSeconds": 60,
+      "budgetUsedPercent": 200,
+      "budgetState": "exceeded",
+      "blockingCandidate": {
+        "progress": {
+          "total": 6,
+          "examined": 6,
+          "resumed": 5,
+          "reattached": 0,
+          "terminal": 0,
+          "skipped": 0
+        },
+        "runId": "0123456789abcdef0123456789abcdef",
+        "gaggle": "goobers",
+        "workflow": "implement",
+        "disposition": "resolving-generation",
+        "operation": "resolve execution generation",
+        "startedAt": "2026-07-18T12:32:56Z",
+        "lastProgressAt": "2026-07-18T12:34:56Z",
+        "elapsedSeconds": 120,
+        "progressAgeSeconds": 5
+      }
+    },
     "update": {
       "available": true,
       "latestVersion": "v1.3.0",
       "currentVersion": "v1.2.3",
       "channel": "stable",
       "checkedAt": "2026-07-18T12:34:56Z"
+    },
+    "telemetryExporterHealth": {
+      "destinations": {
+        "collector": {
+          "enabled": true,
+          "mode": "otlp",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z",
+            "lastFailureAt": "2026-07-18T12:32:56Z",
+            "lastFailureReason": "collector_unavailable",
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "recoveryTransitions": 1,
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          },
+          "metric": {
+            "configured": true,
+            "state": "unhealthy",
+            "lastFailureAt": "2026-07-18T12:36:56Z",
+            "lastFailureReason": "signal_unimplemented",
+            "consecutiveFailures": 3,
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          }
+        },
+        "tenant": {
+          "replay": {
+            "accountingReady": true,
+            "pendingRecords": 2,
+            "pendingBytes": 1024,
+            "oldestPendingSeconds": 30,
+            "lastSuccess": "2026-07-18T12:32:56Z",
+            "lastFailure": "2026-07-18T12:36:56Z",
+            "failureClass": "rejected",
+            "activeFailure": true
+          },
+          "journal": {
+            "accepted": 12,
+            "dropped": 0,
+            "failures": 0
+          },
+          "diagnostics": {
+            "accepted": 3,
+            "dropped": 0,
+            "failures": 0
+          },
+          "enabled": true,
+          "mode": "azure-monitor",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z"
+          },
+          "metric": {
+            "configured": false,
+            "state": "disabled"
+          }
+        }
+      },
+      "enabled": true,
+      "mode": "custom",
+      "trace": {
+        "configured": true,
+        "state": "healthy",
+        "lastSuccessAt": "2026-07-18T12:36:56Z",
+        "lastFailureAt": "2026-07-18T12:32:56Z",
+        "lastFailureReason": "collector_unavailable",
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "recoveryTransitions": 1,
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      },
+      "metric": {
+        "configured": true,
+        "state": "unhealthy",
+        "lastFailureAt": "2026-07-18T12:36:56Z",
+        "lastFailureReason": "signal_unimplemented",
+        "consecutiveFailures": 3,
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      }
     }
   },
   "instance": {
@@ -212,6 +366,91 @@ export const goWireFixtures = {
       "warningFloorBytes": 10737418240,
       "criticalFloorBytes": 5368709120,
       "measuredAt": "2026-07-18T12:32:56Z"
+    },
+    "telemetryExporterHealth": {
+      "destinations": {
+        "collector": {
+          "enabled": true,
+          "mode": "otlp",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z",
+            "lastFailureAt": "2026-07-18T12:32:56Z",
+            "lastFailureReason": "collector_unavailable",
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "recoveryTransitions": 1,
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          },
+          "metric": {
+            "configured": true,
+            "state": "unhealthy",
+            "lastFailureAt": "2026-07-18T12:36:56Z",
+            "lastFailureReason": "signal_unimplemented",
+            "consecutiveFailures": 3,
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          }
+        },
+        "tenant": {
+          "replay": {
+            "accountingReady": true,
+            "pendingRecords": 2,
+            "pendingBytes": 1024,
+            "oldestPendingSeconds": 30,
+            "lastSuccess": "2026-07-18T12:32:56Z",
+            "lastFailure": "2026-07-18T12:36:56Z",
+            "failureClass": "rejected",
+            "activeFailure": true
+          },
+          "journal": {
+            "accepted": 12,
+            "dropped": 0,
+            "failures": 0
+          },
+          "diagnostics": {
+            "accepted": 3,
+            "dropped": 0,
+            "failures": 0
+          },
+          "enabled": true,
+          "mode": "azure-monitor",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z"
+          },
+          "metric": {
+            "configured": false,
+            "state": "disabled"
+          }
+        }
+      },
+      "enabled": true,
+      "mode": "custom",
+      "trace": {
+        "configured": true,
+        "state": "healthy",
+        "lastSuccessAt": "2026-07-18T12:36:56Z",
+        "lastFailureAt": "2026-07-18T12:32:56Z",
+        "lastFailureReason": "collector_unavailable",
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "recoveryTransitions": 1,
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      },
+      "metric": {
+        "configured": true,
+        "state": "unhealthy",
+        "lastFailureAt": "2026-07-18T12:36:56Z",
+        "lastFailureReason": "signal_unimplemented",
+        "consecutiveFailures": 3,
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      }
     },
     "recoveryInventory": {
       "state": "warning",
@@ -812,6 +1051,7 @@ export const goWireFixtures = {
       "terminalReason": "review budget exhausted",
       "causalEventSeq": 9
     },
+    "terminalCauseStatus": "unavailable",
     "transitions": [
       {
         "branch": 0,
@@ -887,7 +1127,16 @@ export const goWireFixtures = {
         },
         "error": {
           "code": "review_failed",
-          "message": "review requested changes"
+          "message": "review requested changes",
+          "causes": [
+            {
+              "message": "review gate failed"
+            },
+            {
+              "code": "review_rejected",
+              "message": "review requested changes"
+            }
+          ]
         },
         "redaction": {
           "target": "artifacts/result.json",
@@ -1101,6 +1350,9 @@ export const goWireFixtures = {
         "runs": [
           {
             "runId": "run-123",
+            "gaggle": "goobers",
+            "workflow": "implement",
+            "status": "completed",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 3,
             "measuredAttempts": 3,
@@ -1170,6 +1422,8 @@ export const goWireFixtures = {
         "runs": [
           {
             "runId": "run-124",
+            "gaggle": "goobers",
+            "workflow": "review",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 2,
             "measuredAttempts": 2,
@@ -1247,12 +1501,12 @@ export const goWireFixtures = {
         "p50Tokens": 24000,
         "p95Tokens": 48000,
         "costSamples": 4,
-        "p50CostUSD": 1.25,
-        "p95CostUSD": 2.5,
+        "p50CostAIC": 125,
+        "p95CostAIC": 250,
         "retryWasteAttempts": 1,
         "retryWasteDurationMs": 100000,
         "retryWasteTokens": 12000,
-        "retryWasteCostUSD": 0.75,
+        "retryWasteCostAIC": 75,
         "stuckAbortedAttempts": 1
       }
     ],
@@ -1269,12 +1523,12 @@ export const goWireFixtures = {
         "p50CopilotPremiumRequests": 1,
         "p95CopilotPremiumRequests": 2,
         "costSamples": 4,
-        "costUSD": 1.5,
-        "p50CostUSD": 1.25,
-        "p95CostUSD": 2.5,
+        "costAIC": 150,
+        "p50CostAIC": 125,
+        "p95CostAIC": 250,
         "retryWasteAttempts": 1,
         "retryWasteTokens": 12000,
-        "retryWasteCostUSD": 0.75
+        "retryWasteCostAIC": 75
       }
     ],
     "models": [
@@ -1288,7 +1542,7 @@ export const goWireFixtures = {
         "premiumRequestSamples": 3,
         "copilotPremiumRequests": 3,
         "costSamples": 3,
-        "costUSD": 1.5
+        "costAIC": 150
       }
     ],
     "creditAssignment": [
@@ -1440,7 +1694,8 @@ export const goWireFixtures = {
         "gaggle": "core"
       }
     },
-    "content": "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n"
+    "content": "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n",
+    "diagnostics": []
   },
   "configPreviewRequest": {
     "changeSet": {

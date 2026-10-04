@@ -72,6 +72,59 @@ func TestGooberInvocationActivatesAssetPathGuardBeforeCall(t *testing.T) {
 	}
 }
 
+func TestOperatorMessageAddressForAttemptUsesStageStartSequence(t *testing.T) {
+	const runID = "run-operator-address"
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "workflow", WorkflowVersion: 1,
+		Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	startedSeq := run.Seq()
+
+	got := operatorMessageAddressForAttempt(run, runID, "implement", 1, "coder")
+	want, err := journal.StageAgentAddress(runID, "implement", 1, "coder", startedSeq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want.String() {
+		t.Fatalf("operatorMessageAddressForAttempt = %q, want %q", got, want.String())
+	}
+}
+
+func TestOperatorMessageAddressForAttemptUsesGateStartSequence(t *testing.T) {
+	const runID = "run-gate-operator-address"
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "workflow", WorkflowVersion: 1,
+		Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateStarted, Gate: "review",
+		Runner: map[string]any{"repassAttempt": 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	startedSeq := run.Seq()
+
+	got := operatorMessageAddressForAttempt(run, runID, "review", 2, "reviewer")
+	want, err := journal.StageAgentAddress(runID, "review", 2, "reviewer", startedSeq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want.String() {
+		t.Fatalf("operatorMessageAddressForAttempt = %q, want %q", got, want.String())
+	}
+}
+
 type gateHeartbeatJournalStub struct{}
 
 func (gateHeartbeatJournalStub) Append(journal.Event) error  { return nil }
@@ -147,5 +200,33 @@ func TestGateHeartbeatGooberComposesWithAssetGuard(t *testing.T) {
 	case <-ticker.stopped:
 	default:
 		t.Fatal("heartbeat ticker was not stopped after review")
+	}
+}
+
+func TestReviewerOperatorMessageTargetRebindsEachDispatch(t *testing.T) {
+	run := newRunnerTestJournal(t, "reviewer-addresses")
+	capturing := &attemptCapturingGoober{}
+	invocation := newGooberInvocation(capturing, nil, run, "reviewer-addresses", "review", 1, "reviewer")
+	var previous string
+	for _, number := range []int{1, 2, 1} {
+		if err := run.Append(journal.ReviewerAttemptEvent(journal.EventReviewerStarted, "review", number, "")); err != nil {
+			t.Fatal(err)
+		}
+		start := run.Seq()
+		// An intervening record must not become the attempt's address anchor.
+		if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "review", Attempt: number}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := invocation.Review(context.Background(), apiv1.InvocationEnvelope{Attempt: int32(number)}); err != nil {
+			t.Fatal(err)
+		}
+		want, err := journal.StageAgentAddress("reviewer-addresses", "review", number, "reviewer", start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if invocation.operatorMessageAddress != want.String() || invocation.operatorMessageAddress == previous {
+			t.Fatalf("dispatch target=%q want=%q previous=%q", invocation.operatorMessageAddress, want.String(), previous)
+		}
+		previous = invocation.operatorMessageAddress
 	}
 }

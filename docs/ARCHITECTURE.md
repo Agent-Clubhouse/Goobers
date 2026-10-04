@@ -82,7 +82,7 @@ execution. Two runners implement the same contract:
 > compiled state machine as a Temporal workflow, `internal/workerhost` runs the
 > workers, and `internal/dispatcher` dispatches agentic stages to ephemeral
 > Kubernetes pods. The prescriptive part that remains is the operator/GitOps
-> config-delivery path in §10 and the full mode-3 description owned by #4240.
+> config-delivery path in §10 and the full mode-3 description owned by #6352.
 
 - The same compiled state machine hosted as a Temporal workflow; stages become
   activities dispatched to distributed workers; agentic stages run in ephemeral
@@ -345,7 +345,12 @@ Contract rules:
   `SEC-044`). Non-injection holds on every provider, Azure DevOps included:
   every ADO auth kind resolves in the daemon, a stage receives only the
   `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
-  the non-secret `GOOBERS_REPO_AUTH_SCHEME`), and no stage reads
+  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and, for a value whose source
+  states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`;
+  a deterministic goobers-CLI stage with such a value also gets a stage
+  credential-refresh grant, `GOOBERS_CREDENTIAL_ENDPOINT` +
+  `GOOBERS_CREDENTIAL_GRANT`, that re-resolves only those capabilities, #6120),
+  and no stage reads
   `repos[].auth` (see [the stage contract](stage-contract.md)). When a
   gaggle keeps its backlog on another provider than its code (topology (b):
   a GitHub or Gitea backlog for Azure DevOps code), the credential a
@@ -392,7 +397,9 @@ Contract rules:
   agentic gate may override `maxRepasses`. The value bounds cumulative
   re-entries to a branch's target stage across all gates that route back to
   that stage; a pass at one gate does not reset that target's live budget.
-  Separate target stages can therefore have independent budgets. Stall
+  Only non-pass outcomes are charged: a `pass` branch into an already-completed
+  stage is a forward step, so each repair loop is bounded by the failure that
+  sent it back rather than by the passing validation that follows. Separate target stages can therefore have independent budgets. Stall
   detection does not have a task-level override: task/gate `timeoutSeconds`
   and retry policies already own per-attempt execution bounds, while the stall
   watchdog protects the run journal as a whole.
@@ -545,8 +552,8 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   priority single-winner election (`SCH-010` full form, `SCH-011`), dead-letter /
   unrouted-item surfacing (`SCH-012`), and an item priority field (`SCH-030`).
   None of these have runtime consumers.
-- At tier 3, cron triggers become Temporal Schedules and claiming coordinates across
-  distributed workers — same declared semantics, different substrate.
+- At tier 3, `internal/localscheduler` remains the trigger source. It starts
+  engine runs whose stage execution is distributed across workers.
 
 ## 8. Telemetry (two stores, unchanged doctrine)
 
@@ -603,7 +610,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Runner / durability | Local runner, file journal | **Temporal** (self-hosted, Postgres-backed), history → journal projection |
 | Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Journal projection on a single-writer RWO instance volume; fleet-wide content-addressed artifacts on RWX/blob storage |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
-| Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
+| Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **`internal/localscheduler`**, starting Temporal engine runs |
 | Config delivery | Automatically watched local `config/` (`--watch-config=false` opts out); or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |
 | Run telemetry store | Journal spans + SQLite | **ADX** via OTLP |
 | Secrets | Env/file, Keychain, and `store` refs into a declared Azure Key Vault (usable at tiers 1-2 already) | **Azure Key Vault** as the primary tier-3 secret backend |
@@ -642,7 +649,7 @@ and implemented into PRs by the instance running on your own machine.
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop. The `reference-workflows/` reference config
 now defines the full self-hosting workflow set and
-currently loads **11 goobers and 15 workflows**; the CI-guarded inventory in
+currently loads **11 goobers and 16 workflows**; the CI-guarded inventory in
 [`reference-workflows/README.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/reference-workflows/README.md)
 is the count and roster of record. Together those workflows provide the canonical
 patterns for curating and
@@ -658,9 +665,9 @@ deployed config separately, and it can drift from the checked-in reference.
 
 Arbitrary tier-1/tier-2 repositories are current scope, not a future V1
 prerequisite. Repository-neutral GitHub onboarding and multi-gaggle configuration
-are shipped, alongside the Azure DevOps provider (supported, though with known
-provider-parity gaps still open, e.g. #5554, #5648, #5649 — see
-`docs/provider-capability-matrix.md`) and an experimental Gitea provider,
+are shipped, alongside the Azure DevOps provider (supported; its remaining
+provider differences are listed in `docs/provider-capability-matrix.md` and
+`docs/guides/ado-limitations.md`) and an experimental Gitea provider,
 packaged-install machinery, the journal-backed portal, capability-scoped and
 per-goober credential injection, optional OIDC, and a narrow Tutor workflow.
 Native sandboxed stage execution has also shipped (epic #35, closed) but
@@ -681,7 +688,7 @@ Still prescriptive: reviving the operator + ArgoCD/GitOps config-delivery path
 (`internal/operator`, `cmd/operator`, `cmd/config-sync`, `infra/`, still
 quarantined per §11) and the remaining Azure substrate drop-ins (ADX exporter,
 Entra) per §10. The authoritative current-state description of cloud execution
-is owned by [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240).
+is owned by [#6352](https://github.com/Agent-Clubhouse/Goobers/issues/6352).
 
 ## 13. Relationship to the requirement specs
 

@@ -39,7 +39,16 @@ type stalledSweepDeps struct {
 	// it already has. The row stays `running` forever while the journal says
 	// otherwise, which is what manufactured four "stuck for weeks" runs on the
 	// cloud instance and hid the genuinely stalled ones among them.
-	JournalAdvanced func(runID string, seq uint64)
+	JournalAdvanced        func(runID string, seq uint64)
+	JournalAdvancedContext func(context.Context, string, uint64)
+	// DrainedDowntime is every interval the daemon was down after a graceful
+	// drain (#5601), read once at startup by cleanDaemonDowntime. A drained
+	// run is parked at a stage boundary on purpose and nothing can progress it
+	// until the next daemon starts, so that interval is not the run's own
+	// inactivity: the stall check extends each run's timeout by the part of
+	// these intervals that falls after its last activity. Time the daemon was
+	// up, and downtime after a crash or a forced drain, still count.
+	DrainedDowntime []daemonDowntime
 }
 
 func (d *stalledSweepDeps) prepareTerminal() stalledTerminalPreparer {
@@ -49,11 +58,67 @@ func (d *stalledSweepDeps) prepareTerminal() stalledTerminalPreparer {
 	return d.PrepareTerminal
 }
 
+func (d *stalledSweepDeps) journalAdvancedContext() func(context.Context, string, uint64) {
+	if d == nil {
+		return nil
+	}
+	return d.JournalAdvancedContext
+}
+
 func (d *stalledSweepDeps) journalAdvanced() func(string, uint64) {
 	if d == nil {
 		return nil
 	}
 	return d.JournalAdvanced
+}
+
+// drainedDowntimeSince returns how much graceful-drain downtime falls after
+// lastActivity. A zero lastActivity credits every interval; the runner still
+// refuses to escalate a run whose activity it cannot date.
+func (d *stalledSweepDeps) drainedDowntimeSince(lastActivity time.Time) time.Duration {
+	if d == nil {
+		return 0
+	}
+	var total time.Duration
+	for _, window := range d.DrainedDowntime {
+		from := window.from
+		if from.Before(lastActivity) {
+			from = lastActivity
+		}
+		if window.to.After(from) {
+			total += window.to.Sub(from)
+		}
+	}
+	return total
+}
+
+// daemonDowntime is one interval between a daemon.clean_shutdown and the next
+// daemon.started.
+type daemonDowntime struct {
+	from, to time.Time
+}
+
+// cleanDaemonDowntime pairs each clean shutdown with the daemon start that
+// follows it. A dirty restart, or a start with no clean shutdown before it,
+// contributes nothing: when a crashed daemon stopped is unknown, so that gap
+// keeps counting toward the stall timeout exactly as before.
+func cleanDaemonDowntime(events []journal.Event) []daemonDowntime {
+	var windows []daemonDowntime
+	var shutdownAt time.Time
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventDaemonCleanShutdown:
+			shutdownAt = event.Time
+		case journal.EventDaemonStarted:
+			if !shutdownAt.IsZero() && event.Time.After(shutdownAt) {
+				windows = append(windows, daemonDowntime{from: shutdownAt, to: event.Time})
+			}
+			shutdownAt = time.Time{}
+		case journal.EventDaemonDirtyRestart:
+			shutdownAt = time.Time{}
+		}
+	}
+	return windows
 }
 
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
@@ -98,14 +163,23 @@ func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
 }
 
 func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runner) func() {
+	release, _ := r.trackRunLease(runID, workflow, owner, false)
+	return release
+}
+
+func (r *daemonRunnerRegistry) trackRunLease(runID, workflow string, owner *runner.Runner, requireCompatible bool) (func(), bool) {
 	if r == nil || owner == nil {
-		return func() {}
+		return func() {}, false
 	}
 	r.mu.Lock()
 	if r.owners == nil {
 		r.owners = make(map[string]trackedRun)
 	}
 	lease := r.owners[runID]
+	if requireCompatible && lease.owner != nil && lease.owner != owner {
+		r.mu.Unlock()
+		return func() {}, false
+	}
 	if lease.owner == owner {
 		lease.leases++
 	} else {
@@ -133,7 +207,7 @@ func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runne
 			}
 			r.mu.Unlock()
 		})
-	}
+	}, true
 }
 
 // RunIDs lists every run this process is currently tracking — the in-process
@@ -162,47 +236,7 @@ func (r *daemonRunnerRegistry) RunIDs() []string {
 // lease. Track's own hardStopping propagation applies here too, since a run
 // that becomes reachable mid-shutdown must still be stopped.
 func (r *daemonRunnerRegistry) TrackCompatible(runID string, owner *runner.Runner) (func(), bool) {
-	if r == nil || owner == nil {
-		return func() {}, false
-	}
-	r.mu.Lock()
-	if r.owners == nil {
-		r.owners = make(map[string]trackedRun)
-	}
-	lease := r.owners[runID]
-	if lease.owner != nil && lease.owner != owner {
-		r.mu.Unlock()
-		return func() {}, false
-	}
-	if lease.owner == owner {
-		lease.leases++
-	} else {
-		r.nextGeneration++
-		lease = trackedRun{RunID: runID, owner: owner, generation: r.nextGeneration, leases: 1}
-	}
-	r.owners[runID] = lease
-	hardStopping := r.hardStopping
-	r.mu.Unlock()
-	if hardStopping {
-		owner.HardStopRunWhenStarted(runID)
-	}
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			r.mu.Lock()
-			current := r.owners[runID]
-			if current.generation == lease.generation {
-				current.leases--
-				if current.leases == 0 {
-					delete(r.owners, runID)
-				} else {
-					r.owners[runID] = current
-				}
-			}
-			r.mu.Unlock()
-		})
-	}, true
+	return r.trackRunLease(runID, "", owner, true)
 }
 
 func (r *daemonRunnerRegistry) ActiveRuns() []trackedRun {
@@ -294,7 +328,8 @@ func newStalledTerminalizer(
 		NotifyTerminal: notify,
 		// Without this the run.finished this terminalizer appends is invisible
 		// to every derived reader — see stalledSweepDeps.JournalAdvanced.
-		JournalAdvanced: deps.journalAdvanced(),
+		JournalAdvanced:        deps.journalAdvanced(),
+		JournalAdvancedContext: deps.journalAdvancedContext(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err)
@@ -385,6 +420,7 @@ func sweepStalledRuns(
 			continue
 		}
 		durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
+		stallWindow := runTimeout
 		if !durationExceeded {
 			events, eventsErr := reader.Events()
 			if eventsErr != nil {
@@ -405,7 +441,9 @@ func sweepStalledRuns(
 			if journal.ParkedAtGate(events) {
 				continue
 			}
-			if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
+			lastActivity := events[len(events)-1].Time
+			stallWindow = runTimeout + deps.drainedDowntimeSince(lastActivity)
+			if !lastActivity.Before(now.Add(-stallWindow)) {
 				continue
 			}
 		}
@@ -478,7 +516,7 @@ func sweepStalledRuns(
 		if durationExceeded {
 			result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration)
 		} else {
-			result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, runTimeout)
+			result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, stallWindow)
 		}
 		if terminated {
 			if release != nil {

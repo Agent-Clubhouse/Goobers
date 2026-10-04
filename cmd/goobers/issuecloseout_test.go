@@ -71,7 +71,7 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 	if issue.state != "closed" {
 		t.Fatalf("issue state = %q, want closed", issue.state)
 	}
-	if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "https://example/pull/1") {
+	if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "https://github.com/your-org/your-repo/pull/1") {
 		t.Fatalf("issue comments = %+v, want exactly one linking pull/1", issue.comments)
 	}
 	var recordedClose bool
@@ -369,8 +369,64 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
 		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
 	}
-	if len(parked.comments) != 1 || parked.comments[0] != "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?" {
-		t.Fatalf("issue comments = %v, want exact routed reason and question", parked.comments)
+	if len(parked.comments) != 1 {
+		t.Fatalf("issue comments = %v, want exactly the routed reason and question", parked.comments)
+	}
+	if !strings.Contains(parked.comments[0], providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7", issueCloseOutNeedsHuman))) {
+		t.Fatalf("park comment lacks the close-out operation marker: %q", parked.comments[0])
+	}
+	assertBodyEqualIgnoringAttribution(t, parked.comments[0], "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?")
+}
+
+// TestIssueCloseOutRerunAdoptsEarlierAttemptsComment is #2657 at the stage
+// level: an earlier close-out attempt posted its comment and then died before
+// releasing the ledger claim, so the stage runs again. The re-run must find
+// that attempt's operation marker and post no second comment.
+func TestIssueCloseOutRerunAdoptsEarlierAttemptsComment(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers/status:done")
+
+	const runID = "run-rerun"
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+	earlier := "Implementation complete.\n\n" + providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7", providers.WorkItemStatusDone))
+	server.mu.Lock()
+	server.issues[7].state = "closed"
+	server.issues[7].comments = append(server.issues[7].comments, earlier)
+	server.issues[7].commentIDs = append(server.issues[7].commentIDs, 1)
+	server.issues[7].commentAuthors = append(server.issues[7].commentAuthors, "goobers-bot")
+	server.issues[7].commentTypes = append(server.issues[7].commentTypes, "Bot")
+	server.issues[7].commentTimes = append(server.issues[7].commentTimes, time.Now().UTC())
+	server.nextCommentID = 1
+	server.mu.Unlock()
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	server.mu.Lock()
+	issue := server.issues[7]
+	server.mu.Unlock()
+	var closeOut int
+	for _, comment := range issue.comments {
+		if strings.Contains(comment, "Implementation complete.") {
+			closeOut++
+		}
+	}
+	if closeOut != 1 {
+		t.Fatalf("close-out comments = %d in %q, want the earlier attempt's one only", closeOut, issue.comments)
+	}
+	if issue.state != "closed" {
+		t.Fatalf("issue state = %q, want closed", issue.state)
 	}
 }
 

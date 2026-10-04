@@ -42,6 +42,23 @@ func TestRequiredCapabilities(t *testing.T) {
 			want:    []capability.Capability{capability.ProviderPRWrite},
 		},
 		{
+			name:    "config-repo pull request open swaps the product credential for configrepo:write",
+			command: "open-pr",
+			args:    []string{"--config-repo"},
+			want:    []capability.Capability{capability.ConfigRepoWrite},
+		},
+		{
+			name:    "config-repo branch push",
+			command: "push-branch",
+			args:    []string{"--config-repo"},
+			want:    []capability.Capability{capability.ConfigRepoWrite},
+		},
+		{
+			name:    "product branch push",
+			command: "push-branch",
+			want:    []capability.Capability{capability.RepoPush},
+		},
+		{
 			name:    "read-only backlog query",
 			command: "backlog-query",
 			args:    []string{"--read-only"},
@@ -254,6 +271,19 @@ func TestResultFile(t *testing.T) {
 	}
 	if got, ok := ResultFile("publish-batch"); !ok || got != "published-batch.json" {
 		t.Fatalf("ResultFile(publish-batch) = %q, %v, want published-batch.json, true", got, ok)
+	}
+}
+
+func TestIsDefaultResultFile(t *testing.T) {
+	for _, name := range []string{"queue-result.json", "claimed-item.json", "published-batch.json"} {
+		if !IsDefaultResultFile(name) {
+			t.Fatalf("IsDefaultResultFile(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"analysis-result.json", "nested/claimed-item.json", ""} {
+		if IsDefaultResultFile(name) {
+			t.Fatalf("IsDefaultResultFile(%q) = true, want false", name)
+		}
 	}
 }
 

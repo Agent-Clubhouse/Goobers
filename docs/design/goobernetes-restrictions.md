@@ -4,11 +4,14 @@ Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 goobernetes-decisions.md (2026-08-22).
 
 Delivered-by: #3516, #3568, #4540
+Scope-delta: #3568 delivers rendered reference NetworkPolicies and an offline drift gate. Live cluster verification and the deferred proxy layer remain outside this slice; the broader restrictions design is still approved.
+Verified: 53566d5a9 (2026-10-02)
 
 The instance mandate configuration and admission/status slice is delivered by
 #4540 ([operator guide](../guides/isolation-mandates.md)). This does not claim
 the entire restrictions program implemented; the broader effect-list delivery
-(#3516), manifest rendering (#3568), and remaining work below retain their owners.
+(#3516) and remaining work below retain their owners. Manifest rendering and its
+committed-fixture drift gate are delivered by #3568.
 
 This document defines the v1 restrictions model for all three execution modes: what a
 restriction *is* (an effect, never a mechanism), who may introduce one (runner, stage,
@@ -486,3 +489,34 @@ Deliberately open — none reopens a decided question:
 - **Windows epic sequencing**: LPAC vs. job objects vs. Windows NetworkPolicy fidelity —
   which spike runs first. (The harness itself is settled — #647 closed with the harness
   confirmed working on Windows.)
+
+
+### network:none DNS migration (#5285)
+
+Linux `network:none` class policies omit DNS egress. The gaggle base's DNS
+policy excludes stage pods so the additive policy union cannot reopen that path.
+Other classes retain their DNS grant. Upgrade the dispatcher and apply
+`deploy/reference/goobers-system/worker-service-rbac.yaml` before updating the
+policies. The one-release `netpol-render --keep-dns-for-network-none` escape is
+deprecated at introduction and will be removed in the next minor.
+
+Each dispatch reads the daemon and blob endpoints' Kubernetes Services and stamps
+host aliases for their current primary ClusterIPs. URLs retain their original
+hostnames, including TLS verification. Endpoint hosts must name
+`service.namespace[.svc[.cluster-domain]]`; missing, headless, ExternalName and
+external endpoints fail with `NETWORK_NONE_SERVICE`. The reference grants read
+access only to `goobers-api` in `goobers-system`; operators using other Services
+must grant `get` on those named Services. Template aliases cannot redirect these
+endpoints. The blob grant retains its namespace-and-pod selector form; verify
+Service translation with the target CNI.
+
+`doctor --k8s --checks network-none-dns` inspects class-policy intent and reports
+**UNVERIFIED dataplane**, even when the class policy has no DNS row. For an
+operator-scoped check, select a stage pod in the target namespace and class and
+an unrestricted control pod: confirm daemon HTTPS by its original hostname from
+the stage pod; query the same DNS server directly from both pods, requiring a
+stage timeout and a successful control response; retain D12's denied-IP and
+allowed-IP controls. Include both TCP and UDP DNS. A timeout without the control
+is not evidence of enforcement. Doctor's automatic in-cluster execution remains
+[#6443](https://github.com/Agent-Clubhouse/Goobers/issues/6443); it does not create or exec probe pods here. Windows
+`network:none` remains prohibited; host-alias helper coverage does not lift it.

@@ -49,8 +49,8 @@ func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
 		t.Fatalf("publication must wait for native-smoke: needs=%v error=%v", dependencies, err)
 	}
 	smoke, ok := workflow.Jobs["native-smoke"]
-	if !ok || smoke.Needs.Value != "sign-windows" {
-		t.Fatal("native-smoke must consume the final signing job's artifacts")
+	if !ok || smoke.Needs.Value != "assemble" {
+		t.Fatal("native-smoke must consume the assembled final signed artifacts")
 	}
 	var targets []string
 	for _, row := range smoke.Strategy.Matrix.Include {
@@ -59,6 +59,12 @@ func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
 	for _, target := range []string{"darwin_arm64", "darwin_amd64", "windows_amd64", "linux_arm64"} {
 		if !slices.Contains(targets, target) {
 			t.Errorf("published platform %s has no native smoke leg", target)
+		}
+	}
+	smokeJob := workflowJob(string(data), "native-smoke")
+	for _, evidence := range []string{"$RUNNER_ARCH", "selected-checksum)", "$GITHUB_STEP_SUMMARY"} {
+		if !strings.Contains(smokeJob, evidence) {
+			t.Errorf("native-smoke must record runner arch and tested digest; missing %q", evidence)
 		}
 	}
 	job := workflowJob(string(data), "validate-release")
@@ -114,6 +120,18 @@ func TestReleaseBuildPublishesReusablePortalPackage(t *testing.T) {
 // turned every legitimate pin bump into an unrelated failure of this test.
 var signingOrderCases = []signingOrderCase{
 	{
+		// #5852: NextPlannedRelease freshness is enforced per tag, before
+		// anything is uploaded for signing.
+		name: "NextPlannedRelease",
+		job:  "build",
+		markers: []string{
+			"- name: Check NextPlannedRelease covers this release",
+			"GOOBERS_RELEASE_TAG: ${{ github.ref_name }}",
+			"--- PASS: TestReleaseTagWithinNextPlannedRelease",
+			"- name: Upload unsigned artifacts",
+		},
+	},
+	{
 		name: "macOS",
 		job:  "sign-macos",
 		markers: []string{
@@ -124,7 +142,8 @@ var signingOrderCases = []signingOrderCase{
 			// #4269: signing/notarization alone never proves the
 			// binary actually runs on its target OS.
 			`"$WORKDIR/goobers" --version | grep --fixed-strings "$TAG"`,
-			"- name: Recompute SHA256SUMS",
+			`tar -czf "signed/$(basename "$ARCHIVE")"`,
+			"- name: Upload signed darwin archives",
 		},
 	},
 	{
@@ -142,10 +161,32 @@ var signingOrderCases = []signingOrderCase{
 			"- name: Execute signed goobers.exe",
 			"$version = & winsign\\goobers.exe --version",
 			"- name: Repackage signed archive",
-			"- name: Recompute SHA256SUMS",
+			"- name: Upload signed Windows archive",
+		},
+	},
+	{
+		// #5413: SHA256SUMS is recomputed once, after both signers, and only
+		// then uploaded as the final set every signed-byte gate consumes.
+		name: "assemble",
+		job:  "assemble",
+		markers: []string{
+			"- name: Download unsigned artifacts",
+			"- name: Download signed darwin archives",
+			"- name: Download signed Windows archive",
+			"- name: " + releaseAssembleStep,
+			"sha256sum --check --strict --quiet SHA256SUMS",
+			`cp "$signed_file" "dist/$name"`,
+			"xargs sha256sum --",
+			"its signer did not re-pack it",
+			"changed between build and publish but is never signed",
+			"- name: Upload final signed artifacts",
 		},
 	},
 }
+
+// releaseAssembleStep names the one step that merges signed archives into the
+// build's set and recomputes SHA256SUMS.
+const releaseAssembleStep = "Merge signed archives and recompute SHA256SUMS"
 
 // firstUnorderedMarker reports the first marker that does not appear after all
 // preceding markers in section.
@@ -211,7 +252,7 @@ func TestReleaseWorkflowSigningMarkersToleratePinBumps(t *testing.T) {
         run: |
           $version = & winsign\goobers.exe --version
       - name: Repackage signed archive
-      - name: Recompute SHA256SUMS
+      - name: Upload signed Windows archive
 `
 	windows, ok := signingOrderCase{}, false
 	for _, test := range signingOrderCases {
@@ -224,5 +265,35 @@ func TestReleaseWorkflowSigningMarkersToleratePinBumps(t *testing.T) {
 	}
 	if marker, matched := firstUnorderedMarker(signWindows, windows.markers); !matched {
 		t.Errorf("re-pinned sign-windows job must still satisfy marker %q", marker)
+	}
+}
+
+// TestReleaseSignersUploadOnlyTheirArchives pins #5413's parallel-signing
+// contract: each signer starts from the build, uploads only the archive(s) it
+// re-packed, and leaves SHA256SUMS to assemble, so neither signer can carry
+// (or rewrite) the other's output or the shared manifest.
+func TestReleaseSignersUploadOnlyTheirArchives(t *testing.T) {
+	t.Parallel()
+	workflow := loadReleaseAuthorizationWorkflow(t)
+	for job, artifact := range map[string]string{"sign-macos": "dist-signed-darwin", "sign-windows": "dist-signed-windows"} {
+		uploads := 0
+		for _, step := range workflow.Jobs[job].Steps {
+			if strings.Contains(step.Run, "SHA256SUMS") {
+				t.Errorf("%s step %q must not read or rewrite SHA256SUMS; assemble recomputes it once", job, step.Name)
+			}
+			if step.With["name"] == "dist-unsigned" && step.With["path"] != "dist" {
+				t.Errorf("%s must sign from the build's upload", job)
+			}
+			if _, ok := step.With["if-no-files-found"]; !ok {
+				continue
+			}
+			uploads++
+			if step.With["name"] != artifact || step.With["path"] != "signed/" || step.With["overwrite"] != "" {
+				t.Errorf("%s must upload only its signed archives as %s: %v", job, artifact, step.With)
+			}
+		}
+		if uploads != 1 {
+			t.Errorf("%s must make exactly one upload, got %d", job, uploads)
+		}
 	}
 }

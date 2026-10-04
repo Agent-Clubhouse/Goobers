@@ -82,7 +82,14 @@ type remediationCheckpointServerState struct {
 	// short) entry serves the default timestamp so existing tests are
 	// unaffected; the sentinel "-" omits created_at entirely (a comment with
 	// no timestamp), which the human-comment watermark tests use.
-	commentCreatedAt    []string
+	commentCreatedAt []string
+	// commentAuthors is optional, index-aligned with comments (as
+	// rebasePRServerState's commentAuthors): an empty (or short) entry falls
+	// back to the bot login "goobers-bot", so existing tests that only set
+	// comments are unaffected. Only a bot-authored comment is stamped with
+	// the attribution footer; a comment seeded under a non-bot login is
+	// served raw, modeling a human comment the way production stores it.
+	commentAuthors      []string
 	files               []providers.ChangedFile
 	siblings            []remediationCheckpointSibling
 	labelRemovalAuth    string
@@ -281,7 +288,15 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		out := make([]map[string]interface{}, len(st.comments))
 		for i, c := range st.comments {
-			entry := map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": c}
+			login := "goobers-bot"
+			if i < len(st.commentAuthors) && st.commentAuthors[i] != "" {
+				login = st.commentAuthors[i]
+			}
+			body := c
+			if login == "goobers-bot" {
+				body = stampOwnFixtureBody(c, "comment")
+			}
+			entry := map[string]interface{}{"id": i + 1, "user": map[string]string{"login": login}, "body": body}
 			createdAt := "2026-07-15T00:00:00Z"
 			if i < len(st.commentCreatedAt) {
 				createdAt = st.commentCreatedAt[i]
@@ -303,7 +318,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 			for i, comment := range sibling.comments {
 				out[i] = map[string]interface{}{
 					"id": i + 1, "user": map[string]string{"login": "goobers-bot"},
-					"body": comment, "created_at": sibling.updatedAt.Format(time.RFC3339),
+					"body": stampOwnFixtureBody(comment, "comment"), "created_at": sibling.updatedAt.Format(time.RFC3339),
 				}
 			}
 			writeFakeJSON(w, out)
@@ -714,6 +729,7 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 		t.Fatalf("no-cause state = %+v, ok=%v, want cycle and digest with unchanged counters", state, ok)
 	}
 
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
 	code, stdout, stderr = runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
 		t.Fatalf("repeat: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -895,44 +911,68 @@ func TestDeclaredRemediationBudgetsReadWorkflowInputs(t *testing.T) {
 	}
 }
 
-// TestDeclaredRemediationBudgetsHumanCommentDefaultsWhenUndeclared covers the
-// backward-compat contract: an undeclared humanCommentBudget must fall back to
-// the default (not error, unlike the four legacy budgets), while a non-empty
-// invalid value is still a hard error.
-func TestDeclaredRemediationBudgetsHumanCommentDefaultsWhenUndeclared(t *testing.T) {
-	t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", "2")
-	t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
-	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "2")
-	t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "2")
+// remediationBudgetInputEnv maps each per-cause budget input to the
+// environment variable the provider-stage envelope sets for it.
+var remediationBudgetInputEnv = map[string]string{
+	"conflictBudget":       "GOOBERS_INPUT_CONFLICTBUDGET",
+	"substantiveBudget":    "GOOBERS_INPUT_SUBSTANTIVEBUDGET",
+	"failingCIBudget":      "GOOBERS_INPUT_FAILINGCIBUDGET",
+	"siblingOverlapBudget": "GOOBERS_INPUT_SIBLINGOVERLAPBUDGET",
+	"humanCommentBudget":   "GOOBERS_INPUT_HUMANCOMMENTBUDGET",
+}
 
-	t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", "")
+// TestDeclaredRemediationBudgetsDefaultEachUndeclaredCause pins the #2737
+// ruling: every per-cause budget is optional and falls back to
+// defaultRemediationCauseBudget when undeclared, independently of the others,
+// rather than failing the stage the first time that cause fires.
+func TestDeclaredRemediationBudgetsDefaultEachUndeclaredCause(t *testing.T) {
+	if defaultRemediationCauseBudget != 2 {
+		t.Fatalf("defaultRemediationCauseBudget = %d, want 2 (PO ruling on #2737)", defaultRemediationCauseBudget)
+	}
+	for _, env := range remediationBudgetInputEnv {
+		t.Setenv(env, "")
+	}
 	got, err := declaredRemediationBudgets(0)
 	if err != nil {
-		t.Fatalf("declaredRemediationBudgets with undeclared humanCommentBudget: %v", err)
+		t.Fatalf("declaredRemediationBudgets with no budgets declared: %v", err)
 	}
-	if got.HumanComment != defaultHumanCommentBudget {
-		t.Fatalf("HumanComment budget = %d, want default %d when undeclared", got.HumanComment, defaultHumanCommentBudget)
+	want := remediationBudgets{Conflict: 2, Substantive: 2, FailingCI: 2, SiblingOverlap: 2, HumanComment: 2}
+	if got != want {
+		t.Fatalf("budgets = %+v, want every cause defaulted %+v", got, want)
 	}
 
-	for _, raw := range []string{"not-a-number", "0", "-1"} {
-		t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", raw)
-		if _, err := declaredRemediationBudgets(0); err == nil {
-			t.Fatalf("declaredRemediationBudgets accepted invalid humanCommentBudget %q", raw)
-		}
+	// A declared budget still wins for its own cause; the rest default.
+	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "5")
+	got, err = declaredRemediationBudgets(0)
+	if err != nil {
+		t.Fatalf("declaredRemediationBudgets with one budget declared: %v", err)
+	}
+	want.FailingCI = 5
+	if got != want {
+		t.Fatalf("budgets = %+v, want %+v", got, want)
 	}
 }
 
-func TestDeclaredRemediationBudgetsRejectMissingOrInvalidInputs(t *testing.T) {
-	for _, raw := range []string{"", "not-a-number", "0", "-1"} {
-		t.Run(raw, func(t *testing.T) {
-			t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", raw)
-			t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
-			t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "2")
-			t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "2")
-			if _, err := declaredRemediationBudgets(0); err == nil {
-				t.Fatalf("declaredRemediationBudgets accepted conflictBudget %q", raw)
-			}
-		})
+// TestDeclaredRemediationBudgetsRejectInvalidInputs keeps a typo loud: a
+// non-empty value that is not a positive integer is a hard error for every
+// cause, never a silent fallback to the default.
+func TestDeclaredRemediationBudgetsRejectInvalidInputs(t *testing.T) {
+	for input, env := range remediationBudgetInputEnv {
+		for _, raw := range []string{"not-a-number", "0", "-1"} {
+			t.Run(input+"/"+raw, func(t *testing.T) {
+				for _, other := range remediationBudgetInputEnv {
+					t.Setenv(other, "2")
+				}
+				t.Setenv(env, raw)
+				_, err := declaredRemediationBudgets(0)
+				if err == nil {
+					t.Fatalf("declaredRemediationBudgets accepted %s %q", input, raw)
+				}
+				if !strings.Contains(err.Error(), input) {
+					t.Fatalf("error %q does not name input %q", err, input)
+				}
+			})
+		}
 	}
 }
 
@@ -1072,6 +1112,7 @@ func TestRemediationCheckpointRecordsCommentWatermark(t *testing.T) {
 			number: 77, headSHA: headSHA, baseSHA: baseSHA,
 			labels:           []string{needsRemediationLabel},
 			comments:         []string{priorComment, "please look", "and this too"},
+			commentAuthors:   []string{"goobers-bot", "human-reviewer", "human-reviewer"},
 			commentCreatedAt: []string{"2026-07-19T00:00:00Z", "2026-07-20T00:00:00Z", "2026-07-21T00:00:00Z"},
 		}
 		server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
@@ -1140,6 +1181,7 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 		t.Fatalf("first cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
 	// Second cycle: no new commits landed since — the diff is identical —
 	// so this must escalate even though the (default, liberal) budget is
 	// nowhere near exhausting its cause budget.
@@ -1597,6 +1639,7 @@ func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.
 	if code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
 		t.Fatalf("first cycle: code = %d, stderr = %q", code, stderr)
 	}
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
 	if code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
 		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}

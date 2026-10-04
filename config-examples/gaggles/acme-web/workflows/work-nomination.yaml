@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: work-nomination
+  annotations:
+    goobers.dev/purpose: "Scans the repository, code-scanning alerts and dependency alerts for worthwhile work and nominates it as new backlog issues."
 spec:
   gaggle: acme-web
   displayName: Work nomination
@@ -156,10 +158,12 @@ spec:
 
   # Each independent source settles as a branch. A quiet source reports
   # no-work for itself without preventing the remaining sources or repository
-  # inspection from reaching the nominator.
+  # inspection from reaching the nominator. The sources run one at a time;
+  # raise maxConcurrentBranches to run them concurrently.
   parallels:
     - name: collect-sources
       failurePolicy: continue_on_error
+      maxConcurrentBranches: 1
       join: nominate
       branches:
         - { name: telemetry, start: gather-signals }

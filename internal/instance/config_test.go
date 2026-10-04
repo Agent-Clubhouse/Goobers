@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {
@@ -1535,6 +1536,35 @@ func TestDaemonLivenessTimeout(t *testing.T) {
 	}
 }
 
+// #5397: the required-MCP settle budget is optional (zero keeps the harness
+// default), loads from instance.yaml, and fails closed when malformed.
+func TestRequiredMCPSettleTimeout(t *testing.T) {
+	if got, err := (RunnerConfig{}).RequiredMCPSettleTimeoutDuration(); err != nil || got != 0 {
+		t.Fatalf("unset RequiredMCPSettleTimeoutDuration = %s, %v; want 0", got, err)
+	}
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+runner:
+  requiredMCPSettleTimeout: 90s
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got, err := cfg.Runner.RequiredMCPSettleTimeoutDuration(); err != nil || got != 90*time.Second {
+		t.Fatalf("RequiredMCPSettleTimeoutDuration = %s, %v; want 90s", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{Runner: RunnerConfig{RequiredMCPSettleTimeout: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runner.requiredMCPSettleTimeout") {
+				t.Fatalf("Validate() error = %v, want runner.requiredMCPSettleTimeout error", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigAPIListenAddress(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
@@ -2489,6 +2519,15 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "gitea auth requires token",
 		},
 		{
+			// GitHub Enterprise Server is unsupported (#6347): a baseUrl on a
+			// github repo would be silently ignored, so it is refused.
+			name: "github rejects baseUrl",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", BaseURL: "https://ghe.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "GitHub Enterprise Server is unsupported",
+		},
+		{
 			name: "missing owner",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Name: "web", Token: TokenRef{Env: "T"}},
@@ -3076,6 +3115,126 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestRunnerConfigHarnessArgValidationErrors(t *testing.T) {
+	seventeenArgs := make([]string, 17)
+	for i := range seventeenArgs {
+		seventeenArgs[i] = "{sessionId}"
+	}
+
+	tests := []struct {
+		name string
+		cfg  RunnerConfig
+		run  func(RunnerConfig) error
+		want string
+	}{
+		{
+			name: "session unknown harness",
+			cfg:  RunnerConfig{HarnessSessionArgs: map[string][]string{"unknown": {"{sessionId}"}}},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["unknown"]: unknown harness (known: claude-code, codex, copilot)`,
+		},
+		{
+			name: "session non-copilot harness",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"codex": {"codex"}},
+				HarnessSessionArgs: map[string][]string{"codex": {"{sessionId}"}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["codex"]: only the copilot harness supports launcher session arguments`,
+		},
+		{
+			name: "session missing command",
+			cfg:  RunnerConfig{HarnessSessionArgs: map[string][]string{"copilot": {"{sessionId}"}}},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"]: requires runner.harnessCommand["copilot"]`,
+		},
+		{
+			name: "session count bounds",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": seventeenArgs},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"]: must contain 1 to 16 arguments`,
+		},
+		{
+			name: "session invalid argument",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"{sessionId}", ""}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"][1]: invalid session argument`,
+		},
+		{
+			name: "session unsupported braces",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"{other}"}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"][0]: only {sessionId} is supported`,
+		},
+		{
+			name: "session missing placeholder",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"fixed"}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"]: at least one argument must contain {sessionId}`,
+		},
+		{
+			name: "preflight unknown harness",
+			cfg:  RunnerConfig{HarnessPreflightArgs: map[string][]string{"unknown": {"check"}}},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["unknown"]: unknown harness (known: claude-code, codex, copilot)`,
+		},
+		{
+			name: "preflight non-copilot harness",
+			cfg: RunnerConfig{
+				HarnessCommand:       map[string][]string{"codex": {"codex"}},
+				HarnessPreflightArgs: map[string][]string{"codex": {"check"}},
+			},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["codex"]: only the copilot harness supports preflight arguments`,
+		},
+		{
+			name: "preflight missing command",
+			cfg:  RunnerConfig{HarnessPreflightArgs: map[string][]string{"copilot": {"check"}}},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["copilot"]: requires runner.harnessCommand["copilot"]`,
+		},
+		{
+			name: "preflight count bounds",
+			cfg: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": seventeenArgs},
+			},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["copilot"]: must contain 1 to 16 arguments`,
+		},
+		{
+			name: "preflight invalid argument",
+			cfg: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": {""}},
+			},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["copilot"][0]: invalid preflight argument`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.run(tt.cfg)
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("validation error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // TestConfigValidateDaemonIdentity covers #1780's DaemonIdentityConfig: the
 // same exactly-one-kind, kind-specific-required-fields, fail-closed-inline-
 // secret discipline RepoAuthConfig already enforces for repo-level auth.
@@ -3640,6 +3799,52 @@ func TestDefaultStageTimeoutDuration(t *testing.T) {
 	}
 }
 
+func TestRecoveryCustodyTimeoutDuration(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "unset", value: "", want: 0},
+		{name: "duration", value: "10m", want: 10 * time.Minute},
+		{name: "seconds", value: "90s", want: 90 * time.Second},
+		{name: "malformed", value: "ten minutes", wantErr: true},
+		{name: "zero", value: "0s", wantErr: true},
+		{name: "negative", value: "-1m", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := RunnerConfig{RecoveryCustodyTimeout: tc.value}.RecoveryCustodyTimeoutDuration()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("RecoveryCustodyTimeoutDuration(%q) = %s, want an error", tc.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RecoveryCustodyTimeoutDuration(%q): %v", tc.value, err)
+			}
+			if got != tc.want {
+				t.Fatalf("RecoveryCustodyTimeoutDuration(%q) = %s, want %s", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsMalformedRecoveryCustodyTimeout(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{Runner: RunnerConfig{RecoveryCustodyTimeout: "ten minutes"}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error for a malformed runner.recoveryCustodyTimeout")
+	}
+	if !strings.Contains(err.Error(), "runner.recoveryCustodyTimeout") {
+		t.Fatalf("Validate() error = %q, want it to name runner.recoveryCustodyTimeout", err)
+	}
+}
+
 // A malformed baseline must fail `goobers validate` once, not every run at
 // dispatch — the value is consumed when the deterministic executor is built.
 func TestValidateRejectsMalformedDefaultStageTimeout(t *testing.T) {
@@ -4149,6 +4354,16 @@ func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
 	}
 }
 
+func TestExternalTelemetryConnectorNamesIsNonNilForAConfig(t *testing.T) {
+	var nilConfig *Config
+	if names := nilConfig.ExternalTelemetryConnectorNames(); names != nil {
+		t.Fatalf("nil config names = %#v, want nil (check skipped)", names)
+	}
+	if names := (&Config{}).ExternalTelemetryConnectorNames(); names == nil || len(names) != 0 {
+		t.Fatalf("empty config names = %#v, want a non-nil empty slice so the check still runs", names)
+	}
+}
+
 // TestExternalTelemetryConnectorsByName is #4341's dispatcher-side lookup:
 // the index the dispatcher stamps a stage pod from must clear Auth.Token,
 // never hand a credential reference to a caller that has no business
@@ -4267,5 +4482,224 @@ func TestStorageHealthConfigValidate(t *testing.T) {
 				t.Fatalf("validate() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestLoadConfigEngineTLSReachesEffectiveConfig pins the #5289 plumbing: the
+// engine.tls block survives the env-override resolution LoadConfig applies,
+// so every dial site reading EffectiveEngineConfig sees it.
+func TestLoadConfigEngineTLSReachesEffectiveConfig(t *testing.T) {
+	t.Setenv(TemporalHostPortEnv, "temporal.internal:7233")
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  tls:
+    caFile: /etc/temporal/ca.pem
+    certFile: /etc/temporal/tls.crt
+    keyFile: /etc/temporal/tls.key
+    serverName: temporal-frontend
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	want := temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", CertFile: "/etc/temporal/tls.crt", KeyFile: "/etc/temporal/tls.key", ServerName: "temporal-frontend"}
+	got := cfg.EffectiveEngineConfig()
+	if got.TLS == nil || *got.TLS != want {
+		t.Fatalf("EffectiveEngineConfig().TLS = %+v, want %+v", got.TLS, want)
+	}
+	if got.HostPort != "temporal.internal:7233" {
+		t.Fatalf("HostPort = %q, want the environment override", got.HostPort)
+	}
+}
+
+// TestLoadConfigEngineWorkerVersioningIsOptIn pins #5950: worker versioning is
+// off unless engine.workerVersioning says otherwise, and the opt-in survives
+// the resolution LoadConfig applies, which rebuilds the engine block.
+func TestLoadConfigEngineWorkerVersioningIsOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "omitted", yaml: "engine:\n  hostPort: localhost:7233\n", want: false},
+		{name: "opted in", yaml: "engine:\n  hostPort: localhost:7233\n  workerVersioning: true\n", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\n"+tc.yaml)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if got := cfg.EffectiveEngineConfig().WorkerVersioning; got != tc.want {
+				t.Fatalf("EffectiveEngineConfig().WorkerVersioning = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadConfigEngineHITLSurvivesResolution pins that engine.hitl reaches
+// EffectiveEngineConfig: LoadConfig rebuilds the engine block from defaults
+// and overrides, and that rebuild used to drop HITL, so an instance that
+// opted into the #3883 operator-hold protocol silently ran without it.
+func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
+	path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n  hitl:\n    enabled: true\n    window: 4h\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.EngineHITLEnabled() {
+		t.Fatal("EngineHITLEnabled() = false, want the engine.hitl opt-in to survive LoadConfig")
+	}
+	if got := cfg.EffectiveEngineConfig().HITL; got == nil || got.Window != "4h" {
+		t.Fatalf("EffectiveEngineConfig().HITL = %+v, want window 4h", got)
+	}
+}
+
+// TestResolveEngineConfigPreservesEveryField pins #6012: resolution starts
+// from a full copy of the authored engine block, so a field that is not
+// env-backed reaches the resolved config without being re-listed in the
+// resolver. The fixture must set every field; the reflection guard fails
+// when a new EngineConfig field is added without extending it.
+func TestResolveEngineConfigPreservesEveryField(t *testing.T) {
+	authored := EngineConfig{
+		HostPort:         "temporal.internal:7233",
+		Namespace:        "authored-namespace",
+		TaskQueue:        "authored-queue",
+		HITL:             &EngineHITLConfig{Enabled: true, Window: "4h", Actors: []string{"operator"}},
+		TLS:              &temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", ServerName: "temporal-frontend"},
+		WorkerVersioning: true,
+	}
+	value := reflect.ValueOf(authored)
+	for i := 0; i < value.NumField(); i++ {
+		if value.Field(i).IsZero() {
+			t.Fatalf("fixture leaves EngineConfig.%s zero; set it so its preservation is covered", value.Type().Field(i).Name)
+		}
+	}
+	noEnv := func(string) (string, bool) { return "", false }
+
+	t.Run("without environment overrides", func(t *testing.T) {
+		input := authored
+		resolved, _, err := (&Config{Engine: &input}).ResolveEngineConfig(noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(resolved, authored) {
+			t.Fatalf("resolved = %+v, want authored %+v", resolved, authored)
+		}
+	})
+
+	t.Run("environment overrides only the env-backed scalars", func(t *testing.T) {
+		input := authored
+		env := map[string]string{
+			TemporalHostPortEnv:  "temporal.env:7233",
+			TemporalNamespaceEnv: "env-namespace",
+			TaskQueueEnv:         "env-queue",
+		}
+		resolved, _, err := (&Config{Engine: &input}).ResolveEngineConfig(func(key string) (string, bool) {
+			v, ok := env[key]
+			return v, ok
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := authored
+		want.HostPort, want.Namespace, want.TaskQueue = "temporal.env:7233", "env-namespace", "env-queue"
+		if !reflect.DeepEqual(resolved, want) {
+			t.Fatalf("resolved = %+v, want %+v", resolved, want)
+		}
+	})
+
+	t.Run("defaults fill only empty env-backed scalars", func(t *testing.T) {
+		input := authored
+		input.HostPort, input.Namespace, input.TaskQueue = "", "", ""
+		resolved, _, err := (&Config{Engine: &input}).ResolveEngineConfig(noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := authored
+		want.HostPort, want.Namespace, want.TaskQueue = DefaultTemporalHostPort, DefaultTemporalNamespace, DefaultEngineTaskQueue
+		if !reflect.DeepEqual(resolved, want) {
+			t.Fatalf("resolved = %+v, want %+v", resolved, want)
+		}
+	})
+}
+
+// TestEngineConfigValidateHostPortPort pins #6013: a hostPort whose port is
+// not a number from 1 through 65535 is refused at load, not at dial.
+func TestEngineConfigValidateHostPortPort(t *testing.T) {
+	for _, tc := range []struct {
+		hostPort string
+		wantErr  string
+	}{
+		{hostPort: "localhost:7233"},
+		{hostPort: "temporal.example:1"},
+		{hostPort: "10.0.0.5:65535"},
+		{hostPort: "[::1]:7233"},
+		{hostPort: "temporal:abc", wantErr: `hostPort "temporal:abc": port "abc" must be a number from 1 through 65535`},
+		{hostPort: "temporal:0", wantErr: `port "0" must be a number from 1 through 65535`},
+		{hostPort: "temporal:-1", wantErr: `port "-1" must be a number from 1 through 65535`},
+		{hostPort: "temporal:65536", wantErr: `port "65536" must be a number from 1 through 65535`},
+		{hostPort: "temporal:70000", wantErr: `port "70000" must be a number from 1 through 65535`},
+		{hostPort: "temporal", wantErr: `must be in host:port form`},
+	} {
+		t.Run(tc.hostPort, func(t *testing.T) {
+			err := EngineConfig{HostPort: tc.hostPort, Namespace: "default", TaskQueue: "goobers"}.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoadConfigRejectsInvalidEngineHostPortPort pins #6013 at the LoadConfig
+// boundary the issue names.
+func TestLoadConfigRejectsInvalidEngineHostPortPort(t *testing.T) {
+	path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: temporal:70000\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), `port "70000" must be a number from 1 through 65535`) {
+		t.Fatalf("LoadConfig error = %v, want out-of-range port refusal", err)
+	}
+}
+
+func TestLoadConfigEngineTLSRejectsCertWithoutKey(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  tls:
+    certFile: /etc/temporal/tls.crt
+`)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "certFile and keyFile must be set together") {
+		t.Fatalf("LoadConfig error = %v, want the cert/key pairing refusal", err)
+	}
+}
+
+func TestTerminalBranchRetentionDuration(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+		bad   bool
+	}{
+		{"", 30 * 24 * time.Hour, false}, {"0s", 0, false}, {"1440h", 60 * 24 * time.Hour, false}, {"-1h", 0, true}, {"30d", 0, true},
+	} {
+		cfg := RetentionConfig{TerminalBranchMaxAge: tc.value}
+		got, err := cfg.TerminalBranchMaxAgeDuration()
+		if (err != nil) != tc.bad || !tc.bad && got != tc.want {
+			t.Fatalf("%q: %v, %v", tc.value, got, err)
+		}
+		if err := (&Config{Retention: cfg}).Validate(); (err != nil) != tc.bad {
+			t.Fatalf("validate %q: %v", tc.value, err)
+		}
 	}
 }

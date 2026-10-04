@@ -228,6 +228,16 @@ func (r standaloneDashboardReader) WorkItem(
 	return reader.WorkItem(ctx, provider, repository, kind, externalID)
 }
 
+// ActiveClaims forwards the active-claims read (#1488); the embedded Reader
+// interface would otherwise hide it from the handler's capability check.
+func (r standaloneDashboardReader) ActiveClaims(ctx context.Context) (readservice.ActiveClaimList, error) {
+	reader, ok := r.Reader.(readservice.ActiveClaimsReader)
+	if !ok {
+		return readservice.ActiveClaimList{}, errors.New("active claims are not served by this reader")
+	}
+	return reader.ActiveClaims(ctx)
+}
+
 func runDashboard(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()
@@ -846,6 +856,12 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if err != nil {
 		return dashboardAPI{}, err
 	}
+	// Started only once nothing below can fail, so no error return leaves a
+	// live read-model writer behind (#5120).
+	stopReadProjection := func() {}
+	if readStore != nil && readMode == readservice.ReadModeProjected {
+		stopReadProjection = readservice.StartStandaloneProjection(readStore, layout, errorLog)
+	}
 	return dashboardAPI{
 		handler: handler,
 		mode:    dashboardModeStandalone,
@@ -853,6 +869,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		// (#1929); the change-feed stream holds no goroutine of its own beyond
 		// each subscription, which the handler cancels.
 		close: func() error {
+			stopReadProjection()
 			projectorErr := stopSchedulerProjector()
 			var telemetryCloseErr error
 			if telemetry != nil {

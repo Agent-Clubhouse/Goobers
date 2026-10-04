@@ -3,6 +3,7 @@ package instance
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,10 +42,13 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 	return validateInOrder(
 		func() error { return c.Portal.validate() },
 		c.validateSpeech,
+		func() error { return c.DecisionGate.Validate() },
 		func() error { return c.Webhook.validateSecret(stores) },
 		c.validateTimezone,
 		c.Runner.validateDefaultStageTimeout,
+		c.Runner.validateRecoveryCustodyTimeout,
 		c.Runner.validateStageMemoryLimit,
+		c.Runner.validatePodTmpfsSize,
 		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
 		c.validateExternalTelemetry,
 		c.Telemetry.Retention.validate,
@@ -57,6 +61,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		func() error { return c.validateCredentials(stores) },
 		c.Runner.validate,
 		c.validateRunners,
+		c.validatePlacement,
 		c.validateIsolation,
 		c.validateEgress,
 		func() error { return c.validateWorkflowSourceCredentials(stores) },
@@ -140,12 +145,21 @@ func (c SecretStoreConfig) validate(i int, stores map[string]bool) error {
 	if !validSecretStoreName(c.Name) {
 		return fmt.Errorf("secretStores[%d]: name %q must be a lowercase DNS label (letters, digits, and interior hyphens, at most 63 characters)", i, c.Name)
 	}
-	if stores[c.Name] {
+	if _, exists := stores[c.Name]; exists {
 		return fmt.Errorf("secretStores[%d]: name %q is declared more than once", i, c.Name)
 	}
-	stores[c.Name] = true
-	if c.Kind != SecretStoreKindAzureKeyVault {
-		return fmt.Errorf("secretStores[%d] (%s): unsupported kind %q (supported: %q)", i, c.Name, c.Kind, SecretStoreKindAzureKeyVault)
+	stores[c.Name] = c.Kind == SecretStoreKindAzureKeyVault
+	if c.IsKeyStore() && c.CacheTTLSeconds != 0 {
+		return fmt.Errorf("secretStores[%d] (%s): key stores do not support cacheTTLSeconds", i, c.Name)
+	}
+	if c.Kind == SecretStoreKindFileKey {
+		return c.validateFileKey()
+	}
+	if c.Kind != SecretStoreKindAzureKeyVault && c.Kind != SecretStoreKindKeyVaultKey {
+		return fmt.Errorf("secretStores[%d] (%s): unsupported kind %q (supported: %q, %q, %q)", i, c.Name, c.Kind, SecretStoreKindAzureKeyVault, SecretStoreKindKeyVaultKey, SecretStoreKindFileKey)
+	}
+	if c.Directory != "" {
+		return fmt.Errorf("secretStores[%d] (%s): directory is only valid for file-key", i, c.Name)
 	}
 	if err := validateVaultURI(c.VaultURI); err != nil {
 		return fmt.Errorf("secretStores[%d] (%s): vaultURI: %w", i, c.Name, err)
@@ -202,6 +216,11 @@ func (c RunnerConfig) validateDefaultStageTimeout() error {
 	return err
 }
 
+func (c RunnerConfig) validateRecoveryCustodyTimeout() error {
+	_, err := c.RecoveryCustodyTimeoutDuration()
+	return err
+}
+
 // validateStageMemoryLimit rejects a malformed runner.stageMemoryLimit at
 // LOAD, not at the first stage that would have been bounded by it. A quantity
 // typo is otherwise discovered only when a stage runs — and its effect is
@@ -212,7 +231,15 @@ func (c RunnerConfig) validateStageMemoryLimit() error {
 	return err
 }
 
+func (c RunnerConfig) validatePodTmpfsSize() error {
+	_, err := c.ResolvePodTmpfsSize()
+	return err
+}
+
 func (c TelemetryConfig) validate(stores map[string]bool, telemetryEnabled bool) error {
+	if err := c.validateExporters(stores, telemetryEnabled); err != nil {
+		return err
+	}
 	if c.CollectionProfile != "" && !c.CollectionProfile.valid() {
 		return fmt.Errorf("telemetry.collectionProfile must be one of health, journal, standard, or diagnostic")
 	}
@@ -338,6 +365,9 @@ func (c *StorageHealthConfig) validate() error {
 }
 
 func (c RetentionConfig) validate() error {
+	if _, err := c.TerminalBranchMaxAgeDuration(); err != nil {
+		return err
+	}
 	if c.MaxRetainedWorktreeBytes < 0 {
 		return fmt.Errorf("retention.maxRetainedWorktreeBytes must not be negative")
 	}
@@ -517,6 +547,9 @@ func (r RepoRef) validateGitHub(i int, stores map[string]bool, envPassthrough []
 	if r.Project != "" {
 		return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
 	}
+	if r.BaseURL != "" {
+		return fmt.Errorf("repos[%d] (%s/%s): %s", i, r.Owner, r.Name, apiv1.GitHubBaseURLUnsupported)
+	}
 	kind := GitHubAuthPAT
 	if r.Auth != nil {
 		kind = r.Auth.Kind
@@ -533,9 +566,32 @@ func (r RepoRef) validateGitHub(i int, stores map[string]bool, envPassthrough []
 		return nil
 	case GitHubAuthApp:
 		return r.validateGitHubApp(i, stores, envPassthrough)
+	case GitHubAuthAppToken:
+		return r.validateGitHubAppToken(i)
 	default:
-		return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp)
+		return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp, GitHubAuthAppToken)
 	}
+}
+
+// Match the login vocabulary accepted by dispatcher-owned stage identity.
+// Do not infer an App identity from token prefixes or an ambient gh session.
+var githubAppTokenSlugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+func (r RepoRef) validateGitHubAppToken(i int) error {
+	where := fmt.Sprintf("repos[%d] (%s/%s): auth kind %q", i, r.Owner, r.Name, GitHubAuthAppToken)
+	if r.Auth.AppID != "" || r.Auth.InstallationID != "" || r.Auth.PrivateKey != nil {
+		return fmt.Errorf("%s must not configure auth.appId, auth.installationId, or auth.privateKey — token minting is external", where)
+	}
+	if r.Auth.Tenant != "" || r.Auth.ClientID != "" {
+		return fmt.Errorf("%s: auth.tenant and auth.clientId are only valid for ADO auth kinds", where)
+	}
+	if r.Token.sourceCount() != 1 || r.Token.GitHubCLI != nil {
+		return fmt.Errorf("%s requires exactly one token.env, token.file, token.keychain, or token.store reference to an externally minted installation token; githubCLI user identity is not supported", where)
+	}
+	if !githubAppTokenSlugPattern.MatchString(r.Auth.Slug) {
+		return fmt.Errorf("%s requires auth.slug: 1-39 ASCII letters, digits or hyphens, starting with a letter or digit, without the [bot] suffix", where)
+	}
+	return nil
 }
 
 func (r RepoRef) validateGitHubApp(i int, stores map[string]bool, envPassthrough []string) error {
@@ -869,7 +925,7 @@ func (c RunnerConfig) validate() error {
 			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
 		}
 	}
-	if _, err := c.LivenessTimeoutDuration(); err != nil {
+	if err := c.validateTimeouts(); err != nil {
 		return err
 	}
 	for i, name := range c.EnvPassthrough {
@@ -899,55 +955,63 @@ func (c RunnerConfig) validate() error {
 	return c.validateHarnessPreflightArgs()
 }
 
+func (c RunnerConfig) validateTimeouts() error {
+	if _, err := c.LivenessTimeoutDuration(); err != nil {
+		return err
+	}
+	_, err := c.RequiredMCPSettleTimeoutDuration()
+	return err
+}
+
+type harnessArgRule struct {
+	purpose          string
+	argument         string
+	requireSessionID bool
+}
+
 func (c RunnerConfig) validateHarnessSessionArgs() error {
-	for name, args := range c.HarnessSessionArgs {
+	return c.validateHarnessArgs("harnessSessionArgs", c.HarnessSessionArgs, harnessArgRule{
+		purpose:          "launcher session arguments",
+		argument:         "session",
+		requireSessionID: true,
+	})
+}
+
+func (c RunnerConfig) validateHarnessPreflightArgs() error {
+	return c.validateHarnessArgs("harnessPreflightArgs", c.HarnessPreflightArgs, harnessArgRule{
+		purpose:  "preflight arguments",
+		argument: "preflight",
+	})
+}
+
+func (c RunnerConfig) validateHarnessArgs(field string, argsByHarness map[string][]string, rule harnessArgRule) error {
+	for name, args := range argsByHarness {
 		if !knownHarnessName(name) {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
+			return fmt.Errorf("runner.%s[%q]: unknown harness (known: %s)", field, name, strings.Join(knownHarnessNames(), ", "))
 		}
 		if name != "copilot" {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: only the copilot harness supports launcher session arguments", name)
+			return fmt.Errorf("runner.%s[%q]: only the copilot harness supports %s", field, name, rule.purpose)
 		}
 		if _, ok := c.HarnessCommand[name]; !ok {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: requires runner.harnessCommand[%q]", name, name)
+			return fmt.Errorf("runner.%s[%q]: requires runner.harnessCommand[%q]", field, name, name)
 		}
 		if len(args) == 0 || len(args) > 16 {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: must contain 1 to 16 arguments", name)
+			return fmt.Errorf("runner.%s[%q]: must contain 1 to 16 arguments", field, name)
 		}
 		foundSessionID := false
 		for i, arg := range args {
 			if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
-				return fmt.Errorf("runner.harnessSessionArgs[%q][%d]: invalid session argument", name, i)
+				return fmt.Errorf("runner.%s[%q][%d]: invalid %s argument", field, name, i, rule.argument)
 			}
-			foundSessionID = foundSessionID || strings.Contains(arg, "{sessionId}")
-			if strings.ContainsAny(strings.ReplaceAll(arg, "{sessionId}", ""), "{}") {
-				return fmt.Errorf("runner.harnessSessionArgs[%q][%d]: only {sessionId} is supported", name, i)
+			if rule.requireSessionID {
+				foundSessionID = foundSessionID || strings.Contains(arg, "{sessionId}")
+				if strings.ContainsAny(strings.ReplaceAll(arg, "{sessionId}", ""), "{}") {
+					return fmt.Errorf("runner.%s[%q][%d]: only {sessionId} is supported", field, name, i)
+				}
 			}
 		}
-		if !foundSessionID {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: at least one argument must contain {sessionId}", name)
-		}
-	}
-	return nil
-}
-
-func (c RunnerConfig) validateHarnessPreflightArgs() error {
-	for name, args := range c.HarnessPreflightArgs {
-		if !knownHarnessName(name) {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
-		}
-		if name != "copilot" {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: only the copilot harness supports preflight arguments", name)
-		}
-		if _, ok := c.HarnessCommand[name]; !ok {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: requires runner.harnessCommand[%q]", name, name)
-		}
-		if len(args) == 0 || len(args) > 16 {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: must contain 1 to 16 arguments", name)
-		}
-		for i, arg := range args {
-			if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
-				return fmt.Errorf("runner.harnessPreflightArgs[%q][%d]: invalid preflight argument", name, i)
-			}
+		if rule.requireSessionID && !foundSessionID {
+			return fmt.Errorf("runner.%s[%q]: at least one argument must contain {sessionId}", field, name)
 		}
 	}
 	return nil

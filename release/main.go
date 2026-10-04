@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 const versionPkg = "github.com/goobers/goobers/internal/version"
@@ -30,6 +33,7 @@ func main() {
 type options struct {
 	version               string
 	commit                string
+	sourceCommit          string
 	date                  string
 	outDir                string
 	imageContexts         string
@@ -48,6 +52,9 @@ type options struct {
 func run(args []string, stdout, stderr io.Writer) error {
 	opts, err := parseFlags(args, stderr)
 	if err != nil {
+		return err
+	}
+	if err := verifyReleaseSource(opts.sourceCommit); err != nil {
 		return err
 	}
 	if err := checkReleasePreflight(opts.version); err != nil {
@@ -87,6 +94,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	archives, skipped, err := buildReleaseTargets(opts, ldflags, releaseDocsDir, images, stdout)
 	if err != nil {
+		return err
+	}
+	if err := verifyReleaseSource(opts.sourceCommit); err != nil {
 		return err
 	}
 
@@ -171,34 +181,90 @@ func run(args []string, stdout, stderr io.Writer) error {
 	return images.finalize(stdout)
 }
 
+// buildReleaseTargets builds, verifies and packages every target concurrently
+// (#5413): each target writes only its own binary, archive and image-context
+// directory, so the targets share no mutable state. Results are reported and
+// returned in target order, and the first failure in that order wins, so the
+// output and the archive list stay deterministic.
 func buildReleaseTargets(opts options, ldflags, releaseDocsDir string, images *imageContexts, stdout io.Writer) ([]string, []string, error) {
+	results := make([]releaseTargetResult, len(opts.targets))
+	slots := make(chan struct{}, releaseBuildParallelism(len(opts.targets)))
+	var wg sync.WaitGroup
+	for i, t := range opts.targets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			results[i] = buildReleaseTarget(t, opts, ldflags, releaseDocsDir, images)
+		}()
+	}
+	wg.Wait()
+
 	var archives []string
 	var skipped []string
-	for _, t := range opts.targets {
-		binPath, buildOut, err := buildTarget(t, ldflags, opts.outDir)
-		if err != nil {
-			if opts.skipUnbuildable {
-				_, _ = fmt.Fprintf(stdout, "skip  %-14s (does not compile yet)\n", t)
-				skipped = append(skipped, t.String())
-				continue
-			}
-			return nil, nil, fmt.Errorf("build %s failed — the release matrix requires every "+
-				"target to compile (windows is gated on the #633 CI leg going green); "+
-				"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)
+	for i, t := range opts.targets {
+		result := results[i]
+		switch {
+		case result.err != nil:
+			return nil, nil, result.err
+		case result.skipped:
+			_, _ = fmt.Fprintf(stdout, "skip  %-14s (does not compile yet)\n", t)
+			skipped = append(skipped, t.String())
+		default:
+			archives = append(archives, result.archive)
+			_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(result.archive))
 		}
-		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := images.stage(t, binPath, ldflags, opts); err != nil {
-			return nil, nil, err
-		}
-		_ = os.Remove(binPath) // keep only the archive
-		archives = append(archives, archivePath)
-		_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(archivePath))
 	}
-
 	return archives, skipped, nil
+}
+
+type releaseTargetResult struct {
+	archive string
+	skipped bool
+	err     error
+}
+
+// releaseBuildParallelismEnv overrides the default concurrent target-build
+// bound with a positive integer.
+const releaseBuildParallelismEnv = "GOOBERS_RELEASE_BUILD_PARALLELISM"
+
+// releaseBuildParallelism bounds concurrent target builds. Each `go build`
+// already parallelizes across packages, so the default is half the CPUs
+// (minimum 1, maximum 4). Release runners and CI shards share the machine with
+// other work; a build per CPU saturated a CI shard and pushed an unrelated
+// deadline-bound test past its limit (#6493). GOOBERS_RELEASE_BUILD_PARALLELISM
+// overrides the default with a positive integer.
+func releaseBuildParallelism(targets int) int {
+	limit := max(1, min(4, runtime.NumCPU()/2))
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(releaseBuildParallelismEnv))); err == nil && v > 0 {
+		limit = v
+	}
+	return max(1, min(targets, limit))
+}
+
+func buildReleaseTarget(t Target, opts options, ldflags, releaseDocsDir string, images *imageContexts) releaseTargetResult {
+	binPath, buildOut, err := buildTarget(t, ldflags, opts.outDir)
+	if err != nil {
+		if opts.skipUnbuildable {
+			return releaseTargetResult{skipped: true}
+		}
+		return releaseTargetResult{err: fmt.Errorf("build %s failed — the release matrix requires every "+
+			"target to compile (windows is gated on the #633 CI leg going green); "+
+			"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)}
+	}
+	if err := verifyTargetBinary(binPath, opts.sourceCommit, buildPackage, t); err != nil {
+		return releaseTargetResult{err: err}
+	}
+	archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
+	if err != nil {
+		return releaseTargetResult{err: err}
+	}
+	if err := images.stage(t, binPath, ldflags, opts); err != nil {
+		return releaseTargetResult{err: err}
+	}
+	_ = os.Remove(binPath) // keep only the archive
+	return releaseTargetResult{archive: archivePath}
 }
 
 func parseFlags(args []string, stderr io.Writer) (options, error) {
@@ -207,6 +273,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	var (
 		version          = fs.String("version", "", "release version (default: nearest v[0-9]* product tag from git describe)")
 		commit           = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
+		sourceCommit     = fs.String("source-commit", "", "require clean source and compiled Git metadata matching this full commit (required by the official publisher)")
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
 		imageContexts    = fs.String("image-contexts", "", "prepare Linux or Windows base-image build inputs in a new directory (requires explicit supported -targets or -image-targets; does not build or publish images)")
@@ -227,6 +294,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	}
 
 	opts := options{
+		sourceCommit:          *sourceCommit,
 		outDir:                *outDir,
 		imageContexts:         *imageContexts,
 		imageArtifacts:        *imageArtifacts,
@@ -242,6 +310,12 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	opts.version = firstNonEmpty(*version, os.Getenv("GOOBERS_VERSION"), gitOutput("describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"), "dev")
 	opts.commit = firstNonEmpty(*commit, gitOutput("rev-parse", "--short", "HEAD"), "none")
 	opts.date = firstNonEmpty(*date, gitOutput("show", "-s", "--format=%cI", "HEAD"), "unknown")
+	if opts.sourceCommit != "" {
+		if !fullSourceCommit.MatchString(opts.sourceCommit) ||
+			(opts.commit != opts.sourceCommit && opts.commit != opts.sourceCommit[:12]) || opts.skipUnbuildable {
+			return options{}, fmt.Errorf("-source-commit requires a full lowercase Git SHA, matching full or 12-character -commit, and no -skip-unbuildable")
+		}
+	}
 
 	if err := validateImageImportFlags(opts, fs); err != nil {
 		return options{}, err
@@ -300,12 +374,20 @@ func parseTargets(csv string) ([]Target, error) {
 // missing windows internal/platform/proc impl) rather than a bare exit code.
 func buildTarget(t Target, ldflags, outDir string) (binPath string, buildOutput string, err error) {
 	binPath = filepath.Join(outDir, t.binaryName()+"."+t.OS+"-"+t.Arch)
-	buildOutput, err = buildReleaseBinary(t, ldflags, binPath, buildPackage)
+	buildOutput, err = buildTargetBinary(t, ldflags, binPath, buildPackage)
 	if err != nil {
 		return "", buildOutput, err
 	}
 	return binPath, "", nil
 }
+
+// buildTargetBinary and verifyTargetBinary are the archive path's compile and
+// provenance steps. They are vars so the concurrent-orchestration tests can
+// replace real cross-compiles, which starve a shared CI runner (#6493).
+var (
+	buildTargetBinary  = buildReleaseBinary
+	verifyTargetBinary = verifyReleaseBinary
+)
 
 // Both archive and image binaries use the same platform and metadata inputs.
 func buildReleaseBinary(t Target, ldflags, binPath, pkg string) (string, error) {

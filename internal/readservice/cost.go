@@ -92,6 +92,9 @@ type TelemetryCostModelAggregate struct {
 // external work item.
 type TelemetryCostRunAggregate struct {
 	RunID                  string                        `json:"runId"`
+	Gaggle                 string                        `json:"gaggle,omitempty"`
+	Workflow               string                        `json:"workflow,omitempty"`
+	Status                 string                        `json:"status,omitempty"`
 	StartedAt              time.Time                     `json:"startedAt"`
 	UsageAttempts          int                           `json:"usageAttempts"`
 	MeasuredAttempts       int                           `json:"measuredAttempts"`
@@ -254,7 +257,7 @@ func projectCostRun(source rollup.CostRunAggregate) TelemetryCostRunAggregate {
 		native = nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases)
 	}
 	return TelemetryCostRunAggregate{
-		RunID: source.RunID, StartedAt: source.StartedAt,
+		RunID: source.RunID, Gaggle: source.Gaggle, Workflow: source.Workflow, Status: source.Status, StartedAt: source.StartedAt,
 		UsageAttempts: source.UsageAttempts, MeasuredAttempts: source.MeasuredAttempts,
 		InputTokens: source.InputTokens, OutputTokens: source.OutputTokens,
 		CacheReadTokens: source.CacheReadTokens, CacheWriteTokens: source.CacheWriteTokens,

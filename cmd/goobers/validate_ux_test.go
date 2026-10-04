@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestValidateSurfacesResolvedLargeRepoPreset(t *testing.T) {
@@ -195,6 +196,26 @@ func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
 				t.Fatalf("validate stdout missing %q:\n%s", tc.want, stdout)
 			}
 		})
+	}
+}
+
+func TestValidateSourceTreeLoadsInstructionsFromGooberSourceDirectory(t *testing.T) {
+	root := t.TempDir()
+	if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+		t.Fatal(err)
+	}
+	canonicalDir := filepath.Join(root, "gaggles", "example", "goobers", "implementer")
+	sourceDir := filepath.Join(root, "gaggles", "example", "goobers", "deps-coder")
+	if err := os.Rename(canonicalDir, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", "--source-tree", "--instance", filepath.Join(root, instance.GuidedSourceInstanceFile), root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("validate source tree code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "OK: instance.yaml valid; config/ valid") {
+		t.Fatalf("validate stdout missing success message:\n%s", stdout)
 	}
 }
 
@@ -712,13 +733,23 @@ func TestValidateErrorsOnMissingDSLVersionPin(t *testing.T) {
 		t.Fatalf("validate: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: 2.0, 3.0) — the transitional default is gone now that DSL 1.4 is dropped",
+		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: " + loadableDSLVersionsForTest() + ") — the transitional default is gone now that DSL 1.4 is dropped",
 		"config directory failed validation",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
 		}
 	}
+}
+
+func loadableDSLVersionsForTest() string {
+	var versions []string
+	for _, version := range supportmatrix.GetDSL().Versions() {
+		if version.Level != supportmatrix.LevelUnsupported {
+			versions = append(versions, version.Version)
+		}
+	}
+	return strings.Join(versions, ", ")
 }
 
 func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
@@ -896,8 +927,19 @@ func TestValidateWorkflowOverrideChangesSiblingOverlapScope(t *testing.T) {
 	// replaces the gaggle default ("area:frontend") for this workflow, so it
 	// no longer overlaps the sibling's declared "area:frontend" — proving
 	// the override, not the gaggle default, drove the comparison.
-	if strings.Contains(stdout, "SIB001") {
-		t.Fatalf("validate output unexpectedly warned despite the workflow's own requireLabels override:\n%s", stdout)
+	if strings.Contains(stdout, "overlaps declared sibling") {
+		t.Fatalf("validate output warned on overlap despite the workflow's own requireLabels override:\n%s", stdout)
+	}
+	// Replacing the default drops the gaggle's partition label, and the
+	// disjoint override excludes nothing, so the task still claims items the
+	// sibling owns (#3286).
+	for _, want := range []string{
+		"drops partition label(s) [area:frontend]",
+		`add excludeLabels: "area:frontend"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
 	}
 }
 

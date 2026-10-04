@@ -26,6 +26,21 @@ type AgentAddress struct {
 	AgentID string
 }
 
+// StageAgentAddress returns the portable address for an agent observed during
+// one stage attempt that began at startedSeq.
+func StageAgentAddress(runID, stage string, attempt int, agentID string, startedSeq uint64) (AgentAddress, error) {
+	address := AgentAddress{
+		RunID:   runID,
+		Stage:   stage,
+		Attempt: attempt,
+		AgentID: encodeJournalAgentToken(agentID, startedSeq),
+	}
+	if err := address.Validate(); err != nil {
+		return AgentAddress{}, err
+	}
+	return address, nil
+}
+
 // Validate rejects malformed or incomplete addresses before resolution.
 func (a AgentAddress) Validate() error {
 	if !apiv1.ValidRunID(a.RunID) {
@@ -50,6 +65,16 @@ func (a AgentAddress) String() string {
 		url.PathEscape(a.Stage) + "/" +
 		strconv.Itoa(a.Attempt) + "/" +
 		url.PathEscape(a.AgentID)
+}
+
+// StageStartedSeq returns the stage-start sequence embedded in the address
+// token.
+func (a AgentAddress) StageStartedSeq() (uint64, error) {
+	token, err := parseJournalAgentToken(a.AgentID)
+	if err != nil {
+		return 0, err
+	}
+	return token.startedSeq, nil
 }
 
 // ParseAgentAddress decodes the portable run/stage/attempt/agent identifier.
@@ -321,17 +346,33 @@ func collectAttemptSpans(events []Event) (map[string][]attemptSpan, map[string]u
 	spans := make(map[string][]attemptSpan)
 	latest := make(map[string]uint64)
 	for _, event := range events {
-		if event.Stage == "" || event.Attempt < 1 {
-			continue
-		}
 		switch event.Type {
-		case EventStageStarted:
+		case EventStageStarted, EventReviewerStarted:
+			if event.Stage == "" || event.Attempt < 1 {
+				continue
+			}
 			span := attemptSpan{stage: event.Stage, attempt: event.Attempt, startedSeq: event.Seq}
 			spans[event.Stage] = append(spans[event.Stage], span)
 			if event.Seq > latest[event.Stage] {
 				latest[event.Stage] = event.Seq
 			}
-		case EventStageFinished:
+		case EventGateStarted:
+			if event.Gate == "" {
+				continue
+			}
+			attempt := event.RepassAttempt()
+			if attempt < 1 {
+				continue
+			}
+			span := attemptSpan{stage: event.Gate, attempt: attempt, startedSeq: event.Seq}
+			spans[event.Gate] = append(spans[event.Gate], span)
+			if event.Seq > latest[event.Gate] {
+				latest[event.Gate] = event.Seq
+			}
+		case EventStageFinished, EventReviewerFinished:
+			if event.Stage == "" || event.Attempt < 1 {
+				continue
+			}
 			stageSpans := spans[event.Stage]
 			for i := len(stageSpans) - 1; i >= 0; i-- {
 				if stageSpans[i].attempt != event.Attempt || stageSpans[i].finishedSeq != 0 {

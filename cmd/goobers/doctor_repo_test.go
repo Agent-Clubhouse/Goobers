@@ -171,12 +171,13 @@ func TestDoctorRequiresExactlyOneMode(t *testing.T) {
 		{"doctor", "--k8s", "--repo"},
 		{"doctor", "--av-exclusions", "--repo"},
 		{"doctor", "--av-exclusions", "--k8s"},
+		{"doctor", "--harness-auth", "--repo"},
 	} {
 		code, _, stderr := runArgs(t, args...)
 		if code != 2 {
 			t.Fatalf("%v: code = %d, want 2", args, code)
 		}
-		if !strings.Contains(stderr, "exactly one of --k8s, --repo or --av-exclusions") {
+		if !strings.Contains(stderr, "exactly one of --k8s, --repo, --harness-auth, --av-exclusions or --temporal-codec") {
 			t.Fatalf("%v: stderr = %q, want the exactly-one-mode message", args, stderr)
 		}
 	}

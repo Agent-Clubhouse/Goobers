@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,11 @@ import (
 )
 
 func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
-	authErr := errors.New("GET /commits/abc/check-runs failed: status 403: Resource not accessible by personal access token")
+	authErr := fmt.Errorf("provider backlog count: %w", schedulerTypedCause{
+		code:  "github_auth_rejected",
+		class: "auth",
+		err:   errors.New("GET /commits/abc/check-runs failed: status 403: Resource not accessible by personal access token"),
+	})
 	failing := &fakeBacklogCounter{err: authErr}
 	entry := WorkflowEntry{
 		Workflow:              "implementation",
@@ -32,11 +37,19 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 		ScheduleDemandCounter: failing,
 		Starter:               &fakeStarter{},
 	}
-	sched, dir := newTestScheduler(t, []WorkflowEntry{entry})
 	now := time.Now()
+	clock := newFakeClock(now)
+	sched, dir := newTestScheduler(t, []WorkflowEntry{entry}, WithClock(clock.Now, time.After))
 
-	sched.Tick(context.Background(), now.Add(2*time.Hour))
-	sched.Tick(context.Background(), now.Add(3*time.Hour))
+	// Both ticks fall inside the circuit's cooldown, so the second must not
+	// poll the rejected credential again (#2687). The cooldown's expiry is
+	// covered by authcircuitcooldown6166_test.go.
+	tick := func(at time.Time) {
+		clock.now.Store(&at)
+		sched.Tick(context.Background(), at)
+	}
+	tick(now.Add(2 * time.Hour))
+	tick(now.Add(2*time.Hour + authCircuitBaseCooldown - time.Minute))
 	if got := failing.polls(); got != 1 {
 		t.Fatalf("polls after permanent auth failure = %d, want 1", got)
 	}
@@ -49,6 +62,9 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 	for _, event := range events {
 		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed {
 			authEvents++
+			if got := event.Error.Causes; len(got) < 2 || got[1].Code != "github_auth_rejected" || got[1].Class != "auth" {
+				t.Fatalf("auth event causes = %+v, want typed provider cause metadata", got)
+			}
 		}
 	}
 	if authEvents != 1 {
@@ -62,10 +78,25 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 	if err := sched.Reload([]WorkflowEntry{entry}, nil, now, "old", "new"); err != nil {
 		t.Fatal(err)
 	}
-	sched.Tick(context.Background(), now.Add(4*time.Hour))
+	tick(now.Add(2*time.Hour + authCircuitBaseCooldown - 30*time.Second))
 	if got := repaired.polls(); got != 1 {
 		t.Fatalf("polls after credential configuration reload = %d, want 1", got)
 	}
+}
+
+type schedulerTypedCause struct {
+	code  string
+	class string
+	err   error
+}
+
+func (e schedulerTypedCause) Error() string { return e.err.Error() }
+func (e schedulerTypedCause) Unwrap() error { return e.err }
+func (e schedulerTypedCause) ErrorCode() string {
+	return e.code
+}
+func (e schedulerTypedCause) ErrorClass() string {
+	return e.class
 }
 
 func TestAuthFailureCircuitStopsRunRedispatch(t *testing.T) {
@@ -92,7 +123,7 @@ func TestAuthFailureCircuitStopsRunRedispatch(t *testing.T) {
 			}
 			identity := WorkflowIdentity{Gaggle: "goobers-site", Workflow: "implementation"}
 			waitForCount(t, func() int {
-				if sched.authCircuitOpen(identity) {
+				if sched.authCircuitOpen(identity, sched.now()) {
 					return 1
 				}
 				return 0
@@ -204,7 +235,7 @@ func TestCredentialMaterializationFailureOpensRunCircuit(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCount(t, func() int {
-		if sched.authCircuitOpen(identity) {
+		if sched.authCircuitOpen(identity, sched.now()) {
 			return 1
 		}
 		return 0

@@ -21,6 +21,10 @@ func TestJournalEventMirrorFieldSet(t *testing.T) {
 		"minimumIntegrity", "notificationReceipt", "notificationRequest",
 		"operatorMessageAcknowledgement", "operatorMessageOutcome", "operatorMessageRequest",
 		"parallel", "peerMessage", "progress", "rationale", "skipCount",
+		// Run terminal causes are exposed by readservice; rollups still consume
+		// the existing status and error fields, without a terminal-cause column.
+		"terminalCause",
+		"workspaceRevision",
 	}
 	want := append(jsonFields(reflect.TypeOf(journalEvent{})), intentionallyUnmirrored...)
 	sort.Strings(want)

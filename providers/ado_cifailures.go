@@ -2,6 +2,8 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
@@ -9,22 +11,32 @@ import (
 
 // adoPolicyEvaluationSettings is the subset of a policy configuration's
 // settings that names what a CI policy requires: the build policy's display
-// name, or the status policy's genre and name.
+// name and definition, or the status policy's genre and name.
 type adoPolicyEvaluationSettings struct {
-	DisplayName string `json:"displayName"`
-	StatusGenre string `json:"statusGenre"`
-	StatusName  string `json:"statusName"`
+	DisplayName       string      `json:"displayName"`
+	BuildDefinitionID json.Number `json:"buildDefinitionId"`
+	StatusGenre       string      `json:"statusGenre"`
+	StatusName        string      `json:"statusName"`
 }
 
 var _ PullRequestCIFailureReader = (*ADOProvider)(nil)
 
-// PullRequestCIFailures returns the minimal native CI evidence Azure DevOps
-// offers for a pull request (design ado-parity-dsl-2-0.md §3.4, ADO-N22):
-// every enabled, blocking build, status or unclassified policy evaluation that
-// is rejected or broken, with a link to the evaluated build from
-// context.buildId. Reviewer, comment-resolution and work-item-linking
+// PullRequestCIFailures returns the native CI evidence Azure DevOps offers for
+// a pull request (design ado-parity-dsl-2-0.md §3.4, ADO-N22; #5652): every
+// enabled, blocking build, status or unclassified policy evaluation that is
+// rejected or broken. Reviewer, comment-resolution and work-item-linking
 // policies are never CI failures and are left out, as are advisory
-// (non-blocking) policies. Build logs are not fetched.
+// (non-blocking) policies.
+//
+// For each failure it finds the build behind the policy (context.buildId, the
+// build policy's latest build for refs/pull/<id>/merge, or the build a
+// required pull request status links to), rejects a build of another
+// repository or pull request, grades a build of another source head stale,
+// and reports the build's failed jobs and tasks: their timeline issues and a
+// bounded excerpt of each step's log tail, as annotations. Every failure is
+// graded (CIFailureDetail.Evidence), so an external status, a missing build
+// or a truncated log is explicit rather than an empty result. An
+// authentication failure is returned as an error, never as empty evidence.
 //
 // Evaluations belong to the pull request, not to a commit, so the result is
 // stamped with the source head ADO reports for the pull request; the caller
@@ -45,41 +57,84 @@ func (p *ADOProvider) PullRequestCIFailures(ctx context.Context, repo Repository
 	if projectName == "" {
 		projectName = p.project(repo)
 	}
+	scope := &adoCIScope{repo: repo, pullID: pullID, detail: detail, project: projectName}
+	failures, err := p.ciFailuresFromEvaluations(ctx, scope, evals)
+	if err != nil {
+		return PullRequestCIFailures{}, err
+	}
 	return PullRequestCIFailures{
 		HeadSHA:  detail.LastMergeSourceCommit.CommitID,
-		Failures: p.ciFailuresFromEvaluations(evals, projectName),
+		Failures: failures,
 	}, nil
 }
 
 // ciFailuresFromEvaluations keeps the failing, blocking evaluations that
-// report CI: build, status and unclassified policies. Unlike
-// reducePolicyEvaluations it takes no human-only configuration ids (a CI-poll
-// gate input gather-ci-failures does not receive), so a rejected blocking
-// policy a loop declares human-only (merge strategy, proof-of-presence) is
-// still reported here, labelled by its policy type.
-func (p *ADOProvider) ciFailuresFromEvaluations(evals []adoPolicyEvaluation, projectName string) []CIFailureDetail {
-	failures := make([]CIFailureDetail, 0, len(evals))
-	for _, ev := range evals {
-		if !adoEvaluationBlocks(ev) || adoPolicyCheckState(ev.Status) != CheckStateFailing {
-			continue
+// report CI: build, status and unclassified policies, each with its collected
+// evidence. Unlike reducePolicyEvaluations it takes no human-only
+// configuration ids (a CI-poll gate input gather-ci-failures does not
+// receive), so a rejected blocking policy a loop declares human-only (merge
+// strategy, proof-of-presence) is still reported here, labelled by its
+// policy type.
+func (p *ADOProvider) ciFailuresFromEvaluations(ctx context.Context, scope *adoCIScope, evals []adoPolicyEvaluation) ([]CIFailureDetail, error) {
+	failing := failingCIEvaluations(evals)
+	failures := make([]CIFailureDetail, 0, len(failing))
+	for _, ev := range failing {
+		evidence, err := p.ciEvidenceFor(ctx, scope, ev)
+		if err != nil {
+			return nil, fmt.Errorf("collect CI evidence for %s: %w", adoCIPolicyName(ev), err)
 		}
-		kind := adoPolicyKindOf(ev.Configuration.Type.ID)
-		if kind != adoPolicyCI && kind != adoPolicyOther {
-			continue
+		link := p.buildResultsURL(scope.project, ev.Context.BuildID.String())
+		if link == "" {
+			link = evidence.buildURL
 		}
 		failures = append(failures, CIFailureDetail{
 			CheckDetail: CheckDetail{
 				Name:       adoCIPolicyName(ev),
 				State:      CheckStateFailing,
 				Conclusion: ev.Status,
-				URL:        p.buildResultsURL(projectName, ev.Context.BuildID.String()),
-				Summary:    adoCIPolicySummary(ev),
+				URL:        link,
+				Summary:    evidence.summary(adoCIPolicySummary(ev)),
 			},
-			Annotations: []CheckAnnotation{},
+			Annotations: evidence.annotations,
 			Integrity:   apiintegrity.Unapproved,
+			Evidence:    evidence.state,
 		})
 	}
-	return failures
+	return failures, nil
+}
+
+// failingCIEvaluations keeps the enabled, blocking, rejected or broken
+// evaluations of CI-gating policy kinds.
+func failingCIEvaluations(evals []adoPolicyEvaluation) []adoPolicyEvaluation {
+	var out []adoPolicyEvaluation
+	for _, ev := range evals {
+		if !adoEvaluationBlocks(ev) || adoPolicyCheckState(ev.Status) != CheckStateFailing {
+			continue
+		}
+		if adoPolicyKindOf(ev.Configuration.Type.ID).gatesCI() {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// HasPullRequestCIFailures reports whether PullRequestCIFailures would report
+// at least one failure for the pull request, from the same policy
+// evaluations but without reading any build, timeline or log. It costs the
+// same two GETs as before #5652.
+func (p *ADOProvider) HasPullRequestCIFailures(ctx context.Context, repo RepositoryRef, pullID string) (bool, error) {
+	if err := requireRepo(repo); err != nil {
+		return false, err
+	}
+	detail, err := p.getPullRequestDetail(ctx, repo, pullID)
+	if err != nil {
+		return false, err
+	}
+	evals, err := p.pullRequestEvaluations(ctx, repo, pullID, detail)
+	if err != nil {
+		return false, err
+	}
+	return len(failingCIEvaluations(evals)) > 0, nil
 }
 
 // adoCIPolicyName labels a CI policy by what it requires when ADO says so
@@ -105,15 +160,11 @@ func adoCIPolicyName(ev adoPolicyEvaluation) string {
 	return typeName + ": " + status
 }
 
-// adoCIPolicySummary says what ADO reported. Minimal evidence: no log fetch.
-// Only a build policy mentions build logs; other policies have none.
+// adoCIPolicySummary says what ADO reported about the policy itself; the
+// collected evidence is appended after it.
 func adoCIPolicySummary(ev adoPolicyEvaluation) string {
-	summary := "blocking policy rejected by Azure DevOps"
 	if strings.EqualFold(ev.Status, "broken") {
-		summary = "Azure DevOps could not evaluate this blocking policy (broken)"
+		return "Azure DevOps could not evaluate this blocking policy (broken)"
 	}
-	if strings.EqualFold(strings.TrimSpace(ev.Configuration.Type.ID), adoPolicyTypeBuild) {
-		summary += "; build logs are not fetched"
-	}
-	return summary
+	return "blocking policy rejected by Azure DevOps"
 }

@@ -42,7 +42,7 @@ func (e *workflowDigestError) Unwrap() error {
 	return e.Err
 }
 
-func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpec) (map[string]string, error) {
+func loadGooberInstructions(configDir string, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[string]string, error) {
 	names := make([]string, 0, len(goobers))
 	for name := range goobers {
 		names = append(names, name)
@@ -50,13 +50,28 @@ func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpe
 	sort.Strings(names)
 	instructions := make(map[string]string, len(goobers))
 	for _, name := range names {
-		content, err := os.ReadFile(instructionsPath(configDir, goobers[name], name))
+		content, err := os.ReadFile(resolvedInstructionsPath(configDir, set, goobers[name], name))
 		if err != nil {
 			return nil, &gooberInstructionsError{Goober: name, Err: err}
 		}
 		instructions[name] = string(content)
 	}
 	return instructions, nil
+}
+
+func resolvedInstructionsPath(configDir string, set *instance.ConfigSet, spec apiv1.GooberSpec, gooberName string) string {
+	return filepath.Join(resolvedGooberDefinitionDir(configDir, set, spec, gooberName), spec.Instructions)
+}
+
+// resolvedGooberDefinitionDir is the directory holding the goober's parsed
+// definition file — the same directory validation resolves spec.instructions
+// and the goober's assets against (#6611). It falls back to the conventional
+// name-derived layout only when no loaded ConfigSet provenance is available.
+func resolvedGooberDefinitionDir(configDir string, set *instance.ConfigSet, spec apiv1.GooberSpec, gooberName string) string {
+	if source, ok := set.GooberSource(gooberName); ok {
+		return filepath.Join(configDir, filepath.Dir(source))
+	}
+	return gooberDefinitionDir(configDir, spec, gooberName)
 }
 
 type skillSource struct{ name, gaggle string }
@@ -169,9 +184,10 @@ func compiledMachinesWithGooberDigestsAndWarnings(
 	harnessCommand map[string][]string,
 	deferModelDiscovery bool,
 	modelCredential func(ctx context.Context) (string, error),
+	knownTelemetryConnectors []string,
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	return compiledMachinesWithGooberDigests(
-		set, goobers, instructions, environment, harnessCommand, deferModelDiscovery, modelCredential,
+		set, goobers, instructions, environment, harnessCommand, deferModelDiscovery, modelCredential, knownTelemetryConnectors,
 		func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
 			return loadGooberSkillPackages(configDir, gaggle, resolved)
 		},
@@ -201,21 +217,30 @@ func compiledMachinesWithGooberDigests(
 	harnessCommand map[string][]string,
 	deferModelDiscovery bool,
 	modelCredential func(ctx context.Context) (string, error),
+	knownTelemetryConnectors []string,
 	skillPackagesFor func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error),
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, environment, harnessCommand, deferModelDiscovery, modelCredential)
+	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, environment, harnessCommand, deferModelDiscovery, modelCredential, knownTelemetryConnectors)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	gooberDigests, err := computeMachineGooberDigests(machines, resolvedGoobers, instructions, skillPackagesFor)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return machines, gooberDigests, resolvedGoobers, warnings, nil
+}
+
+func computeMachineGooberDigests(machines map[localscheduler.WorkflowIdentity]*workflow.Machine, resolvedGoobers map[string]apiv1.GooberSpec, instructions map[string]string, skillPackagesFor func(string, map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error)) (map[localscheduler.WorkflowIdentity]string, error) {
 	gooberDigests := make(map[localscheduler.WorkflowIdentity]string, len(machines))
 	for identity, machine := range machines {
 		skillPackages, err := skillPackagesFor(identity.Gaggle, resolvedGoobers)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, err
 		}
 		digest, err := workflow.ComputeGooberDigest(machine.Def, resolvedGoobers, instructions, skillPackages)
 		if err != nil {
-			return nil, nil, nil, nil, &workflowDigestError{
+			return nil, &workflowDigestError{
 				Gaggle:   identity.Gaggle,
 				Workflow: identity.Workflow,
 				Err:      err,
@@ -223,5 +248,5 @@ func compiledMachinesWithGooberDigests(
 		}
 		gooberDigests[identity] = digest
 	}
-	return machines, gooberDigests, resolvedGoobers, warnings, nil
+	return gooberDigests, nil
 }

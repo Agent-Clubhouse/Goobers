@@ -26,6 +26,8 @@ import (
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // newFakeCluster returns a fake clientset shaped like an otherwise conformant
@@ -134,10 +136,10 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	for _, result := range report.Results {
 		want := StatusPass
 		switch result.ID {
-		case "overlay-pin-agreement", "overlay-image-contract":
+		case "overlay-pin-agreement", "overlay-image-contract", "pod-security-admission":
 			// Cluster health proves nothing about an omitted consumer overlay.
 			want = StatusWarn
-		case "storage-rwx", "networkpolicy-api", "apiserver-ipblock-drift":
+		case "storage-rwx", "networkpolicy-api", "apiserver-ipblock-drift", "network-none-dns":
 			// storage-rwx: inferred, never a hard pass (§4). networkpolicy-api:
 			// API-discovery only — a served API is a correlate of enforcement,
 			// not proof of it, so even an "otherwise conformant" cluster warns
@@ -767,6 +769,31 @@ func TestWriteTextRendersRowsHintsAndVerdict(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text report missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestTemporalNamespaceReportsTransport: the check names the transport it
+// dialed with (#5289), plaintext when no TLS is configured.
+func TestTemporalNamespaceReportsTransport(t *testing.T) {
+	for _, tc := range []struct {
+		tls  *temporaldial.TLS
+		want string
+	}{
+		{nil, "transport: plaintext"},
+		{&temporaldial.TLS{CAFile: "ca.pem"}, "transport: tls"},
+		{&temporaldial.TLS{CertFile: "c.pem", KeyFile: "k.pem"}, "transport: mtls"},
+	} {
+		report := Run(context.Background(), newFakeCluster(t), Options{
+			TemporalHostPort: "temporal-frontend.goobers-temporal:7233",
+			TemporalTLS:      tc.tls,
+			DialTemporal: func(context.Context, string) (temporalNamespaceDescriber, error) {
+				return &fakeTemporalDescriber{wantNamespace: "default"}, nil
+			},
+		})
+		result := resultByID(t, report, "temporal-namespace")
+		if result.Status != StatusPass || !strings.Contains(result.Detail, tc.want) {
+			t.Fatalf("temporal-namespace = %s %q, want pass naming %q", result.Status, result.Detail, tc.want)
 		}
 	}
 }

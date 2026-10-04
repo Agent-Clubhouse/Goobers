@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -128,6 +129,100 @@ func TestStatusLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
 	}
 	if work.JournalOpens != 0 {
 		t.Fatalf("status --limit 20 opened %d run journals with 1,000 projected runs, want 0", work.JournalOpens)
+	}
+}
+
+func TestStatusJSONKeepsProjectedRunsWhenFleetFactsUnavailable(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	startedAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+		RunID: "projected-run", Gaggle: "example", Workflow: "default-implement",
+		Phase: journal.PhaseCompleted, Terminal: true, StartedAt: startedAt,
+		LastActivity: startedAt, LastSeq: 1,
+	}}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+		RunID: "hidden-failed-run", Gaggle: "example", Workflow: "default-implement",
+		Phase: journal.PhaseFailed, Terminal: true, StartedAt: startedAt.Add(-time.Minute),
+		LastActivity: startedAt.Add(-time.Minute), LastSeq: 1,
+	}}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watermarks.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previousFleetFacts := loadStatusFleetFacts
+	loadStatusFleetFacts = func(context.Context, *readservice.Local) ([]readservice.StatusFleetFact, error) {
+		return nil, errors.New("fleet facts timed out")
+	}
+	t.Cleanup(func() { loadStatusFleetFacts = previousFleetFacts })
+	stubStatusParkedBacklog(t, func(context.Context, *instance.Config) (statusParkedBacklog, error) {
+		return statusParkedBacklog{}, nil
+	})
+	previousPRLoader := loadStatusPRLabelCounts
+	loadStatusPRLabelCounts = func(context.Context, *instance.Config) (statusPRLabelCounts, error) {
+		return statusPRLabelCounts{}, nil
+	}
+	t.Cleanup(func() { loadStatusPRLabelCounts = previousPRLoader })
+
+	code, stdout, stderr := runArgs(t, "status", "--json", "--workflow=default-implement", "--limit=1", root)
+	if code != 0 {
+		t.Fatalf("status --json: code=%d stderr=%q", code, stderr)
+	}
+	var output statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("decode status JSON: %v\n%s", err, stdout)
+	}
+	if len(output.Runs) != 1 || output.Runs[0].RunID != "projected-run" {
+		t.Fatalf("runs = %+v, want projected run preserved despite fleet facts failure", output.Runs)
+	}
+	if output.Summary != nil {
+		t.Fatalf("summary = %+v, want omitted instead of synthesized from filtered/limited display rows", output.Summary)
+	}
+	if output.Collection == nil || output.Collection.State != "partial" ||
+		len(output.Collection.Queries) != 1 ||
+		output.Collection.Queries[0].Name != "fleetFacts" ||
+		!strings.Contains(output.Collection.Queries[0].Error, "fleet facts timed out") {
+		t.Fatalf("collection = %+v, want partial fleetFacts error", output.Collection)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--workflow=default-implement", "--limit=1", root)
+	if code != 0 {
+		t.Fatalf("status: code=%d stderr=%q", code, stderr)
+	}
+	for _, want := range []string{
+		"Workflow summary unavailable: fleetFacts failed",
+		"Status collection partial: fleetFacts unavailable",
+		"projected-run",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+	}
+	if strings.Contains(stdout, "hidden-failed-run") {
+		t.Fatalf("stdout = %q, want display limit/filter preserved", stdout)
+	}
+	if strings.Contains(stdout, "Workflow summary (success rate") {
+		t.Fatalf("stdout = %q, want no synthesized workflow summary", stdout)
 	}
 }
 
@@ -1136,6 +1231,69 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 		if len(line) > 80 {
 			t.Fatalf("summary line is %d columns, want at most 80: %q", len(line), line)
 		}
+	}
+}
+
+// TestBuildStatusFleetSummaryCountsNoWorkBesideSuccess is #5553: a lane whose
+// recent completions all found nothing to do reported a bare 100%, reading as
+// productive while idle for days. No-work completions still count as
+// successes, but the cell says how many of them were no-work.
+func TestBuildStatusFleetSummaryCountsNoWorkBesideSuccess(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 6, 30, 0, 0, time.UTC)
+	workflows := []apiv1.Workflow{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "idle"},
+			Spec:       apiv1.WorkflowSpec{Gaggle: "fleet", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "productive"},
+			Spec:       apiv1.WorkflowSpec{Gaggle: "fleet", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}},
+		},
+	}
+	// The idle lane has twelve completed no-work ticks (only the window's ten
+	// count); the productive lane has one completed run that did work.
+	facts := []readservice.StatusFleetFact{{Gaggle: "fleet", Workflow: "idle"}, {Gaggle: "fleet", Workflow: "productive"}}
+	for i := 0; i < statusSuccessRateWindow+2; i++ {
+		at := now.Add(-time.Duration(i+1) * time.Minute)
+		facts[0].TerminalRuns = append(facts[0].TerminalRuns, readservice.RunSummary{
+			ID: fmt.Sprintf("idle-%02d", i), Workflow: "idle", Gaggle: "fleet",
+			Phase: journal.PhaseCompleted, StartedAt: at, LastActivityAt: at, NoWork: true,
+		})
+	}
+	facts[1].TerminalRuns = append(facts[1].TerminalRuns, readservice.RunSummary{
+		ID: "work", Workflow: "productive", Gaggle: "fleet",
+		Phase: journal.PhaseCompleted, StartedAt: now, LastActivityAt: now,
+	})
+
+	got, err := buildStatusFleetSummary(workflows, statusFleetRuns(facts), nil, nil, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle, productive := got.Workflows[0], got.Workflows[1]
+	if idle.SuccessfulRuns != statusSuccessRateWindow || idle.NoWorkRuns != statusSuccessRateWindow {
+		t.Fatalf("idle summary = %+v, want %d successes all no-work", idle, statusSuccessRateWindow)
+	}
+	if productive.SuccessfulRuns != 1 || productive.NoWorkRuns != 0 {
+		t.Fatalf("productive summary = %+v", productive)
+	}
+
+	var text bytes.Buffer
+	renderStatusFleetSummary(&text, got, now)
+	if !strings.Contains(text.String(), "10/10 100% (10 no-work)") {
+		t.Fatalf("summary text = %q, want the no-work count beside the success count", text.String())
+	}
+	if strings.Count(text.String(), "no-work") != 1 {
+		t.Fatalf("summary text = %q, want no no-work note on the productive lane", text.String())
+	}
+	// Columns stay aligned: NEXT starts at the same offset on every row.
+	var nextAt []int
+	for _, line := range strings.Split(text.String(), "\n") {
+		if i := strings.Index(line, "manual"); i >= 0 {
+			nextAt = append(nextAt, i)
+		}
+	}
+	if len(nextAt) != 2 || nextAt[0] != nextAt[1] {
+		t.Fatalf("NEXT offsets = %v in %q, want two aligned rows", nextAt, text.String())
 	}
 }
 
@@ -2426,6 +2584,30 @@ func TestStatusDaemonRejectsRunListingFlags(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--daemon cannot be combined") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestReportDaemonRecoveryCandidateNamesBlockingOperation(t *testing.T) {
+	now := time.Date(2026, 10, 2, 17, 0, 0, 0, time.UTC)
+	var out strings.Builder
+	reportDaemonRecoveryCandidate(&out, now, &httpapi.RecoveryCandidateStatus{
+		Progress: httpapi.RecoveryProgress{Total: 6, Examined: 6, Resumed: 5, Terminal: 0, Skipped: 0},
+		RunID:    "c423d482", Gaggle: "goobers", Workflow: "implement",
+		Disposition: "resolving-generation", Operation: "resolve execution generation",
+		StartedAt: now.Add(-2 * time.Minute), LastProgressAt: now.Add(-15 * time.Second),
+	})
+	text := out.String()
+	for _, want := range []string{
+		"examined=6/6",
+		"blocking run=c423d482",
+		"workflow=goobers/implement",
+		"disposition=resolving-generation",
+		"operation=\"resolve execution generation\"",
+		"last-progress=15s ago",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("status text = %q, want %q", text, want)
+		}
 	}
 }
 

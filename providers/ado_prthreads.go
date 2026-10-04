@@ -36,6 +36,10 @@ const adoPRThreadCommentType = "text"
 // no PR-comment transport otherwise, so this is the keystone of the ADO
 // remediation handoff.
 //
+// The thread is opened with status "closed", not "active": an active thread
+// would count against a comment-resolution branch policy and hold the pull
+// request until someone resolved Goobers' own bookkeeping comment.
+//
 // The returned Comment.ID is the composite "<pullID>/<threadId>/<commentId>" so
 // UpdatePullRequestThreadComment can address the exact comment later with no
 // extra state — the ADO update endpoint needs all three, unlike GitHub's
@@ -150,6 +154,29 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 	return nil
 }
 
+// DeletePullRequestThreadComment deletes one pull-request thread comment — the
+// ADO analog of GitHub's DeleteComment, used to drop a duplicate of a
+// run-scoped comment a retry posted. commentID is the composite
+// "<pullID>/<threadId>/<commentId>" a prior Post/List returned.
+func (p *ADOProvider) DeletePullRequestThreadComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if err := requireRepo(repo); err != nil {
+		return err
+	}
+	pullID, threadID, cID, err := parseADOThreadCommentID(commentID)
+	if err != nil {
+		return err
+	}
+	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads", threadID, "comments", cID)
+	if err != nil {
+		return err
+	}
+	if err := p.do(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
+		return err
+	}
+	p.recordMutation(ctx, "pr", pullID, "comment", repo)
+	return nil
+}
+
 // AddPullRequestLabels applies one or more native Azure DevOps PR labels — the
 // hazard-free carrier for the goobers:needs-remediation selector signal.
 // ListPullRequests already reads PR labels, so writing them here drives the
@@ -175,6 +202,14 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	// A failed pre-read only loses the already-present skip: the POSTs still
 	// run, and ADO merges a label that exists in another casing server-side.
 	existing, readErr := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	var existingNames []string
+	if existing != nil {
+		existingNames = make([]string, 0, len(existing))
+		for _, label := range existing {
+			existingNames = append(existingNames, label.Name)
+		}
+	}
+	pending = planLabelMutation(existingNames, pending, nil, equalFoldLabelName).Add
 	// The PR-labels endpoint is published only under the -preview version;
 	// a plain "7.1" is rejected (VssInvalidPreviewVersionException).
 	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
@@ -183,9 +218,6 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	}
 	var result PullRequestLabelAddError
 	for _, name := range pending {
-		if _, present := existing[strings.ToLower(name)]; present {
-			continue
-		}
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]interface{}{"name": name}, nil); err != nil {
 			result.Failed = append(result.Failed, name)
 			result.errs = append(result.errs, err)
@@ -213,14 +245,14 @@ func adoPullRequestLabelAddResult(result *PullRequestLabelAddError, readErr erro
 // adoPendingPullRequestLabels drops blank names and case-insensitive
 // duplicates from an AddPullRequestLabels request, keeping first-seen order.
 func adoPendingPullRequestLabels(names []string) []string {
-	out := make([]string, 0, len(names))
+	nonblank := make([]string, 0, len(names))
 	for _, name := range names {
-		if strings.TrimSpace(name) == "" || adoHasLabel(out, name) {
+		if strings.TrimSpace(name) == "" {
 			continue
 		}
-		out = append(out, name)
+		nonblank = append(nonblank, name)
 	}
-	return out
+	return planLabelMutation(nil, nonblank, nil, equalFoldLabelName).Add
 }
 
 // adoPullRequestLabel is one label on a pull request: its id and the name in
@@ -516,6 +548,10 @@ type adoPullRequestThread struct {
 	IsDeleted                bool                         `json:"isDeleted"`
 	ThreadContext            *adoThreadContext            `json:"threadContext"`
 	PullRequestThreadContext *adoPullRequestThreadContext `json:"pullRequestThreadContext"`
+	// Properties carries ADO's thread properties; a CodeReviewThreadType key
+	// marks a thread ADO synthesized (vote, push, policy status), read by
+	// ListPullRequestFeedbackComments.
+	Properties map[string]interface{} `json:"properties"`
 }
 
 type adoPullRequestThreadComment struct {

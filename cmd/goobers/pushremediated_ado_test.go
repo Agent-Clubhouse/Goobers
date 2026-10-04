@@ -89,7 +89,7 @@ func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
 		for i, body := range s.threadComments {
 			comments[i] = map[string]interface{}{
 				"id":            i + 1,
-				"content":       body,
+				"content":       stampOwnFixtureBody(body, "comment"),
 				"commentType":   "text",
 				"author":        map[string]string{"displayName": "goobers-bot", "uniqueName": "bot@example.com"},
 				"publishedDate": "2026-07-15T00:00:00Z",

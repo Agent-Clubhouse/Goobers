@@ -33,6 +33,7 @@ describe("workflows page", () => {
 
     await user.click(gaggleToggle);
     const inventory = screen.getByRole("region", { name: "Core product workflow definitions" });
+    expect(within(inventory).getByTitle("core/implementation")).toBeInTheDocument();
     const workflowRow = within(inventory)
       .getByText("Implementation")
       .closest(".workflow-row");

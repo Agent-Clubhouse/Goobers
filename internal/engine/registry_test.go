@@ -187,3 +187,16 @@ func TestStartUnregistered(t *testing.T) {
 		t.Error("starting an unregistered workflow should error")
 	}
 }
+
+// NewRegistryWithPreviewFeatures returns an empty Registry that treats every
+// definition registered into it as preview-acknowledged, bypassing each
+// definition's own annotation. It exists for tests exercising preview DSL
+// syntax/semantics directly; production wiring uses NewRegistry and lets each
+// Workflow's own goobers.dev/allow-preview-features annotation (carried on
+// wf.Definition.Annotations) govern its own compilation (#4220).
+func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
+	return &Registry{
+		defs:                 make(map[string][]wf.Definition),
+		forcePreviewFeatures: enabled,
+	}
+}

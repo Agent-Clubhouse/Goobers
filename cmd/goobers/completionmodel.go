@@ -79,6 +79,25 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"advisory-pr-reset": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle name"},
+		{name: "owner", takesArg: true, desc: "GitHub owner"},
+		{name: "repo", takesArg: true, desc: "GitHub repository"},
+		{name: "review-type", takesArg: true, desc: "Advisory review type"},
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+	},
+	"temporal codec-server": {
+		{name: "listen", takesArg: true, desc: "TLS listener address"},
+		{name: "tls-cert", takesArg: true, desc: "TLS certificate PEM file"},
+		{name: "tls-key", takesArg: true, desc: "TLS private key PEM file"},
+		{name: "allow-origin", takesArg: true, desc: "Exact Temporal Web UI origin"},
+	},
+	"gaggle export": {
+		{name: "output", takesArg: true, desc: "Write the bundle to a file"},
+	},
+	"gaggle import": {
+		{name: "name", takesArg: true, desc: "Destination gaggle name"},
+	},
 	"config templates import": {
 		{name: "repository", takesArg: true, desc: "Template Git repository"},
 		{name: "directory", takesArg: true, desc: "Template directory in the repository"},
@@ -155,6 +174,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit the versioned onboarding action envelope"},
 	},
 	"preflight": {
+		{name: "instance", takesArg: true, desc: "Instance root to inspect"},
+		{name: "workflow", takesArg: true, desc: "Workflow name to inspect"},
+		{name: "execution-identity", takesArg: true, values: []string{"actual"}, desc: "Report actual identity boundaries"},
+		{name: "check-readiness", desc: "Run bounded read-only harness probes"},
+		{name: "json", desc: "Emit versioned runtime preflight report"},
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
 	},
@@ -234,6 +258,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "record-instance", takesArg: true, desc: "Instance root receiving Kubernetes check results"},
+		{name: "result-max-age", takesArg: true, desc: "Recorded Kubernetes result freshness window"},
+		{name: "psa-namespaces", takesArg: true, desc: "Namespaces for rendered pod admission checks"},
+		{name: "psa-service-account", takesArg: true, desc: "Stage ServiceAccount for rendered pod admission checks"},
+		{name: "temporal-codec", desc: "Report configured Temporal payload codec"},
+		{name: "instance", takesArg: true, desc: "Instance config for Kubernetes Temporal checks"},
 		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
 		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
@@ -243,6 +273,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "image-ca", takesArg: true, desc: "Internal root CA PEM for image trust checks"},
 		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
 		{name: "repo", desc: "Compare repository forge policy with GitHub"},
+		{name: "harness-auth", desc: "Report credential-free harness authentication state"},
 		{name: "av-exclusions", desc: "List the directories Goobers writes then reads and verify antivirus exclusions (advisory)"},
 		{name: "work-root", takesArg: true, desc: "Worker work root to enumerate (--av-exclusions)"},
 		{name: "kubeconfig", takesArg: true, desc: "Kubeconfig path"},
@@ -261,6 +292,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "baseline", takesArg: true, desc: "Coverage baseline file"},
 		{name: "write-baseline", desc: "Freeze the current per-class coverage into the baseline"},
 		{name: "timeout", takesArg: true, desc: "Per-fetch timeout for provenance checks"},
+		{name: "keep-dns-for-network-none", desc: "Deprecated migration escape: retain DNS for network:none"},
 		{name: "print-blob-endpoint", desc: "Print the blob endpoint (namespace, pod labels, port) as JSON and exit"},
 	},
 	"self-update": {
@@ -305,6 +337,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"worker": {
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
+		{name: "blob-endpoint", takesArg: true, desc: "HTTP(S) artifact plane alternative"},
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
 		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
@@ -380,6 +413,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dot", desc: "Emit Graphviz DOT"},
 	},
 	"runs list": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
@@ -390,6 +424,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"status": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "agents", desc: "List in-flight agentic stages by role"},
 		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
@@ -450,14 +485,21 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
 		{name: "provider", takesArg: true, desc: "Filter by provider"},
 	},
+	"claims active": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
+		{name: "provider", takesArg: true, desc: "Filter by provider"},
+	},
 	"claims release": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the claim"},
 		{name: "provider", takesArg: true, desc: "Provider owning the claim"},
 		{name: "force", desc: "Release a claim held by a non-terminal run"},
 	},
 	"trace": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "follow", desc: "Stream events until the run reaches a terminal phase"},
+		{name: "after-seq", takesArg: true, desc: "Resume transcript follow after a journal sequence"},
 		{name: "summary", desc: "Show run metadata and review verdicts"},
 		{name: "verdicts", desc: "Show review verdict content"},
 		{name: "transcripts", desc: "Show every recorded agent-stage transcript"},
@@ -479,9 +521,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "out", takesArg: true, desc: "Write the injection record here instead of stdout"},
 	},
 	"escalations": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
+		{name: "limit", takesArg: true, desc: "Maximum escalated runs to show"},
+		{name: "since", takesArg: true, desc: "Only include runs started at or after this time"},
 	},
 	"escalations show": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "include-verdict", desc: "Include review verdict content"},
 	},
@@ -514,6 +560,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"telemetry test": {
+		{name: "destination", takesArg: true, desc: "Named Azure destination to probe"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "timeout", takesArg: true, desc: "Connectivity deadline"},
 	},
@@ -558,6 +605,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "Inclusive span-start lower bound"},
 		{name: "until", takesArg: true, desc: "Exclusive span-start upper bound"},
 	},
+	"telemetry mark-fix": {
+		{name: "finding", takesArg: true, desc: "Backprop finding ID to verify"},
+		{name: "applied-at", takesArg: true, desc: "Fix deployment time as RFC3339"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},
@@ -569,6 +620,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"backlog-health": {
 		{name: "feedback", desc: "Include backlog feedback"},
+	},
+	"gate-removal-guard": {
+		{name: "config-repo", desc: "Inspect the instance config repository checkout"},
+	},
+	"push-branch": {
+		{name: "config-repo", desc: "Push the instance config repository checkout with configrepo:write"},
+	},
+	"open-pr": {
+		{name: "config-repo", desc: "Open the PR in the instance config repository with configrepo:write"},
 	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
@@ -598,6 +658,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "max-runs", takesArg: true, desc: "Maximum runs to collect when no run is named"},
 		{name: "output", takesArg: true, desc: "Archive path to write"},
 		{name: "json", desc: "Write the machine-readable document to stdout"},
+	},
+	"diagnostics triage": {
+		{name: "run", takesArg: true, desc: "Run id to classify"},
+		{name: "json", desc: "Write the machine-readable support-triage contract"},
 	},
 	"security-alerts-query": {
 		{name: "source", takesArg: true, values: []string{"code-scanning", "dependabot"}, desc: "Alert feed to read"},

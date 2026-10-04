@@ -72,3 +72,23 @@ func (w *snapshotPathOutput) Write(data []byte) (int, error) {
 	}
 	return w.Buffer.Write(data)
 }
+
+// privateGitDirectory creates the scratch directory that holds a private
+// recovery Git directory. It lives inside the repository's own Git directory,
+// on the workspace volume, so recovery custody never depends on free space in
+// the platform temp root: in a tmp:ephemeral pod that is a small tmpfs, and a
+// full one made `git init` fail with "No space left on device" and cost a
+// stage its outputs. When the Git directory cannot be located or written the
+// platform temp root is used, as before.
+func privateGitDirectory(ctx context.Context, repository, pattern string) (string, error) {
+	var gitDir snapshotPathOutput
+	if err := recoveryGit(ctx, repository, &gitDir, "rev-parse", "--path-format=absolute", "--git-dir"); err == nil {
+		parent := strings.TrimSuffix(gitDir.String(), "\n")
+		if filepath.IsAbs(parent) && !strings.ContainsAny(parent, "\r\n\x00") {
+			if directory, err := os.MkdirTemp(parent, pattern); err == nil {
+				return directory, nil
+			}
+		}
+	}
+	return os.MkdirTemp("", pattern)
+}

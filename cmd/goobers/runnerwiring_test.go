@@ -42,6 +42,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/harness"
@@ -77,6 +78,39 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 		out[g.Capability] = val
 	}
 	return out
+}
+
+func TestIssueOwnershipScopeByGaggle(t *testing.T) {
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "cloud"},
+			Spec: apiv1.GaggleSpec{IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+				Assignees:  []string{"cloud-bot", "cloud-alt"},
+				Unassigned: "refuse",
+			}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "local"},
+			Spec: apiv1.GaggleSpec{IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+				Assignees:  []string{"local-bot"},
+				Unassigned: "allow",
+			}},
+		},
+		{ObjectMeta: metav1.ObjectMeta{Name: "legacy"}},
+	}}
+
+	if got, want := issueOwnershipAssigneesByGaggle(set), map[string]string{
+		"cloud": "cloud-bot,cloud-alt",
+		"local": "local-bot",
+	}; !maps.Equal(got, want) {
+		t.Fatalf("assignees = %#v, want %#v", got, want)
+	}
+	if got, want := issueOwnershipUnassignedByGaggle(set), map[string]string{
+		"cloud": "refuse",
+		"local": "allow",
+	}; !maps.Equal(got, want) {
+		t.Fatalf("unassigned = %#v, want %#v", got, want)
+	}
 }
 
 type runnerWiringModelLister struct {
@@ -261,6 +295,8 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 			},
 		}},
 		nil,
+		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -418,6 +454,8 @@ func TestBuildTelemetryClientThreadsOTLPTLSFields(t *testing.T) {
 				KeyFile:    clientCert.keyFile,
 			},
 		}},
+		nil,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -871,6 +909,12 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	if copilot.Name() != "copilot-cli" {
 		t.Fatalf("adapter Name = %q, want existing diagnostic identity copilot-cli", copilot.Name())
 	}
+	// The launcher prefix stays the bare CLI: --no-remote-export is enforced
+	// on every final session argv by the adapter, not carried in the prefix
+	// an operator override could replace.
+	if got, want := strings.Join(copilot.Command, " "), "copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want built-in default %q", got, want)
+	}
 	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
 		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
 	}
@@ -1152,6 +1196,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				nil,
 				false,
 				nil,
+				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -1175,6 +1220,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 		harness.EnvironmentConfig{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -1224,6 +1270,7 @@ func TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery(t *testing
 			credentialCalls++
 			return "pat-from-file-ref", nil
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -1275,6 +1322,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		harness.EnvironmentConfig{ExtraAllowlist: []string{"COPILOT_HOME"}},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -1872,7 +1920,7 @@ func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != len(credentialedCapabilities) {
+	if len(grants) != len(repoCredentialedCapabilityNames()) {
 		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
 	}
 	for _, grant := range grants {
@@ -1982,6 +2030,32 @@ func TestGitHubRepoForGaggle(t *testing.T) {
 
 	if got, ok := githubRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Name: "web"}); ok {
 		t.Fatalf("githubRepoForGaggle(ado project) = %#v, want no match", got)
+	}
+}
+
+func TestGiteaRepoForGaggle(t *testing.T) {
+	want := instance.RepoRef{
+		Provider: "gitea",
+		Owner:    "acme",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ACME_WEB_TOKEN"},
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "gitea", Owner: "acme", Name: "other"},
+		want,
+	}}
+	got, ok := giteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitea, Owner: "acme", Name: "web"})
+	if !ok || got.Owner != want.Owner || got.Name != want.Name || got.Token.Env != want.Token.Env {
+		t.Fatalf("giteaRepoForGaggle() = %#v, %v", got, ok)
+	}
+
+	single := &instance.Config{Repos: []instance.RepoRef{want}}
+	if got, ok := giteaRepoForGaggle(single, apiv1.RepoRef{}); !ok || got.Name != want.Name {
+		t.Fatalf("giteaRepoForGaggle(single-repo fallback) = %#v, %v", got, ok)
+	}
+
+	if got, ok := giteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}); ok {
+		t.Fatalf("giteaRepoForGaggle(github project) = %#v, want no match", got)
 	}
 }
 
@@ -2524,6 +2598,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 
 	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -2567,24 +2642,24 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		return exec.LookPath(name)
 	}
 	t.Cleanup(func() { runnerLookPath = previousLookPath })
-	definitions, err := buildSchedulerDefinitions(
-		layout,
-		&instance.Config{},
-		set,
-		nil,
-		&wg,
-		newDaemonRunnerRegistry(),
-		nil,
-		nil,
-		nil,
-		log,
-		journal.NewRegistryScrubber(),
-		nil,
-		localscheduler.NewProviderQuotaState(),
-		nil,
-		nil,
-		nil,
-	)
+	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
+		Layout:           layout,
+		Config:           &instance.Config{},
+		Definitions:      set,
+		Validation:       nil,
+		WaitGroup:        &wg,
+		RunnerRegistry:   newDaemonRunnerRegistry(),
+		Telemetry:        nil,
+		RollupDB:         nil,
+		Watermarks:       nil,
+		InstanceLog:      log,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		WorktreeManagers: nil,
+		ProviderQuota:    localscheduler.NewProviderQuotaState(),
+		TerminalNotifier: nil,
+		CredentialStores: nil,
+		StartupProgress:  nil,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3406,6 +3481,59 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 }
 
+// TestCIPollCredentialSourceReResolvesOnlyAfterUnauthorized: the local
+// ci-poll source resolves once at stage start, reuses that value per poll,
+// and re-resolves through the injector once after a 401 invalidates it
+// (#6154 on top of Goobers#6120) — including for a value with no expiry.
+func TestCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) {
+	calls := 0
+	resolver, err := credentials.NewResolverWithSources(nil, map[string]credentials.ResolveFunc{
+		"ci-poll": func(context.Context) (string, error) {
+			calls++
+			return fmt.Sprintf("ci-poll-token-%d", calls), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResolverWithSources: %v", err)
+	}
+	reg := &escTestRegistrar{}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: string(capability.ProviderPRWrite),
+		Ref:        "ci-poll",
+	}}, reg)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	first, source, err := ciPollTokenSource(context.Background(), injector, string(capability.ProviderPRWrite), reg)
+	if err != nil {
+		t.Fatalf("ciPollTokenSource: %v", err)
+	}
+	refreshable, ok := source.(providers.RefreshableTokenSource)
+	if !ok {
+		t.Fatalf("source %T is not refreshable", source)
+	}
+	for range 2 {
+		token, err := source.Token(context.Background())
+		if err != nil || token != first {
+			t.Fatalf("Token = %q, %v; want the stage-start value %q", token, err, first)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("resolved %d times before any 401, want only the stage-start resolve", calls)
+	}
+	refreshable.Invalidate()
+	second, err := source.Token(context.Background())
+	if err != nil || second != "ci-poll-token-2" {
+		t.Fatalf("Token after 401 = %q, %v; want one re-resolved value", second, err)
+	}
+	if calls != 2 {
+		t.Fatalf("resolved %d times, want exactly one re-resolve", calls)
+	}
+	if len(reg.registered) == 0 || string(reg.registered[len(reg.registered)-1]) != second {
+		t.Fatalf("registered secrets = %q, want the re-resolved value registered", reg.registered)
+	}
+}
+
 type escFakeCommenter struct {
 	gotReq providers.UpdateWorkItemRequest
 }
@@ -3576,6 +3704,7 @@ func repoConfig() *instance.Config {
 // configured AND some workflow opts into the MaxOpenPRs cap — so an instance
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
+	t.Parallel()
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
 		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
@@ -3639,13 +3768,12 @@ func TestBuildOpenPRRefresherRoutesPerGaggleRepo(t *testing.T) {
 		"token-repo-a": {"goobers/implementation/run-1", "goobers-site/implementation/decoy"},
 		"token-repo-b": {"goobers-site/implementation/run-2", "goobers-site/implementation/run-3"},
 	}
-	prev := newOpenPRProvider
-	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+	deps := productionRuntimeDeps()
+	deps.openPRListers.github = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
 		return &fakeHeadLister{heads: headsByToken[token]}
 	}
-	t.Cleanup(func() { newOpenPRProvider = prev })
 
-	set, err := buildOpenPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
+	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
 		map[string]string{"site": "goobers-site"}, "", nil)
 	if err != nil {
 		t.Fatalf("buildOpenPRRefresher: %v", err)
@@ -3708,14 +3836,12 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 
 	fake := &fakeHeadLister{heads: []string{"goobers/implementation/run-1"}}
 	var gotToken string
-	prev := newOpenPRProvider
-	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+	newProvider := func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
 		gotToken = token
 		return fake
 	}
-	t.Cleanup(func() { newOpenPRProvider = prev })
 
-	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg}
+	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg, newProvider: newProvider}
 	prs, err := l.ListOpenPullRequests(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "web"})
 	if err != nil {
 		t.Fatalf("ListOpenPullRequests: %v", err)
@@ -4632,7 +4758,7 @@ func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
 
 // TestBuildFailedHandlerFirstFailureNoLabels proves a single terminal failure
 // posts a streak comment with count=1 but does NOT apply needs-human. The
-// circuit breaker only fires at failureStreakThreshold (3).
+// circuit breaker only fires at escalationnotify.FailureStreakThreshold (3).
 func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
@@ -4704,7 +4830,7 @@ func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 }
 
 // TestBuildFailedHandlerCircuitBreakerTripsAtThreshold proves that after
-// failureStreakThreshold consecutive failures, needs-human is applied and ready
+// escalationnotify.FailureStreakThreshold consecutive failures, needs-human is applied and ready
 // is removed — the circuit breaker engages.
 func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
@@ -4730,9 +4856,9 @@ func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	}}
 	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 
-	// Simulate failureStreakThreshold failures by calling the handler repeatedly.
+	// Simulate escalationnotify.FailureStreakThreshold failures by calling the handler repeatedly.
 	// Each call reads the streak from prior comments, increments, and upserts.
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		err = h(context.Background(), runner.FailedOutcome{
 			RunID:   "run-trip",
 			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
@@ -4900,7 +5026,7 @@ func TestTerminalCircuitBreakerTripsOnEscalated(t *testing.T) {
 		t.Fatal("expected non-nil terminal notifier")
 	}
 
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		if err := h("run-esc", journal.PhaseEscalated, "open-pr-gate"); err != nil {
 			t.Fatalf("call %d: %v", i+1, err)
 		}
@@ -4950,7 +5076,7 @@ func TestTerminalCircuitBreakerSkipsCompleted(t *testing.T) {
 	}}
 	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 
-	for i := 0; i < failureStreakThreshold+1; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold+1; i++ {
 		_ = h("run-ok", journal.PhaseCompleted, "done")
 	}
 
@@ -5183,5 +5309,29 @@ func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
 	}
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
 		t.Fatalf("script result = %+v, want a credential_read_refused failure", result)
+	}
+}
+
+// TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot is
+// #6058: `goobers up .` passes a relative instance root. The replay spool root
+// must still be absolute, because the journal-export cursor store and replay
+// index open SQLite through sqliteuri.File, which only accepts absolute paths.
+func TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_RELATIVE_ROOT_CONNECTION", connectionString)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var cfg telemetry.Config
+	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_RELATIVE_ROOT_CONNECTION"},
+	}, instance.TelemetryProfileStandard, ".", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(cfg.AzureMonitorReplayRoot) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want an absolute path for a relative instance root", cfg.AzureMonitorReplayRoot)
+	}
+	if !strings.HasSuffix(cfg.AzureMonitorReplayRoot, filepath.Join("telemetry-export", "azure-monitor")) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want it under the instance root's telemetry-export/azure-monitor", cfg.AzureMonitorReplayRoot)
 	}
 }

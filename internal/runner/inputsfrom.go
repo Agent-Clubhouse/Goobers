@@ -7,6 +7,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workspacerevision"
 )
 
 // stageOutput is one completed stage's journaled Outputs together with the
@@ -303,6 +304,35 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 	return out
 }
 
+func reconstructWorkspaceRevision(events []journal.Event, machine *workflow.Machine) (*apiv1.WorkspaceRevision, error) {
+	var revision *apiv1.WorkspaceRevision
+	for _, event := range events {
+		if event.WorkspaceRevision == nil {
+			continue
+		}
+		if event.Type != journal.EventStageFinished || event.Status != string(apiv1.ResultSuccess) {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "journal workspace revision requires a successful stage.finished event"}
+		}
+		if machine == nil {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeInvalid, Message: "journal workspace revision requires a pinned workflow"}
+		}
+		task, ok := machine.Task(event.Stage)
+		if !ok {
+			return nil, &workspacerevision.Error{Code: workspacerevision.CodeUnauthorized, Message: "journal workspace revision producer is not a pinned task"}
+		}
+		result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, WorkspaceRevision: event.WorkspaceRevision}
+		if err := workspacerevision.NormalizeResult(&result, task.Type == apiv1.TaskDeterministic); err != nil {
+			return nil, err
+		}
+		var err error
+		revision, err = workspacerevision.Accept(revision, result.WorkspaceRevision)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return revision, nil
+}
+
 // resolvedInputGrades maps each of a task's inputsFrom entries to the provenance
 // of the stage that will produce it, keyed by the consuming input name so an
 // admission failure names the input the workflow author declared.
@@ -377,6 +407,29 @@ func producedIntegrity(
 		return apiv1.IntegrityTrusted
 	}
 	return apiv1.WeakestIntegrity(grades...)
+}
+
+// StageResultIntegrity is the grade a stage's ResultEnvelope finishes with: the
+// weaker of the grade its executor stamped on the envelope itself and the grade
+// producedIntegrity derived from what the stage was admitted with (#2979).
+//
+// An executor that knows its own output is less trustworthy than its inputs —
+// external-telemetry returns third-party data, so it stamps IntegrityUnapproved —
+// must not have that grade replaced by the input-derived one, or a deterministic
+// stage with no graded input would hand its unapproved outputs downstream as
+// trusted. Taking the weaker of the two, rather than letting the executor's grade
+// win outright, means an executor stamp can only ever LOWER a grade: an
+// executor that read unapproved input cannot launder it upward by stamping a
+// stronger grade (TBH-4). An executor that stamps nothing keeps producedIntegrity
+// exactly as before, and an unknown stamp yields the zero grade, which
+// downstream admission refuses (fail closed).
+//
+// Exported for the Temporal engine, which must grade a stage on the same rule.
+func StageResultIntegrity(executorGrade, produced apiv1.Integrity) apiv1.Integrity {
+	if executorGrade == "" {
+		return produced
+	}
+	return apiv1.WeakestIntegrity(executorGrade, produced)
 }
 
 // --- shared with the Temporal engine (#624 shared-constant pattern) ---------

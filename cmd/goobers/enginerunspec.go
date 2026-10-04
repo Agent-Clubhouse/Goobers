@@ -108,17 +108,18 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		triggerRef = req.def.Name
 	}
 	return engine.StartSpec{
-		ConfigGeneration: req.configGeneration,
-		RunID:            runID,
-		Gaggle:           req.gaggle,
-		RepoRef:          req.project,
-		Item:             req.item,
-		TriggerKind:      triggerKind,
-		TriggerRef:       triggerRef,
-		BranchNamespace:  branchNamespacesByGaggle(req.set)[req.gaggle],
-		LiveJournal:      req.liveJournal,
-		Placements:       placements,
-		RunControls:      controls,
+		ConfigGeneration:    req.configGeneration,
+		RunID:               runID,
+		Gaggle:              req.gaggle,
+		RepoRef:             req.project,
+		Item:                req.item,
+		TriggerKind:         triggerKind,
+		TriggerRef:          triggerRef,
+		BranchNamespace:     branchNamespacesByGaggle(req.set)[req.gaggle],
+		LiveJournal:         req.liveJournal,
+		Placements:          placements,
+		SelfExecutionDenied: req.cfg.SelfExecutionDenied(),
+		RunControls:         controls,
 		// #294/#3528: an agentic gate's reviewer capabilities are instance
 		// policy, pinned into the run at start and read back from the run's
 		// own snapshot afterwards — the daemon's credential plane resolves a
@@ -135,8 +136,12 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// its own, exactly as dispatchTask does. A dispatch that leaves them
 		// empty hands the stage no partition, and on a shared backlog that
 		// claims the sibling instance's goobers:local items.
-		BacklogQueryAssignedTo:    selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
-		BacklogQueryRequireLabels: requireLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryAssignedTo:     selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
+		BacklogQueryRequireLabels:  requireLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryBacklogLabels:  backlogLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryLabelPredicate: backlogLabelPredicatesByGaggle(req.set)[req.gaggle],
+		IssueOwnershipAssignees:    issueOwnershipAssigneesByGaggle(req.set)[req.gaggle],
+		IssueOwnershipUnassigned:   issueOwnershipUnassignedByGaggle(req.set)[req.gaggle],
 		// #3876: kit provenance, so an engine run's run.yaml names the same
 		// digest gooberDigestStarter stamps on a runner-driven one.
 		GooberDigest: req.gooberDigest,

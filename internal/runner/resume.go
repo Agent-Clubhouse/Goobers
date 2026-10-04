@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowgraph"
 )
 
 // ErrTerminalGenerationChanged means an intervention was validated against an
@@ -145,7 +146,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	// A fresh registrar/scrubber per resume, exactly like Start — a run's
 	// secrets have no business outliving one process's handling of it.
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
@@ -189,7 +190,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}
@@ -331,6 +332,12 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 	}
+	ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
+	// Terminal handlers read the active run's attempt context, which
+	// withActiveRun built before the attribution above existed. Rebase it now
+	// so a terminal reached while replaying (before the walk's own rebase
+	// below) is attributed too (#5178).
+	setStalledAttemptContext(ctx)
 	if res, done, terr := r.resumeTerminalPhase(rd, jr, in); done || terr != nil {
 		return res, terr
 	}
@@ -363,7 +370,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		seedEvents = events
 	}
 
-	f := r.newResumeFrame(jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	f, err := r.newResumeFrame(ctx, jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
+	}
 	ws := f.ws
 
 	startState, err := f.resolveStartState(rd, in.Machine)
@@ -483,6 +493,37 @@ func (r *Runner) resumeTerminalPhase(rd *journal.Reader, jr *journal.Run, in Res
 	}
 	switch phase {
 	case journal.PhaseCompleted, journal.PhaseAborted, journal.PhaseEscalated, journal.PhaseFailed:
+		// A terminal gate is itself durable, but a crash may have preceded
+		// run.finished. Complete that record exactly once before reporting the
+		// recovered terminal. Existing (including legacy) terminals stay intact.
+		events, err := rd.Events()
+		if err != nil {
+			return Result{}, true, err
+		}
+		finished, finalState := false, ""
+		for i := len(events) - 1; i >= 0; i-- {
+			e := events[i]
+			if e.Type == journal.EventRunResumed || e.Type == journal.EventStageRerunRequested {
+				break
+			}
+			if e.Type == journal.EventRunFinished {
+				finished = true
+				break
+			}
+			if finalState == "" && (e.Type == journal.EventGateEvaluated || e.Type == journal.EventGateOverridden) {
+				finalState = e.Gate
+			}
+			if e.Type == journal.EventGateOverridden {
+				break
+			}
+		}
+		if !finished {
+			res, err := r.finish(in.RunID, jr, phase, finalState, 0)
+			if err == nil && in.HumanDecision != nil {
+				err = fmt.Errorf("runner: run %q is %s and no longer awaiting a human gate decision", in.RunID, phase)
+			}
+			return res, true, err
+		}
 		res := Result{Phase: phase}
 		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, true, err
@@ -613,15 +654,20 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 // are not readable until the journal's item snapshot and pinned run controls
 // have been resolved, so resumeOwned fills those two in.
 func (r *Runner) newResumeFrame(
+	ctx context.Context,
 	jr *journal.Run, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
-) *resumeFrame {
+) (*resumeFrame, error) {
 	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
 	pointerEvents := seedEvents
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	ws := newWalkState(jr, StartInput{
+	branch := 0
+	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
+		branch = activeParallel.current().id
+	}
+	startIn, err := r.restoreResumeWorkspaceRevision(ctx, StartInput{
 		instanceID:       id.InstanceID,
 		configGeneration: id.ConfigGeneration,
 		RunID:            in.RunID,
@@ -634,7 +680,11 @@ func (r *Runner) newResumeFrame(
 		// here after it already started (and therefore already cleared the #735
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
-	}, registrar, "")
+	}, events, activeParallel, parallelStart, branch)
+	if err != nil {
+		return nil, err
+	}
+	ws := newWalkState(jr, startIn, registrar, "")
 	if id.ContinuedFromRunID != "" {
 		ws.pointers = append(ws.pointers, id.ContextPointers...)
 	} else {
@@ -680,7 +730,7 @@ func (r *Runner) newResumeFrame(
 		hasLast:            hasLast,
 		segmentLastStage:   segmentLastStage,
 		hasSegmentLast:     hasSegmentLast,
-	}
+	}, nil
 }
 
 // resolveStartState picks the workflow state this resume re-enters at.
@@ -732,7 +782,7 @@ func (f *resumeFrame) resolveStartState(rd *journal.Reader, machine *workflow.Ma
 			return "", fmt.Errorf("runner: restore active parallel %q: no current branch", ws.parallel.spec.Name)
 		case current.settled:
 			startState = workflow.TargetJoin
-		case startState == ws.parallel.spec.Name || !branchContainsState(machine, current.start, startState):
+		case startState == ws.parallel.spec.Name || !workflowgraph.BranchContainsState(machine, current.start, startState):
 			startState = current.machine
 			if startState == "" {
 				startState = current.start
@@ -946,6 +996,7 @@ func (f *resumeFrame) seedGateBudgets(machine *workflow.Machine) {
 	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(f.segment), gateDiffDigests
 	ws.infraGateAttempts = gateInfrastructureSeed(f.segment)
 	ws.infraRepassAttempts = infrastructureTargetRepassSeed(f.segment)
+	ws.pollAttempts = pollingTargetSeed(f.segment)
 	ws.evidenceRejections = remediationEvidenceRejectionSeed(f.segment)
 }
 
@@ -990,21 +1041,19 @@ func latestHumanGateProgress(events []journal.Event, machine *workflow.Machine) 
 }
 
 func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
-			return events[i+1:], events[i].Target
-		}
+	i, ok := journal.LastIndex(events, func(event journal.Event) bool {
+		return event.Type == journal.EventRunResumed || event.Type == journal.EventGateOverridden
+	})
+	if ok {
+		return events[i+1:], events[i].Target
 	}
 	return events, ""
 }
 
 func latestRunResume(events []journal.Event) (journal.Event, bool) {
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
-			return events[i], true
-		}
-	}
-	return journal.Event{}, false
+	return journal.LastEvent(events, func(event journal.Event) bool {
+		return event.Type == journal.EventRunResumed || event.Type == journal.EventGateOverridden
+	})
 }
 
 func latestActiveGateOverride(events []journal.Event) (journal.Event, bool) {
@@ -1140,8 +1189,7 @@ func hasRetryDecisionAfter(events []journal.Event, evaluated journal.Event) bool
 }
 
 func gateRepassAttempt(e journal.Event) int {
-	n, _ := e.Runner["repassAttempt"].(float64)
-	return int(n)
+	return e.RepassAttempt()
 }
 
 // PinnedWorkflowMachine reconstructs the historical machine from the trusted,
@@ -1264,11 +1312,15 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
 		return outcome.result, outcome.err
 	}
+	cause := newTerminalCause(journal.PhaseFailed)
+	cause.Classification, cause.Code, cause.Message = journal.TerminalResumeRefused, code, msg
+	cause.CausalEventSeq = jr.Seq() + 1 // The refusal itself is the causal event.
 	terminal := journal.Event{
-		Type:        journal.EventRunFinished,
-		Status:      string(journal.PhaseFailed),
-		Disposition: journal.RunDispositionProduced,
-		Error:       &journal.ErrorDetail{Code: code, Message: msg},
+		TerminalCause: cause,
+		Type:          journal.EventRunFinished,
+		Status:        string(journal.PhaseFailed),
+		Disposition:   journal.RunDispositionProduced,
+		Error:         &journal.ErrorDetail{Code: code, Message: msg},
 	}
 	if err := jr.Append(terminal); err != nil {
 		return Result{}, fmt.Errorf("runner: %s (additionally failed to journal terminal refusal: %w)", msg, err)
@@ -1638,18 +1690,13 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 }
 
 func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {
-	gateIndex := -1
-	branch := 0
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventGateEvaluated && events[i].Gate == gateName && events[i].Branch > 0 {
-			gateIndex = i
-			branch = events[i].Branch
-			break
-		}
-	}
-	if gateIndex < 0 {
+	gateIndex, ok := journal.LastIndex(events, func(event journal.Event) bool {
+		return event.Type == journal.EventGateEvaluated && event.Gate == gateName && event.Branch > 0
+	})
+	if !ok {
 		return "", 0, false
 	}
+	branch := events[gateIndex].Branch
 	for i := gateIndex - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Type != journal.EventParallelStarted {
@@ -1657,30 +1704,12 @@ func interventionParallelContext(events []journal.Event, machine *workflow.Machi
 		}
 		spec, ok := machine.Parallel(event.Parallel)
 		if !ok || branch > len(spec.Branches) ||
-			!branchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
+			!workflowgraph.BranchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
 			continue
 		}
 		return spec.Name, branch, true
 	}
 	return "", 0, false
-}
-
-func branchContainsState(machine *workflow.Machine, start, state string) bool {
-	seen := map[string]bool{}
-	stack := []string{start}
-	for len(stack) > 0 {
-		current := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if current == state {
-			return true
-		}
-		if current == "" || workflow.IsReservedAnyTarget(current) || seen[current] || !machine.Has(current) {
-			continue
-		}
-		seen[current] = true
-		stack = append(stack, machine.Outgoing(current)...)
-	}
-	return false
 }
 
 func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelExec {
@@ -1864,6 +1893,9 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
+		if e.Type == journal.EventGateEvaluated && e.Verdict == gate.OutcomeTimeout {
+			continue
+		}
 		if e.Type == journal.EventGateEvaluated && e.Verdict == gate.OutcomeInfra {
 			if seed == nil {
 				seed = make(map[string]int)
@@ -1892,6 +1924,9 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateEvaluated {
 			continue
 		}
+		if e.Verdict == gate.OutcomeTimeout {
+			continue
+		}
 		if seed == nil {
 			seed = make(map[string]int)
 		}
@@ -1916,7 +1951,7 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 func targetRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
-		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra {
+		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra || e.Verdict == gate.OutcomeTimeout {
 			continue
 		}
 		target, _ := e.Runner["repassTarget"].(string)
@@ -1955,6 +1990,38 @@ func infrastructureTargetRepassSeed(events []journal.Event) map[string]int {
 			target = e.Target
 		}
 		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		gateTargets[e.Gate] = target
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func pollingTargetSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	gateTargets := make(map[string]string)
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if e.Verdict != gate.OutcomeTimeout {
+			if target := gateTargets[e.Gate]; target != "" && seed != nil {
+				seed[target] = 0
+			}
+			continue
+		}
+		target, _ := e.Runner["pollTarget"].(string)
+		if target == "" && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["pollAttempt"].(float64)
 		if target == "" || !ok {
 			continue
 		}

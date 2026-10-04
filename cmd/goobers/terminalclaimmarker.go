@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -141,7 +142,8 @@ func buildTerminalGitHubClaimMarkerRelease(cfg *instance.Config, repo providers.
 // (adoauth), so PAT, Azure CLI, workload identity and managed identity keep
 // their configured behavior.
 //
-// The provider is built per release rather than at daemon start: terminal
+// The provider is built lazily, once per terminal cleanup
+// (terminalReleaseProvider), rather than at daemon start: terminal
 // cleanup is best-effort, so an ADO credential source that cannot be built
 // (an unconfigured project repo, a missing workload-identity environment) is
 // journaled as a claim_marker_release_failed event on the run that needed it
@@ -158,7 +160,9 @@ func buildTerminalADOClaimMarkerRelease(l instance.Layout, cfg *instance.Config,
 		if configErr != nil {
 			return providers.WorkItem{}, scrubTerminalError(registrar, configErr)
 		}
-		provider, err := newTerminalADOClaimMarkerProvider(configured, registrar, stores)
+		provider, err := terminalReleaseProvider(ctx, func() (workItemClaimReleaser, error) {
+			return newTerminalADOClaimMarkerProvider(configured, registrar, stores)
+		})
 		if err != nil {
 			return providers.WorkItem{}, scrubTerminalError(registrar, fmt.Errorf("build terminal ADO claim-marker provider: %w", err))
 		}
@@ -166,6 +170,36 @@ func buildTerminalADOClaimMarkerRelease(l instance.Layout, cfg *instance.Config,
 		return item, scrubTerminalError(registrar, err)
 	}
 	return release, backlog
+}
+
+// terminalReleaseScope memoizes the provider a release func builds, for the
+// span of one terminal cleanup (releaseTerminalClaimMarkers). Without it an
+// ADO release built a new credential source per ledger entry: with azure-cli
+// auth, one az subprocess per item inside one cleanup's time budget.
+type terminalReleaseScope struct {
+	once     sync.Once
+	provider workItemClaimReleaser
+	err      error
+}
+
+type terminalReleaseScopeKey struct{}
+
+// withTerminalReleaseScope returns ctx carrying a fresh per-cleanup scope.
+func withTerminalReleaseScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, terminalReleaseScopeKey{}, &terminalReleaseScope{})
+}
+
+// terminalReleaseProvider builds the release provider once per cleanup scope
+// in ctx and reuses it for every entry; a build error is returned to every
+// release in that scope, so each entry still journals why it did not land.
+// Outside a scope it builds a provider per call, as before.
+func terminalReleaseProvider(ctx context.Context, build func() (workItemClaimReleaser, error)) (workItemClaimReleaser, error) {
+	scope, ok := ctx.Value(terminalReleaseScopeKey{}).(*terminalReleaseScope)
+	if !ok {
+		return build()
+	}
+	scope.once.Do(func() { scope.provider, scope.err = build() })
+	return scope.provider, scope.err
 }
 
 // releaseTerminalClaimMarkers ends the provider-visible claim epoch for every
@@ -215,7 +249,7 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 	if len(entries) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), terminalClaimMarkerTimeout)
+	ctx, cancel := context.WithTimeout(withTerminalReleaseScope(context.Background()), terminalClaimMarkerTimeout)
 	defer cancel()
 	for _, entry := range entries {
 		if _, err := release(ctx, providers.ClaimWorkItemRequest{
@@ -297,10 +331,7 @@ func recordClaimMarkerReleaseError(log *journal.InstanceLog, entry localschedule
 		Gaggle:   entry.Gaggle,
 		Workflow: entry.Workflow,
 		RunID:    entry.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    claimMarkerReleaseErrorCode,
-			Message: err.Error(),
-		},
-		Runner: map[string]any{"operation": claimLockOperationRunRelease},
+		Error:    journal.ErrorDetailFor(claimMarkerReleaseErrorCode, err),
+		Runner:   map[string]any{"operation": claimLockOperationRunRelease},
 	})
 }

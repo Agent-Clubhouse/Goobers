@@ -28,7 +28,7 @@ func validateImageImportFlags(opts options, fs *flag.FlagSet) error {
 			return fmt.Errorf("final artifact import requires explicit -%s", name)
 		}
 	}
-	for _, name := range []string{"output", "previous-features", "previous-support-matrix", "first-feature-snapshot", "checksums", "skip-unbuildable"} {
+	for _, name := range []string{"output", "previous-features", "previous-support-matrix", "first-feature-snapshot", "checksums", "skip-unbuildable", "source-commit"} {
 		if seen[name] {
 			return fmt.Errorf("-%s does not apply to final artifact import", name)
 		}

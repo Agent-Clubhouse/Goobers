@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/branchretention"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -150,6 +151,10 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	if err != nil {
 		return err
 	}
+	branchAge, err := cfg.TerminalBranchMaxAgeDuration()
+	if err != nil {
+		return err
+	}
 	journalGraceAge, err := cfg.JournalGraceAgeDuration()
 	if err != nil {
 		return err
@@ -197,32 +202,39 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 		// exactly the week after it was captured.
 		promoteRecoveryOverflow(ctx, l, setup, managers, resolvedDryRun.operator, stdout, stderr),
 	)
-	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)
+	branchReferences, err := retentionBranchReferences(runsByRoot, setup, true)
 	if err != nil {
 		return errors.Join(recoveryErr, err)
 	}
-	results, warnings, err := worktree.PruneRetained(ctx, managers, worktree.RetentionOptions{
-		Now:              now,
-		Delete:           !dryRun,
-		MaxRetainedBytes: cfg.MaxRetainedWorktreeBytes,
-		MaxAge:           maxAge,
+	// One owner index per root for this pass, so legacy-marker owner
+	// resolution lists each runs directory at most once (#6359).
+	ownersByRoot := make(map[string]*runOwnerIndex, len(runsByRoot))
+	for root, runsDir := range runsByRoot {
+		ownersByRoot[root] = newRunOwnerIndex(runsDir)
+	}
+	ownersFor := func(root string) *runOwnerIndex {
+		if owners, ok := ownersByRoot[root]; ok {
+			return owners
+		}
+		return newRunOwnerIndex(runsByRoot[root])
+	}
+	opts := worktree.RetentionOptions{
+		Now:                  now,
+		Delete:               !dryRun,
+		MaxRetainedBytes:     cfg.MaxRetainedWorktreeBytes,
+		MaxAge:               maxAge,
+		TerminalBranchMaxAge: branchAge,
 		IsTerminalFailure: func(root, worktreeID, ownerRunID string) (bool, error) {
-			phase, found, err := retainedWorktreePhase(runsByRoot[root], worktreeID, ownerRunID)
+			phase, found, err := retainedWorktreePhase(ownersFor(root), worktreeID, ownerRunID)
 			return found && terminalFailurePhase(phase), err
 		},
-		IsRunTerminal: func(root, runID string) (bool, error) {
-			phase, found, err := readRunPhase(runsByRoot[root], runID)
-			return found && terminalRunPhase(phase), err
-		},
-		IsBranchProtected: func(root, branch string) (bool, error) {
-			_, protected := protectedBranches[root][branch]
-			return protected, nil
-		},
 		JournalMissing: func(root, worktreeID, ownerRunID string) (bool, error) {
-			return retainedWorktreeJournalMissing(runsByRoot[root], worktreeID, ownerRunID)
+			return retainedWorktreeJournalMissing(ownersFor(root), worktreeID, ownerRunID)
 		},
 		JournalGraceAge: journalGraceAge,
-	})
+	}
+	configureBranchRetention(ctx, l, runsByRoot, branchReferences, &opts)
+	results, warnings, err := worktree.PruneRetained(ctx, managers, opts)
 	if err != nil {
 		return errors.Join(recoveryErr, err)
 	}
@@ -270,12 +282,12 @@ func retentionManagers(l instance.Layout, setup *schedulerSetup) ([]*worktree.Ma
 	return managers, runsByRoot, nil
 }
 
-func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSetup) (map[string]map[string]struct{}, error) {
+func retentionBranchReferences(runsByRoot map[string]string, setup *schedulerSetup, includeSettled bool) (map[string]map[string][]string, error) {
 	namespaces := map[string]string{}
 	if setup.Definitions != nil {
 		namespaces = branchNamespacesByGaggle(setup.Definitions)
 	}
-	protected := make(map[string]map[string]struct{}, len(runsByRoot))
+	protected := make(map[string]map[string][]string, len(runsByRoot))
 	roots := make([]string, 0, len(runsByRoot))
 	for root := range runsByRoot {
 		roots = append(roots, root)
@@ -283,7 +295,7 @@ func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSe
 	sort.Strings(roots)
 
 	for _, root := range roots {
-		protected[root] = make(map[string]struct{})
+		protected[root] = make(map[string][]string)
 		runsDir := runsByRoot[root]
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
@@ -304,13 +316,6 @@ func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSe
 				}
 				return nil, fmt.Errorf("open retention run %s: %w", entry.Name(), err)
 			}
-			phase, err := reader.Phase()
-			if err != nil {
-				return nil, fmt.Errorf("read phase for retention run %s: %w", entry.Name(), err)
-			}
-			if terminalRunPhase(phase) {
-				continue
-			}
 			identity, err := reader.Identity()
 			if err != nil {
 				return nil, fmt.Errorf("read identity for retention run %s: %w", entry.Name(), err)
@@ -319,20 +324,27 @@ func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSe
 			if err != nil {
 				return nil, fmt.Errorf("read events for retention run %s: %w", entry.Name(), err)
 			}
+			if !includeSettled && branchretention.Settled(events) {
+				continue
+			}
+			refs := make(map[string]struct{})
 			namespace := providers.NormalizeBranchNamespace(namespaces[identity.Gaggle])
-			protected[root][providers.BranchNameIn(namespace, identity.Workflow, identity.RunID)] = struct{}{}
+			refs[providers.BranchNameIn(namespace, identity.Workflow, identity.RunID)] = struct{}{}
 			machine := setup.Machines[localscheduler.WorkflowIdentity{
 				Gaggle: identity.Gaggle, Workflow: identity.Workflow,
 			}]
 			if machine != nil && identity.WorkflowDigest != "" && machine.Digest() == identity.WorkflowDigest {
 				if branch := runner.RestoredWorkspaceBranch(events, machine, namespace); branch != "" {
-					protected[root][branch] = struct{}{}
+					refs[branch] = struct{}{}
 				}
-				continue
+			} else {
+				// Without the pinned machine, protect every plausible binding rather
+				// than deleting the one a restored configuration may need to resume.
+				protectJournaledWorkspaceBranches(refs, events, namespace)
 			}
-			// Without the pinned machine, protect every plausible binding rather
-			// than deleting the one a restored configuration may need to resume.
-			protectJournaledWorkspaceBranches(protected[root], events, namespace)
+			for branch := range refs {
+				protected[root][branch] = append(protected[root][branch], identity.RunID)
+			}
 		}
 	}
 	return protected, nil
@@ -373,26 +385,27 @@ func addRetentionManager(managers *[]*worktree.Manager, runsByRoot map[string]st
 	return nil
 }
 
-func retainedWorktreePhase(runsDir, worktreeID, ownerRunID string) (journal.RunPhase, bool, error) {
-	owner, err := resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID)
+func retainedWorktreePhase(owners *runOwnerIndex, worktreeID, ownerRunID string) (journal.RunPhase, bool, error) {
+	owner, err := owners.resolveRetainedWorktreeOwner(worktreeID, ownerRunID)
 	if err != nil {
 		return "", false, err
 	}
 	if owner == "" {
 		return "", false, nil
 	}
-	return readRunPhase(runsDir, owner)
+	return readRunPhase(owners.runsDir, owner)
 }
 
 // retainedWorktreeJournalMissing reports whether the retained worktree's
-// owning run journal directory does not exist under runsDir at all — #2052's
-// grace-window trigger. This is deliberately narrower than "found=false" from
-// retainedWorktreePhase, which also covers a journal that exists but is
-// unreadable or errors reading its phase; only a confirmed-absent directory
-// (e.g. already removed by telemetry retention) counts as "missing" here, so
-// a merely-corrupt-but-present journal is never treated as gone.
-func retainedWorktreeJournalMissing(runsDir, worktreeID, ownerRunID string) (bool, error) {
-	owner, err := resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID)
+// owning run journal directory does not exist under the index's runs
+// directory at all — #2052's grace-window trigger. This is deliberately
+// narrower than "found=false" from retainedWorktreePhase, which also covers a
+// journal that exists but is unreadable or errors reading its phase; only a
+// confirmed-absent directory (e.g. already removed by telemetry retention)
+// counts as "missing" here, so a merely-corrupt-but-present journal is never
+// treated as gone.
+func retainedWorktreeJournalMissing(owners *runOwnerIndex, worktreeID, ownerRunID string) (bool, error) {
+	owner, err := owners.resolveRetainedWorktreeOwner(worktreeID, ownerRunID)
 	if err != nil {
 		return false, err
 	}
@@ -404,7 +417,7 @@ func retainedWorktreeJournalMissing(runsDir, worktreeID, ownerRunID string) (boo
 		// what the grace window exists to eventually resolve.
 		return true, nil
 	}
-	if _, err := os.Stat(filepath.Join(runsDir, owner)); err != nil {
+	if _, err := os.Stat(filepath.Join(owners.runsDir, owner)); err != nil {
 		if os.IsNotExist(err) {
 			return true, nil
 		}
@@ -413,28 +426,66 @@ func retainedWorktreeJournalMissing(runsDir, worktreeID, ownerRunID string) (boo
 	return false, nil
 }
 
+// runOwnerIndex resolves retained-worktree owners against one runs
+// directory, listing that directory at most once (#6359). Legacy markers
+// predate the stamped OwnerRunID and resolve by name prefix, which needs the
+// whole run-directory listing; re-reading it per candidate made a sweep
+// O(candidates x runs). An index is scoped to a single sweep pass — callers
+// build a fresh one per Reap or retention pass, never a long-lived one — so a
+// later pass always sees runs created since. A failed listing is not cached:
+// the next candidate retries it, exactly as before the index existed.
+type runOwnerIndex struct {
+	runsDir string
+	// readDir is os.ReadDir outside tests; tests count calls through it.
+	readDir func(string) ([]os.DirEntry, error)
+
+	mu     sync.Mutex
+	loaded bool
+	runIDs []string
+}
+
+func newRunOwnerIndex(runsDir string) *runOwnerIndex {
+	return &runOwnerIndex{runsDir: runsDir, readDir: os.ReadDir}
+}
+
+// runDirectoryNames returns the directory names under runsDir, reading the
+// directory only until the first successful listing. A missing runs
+// directory is a valid (empty) listing and is cached like any other.
+func (x *runOwnerIndex) runDirectoryNames() ([]string, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.loaded {
+		return x.runIDs, nil
+	}
+	entries, err := x.readDir(x.runsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+	var runIDs []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			runIDs = append(runIDs, entry.Name())
+		}
+	}
+	x.runIDs, x.loaded = runIDs, true
+	return runIDs, nil
+}
+
 // resolveRetainedWorktreeOwner identifies the run ID that owns a retained
 // worktree marker: the stamped OwnerRunID when present, or (for legacy
 // markers predating that field) the longest runsDir entry whose name
 // prefixes the worktree ID. Returns "" — not an error — when no owner can be
 // resolved by either means.
-func resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID string) (string, error) {
+func (x *runOwnerIndex) resolveRetainedWorktreeOwner(worktreeID, ownerRunID string) (string, error) {
 	if ownerRunID != "" {
 		return ownerRunID, nil
 	}
-	entries, err := os.ReadDir(runsDir)
+	runIDs, err := x.runDirectoryNames()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read runs directory: %w", err)
+		return "", err
 	}
 	var owner string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		runID := entry.Name()
+	for _, runID := range runIDs {
 		if worktreeID != runID && !strings.HasPrefix(worktreeID, runID+"-") {
 			continue
 		}
@@ -493,9 +544,14 @@ func settledRunPhase(phase journal.RunPhase) bool {
 // worktreeRunTerminal it forwards the marker's stamped owner run ID, so the
 // journal is resolved exactly when one is present and only falls back to
 // prefix matching for legacy markers that predate the field.
+//
+// Every call builds a fresh owner index, so callers call it once per Reap
+// pass: the runs directory is listed at most once per pass (#6359) and the
+// next pass still sees runs created since.
 func worktreeRunAbandoned(runsDir string) func(string, string) (bool, error) {
+	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID, ownerRunID string) (bool, error) {
-		phase, found, err := retainedWorktreePhase(runsDir, worktreeID, ownerRunID)
+		phase, found, err := retainedWorktreePhase(owners, worktreeID, ownerRunID)
 		if err != nil {
 			return false, err
 		}

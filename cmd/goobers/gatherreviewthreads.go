@@ -1,11 +1,8 @@
 package main
 
 import (
-	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -21,16 +18,11 @@ const gatherReviewThreadsHelp = "Usage: goobers gather-review-threads [path]\n\n
 	"2 = usage/IO error.\n"
 
 func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("gather-review-threads", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "gather-review-threads")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommandRoot(args, "gather-review-threads", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
+	root := env.root
 
 	runID, _, err := providerRunContext()
 	if err != nil {
@@ -42,11 +34,11 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: read remediation brief: %v\n", err)
 		return 1
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok = resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repo
 	provider, err := reviewThreadStageSurface[reviewThreadReader](root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -111,18 +103,8 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 	brief.Integrity = apiv1.WeakestIntegrity(integrities...)
 
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
-	data, err := json.MarshalIndent(brief, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal remediation brief: %v\n", err)
-		return 1
-	}
-	if err := validateRemediationBriefJSON(data); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 2
+	if code := writeGatherRemediationBrief(stderr, resultFile, brief, 2); code != 0 {
+		return code
 	}
 	pf(stdout, "gathered %d native review(s) and %d inline comment(s) for PR #%s\n", len(reviews), len(comments), brief.SelectedNumber)
 	return 0

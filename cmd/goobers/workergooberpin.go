@@ -38,6 +38,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -295,6 +296,10 @@ func newGooberDigestIndex(
 				// any credential is ever consulted, so resolving one here would
 				// be pure overhead on this hot per-reload path (#4292).
 				nil,
+				// nil: the connector check (#4475) is an authoring-time
+				// rejection the daemon already applied; it never changes a
+				// digest, so re-running it here could only refuse attempts.
+				nil,
 				func(gaggle string, _ map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
 					return skillPackages[gaggle], nil
 				},
@@ -316,7 +321,7 @@ func newGooberDigestIndex(
 // substitution the pin exists to prevent.
 func loadSnapshotGooberInputs(configDir string, set *instance.ConfigSet) (map[string]string, map[string]map[string][]workflow.SkillFile, error) {
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -412,7 +417,7 @@ func (w *workerSeams) forPinnedGaggle(gaggle, workflowName, pin string) (*gaggle
 			}
 			continue
 		}
-		if !containsString(served, digest) {
+		if !slices.Contains(served, digest) {
 			served = append(served, digest)
 		}
 		if digest != pin {
@@ -442,6 +447,11 @@ func (w *workerSeams) seamsFromLocked(snapshot *workerConfigSnapshot, gaggle str
 	built, err := w.buildGaggleSeams(snapshot, gaggle)
 	if err != nil {
 		return nil, err
+	}
+	if built.seams.degraded() {
+		// A harness failed preflight: serve this kit, but rebuild next time
+		// rather than pin a transient failure into the snapshot (#5949).
+		return built.seams, nil
 	}
 	updated := snapshot.withGaggle(gaggle, built)
 	if current := w.snapshot.Load(); current == snapshot {
@@ -486,7 +496,7 @@ func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerC
 			}
 			continue
 		}
-		if !containsString(served, digest) {
+		if !slices.Contains(served, digest) {
 			served = append(served, digest)
 		}
 		if digest == pin {
@@ -495,13 +505,4 @@ func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerC
 		}
 	}
 	return nil, w.refuseGooberPinLocked(gaggle, workflowName, pin, served, unverifiable)
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

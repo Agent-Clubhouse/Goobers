@@ -64,7 +64,7 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	if err := recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", record.BaseSHA, currentMain); err != nil {
 		return "", fmt.Errorf("retained checkpoint is stale: its base is not an ancestor of current main")
 	}
-	directory, err := os.MkdirTemp("", "goobers-recovery-restore-*")
+	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-restore-*")
 	if err != nil {
 		return "", err
 	}

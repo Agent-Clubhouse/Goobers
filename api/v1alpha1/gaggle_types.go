@@ -9,8 +9,7 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // active mode-3 worker routes every stage pod for this gaggle into its
 // declared isolation.namespace, and verifies that namespace's existence and
 // this worker's RBAC access to it before polling or dispatching any work
-// (#4897). IdentityRef is not yet consumed — every gaggle's stage pods still
-// run under their namespace's default ServiceAccount.
+// (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
 type GaggleSpec struct {
 	// Cost overrides instance-wide external cost publication. An omitted or
 	// null enabled value inherits the instance default; local accounting remains active.
@@ -113,6 +112,12 @@ type GaggleSpec struct {
 	// behaves exactly as before.
 	// +optional
 	RequireLabels []string `json:"requireLabels,omitempty" yaml:"requireLabels,omitempty"`
+	// IssueOwnershipScope is the default ownership policy every workflow task
+	// in this gaggle inherits for provider-visible issue writes. A task may
+	// override the policy with ownershipAssignees / ownershipUnassigned inputs.
+	// Empty leaves writes unrestricted, preserving legacy behavior.
+	// +optional
+	IssueOwnershipScope *IssueOwnershipScope `json:"issueOwnershipScope,omitempty" yaml:"issueOwnershipScope,omitempty"`
 	// RunsOn is the gaggle-level placement floor (DSL 3.0, dsl-3.0.md §2): OS,
 	// toolchain capability tags, and required runner restrictions that merge
 	// into every stage of every workflow in this gaggle — capabilities and
@@ -139,6 +144,21 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// IssueOwnershipScope constrains provider-visible issue writes to owned
+// assignees while keeping unassigned handling independently configurable.
+type IssueOwnershipScope struct {
+	// Assignees are provider identities this gaggle may mutate. Empty means no
+	// assigned-owner restriction, though Unassigned may still refuse unassigned
+	// issues.
+	// +optional
+	Assignees []string `json:"assignees,omitempty" yaml:"assignees,omitempty"`
+	// Unassigned controls whether unassigned issues are in scope. Empty behaves
+	// as "allow" when Assignees is empty and "refuse" when Assignees is set.
+	// +kubebuilder:validation:Enum=allow;refuse
+	// +optional
+	Unassigned string `json:"unassigned,omitempty" yaml:"unassigned,omitempty"`
 }
 
 // CostReporting controls provider-visible cost receipts and summaries, not
@@ -228,10 +248,13 @@ type GaggleIsolation struct {
 	// topology is supported.
 	// +kubebuilder:validation:Required
 	Namespace string `json:"namespace" yaml:"namespace"`
+	// ServiceAccount selects the stage pod account. Empty defaults to goobers-stage;
+	// default is an explicit opt-out. The account must disable token automount.
+	// +optional
+	ServiceAccount string `json:"serviceAccount,omitempty" yaml:"serviceAccount,omitempty"`
 	// IdentityRef names the target per-gaggle Azure workload identity
 	// (managed-identity federation). The active dispatcher does not consume
-	// it yet — every gaggle's stage pods still run under their namespace's
-	// default ServiceAccount (#4897 scoped namespace routing only).
+	// it yet; ServiceAccount selects the Kubernetes account independently.
 	// +optional
 	IdentityRef string `json:"identityRef,omitempty" yaml:"identityRef,omitempty"`
 }
@@ -294,4 +317,15 @@ type GaggleList struct {
 	metav1.TypeMeta `json:",inline" yaml:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 	Items           []Gaggle `json:"items" yaml:"items"`
+}
+
+// DefaultStageServiceAccount is the unprivileged account shipped by the reference.
+const DefaultStageServiceAccount = "goobers-stage"
+
+// EffectiveServiceAccount resolves the stage identity, including explicit default opt-out.
+func (i GaggleIsolation) EffectiveServiceAccount() string {
+	if i.ServiceAccount != "" {
+		return i.ServiceAccount
+	}
+	return DefaultStageServiceAccount
 }

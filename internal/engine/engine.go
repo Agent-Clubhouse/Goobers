@@ -3,11 +3,11 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -62,6 +62,8 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
+	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
 	InstanceID             string             `json:"instanceId,omitempty"`
 	RunID                  string             `json:"runId"`
 	Gaggle                 string             `json:"gaggle"`
@@ -134,6 +136,16 @@ type RunInput struct {
 	// these fields existed — is a no-op, byte for byte as before.
 	BacklogQueryAssignedTo    string `json:"backlogQueryAssignedTo,omitempty"`
 	BacklogQueryRequireLabels string `json:"backlogQueryRequireLabels,omitempty"`
+	// BacklogQueryBacklogLabels and BacklogQueryLabelPredicate pin the
+	// gaggle's spec.backlog label scope for backlog-query stages. They are
+	// conjoined with task-local selectors so a persisted run never re-reads
+	// gaggle configuration mid-flight.
+	BacklogQueryBacklogLabels  string `json:"backlogQueryBacklogLabels,omitempty"`
+	BacklogQueryLabelPredicate string `json:"backlogQueryLabelPredicate,omitempty"`
+	// IssueOwnershipAssignees/Unassigned pin the gaggle's provider-visible
+	// issue-write ownership defaults for every task in the run.
+	IssueOwnershipAssignees  string `json:"issueOwnershipAssignees,omitempty"`
+	IssueOwnershipUnassigned string `json:"issueOwnershipUnassigned,omitempty"`
 	// GooberDigest is the content digest of the goober kit this run's stages
 	// are meant to execute, pinned at start exactly as the local scheduler
 	// stamps it onto a runner-driven StartRequest
@@ -229,80 +241,19 @@ const temporalHumanGateUnsupported = "engine: human gates require occurrence-bou
 // local runner journals its own, so the projected runs/<id>/ record is
 // indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
-	return run(ctx, in, nil)
+	return run(ctx, in)
 }
 
-// ClaimScheduled converts a Schedule action into an exactly-once run start.
-// Temporal forbids WorkflowIDReusePolicy on Schedule actions, so the action
-// workflow claims the fire with a child ID whose reuse policy rejects duplicates.
-func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
-	claimID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
-		WorkflowID:            scheduledRunWorkflowID(claimID),
-		TaskQueue:             workflow.GetInfo(ctx).TaskQueueName,
-		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 1,
-		},
-	})
-	in.RunID = claimID
-	var result RunResult
-	err := workflow.ExecuteChildWorkflow(childCtx, RunScheduled, in).Get(childCtx, &result)
-	if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
-		return RunResult{}, nil
-	}
-	return result, err
-}
-
-// scheduledRunWorkflowIDSuffix distinguishes a scheduled run's child workflow
-// id from its Schedule action claim id. The claim liveness probe
-// (liveness.go) inverts this mapping, so both sides share the constant.
-const scheduledRunWorkflowIDSuffix = "-run"
-
-func scheduledRunWorkflowID(claimID string) string {
-	return claimID + scheduledRunWorkflowIDSuffix
-}
-
-// RunScheduled binds a timestamped schedule claim to the run and records the
-// nominal fire in the scheduler-journal projection.
-func RunScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
-	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	claimID := in.RunID
-	if claimID == "" {
-		claimID = workflowID
-	}
-	fireTime, err := scheduledFireTime(in.TriggerRef, claimID)
-	if err != nil {
-		return RunResult{}, err
-	}
-	// Temporal's claim ID carries an RFC3339 timestamp (and therefore colons).
-	// Hash it into the same portable trace/run ID shape every other starter uses.
-	in.RunID = RunID(claimID)
-	in.TriggerKind = string(journal.TriggerSchedule)
-	return run(ctx, in, &fireTime)
-}
-
-func scheduledFireTime(scheduleID, workflowID string) (time.Time, error) {
-	// Temporal Schedules append "-"+nominal.UTC().Format(time.RFC3339) to the
-	// configured action ID and reject reuse of the resulting workflow ID.
-	prefix := scheduleID + "-"
-	if scheduleID == "" || !strings.HasPrefix(workflowID, prefix) {
-		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q does not encode schedule %q", workflowID, scheduleID)
-	}
-	fireTime, err := time.Parse(time.RFC3339, strings.TrimPrefix(workflowID, prefix))
-	if err != nil {
-		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q has invalid fire time: %w", workflowID, err)
-	}
-	return fireTime, nil
-}
-
-func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, error) {
+func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	in.Item = normalizeItemIntegrity(in.Item)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
 	)
 	if err != nil {
+		return RunResult{}, err
+	}
+	if err := refuseRemoteUsage(in.WorkflowName, in.Spec, in.Placements); err != nil {
 		return RunResult{}, err
 	}
 	for _, g := range in.Spec.Gates {
@@ -325,9 +276,6 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	rec.runStarted(ctx)
-	if scheduledAt != nil {
-		rec.triggerFiredAt(*scheduledAt, in)
-	}
 	rec.recordRunBranchUpfront(ctx, in)
 
 	var res RunResult
@@ -348,7 +296,9 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// workflow.
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error(), err)
-			rec.runFinished(ctx, journal.PhaseFailed, journal.RunDispositionProduced)
+			if causeErr := rec.runFinished(ctx, journal.PhaseFailed, journal.RunDispositionProduced, ""); causeErr != nil {
+				return RunResult{}, errors.Join(err, causeErr)
+			}
 			hitl.noteTerminal()
 			rec.emitTerminal(ctx)
 			return RunResult{}, terminalWorkflowFailure(err)
@@ -378,7 +328,10 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
-		rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced)
+		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runner.RunCanceledErrorCode
+		if causeErr := rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced, ""); causeErr != nil {
+			return RunResult{}, errors.Join(err, causeErr)
+		}
 		hitl.noteTerminal()
 		rec.emitTerminal(abortCtx)
 		return RunResult{}, err
@@ -403,7 +356,9 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	if res.NoWork {
 		disposition = journal.RunDispositionNoWork
 	}
-	rec.runFinished(ctx, phase, disposition)
+	if err := rec.runFinished(ctx, phase, disposition, res.FinalState); err != nil {
+		return RunResult{}, err
+	}
 	hitl.noteTerminal()
 	rec.emitTerminal(ctx)
 	return res, nil
@@ -426,12 +381,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// a history recorded before the infrastructure counters existed replays
 	// with their zero values, which is what "no infrastructure repass has been
 	// charged" means.
-	repassBudget := gate.RepassBudget{
-		Attempts:                     map[string]int{},
-		InfrastructureAttempts:       map[string]int{},
-		RepassAttempts:               map[string]int{},
-		InfrastructureRepassAttempts: map[string]int{},
-	}
+	repassBudget := newRepassBudget()
 	// gateDispatches numbers each placed gate's pod attempts across the whole
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
@@ -924,6 +874,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, taskDispatches map[string]int, rec *runJournal) (apiv1.ResultEnvelope, error) {
+	t = namedPublicationTask(ctx, t)
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -932,11 +883,12 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// The gaggle's claim partition (#3873, MIRC-2), applied where the local
 	// runner applies it: on the projected inputs, BEFORE the inputsFrom
 	// overlay below, so a stage that binds requireLabels/assignedTo from an
-	// upstream output still wins — the same precedence dispatchTask has
-	// (internal/runner/run.go:4413-4414). Pure function of pinned RunInput
-	// data, so it is replay-deterministic; a no-op for a gaggle that
-	// configures neither.
+	// upstream output still wins. Gaggle backlog scope is stricter: it is
+	// re-applied after inputsFrom so upstream bindings can only narrow it.
+	// Pure function of pinned RunInput data, so it is replay-deterministic; a
+	// no-op for a gaggle that configures neither.
 	inputs = backlogdefaults.Apply(t, inputs, in.BacklogQueryAssignedTo, in.BacklogQueryRequireLabels)
+	inputs = backlogdefaults.ApplyIssueOwnershipScope(inputs, in.IssueOwnershipAssignees, in.IssueOwnershipUnassigned)
 	limits, err := wf.TaskLimits(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
@@ -994,6 +946,10 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
+	env.Inputs, err = backlogdefaults.ApplyBacklogScopeToInvocation(t, env.Inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q backlog scope: %w", t.Name, err)
+	}
 	// Mode-3 routing (#3588): a stage whose PINNED placement resolved to a
 	// non-self runner dispatches through ActDispatchStage on its pinned
 	// per-(gaggle × runner-type) queue (architecture D9, subsuming the
@@ -1013,6 +969,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// remediated a branch nobody was reviewing.
 		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
 	}
+	if in.SelfExecutionDenied {
+		return runner.SelfExecutionBlockedResult(t.Name), nil
+	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, inputGrades)
 	if t.Type == apiv1.TaskAgentic {
@@ -1027,10 +986,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// commits it is handed can never disagree.
 		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
-			attemptEnv := env
-			attemptEnv.Attempt = int32(attempt)
+			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
-			result.Integrity = produced
+			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 			return result, err
 		}, deltaOut)
 	}
@@ -1055,10 +1013,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	run.Workspace = t.EffectiveWorkspace()
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
-		attemptEnv := env
-		attemptEnv.Attempt = int32(attempt)
+		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
-		result.Integrity = produced
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
 }
@@ -1152,6 +1109,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// versus the workflow's own — and the self arm's options are the
 		// ones it has always had.
 		placement, remote := remotePlacementFor(in, g.Name)
+		if !remote && in.SelfExecutionDenied {
+			return "", nil, GateReviewResult{}, temporal.NewNonRetryableApplicationError((&runner.SelfExecutionRefusal{Stage: g.Name}).Error(), runner.SelfExecutionDeniedCode, nil)
+		}
 		if remote {
 			ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		} else {
@@ -1183,17 +1143,25 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// both zero-valued, which disables both short-circuits — precisely the
 		// pre-#3882 behaviour.
 		var review GateReviewResult
+		var reviewerAttempt int
 		if err := evaluateWithInfraRetry(ctx, g, rec, firstClass, func(ctx workflow.Context, class journal.AttemptClass) error {
-			if remote {
-				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
-				if err != nil {
-					return err
+			reviewerAttempt++
+			return recordReviewerDispatch(ctx, rec, g, reviewerAttempt, class, &review, func(ctx workflow.Context, class journal.AttemptClass) error {
+				if remote {
+					surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
+					if err != nil {
+						return err
+					}
+					review = GateReviewResult{Verdict: surrendered, Reviewed: true}
+					return nil
 				}
-				review = GateReviewResult{Verdict: surrendered, Reviewed: true}
-				return nil
-			}
-			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta,
-				g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+				attemptEnv := env
+				if number, ok := reviewerNumber(ctx); ok {
+					attemptEnv.Attempt = int32(number)
+				}
+				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
+					g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+			})
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
 		}
@@ -1323,12 +1291,7 @@ func normalizeArtifactIntegrity(taskType apiv1.TaskType, artifacts []apiv1.Artif
 }
 
 func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {

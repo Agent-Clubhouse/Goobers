@@ -3,6 +3,7 @@ package rollup
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,6 +97,78 @@ func TestDigestHistoryNoTransitionsWithOneDigest(t *testing.T) {
 	}
 	if len(changes) != 0 {
 		t.Fatalf("changes = %+v, want none (only one digest ever seen)", changes)
+	}
+}
+
+func TestEfficacyVerdict(t *testing.T) {
+	thresholds := EfficacyThresholds{
+		MinSamples:                  5,
+		SignificantFailureRateDelta: 0.1,
+	}
+	tests := []struct {
+		name       string
+		before     RunStats
+		after      RunStats
+		thresholds EfficacyThresholds
+		want       EfficacyVerdict
+		wantDelta  float64
+	}{
+		{
+			name:       "helped",
+			before:     RunStats{CompletedRuns: 2, FailedRuns: 3, SuccessRate: 0.4},
+			after:      RunStats{CompletedRuns: 5, SuccessRate: 1},
+			thresholds: thresholds,
+			want:       EfficacyHelped,
+			wantDelta:  -0.6,
+		},
+		{
+			name:       "regressed",
+			before:     RunStats{CompletedRuns: 5, SuccessRate: 1},
+			after:      RunStats{CompletedRuns: 1, FailedRuns: 4, SuccessRate: 0.2},
+			thresholds: thresholds,
+			want:       EfficacyRegressed,
+			wantDelta:  0.8,
+		},
+		{
+			name:       "no change",
+			before:     RunStats{CompletedRuns: 4, FailedRuns: 1, SuccessRate: 0.8},
+			after:      RunStats{CompletedRuns: 4, FailedRuns: 1, SuccessRate: 0.8},
+			thresholds: thresholds,
+			want:       EfficacyNoChange,
+		},
+		{
+			name:       "insufficient before",
+			before:     RunStats{CompletedRuns: 3, FailedRuns: 1, SuccessRate: 0.75},
+			after:      RunStats{CompletedRuns: 5, SuccessRate: 1},
+			thresholds: thresholds,
+			want:       EfficacyInsufficientData,
+		},
+		{
+			name:       "insufficient after",
+			before:     RunStats{CompletedRuns: 5, SuccessRate: 1},
+			after:      RunStats{CompletedRuns: 3, FailedRuns: 1, SuccessRate: 0.75},
+			thresholds: thresholds,
+			want:       EfficacyInsufficientData,
+		},
+		{
+			name:      "default thresholds",
+			before:    RunStats{CompletedRuns: 50, FailedRuns: 50, SuccessRate: 0.5},
+			after:     RunStats{CompletedRuns: 54, FailedRuns: 46, SuccessRate: 0.54},
+			want:      EfficacyNoChange,
+			wantDelta: -0.04,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, delta := efficacyVerdict(tt.before, tt.after, tt.thresholds)
+			if got != tt.want {
+				t.Errorf("efficacyVerdict() verdict = %q, want %q", got, tt.want)
+			}
+			if math.Abs(delta-tt.wantDelta) > 1e-12 {
+				t.Errorf("efficacyVerdict() delta = %v, want %v", delta, tt.wantDelta)
+			}
+		})
 	}
 }
 

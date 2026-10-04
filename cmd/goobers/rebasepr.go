@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergeresolve"
+	"github.com/goobers/goobers/internal/pushrejection"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -297,7 +298,7 @@ func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.Re
 		if err := transport.ClearNeedsRemediation(ctx, repo, selectedNumber); err != nil {
 			return fail(fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
-		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA, ""); err != nil {
 			return fail(err)
 		}
 		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
@@ -312,7 +313,7 @@ func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.Re
 		// and remediation-checkpoint (reading policyExcluded/
 		// policyExcludedReason below) escalates immediately rather than
 		// spending a repass budget on a cause the policy declined to touch.
-		if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+		if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA, ""); err != nil {
 			return fail(err)
 		}
 		pf(stdout, "PR #%s: %s\n", selectedNumber, policy.excludedReason)
@@ -326,13 +327,22 @@ func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.Re
 	// cause. A human-comment-only cycle likewise just force-pushes the clean
 	// rebase (safe: it neither rewrites content nor drops a finding) and defers
 	// to the checkpoint for the agentic response to the comment.
+	//
+	// The run continues past this push, so the head it published is recorded
+	// (pushedHeadSha): the revision guards (#6128) must read this run's own
+	// lease-verified rebase as advancing its expectation, not as a stale
+	// selection.
+	pushedHeadSHA := ""
 	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
+		if pushedHeadSHA, err = resolveHead("."); err != nil {
+			return fail(fmt.Errorf("resolve rebased PR #%s head: %w", selectedNumber, err))
+		}
 		if err := forcePushWithLeaseWithAuth(ctx, ".", head, attemptedHeadSHA, gitAuth); err != nil {
 			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
 	}
 
-	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA, pushedHeadSHA); err != nil {
 		return fail(err)
 	}
 	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
@@ -588,6 +598,7 @@ func writeRebaseResult(
 	conflictLocations []rebaseConflictLocation,
 	attemptedHeadSHA string,
 	rebaseBaseSHA string,
+	pushedHeadSHA string,
 ) error {
 	locationsJSON, err := json.Marshal(conflictLocations)
 	if err != nil {
@@ -601,6 +612,7 @@ func writeRebaseResult(
 		"conflictLocations":    string(locationsJSON),
 		"attemptedHeadSha":     attemptedHeadSHA,
 		"rebaseBaseSha":        rebaseBaseSHA,
+		rebasePushedHeadOutput: pushedHeadSHA,
 		"remediationCauses":    formatRemediationCauses(policy.causes),
 		"policyExcluded":       strconv.FormatBool(policy.excluded),
 		"policyExcludedReason": policy.reason,
@@ -885,16 +897,13 @@ func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA st
 	}
 	cmd := workspaceGitAuthEnvCommand(dir, env, "push", "--force-with-lease="+branch+":"+expectedSHA, url, branch+":"+branch)
 	if out, err := workspaceGitCombinedOutput(cmd); err != nil {
-		wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-		// Same classification as gitPushBranch (ADO-N26): a force-push
-		// rejected by an enabled ADO branch policy (TF402455 /
-		// GitRefUpdateRejectedByPolicyException) is never a credential
-		// problem, so it must never surface as one to a caller deciding
-		// whether to retry.
-		if isADOPolicyProtectedPush(string(out)) {
-			return &policyProtectedPushError{branch: branch, err: wrapped}
-		}
-		return wrapped
+		// Same classification as gitPushBranch: a force-push rejected by an
+		// enabled ADO branch policy (TF402455 /
+		// GitRefUpdateRejectedByPolicyException, ADO-N26) or by GitHub for
+		// a workflow-file change the App lacks `workflows` permission for
+		// (#5502) is never a credential problem or a lease race, so it must
+		// never surface as one to a caller deciding whether to retry.
+		return pushrejection.Classify(branch, string(out), err)
 	}
 	return nil
 }

@@ -25,52 +25,19 @@ import (
 // sidesteps this package's lack of a typed HTTP-status error to match against
 // (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestResult{}, err
-	}
-	if existing, ok, err := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); err != nil {
-		return PullRequestResult{}, err
-	} else if ok {
-		return p.updatePullRequest(ctx, req, existing.Number)
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
-	if err != nil {
-		return PullRequestResult{}, err
-	}
-	prBody := withRunIDFooter(req.Body, req.RunID)
-	body := map[string]interface{}{
-		"title": req.Title,
-		"body":  prBody,
-		"head":  req.Head,
-		"base":  req.Base,
-		"draft": req.Draft,
-	}
-	var out githubPullRequest
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		if IsPullRequestAlreadyExistsError(err) {
-			// #1767: lost a create race against a concurrent open-pr call for
-			// this same head/base between the check above and this POST.
-			// OpenPullRequest's own doc comment promises convergence on the
-			// PR that already exists rather than a duplicate — honor that
-			// here instead of surfacing the race as a stage failure.
-			if existing, ok, ferr := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); ferr == nil && ok {
-				return p.updatePullRequest(ctx, req, existing.Number)
+	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, restOpenPullRequestHooks{
+		title: func(req PullRequestRequest) string { return req.Title },
+		createBody: func(req PullRequestRequest, title, body string) interface{} {
+			return map[string]interface{}{
+				"title": title,
+				"body":  body,
+				"head":  req.Head,
+				"base":  req.Base,
+				"draft": req.Draft,
 			}
-		}
-		return PullRequestResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
-		URL:       out.HTMLURL,
-		Operation: "open",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(req.Title)},
-			"body":  {After: digestString(prBody)},
 		},
+		isCreateRaceError: IsPullRequestAlreadyExistsError,
 	})
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
 }
 
 // FindPullRequestByBranch looks up an open PR for head/base, returning
@@ -150,34 +117,6 @@ func (p *GitHubProvider) ListOpenPullRequests(ctx context.Context, repo Reposito
 	return prs, nil
 }
 
-// updatePullRequest applies title/body edits to an already-open PR (its
-// number found by FindPullRequestByBranch) — the repass path: the same run
-// branch already has an open PR, so this call updates it in place instead of
-// opening a duplicate.
-func (p *GitHubProvider) updatePullRequest(ctx context.Context, req PullRequestRequest, existingNumber int) (PullRequestResult, error) {
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", strconv.Itoa(existingNumber))
-	if err != nil {
-		return PullRequestResult{}, err
-	}
-	prBody := withRunIDFooter(req.Body, req.RunID)
-	var out githubPullRequest
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"title": req.Title, "body": prBody}, &out); err != nil {
-		return PullRequestResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
-		URL:       out.HTMLURL,
-		Operation: "update",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(req.Title)},
-			"body":  {After: digestString(prBody)},
-		},
-	})
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
-}
-
 // PollPullRequest reports mergeability, review decision, combined check state,
 // and comments-since for a GitHub pull request (BL-031). A read, so it does not
 // emit a mutation event.
@@ -250,43 +189,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
 // optionally leaves a comment.
 func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	if req.PullID == "" {
-		return ClosePullRequestResult{}, errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
-	if err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	var out githubPullRequestDetail
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"state": "closed"}, &out); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	if req.Comment != "" {
-		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
-			return ClosePullRequestResult{}, err
-		}
-	}
-	state := "closed"
-	operation := "close"
-	if out.Merged {
-		state = "merged"
-		operation = "merge"
-	}
-	fields := map[string]FieldDigest{"state": {After: digestString(state)}}
-	if req.Comment != "" {
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		URL:       out.HTMLURL,
-		Operation: operation,
-		Fields:    fields,
-	})
-	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+	return closeRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
 }
 
 // UpdateBranchError is a typed rejection from GitHub's update-branch endpoint.
@@ -397,36 +300,19 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		body["merge_method"] = string(req.MergeMethod)
 	}
 	var out githubMergeResult
-	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
-	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
+	receipt, err := prepareRESTMergeReceipt(ctx, p.recorder, ProviderGitHub, req.Repository, p.BaseURL, req.PullID, req.ExpectedHeadSHA)
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
 	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
 		return MergePullRequestResult{}, err
 	}
-	number, convErr := strconv.Atoi(req.PullID)
-	if convErr != nil {
-		number = 0
-	}
 	// An accepted HTTP response is not evidence of a completed merge. In
 	// particular, missing/false `merged` must not inflate mutation telemetry.
-	if out.Merged {
-		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, out.SHA)
-		if intent != nil {
-			confirmation.IntentID = intent.ID
-		}
-		if err := recordLandingReceipt(ctx, p.recorder, ExternalRef{
-			MergeConfirmation: confirmation,
-			Provider:          ProviderGitHub,
-			Ref:               issueRef(req.Repository, req.PullID),
-			Operation:         "merge",
-			Fields:            map[string]FieldDigest{"state": {After: digestString("merged")}},
-		}); err != nil {
-			return MergePullRequestResult{Number: number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
-		}
+	if err := receipt.record(ctx, out.SHA, out.Merged); err != nil {
+		return MergePullRequestResult{Number: receipt.number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
 	}
-	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
+	return MergePullRequestResult{Number: receipt.number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }
 
 // DetectMergePolicy reports req.Branch's active merge policy (issue #758)
@@ -1050,36 +936,7 @@ func githubUserLogins(users []githubUser) []string {
 // change, for cross-PR conflict/drift detection. A read, so it does not
 // emit a mutation event.
 func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
-	if pullID == "" {
-		return nil, errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
-	if err != nil {
-		return nil, err
-	}
-	var files []githubPullRequestFile
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageOut []githubPullRequestFile
-		if err := json.Unmarshal(page, &pageOut); err != nil {
-			return fmt.Errorf("decode pull files page: %w", err)
-		}
-		files = append(files, pageOut...)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	out := make([]ChangedFile, 0, len(files))
-	for _, f := range files {
-		out = append(out, ChangedFile{
-			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
-			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
-			Integrity: apiintegrity.Unapproved,
-		})
-	}
-	return out, nil
+	return restPullRequestFiles(ctx, p, p.BaseURL, repo, pullID, true)
 }
 
 // RepositoryFileContent returns one file's contents at ref.
@@ -1437,6 +1294,10 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		if actionsErr != nil {
 			return nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
 		}
+		runs, dedupErr := p.withoutSupersededCancelledActionsRuns(ctx, repo, runs)
+		if dedupErr != nil {
+			return nil, fmt.Errorf("actions/runs fallback: %w", dedupErr)
+		}
 		for _, run := range runs {
 			state := normalizeCheckRunState(run.Status, run.Conclusion)
 			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
@@ -1445,7 +1306,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		}
 		return details, nil
 	}
-	for _, run := range checkRuns {
+	for _, run := range withoutSupersededCancelledCheckRuns(checkRuns) {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
 		details = append(details, resolvedCheckDetail{
 			CheckDetail: CheckDetail{
@@ -1456,6 +1317,153 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		})
 	}
 	return details, nil
+}
+
+// withoutSupersededCancelledCheckRuns drops a cancelled check run when a newer
+// run of the same check exists on the commit (#6360). A workflow with
+// cancel-in-progress leaves the cancelled run beside the run that superseded
+// it, each in its own check suite, so the cancellation is an artifact of the
+// supersession rather than a verdict on the code. Runs are grouped by check
+// name plus the GitHub App that produced them, and "newer" means a higher run
+// id: GitHub allocates ids in creation order, and unlike started_at an id is
+// never null for a queued run.
+//
+// Only cancelled runs are dropped. A check name is a job name, so two
+// different workflows can each produce a "test" check from the same app; were
+// a superseded failure dropped too, a later pass in one workflow would hide a
+// genuine failure in the other (the #139 direction). Every other run counts
+// as before, and the output keeps the API's order.
+//
+// A skipped run supersedes nothing: it validated nothing, so it cannot stand
+// in for the cancelled run's missing verdict. A workflow that skips every job
+// for a PR title/body edit (ci.yml, #6360) would otherwise turn a red run that
+// cancelled itself into a pass. This also holds for a skipped job in a real
+// newer run (a conditional job): the older cancelled check keeps counting.
+func withoutSupersededCancelledCheckRuns(runs []githubCheckRun) []githubCheckRun {
+	type checkKey struct {
+		name  string
+		appID int64
+	}
+	// The skipped test cannot fail, so neither can the dedup.
+	out, _ := withoutSupersededCancelled(runs, func(run githubCheckRun) (checkKey, int64, string) {
+		return checkKey{name: run.Name, appID: run.App.ID}, run.ID, run.Conclusion
+	}, func(run githubCheckRun) (bool, error) {
+		return !strings.EqualFold(run.Conclusion, "skipped"), nil
+	})
+	return out
+}
+
+// withoutSupersededCancelledActionsRuns applies the same rule to the
+// actions/runs fallback (#2685), grouping workflow runs by name and
+// workflow id. A workflow run whose jobs were all skipped can still conclude
+// success, so a passing run supersedes only once its jobs show it executed
+// something (actionsRunSupersedes).
+func (p *GitHubProvider) withoutSupersededCancelledActionsRuns(ctx context.Context, repo RepositoryRef, runs []githubActionsRun) ([]githubActionsRun, error) {
+	type workflowKey struct {
+		name       string
+		workflowID int64
+	}
+	return withoutSupersededCancelled(runs, func(run githubActionsRun) (workflowKey, int64, string) {
+		return workflowKey{name: run.Name, workflowID: run.WorkflowID}, run.ID, run.Conclusion
+	}, func(run githubActionsRun) (bool, error) {
+		return p.actionsRunSupersedes(ctx, repo, run)
+	})
+}
+
+// actionsRunSupersedes reports whether run may stand in for an older cancelled
+// run of its workflow. A run that is still going or that did not pass keeps
+// the result at least as strict as the cancelled one, so it needs no lookup;
+// a skipped run never supersedes; a passing run supersedes only if it ran a
+// job. A failed job lookup is returned, like every other read in
+// checkDetails, rather than guessed into a verdict either way.
+func (p *GitHubProvider) actionsRunSupersedes(ctx context.Context, repo RepositoryRef, run githubActionsRun) (bool, error) {
+	if !strings.EqualFold(run.Status, "completed") {
+		return true, nil
+	}
+	switch strings.ToLower(run.Conclusion) {
+	case "skipped":
+		return false, nil
+	case "success", "neutral":
+		executed, err := p.actionsRunExecutedJobs(ctx, repo, run.ID)
+		if err != nil {
+			return false, fmt.Errorf("list jobs of workflow run %d: %w", run.ID, err)
+		}
+		return executed, nil
+	}
+	return true, nil
+}
+
+// actionsRunExecutedJobs reports whether any job of the workflow run's latest
+// attempt concluded other than skipped.
+func (p *GitHubProvider) actionsRunExecutedJobs(ctx context.Context, repo RepositoryRef, runID int64) (bool, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "runs", strconv.FormatInt(runID, 10), "jobs")
+	if err != nil {
+		return false, err
+	}
+	executed := false
+	err = p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut struct {
+			Jobs []struct {
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
+		}
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode actions run jobs page: %w", err)
+		}
+		for _, job := range pageOut.Jobs {
+			if !strings.EqualFold(job.Conclusion, "skipped") {
+				executed = true
+				return errStopPaging
+			}
+		}
+		return nil
+	})
+	return executed, err
+}
+
+// withoutSupersededCancelled removes each cancelled run whose group, per
+// describe, also holds a higher-id run that supersedes reports may stand in
+// for it. supersedes is consulted lazily, at most once per run, and only for
+// runs newer than a cancelled run of their group. Order is preserved.
+func withoutSupersededCancelled[R any, K comparable](runs []R, describe func(R) (key K, id int64, conclusion string), supersedes func(R) (bool, error)) ([]R, error) {
+	verdicts := make(map[int]bool, len(runs))
+	canSupersede := func(i int) (bool, error) {
+		if v, ok := verdicts[i]; ok {
+			return v, nil
+		}
+		v, err := supersedes(runs[i])
+		if err != nil {
+			return false, err
+		}
+		verdicts[i] = v
+		return v, nil
+	}
+	superseded := func(i int) (bool, error) {
+		key, id, _ := describe(runs[i])
+		for j := range runs {
+			if otherKey, otherID, _ := describe(runs[j]); otherKey != key || otherID <= id {
+				continue
+			}
+			if ok, err := canSupersede(j); err != nil || ok {
+				return ok, err
+			}
+		}
+		return false, nil
+	}
+	out := make([]R, 0, len(runs))
+	for i, run := range runs {
+		if _, _, conclusion := describe(run); strings.EqualFold(conclusion, "cancelled") {
+			drop, err := superseded(i)
+			if err != nil {
+				return nil, err
+			}
+			if drop {
+				continue
+			}
+		}
+		out = append(out, run)
+	}
+	return out, nil
 }
 
 // actionsRunsForRef reads workflow-run conclusions for ref via the Actions
@@ -1668,99 +1676,14 @@ func normalizeCheckRunState(status, conclusion string) CheckState {
 
 // RequestReview requests GitHub reviewers for a pull request.
 func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) error {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return err
-	}
-	if req.PullID == "" {
-		return errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
-	if err != nil {
-		return err
-	}
-	body := map[string][]string{"reviewers": req.Reviewers}
-	if err := p.do(ctx, http.MethodPost, endpoint, body, nil); err != nil {
-		return err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		Operation: "request-review",
-		Fields: map[string]FieldDigest{
-			"reviewers": {After: digestString(strings.Join(req.Reviewers, ","))},
-		},
-	})
-	return nil
+	return requestRESTReview(ctx, p, ProviderGitHub, p.BaseURL, req)
 }
 
 // SubmitPullRequestReview publishes a SHA-pinned native GitHub review. GitHub
 // associates the review with commit_id, allowing branch-protection
 // stale-dismissal to invalidate an approval when the pull request moves.
 func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	if req.PullID == "" {
-		return PullRequestReviewResult{}, errPullIDRequired
-	}
-	if req.CommitSHA == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
-	}
-	if req.Body == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
-	}
-	reviewBody, err := withAttribution(req.Body, p.attribution, "pull-request-review")
-	if err != nil {
-		return PullRequestReviewResult{}, err
-	}
-
-	var event string
-	switch req.Decision {
-	case ReviewDecisionApproved:
-		event = "APPROVE"
-	case ReviewDecisionChangesRequested:
-		event = "REQUEST_CHANGES"
-	case ReviewDecisionComment:
-		event = "COMMENT"
-	default:
-		return PullRequestReviewResult{}, fmt.Errorf("unsupported review decision %q", req.Decision)
-	}
-
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "reviews")
-	if err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	body := map[string]string{
-		"body":      reviewBody,
-		"commit_id": req.CommitSHA,
-		"event":     event,
-	}
-	var out struct {
-		ID       int64  `json:"id"`
-		HTMLURL  string `json:"html_url"`
-		CommitID string `json:"commit_id"`
-		State    string `json:"state"`
-	}
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		URL:       out.HTMLURL,
-		Operation: "review",
-		Fields: map[string]FieldDigest{
-			"body":      {After: digestString(req.Body)},
-			"commitSha": {After: digestString(req.CommitSHA)},
-			"decision":  {After: digestString(string(req.Decision))},
-		},
-	})
-	return PullRequestReviewResult{
-		ID:        out.ID,
-		URL:       out.HTMLURL,
-		CommitSHA: req.CommitSHA,
-		Decision:  req.Decision,
-	}, nil
+	return submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
 }
 
 // ListWorkItems lists GitHub issues as unified work items.

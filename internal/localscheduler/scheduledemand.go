@@ -22,6 +22,11 @@ type scheduleDemandStateFile struct {
 	Workflows  []scheduleDemandWorkflow `json:"workflows"`
 }
 
+func (s *scheduleDemandStateFile) setOwnershipStamp(stamp ownershipStamp) {
+	s.Owner = stamp.Owner
+	s.Generation = stamp.Generation
+}
+
 type scheduleDemandWorkflow struct {
 	Gaggle   string `json:"gaggle"`
 	Workflow string `json:"workflow"`
@@ -57,14 +62,8 @@ func readScheduleDemandState(schedulerDir string) (map[WorkflowIdentity]bool, er
 }
 
 func writeScheduleDemandState(schedulerDir string, owner *stateOwner, outstanding map[WorkflowIdentity]bool) error {
-	stamp, err := owner.stamp(schedulerDir, scheduleDemandStateFileName)
-	if err != nil {
-		return err
-	}
-	state := scheduleDemandStateFile{
-		Owner:      stamp.Owner,
-		Generation: stamp.Generation,
-		Workflows:  make([]scheduleDemandWorkflow, 0, len(outstanding)),
+	state := &scheduleDemandStateFile{
+		Workflows: make([]scheduleDemandWorkflow, 0, len(outstanding)),
 	}
 	for identity, pending := range outstanding {
 		if !pending {
@@ -78,19 +77,13 @@ func writeScheduleDemandState(schedulerDir string, owner *stateOwner, outstandin
 		}
 		return state.Workflows[i].Gaggle < state.Workflows[j].Gaggle
 	})
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("localscheduler: marshal schedule demand: %w", err)
-	}
-	data = append(data, '\n')
-	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
-		return fmt.Errorf("localscheduler: create schedule demand directory: %w", err)
-	}
-	if err := journal.WriteFileAtomic(filepath.Join(schedulerDir, scheduleDemandStateFileName), data, 0o644); err != nil {
-		return fmt.Errorf("localscheduler: persist schedule demand: %w", err)
-	}
-	// Only a landed write commits the claimed generation: a failed write must
-	// stay retryable rather than poisoning later writes with ErrStateSeized.
-	owner.commit(scheduleDemandStateFileName, stamp)
-	return nil
+	return writeOwnedJSONState(
+		schedulerDir,
+		owner,
+		scheduleDemandStateFileName,
+		"schedule demand",
+		"schedule demand",
+		state,
+		journal.WriteFileAtomic,
+	)
 }

@@ -455,7 +455,7 @@ func TestCopilotImageProbeRequiresRealParserAuthenticationRefusal(t *testing.T) 
 				t.Fatalf("probe overstates its evidence: %+v", proof)
 			}
 			joined := strings.Join(engine.commands[len(engine.commands)-1], " ")
-			for _, want := range []string{"COPILOT_GITHUB_TOKEN=", "GH_TOKEN=", "GITHUB_TOKEN=", "--available-tools=", "--usage-output-file /tmp/goobers-usage-probe.json"} {
+			for _, want := range []string{"COPILOT_GITHUB_TOKEN=", "GH_TOKEN=", "GITHUB_TOKEN=", "--available-tools=", "--usage-output-file /tmp/goobers-usage-probe.json", "--no-remote-export"} {
 				if !strings.Contains(joined, want) {
 					t.Fatalf("missing probe contract %s: %s", want, joined)
 				}

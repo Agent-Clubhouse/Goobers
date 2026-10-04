@@ -42,7 +42,14 @@ const (
 // stage. SinceDSL and UntilDSL are optional DSL-version bounds for the
 // configuration surface. RetiredSince is a release or date recording a
 // retirement that applies to every supported DSL version; Replacement must
-// explain how an author should migrate.
+// explain how an author should migrate. UnsetDefault, when non-empty, is the
+// value the command falls back to when the workflow leaves the input unset;
+// it marks a policy default the author should choose explicitly, so
+// configuration validation warns about every unset occurrence instead of
+// letting the default apply invisibly. UnsetDefaultBypassFlags name
+// command-line flags whose presence means the invocation never reads the
+// input (an override, or a mode that skips the evaluation), so validation
+// stays quiet for an unset input on such a command.
 type Input struct {
 	Name         string
 	Type         InputType
@@ -51,6 +58,9 @@ type Input struct {
 	UntilDSL     string
 	RetiredSince string
 	Replacement  string
+	UnsetDefault string
+
+	UnsetDefaultBypassFlags []string
 }
 
 // inputSchemas is the complete contract for workflow-callable built-ins. Map
@@ -91,6 +101,7 @@ var inputSchemas = map[string][]Input{
 		{Name: "maxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "parkLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "reconcileMetadata", Type: InputBoolean, State: InputCurrent},
+		{Name: "reconcileScanLimit", Type: InputInteger, State: InputCurrent},
 		{Name: "requireLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "respectAssignee", Type: InputBoolean, State: InputCurrent},
 		{Name: "resultFile", Type: InputPath, State: InputCurrent},
@@ -101,6 +112,7 @@ var inputSchemas = map[string][]Input{
 			RetiredSince: "2026-09-08",
 			Replacement:  "configure schedule and readiness on a separate workflow using backlog-query --claim --resweep",
 		},
+		{Name: "resweepDependencyMaxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "resweepMaxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "resweepReadyLabel", Type: InputString, State: InputCurrent},
 		{Name: "selectionPriority", Type: InputStringList, State: InputCurrent},
@@ -132,7 +144,11 @@ var inputSchemas = map[string][]Input{
 	),
 	"gather-ci-failures":       schema(pathsIn("resultFile"), durationsIn("timeout")),
 	"gather-implement-context": schema(stringsIn("base"), integersIn("maxHotFiles"), pathsIn("resultFile"), durationsIn("timeout")),
-	"gather-issue-context":     schema(pathsIn("resultFile"), durationsIn("timeout")),
+	"gather-issue-context": schema(
+		stringsIn("parentCrossProject"), stringListsIn("parentFields", "parentIncludeTypes"),
+		booleansIn("parentTraversal"), integersIn("parentMaxDepth", "parentMaxFieldBytes", "parentMaxItems"),
+		pathsIn("resultFile"), durationsIn("timeout"),
+	),
 	"gather-pr-context": schema(
 		stringsIn("base", "headPrefix", "minSeverity", "remediationAlgorithm", "selectedNumber"),
 		pathsIn("resultFile"), durationsIn("timeout"),
@@ -145,7 +161,7 @@ var inputSchemas = map[string][]Input{
 		stringListsIn("headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
-	"gate-removal-guard": schema(stringsIn("base"), pathsIn("resultFile")),
+	"gate-removal-guard": schema(stringsIn("base", "configRepo", "configRepoBase", "configRepoDir"), pathsIn("resultFile")),
 	"issue-close-out": schema(
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -157,14 +173,14 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
-		stringsIn("base", "body", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
+		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
 		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "recordLiveVerification", "runIdFooter"),
-		stringListsIn("actionRoots", "docsRoots"), pathsIn("resultFile"), durationsIn("timeout"),
+		stringListsIn("actionRoots", "docsRoots", "reviewers"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
 	"pr-comment-watch": schema(
-		stringsIn("base"), integersIn("maxPullRequests"),
+		stringsIn("base", "identityMode"), integersIn("maxPullRequests"),
 		stringListsIn("excludeAuthors", "excludeLabels", "headPrefixes", "unparkLabels"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -173,6 +189,8 @@ var inputSchemas = map[string][]Input{
 		booleansIn("allowPendingChecks", "respectAssignee"), stringListsIn("excludeLabels", "headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
+	"advisory-pr-select":   schema(stringsIn("reviewType"), pathsIn("resultFile"), durationsIn("timeout")),
+	"advisory-pr-publish":  schema(stringsIn("expectedAuthor", "reviewType", "reviewerStage", "selectionStage"), pathsIn("resultFile"), durationsIn("timeout")),
 	"preflight-repo-write": schema(stringsIn("branch"), durationsIn("timeout")),
 	"publish-batch":        schema(stringsIn("planFile", "validationFile"), pathsIn("resultFile"), durationsIn("timeout")),
 	"push-remediated":      schema(pathsIn("resultFile"), durationsIn("timeout")),
@@ -193,12 +211,16 @@ var inputSchemas = map[string][]Input{
 	),
 	"remediation-checkpoint": schema(
 		stringsIn("attemptedHeadSha", "base", "conflictLocations", "headPrefix", "policyExcludedReason", "rebaseBaseSha", "remediationCauses", "selectedNumber"),
-		integersIn("conflictBudget", "failingCIBudget", "humanCommentBudget", "siblingOverlapBudget", "substantiveBudget"),
+		// #2737: each per-cause budget defaults to 2 when unset; validate
+		// warns so the remediation allowance stays an explicit choice.
+		// --budget overrides every budget; --escalate parks the PR before
+		// any budget is evaluated.
+		defaultedIntegersIn("2", []string{"--budget", "--escalate"}, "conflictBudget", "failingCIBudget", "humanCommentBudget", "siblingOverlapBudget", "substantiveBudget"),
 		booleansIn("conflict", "policyExcluded", "rebaseInfrastructureFailure"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"report-pr-status": schema(
-		stringsIn("description", "pull-request-url", "state", "statusGenre", "statusName", "targetUrl"),
+		stringsIn("description", "headSha", "pull-request-url", "state", "statusGenre", "statusName", "targetUrl"),
 		integersIn("prNumber"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"resolve-review-threads": schema(pathsIn("resultFile"), durationsIn("timeout")),
@@ -220,7 +242,8 @@ var inputSchemas = map[string][]Input{
 	// an explicit empty schema distinguishes them from external/unknown
 	// commands and makes a newly added consumer fail the structural parity
 	// test until its contract is declared here.
-	"push-branch":        {},
+	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir")),
+	"config-checkout":    schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "head")),
 	"recovery-restore":   {},
 	"recovery-resume":    schema(pathsIn("resultFile")),
 	"ios-simulator-test": schema(integersIn("maxOutputBytes"), pathsIn("resultFile")),
@@ -234,6 +257,8 @@ var inputSchemas = map[string][]Input{
 // command implementation.
 var executorInputs = []Input{
 	{Name: "maxOutputBytes", Type: InputInteger, State: InputCurrent},
+	{Name: "ownershipAssignees", Type: InputStringList, State: InputCurrent},
+	{Name: "ownershipUnassigned", Type: InputString, State: InputCurrent},
 	{Name: "timeout", Type: InputDuration, State: InputCurrent},
 }
 
@@ -259,6 +284,18 @@ func integersIn(names ...string) []Input    { return currentInputs(InputInteger,
 func durationsIn(names ...string) []Input   { return currentInputs(InputDuration, names...) }
 func stringListsIn(names ...string) []Input { return currentInputs(InputStringList, names...) }
 func pathsIn(names ...string) []Input       { return currentInputs(InputPath, names...) }
+
+// defaultedIntegersIn declares integer inputs the command defaults to
+// unsetDefault when the workflow omits them, unless one of bypassFlags is on
+// the command line (see Input.UnsetDefault).
+func defaultedIntegersIn(unsetDefault string, bypassFlags []string, names ...string) []Input {
+	inputs := integersIn(names...)
+	for i := range inputs {
+		inputs[i].UnsetDefault = unsetDefault
+		inputs[i].UnsetDefaultBypassFlags = bypassFlags
+	}
+	return inputs
+}
 
 // InputSchemaForVersion resolves command's declared inputs at one DSL version
 // and reports whether command is a known workflow-callable built-in. Unbounded

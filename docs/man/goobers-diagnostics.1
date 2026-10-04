@@ -1,7 +1,7 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS DIAGNOSTICS" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers diagnostics \- collect a portable, redacted support bundle
+goobers diagnostics \- collect redacted support evidence or classify one run
 .SH SYNOPSIS
 \fBgoobers diagnostics\fR [\fIoptions\fR]
 .SH DESCRIPTION
@@ -15,11 +15,14 @@ for reading a Goobers incident.
 Subcommands:
   bundle  write a redacted diagnostics archive (or --json to stdout)
 
+  triage  classify one run before filing a Goobers defect
+
 Default path is ".".
 .fi
 .SH EXAMPLES
 .nf
 goobers diagnostics bundle ./my-instance
+goobers diagnostics triage --run 8f2c --json ./my-instance
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

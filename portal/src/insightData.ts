@@ -78,7 +78,7 @@ export interface InsightGaggleSpend {
 export interface InsightCostRollupSnapshot {
   filters: TelemetryStatsOptions;
   /** Undefined when no model reported a measured cost in this window. */
-  totalCostUSD?: number;
+  totalCostAIC?: number;
   totalCostSamples: number;
   /** Descending by estimated spend (P50 cost × cost samples) — the wire
    * contract totals cost per model, not per gaggle, so a gaggle's own total
@@ -127,18 +127,14 @@ export function useInsightStats(
 }
 
 const TREND_BUCKET_COUNTS: Record<Exclude<InsightWindow, "all">, number> = {
-  "24h": 8,
+  "24h": 1,
   "7d": 7,
-  "30d": 10,
+  "30d": 30,
 };
 
 /**
- * Splits the current window into evenly-sized buckets, oldest first.
- *
- * Bucket counts are fixed per window rather than one-bucket-per-hour/day,
- * because each bucket costs a network round trip (there is no bucketed
- * telemetry endpoint) — 8/7/10 buckets keeps 24h/7d/30d all readable as a
- * sparkline without firing dozens of requests.
+ * Splits the rolling window into 24-hour buckets, oldest first.
+ * The bucketed telemetry endpoint loads all days in one request.
  */
 export function insightTrendBuckets(
   window: InsightWindow,
@@ -202,12 +198,13 @@ export function useInsightCostTrend(
     isCurrent: (data) => data.window === window,
     errorMessage: "Unable to read the cost trend.",
     load: async (signal) => {
-      const bucketRanges = insightTrendBuckets(window);
+      const now = new Date();
+      const bucketRanges = insightTrendBuckets(window, now);
       if (bucketRanges.length === 0) {
         return { buckets: [], window };
       }
-      const previousRange = insightPreviousWindowFilters(window);
-      const currentRange = insightWindowFilters(window);
+      const previousRange = insightPreviousWindowFilters(window, now);
+      const currentRange = insightWindowFilters(window, now);
       const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
       const trendUntil = bucketRanges.at(-1)?.until;
       const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
@@ -315,10 +312,10 @@ function costRollupFromStats(
   window: InsightWindow,
 ): InsightCostRollupSnapshot {
   const totalCostSamples = stats.models.reduce((sum, model) => sum + model.costSamples, 0);
-  const totalCostUSD =
+  const totalCostAIC =
     totalCostSamples === 0
       ? undefined
-      : stats.models.reduce((sum, model) => sum + (model.costUSD ?? 0), 0);
+      : stats.models.reduce((sum, model) => sum + (model.costAIC ?? 0), 0);
   const byGaggle = stats.gaggles
     .map((gaggle) => ({
       gaggle: gaggle.gaggle,
@@ -326,8 +323,8 @@ function costRollupFromStats(
         (item) => item.scope === "gaggle" && item.gaggle === gaggle.gaggle,
       ),
     }))
-    .sort((left, right) => (right.usage?.costUSD ?? 0) - (left.usage?.costUSD ?? 0));
-  return { filters, totalCostUSD, totalCostSamples, byGaggle, window };
+    .sort((left, right) => (right.usage?.costAIC ?? 0) - (left.usage?.costAIC ?? 0));
+  return { filters, totalCostAIC, totalCostSamples, byGaggle, window };
 }
 
 export function useInsightErrorSignatures(

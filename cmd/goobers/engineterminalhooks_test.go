@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -497,7 +498,7 @@ func TestEngineInfrastructureTerminalDoesNotChargeFailureStreak(t *testing.T) {
 	wrapped := fmt.Errorf("workflow failed: %w", temporal.NewApplicationError("pod vanished", engine.FailureTypeInfrastructure))
 	converter := temporal.GetDefaultFailureConverter()
 	cause := converter.FailureToError(converter.ErrorToFailure(temporal.NewApplicationErrorWithCause(wrapped.Error(), engine.FailureTypeInfrastructure, wrapped)))
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		hooks.fireFailed(context.Background(), engineTerminalOutcome{RunID: runID, Phase: journal.PhaseFailed, Err: cause})
 	}
 	if len(fake.calls) != 0 {
@@ -507,9 +508,15 @@ func TestEngineInfrastructureTerminalDoesNotChargeFailureStreak(t *testing.T) {
 	if result.FailureCode != telemetry.ErrCodeInfraFailure {
 		t.Fatalf("scheduler code = %q", result.FailureCode)
 	}
+	if class := engineTerminalFaultClass(cause); class != telemetry.ErrorClassInfra {
+		t.Fatalf("engine fault class = %q, want %q (#5638)", class, telemetry.ErrorClassInfra)
+	}
 	for _, err := range []error{errors.New("GoobersInfrastructureFailure"), temporal.NewApplicationError("pod vanished", engine.FailureTypeStage)} {
 		if code := engineTerminalFailureCode(err); code != engineWalkFailureCode {
 			t.Fatalf("policy/unknown failure became infra: %q", code)
+		}
+		if class := engineTerminalFaultClass(err); class != "" {
+			t.Fatalf("policy/unknown failure classified %q", class)
 		}
 	}
 }

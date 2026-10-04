@@ -45,6 +45,12 @@ func (w *Writer) applyArtifact(ctx context.Context, run *liveRun, op Op) (bool, 
 	}
 	run.keys[op.Key] = run.jr.Seq()
 	run.artifactRefs[a.Name] = ref
+	run.rememberArtifactKey(op.Key, ref)
+	// Committed above whatever happens here: a failed write-through fails the
+	// emit, and the retried op re-publishes from the dedup path.
+	if err := w.publishArtifact(ctx, run, ref); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 

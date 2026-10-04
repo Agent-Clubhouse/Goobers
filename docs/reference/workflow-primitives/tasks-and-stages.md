@@ -115,7 +115,7 @@ placeholder; the runner dispatches by `inputs.kind` and does not shell out.
 | `prRepo` | no | run repository name | Overrides the repository name. |
 | `pollMaxIntervalSeconds` | no | `2m` | Maximum backoff interval, as a Go duration string. |
 | `pollTimeoutSeconds` | no | `30m` | Overall poll timeout, bounded below the task's wall-clock limit. |
-| `humanPolicyConfigurationIds` | no | all policies gate | Comma-separated provider policy identifiers that require human action and therefore do not drive the fixable-CI branch. |
+| `humanPolicyConfigurationIds` | no | every blocking policy gates, except Azure DevOps reviewer, comment-resolution and work-item-linking policies | Comma-separated provider policy identifiers that require human action and therefore do not drive the fixable-CI branch. Azure DevOps minimum- and required-reviewer policies never gate CI and need no entry: an unmet one is reported as a human wait. |
 | `retryFailedChecksMaxAttempts` | no | `0` (disabled) | GitHub only. A positive integer count opts in to mechanically rerunning the pull request's currently-failing checks (via GitHub's rerun-failed-jobs API) up to this many times before reporting a terminal `failing` outcome — reduces repass churn on flaky checks. Reruns every failed job in each failed workflow run at the PR's head commit; GitHub's API has no per-check selection. Requires the credential behind `provider:pr:write` to also carry Actions: Read and write, which it does not by default — see [#4751](https://github.com/Agent-Clubhouse/Goobers/issues/4751). |
 | `retryFailedChecksBackoffSeconds` | no | matches the effective `pollIntervalSeconds` | Go duration string; how long to wait after triggering a rerun before re-polling. Only meaningful when `retryFailedChecksMaxAttempts` is set. |
 
@@ -202,6 +202,8 @@ Required capability: `telemetry:read`.
 | `timeoutSeconds` | Positive wall-clock limit for one attempt. |
 | `limits` | Agent/runtime budgets such as duration, token, and cost limits. |
 | `expectedOutputs` | Scalar output or artifact names later states rely on. |
+| `artifactSlots` | DSL 3.1 producer-local named artifact slots. |
+| `artifactInputs` | DSL 3.1 consumer-local bindings from local input names to exact `producer.slot` references. |
 | `continueOnError` | Marks a failure as best-effort, discards its scalar outputs, and advances to `next`; a failed task already advances to a declared next gate without this flag, while preserving its outputs for classification/remediation. |
 | `workspace` | Task-level `repo`, `repo-readonly`, or `scratch`. |
 | `outbox` | Up to 32 workspace-relative files/directories to export durably. |
@@ -211,6 +213,45 @@ Required capability: `telemetry:read`.
 | `runsOn` | DSL 3.0 placement requirements. |
 | `repoFrom` | DSL 3.0 producer stage or stages whose run-branch state this stage consumes. |
 | `commitsRepo` | DSL 3.0 declaration that a deterministic command/script advances the run branch. |
+
+### DSL 3.1 named artifact contracts
+
+`artifactSlots` and `artifactInputs` are additive in `dslVersion: "3.1"` only.
+DSL 2.0 and 3.0 documents neither accept nor require them, and
+`expectedOutputs` keeps its existing advisory meaning. The runtime artifact
+transport remains the existing positional/context-pointer channel; DSL 3.1 only
+adds stable authoring names that future tooling can lower onto that transport.
+
+A producer declares stable local slots:
+
+```yaml
+artifactSlots:
+  - name: report
+    mediaType: application/json
+    schemaPath: schemas/report.schema.json
+    maxSize: 1048576
+  - name: trace
+    mediaType: application/x-ndjson
+```
+
+A consumer binds its own local input names to exact producer slot references:
+
+```yaml
+artifactInputs:
+  summary: {from: produce.report}
+  telemetry: {from: produce.trace}
+```
+
+Slot names are local to the producer task; input names are local to the consumer
+task. Slot and local input names use letters, digits, `_`, and `-`; `.` is
+reserved as the separator in `producer.slot` references and task/state names
+already reject dots. Each task may declare up to 64 slots and 64 local input
+bindings. `mediaType` is optional artifact metadata, `schemaPath`
+optionally points to a closed schema for the payload, and `maxSize` is an
+optional byte ceiling using the same byte-count convention as artifact pointer
+`size`. DSL 3.1 validation checks duplicate slots and exact `producer.slot`
+references. It does not add graph-dominance/lowering rules, runtime artifact
+resolution, Goobers-IO reads, or migration mechanics.
 
 The schema remains the exhaustive field-shape contract. This reference
 documents the named execution primitives and their composition semantics.

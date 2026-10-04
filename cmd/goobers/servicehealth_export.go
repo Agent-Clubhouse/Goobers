@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"time"
@@ -37,7 +38,7 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 		exporter, err := buildDiagnosticExporterWithStores(initialize, root, setup, stores)
 		cancel()
 		if err != nil {
-			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "diagnostics_export_unavailable", Message: err.Error()}})
+			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: journal.ErrorDetailFor("diagnostics_export_unavailable", err)})
 		}
 		runHealthExports(ctx, root, setup, exporter, records, fleet)
 
@@ -61,16 +62,23 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 	otlp := setup.Config.DiagnosticOTLP()
 	azure := setup.Config.Telemetry.AzureMonitor
 	azureEnabled := setup.Config.TelemetryEnabled() && azure != nil && azure.Enabled()
-	if !otlp.Enabled() && !azureEnabled {
+	if !otlp.Enabled() && !azureEnabled && !setup.Config.Telemetry.NamedAzureEnabled() {
 		return nil, nil
 	}
 	cfg := telemetry.Config{
 		ServiceVersion: version.Get().Version, BuildCommit: version.Get().Commit,
-		Scrubber: journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
+		Scrubber:                journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
+		ExporterHealth:          setup.TelemetryExporterHealth,
+		AzureMonitorReplayStart: setup.TelemetryReplayStart,
 	}
+	_, cfg.ResourceAttributes = telemetryInstanceIdentities(root)
+	var legacyErr error
 	if otlp.Enabled() {
 		if err := configureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
-			return nil, err
+			if !setup.Config.Telemetry.NamedAzureEnabled() {
+				return nil, err
+			}
+			legacyErr = err
 		}
 	}
 	if azureEnabled {
@@ -78,7 +86,9 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 			return nil, err
 		}
 	}
-	return telemetry.NewDiagnosticExporter(cfg)
+	namedErr := configureNamedTelemetry(ctx, &cfg, setup.Config.Telemetry, root, setup.SharedRegistry, stores, true)
+	exporter, err := telemetry.NewDiagnosticExporter(cfg)
+	return exporter, errors.Join(legacyErr, namedErr, err)
 }
 
 // Whitelist the public operational contract rather than exporting the instance
@@ -156,6 +166,11 @@ func addAzureReplayHealth(record *telemetry.DiagnosticRecord, root string) {
 	pending := telemetry.InspectAzureReplayRoot(filepath.Join(root, "telemetry-export", "azure-monitor"))
 	record.Attributes["azureReplayPendingRecords"] = pending.PendingRecords
 	record.Attributes["azureReplayPendingBytes"] = pending.PendingBytes
+	record.Attributes["azureReplayPendingFiles"] = pending.PendingFiles
+	record.Attributes["azureReplayAccountingReady"] = pending.AccountingReady
+	record.Attributes["azureReplayAdmissionFailures"] = int64(min(pending.AdmissionFailures, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayQueueDropped"] = int64(min(pending.QueueDropped, uint64(math.MaxInt64)))
+	record.Attributes["azureReplayExportFailures"] = int64(min(pending.ExportFailures, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayOldestPendingSeconds"] = int64(pending.OldestPendingAge.Seconds())
 	record.Attributes["azureReplayAccepted"] = int64(min(pending.Accepted, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayDelivered"] = int64(min(pending.Delivered, uint64(math.MaxInt64)))
@@ -163,6 +178,15 @@ func addAzureReplayHealth(record *telemetry.DiagnosticRecord, root string) {
 	record.Attributes["azureReplayPrunedAge"] = int64(min(pending.PrunedAge, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayPrunedBytes"] = int64(min(pending.PrunedBytes, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayMalformed"] = int64(min(pending.Malformed, uint64(math.MaxInt64)))
+	// Delivery evidence (#5940): fixed classes and timestamps, no endpoint.
+	record.Attributes["azureReplayActiveFailure"] = pending.ActiveFailure
+	if !pending.LastSuccess.IsZero() {
+		record.Attributes["azureReplayLastSuccess"] = pending.LastSuccess.UTC().Format(time.RFC3339)
+	}
+	if !pending.LastFailure.IsZero() {
+		record.Attributes["azureReplayLastFailure"] = pending.LastFailure.UTC().Format(time.RFC3339)
+		record.Attributes["azureReplayFailureClass"] = pending.FailureClass
+	}
 }
 
 func emitFleetHealth(ctx context.Context, root string, store *history.Store, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) error {

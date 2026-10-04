@@ -94,6 +94,10 @@ Use a 64-bit Windows 11 or Windows Server 2025 host with:
 2. **PowerShell** for the commands below.
 3. **Go matching `go.mod`** only when building from source or reproducing the
    validation. A release install does not require Go, Node.js, Bash, or Make.
+   Install it with `winget install GoLang.Go` (or the installer from
+   <https://go.dev/dl/>), open a new PowerShell window, and confirm it is on
+   `PATH` with `go version`. The version must satisfy the `go` line in
+   [`go.mod`](../../go.mod).
 4. Every executable used by your own deterministic workflow stages on the
    daemon's `PATH`.
 
@@ -152,7 +156,14 @@ elevated prompt and update the machine `PATH`. See
 
 ## 4. Build from source instead
 
-From a repository checkout with the pinned Go and Node.js 24 toolchains:
+From a repository checkout with the pinned Go and Node.js 24 toolchains. First
+confirm both are on `PATH` so a missing toolchain fails here rather than midway
+through the build (see section 1 to install Go):
+
+```powershell
+go version
+node --version
+```
 
 ```powershell
 npm --prefix portal ci --no-audit --no-fund

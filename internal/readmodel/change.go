@@ -184,40 +184,34 @@ func (s *Store) Changes(ctx context.Context, afterSeq uint64, limit int) ([]Chan
 	if limit <= 0 {
 		limit = defaultChangePageSize
 	}
-	db, release, err := s.readHandle()
+	var out []Change
+	err := s.withReadRows(ctx, `
+		SELECT seq, at, kind, run_id, gaggle, workflow
+		FROM change WHERE seq > ? ORDER BY seq ASC LIMIT ?`,
+		[]any{afterSeq, limit},
+		fmt.Sprintf("readmodel: read changes after %d", afterSeq),
+		"readmodel: change rows",
+		func(rows *sql.Rows) error {
+			var (
+				c                       Change
+				at                      string
+				runID, gaggle, workflow sql.NullString
+				kind                    string
+			)
+			if err := rows.Scan(&c.Seq, &at, &kind, &runID, &gaggle, &workflow); err != nil {
+				return fmt.Errorf("readmodel: scan change: %w", err)
+			}
+			parsed, err := time.Parse(timeFormat, at)
+			if err != nil {
+				return fmt.Errorf("readmodel: parse change timestamp %q: %w", at, err)
+			}
+			c.At, c.Kind = parsed, ChangeKind(kind)
+			c.RunID, c.Gaggle, c.Workflow = runID.String, gaggle.String, workflow.String
+			out = append(out, c)
+			return nil
+		})
 	if err != nil {
 		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
-		SELECT seq, at, kind, run_id, gaggle, workflow
-		FROM change WHERE seq > ? ORDER BY seq ASC LIMIT ?`, afterSeq, limit)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: read changes after %d: %w", afterSeq, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []Change
-	for rows.Next() {
-		var (
-			c                       Change
-			at                      string
-			runID, gaggle, workflow sql.NullString
-			kind                    string
-		)
-		if err := rows.Scan(&c.Seq, &at, &kind, &runID, &gaggle, &workflow); err != nil {
-			return nil, fmt.Errorf("readmodel: scan change: %w", err)
-		}
-		parsed, err := time.Parse(timeFormat, at)
-		if err != nil {
-			return nil, fmt.Errorf("readmodel: parse change timestamp %q: %w", at, err)
-		}
-		c.At, c.Kind = parsed, ChangeKind(kind)
-		c.RunID, c.Gaggle, c.Workflow = runID.String, gaggle.String, workflow.String
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: change rows: %w", err)
 	}
 	return out, nil
 }

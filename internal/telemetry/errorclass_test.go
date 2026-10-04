@@ -24,7 +24,16 @@ func TestClassifyErrorNamesEveryProducedCode(t *testing.T) {
 		{code: ErrCodeProviderFailed, want: ErrorClassProvider},
 		{code: ErrCodePollProvider, want: ErrorClassProvider},
 		{code: ErrCodeNoWorkUnsubstantiated, want: ErrorClassValidation},
+		{code: ErrCodeRunCanceled, want: ErrorClassOperator},
 		{code: "github_rate_limited", want: ErrorClassProviderRateLimit},
+		// #5638: substrate codes for a stage that never got an agent turn.
+		{code: ErrCodeHarnessRequiredMCPUnavailable, want: ErrorClassInfra},
+		{code: ErrCodeCredentialResolveFailed, want: ErrorClassInfra},
+		{code: ErrCodeWorkspaceProvisionFailed, want: ErrorClassInfra},
+		{code: ErrCodeContextMaterializeFailed, want: ErrorClassInfra},
+		{code: ErrCodeAgenticExecutorUnavailable, want: ErrorClassInfra},
+		{code: ErrCodeAgenticKitMissing, want: ErrorClassInfra},
+		{code: ErrCodeAgenticKitUnavailable, want: ErrorClassInfra},
 		// Unlisted codes still reach their owner through the namespace
 		// heuristics rather than falling back to unknown.
 		{code: "github_pr_not_found", want: ErrorClassProvider},

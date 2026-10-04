@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -22,6 +23,8 @@ type wireFixtures struct {
 	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
 	CancelRequest            CancelRunRequest                           `json:"cancelRequest"`
 	CancelResult             CancelRunResult                            `json:"cancelResult"`
+	OperatorMessageRequest   OperatorMessageSubmitRequest               `json:"operatorMessageRequest"`
+	OperatorMessageResponse  OperatorMessageSubmitResponse              `json:"operatorMessageResponse"`
 	QueueEligibility         readservice.QueueEligibilityView           `json:"queueEligibility"`
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
@@ -60,6 +63,8 @@ var wireFixtureTypes = []struct {
 	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
 	{name: "cancelRequest", scriptType: "CancelRunRequest"},
 	{name: "cancelResult", scriptType: "CancelRunResult"},
+	{name: "operatorMessageRequest", scriptType: "OperatorMessageSubmitRequest"},
+	{name: "operatorMessageResponse", scriptType: "OperatorMessageSubmitResponse"},
 	{name: "queueEligibility", scriptType: "QueueEligibilityView"},
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
@@ -127,6 +132,20 @@ func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView 
 	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
 }
 
+func healthStartupWireFixture(startedAt, timestamp time.Time) *readservice.StartupStatus {
+	return &readservice.StartupStatus{
+		Phase: "crash-resume", Target: "candidates=6", Since: startedAt,
+		ElapsedSeconds: 120, WorktreeCount: 1, RecoveryRunCount: 6, AccumulationCount: 7,
+		BudgetSeconds: 60, BudgetUsedPercent: 200, BudgetState: "exceeded",
+		BlockingCandidate: &readservice.StartupRecoveryCandidate{
+			Progress: readservice.StartupRecoveryProgress{Total: 6, Examined: 6, Resumed: 5},
+			RunID:    "0123456789abcdef0123456789abcdef", Gaggle: "goobers", Workflow: "implement",
+			Disposition: "resolving-generation", Operation: "resolve execution generation",
+			StartedAt: startedAt, LastProgressAt: timestamp, ElapsedSeconds: 120, ProgressAgeSecs: 5,
+		},
+	}
+}
+
 func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt time.Time) readservice.Instance {
 	return readservice.Instance{
 		APIVersion:    readservice.APIVersion,
@@ -152,7 +171,8 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 			Tier: "admission-stopped", Path: "/instances/fixture", FreeBytes: 1 << 30, TotalBytes: 100 << 30,
 			WarningFloorBytes: 10 << 30, CriticalFloorBytes: 5 << 30, MeasuredAt: startedAt,
 		},
-		TelemetryRetention: telemetryRetentionWireFixture(startedAt, finishedAt),
+		TelemetryRetention:      telemetryRetentionWireFixture(startedAt, finishedAt),
+		TelemetryExporterHealth: telemetryExporterHealthWireFixture(startedAt, finishedAt),
 		RecoveryInventory: &readservice.RecoveryInventoryStatus{
 			State: readservice.RecoveryInventoryWarning, Used: 104, Limit: 128, Unreadable: 2, Overflow: 0,
 			HighWaterPercent:    readservice.RecoveryInventoryHighWaterPercent,
@@ -167,6 +187,29 @@ func telemetryRetentionWireFixture(startedAt, finishedAt time.Time) *readservice
 		Enabled: true, Window: "90d", MaxRuns: 500, FirstEnable: "gracePeriod",
 		EnforceAt: &finishedAt, LastPassAt: &startedAt, LastPassMode: "dry-run", CandidateCount: 7,
 	}
+}
+
+func telemetryExporterHealthWireFixture(startedAt, finishedAt time.Time) *readservice.TelemetryExporterHealthStatus {
+	result := &readservice.TelemetryExporterHealthStatus{
+		Enabled: true, Mode: "otlp",
+		Trace: readservice.TelemetryExporterSignalState{
+			Configured: true, State: "healthy", LastSuccessAt: &finishedAt, LastFailureAt: &startedAt,
+			LastFailureReason: "collector_unavailable", LastTransitionAt: &finishedAt,
+			ConsecutiveFailures: 0, FailureTransitions: 1, RecoveryTransitions: 1, SuppressedFailureEvents: 2,
+		},
+		Metric: readservice.TelemetryExporterSignalState{
+			Configured: true, State: "unhealthy", LastFailureAt: &finishedAt,
+			LastFailureReason: "signal_unimplemented", LastTransitionAt: &finishedAt,
+			ConsecutiveFailures: 3, FailureTransitions: 1, SuppressedFailureEvents: 2,
+		},
+	}
+	collector := *result
+	result.Mode = "custom"
+	result.Destinations = map[string]*readservice.TelemetryExporterHealthStatus{
+		"collector": &collector,
+		"tenant":    {Enabled: true, Mode: "azure-monitor", Trace: readservice.TelemetryExporterSignalState{Configured: true, State: "healthy", LastSuccessAt: &finishedAt}, Metric: readservice.TelemetryExporterSignalState{State: "disabled"}, Journal: &telemetry.ExporterDeliveryCounters{Accepted: 12}, Diagnostics: &telemetry.ExporterDeliveryCounters{Accepted: 3}, Replay: &telemetry.ExporterReplayHealthSnapshot{AccountingReady: true, PendingRecords: 2, PendingBytes: 1024, OldestPendingSeconds: 30, LastSuccess: &startedAt, LastFailure: &finishedAt, FailureClass: "rejected", ActiveFailure: true}},
+	}
+	return result
 }
 
 func wireFixtureTimes() (time.Time, time.Time, time.Time) {
@@ -213,15 +256,15 @@ func newWireFixtures() wireFixtures {
 	p95Tokens := int64(48000)
 	p50PremiumRequests := 1.0
 	p95PremiumRequests := 2.0
-	p50CostUSD := 1.25
-	p95CostUSD := 2.5
+	p50CostAIC := 125.0
+	p95CostAIC := 250.0
 	retryWasteDuration := int64(100000)
 	retryWasteTokens := int64(12000)
-	retryWasteCostUSD := 0.75
+	retryWasteCostAIC := 75.0
 	modelInputTokens := int64(36000)
 	modelOutputTokens := int64(12000)
 	modelPremiumRequests := 3.0
-	modelCostUSD := 1.5
+	modelCostAIC := 150.0
 	warning := validate.CodedWarning{
 		Code:        validate.WarningDeprecatedFeature,
 		Severity:    validate.Warning,
@@ -383,15 +426,20 @@ func newWireFixtures() wireFixtures {
 		},
 	}
 
+	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
+
 	return wireFixtures{
-		TriggerRequest:   TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
-		TriggerResponse:  TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
-		TriggerStatus:    TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
-		CancelRequest:    CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
-		CancelResult:     CancelRunResult{Code: "cancellation_requested"},
-		QueueEligibility: queueEligibilityWireFixture(timestamp),
+		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
+		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
+		CancelRequest:           CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
+		CancelResult:            CancelRunResult{Code: "cancellation_requested"},
+		OperatorMessageRequest:  operatorMessageRequest,
+		OperatorMessageResponse: operatorMessageResponse,
+		QueueEligibility:        queueEligibilityWireFixture(timestamp),
 		Health: readservice.Health{
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
+			Startup:          healthStartupWireFixture(startedAt, timestamp),
 			APIVersion:       readservice.APIVersion,
 			SchemaVersion:    readservice.SchemaVersion,
 			Build:            readservice.BuildMetadata{Version: "v1.2.3", Commit: "abc1234", Date: "2026-07-18T12:00:00Z"},
@@ -415,6 +463,7 @@ func newWireFixtures() wireFixtures {
 				Channel:        "stable",
 				CheckedAt:      timestamp,
 			},
+			TelemetryExporterHealth: telemetryExporterHealthWireFixture(startedAt, finishedAt),
 		},
 		Instance: instanceWireFixture(warning, startedAt, finishedAt),
 		PortalConfig: readservice.PortalConfig{
@@ -516,6 +565,7 @@ func newWireFixtures() wireFixtures {
 				TerminalReason: "review budget exhausted",
 				CausalEventSeq: 9,
 			},
+			TerminalCauseStatus: "unavailable",
 			Transitions: []readservice.RunTransition{
 				{Branch: 0, Seq: 3, Source: "implement", Target: "review"},
 				{Branch: 0, Seq: 9, Source: "review", Verdict: "fail", Terminal: true, Status: "escalated"},
@@ -554,6 +604,10 @@ func newWireFixtures() wireFixtures {
 				Error: &journal.ErrorDetail{
 					Code:    "review_failed",
 					Message: "review requested changes",
+					Causes: []journal.ErrorCause{
+						{Message: "review gate failed"},
+						{Code: "review_rejected", Message: "review requested changes"},
+					},
 				},
 				Redaction: &journal.RedactionInfo{
 					Target:    "artifacts/result.json",
@@ -697,7 +751,7 @@ func newWireFixtures() wireFixtures {
 					CostBases:     []string{"vendor_reported"},
 				}},
 				Runs: []readservice.TelemetryCostRunAggregate{{
-					RunID: "run-123", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
+					RunID: "run-123", Gaggle: "goobers", Workflow: "implement", Status: "completed", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
 					InputTokens: &modelInputTokens, OutputTokens: &modelOutputTokens,
 					NativeTotals: []readservice.TelemetryCostAmount{{
 						Unit: "aiCredits", Value: 2.5,
@@ -727,7 +781,7 @@ func newWireFixtures() wireFixtures {
 				},
 				Models: []readservice.TelemetryCostModelAggregate{},
 				Runs: []readservice.TelemetryCostRunAggregate{{
-					RunID: "run-124", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
+					RunID: "run-124", Gaggle: "goobers", Workflow: "review", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
 					NativeTotals: []readservice.TelemetryCostAmount{{
 						Unit: "usd", Value: 0.025,
 					}},
@@ -789,12 +843,12 @@ func newWireFixtures() wireFixtures {
 				P50Tokens:            &p50Tokens,
 				P95Tokens:            &p95Tokens,
 				CostSamples:          4,
-				P50CostUSD:           &p50CostUSD,
-				P95CostUSD:           &p95CostUSD,
+				P50CostAIC:           &p50CostAIC,
+				P95CostAIC:           &p95CostAIC,
 				RetryWasteAttempts:   1,
 				RetryWasteDurationMs: &retryWasteDuration,
 				RetryWasteTokens:     &retryWasteTokens,
-				RetryWasteCostUSD:    &retryWasteCostUSD,
+				RetryWasteCostAIC:    &retryWasteCostAIC,
 				StuckAbortedAttempts: 1,
 			}},
 			Usage: []readservice.TelemetryUsageStats{{
@@ -809,12 +863,12 @@ func newWireFixtures() wireFixtures {
 				P50CopilotPremiumRequests: &p50PremiumRequests,
 				P95CopilotPremiumRequests: &p95PremiumRequests,
 				CostSamples:               4,
-				CostUSD:                   &modelCostUSD,
-				P50CostUSD:                &p50CostUSD,
-				P95CostUSD:                &p95CostUSD,
+				CostAIC:                   &modelCostAIC,
+				P50CostAIC:                &p50CostAIC,
+				P95CostAIC:                &p95CostAIC,
 				RetryWasteAttempts:        1,
 				RetryWasteTokens:          &retryWasteTokens,
-				RetryWasteCostUSD:         &retryWasteCostUSD,
+				RetryWasteCostAIC:         &retryWasteCostAIC,
 			}},
 			Models: []readservice.TelemetryModelStats{{
 				Model:                  "gpt-5.4",
@@ -826,7 +880,7 @@ func newWireFixtures() wireFixtures {
 				PremiumRequestSamples:  3,
 				CopilotPremiumRequests: &modelPremiumRequests,
 				CostSamples:            3,
-				CostUSD:                &modelCostUSD,
+				CostAIC:                &modelCostAIC,
 			}},
 		},
 		TelemetryErrorSignatures: readservice.TelemetryErrorSignaturesResult{
@@ -897,6 +951,7 @@ func newWireFixtures() wireFixtures {
 			Revision:      configSource.Revision,
 			Document:      configDocumentDescriptor,
 			Content:       "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n",
+			Diagnostics:   []ConfigDiagnostic{},
 		},
 		ConfigPreviewRequest: ConfigChangePreviewRequest{
 			ChangeSet: configChangeSet,
@@ -974,4 +1029,32 @@ func int64Pointer(value int64) *int64 {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequest, OperatorMessageSubmitResponse) {
+	request := OperatorMessageSubmitRequest{
+		Gaggle:        "goobers",
+		TargetAddress: "terminal:operator",
+		Purpose:       "approval-required",
+		Content:       apiv1.OperatorMessageContent{Text: "Please review the run."},
+		DeliveryMode:  "terminal",
+	}
+	response := OperatorMessageSubmitResponse{
+		Accepted: true,
+		Record: apiv1.OperatorMessageRecord{
+			Request: apiv1.OperatorMessageRequest{
+				Schema:         apiv1.OperatorMessageRequestSchema,
+				RequestID:      "message-1",
+				IdempotencyKey: "key-1",
+				TargetAddress:  "terminal:operator",
+				PrincipalRef:   "user:operator",
+				RequestedAt:    timestamp,
+				Purpose:        "approval-required",
+				Content:        apiv1.OperatorMessageContent{Text: "Please review the run."},
+				DeliveryMode:   "terminal",
+			},
+			State: apiv1.OperatorMessageAccepted,
+		},
+	}
+	return request, response
 }

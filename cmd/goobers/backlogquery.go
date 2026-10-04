@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"sort"
@@ -80,7 +81,16 @@ const backlogScanPageSize = 100
 const backlogEligibilityQuotaFloor = 0.10
 
 type backlogScanCursor struct {
-	Cursor string `json:"cursor,omitempty"`
+	Cursor   string                        `json:"cursor,omitempty"`
+	Deferred string                        `json:"deferred,omitempty"`
+	Child    *backlogChildInspectionCursor `json:"child,omitempty"`
+}
+
+type backlogChildInspectionCursor struct {
+	ParentID    string `json:"parentId,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	NextIndex   int    `json:"nextIndex,omitempty"`
+	Phase       string `json:"phase,omitempty"`
 }
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
@@ -96,7 +106,7 @@ const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 // single, unambiguous signal to filter or alert on.
 const blockedOnlyCompletionAnnotation = "backlog.completed-with-blocked-only"
 
-const inReviewStatusLabel = "goobers/status:in-review"
+const inReviewStatusLabel = providers.LabelStatusInReview
 
 const (
 	backlogFailureDeprioritizeThreshold = 3
@@ -144,7 +154,8 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
 	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
 	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
-	"and uses only the github:issues:read capability. When inputs.resultFile\n" +
+	"and uses only the github:issues:read capability routed to the configured\n" +
+	"backlog provider (GitHub, Azure DevOps, or Gitea). When inputs.resultFile\n" +
 	"is declared, it also writes a read-only candidate report with scan coverage;\n" +
 	"candidates are for inspection, not claims or permission to re-ready work.\n\n" +
 	"The --resweep modifier requires --claim and selects only re-sweep work;\n" +
@@ -179,11 +190,15 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
 	"preserves plain FIFO exactly. fieldOrder is an optional comma-separated\n" +
 	"field[:asc|desc] list applied within each label-priority tier before FIFO.\n\n" +
-	"A separate scheduled workflow uses --claim --resweep with bounded\n" +
-	"resweepMaxItems to recheck blocked dependencies and ready items. Forward\n" +
+	"A separate scheduled workflow uses --claim --resweep to recheck blocked\n" +
+	"dependencies and ready items; a bounded resweepMaxItems enables it. Forward\n" +
 	"candidates reserve maxItems capacity first but are never claimed by this\n" +
 	"mode. The sweep uses leftover capacity and rotates within selectionPriority\n" +
-	"tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and\n" +
+	"tiers. The two lanes have independent budgets: resweepMaxItems bounds\n" +
+	"ready-drift reviews, and resweepDependencyMaxItems (default 25, at most\n" +
+	"250) bounds how many blocked items have their native blockers rechecked.\n" +
+	"Both lanes share the leftover batch capacity, dependency rechecks first.\n" +
+	"Cadence belongs to workflow schedule/readiness; resweepInterval and\n" +
 	"inline re-sweep inputs on ordinary --claim runs are retired. Ready items\n" +
 	"already in implementation/review are emitted as read-only context and are\n" +
 	"never claimed.\n\n" +
@@ -246,13 +261,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return runBacklogQueryRelease(env)
 	}
 
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	stageEnv, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
-	env.repo = repo
-	env.backlogRepo = backlogRepoRefForStage(root, repo)
+	env.repo = stageEnv.repoRef()
+	env.backlogRepo = stageEnv.backlogRepoRef()
 	if code := env.openProvider(mode == backlogQueryModeReadOnly); code != 0 {
 		return code
 	}
@@ -334,7 +348,8 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	if !readOnly {
 		opts = append(opts, withStageProviderCache())
 	}
-	provider, err := newProviderForStage(env.root, env.issueRepo(), readOnly, opts...)
+	stageEnv := stageCommandEnv{root: env.root, repo: env.issueRepo()}
+	provider, err := providerForEnvAs[providers.Provider](stageEnv, readOnly, opts...)
 	if err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
@@ -345,11 +360,33 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 		return 1
 	}
 	env.issueProvider = issueProvider
-	env.ghIssueProvider, _ = provider.(*providers.GitHubProvider)
-	if ado, isADO := provider.(*providers.ADOProvider); isADO {
+	env.ghIssueProvider = githubProviderForBacklogExtras(provider)
+	if ado := adoProviderForBacklogDefaults(provider); ado != nil {
 		applyGaggleDoneStates(env.root, ado)
 	}
 	return 0
+}
+
+func githubProviderForBacklogExtras(provider providers.Provider) *providers.GitHubProvider {
+	if gh, ok := provider.(*providers.GitHubProvider); ok {
+		return gh
+	}
+	if scoped, ok := provider.(scopedIssueProvider); ok {
+		gh, _ := scoped.Provider.(*providers.GitHubProvider)
+		return gh
+	}
+	return nil
+}
+
+func adoProviderForBacklogDefaults(provider providers.Provider) *providers.ADOProvider {
+	if ado, ok := provider.(*providers.ADOProvider); ok {
+		return ado
+	}
+	if scoped, ok := provider.(scopedIssueProvider); ok {
+		ado, _ := scoped.Provider.(*providers.ADOProvider)
+		return ado
+	}
+	return nil
 }
 
 // backlogPRExtrasAvailable reports whether backlog-query's GitHub
@@ -363,9 +400,20 @@ func backlogPRExtrasAvailable(env backlogQueryEnv) bool {
 	return env.ghIssueProvider != nil && !backlogOnOtherProvider(env.repo, env.backlogRepo)
 }
 
+func backlogReconcileScope(respectAssignee bool, assignedTo string) backlogReconcileAssigneeScope {
+	if !respectAssignee {
+		assignedTo = ""
+	}
+	return backlogReconcileAssigneeScope{
+		respectAssignee: respectAssignee,
+		assignedTo:      assignedTo,
+		ownership:       issueOwnershipScopeFromInputs(),
+	}
+}
+
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
-	root, repo := env.root, env.repo
-	ghIssueProvider, stderr := env.ghIssueProvider, env.stderr
+	repo := env.repo
+	stderr := env.stderr
 	claim := mode == backlogQueryModeClaim || mode == backlogQueryModeResweep
 	reconcile := mode == backlogQueryModeReconcile
 	readOnly := mode == backlogQueryModeReadOnly
@@ -374,7 +422,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// blocked checks, and claim — must address the backlog project rather than
 	// the routed code repo. On GitHub the two coincide and backlogRepo == repo.
 	trustLabel := providerInput("trustLabel", "")
-	requireLabels := splitLabelList(providerInput("requireLabels", ""))
+	requireLabels := backlogQueryRequireLabels(env)
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
 	labelExpression := providerInput("labelPredicate", "")
 	labelFilter, excludeLabels, err := compileBacklogLabelSelection(labelExpression, requireLabels, excludeLabels, providerInput("parkLabels", ""), providerInput("filterParkLabels", "true"))
@@ -413,7 +461,6 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// is no separate null-mode branch to get wrong.
 	respectAssignee := providerInput("respectAssignee", "") == "true"
 	assignedTo := providerInput("assignedTo", "")
-
 	// maxItems caps how many eligible items one --claim run claims (#236): it was
 	// a dead input everywhere (the query hardcoded a limit and --claim took
 	// exactly one), so a documented input was silently ignored — the #130 class
@@ -475,58 +522,27 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			selectionPriority: selectionPriority,
 			respectAssignee:   respectAssignee,
 			assignedTo:        assignedTo,
+			ownership:         issueOwnershipScopeFromInputs(),
 			scanLimit:         scanLimit,
 		})
 	}
 	observedAt := time.Now().UTC()
 
 	if reconcile {
-		return runReconcileBacklogQuery(ctx, env, trustLabel, stalenessPolicy, observedAt)
+		return runReconcileBacklogQuery(ctx, env, trustLabel, stalenessPolicy, observedAt, backlogReconcileScope(respectAssignee, assignedTo))
 	}
 	if curationRun && mode != backlogQueryModeResweep {
-		if code := reconcileBacklogQueryMetadata(ctx, env, trustLabel, stalenessPolicy, observedAt, "claimed-items.json"); code != 0 {
+		if code := reconcileBacklogQueryMetadata(ctx, env, trustLabel, stalenessPolicy, observedAt, "claimed-items.json", backlogReconcileScope(respectAssignee, assignedTo)); code != 0 {
 			return code
 		}
 	}
 
-	var (
-		prProvider *providers.GitHubProvider
-		openIssues map[string]bool
-	)
-	// The open-PR eligibility backstop and closed-unmerged requeue read pull
-	// requests through the GitHub PR API, so they need both a github:pr:write
-	// token and GitHub code (backlogPRExtrasAvailable). ADO code, topology (b)
-	// included, gets exactly the pre-backstop label-only behavior.
-	//
-	// Built through the shared stage-provider seam so this second provider
-	// carries the same declared identity the issue provider above does
-	// (#3885/#3890 locally, #3914 in a pod) instead of being a second,
-	// identity-less GitHub client constructed beside it. A construction
-	// failure degrades exactly as an absent token does — to the pre-backstop
-	// label-only behavior — rather than becoming a new fatal path: reaching
-	// here means the issue provider already resolved to GitHub with a
-	// registered factory and an explicit token, so there is nothing left for
-	// the seam to refuse.
-	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
-		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-			withStageProviderCapability(capability.GitHubPRWrite),
-			withStageProviderToken(prToken),
-			withStageProviderCache(),
-		)
-	}
-	if prProvider != nil {
-		openIssues, err = openPRIssueNumbers(ctx, prProvider, repo)
-		if err != nil {
-			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
-		}
-		if claim {
-			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo); err != nil {
-				return failProviderStage(stderr, "reconcile closed pull requests", err, "claimed-item.json")
-			}
-		}
+	prProvider, openIssues, code := backlogPRExtras(ctx, env, repo, claim)
+	if code != 0 {
+		return code
 	}
 
-	scan, code := scanBacklogEligibility(ctx, env, backlogScanOptions{
+	scanOpts := backlogScanOptions{
 		trustLabel:        trustLabel,
 		requireLabels:     requireLabels,
 		excludeLabels:     excludeLabels,
@@ -538,9 +554,11 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		selectionPriority: selectionPriority,
 		respectAssignee:   respectAssignee,
 		assignedTo:        assignedTo,
+		ownership:         issueOwnershipScopeFromInputs(),
 		scanLimit:         scanLimit,
 		openIssues:        openIssues,
-	})
+	}
+	scan, code := scanBacklogEligibility(ctx, env, scanOpts)
 	if code != 0 {
 		return code
 	}
@@ -550,6 +568,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	observedRecords, remainingRecords := scan.observedRecords, scan.remainingRecords
 	verifiedSkips, observedSkips := scan.verifiedSkips, scan.observedSkips
 	forwardEligibleCount := len(eligible)
+	forwardCurationRun := curationRun && mode != backlogQueryModeResweep
 
 	resweep, code := runBacklogResweep(ctx, env, backlogResweepOptions{
 		enabled:           resweepEnabled,
@@ -557,6 +576,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		eligible:          eligible,
 		maxItems:          maxItems,
 		trustLabel:        trustLabel,
+		assigneeScope:     backlogReconcileScope(respectAssignee, assignedTo),
 		requireLabels:     requireLabels,
 		fieldFilter:       fieldFilter,
 		fieldOrder:        fieldOrder,
@@ -656,11 +676,63 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		workflow:               workflow,
 		labelFilter:            labelFilter,
 		curationRun:            curationRun,
+		forwardCurationRun:     forwardCurationRun,
 		stalenessPolicy:        stalenessPolicy,
 		observedAt:             observedAt,
 		curationModeByID:       curationModeByID,
 		beforeClaimTransaction: beforeClaimTransaction,
 	})
+}
+
+func backlogPRExtras(ctx context.Context, env backlogQueryEnv, repo providers.RepositoryRef, claim bool) (*providers.GitHubProvider, map[string]bool, int) {
+	// The open-PR eligibility backstop and closed-unmerged requeue read pull
+	// requests through the GitHub PR API, so they need both a github:pr:write
+	// token and GitHub code (backlogPRExtrasAvailable). ADO code, topology (b)
+	// included, gets exactly the pre-backstop label-only behavior.
+	var prProvider *providers.GitHubProvider
+	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
+		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](env.root, repo, false,
+			withStageProviderCapability(capability.GitHubPRWrite),
+			withStageProviderToken(prToken),
+			withStageProviderCache(),
+		)
+	}
+	if prProvider == nil {
+		return nil, nil, 0
+	}
+	openIssues, err := openPRIssueNumbers(ctx, prProvider, repo)
+	if err != nil {
+		return nil, nil, failProviderStage(env.stderr, "list open pull requests", err, "claimed-item.json")
+	}
+	if claim {
+		if err := reconcileClosedUnmergedInReview(ctx, env.ghIssueProvider, prProvider, repo, openIssues); err != nil {
+			return nil, nil, failProviderStage(env.stderr, "reconcile closed pull requests", err, "claimed-item.json")
+		}
+	}
+	return prProvider, openIssues, 0
+}
+
+func advanceClaimBacklogCursor(ctx context.Context, opts backlogClaimOptions) error {
+	if err := advanceBacklogScanCursor(ctx, opts.state, opts.cursorKey, opts.scanCursor, opts.nextScanCursor); err != nil {
+		return fmt.Errorf("advance backlog scan cursor: %w", err)
+	}
+	return nil
+}
+
+func writeEmptyForwardCurationResult(env backlogQueryEnv, reason string) int {
+	data, err := json.Marshal([]curationClaimedItem{})
+	if err != nil {
+		pf(env.stderr, "error: marshal empty curation claim artifact: %v\n", err)
+		return 1
+	}
+	resultFile := providerInput("resultFile", "claimed-item.json")
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(env.stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	writeClaimedBacklogSummary(env.stdout, nil, nil)
+	pf(env.stdout, "continuing curation with empty claimed-items artifact: %s\n", reason)
+	return 0
 }
 
 func deprioritizeRepeatedFailures(
@@ -769,6 +841,7 @@ type backlogClaimOptions struct {
 	workflow               string
 	labelFilter            *labelpredicate.Predicate
 	curationRun            bool
+	forwardCurationRun     bool
 	stalenessPolicy        backlogStalenessPolicy
 	observedAt             time.Time
 	curationModeByID       map[string]string
@@ -780,13 +853,10 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	stdout, stderr := env.stdout, env.stderr
 	eligible, readOnlyResweep := opts.eligible, opts.readOnlyResweep
 	cursorKey := opts.cursorKey
-	scanCursor, nextScanCursor := opts.scanCursor, opts.nextScanCursor
 	observedRecords, remainingRecords := opts.observedRecords, opts.remainingRecords
 	verifiedSkips, observedSkips := opts.verifiedSkips, opts.observedSkips
 	maxItems, runID, workflow := opts.maxItems, opts.runID, opts.workflow
 	labelFilter, curationRun := opts.labelFilter, opts.curationRun
-	stalenessPolicy, observedAt := opts.stalenessPolicy, opts.observedAt
-	curationModeByID := opts.curationModeByID
 	persistResweepState := opts.persistResweepState
 	eligible = reorderContestedBacklogItems(ctx, env, opts.prProvider, eligible, opts.forwardEligibleCount)
 
@@ -804,13 +874,16 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
+		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, opts.scanCursor, opts.nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
 		if err := persistResweepState(ctx); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
+		}
+		if opts.forwardCurationRun {
+			return writeEmptyForwardCurationResult(env, "no eligible item to claim")
 		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
@@ -832,11 +905,8 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		}
 		leaseDuration = d
 	}
-
-	// The claiming path's annotations now travel through the seam, not
-	// through a *journal.InstanceLog this process opened (Goobers#3898): in a
-	// stage pod the plane backend emits them to the daemon, and no local file
-	// is touched at all.
+	// The claiming path's annotations travel through the stage seam (#3898);
+	// stage pods emit them to the daemon, not a local instance log.
 	annotations, err := openStageAnnotator(l)
 	if err != nil {
 		pf(stderr, "error: open annotator: %v\n", err)
@@ -859,7 +929,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		pf(stderr, "error: open claim ledger: %v\n", err)
 		return 1
 	}
-
 	session := backlogClaimSession{
 		env:              env,
 		annotations:      annotations,
@@ -896,8 +965,8 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	}
 	eligible, observedSkips, claimed := session.eligible, session.observedSkips, session.claimed
 	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
-		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
-			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+		if err := advanceClaimBacklogCursor(ctx, opts); err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		if err := persistResweepState(ctx); err != nil {
@@ -905,10 +974,15 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return 1
 		}
 		reason := "no eligible item to claim"
+		if len(session.refusals) > 0 {
+			// Every candidate sat out a claim-disagreement backoff; saying
+			// "no eligible item" would hide that real items exist (#5468).
+			reason = claimRefusalReason(session.refusals)
+		}
 		if len(observedSkips) > 0 {
 			// This cycle's only candidate(s) were all blocked — distinct from a
 			// genuinely empty backlog (#1907). See blockedOnlyCompletionAnnotation.
-			reason = fmt.Sprintf("no eligible item to claim (%d blocked candidate(s) skipped this cycle)", len(observedSkips))
+			reason = fmt.Sprintf("%s (%d blocked candidate(s) skipped this cycle)", reason, len(observedSkips))
 			if jerr := annotations.Append(journal.Event{
 				Type:     journal.EventRunnerAnnotation,
 				Workflow: workflow,
@@ -922,6 +996,9 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 				pf(stderr, "warning: journal blocked-only completion summary: %v\n", jerr)
 			}
 		}
+		if opts.forwardCurationRun {
+			return writeEmptyForwardCurationResult(env, reason)
+		}
 		return writeNoWorkResult(stdout, stderr, reason)
 	}
 	// Every eligible item is already claimed by another run — a routine no-work
@@ -929,8 +1006,8 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	// runner short-circuits on, rather than the old return 1. Batch-aware len
 	// check (#236) replaces #274's pointer-nil check.
 	if len(claimed) == 0 && len(readOnlyResweep) == 0 {
-		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
-			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+		if err := advanceClaimBacklogCursor(ctx, opts); err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		if malformedReadyItems > 0 {
@@ -944,15 +1021,21 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
+		reason := "every eligible item is already claimed by another run"
+		if len(session.refusals) > 0 {
+			reason = claimRefusalReason(session.refusals)
+		}
+		if opts.forwardCurationRun {
+			return writeEmptyForwardCurationResult(env, reason)
+		}
+		return writeNoWorkResult(stdout, stderr, reason)
 	}
-
 	if code := writeClaimedBacklogResult(ctx, env, claimed, readOnlyResweep, claimedBacklogResultOptions{
 		maxItems:            maxItems,
 		curationRun:         curationRun,
-		stalenessPolicy:     stalenessPolicy,
-		observedAt:          observedAt,
-		curationModeByID:    curationModeByID,
+		stalenessPolicy:     opts.stalenessPolicy,
+		observedAt:          opts.observedAt,
+		curationModeByID:    opts.curationModeByID,
 		persistResweepState: persistResweepState,
 	}); code != 0 {
 		return code
@@ -980,7 +1063,7 @@ func writeClaimedBacklogResult(
 	var err error
 	if opts.curationRun {
 		curationItems, err = enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
 		)
 		if err != nil {
 			return failProviderStage(env.stderr, "compute claimed-item staleness", err, "claimed-items.json")
@@ -989,7 +1072,7 @@ func writeClaimedBacklogResult(
 			curationItems[index].CurationMode = opts.curationModeByID[curationItems[index].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
 		)
 		if enrichErr != nil {
 			return failProviderStage(env.stderr, "compute read-only re-sweep staleness", enrichErr, "claimed-items.json")
@@ -1004,6 +1087,9 @@ func writeClaimedBacklogResult(
 	if err != nil {
 		pf(env.stderr, "error: marshal claimed item(s): %v\n", err)
 		return 1
+	}
+	if !opts.curationRun && opts.maxItems == 1 && len(claimed) > 0 {
+		data = withPriorNoWorkVerdict(ctx, env.layout, env.issueRepo(), claimed[0].ID, data, env.stderr)
 	}
 	resultFile := providerInput("resultFile", "claimed-item.json")
 	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
@@ -1025,6 +1111,8 @@ func marshalClaimedBacklogItems(
 	maxItems int,
 ) ([]byte, error) {
 	switch {
+	case curationRun && len(curationItems) == 0:
+		return json.Marshal([]curationClaimedItem{})
 	case curationRun && maxItems == 1:
 		return json.Marshal(curationItems[0])
 	case curationRun:
@@ -1034,6 +1122,22 @@ func marshalClaimedBacklogItems(
 	default:
 		return json.Marshal(claimed)
 	}
+}
+
+// backlogStalenessProvider is the provider claimed-item staleness is read
+// through: the concrete GitHub issue provider exactly as before, otherwise the
+// backlog's own issue provider when it exposes comments (Azure DevOps,
+// Goobers#6104). It returns an untyped nil — never a nil *GitHubProvider in
+// an interface — when neither applies, so enrichment marks the evidence
+// unavailable instead of dereferencing nil.
+func backlogStalenessProvider(env backlogQueryEnv) stalenessCommentProvider {
+	if env.ghIssueProvider != nil {
+		return env.ghIssueProvider
+	}
+	if provider, ok := env.issueProvider.(stalenessCommentProvider); ok && provider != nil {
+		return provider
+	}
+	return nil
 }
 
 func writeClaimedBacklogSummary(stdout io.Writer, claimed, readOnly []providers.WorkItem) {
@@ -1113,6 +1217,64 @@ type backlogClaimSession struct {
 	nextClaimIndex      int
 	claimSetPrepared    bool
 	driftBackoffChecked bool
+	// refusals records every eligible item this session did not claim and
+	// who held it, so a no-work result names the holder and the source of
+	// that ownership instead of a generic "already claimed" (#5468).
+	refusals []claimRefusal
+}
+
+// Sources a claimRefusal can name. They are distinct because each sends an
+// operator somewhere different: the local ledger (scheduler/claims.json), the
+// provider's claim breadcrumb epoch, or this instance's disagreement backoff.
+const (
+	claimRefusalLedger        = "local ledger"
+	claimRefusalProviderEpoch = "provider epoch"
+	claimRefusalBackoff       = "claim-disagreement backoff"
+)
+
+// claimRefusalReasonLimit bounds how many refusals a no-work reason spells
+// out; a curation listing can be long and the reason is a journaled scalar.
+const claimRefusalReasonLimit = 5
+
+type claimRefusal struct {
+	itemID     string
+	holder     string
+	source     string
+	retryAfter time.Time
+}
+
+func (r claimRefusal) describe() string {
+	holder := "an unknown run"
+	if r.holder != "" {
+		holder = "run " + r.holder
+	}
+	if r.source == claimRefusalBackoff {
+		return fmt.Sprintf("item %s deferred by %s after %s held its provider claim, retry after %s",
+			r.itemID, r.source, holder, r.retryAfter.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("item %s held by %s (%s)", r.itemID, holder, r.source)
+}
+
+// claimRefusalReason renders the no-work reason for a cycle whose eligible
+// items were all refused. It keeps the historical "already claimed by another
+// run" wording only when that is literally true of every refusal.
+func claimRefusalReason(refusals []claimRefusal) string {
+	prefix := "every eligible item is already claimed by another run"
+	for _, refusal := range refusals {
+		if refusal.source == claimRefusalBackoff {
+			prefix = "every eligible item is claimed by another run or deferred by claim-disagreement backoff"
+			break
+		}
+	}
+	parts := make([]string, 0, min(len(refusals), claimRefusalReasonLimit)+1)
+	for index, refusal := range refusals {
+		if index == claimRefusalReasonLimit {
+			parts = append(parts, fmt.Sprintf("and %d more", len(refusals)-index))
+			break
+		}
+		parts = append(parts, refusal.describe())
+	}
+	return prefix + ": " + strings.Join(parts, "; ")
 }
 
 func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *labelpredicate.Predicate) (int, int) {
@@ -1124,30 +1286,10 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 			return malformedReadyItems, 1
 		}
 		if labelFilter.ReferencesLabel(providers.LabelReady) {
-			for index := firstNewClaim; index < len(session.claimed); {
-				if !session.claimed[index].HasLabel(providers.LabelReady) {
-					index++
-					continue
-				}
-				transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
-					ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
-				)
-				if err != nil {
-					return malformedReadyItems, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
-				}
-				if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
-					malformed := session.claimed[index]
-					if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
-						pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
-						return malformedReadyItems, 1
-					}
-					session.forgetNewClaim(malformed.ID)
-					pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, err)
-					session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
-					malformedReadyItems++
-					continue
-				}
-				index++
+			skipped, code := session.annotateNewReadyClaims(ctx, firstNewClaim)
+			malformedReadyItems += skipped
+			if code != 0 {
+				return malformedReadyItems, code
 			}
 		}
 		if err := session.confirmProviderClaims(ctx, firstNewClaim); err != nil {
@@ -1156,6 +1298,55 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 		}
 	}
 	return malformedReadyItems, 0
+}
+
+// annotateNewReadyClaims stamps the ready time on each claim acquired from
+// firstNewClaim on that carries the ready label. An item whose ready history
+// is malformed, or incomplete (providers.ErrLabelHistoryIncomplete, such as an
+// ADO item past the revision cap), is released and skipped so one
+// pathological item cannot fail the claim stage every time it is re-selected.
+// Any other provider read error still fails the stage. It returns the number
+// of items skipped and a non-zero exit code when the stage must stop.
+func (session *backlogClaimSession) annotateNewReadyClaims(ctx context.Context, firstNewClaim int) (int, int) {
+	skipped := 0
+	for index := firstNewClaim; index < len(session.claimed); {
+		if !session.claimed[index].HasLabel(providers.LabelReady) {
+			index++
+			continue
+		}
+		transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
+			ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
+		)
+		if err != nil && !errors.Is(err, providers.ErrLabelHistoryIncomplete) {
+			return skipped, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
+		}
+		if err == nil {
+			err = annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions)
+		}
+		if err == nil {
+			index++
+			continue
+		}
+		if code := session.skipMalformedClaim(ctx, index, err); code != 0 {
+			return skipped, code
+		}
+		skipped++
+	}
+	return skipped, 0
+}
+
+// skipMalformedClaim releases the claim at index, drops it from the claim
+// set, and warns why it was skipped.
+func (session *backlogClaimSession) skipMalformedClaim(ctx context.Context, index int, cause error) int {
+	malformed := session.claimed[index]
+	if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
+		pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
+		return 1
+	}
+	session.forgetNewClaim(malformed.ID)
+	pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, cause)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	return 0
 }
 
 // acquire is the claim transaction: the blocked-record reconcile and the
@@ -1202,7 +1393,7 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
 		session.nextClaimIndex++
-		ok, err := session.claimItem(ctx, ledger, item)
+		ok, holder, err := session.claimItem(ctx, ledger, item)
 		if err != nil {
 			return err
 		}
@@ -1213,6 +1404,7 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 			}
 		} else {
 			session.env.debugf("claim lost %s: ledger claim held by another run", item.ID)
+			session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: holder, source: claimRefusalLedger})
 		}
 	}
 	return nil
@@ -1284,13 +1476,13 @@ func (session *backlogClaimSession) claimKey(item providers.WorkItem) claimsclie
 	}
 }
 
-func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, error) {
-	ok, _, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
+func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, string, error) {
+	ok, holder, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
 	if err != nil {
-		return false, fmt.Errorf("claim %s in ledger: %w", item.ID, err)
+		return false, "", fmt.Errorf("claim %s in ledger: %w", item.ID, err)
 	}
 	if !ok {
-		return false, nil
+		return false, holder, nil
 	}
 	// #4417: record this item's own typed repository identity against the
 	// claim — terminal circuit-breaker/notification bookkeeping later reads
@@ -1300,9 +1492,9 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
 			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
 		}
-		return false, fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
+		return false, "", fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
 	}
-	return true, nil
+	return true, "", nil
 }
 
 func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, start int) error {
@@ -1314,6 +1506,9 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			return fmt.Errorf("%s: %w", item.ID, err)
 		}
 		if result.Claimed {
+			if result.Item.ID != "" {
+				session.claimed[index] = mergeProviderConfirmedClaim(session.claimed[index], result.Item)
+			}
 			session.recordCurrentClaimObservation(ctx, item, result, nil)
 			index++
 			continue
@@ -1334,6 +1529,9 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 				return fmt.Errorf("%s: %w", item.ID, err)
 			}
 			if result.Claimed {
+				if result.Item.ID != "" {
+					session.claimed[index] = mergeProviderConfirmedClaim(session.claimed[index], result.Item)
+				}
 				session.recordCurrentClaimObservation(ctx, item, result, nil)
 				pf(session.env.stderr, "notice: retired the surrendered provider claim on item %s left by run %s and claimed it\n", item.ID, retiredHolder)
 				index++
@@ -1346,10 +1544,16 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			return fmt.Errorf("read provider claim history for item %s: %w", item.ID, err)
 		}
 		if drift != nil {
+			// Persistent disagreement with one provider owner is recorded as
+			// ownership drift (telemetry + the backoff the next cycle honours)
+			// and skips only this item. Failing the stage here rolled back the
+			// whole batch — up to maxItems claims — over one orphaned epoch.
 			session.recordCurrentClaimObservation(ctx, item, result, nil)
-			return drift
+			session.journalOwnershipDrift(drift)
+		} else {
+			session.recordCurrentContention(ctx, item, result.ClaimedBy)
 		}
-		session.recordCurrentContention(ctx, item, result.ClaimedBy)
+		session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: result.ClaimedBy, source: claimRefusalProviderEpoch})
 		if err := session.releaseLedger(ctx, item); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
@@ -1358,6 +1562,16 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
 	}
 	return nil
+}
+
+func mergeProviderConfirmedClaim(current, confirmed providers.WorkItem) providers.WorkItem {
+	if current.ReadyAt != nil && confirmed.ReadyAt == nil {
+		confirmed.ReadyAt = current.ReadyAt
+	}
+	if current.Integrity != "" {
+		confirmed.Integrity = current.Integrity
+	}
+	return confirmed
 }
 
 func (session *backlogClaimSession) recordCurrentClaimObservation(ctx context.Context, item providers.WorkItem, result providers.ClaimResult, claimErr error) {
@@ -1387,6 +1601,26 @@ func (session *backlogClaimSession) recordCurrentContention(ctx context.Context,
 			recordProviderClaimContention(ctx, session.ledger, entry, providerRunID, session.env.stderr)
 			return
 		}
+	}
+}
+
+// journalOwnershipDrift surfaces a repeated provider contention that is now
+// skipped per item rather than failing the stage, so it stays visible in the
+// run journal and on stderr. A journal failure only warns: the skip is the
+// safe outcome either way.
+func (session *backlogClaimSession) journalOwnershipDrift(drift *providerClaimOwnershipError) {
+	pf(session.env.stderr, "warning: %v; skipping item %s this cycle\n", drift, drift.itemID)
+	if err := session.annotations.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Workflow: session.workflow, RunID: session.runID,
+		Reason: drift.Error(),
+		Runner: map[string]any{
+			"annotation": "provider-claim-ownership-drift",
+			"errorCode":  drift.Code(),
+			"provider":   drift.provider, "itemId": drift.itemID,
+			"claimRunId": drift.claimRunID, "providerRunId": drift.providerRunID,
+		},
+	}); err != nil {
+		pf(session.env.stderr, "warning: journal provider claim ownership drift for item %s: %v\n", drift.itemID, err)
 	}
 }
 
@@ -1442,6 +1676,9 @@ func (session *backlogClaimSession) filterRecentClaimDisagreements(ctx context.C
 			continue
 		}
 		retryAt := observation.ObservedAt.Add(session.leaseDuration)
+		session.refusals = append(session.refusals, claimRefusal{
+			itemID: item.ID, holder: observation.ProviderRunID, source: claimRefusalBackoff, retryAfter: retryAt,
+		})
 		pf(session.env.stderr, "warning: delaying provider claim for item %s; owner %s disagreed with the ledger, retry after %s\n",
 			item.ID, observation.ProviderRunID, retryAt.UTC().Format(time.RFC3339))
 		if err := session.annotations.Append(journal.Event{
@@ -1495,13 +1732,9 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if current, held := listing.Lookup(session.claimKey(item)); held && (current.RunID == holder || !current.SharedDeadline.IsZero()) {
 		return false, nil
 	}
-	surrendered := false
-	for _, entry := range listing.HistoryForItem(item.ID) {
-		if entry.RunID != holder {
-			continue
-		}
-		surrendered = entry.ReleasedAt != nil
-		break
+	surrendered, err := session.providerClaimSurrendered(ctx, item, holder, listing)
+	if err != nil {
+		return false, err
 	}
 	if !surrendered {
 		return false, nil
@@ -1511,12 +1744,88 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 		ID:         item.ID,
 		// This run holds the authoritative ledger lease for the item, which is
 		// exactly the precondition LedgerAuthorized documents.
-		RunID:            session.runID,
-		LedgerAuthorized: true,
+		RunID:              session.runID,
+		LedgerAuthorized:   true,
+		ExpectedClaimRunID: holder,
 	}); err != nil {
 		return false, fmt.Errorf("retire provider claim: %w", err)
 	}
 	return true, nil
+}
+
+func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, listing claimsclient.Listing) (bool, error) {
+	foundHistory := false
+	for _, entry := range listing.HistoryForItem(item.ID) {
+		if entry.RunID != holder {
+			continue
+		}
+		foundHistory = true
+		if entry.ReleasedAt != nil {
+			return true, nil
+		}
+	}
+	return session.orphanedProviderClaimSurrendered(ctx, item, holder, foundHistory)
+}
+
+type providerClaimEpochReader interface {
+	OpenClaimEpochs(context.Context, providers.RepositoryRef, string) ([]providers.ClaimEpoch, error)
+}
+
+func (session *backlogClaimSession) orphanedProviderClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, hasHistory bool) (bool, error) {
+	reader, ok := session.env.issueProvider.(providerClaimEpochReader)
+	if !ok || reader == nil {
+		return false, nil
+	}
+	epoch, ok, err := session.ownTrustedClaimEpoch(ctx, reader, item.ID, holder)
+	if err != nil || !ok {
+		return false, err
+	}
+	if session.providerClaimHolderTerminal(holder) {
+		return true, nil
+	}
+	if hasHistory {
+		return false, nil
+	}
+	if epoch.CreatedAt.IsZero() || time.Since(epoch.CreatedAt) <= localscheduler.ClaimHistoryTTL {
+		return false, nil
+	}
+	return !session.providerClaimHolderKnown(holder), nil
+}
+
+func (session *backlogClaimSession) ownTrustedClaimEpoch(ctx context.Context, reader providerClaimEpochReader, itemID, holder string) (providers.ClaimEpoch, bool, error) {
+	epochs, err := reader.OpenClaimEpochs(ctx, session.env.backlogRepo, itemID)
+	if err != nil {
+		return providers.ClaimEpoch{}, false, fmt.Errorf("read open provider claim epochs: %w", err)
+	}
+	instanceID := stageInstanceIdentity()
+	for _, epoch := range epochs {
+		if !epoch.Trusted || epoch.RunID != holder {
+			continue
+		}
+		if instanceID == "" || epoch.InstanceID == "" || epoch.InstanceID != instanceID {
+			return providers.ClaimEpoch{}, false, nil
+		}
+		return epoch, true, nil
+	}
+	return providers.ClaimEpoch{}, false, nil
+}
+
+func (session *backlogClaimSession) providerClaimHolderTerminal(holder string) bool {
+	runDir, err := session.env.layout.FindRunDir(holder)
+	if err != nil {
+		return false
+	}
+	reader, err := journal.OpenReadOnly(runDir)
+	if err != nil {
+		return false
+	}
+	phase, err := reader.Phase()
+	return err == nil && phase != journal.PhaseRunning
+}
+
+func (session *backlogClaimSession) providerClaimHolderKnown(holder string) bool {
+	_, err := session.env.layout.FindRunDir(holder)
+	return err == nil || !errors.Is(err, fs.ErrNotExist)
 }
 
 func (session *backlogClaimSession) forgetNewClaim(itemID string) {
@@ -1558,6 +1867,10 @@ type backlogResweepOptions struct {
 	eligible   []providers.WorkItem
 	maxItems   int
 	trustLabel string
+	// assigneeScope is the owner partition from backlog-query's normal
+	// eligibility scan. Re-sweeps mutate items too, so they must not widen
+	// beyond the same assignment scope.
+	assigneeScope backlogReconcileAssigneeScope
 	// requireLabels is the gaggle's partition scope (injected by
 	// defaultBacklogQueryRequireLabels, e.g. goobers:cloud/goobers:local — the
 	// ONLY mechanism that carries partition membership; there is no analogous
@@ -1614,7 +1927,7 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 		return result, 0
 	}
 	result.stateKey = backlogResweepStateKey(
-		env.repo, providerGaggle(), opts.trustLabel, opts.policy.readyLabel,
+		env.repo, providerGaggle(), opts.trustLabel, opts.policy.readyLabel, opts.assigneeScope,
 	)
 	var err error
 	result.state, err = readBacklogResweepState(ctx, opts.state, result.stateKey)
@@ -1650,6 +1963,10 @@ func missingRequiredLabel(item providers.WorkItem, requireLabels []string) (stri
 	return "", false
 }
 
+func resweepQueryAssignee(opts backlogResweepOptions) string {
+	return opts.assigneeScope.queryAssignee()
+}
+
 func appendBlockedResweepCandidates(
 	ctx context.Context,
 	env backlogQueryEnv,
@@ -1662,7 +1979,7 @@ func appendBlockedResweepCandidates(
 		env.issueRepo(),
 		compactLabels(opts.trustLabel, blockedOnSiblingLabel),
 		opts.requireLabels,
-		"",
+		resweepQueryAssignee(opts),
 		opts.fieldFilter,
 		backlogScanCeiling,
 		backlogScanCursor{Cursor: result.state.BlockedCursor},
@@ -1680,6 +1997,10 @@ func appendBlockedResweepCandidates(
 		}
 		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
 			env.debugf("excluded %s: missing required label %q", item.ID, label)
+			continue
+		}
+		if !opts.assigneeScope.permits(item) {
+			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
 		if !item.HasLabel(blockedOnSiblingLabel) {
@@ -1702,37 +2023,61 @@ func appendBlockedResweepCandidates(
 		pf(env.stderr, "error: order blocked dependency rechecks: %v\n", err)
 		return nil, 1
 	}
-	if len(items) > opts.policy.maxItems {
-		for _, item := range items[opts.policy.maxItems:] {
-			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
+	// The dependency-recheck lane rotates through parked items on its OWN
+	// budget (#4884), independent of the ready-drift lane's resweepMaxItems.
+	if len(items) > opts.policy.dependencyMaxItems {
+		for _, item := range items[opts.policy.dependencyMaxItems:] {
+			env.debugf("excluded %s: dependency recheck budget exhausted", item.ID)
 		}
-		items = items[:opts.policy.maxItems]
+		items = items[:opts.policy.dependencyMaxItems]
 	}
+	rechecked, code := recheckBlockedResweepCandidates(ctx, env, opts, result, items)
+	if code != 0 {
+		return nil, code
+	}
+	result.state.BlockedCursor = blockedWindow.Cursor.Cursor
+	return rechecked, 0
+}
+
+// recheckBlockedResweepCandidates asks the provider for each parked item's
+// native blockers and selects the ones whose blockers have all closed. It
+// returns the items to record as swept: every item actually rechecked, minus
+// any actionable item left unselected for lack of batch capacity, so the
+// rotation offers that item first on the next run instead of a full cycle
+// later.
+func recheckBlockedResweepCandidates(
+	ctx context.Context,
+	env backlogQueryEnv,
+	opts backlogResweepOptions,
+	result *backlogResweepResult,
+	items []providers.WorkItem,
+) ([]providers.WorkItem, int) {
+	// Claims share the run's batch capacity left after forward work; the
+	// recheck budget itself is the lane's own (applied by the caller).
 	budget := opts.maxItems - len(result.eligible)
+	rechecked := make([]providers.WorkItem, 0, len(items))
 	for _, item := range items {
 		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.issueRepo(), item.ID)
 		if err != nil {
 			return nil, failProviderStage(env.stderr, "recheck blocked-item dependencies", fmt.Errorf("dependency recheck item %s: %w", item.ID, err), "claimed-items.json")
 		}
-		if len(blockers) == 0 {
+		switch {
+		case len(blockers) == 0:
 			pf(env.stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
 			env.debugf("excluded %s: dependency recheck has no named native blocker", item.ID)
-			continue
-		}
-		if !blockersActionable(blockers) {
+		case !blockersActionable(blockers):
 			env.debugf("excluded %s: %s", item.ID, openBlockersExclusionReason(blockers))
-			continue
-		}
-		if budget == 0 {
+		case budget <= 0:
 			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
 			continue
+		default:
+			result.eligible = append(result.eligible, item)
+			result.modeByID[item.ID] = "dependency-recheck"
+			budget--
 		}
-		result.eligible = append(result.eligible, item)
-		result.modeByID[item.ID] = "dependency-recheck"
-		budget--
+		rechecked = append(rechecked, item)
 	}
-	result.state.BlockedCursor = blockedWindow.Cursor.Cursor
-	return items, 0
+	return rechecked, 0
 }
 
 func blockersActionable(blockers []providers.WorkItem) bool {
@@ -1764,10 +2109,10 @@ func appendReadyResweepCandidates(
 	opts backlogResweepOptions,
 	result *backlogResweepResult,
 ) ([]providers.WorkItem, backlogScanCursor, int) {
-	// Both lanes share one re-sweep allowance. Forward candidates reserve
-	// total-batch slots but do not spend the re-sweep-specific allowance.
-	selected := len(result.eligible) - len(opts.eligible) + len(result.readOnly)
-	budget := min(opts.policy.maxItems-selected, opts.maxItems-len(result.eligible)-len(result.readOnly))
+	// The ready-drift lane spends only its own resweepMaxItems allowance;
+	// dependency rechecks no longer draw it down (#4884). Forward candidates
+	// and dependency-recheck selections still occupy total-batch slots.
+	budget := min(opts.policy.maxItems, opts.maxItems-len(result.eligible)-len(result.readOnly))
 	if budget <= 0 {
 		return nil, backlogScanCursor{Cursor: result.state.Cursor}, 0
 	}
@@ -1777,7 +2122,7 @@ func appendReadyResweepCandidates(
 		env.issueRepo(),
 		compactLabels(opts.trustLabel, opts.policy.readyLabel),
 		opts.requireLabels,
-		"",
+		resweepQueryAssignee(opts),
 		opts.fieldFilter,
 		backlogScanCeiling,
 		backlogScanCursor{Cursor: result.state.Cursor},
@@ -1795,6 +2140,10 @@ func appendReadyResweepCandidates(
 		}
 		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
 			env.debugf("excluded %s: missing required label %q", item.ID, label)
+			continue
+		}
+		if !opts.assigneeScope.permits(item) {
+			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
 		if !item.HasLabel(opts.policy.readyLabel) {
@@ -1915,14 +2264,18 @@ func runReconcileBacklogQuery(
 	trustLabel string,
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
+	scope backlogReconcileAssigneeScope,
 ) int {
-	reconciled, code := performBacklogQueryReconciliation(
-		ctx, env, trustLabel, stalenessPolicy, observedAt, "backlog-reconciliation.json",
+	if backlogReconcileNotApplicable(env) {
+		return writeBacklogReconciliationNotApplicable(env.issueRepo().Provider, env.stdout, env.stderr)
+	}
+	result, code := performBacklogQueryReconciliation(
+		ctx, env, trustLabel, stalenessPolicy, observedAt, "backlog-reconciliation.json", scope,
 	)
 	if code != 0 {
 		return code
 	}
-	return writeBacklogReconciliationResult(reconciled, env.stdout, env.stderr)
+	return writeBacklogReconciliationResult(result, env.stdout, env.stderr)
 }
 
 func reconcileBacklogQueryMetadata(
@@ -1932,8 +2285,13 @@ func reconcileBacklogQueryMetadata(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 	resultFile string,
+	scope backlogReconcileAssigneeScope,
 ) int {
-	_, code := performBacklogQueryReconciliation(ctx, env, trustLabel, stalenessPolicy, observedAt, resultFile)
+	if backlogReconcileNotApplicable(env) {
+		env.debugf("metadata reconciliation not applicable on %s; skipped", env.issueRepo().Provider)
+		return 0
+	}
+	_, code := performBacklogQueryReconciliation(ctx, env, trustLabel, stalenessPolicy, observedAt, resultFile, scope)
 	return code
 }
 
@@ -1944,22 +2302,24 @@ func performBacklogQueryReconciliation(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 	resultFile string,
-) (int, int) {
+	scope backlogReconcileAssigneeScope,
+) (backlogReconciliationResult, int) {
 	if env.ghIssueProvider == nil {
 		err := fmt.Errorf("backlog curation/reconcile is not supported on Azure DevOps yet (BL-033); run it against a GitHub backlog")
-		return 0, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
+		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
 	}
-	reconciled, err := reconcileBacklogMetadata(
+	result, err := reconcileBacklogMetadataDetailed(
 		ctx,
 		env.layout,
 		env.ghIssueProvider,
 		env.issueRepo(),
 		trustLabel,
 		stalenessPolicy,
-		func() time.Time { return observedAt },
+		func() time.Time { return time.Now().UTC() },
+		scope,
 	)
 	if err != nil {
-		return 0, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
+		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
 	}
 	// #3086: the pass above corrects a claim label with no lease behind it. The
 	// opposite drift — a live lease with no label — is invisible to it, because
@@ -1969,11 +2329,50 @@ func performBacklogQueryReconciliation(
 	// warnings for the same reason: it is scheduled housekeeping, so failing
 	// the stage would discard completed work to report a check that can simply
 	// run again on the next tick.
-	restored, err := restoreInvisibleClaims(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, env.stderr)
+	claimBudget := result.Scan.Budget - result.Scan.Spent
+	if claimBudget <= 0 {
+		result.Scan.WorkRemaining = true
+		result.Scan.Complete = false
+		if result.Scan.NextPhase == "" {
+			result.Scan.NextPhase = backlogReconcilePhaseClaims
+			result.Scan.NextCursor = result.nextCursor.Claim
+		}
+		if result.Scan.WorkRemaining {
+			pf(env.stderr, "notice: backlog reconciliation scanned %d item(s) and stopped at the configured budget; work remains at phase %s cursor %q\n",
+				result.Scan.Examined+result.Scan.ClaimExamined, result.Scan.NextPhase, result.Scan.NextCursor)
+		}
+		return result, 0
+	}
+	claims, err := restoreInvisibleClaimsWindow(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, time.Now, env.stderr, claimBudget, result.nextCursor.Claim, scope)
 	if err != nil {
 		pf(env.stderr, "warning: could not reconcile claim visibility: %v\n", err)
+		result.Scan.WorkRemaining = true
+		result.Scan.Complete = false
+		if result.Scan.NextPhase == "" {
+			result.Scan.NextPhase = backlogReconcilePhaseClaims
+			result.Scan.NextCursor = result.nextCursor.Claim
+		}
+	} else {
+		result.Reconciled += claims.Restored
+		result.Scan.ClaimExamined = claims.Examined
+		result.Scan.Spent += claims.Spent
+		if !claims.Complete {
+			result.Scan.WorkRemaining = true
+			result.Scan.Complete = false
+			if result.Scan.NextPhase == "" {
+				result.Scan.NextPhase = backlogReconcilePhaseClaims
+				result.Scan.NextCursor = claims.NextCursor
+			}
+		}
+		if err := advanceBacklogReconcileClaimCursor(ctx, env.layout, result.cursorKey, claims.NextCursor); err != nil {
+			return backlogReconciliationResult{}, failProviderStage(env.stderr, "advance backlog reconciliation cursor", err, resultFile)
+		}
 	}
-	return reconciled + restored, 0
+	if result.Scan.WorkRemaining {
+		pf(env.stderr, "notice: backlog reconciliation scanned %d item(s) and stopped at the configured budget; work remains at phase %s cursor %q\n",
+			result.Scan.Examined+result.Scan.ClaimExamined, result.Scan.NextPhase, result.Scan.NextCursor)
+	}
+	return result, 0
 }
 
 type backlogScanOptions struct {
@@ -1988,8 +2387,26 @@ type backlogScanOptions struct {
 	selectionPriority []string
 	respectAssignee   bool
 	assignedTo        string
+	ownership         issueOwnershipScope
 	scanLimit         int
 	openIssues        map[string]bool
+}
+
+func backlogScanQueryAssignee(opts backlogScanOptions) string {
+	if opts.respectAssignee && opts.assignedTo != "" {
+		return opts.assignedTo
+	}
+	if !opts.respectAssignee && len(opts.ownership.assignees) == 1 && opts.ownership.unassigned == ownershipUnassignedRefuse {
+		return opts.ownership.assignees[0]
+	}
+	return ""
+}
+
+func backlogScanPermitsAssignee(opts backlogScanOptions, item providers.WorkItem) bool {
+	if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
+		return false
+	}
+	return opts.ownership.permits(item)
 }
 
 type backlogEligibilityScan struct {
@@ -2029,10 +2446,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	var result backlogEligibilityScan
 	labels := compactLabels(opts.trustLabel)
 	labels = append(labels, opts.labelFilter.RequiredLabels()...)
-	queryAssignee := ""
-	if opts.respectAssignee && opts.assignedTo != "" {
-		queryAssignee = opts.assignedTo
-	}
+	queryAssignee := backlogScanQueryAssignee(opts)
 	// No lock path and no cursor path: every stateful read and write this
 	// scan makes now goes through the scheduler-state store below, which is
 	// the plane in a stage pod and the instance's own claims.lock-guarded
@@ -2040,7 +2454,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	// would reintroduce the instance-root dependency by construction.
 	result.cursorKey = backlogScanCursorKey(
 		env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
-		opts.requireLabels, opts.excludeLabels, queryAssignee,
+		opts.requireLabels, opts.excludeLabels, queryAssignee, opts.ownership,
 	)
 	store, err := openStageStateStore(env.layout)
 	if err != nil {
@@ -2075,7 +2489,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
-		if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
+		if !backlogScanPermitsAssignee(opts, item) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
@@ -2229,8 +2643,32 @@ func labelExclusionReason(item providers.WorkItem, opts backlogScanOptions) stri
 	return "label predicate not matched"
 }
 
-func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(map[string]int{"reconciled": reconciled})
+// backlogReconcileNotApplicable reports whether this stage's backlog lives on
+// Azure DevOps, where the metadata reconciliation pass has no implementation
+// (Goobers#6104). The pass is scheduled housekeeping over GitHub label drift —
+// orphaned claim labels, tracking-parent labels, staleness markers and
+// invisible-claim restoration, every step typed to *providers.GitHubProvider —
+// and nothing downstream depends on it having run: claim liveness is decided
+// by the ledger, whose stale-lease sweep the daemon also runs on its own
+// ticker. So on ADO it is not-applicable, like update-behind-pr (ADO-N15),
+// rather than a failure that stops every later backlog-curation stage.
+// A Gitea backlog is deliberately not covered: it keeps the refusal below.
+func backlogReconcileNotApplicable(env backlogQueryEnv) bool {
+	return env.ghIssueProvider == nil && env.issueRepo().Provider == providers.ProviderADO
+}
+
+// writeBacklogReconciliationNotApplicable writes reconcile-backlog's result
+// for a provider it does not apply to. It is a success, not noWork: noWork
+// would short-circuit the run and skip every later backlog-curation stage,
+// which is the failure this replaces. reconciled stays 0 so the curation
+// telemetry rollup records no corrections for the cycle.
+func writeBacklogReconciliationNotApplicable(provider providers.ProviderKind, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("backlog metadata reconciliation is not applicable on %s: skipped", provider)
+	data, err := json.Marshal(map[string]any{
+		"reconciled":    0,
+		"notApplicable": "true",
+		"reason":        reason,
+	})
 	if err != nil {
 		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
 		return 1
@@ -2240,7 +2678,27 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	pf(stdout, "reconciled %d backlog item(s)\n", reconciled)
+	pf(stdout, "%s\n", reason)
+	return 0
+}
+
+func writeBacklogReconciliationResult(result backlogReconciliationResult, stdout, stderr io.Writer) int {
+	data, err := json.Marshal(result)
+	if err != nil {
+		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
+		return 1
+	}
+	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	if result.Scan.WorkRemaining {
+		pf(stdout, "reconciled %d backlog item(s); reconciliation scan incomplete after %d item(s), work remains\n",
+			result.Reconciled, result.Scan.Examined+result.Scan.ClaimExamined)
+		return 0
+	}
+	pf(stdout, "reconciled %d backlog item(s)\n", result.Reconciled)
 	return 0
 }
 
@@ -2251,10 +2709,7 @@ func runReadOnlyBacklogQuery(
 ) int {
 	labels := compactLabels(opts.trustLabel)
 	labels = append(labels, opts.labelFilter.RequiredLabels()...)
-	queryAssignee := ""
-	if opts.respectAssignee && opts.assignedTo != "" {
-		queryAssignee = opts.assignedTo
-	}
+	queryAssignee := backlogScanQueryAssignee(opts)
 	if opts.scanLimit <= 0 {
 		opts.scanLimit = backlogScanCeiling
 	}
@@ -2281,7 +2736,7 @@ func runReadOnlyBacklogQuery(
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
-		if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
+		if !backlogScanPermitsAssignee(opts, item) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
@@ -2461,7 +2916,10 @@ func nativeDependencyExclusionReason(
 // each PR's body (PullRequestSummary.Body), so no second round-trip per PR
 // is needed either.
 func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) (map[string]bool, error) {
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace()})
+	// Only the PR bodies are needed here. Without SkipCheckState the list
+	// resolves combined status + check-runs for every open PR: two API calls
+	// per PR on every backlog query.
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true})
 	if err != nil {
 		return nil, err
 	}
@@ -2487,6 +2945,7 @@ func reconcileClosedUnmergedInReview(
 	issueProvider *providers.GitHubProvider,
 	prProvider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
+	openPRIssues map[string]bool,
 ) error {
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: repo,
@@ -2507,6 +2966,12 @@ func reconcileClosedUnmergedInReview(
 	for _, item := range items {
 		if !item.HasLabel(inReviewStatusLabel) ||
 			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+			continue
+		}
+		// An issue an open PR still references cannot be closed-unmerged, and
+		// it is protected anyway. Skipping it avoids a comments read plus a PR
+		// read per in-review issue on every backlog query.
+		if openPRIssues[item.ID] {
 			continue
 		}
 
@@ -2548,6 +3013,13 @@ func reconcileClosedUnmergedInReview(
 	return nil
 }
 
+// linkedImplementationPullIDs returns the pull requests named by author's
+// issue-close-out "Implementation complete: <url> is open for merge-review."
+// comments on repo. issue-close-out posts that comment through
+// UpdateWorkItemStatus, which stores it with the provider attribution footer
+// whenever the stage runs with run attribution (every daemon run), and with
+// the close-out's operation marker (#2657); StripAttribution removes both
+// before the prefix and suffix are matched.
 func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, comments []providers.Comment) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -2555,7 +3027,7 @@ func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, co
 		if !strings.EqualFold(comment.Author, author) {
 			continue
 		}
-		body := strings.TrimSpace(comment.Body)
+		body := providers.StripAttribution(comment.Body)
 		if !strings.HasPrefix(body, implementationInReviewCommentPrefix) ||
 			!strings.HasSuffix(body, implementationInReviewCommentSuffix) {
 			continue
@@ -2654,6 +3126,7 @@ func backlogScanCursorKey(
 	trustLabel, labelExpression, fieldExpression string,
 	requireLabels, excludeLabels []string,
 	queryAssignee string,
+	ownership issueOwnershipScope,
 ) string {
 	key, _ := json.Marshal(struct {
 		Repository      providers.RepositoryRef `json:"repository"`
@@ -2670,7 +3143,8 @@ func backlogScanCursorKey(
 		// change. Distinct assignee values get distinct cursors so a
 		// narrowed scan's pagination progress never cross-contaminates a
 		// differently-scoped one over the same labels/predicates.
-		Assignee string `json:"assignee,omitempty"`
+		Assignee  string            `json:"assignee,omitempty"`
+		Ownership ownershipScopeKey `json:"ownership,omitempty"`
 	}{
 		Repository:      repo,
 		TrustLabel:      trustLabel,
@@ -2679,17 +3153,14 @@ func backlogScanCursorKey(
 		RequireLabels:   requireLabels,
 		ExcludeLabels:   excludeLabels,
 		Assignee:        queryAssignee,
+		Ownership:       ownershipScopeKey{Assignees: append([]string(nil), ownership.assignees...), Unassigned: ownership.unassigned},
 	})
 	sum := sha256.Sum256(key)
 	return stateclient.ScanCursorKey(fmt.Sprintf("%x", sum))
 }
 
 func readBacklogScanCursor(ctx context.Context, store stateclient.Store, key string) (backlogScanCursor, error) {
-	value, err := store.Get(ctx, key)
-	if err != nil {
-		return backlogScanCursor{}, err
-	}
-	return decodeBacklogScanCursor(value)
+	return readJSONState(ctx, store, key, decodeBacklogScanCursor)
 }
 
 // decodeBacklogScanCursor is loadBacklogScanCursor over a scheduler-state
@@ -2723,21 +3194,23 @@ func advanceBacklogScanCursor(
 	key string,
 	observed, next backlogScanCursor,
 ) error {
-	return store.Update(ctx, key, claimLockOperationBacklogScanCursor,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeBacklogScanCursor(value)
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogScanCursor,
+		decodeBacklogScanCursor,
+		func(cursor backlogScanCursor) ([]byte, error) {
+			data, err := json.Marshal(cursor)
 			if err != nil {
-				return nil, false, err
+				return nil, fmt.Errorf("marshal backlog scan cursor: %w", err)
 			}
+			return data, nil
+		},
+		func(current backlogScanCursor) (backlogScanCursor, bool, error) {
 			if current != observed {
-				return nil, false, nil
+				return current, false, nil
 			}
-			data, err := json.Marshal(next)
-			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog scan cursor: %w", err)
-			}
-			return data, true, nil
-		})
+			return next, true, nil
+		},
+	)
 }
 
 // backlogScanWindow describes what one listBacklogScanWindow call actually

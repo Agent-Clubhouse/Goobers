@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -37,6 +39,7 @@ type stageProviderConfig struct {
 	// it; see withStageProviderConfiguredADOAuth.
 	configuredADOAuth bool
 	noRetries         bool
+	tokenSource       providers.TokenSource
 	observeToken      func(string)
 	quota             *localscheduler.ProviderQuotaState
 }
@@ -52,6 +55,15 @@ func withStageProviderCapability(cap capability.Capability) stageProviderOption 
 func withStageProviderToken(token string) stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.token = token
+	}
+}
+
+// withStageProviderTokenSource makes the GitHub provider resolve its token per
+// request from source (nil: the static token). For an in-process caller that
+// holds its own refreshing source, such as the pod's ci-poll (Goobers#6120).
+func withStageProviderTokenSource(source providers.TokenSource) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.tokenSource = source
 	}
 }
 
@@ -144,6 +156,9 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 		}
 	}
 	configureStageAttribution(provider, root)
+	if cfg.capability == capability.GitHubIssuesWrite && !cfg.readOnly {
+		return wrapIssueOwnershipProvider(provider), nil
+	}
 	return provider, nil
 }
 
@@ -152,22 +167,74 @@ func configureStageAttribution(provider providers.Provider, root string) {
 	if !ok {
 		return
 	}
-	attribution, ok := stageAttribution(root)
+	attribution, ok := stageAttributionFor(root)
 	if !ok {
 		return
 	}
 	configurer.SetAttribution(attribution)
 }
 
+// newStageGitHubProvider builds a stage's GitHub provider through the
+// newGitHubProvider seam and stamps its writes with the stage's run
+// attribution. The attribution is applied here, around the seam rather than
+// inside it, so a test that points the seam at a fake forge still runs the
+// stage the way a daemon runs it. Stage providers built by newProviderForStage
+// are attributed there (configureStageAttribution).
+func newStageGitHubProvider(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+	provider := newGitHubProvider(token, opts...)
+	if attribution, ok := stageAttributionFor(os.Getenv(executor.InstanceRootEnvVar)); ok {
+		provider.SetAttribution(attribution)
+	}
+	return provider
+}
+
+// stageAttributionFor resolves the run attribution a stage provider stamps on
+// its writes. Every production provider construction goes through it, so the
+// cmd/goobers test suite can replace it once (testmain_test.go) and run each
+// stage the way a daemon runs it: with attribution on.
+var stageAttributionFor = stageAttribution
+
+// stageAttributionIdentity is the run context a provider write is attributed
+// to, as the executor injects it into a goobers CLI stage.
+type stageAttributionIdentity struct {
+	runID    string
+	gaggle   string
+	workflow string
+	task     string
+	goober   string
+}
+
+// stageAttributionEnvIdentity reads the stage's run context from its env.
+func stageAttributionEnvIdentity() stageAttributionIdentity {
+	return stageAttributionIdentity{
+		runID:    strings.TrimSpace(os.Getenv("GOOBERS_RUN_ID")),
+		gaggle:   strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE")),
+		workflow: strings.TrimSpace(os.Getenv("GOOBERS_WORKFLOW")),
+		task:     strings.TrimSpace(os.Getenv(executor.TaskEnvVar)),
+		goober:   strings.TrimSpace(os.Getenv(executor.GooberEnvVar)),
+	}
+}
+
+// complete reports whether identity names a run. A standalone or manual
+// invocation lacks part of it and is not attributed.
+func (identity stageAttributionIdentity) complete() bool {
+	return identity.runID != "" && identity.gaggle != "" && identity.workflow != "" && identity.task != ""
+}
+
 func stageAttribution(root string) (providers.Attribution, bool) {
-	runID := strings.TrimSpace(os.Getenv("GOOBERS_RUN_ID"))
-	gaggle := strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE"))
-	workflow := strings.TrimSpace(os.Getenv("GOOBERS_WORKFLOW"))
-	task := strings.TrimSpace(os.Getenv(executor.TaskEnvVar))
-	goober := strings.TrimSpace(os.Getenv(executor.GooberEnvVar))
-	if runID == "" || gaggle == "" || workflow == "" || task == "" {
+	identity := stageAttributionEnvIdentity()
+	if !identity.complete() {
 		return providers.Attribution{}, false
 	}
+	return stageAttributionFrom(root, identity, os.Stderr), true
+}
+
+// stageAttributionFrom builds the attribution for identity under root. The
+// instance name, the cost-publication gate, the run's cost receipt and the
+// pinned instance identity are resolved here for every identity, however it
+// was obtained. warnings receives the cost gate's suppression notice.
+func stageAttributionFrom(root string, identity stageAttributionIdentity, warnings io.Writer) providers.Attribution {
+	goober := identity.goober
 	if goober == "" {
 		goober = "deterministic"
 	}
@@ -179,21 +246,21 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 		Schema:   1,
 		Goobers:  true,
 		Instance: instanceName,
-		Gaggle:   gaggle,
-		Workflow: workflow,
-		Task:     task,
+		Gaggle:   identity.gaggle,
+		Workflow: identity.workflow,
+		Task:     identity.task,
 		Goober:   goober,
-		Run:      runID,
+		Run:      identity.runID,
 	}
 	// Provider writes happen after the stage's earlier agentic work has already
 	// journaled completion events. Snapshot those durable events here so every
 	// existing human-readable status comment can carry the same run's
 	// machine-readable cost receipt without consulting telemetry.db.
-	if costPublicationAllowed(root, gaggle, providers.RepositoryRef{}, os.Stderr) {
-		attribution.Cost = stageCostReceipt(root, runID)
+	if costPublicationAllowed(root, identity.gaggle, providers.RepositoryRef{}, warnings) {
+		attribution.Cost = stageCostReceipt(root, identity.runID)
 	}
 	attribution.InstanceID = stageInstanceIdentity()
-	return attribution, true
+	return attribution
 }
 
 func stageInstanceIdentity() string {
@@ -230,7 +297,11 @@ func stageCostReceipt(root, runID string) *providers.CostReceipt {
 		usage.CacheWriteTokens == nil &&
 		usage.ReasoningTokens == nil &&
 		usage.NanoAIU == nil &&
-		usage.CostUSD == nil {
+		usage.CostUSD == nil &&
+		!runHasAgentUsageEvents(events, runID) {
+		// A run with no agent work has no AI cost to report. A run whose
+		// agents reported nothing still gets an empty receipt below, so the
+		// merge-time comments count it as cost unknown (#6353).
 		return nil
 	}
 	var sequence uint64
@@ -249,7 +320,33 @@ func stageCostReceipt(root, runID string) *providers.CostReceipt {
 		ReasoningTokens:  usage.ReasoningTokens,
 		NanoAIU:          usage.NanoAIU,
 		CostUSD:          usage.CostUSD,
+		VendorEstimated:  runCostIsVendorEstimate(events, runID),
 	}
+}
+
+// runHasAgentUsageEvents reports whether the run journaled any agent
+// lifecycle event, i.e. did agentic work whose cost may be unmeasured.
+func runHasAgentUsageEvents(events []journal.Event, runID string) bool {
+	for _, event := range events {
+		if event.Type == journal.EventAgentLifecycle && event.Agent != nil && event.Agent.RunID == runID {
+			return true
+		}
+	}
+	return false
+}
+
+// runCostIsVendorEstimate reports whether any of the run's agent usage carries
+// a cost the vendor itself labels an estimate: the claude-code harness reports
+// total_cost_usd, which Anthropic disclaims as an estimate (#6353).
+func runCostIsVendorEstimate(events []journal.Event, runID string) bool {
+	for _, event := range events {
+		agent := event.Agent
+		if event.Type == journal.EventAgentLifecycle && agent != nil && agent.RunID == runID &&
+			agent.Plugin == harness.ClaudeAgentPlugin && agent.Usage.CostUSD != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func newProviderForStageAs[T providers.Provider](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {
@@ -319,6 +416,7 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	// refuse, which leaves a provider whose stage never asks for a login
 	// working exactly as before.
 	opts = append(opts, stageProviderConfiguredLogin(cfg.root, cfg.repo).options()...)
+	opts = append(opts, stageGitHubTokenSource(cfg, token)...)
 	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
 		opts = append(opts, providers.WithMutationRecorder(recorder))
 	}
@@ -336,6 +434,25 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 		return newCachedGitHubProvider(cfg.root, token, opts...), nil
 	}
 	return newGitHubProvider(token, opts...), nil
+}
+
+// stageGitHubTokenSource resolves the GitHub provider's token per request from
+// the stage's refreshing source when it holds a credential-refresh grant for
+// the delivered value (Goobers#6120): refreshed ahead of its stated expiry,
+// and re-resolved once after a 401. An explicit caller token, a PAT and a
+// stage without a grant keep the static token.
+func stageGitHubTokenSource(cfg stageProviderConfig, token string) []func(*providers.GitHubProvider) {
+	if cfg.tokenSource != nil {
+		return []func(*providers.GitHubProvider){providers.WithTokenSource(cfg.tokenSource)}
+	}
+	if cfg.token != "" {
+		return nil
+	}
+	refreshing := stageRefreshingToken(cfg.capability, token)
+	if refreshing == nil {
+		return nil
+	}
+	return []func(*providers.GitHubProvider){providers.WithTokenSource(refreshing)}
 }
 
 // newRegisteredADOProviderForStage builds a stage's Azure DevOps provider from

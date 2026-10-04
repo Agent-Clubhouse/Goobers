@@ -138,6 +138,25 @@ and the JSON Schemas in `/api/schemas`.
 `Task` and `Gate` are **states within a `Workflow`** (not standalone objects),
 matching the spec model ("a Task/Gate is a state in a workflow").
 
+### Workflow purpose (`goobers.dev/purpose`)
+
+A workflow can describe itself with the `goobers.dev/purpose` metadata
+annotation. The read API serves it as `purpose` on each workflow in the
+inventory, and the portal shows it as the tooltip on the workflow name. Write one
+plain sentence about what the workflow does and why you would want it running,
+for someone browsing a list who has not read the YAML. Do not just restate
+`displayName`.
+
+```yaml
+metadata:
+  name: docs-updater
+  annotations:
+    goobers.dev/purpose: "Keeps repository documentation in sync with recent code changes."
+```
+
+Every workflow shipped in `reference-workflows/` and `config-examples/` sets it;
+copy the convention into your own workflows.
+
 ### Documentation roots (`spec.docsRoots`)
 
 The docs-updater workflow (epic #472) keeps a project's in-repo documentation

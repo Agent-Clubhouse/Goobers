@@ -154,7 +154,7 @@ parallels:
 | `join` | yes | State run once after all successful/accepted branch settlement. |
 | `onFailure` | for `fail_fast` and `all_or_nothing` | Failure target; forbidden for `continue_on_error`. |
 | `branchTimeoutSeconds` | no | Positive bound applied to each branch. |
-| `maxConcurrentBranches` | no | Maximum simultaneous branches; defaults to `1`. |
+| `maxConcurrentBranches` | no | Maximum simultaneous branches; defaults to `1`, so branches run sequentially. Validation warns when it is unset; set it, even to `1`, to make the schedule explicit. |
 
 Successful branch paths end at `@join`; a branch may instead terminate the run
 through `@abort` or `@escalate`. Human gates and writable repository workspaces
@@ -170,6 +170,12 @@ narrower scope overriding the broader one.
 | `maxRepasses` | Bounds how often gates may route back to an already completed stage. A non-human gate may override it. |
 | `stalledRunTimeout` | Positive Go duration after which a silent running journal is escalated. |
 | `maxRunDuration` | Positive Go duration bounding total run age; empty disables this bound. |
+
+`maxRunDuration` requires daemon-backed execution. Without a live daemon,
+`goobers run` rejects the selected workflow before dispatch if its effective
+limit is set, including inherited limits and `--no-wait` runs. Start
+`goobers up` for the instance and submit through the daemon instead.
+`--no-api` file delegation to a live daemon remains supported.
 
 Readiness fields (`maxConcurrentRuns`, `desiredConcurrentRuns`,
 `maxRunsPerHour`, `maxRunsPerDay`, `maxChainDepth`, and `maxOpenPRs`) govern

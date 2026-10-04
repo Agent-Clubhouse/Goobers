@@ -103,6 +103,24 @@ func TestStoreRefusesCorruptRetainedGeneration(t *testing.T) {
 	}
 }
 
+func TestReadRetainedArchivePreservesOversizeError(t *testing.T) {
+	dir := t.TempDir()
+	file, err := os.Create(filepath.Join(dir, "archive.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxArchiveBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRetainedArchive(dir, "sha256:unused"); err == nil || err.Error() != "invalid retained config archive" {
+		t.Fatalf("error = %v, want invalid retained config archive", err)
+	}
+}
+
 func TestStoreLeasesProtectConcurrentCacheReadersAtCapacity(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")

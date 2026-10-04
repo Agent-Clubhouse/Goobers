@@ -88,6 +88,10 @@ type CreateOptions struct {
 	// tree. Empty (the default) is a full checkout — byte-identical to Create
 	// without this field.
 	Sparse []string
+	// RetainOnCleanup marks source-preservation workspaces whose non-terminal
+	// cleanup must publish recovery before the workspace can be reset or
+	// released. Ordinary per-stage worktrees leave this false.
+	RetainOnCleanup bool
 }
 
 // BaseSyncConflictError identifies a genuine content conflict while merging a
@@ -287,6 +291,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		Directory:        directory,
 		BaseRef:          cleanupBaseRef,
 		Branch:           opts.Branch,
+		RetainOnCleanup:  opts.RetainOnCleanup,
 		Writer:           m.writerIdentity,
 		PID:              pid,
 		PIDStartedAt:     startedAt,
@@ -329,20 +334,13 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if err != nil {
 		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, err)
 	}
-
-	// A bot identity local to THIS worktree's own .git/config (`git config`
-	// with no --global, so it never touches the managed working copy or the
-	// host's ambient git config) — an agentic stage's commit must not depend
-	// on the daemon host happening to have user.name/user.email set (#237).
-	if err := retryBotIdentityConfig(ctx, func() error {
-		return runGit(ctx, path, "config", "user.name", BotGitUserName)
-	}); err != nil {
-		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	// The run branch now exists; a later stage that finds it missing reports
+	// it as lost instead of recreating it (#4479).
+	if err := m.recordRunBranchEstablished(key, opts); err != nil {
+		return nil, err
 	}
-	if err := retryBotIdentityConfig(ctx, func() error {
-		return runGit(ctx, path, "config", "user.email", BotGitUserEmail)
-	}); err != nil {
-		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	if err := configureBotIdentity(ctx, path, opts.RunID); err != nil {
+		return nil, err
 	}
 	if sparse {
 		// Cone mode only, per the design (path-list "legacy" sparse-checkout
@@ -451,6 +449,22 @@ func resolvedCleanupBaseRef(ctx context.Context, repository, baseRef string) str
 		return strings.TrimSpace(resolved)
 	}
 	return baseRef
+}
+
+// configureBotIdentity sets a bot identity local to THIS worktree's own
+// .git/config (`git config` with no --global, so it never touches the managed
+// working copy or the host's ambient git config) — an agentic stage's commit
+// must not depend on the daemon host happening to have user.name/user.email
+// set (#237).
+func configureBotIdentity(ctx context.Context, path, runID string) error {
+	for _, setting := range [][2]string{{"user.name", BotGitUserName}, {"user.email", BotGitUserEmail}} {
+		if err := retryBotIdentityConfig(ctx, func() error {
+			return runGit(ctx, path, "config", setting[0], setting[1])
+		}); err != nil {
+			return fmt.Errorf("worktree: set bot identity for run %s: %w", runID, err)
+		}
+	}
+	return nil
 }
 
 func retryBotIdentityConfig(ctx context.Context, op func() error) error {
@@ -787,8 +801,27 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
 	default:
-		if err := m.prepareCleanup(ctx, path, runID, ""); err != nil {
-			return err
+		ownership, ownershipErr := readMarker(m.ownershipPath(key, filepath.Base(path)))
+		if ownershipErr == nil {
+			directory, err := ownership.directoryName()
+			if err != nil {
+				return fmt.Errorf("read stale ownership: %w", err)
+			}
+			if ownership.RunID != runID || directory != filepath.Base(path) {
+				return fmt.Errorf("worktree: stale ownership record does not match target")
+			}
+			if err := m.prepareMarkerCleanupWithRetention(ctx, key, path, markerPath, runID, ownership); err != nil {
+				return err
+			}
+			if err := m.restoreReservedBranchFromMarker(ctx, key, path, ownership); err != nil {
+				return fmt.Errorf("restore guarded branch for stale worktree: %w", err)
+			}
+		} else if os.IsNotExist(ownershipErr) {
+			if err := m.prepareCleanup(ctx, path, runID, ""); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("read stale ownership: %w", ownershipErr)
 		}
 	}
 	if err := retryOnFileLock(ctx, func() error {
@@ -1063,6 +1096,11 @@ func (m *Manager) prepareWorktreeAdd(ctx context.Context, key, repoDir, path str
 	case opts.RequireExistingBranch:
 		return nil, "", false, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
 	default:
+		// A branch an earlier stage of this run already had is lost, not
+		// new: recreating it from base would silently discard its work.
+		if err := m.refuseLostRunBranch(key, opts); err != nil {
+			return nil, "", false, err
+		}
 		args = append(args, "--no-track", "-b", opts.Branch, path, opts.BaseRef)
 		checkoutTarget = opts.Branch
 	}
@@ -1121,11 +1159,21 @@ func (m *Manager) reconcileReleasedSameRunBranch(ctx context.Context, key, repoD
 	if primary.RepositoryDigest != RepositoryDigest(opts.RepoURL) || primary.Branch != opts.Branch {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: repository or branch identity disagrees", opts.Branch, occupant)
 	}
-	if primary.OwnerRunID == "" || primary.OwnerRunID != opts.OwnerRunID {
+	if primary.OwnerRunID == "" {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: owned by another run", opts.Branch, occupant)
+	}
+	if primary.OwnerRunID != opts.OwnerRunID {
+		if primary.Status == statusActive {
+			return fmt.Errorf("worktree: refuse branch %q occupant %s: %w", opts.Branch, occupant, branchOccupancyError{reason: "owned by another run"})
+		}
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: owned by another run", opts.Branch, occupant)
 	}
 	if primary.Status != statusCleanupPending {
-		return fmt.Errorf("worktree: refuse branch %q occupant %s: owner has not surrendered it (status %q)", opts.Branch, occupant, primary.Status)
+		reason := fmt.Sprintf("owner has not surrendered it (status %q)", primary.Status)
+		if primary.Status == statusActive {
+			return fmt.Errorf("worktree: refuse branch %q occupant %s: %w", opts.Branch, occupant, branchOccupancyError{reason: reason})
+		}
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: %s", opts.Branch, occupant, reason)
 	}
 	if primary.Status != ownership.Status {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: ownership records disagree", opts.Branch, occupant)

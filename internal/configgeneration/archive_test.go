@@ -54,6 +54,29 @@ func TestCapturePreservesWholeGenerationAndExcludesInstanceSecrets(t *testing.T)
 	}
 }
 
+func TestCaptureForInstanceCapturesValidatedRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "config/gaggles/example/workflows/implement.yaml", "kind: Workflow\n")
+	writeFixture(t, root, "goobers/shared/instructions.md", "shared instructions")
+	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(root, "config"), "instance-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := Decode(data, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, file := range archive.Files {
+		got[file.Path] = true
+	}
+	for _, name := range []string{"config/gaggles/example/workflows/implement.yaml", "goobers/shared/instructions.md"} {
+		if !got[name] {
+			t.Fatalf("capture missing %s in validated root archive", name)
+		}
+	}
+}
+
 func TestCaptureHasStableIdentityAndPreservesEmptyDirectories(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "config", "gaggles", "example", "assets")

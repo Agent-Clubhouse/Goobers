@@ -37,16 +37,36 @@ func journalOTLPTestInventory(t *testing.T) map[string][]string {
 	t.Helper()
 	root := moduleRoot(t)
 	required := map[string][]string{
-		"./cmd/goobers": {"TestRunNoWaitReturnsAfterStandaloneDispatch"},
+		"./cmd/goobers": {"TestRunNoWaitReturnsAfterStandaloneDispatch", "TestServiceHealthExportProductionWiring"},
 	}
 	for _, pattern := range []string{
 		"internal/journal/committed_test.go",
+		"internal/journal/exportreader_test.go",
 		"internal/livejournal/committed_test.go",
 		"internal/telemetry/journallogs*_test.go",
+		"internal/telemetry/azuremonitor_replay*_test.go",
+		"internal/telemetry/azuremonitor_index_test.go",
+		"internal/telemetry/azuremonitor_health_test.go",
+		"internal/telemetry/azuremonitor_startup_test.go",
+		"internal/telemetry/azuremonitor_start_gate_test.go",
+		"internal/telemetry/azuremonitor_reader_test.go",
+		"internal/telemetry/azuremonitor_identity_test.go",
+		"internal/telemetry/azuremonitor_compression_test.go",
+		"internal/telemetry/azureprivacy_test.go",
+		"internal/telemetry/journalprivacy_test.go",
+		"internal/telemetry/journal_admission_test.go",
+		"internal/telemetry/journalcatchup_test.go",
+		"internal/telemetry/journalcatchup_batch_test.go",
+		"internal/telemetry/journalcatchup_load_test.go",
 		"internal/instance/journallogs_test.go",
 		"api/schemas/journallogs_test.go",
 		"internal/engine/projection_export_test.go",
+		"internal/runner/telemetry_dispatch_probe_test.go",
+		"internal/runner/telemetry_dispatch_load_test.go",
 		"cmd/goobers/journaltelemetry_test.go",
+		"cmd/goobers/journalretention_replay_test.go",
+		"cmd/goobers/telemetryidentity_test.go",
+		"cmd/goobers/daemontelemetrystartup_test.go",
 	} {
 		paths, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
 		if err != nil || len(paths) == 0 {
@@ -133,7 +153,9 @@ func TestCILinuxJournalOTLPRaceCoverage(t *testing.T) {
 	workflow := loadCIWorkflow(t)
 	job := workflow.Jobs["unit"]
 	step := job.step(t, "Unit suite (-race, shard ${{ matrix.shard }})")
-	if job.RunsOn != "ubuntu-latest" || job.If != "" || job.ContinueOnError ||
+	// ciCodeGate skips only title/body-edit runs, which validate nothing
+	// (TestCIRunsOnBaseRetargetNotMetadataEdits); every code event runs it.
+	if job.RunsOn != "ubuntu-latest" || (job.If != "" && job.If != ciCodeGate) || job.ContinueOnError ||
 		step.If != "" || step.ContinueOnError || !slices.Contains(workflow.Jobs["required-ci"].Needs, "unit") {
 		t.Fatal("Linux race shards must remain an unconditional required gate")
 	}

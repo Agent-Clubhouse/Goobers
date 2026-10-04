@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -69,21 +67,11 @@ const gatherPRContextHelp = "Usage: goobers gather-pr-context [path]\n\n" +
 // PR-thread comments + whether the base has advanced since this PR branched, as
 // context for the stages that follow (#363's rebase + finding-driven routing).
 func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("gather-pr-context", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "gather-pr-context")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommand(args, "gather-pr-context", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	root, repo := env.root, env.repo
 	validateRemediationAlgorithm(stderr)
 	adapter, err := newGatherPRContextAdapter(root, repo)
 	if err != nil {
@@ -102,6 +90,7 @@ type gatherPRContextAdapter struct {
 	note             string
 	gitAuth          gitAuthEnvironmentResolver
 	list             func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+	get              func(context.Context, string) (providers.PullRequestSummary, error)
 	prepare          func(context.Context, []providers.PullRequestSummary, map[string]bool) ([]providers.PullRequestSummary, map[int]int, error)
 	resolveCheck     func(context.Context, *providers.PullRequestSummary) error
 	behindBase       func(providers.PullRequestSummary) (bool, error)
@@ -150,6 +139,9 @@ func newGitHubGiteaGatherPRContextAdapter(root string, repo providers.Repository
 	bases := map[string]bool{}
 	return gatherPRContextAdapter{
 		features: gatherPRContextFeatures{checkState: true, siblingBlocking: true, liveBaseTip: true}, gitAuth: tokenGitAuthEnvironment(pushToken), list: provider.ListPullRequests,
+		get: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+			return provider.GetPullRequest(ctx, repo, id)
+		},
 		prepare: func(ctx context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 			if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
 				return nil, nil, gatherPRAdapterError("resolve remediation check states", err)
@@ -203,6 +195,14 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 		return gatherPRContextAdapter{}, err
 	}
 	return gatherPRContextAdapter{features: gatherPRContextFeatures{checkState: true}, gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+		get: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+			pr, err := provider.GetPullRequest(ctx, repo, id)
+			if err != nil {
+				return providers.PullRequestSummary{}, err
+			}
+			pr.Labels, err = provider.PullRequestLabelNames(ctx, repo, id)
+			return pr, err
+		},
 		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
 			return resolveADOSelectedCheckState(ctx, provider, repo, pr)
 		},
@@ -241,13 +241,14 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 // cannot disagree: a rejected comment-resolution or work-item-linking policy
 // is a human wait, not CI, and leaves the list's pending state in place.
 // ListPullRequests cannot report CI state, so without this read hasFailingCI
-// would always be false on Azure DevOps.
+// would always be false on Azure DevOps. It classifies the evaluations only;
+// the build detail behind them is gather-ci-failures' read (#5652).
 func resolveADOSelectedCheckState(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
-	evidence, err := provider.PullRequestCIFailures(ctx, repo, strconv.Itoa(pr.Number))
+	failing, err := provider.HasPullRequestCIFailures(ctx, repo, strconv.Itoa(pr.Number))
 	if err != nil {
 		return err
 	}
-	if len(evidence.Failures) > 0 {
+	if failing {
 		pr.CheckState = providers.CheckStateFailing
 	}
 	return nil
@@ -277,9 +278,9 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 	target := remediationTargetFromEnv()
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := a.list(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: prefix, SkipCheckState: true})
+	prs, err := gatherPRContextPullRequests(ctx, a, repo, base, prefix, target)
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
+		return failProviderStage(stderr, "select pull requests", err, remediationBriefResultFile)
 	}
 	listed := prs
 	prs, pinned, done, code := gatherPRContextCandidateScope(root, target, prs, stdout, stderr)
@@ -321,6 +322,9 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 		return code
 	}
 	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(root, repo, selected.Number, comments, author), comments, stdout, stderr)
+}
+func gatherPRContextPullRequests(ctx context.Context, a gatherPRContextAdapter, repo providers.RepositoryRef, base, prefix string, target remediationTarget) ([]providers.PullRequestSummary, error) {
+	return remediationPullRequestCandidates(ctx, repo, base, prefix, target, a.list, a.get)
 }
 func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (bool, int) {
 	state, prior, ok := latestRemediationStateForPR(pr.Body, comments)
@@ -426,7 +430,7 @@ func writeGatherPRContextResult(
 	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
 
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
-	data, err := json.MarshalIndent(apiv1.RemediationBrief{
+	brief := apiv1.RemediationBrief{
 		Schema:         apiv1.RemediationBriefVersion,
 		Integrity:      apiv1.WeakestIntegrity(integrities...),
 		SelectedNumber: strconv.Itoa(selected.Number),
@@ -456,18 +460,9 @@ func writeGatherPRContextResult(
 			Verdict:  verdict,
 			Comments: comments,
 		},
-	}, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal remediation brief: %v\n", err)
-		return 1
 	}
-	if err := validateRemediationBriefJSON(data); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeGatherRemediationBrief(stderr, resultFile, brief, 1); code != 0 {
+		return code
 	}
 
 	pf(stdout, "gathered context for PR #%d (%s): behind=%v, %d comment(s)\n", selected.Number, selected.Head, behind, len(comments))

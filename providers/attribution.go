@@ -58,6 +58,10 @@ type CostReceipt struct {
 	CopilotPremiumRequests *float64 `json:"copilotPremiumRequests,omitempty"`
 	NanoAIU                *int64   `json:"nanoAiu,omitempty"`
 	CostUSD                *float64 `json:"costUsd,omitempty"`
+	// VendorEstimated marks a receipt whose amount includes a vendor-reported
+	// cost estimate (Claude's total_cost_usd) normalized to nano-AIU for
+	// totals, rather than an authoritative AI-credit bill (#6353).
+	VendorEstimated bool `json:"vendorEstimated,omitempty"`
 }
 
 // AttributionConfigurer is implemented by providers that can stamp authored
@@ -128,6 +132,29 @@ func withAttribution(body string, attribution Attribution, action string) (strin
 		return marker + "\n" + visible, nil
 	}
 	return body + "\n\n" + marker + "\n" + visible, nil
+}
+
+// StripAttribution removes the stamp a provider write adds to the caller's
+// text: the attribution marker with its visible "Posted by **Goobers**"
+// footer line, and the operation marker a keyed work-item update appends to
+// its comment (#2657). It then trims surrounding whitespace. Provider writes
+// return and store the stamped body, so code that reads back text Goobers
+// itself wrote and compares it with the text it meant to write must compare
+// StripAttribution(stored) against strings.TrimSpace(intended). Other Goobers
+// markers — the ones callers put in their own text — are left untouched, and
+// text a person added after the footer stays on its own line rather than
+// being joined to the line before the footer.
+func StripAttribution(body string) string {
+	body = attributionMarkerPattern.ReplaceAllString(body, "\n")
+	return strings.TrimSpace(operationMarkerPattern.ReplaceAllString(body, "\n"))
+}
+
+// StampAttribution returns body with the attribution footer a provider write
+// under SetAttribution(attribution) would store for action. It lets fixtures
+// model provider-stored bodies exactly as production writes them; a zero
+// attribution returns body unchanged.
+func StampAttribution(body string, attribution Attribution, action string) (string, error) {
+	return withAttribution(body, attribution, action)
 }
 
 // ParseAttribution decodes the versioned attribution marker in body.

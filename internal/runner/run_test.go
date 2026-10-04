@@ -76,11 +76,14 @@ type stubTaskResult struct {
 	status            apiv1.ResultStatus
 	summary           string
 	errorInfo         *apiv1.ErrorInfo
+	workspaceRevision *apiv1.WorkspaceRevision
 	artifactName      string
 	artifactData      []byte
 	artifactMediaType string
 	artifactIntegrity apiv1.Integrity
-	outputs           map[string]interface{}
+	// resultIntegrity is the grade the executor stamps on its own envelope.
+	resultIntegrity apiv1.Integrity
+	outputs         map[string]interface{}
 }
 
 // stubDeterministic implements invoke.Deterministic like a real executor
@@ -98,7 +101,14 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 	if !ok {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stub executor: no canned output for %q", env.TaskID)
 	}
-	result := apiv1.ResultEnvelope{Status: cfg.status, Summary: cfg.summary, Error: cfg.errorInfo, Outputs: cfg.outputs}
+	result := apiv1.ResultEnvelope{
+		Status:            cfg.status,
+		Summary:           cfg.summary,
+		Error:             cfg.errorInfo,
+		Outputs:           cfg.outputs,
+		WorkspaceRevision: cfg.workspaceRevision.DeepCopy(),
+		Integrity:         cfg.resultIntegrity,
+	}
 	if cfg.artifactName != "" {
 		var ref journal.Ref
 		var err error
@@ -148,6 +158,32 @@ func (g *committingAssetlessGoober) Invoke(_ context.Context, env apiv1.Invocati
 
 func (g *committingAssetlessGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+type sequencedGoober struct {
+	mu      sync.Mutex
+	results []apiv1.ResultEnvelope
+	calls   int
+}
+
+func (g *sequencedGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	if g.calls <= len(g.results) {
+		return g.results[g.calls-1], nil
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *sequencedGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func (g *sequencedGoober) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
 }
 
 // committingStubDeterministic is stubDeterministic that first commits a real
@@ -1082,10 +1118,11 @@ func newTestRunnerWithDeterministic(t *testing.T, newDet NewDeterministicFunc, a
 	fixtureRepo := newFixtureRepo(t)
 
 	r, err := New(Config{
-		NewDeterministic: newDet,
-		Automated:        automated,
-		Worktrees:        wtMgr,
-		RunsDir:          runsDir,
+		ResolveRepositoryIdentity: lookupRunnerRepositoryFixture,
+		NewDeterministic:          newDet,
+		Automated:                 automated,
+		Worktrees:                 wtMgr,
+		RunsDir:                   runsDir,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return fixtureRepo, nil
 		},
@@ -1451,6 +1488,71 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 	}
 	if ciPollEnv.RepoRef.Owner != "acme" || ciPollEnv.RepoRef.Name != "web" {
 		t.Fatalf("ci-poll RepoRef = %+v", ciPollEnv.RepoRef)
+	}
+}
+
+func TestRunnerInputsFromCannotReplaceGaggleBacklogScope(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{
+				Name: "select", Type: apiv1.TaskDeterministic, Goal: "select labels",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: "query-backlog",
+			},
+			{
+				Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "query backlog",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}},
+				Capabilities: []string{"github:issues:write"},
+				InputsFrom: map[string]string{
+					"requireLabels":  "requireLabels",
+					"labelPredicate": "labelPredicate",
+				},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "backlog-scope-inputs-from", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile fixture machine: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-scope:select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			"requireLabels":  "goobers:ready",
+			"labelPredicate": `"size:s" in labels`,
+		}},
+		"run-scope:query-backlog": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, gate.NewAutomatedEvaluator())
+	r.cfg.BacklogQueryBacklogLabels = "area:web"
+	r.cfg.BacklogQueryLabelPredicate = `"team:web" in labels`
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-scope",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	env, ok := det.received["run-scope:query-backlog"]
+	if !ok {
+		t.Fatal("query-backlog never dispatched")
+	}
+	if got, want := env.Inputs["requireLabels"], "area:web,goobers:ready"; got != want {
+		t.Fatalf("requireLabels = %q, want %q", got, want)
+	}
+	if got, want := env.Inputs["labelPredicate"], `("team:web" in labels) && ("size:s" in labels)`; got != want {
+		t.Fatalf("labelPredicate = %q, want %q", got, want)
 	}
 }
 
@@ -2319,7 +2421,14 @@ func TestRunnerGateRoutedSuccessToCompleteStaysCompleted(t *testing.T) {
 func TestRunnerResultCarriesFailureCauseAtFirstStage(t *testing.T) {
 	machine := terminalFailMachine(t)
 	byTask := map[string]stubTaskResult{
-		"run-cause-first:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "github_rate_limited", Message: "list pull requests: status 403, remaining 0"}},
+		"run-cause-first:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{
+			Code:    "github_rate_limited",
+			Message: "list pull requests: status 403, remaining 0",
+			Causes: []apiv1.ErrorCause{
+				{Message: "list pull requests"},
+				{Code: "github_rate_limited", Class: "infra", Message: "status 403, remaining 0"},
+			},
+		}},
 	}
 	r, runsDir := newTestRunner(t, byTask, nil)
 
@@ -2356,11 +2465,37 @@ func TestRunnerResultCarriesFailureCauseAtFirstStage(t *testing.T) {
 			if !strings.Contains(e.Error.Message, "github_rate_limited") {
 				t.Errorf("run_failed message = %q, want it to contain the stage's own code", e.Error.Message)
 			}
+			if got := causeMessages(e.Error.Causes); !equalStringSlices(got, []string{"list pull requests", "status 403, remaining 0"}) {
+				t.Fatalf("run_failed causes = %#v, want stage structured causes", got)
+			}
+			if e.Error.Causes[1].Code != "github_rate_limited" || e.Error.Causes[1].Class != "infra" {
+				t.Fatalf("run_failed typed cause = %+v, want code/class metadata", e.Error.Causes[1])
+			}
 		}
 	}
 	if !sawCause {
 		t.Fatal("expected a run_failed error event naming stage \"implement\" (#305 pattern)")
 	}
+}
+
+func causeMessages(causes []journal.ErrorCause) []string {
+	out := make([]string, len(causes))
+	for i, cause := range causes {
+		out[i] = cause.Message
+	}
+	return out
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestRunnerResultCarriesFailureCauseAtLastStage covers the AC's second shape
@@ -4053,6 +4188,245 @@ func TestRunnerRetriesTaskPerPolicy(t *testing.T) {
 	}
 }
 
+func TestRunnerRetriesMissingDeclaredAgentArtifactPerPolicy(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a declared artifact",
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+			Next:  workflow.TerminalComplete,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "agentic-declared-artifact-retry", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	goober := &sequencedGoober{results: []apiv1.ResultEnvelope{
+		{
+			Status: apiv1.ResultFailure,
+			Error: &apiv1.ErrorInfo{
+				Code:      "missing_declared_artifact",
+				Message:   "declared artifact file missing: output/result.json",
+				Retryable: true,
+			},
+		},
+		{Status: apiv1.ResultSuccess, Summary: "artifact produced"},
+	}}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-agentic-declared-artifact-retry",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted || goober.callCount() != 2 {
+		t.Fatalf("result=%+v calls=%d, want completed on second attempt", res, goober.callCount())
+	}
+	events := readRunEvents(t, runsDir, "run-agentic-declared-artifact-retry")
+	var starts []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == "implement" {
+			starts = append(starts, event)
+		}
+	}
+	if len(starts) != 2 || starts[0].AttemptClass != "" || starts[1].AttemptClass != journal.AttemptPolicy {
+		t.Fatalf("stage starts = %+v, want initial attempt then policy retry", starts)
+	}
+}
+
+func TestRunnerDoesNotRetryNonRetryableDeclaredAgentArtifactFailure(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a declared artifact",
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+			Next:  workflow.TerminalComplete,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "agentic-declared-artifact-no-retry", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	goober := &sequencedGoober{results: []apiv1.ResultEnvelope{{
+		Status: apiv1.ResultFailure,
+		Error: &apiv1.ErrorInfo{
+			Code:      "missing_declared_artifact",
+			Message:   "declared artifact file missing: output/result.json",
+			Retryable: false,
+		},
+	}}}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-agentic-declared-artifact-no-retry",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed || goober.callCount() != 1 {
+		t.Fatalf("result=%+v calls=%d, want failed after one non-retryable attempt", res, goober.callCount())
+	}
+	events := readRunEvents(t, runsDir, "run-agentic-declared-artifact-no-retry")
+	var starts []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == "implement" {
+			starts = append(starts, event)
+		}
+	}
+	if len(starts) != 1 {
+		t.Fatalf("stage starts = %+v, want exactly one attempt", starts)
+	}
+}
+
+func missingDeclaredArtifactResult() apiv1.ResultEnvelope {
+	return apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error: &apiv1.ErrorInfo{
+			Code:      "missing_declared_artifact",
+			Message:   "declared artifact file missing: output/result.json",
+			Retryable: true,
+		},
+	}
+}
+
+// runDeclaredArtifactFailureStage runs one agentic stage whose goober reports a
+// retryable missing declared artifact on every attempt, and returns the run
+// result, the dispatch count and the stage's journal events.
+func runDeclaredArtifactFailureStage(t *testing.T, runID string, retry *apiv1.RetryPolicy, continueOnError bool) (Result, int, []journal.Event) {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a declared artifact",
+			Retry: retry, ContinueOnError: continueOnError,
+			Next: workflow.TerminalComplete,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: runID, Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	failing := missingDeclaredArtifactResult()
+	goober := &sequencedGoober{results: []apiv1.ResultEnvelope{failing, failing, failing, failing}}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var stageEvents []journal.Event
+	for _, event := range readRunEvents(t, runsDir, runID) {
+		if event.Stage == "implement" {
+			stageEvents = append(stageEvents, event)
+		}
+	}
+	return res, goober.callCount(), stageEvents
+}
+
+// assertFinalArtifactFailureFinished: the attempt that exhausts the budget is
+// journaled as the stage's ordinary failure result, not an executor error.
+func assertFinalArtifactFailureFinished(t *testing.T, events []journal.Event, wantAttempts int) {
+	t.Helper()
+	var starts, finishes, executorErrors int
+	var last journal.Event
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventStageStarted:
+			starts++
+		case journal.EventStageFinished:
+			finishes++
+			last = event
+		case journal.EventError:
+			if event.Error != nil && event.Error.Code == "executor_error" {
+				executorErrors++
+			}
+		}
+	}
+	if starts != wantAttempts || executorErrors != wantAttempts-1 || finishes != 1 {
+		t.Fatalf("starts=%d executorErrors=%d finishes=%d, want %d/%d/1: %+v", starts, executorErrors, finishes, wantAttempts, wantAttempts-1, events)
+	}
+	if last.Attempt != wantAttempts || last.Status != string(apiv1.ResultFailure) || last.Error == nil || last.Error.Code != "missing_declared_artifact" {
+		t.Fatalf("final stage.finished = %+v, want attempt %d failure missing_declared_artifact", last, wantAttempts)
+	}
+}
+
+func TestRunnerDeclaredArtifactRetryExhaustionFinishesAsStageFailure(t *testing.T) {
+	res, calls, events := runDeclaredArtifactFailureStage(t, "run-artifact-retry-exhausted", &apiv1.RetryPolicy{MaxAttempts: 2}, false)
+	if res.Phase != journal.PhaseFailed || calls != 2 {
+		t.Fatalf("result=%+v calls=%d, want failed after two attempts", res, calls)
+	}
+	assertFinalArtifactFailureFinished(t, events, 2)
+}
+
+func TestRunnerDeclaredArtifactFailureWithoutRetryPolicyDoesNotRetry(t *testing.T) {
+	res, calls, events := runDeclaredArtifactFailureStage(t, "run-artifact-no-retry-policy", nil, false)
+	if res.Phase != journal.PhaseFailed || calls != 1 {
+		t.Fatalf("result=%+v calls=%d, want failed after one attempt", res, calls)
+	}
+	assertFinalArtifactFailureFinished(t, events, 1)
+}
+
+func TestRunnerDeclaredArtifactRetryExhaustionHonorsContinueOnError(t *testing.T) {
+	res, calls, events := runDeclaredArtifactFailureStage(t, "run-artifact-retry-continue", &apiv1.RetryPolicy{MaxAttempts: 2}, true)
+	if res.Phase != journal.PhaseCompleted || calls != 2 {
+		t.Fatalf("result=%+v calls=%d, want completed via continueOnError after two attempts", res, calls)
+	}
+	assertFinalArtifactFailureFinished(t, events, 2)
+}
+
 func TestRunnerRetriesInfrastructureFailureAndRecovers(t *testing.T) {
 	machine := retryFixtureMachine(t, 1)
 	cause := errors.New("status 503: provider unavailable")
@@ -5461,6 +5835,170 @@ func TestInfrastructureRepassSeedsStaySeparateFromPolicyBudget(t *testing.T) {
 	}
 }
 
+func TestTimeoutSeedsPreserveGateRecoveryCounters(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeFail, Target: "remediate-ci",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "remediate-ci"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 0.0, "gateAttempt": 0.0, "pollAttempt": 1.0, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateStarted, Gate: "ci-gate", Runner: map[string]any{"repassAttempt": 2.0}},
+	}
+	if got := gateRepassSeed(events)["ci-gate"]; got != 2 {
+		t.Fatalf("policy gate seed after fail -> timeout -> dangling start = %d, want 2", got)
+	}
+
+	infraEvents := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeInfra, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 0.0, "gateAttempt": 0.0, "pollAttempt": 1.0, "pollTarget": "ci-poll"}},
+	}
+	if got := gateInfrastructureSeed(infraEvents)["ci-gate"]; got != 1 {
+		t.Fatalf("infrastructure gate seed after infra -> timeout = %d, want 1", got)
+	}
+}
+
+func timeoutPollingLoopMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "ci-poll",
+		Tasks: []apiv1.Task{
+			{Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "ci-gate"},
+			{Name: "remediate-ci", Type: apiv1.TaskDeterministic, Goal: "fix CI", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "ci-poll"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "ci-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "ci-status", MaxTimeoutPolls: 2},
+				Branches: map[string]string{
+					gate.OutcomePass:        workflow.TerminalComplete,
+					gate.OutcomeFail:        "remediate-ci",
+					gate.OutcomeTimeout:     "ci-poll",
+					workflow.BranchEscalate: workflow.TargetEscalate,
+				},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "timeout-polling-loop", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile timeout polling loop: %v", err)
+	}
+	return m
+}
+
+func TestRunnerResumeRestoresTimeoutPollingBudgetAndReset(t *testing.T) {
+	machine := timeoutPollingLoopMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-poll-exhausted:ci-poll": {status: apiv1.ResultSuccess},
+		"run-poll-reset:ci-poll":     {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newTestRunner(t, byTask, fixedOutcomeAutomated(gate.OutcomeTimeout))
+
+	createPollJournal := func(t *testing.T, runID string, events []journal.Event) {
+		t.Helper()
+		jr, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+			WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		}, nil)
+		if err != nil {
+			t.Fatalf("journal.Create: %v", err)
+		}
+		jr.SetMachineState("ci-poll")
+		for i, event := range events {
+			if err := jr.Append(event); err != nil {
+				t.Fatalf("append event %d (%s): %v", i, event.Type, err)
+			}
+		}
+		if err := jr.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}
+	readEvents := func(t *testing.T, runID string) []journal.Event {
+		t.Helper()
+		rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+		if err != nil {
+			t.Fatalf("OpenRead: %v", err)
+		}
+		events, err := rd.Events()
+		if err != nil {
+			t.Fatalf("Events: %v", err)
+		}
+		return events
+	}
+	timeoutAttempts := func(events []journal.Event) []int {
+		var attempts []int
+		for _, event := range events {
+			if event.Type != journal.EventGateEvaluated || event.Verdict != gate.OutcomeTimeout {
+				continue
+			}
+			n, _ := event.Runner["pollAttempt"].(float64)
+			attempts = append(attempts, int(n))
+		}
+		return attempts
+	}
+
+	createPollJournal(t, "run-poll-exhausted", []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "ci-poll", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 1, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 2, "pollTarget": "ci-poll"}},
+	})
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-poll-exhausted",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume exhausted: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("exhausted phase = %q, want escalated from restored poll count", res.Phase)
+	}
+	exhaustedEvents := readEvents(t, "run-poll-exhausted")
+	if got, want := timeoutAttempts(exhaustedEvents), []int{1, 2, 3}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("exhausted poll attempts = %v, want %v (resume should continue from the journaled pollingTargetSeed)", got, want)
+	}
+	last := exhaustedEvents[len(exhaustedEvents)-1]
+	for i := len(exhaustedEvents) - 1; i >= 0; i-- {
+		if exhaustedEvents[i].Type == journal.EventGateEvaluated {
+			last = exhaustedEvents[i]
+			break
+		}
+	}
+	if last.Target != workflow.TargetEscalate || last.Runner["reason"] != gate.ReasonPollingBudgetExhausted {
+		t.Fatalf("final timeout verdict target=%q reason=%v, want %s/%s", last.Target, last.Runner["reason"], workflow.TargetEscalate, gate.ReasonPollingBudgetExhausted)
+	}
+
+	createPollJournal(t, "run-poll-reset", []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "ci-poll", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 1, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 2, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeFail, Target: "remediate-ci",
+			Runner: map[string]any{"repassAttempt": 1, "gateAttempt": 1, "repassTarget": "remediate-ci"}},
+	})
+	res, err = r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-poll-reset",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume reset: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("reset phase = %q, want eventual escalation after a fresh post-reset polling budget", res.Phase)
+	}
+	resetAttempts := timeoutAttempts(readEvents(t, "run-poll-reset"))
+	if got, want := resetAttempts, []int{1, 2, 1, 2, 3}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reset poll attempts = %v, want %v (non-timeout outcome should reset the restored polling budget)", got, want)
+	}
+}
+
 // TestInfrastructureSeedsAreZeroForPreInfrastructureHistories is the
 // backwards-compatibility half of #3930: a run resumed from a journal written
 // BEFORE the infrastructure counters existed must start with those counters at
@@ -6688,6 +7226,92 @@ func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 		if cause == nil || cause.Kind != "reviewer" || cause.Gate != "review" ||
 			!strings.Contains(cause.Rationale, "empty input") {
 			t.Fatalf("cause = %+v, want reviewer needs-changes rationale", cause)
+		}
+	})
+
+	t.Run("review correction survives forward validation and replay", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-forward-validation")
+		finding := apiv1.Finding{ID: "review:conflict", Message: "resolve the remaining conflict"}
+		data, err := json.Marshal(apiv1.Verdict{
+			Decision:  apiv1.VerdictNeedsChanges,
+			Rationale: "electlander still contains unresolved conflict markers",
+			Findings:  []apiv1.Finding{finding},
+		})
+		if err != nil {
+			t.Fatalf("marshal verdict: %v", err)
+		}
+		ref, err := run.RecordArtifact("verdict/review-correction.json", data)
+		if err != nil {
+			t.Fatalf("record verdict: %v", err)
+		}
+		events := []journal.Event{
+			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
+			{
+				Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(apiv1.VerdictNeedsChanges),
+				Target: "guard-before-implement", Ref: &ref,
+			},
+			{Type: journal.EventStageFinished, Stage: "guard-before-implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "pre-review-validation", Status: string(apiv1.ResultSuccess)},
+			{
+				Type: journal.EventGateEvaluated, Gate: "pre-review-gate", Verdict: gate.OutcomePass,
+				Target: "guard-before-review",
+			},
+			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
+		}
+		for _, event := range events {
+			if err := run.Append(event); err != nil {
+				t.Fatalf("append %s: %v", event.Type, err)
+			}
+		}
+
+		assertCause := func(label string) {
+			t.Helper()
+			cause, causeErr := priorRepassCause(run, "guard-before-review")
+			if causeErr != nil {
+				t.Fatalf("%s priorRepassCause: %v", label, causeErr)
+			}
+			if cause == nil || cause.Kind != "reviewer" || cause.Gate != "review" ||
+				cause.Outcome != string(apiv1.VerdictNeedsChanges) ||
+				!strings.Contains(cause.Rationale, "unresolved conflict") ||
+				len(cause.Findings) != 1 || cause.Findings[0].ID != finding.ID {
+				t.Fatalf("%s cause = %+v, want original review correction and findings", label, cause)
+			}
+		}
+		assertCause("live")
+		if err := run.Close(); err != nil {
+			t.Fatalf("close journal before replay: %v", err)
+		}
+		assertCause("replay")
+	})
+
+	t.Run("validation failure remains the correction", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-validation-failure")
+		for _, event := range []journal.Event{
+			{
+				Type: journal.EventStageFinished, Stage: "pre-review-validation", Status: string(apiv1.ResultFailure),
+				Error: &journal.ErrorDetail{Code: "invalid_findings", Message: "finding response 2 is missing"},
+			},
+			{
+				Type: journal.EventGateEvaluated, Gate: "pre-review-gate", Verdict: gate.OutcomeFail,
+				Target: "guard-before-implement",
+			},
+			{Type: journal.EventStageFinished, Stage: "guard-before-implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
+		} {
+			if err := run.Append(event); err != nil {
+				t.Fatalf("append %s: %v", event.Type, err)
+			}
+		}
+		cause, err := priorRepassCause(run, "guard-before-review")
+		if err != nil {
+			t.Fatalf("priorRepassCause: %v", err)
+		}
+		if cause == nil || cause.Kind != "stage-failure" || cause.Gate != "pre-review-gate" ||
+			cause.Outcome != gate.OutcomeFail || cause.Stage != "pre-review-validation" ||
+			cause.ErrorCode != "invalid_findings" {
+			t.Fatalf("cause = %+v, want validation failure correction", cause)
 		}
 	})
 }

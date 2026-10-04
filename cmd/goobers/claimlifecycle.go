@@ -269,10 +269,7 @@ func recordTerminalClaimInspectionError(log *journal.InstanceLog, entry localsch
 		Gaggle:   entry.Gaggle,
 		Workflow: entry.Workflow,
 		RunID:    entry.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    "terminal_claim_inspection_failed",
-			Message: err.Error(),
-		},
-		Runner: map[string]any{"operation": claimLockOperationRecovery},
+		Error:    journal.ErrorDetailFor("terminal_claim_inspection_failed", err),
+		Runner:   map[string]any{"operation": claimLockOperationRecovery},
 	})
 }

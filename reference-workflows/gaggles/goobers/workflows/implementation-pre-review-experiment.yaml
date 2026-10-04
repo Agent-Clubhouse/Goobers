@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: implementation-pre-review-experiment
+  annotations:
+    goobers.dev/purpose: "Opt-in variant of the implementation workflow that adds a pre-review validation step, used to compare its outcomes against the canonical issue-to-PR path."
 spec:
   gaggle: goobers
   displayName: Implementation pre-review validation experiment
@@ -156,7 +158,7 @@ spec:
         - review
         - local-ci
       goal: >-
-        Implement the claimed issue end to end: read the issue and its
+        Implement the code change for the claimed issue: read the issue and its
         acceptance criteria, plan, implement, verify with fast, targeted
         tests for what you changed, and commit to the run's branch (push is a
         separate deterministic stage — see push-branch below). Do NOT run the
@@ -165,9 +167,18 @@ spec:
         it here only burns the session's wall-clock budget on test execution
         that is about to run again anyway (#724). On a repass, first read the
         reviewer rationale or local-CI failure evidence attached as context and
-        address it before making further changes. Treat a provider-side
-        acceptance step such as an issue comment or report as satisfied only
-        when attached context proves it was already completed. Otherwise fail
+        address it before making further changes. Normal lifecycle actions
+        belong to later deterministic stages: push-branch publishes the run
+        branch; open-pr creates or updates the PR and links the claimed issue;
+        close-out posts the standard completion comment, marks the issue
+        in-review, and releases its claim. Leave those actions pending for their
+        named stages; do not attempt them or claim they already happened. Their
+        pending state is not an implement-stage failure: return success once
+        your code deliverable is complete. This handoff covers only those named
+        lifecycle actions, not an arbitrary requested comment, report, release,
+        merge, or external update. Treat any other provider-side acceptance
+        step as satisfied only when attached context proves it was already
+        completed. Otherwise fail
         explicitly with PROVIDER_ACTION_REQUIRED rather than attempting the
         mutation or reporting MISSING_CAPABILITY.
       capabilities:
@@ -504,6 +515,15 @@ spec:
       agentic:
         goober: reviewer
         workspace: repo
+        # #765/#5397: retry a transient reviewer-harness infrastructure failure
+        # (e.g. a required MCP server not yet ready) within this bound instead
+        # of failing the run and discarding the implement turn that already
+        # succeeded. Evaluator retries never charge a repass; the non-zero
+        # backoff keeps a retry out of the same failure window (#5084).
+        # Non-transient errors still fail fast.
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 20
       branches:
         pass: push-branch
         needs-changes: implement
@@ -557,6 +577,9 @@ spec:
         # input builder injects this default where DSL 1.4 left it unset, so
         # the pin keeps compiled behavior identical across the version bump.
         pollIntervalSeconds: 10
+        # Bound pending-only polling independently from implementation and
+        # remediation repasses; exhaustion routes through the escalate branch.
+        maxTimeoutPolls: 30
       branches:
         pass: close-out
         # Provider-authored failure evidence remains unapproved and is routed
@@ -566,5 +589,6 @@ spec:
         # A poll timeout (#239) is not evidence CI failed — just that it
         # didn't finish in this polling window. Re-enter ci-poll at the
         # journaled stage boundary so the same PR remains claimed and keeps
-        # waiting without consuming implementation or repass budget (#3325).
+        # waiting without consuming implementation or repass budget (#3325);
+        # automated.maxTimeoutPolls bounds the wait (#5558).
         timeout: ci-poll

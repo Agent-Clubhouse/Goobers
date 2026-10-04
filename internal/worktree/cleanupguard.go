@@ -74,11 +74,12 @@ func VerifyCleanupTargetUnchanged(ctx context.Context, target CleanupTarget) err
 	return nil
 }
 
-// VerifyCleanupTargetPreservedByGit proves that removing an intermediate
-// worktree cannot discard its current state. A clean unchanged checkout is
-// disposable, and a clean advanced checkout is safe when HEAD is anchored by
-// its local branch, which survives git worktree removal.
-func VerifyCleanupTargetPreservedByGit(ctx context.Context, target CleanupTarget) error {
+// VerifyCleanupTargetEmptyWithoutHEAD proves that a checkout never reached a
+// commit and has no tracked, staged, or untracked content to recover.
+func VerifyCleanupTargetEmptyWithoutHEAD(ctx context.Context, target CleanupTarget) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	status, err := runCleanupGitOutput(ctx, target.Path, "inspect cleanup status", "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("worktree cleanup cannot inspect working-tree state: %w", err)
@@ -86,29 +87,39 @@ func VerifyCleanupTargetPreservedByGit(ctx context.Context, target CleanupTarget
 	if status != "" {
 		return fmt.Errorf("worktree cleanup target contains unretained changes")
 	}
-	head, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup HEAD", "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		return fmt.Errorf("worktree cleanup cannot resolve HEAD: %w", err)
-	}
-	startRef := strings.TrimSpace(target.StartRef)
-	if startRef != "" {
-		start, startErr := runCleanupGitOutput(ctx, target.Path, "resolve cleanup start", "rev-parse", "--verify", startRef+"^{commit}")
-		if startErr == nil && head == start {
-			return nil
-		}
-	}
-	branch, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup branch", "symbolic-ref", "--quiet", "HEAD")
-	if err != nil || !strings.HasPrefix(branch, "refs/heads/") {
-		return fmt.Errorf("worktree cleanup target advanced without a durable local branch")
-	}
-	branchHead, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup branch HEAD", "rev-parse", "--verify", branch+"^{commit}")
-	if err != nil {
-		return fmt.Errorf("worktree cleanup cannot resolve local branch: %w", err)
-	}
-	if branchHead != head {
-		return fmt.Errorf("worktree cleanup HEAD is not anchored by its local branch")
+	if err := verifyCleanupTargetUnbornHEAD(ctx, target); err != nil {
+		return err
 	}
 	return nil
+}
+
+func verifyCleanupTargetUnbornHEAD(ctx context.Context, target CleanupTarget) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup HEAD", "rev-parse", "--verify", "--quiet", "HEAD"); err == nil {
+		return fmt.Errorf("worktree cleanup target has HEAD")
+	} else if !isGitMissingRef(err) {
+		return fmt.Errorf("worktree cleanup cannot resolve HEAD: %w", err)
+	}
+	branch, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup symbolic HEAD", "symbolic-ref", "--quiet", "HEAD")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot resolve symbolic HEAD: %w", err)
+	}
+	if !strings.HasPrefix(branch, "refs/heads/") {
+		return fmt.Errorf("worktree cleanup HEAD is not an unborn branch")
+	}
+	if _, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup unborn branch", "show-ref", "--verify", "--quiet", branch); err == nil {
+		return fmt.Errorf("worktree cleanup symbolic HEAD already exists")
+	} else if !isGitMissingRef(err) {
+		return fmt.Errorf("worktree cleanup cannot verify unborn branch: %w", err)
+	}
+	return ctx.Err()
+}
+
+func isGitMissingRef(err error) bool {
+	var gitErr *gitCommandError
+	return errors.As(err, &gitErr) && gitErr.exitCode == 1 && strings.TrimSpace(string(gitErr.output)) == ""
 }
 
 // CleanupTarget identifies the directory about to be destroyed. OwnerRunID
@@ -129,6 +140,9 @@ type CleanupTarget struct {
 	// Pinned identifies a managed clone whose base branches live under the
 	// mirror remote, rather than the local branches of a linked worktree.
 	Pinned bool
+	// RetainOnCleanup identifies non-terminal source-preservation cleanup
+	// paths that must publish recovery before the source can be reset.
+	RetainOnCleanup bool
 	// RepositoryDigest and CreatedAt are copied from the durable marker.
 	// Empty values identify legacy metadata and must not be guessed.
 	RepositoryDigest string
@@ -140,7 +154,7 @@ func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRun
 }
 
 func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID string, mk marker) error {
-	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RetainOnCleanup: mk.RetainOnCleanup, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
 func (m *Manager) prepareMarkerCleanupWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker) error {
@@ -162,7 +176,7 @@ func (m *Manager) prepareMarkerExit(ctx context.Context, path, worktreeID string
 	if !keep {
 		return m.prepareMarkerCleanup(ctx, path, worktreeID, mk)
 	}
-	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RetainOnCleanup: mk.RetainOnCleanup, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
 func (m *Manager) prepareMarkerExitWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker, keep bool) error {

@@ -28,18 +28,19 @@ func TestIntegrationTerminalRunBranchCapture(t *testing.T) {
 		name string
 		// commit advances the run branch past the base.
 		commit bool
-		// untracked leaves harness-shaped debris behind, which makes the
-		// stage cleanup publish a snapshot of that same HEAD — so the
-		// terminal capture must find the branch tip already covered.
-		untracked  bool
-		wantRecord bool
+		// preRetained leaves dirty source in a source-preservation cleanup
+		// path, which publishes a snapshot of that same HEAD before terminal
+		// finalization — so terminal capture must find the branch tip already
+		// covered.
+		preRetained bool
+		wantRecord  bool
 	}{
 		{name: "branch-ahead-of-base", commit: true, wantRecord: true},
-		{name: "already-covered-by-stage-capture", commit: true, untracked: true, wantRecord: true},
+		{name: "already-covered-by-source-preservation-capture", commit: true, preRetained: true, wantRecord: true},
 		{name: "branch-at-base", wantRecord: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workcopies, startedAt, records := runTerminalBranchCaptureFixture(t, tc.commit, tc.untracked)
+			workcopies, startedAt, records := runTerminalBranchCaptureFixture(t, tc.commit, tc.preRetained)
 			assertTerminalCaptureLeavesNoScratch(t, workcopies)
 			want := 0
 			if tc.wantRecord {
@@ -59,14 +60,15 @@ func TestIntegrationTerminalRunBranchCapture(t *testing.T) {
 			}
 			// Which writer produced the single record is what separates the
 			// two one-record cases, and asserting only the count would let
-			// either one pass for the other's reason. A stage capture is
-			// stamped with the run's start; a terminal capture with its
-			// durable finish event, which the fixture seeds strictly later.
-			// No wall clock is consulted: both are the fixture's own values.
-			stageCapture := records[0].CreatedAt.Equal(startedAt)
-			if stageCapture != tc.untracked {
-				t.Fatalf("record createdAt = %s (run started %s): stage capture = %t, want %t",
-					records[0].CreatedAt, startedAt, stageCapture, tc.untracked)
+			// either one pass for the other's reason. A source-preservation
+			// cleanup capture is stamped with the run's start; a terminal
+			// capture with its durable finish event, which the fixture seeds
+			// strictly later. No wall clock is consulted: both are the
+			// fixture's own values.
+			cleanupCapture := records[0].CreatedAt.Equal(startedAt)
+			if cleanupCapture != tc.preRetained {
+				t.Fatalf("record createdAt = %s (run started %s): cleanup capture = %t, want %t",
+					records[0].CreatedAt, startedAt, cleanupCapture, tc.preRetained)
 			}
 		})
 	}
@@ -77,7 +79,7 @@ const terminalCaptureRunID = "terminal-branch-capture"
 // runTerminalBranchCaptureFixture drives one run all the way to terminal with
 // its stage worktree removed while the run was still nonterminal, and returns
 // every recovery record the whole lifecycle published.
-func runTerminalBranchCaptureFixture(t *testing.T, commit, untracked bool) (string, time.Time, []recovery.Record) {
+func runTerminalBranchCaptureFixture(t *testing.T, commit, preRetained bool) (string, time.Time, []recovery.Record) {
 	t.Helper()
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
@@ -109,7 +111,7 @@ func runTerminalBranchCaptureFixture(t *testing.T, commit, untracked bool) (stri
 	defer cancel()
 	workspace, err := manager.Create(ctx, worktree.CreateOptions{
 		RepoURL: source, RunID: terminalCaptureRunID + "-stage", OwnerRunID: terminalCaptureRunID,
-		BaseRef: "main", Branch: branch,
+		BaseRef: "main", Branch: branch, RetainOnCleanup: preRetained,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,13 +123,16 @@ func runTerminalBranchCaptureFixture(t *testing.T, commit, untracked bool) (stri
 		recoveryCLIGit(t, workspace.Path, "add", "implementation.txt")
 		recoveryCLIGit(t, workspace.Path, "commit", "-m", "Implement feature")
 	}
-	if untracked {
+	if preRetained {
 		if err := os.WriteFile(filepath.Join(workspace.Path, "claimed-item.json"), []byte("{}"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// The nonterminal teardown every stage boundary performs. The run is not
-	// terminal yet, so this guard cannot know it is the last one.
+	// The nonterminal teardown happens before the run is terminal. Plain
+	// stage cleanup deliberately does not publish a full snapshot (#4911);
+	// the preRetained case opts into the same source-preservation cleanup
+	// cause as pinned and workerhost handoffs, so the later terminal capture
+	// must detect that the branch tip is already covered.
 	if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -231,14 +236,15 @@ func TestIntegrationTerminalReboundBranchCapture(t *testing.T) {
 		aheadBeforeRun bool
 		// commit advances the rebound branch past the commit the run bound to.
 		commit bool
-		// untracked leaves harness-shaped debris behind, which makes the
-		// stage cleanup publish a snapshot of that same HEAD — so the
-		// terminal capture must find the rebound tip already covered.
-		untracked  bool
-		wantRecord bool
+		// preRetained leaves dirty source in a source-preservation cleanup
+		// path, which publishes a snapshot of that same HEAD before terminal
+		// finalization — so terminal capture must find the rebound tip
+		// already covered.
+		preRetained bool
+		wantRecord  bool
 	}{
 		{name: "rebound-branch-ahead-of-base", commit: true, wantRecord: true},
-		{name: "rebound-tip-already-covered", commit: true, untracked: true, wantRecord: true},
+		{name: "rebound-tip-already-covered-by-source-preservation-capture", commit: true, preRetained: true, wantRecord: true},
 		{name: "rebound-tip-at-base", wantRecord: false},
 		// The run bound to a pull request that already had work, failed a
 		// stage and committed nothing: there is nothing of this run's to
@@ -249,7 +255,7 @@ func TestIntegrationTerminalReboundBranchCapture(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := runTerminalReboundBranchCaptureFixture(t, terminalReboundOptions{
-				aheadBeforeRun: tc.aheadBeforeRun, commit: tc.commit, untracked: tc.untracked,
+				aheadBeforeRun: tc.aheadBeforeRun, commit: tc.commit, preRetained: tc.preRetained,
 			})
 			assertTerminalCaptureLeavesNoScratch(t, fixture.workcopies)
 			want := 0
@@ -270,15 +276,16 @@ func TestIntegrationTerminalReboundBranchCapture(t *testing.T) {
 				t.Fatalf("record base ref = %q, want the run's base", record.BaseRef)
 			}
 			assertRecordCoversCommit(t, fixture.mirror, record, fixture.reboundTip)
-			// A stage capture is stamped with the run's start, a terminal
-			// capture with the run's durable finish event, which the fixture
-			// seeds strictly later. No wall clock is consulted: both are the
-			// fixture's own values. The covered case must therefore be the
-			// stage capture's single record and no second one.
-			stageCapture := record.CreatedAt.Equal(fixture.startedAt)
-			if stageCapture != tc.untracked {
-				t.Fatalf("record createdAt = %s (run started %s): stage capture = %t, want %t",
-					record.CreatedAt, fixture.startedAt, stageCapture, tc.untracked)
+			// A source-preservation cleanup capture is stamped with the run's
+			// start, a terminal capture with the run's durable finish event,
+			// which the fixture seeds strictly later. No wall clock is
+			// consulted: both are the fixture's own values. The covered case
+			// must therefore be the cleanup capture's single record and no
+			// second one.
+			cleanupCapture := record.CreatedAt.Equal(fixture.startedAt)
+			if cleanupCapture != tc.preRetained {
+				t.Fatalf("record createdAt = %s (run started %s): cleanup capture = %t, want %t",
+					record.CreatedAt, fixture.startedAt, cleanupCapture, tc.preRetained)
 			}
 		})
 	}
@@ -296,7 +303,7 @@ const (
 type terminalReboundOptions struct {
 	aheadBeforeRun bool
 	commit         bool
-	untracked      bool
+	preRetained    bool
 }
 
 // terminalReboundFixture is one rebound-branch lifecycle's observable result.
@@ -344,7 +351,7 @@ func runTerminalReboundBranchCaptureFixture(t *testing.T, opts terminalReboundOp
 	defer cancel()
 	workspace, err := manager.Create(ctx, worktree.CreateOptions{
 		RepoURL: source, RunID: terminalReboundRunID + "-stage", OwnerRunID: terminalReboundRunID,
-		BaseRef: "main", Branch: terminalReboundBranch,
+		BaseRef: "main", Branch: terminalReboundBranch, RetainOnCleanup: opts.preRetained,
 		// The rebinding the runner applies for an existing branch.
 		RequireExistingBranch: true, AcquireRemoteBranch: true,
 	})
@@ -361,14 +368,16 @@ func runTerminalReboundBranchCaptureFixture(t *testing.T, opts terminalReboundOp
 		recoveryCLIGit(t, workspace.Path, "add", "remediation.txt")
 		recoveryCLIGit(t, workspace.Path, "commit", "-m", "Remediate pull request")
 	}
-	if opts.untracked {
+	if opts.preRetained {
 		if err := os.WriteFile(filepath.Join(workspace.Path, "claimed-item.json"), []byte("{}"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	reboundTip := recoveryCLIGit(t, workspace.Path, "rev-parse", "HEAD")
-	// The nonterminal teardown every stage boundary performs, then the push
-	// failure that ends the run.
+	// The nonterminal teardown happens before the push failure that ends the
+	// run. Plain stage cleanup deliberately does not publish a full snapshot
+	// (#4911); the preRetained case opts into source-preservation cleanup so
+	// terminal capture must detect that the rebound tip is already covered.
 	if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
 		t.Fatal(err)
 	}

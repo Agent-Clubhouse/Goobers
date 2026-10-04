@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -67,11 +68,15 @@ func TestFailedHandlerSkipsInfraAndItemJudgmentDispositions(t *testing.T) {
 		{"network fault", telemetry.ErrCodeInfraNet},
 		{"claims-lock contention", telemetry.ErrCodeClaimsLock},
 		{"verified item refusal", telemetry.ErrCodeIssueNotApplicable},
+		// #5638: no agent turn ever happened.
+		{"required MCP control process never ready", telemetry.ErrCodeHarnessRequiredMCPUnavailable},
+		{"pod executor unavailable", telemetry.ErrCodeAgenticExecutorUnavailable},
+		{"pod context materialization", telemetry.ErrCodeContextMaterializeFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const runID = "run-infra"
 			h, fake := failedHandlerDispositionFixture(t, runID)
-			for i := 0; i < failureStreakThreshold; i++ {
+			for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 				if err := h(context.Background(), runner.FailedOutcome{
 					RunID:   runID,
 					RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
@@ -116,6 +121,37 @@ func TestFailedHandlerStillCountsWorkFailures(t *testing.T) {
 			}
 			if len(fake.calls) != 1 {
 				t.Fatalf("provider calls = %d, want 1 (a work failure still leaves its countable trace)", len(fake.calls))
+			}
+		})
+	}
+}
+
+// TestFailedHandlerHonorsExplicitInfraFaultClass is #5638: the runner already
+// classified the terminal infra (an exhausted infrastructure retry budget), so
+// the failure streak must not re-derive a genuine/work class from whatever code
+// the terminal surfaced under — executor_error for a no-agent-turn harness
+// startup failure, run_failed for a bare walk-level wrapper, or timeout. Only
+// the explicit class exempts: the same codes without it still count
+// (TestFailedHandlerStillCountsWorkFailures), which keeps #1054's
+// harness-timeout case intact.
+func TestFailedHandlerHonorsExplicitInfraFaultClass(t *testing.T) {
+	for _, code := range []string{telemetry.ErrCodeExecutor, "run_failed", telemetry.ErrCodeTimeout} {
+		t.Run(code, func(t *testing.T) {
+			const runID = "run-infra-class"
+			h, fake := failedHandlerDispositionFixture(t, runID)
+			for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
+				if err := h(context.Background(), runner.FailedOutcome{
+					RunID:      runID,
+					RepoRef:    apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+					Stage:      "curate",
+					Code:       code,
+					FaultClass: telemetry.ErrorClassInfra,
+				}); err != nil {
+					t.Fatalf("handler call %d: %v", i+1, err)
+				}
+			}
+			if len(fake.calls) != 0 {
+				t.Fatalf("provider calls = %+v, want none — an explicitly infra-classed terminal is not a work failure", fake.calls)
 			}
 		})
 	}

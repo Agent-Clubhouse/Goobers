@@ -10,6 +10,7 @@
   ],
   "properties": {
     "status": {
+      "description": "Terminal business outcome reported by the stage.",
       "type": "string",
       "enum": [
         "success",
@@ -32,6 +33,7 @@
       }
     },
     "artifacts": {
+      "description": "Content-addressed artifacts produced by the stage.",
       "type": "array",
       "items": {
         "$ref": "artifact-pointer.schema.json"
@@ -42,15 +44,18 @@
       "$ref": "artifact-pointer.schema.json"
     },
     "summary": {
+      "description": "Human-readable summary of the stage result.",
       "type": "string"
     },
     "metrics": {
+      "description": "Numeric metrics emitted by the stage.",
       "type": "object",
       "additionalProperties": {
         "type": "number"
       }
     },
     "error": {
+      "description": "Structured failure detail for failure results.",
       "$ref": "#/$defs/errorInfo"
     },
     "integrity": {
@@ -62,6 +67,10 @@
         "derived"
       ],
       "description": "Provenance of the content this stage produced: the weakest grade among the inputs it was admitted with. Downstream stages resolving inputsFrom grade against this, because outputs are bare scalars that carry no label of their own."
+    },
+    "workspaceRevision": {
+      "description": "Optional immutable repository and exact-object authority. It is established only by a successful deterministic result and is absent for legacy workflows.",
+      "$ref": "workspace-revision.schema.json"
     }
   },
   "allOf": [
@@ -94,17 +103,53 @@
       ],
       "properties": {
         "code": {
+          "description": "Stable, machine-readable stage failure code.",
           "type": "string",
           "minLength": 1
         },
         "message": {
+          "description": "Human-readable stage failure message.",
           "type": "string",
           "minLength": 1
         },
+        "causes": {
+          "description": "Ordered structured cause chain when the producer can preserve wrapped-error boundaries; absent for legacy or unavailable structure.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/errorCause"
+          }
+        },
         "retryable": {
+          "description": "Whether retrying the stage failure may succeed.",
           "type": "boolean"
         }
       }
+    },
+    "errorCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Stable machine-readable code for this cause layer, when available.",
+          "type": "string",
+          "minLength": 1
+        },
+        "class": {
+          "description": "Stable classification for this cause layer, when available.",
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "description": "Human-readable message for this cause layer.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "anyOf": [
+        { "required": ["code"] },
+        { "required": ["class"] },
+        { "required": ["message"] }
+      ]
     }
   }
 }

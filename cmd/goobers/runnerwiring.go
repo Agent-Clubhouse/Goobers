@@ -29,23 +29,17 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// instructionsPath resolves a goober's Instructions field to an absolute
-// file path. Instructions is documented as "relative to the goober
-// definition directory" (api/v1alpha1.GooberSpec), which config-as-code
-// objects don't retain after instance.LoadConfigDir flattens them into a
-// ConfigSet — but every shipped config (internal/instance/starter,
-// config-examples/, reference-workflows/) lays goobers out at the same fixed path, so
-// that layout convention is reproduced here rather than widening ConfigSet's
-// shape for this one field.
+// gooberDefinitionDir is the conventional, name-derived directory of a goober
+// definition. It is only the fallback for callers holding no loaded ConfigSet:
+// resolvedGooberDefinitionDir prefers the parsed definition file's own
+// directory, which validation also resolves instructions and assets against,
+// so a goober directory not named after metadata.name behaves the same at
+// runtime (#6611).
 func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
 	if spec.Gaggle == "" {
 		return filepath.Join(filepath.Dir(configDir), "goobers", gooberName)
 	}
 	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
-}
-
-func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string) string {
-	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
 func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(context.Context, string) error {
@@ -89,24 +83,28 @@ func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
 type runnerCompositionInput struct {
-	ExecutionFence       executionFenceStart
-	Layout               instance.Layout
-	Config               *instance.Config
-	Goobers              map[string]apiv1.GooberSpec
-	InstructionsByGoober map[string]string
-	Telemetry            *telemetry.Client
-	SharedRegistry       *journal.RegistryScrubber
-	WorktreeManager      *worktree.Manager
-	BranchNamespaces     map[string]string
-	GaggleProject        apiv1.RepoRef
-	GaggleBacklog        apiv1.BacklogRef
-	AdditionalRepos      []apiv1.RepoRef
-	HarnessInfo          harnessPreflightInfo
-	CredentialStores     credentials.StoreResolver
-	SandboxPosture       instance.SandboxPosture
-	ProviderQuota        *localscheduler.ProviderQuotaState
-	AppliedConfigDigest  string
-	ConfigGeneration     string
+	ExecutionFence           executionFenceStart
+	Layout                   instance.Layout
+	Config                   *instance.Config
+	Definitions              *instance.ConfigSet
+	Goobers                  map[string]apiv1.GooberSpec
+	InstructionsByGoober     map[string]string
+	SkillPackages            map[string][]workflow.SkillFile
+	Telemetry                *telemetry.Client
+	SharedRegistry           *journal.RegistryScrubber
+	WorktreeManager          *worktree.Manager
+	BranchNamespaces         map[string]string
+	GaggleProject            apiv1.RepoRef
+	GaggleBacklog            apiv1.BacklogRef
+	AdditionalRepos          []apiv1.RepoRef
+	HarnessInfo              harnessPreflightInfo
+	CredentialStores         credentials.StoreResolver
+	SandboxPosture           instance.SandboxPosture
+	ProviderQuota            *localscheduler.ProviderQuotaState
+	AppliedConfigDigest      string
+	ConfigGeneration         string
+	IssueOwnershipAssignees  string
+	IssueOwnershipUnassigned string
 }
 
 var runnerLookPath = exec.LookPath
@@ -114,9 +112,11 @@ var runnerLookPath = exec.LookPath
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
 	executionFence := runnerExecutionFence(input)
-	cfg := input.Config
-	goobers := input.Goobers
-	instructionsByGoober := input.InstructionsByGoober
+	cfg, goobers := input.Config, input.Goobers
+	skillPackages, skillErr := input.resolvedSkillFiles()
+	if skillErr != nil {
+		return runner.Config{}, nil, skillErr
+	}
 	tel := input.Telemetry
 	sharedReg := input.SharedRegistry
 	wtMgr := input.WorktreeManager
@@ -242,10 +242,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
-		if _, ok := instructionsByGoober[name]; !ok {
+		if _, ok := input.InstructionsByGoober[name]; !ok {
 			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
-		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
+		assets, err := gooberassets.Load(filepath.Join(resolvedGooberDefinitionDir(l.ConfigDir(), input.Definitions, spec, name), gooberassets.SourceDir))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
 		}
@@ -285,8 +285,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
-
-	rc := runner.Config{
+	decisionObserver := newDecisionShadowObserver(cfg, nil)
+	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
 		RunControls:      cfg.RunConditions.RunControls(),
@@ -296,7 +296,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
-				ScratchDir: deterministicScratchDir, CredentialStores: stores,
+				ScratchDir: deterministicScratchDir, CredentialStores: stores, CredentialGrants: stageGrantMinterFor(instanceRoot),
 			})
 			if err != nil {
 				return nil, err
@@ -305,10 +305,11 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			exec, err := buildAgenticExecutor(agenticExecutorInput{
-				GooberName: gooberName, Goobers: goobers, Instructions: instructionsByGoober, Assets: assetsByGoober,
+				GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
+				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
 			})
 			if err != nil {
 				return nil, err
@@ -328,17 +329,19 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// so the run branch, the mirror-fetch exclusion above, and the stage
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
 		// entries fall back to providers.DefaultBranchNamespace in the runner.
-		BranchNamespaces: branchNamespaces,
-		ScratchDir:       deterministicScratchDir,
-		RunsDir:          l.RunsDir(),
-		RepoCloneURL:     repoCloneURL,
+		BranchNamespaces:    branchNamespaces,
+		ScratchDir:          deterministicScratchDir,
+		RunsDir:             l.RunsDir(),
+		HandoffSchemaLoader: newHandoffSchemaLoader(cfg, l.ConfigDir()),
+		RepoCloneURL:        repoCloneURL,
 		// The gaggle's read-only reference repos (MGV-11 #1286): the runner
 		// provisions a read-only checkout of each alongside a repo-workspace
 		// stage's primary worktree. Empty for a single-repo gaggle (unchanged).
-		AdditionalRepos:        additionalRepos,
-		GateGooberCapabilities: gateGooberCaps,
-		AgentProvenance:        agentProvenance,
-		BaselineHealth:         baselineHealth,
+		AdditionalRepos:           additionalRepos,
+		ResolveRepositoryIdentity: buildRevisionIdentityResolver(cfg, resolver, sharedReg, stores),
+		GateGooberCapabilities:    gateGooberCaps,
+		AgentProvenance:           agentProvenance,
+		BaselineHealth:            baselineHealth,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(l, cfg, resolver, sharedReg),
@@ -367,10 +370,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
-	}
-	if tel != nil {
-		rc.Telemetry = tel
-	}
+	}, cfg, tel)
+	applyRunnerConfigFinalizers(&rc, input, tel)
 	wtMgr.SetPathLengthLimits(pathLimits)
 	// Refreshed unconditionally, exactly like the path-length limits above —
 	// on BOTH the newly-constructed and the reused-manager path (#4405). A
@@ -384,6 +385,14 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// (SetPathLengthLimits's own shape) is the wrong model here.
 	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
 	return rc, wtMgr, nil
+}
+
+func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInput, tel *telemetry.Client) {
+	if tel != nil {
+		cfg.Telemetry = tel
+	}
+	cfg.IssueOwnershipAssignees = input.IssueOwnershipAssignees
+	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {
@@ -492,17 +501,21 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 // repo backing this gaggle's project, resolved so its configured token can
 // authenticate mirror clone/fetch (#667).
 func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	return repoForGaggleProvider(cfg, project, apiv1.ProviderGitHub, string(providers.ProviderGitHub))
+}
+
+func repoForGaggleProvider(cfg *instance.Config, project apiv1.RepoRef, apiProvider apiv1.Provider, instanceProvider string) (instance.RepoRef, bool) {
 	if cfg == nil {
 		return instance.RepoRef{}, false
 	}
-	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "github" {
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == instanceProvider {
 		return cfg.Repos[0], true
 	}
-	if project.Provider != apiv1.ProviderGitHub {
+	if project.Provider != apiProvider {
 		return instance.RepoRef{}, false
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == project.Owner && repo.Name == project.Name {
+		if repo.Provider == instanceProvider && repo.Owner == project.Owner && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -578,21 +591,7 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 // project repo, mirroring githubRepoForGaggle. A single-repo instance with an
 // unspecified project provider resolves to its sole Gitea repo.
 func giteaRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
-	if cfg == nil {
-		return instance.RepoRef{}, false
-	}
-	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "gitea" {
-		return cfg.Repos[0], true
-	}
-	if project.Provider != apiv1.ProviderGitea {
-		return instance.RepoRef{}, false
-	}
-	for _, repo := range cfg.Repos {
-		if repo.Provider == string(providers.ProviderGitea) && repo.Owner == project.Owner && repo.Name == project.Name {
-			return repo, true
-		}
-	}
-	return instance.RepoRef{}, false
+	return repoForGaggleProvider(cfg, project, apiv1.ProviderGitea, string(providers.ProviderGitea))
 }
 
 // giteaWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
@@ -705,9 +704,14 @@ func (e *workflowCompileError) Unwrap() error {
 // WF-016); no registry is wired at the instance level yet, so this pins
 // version 1 for every workflow, matching run.go's existing limitation until a
 // follow-up introduces one.
-func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	const workflowVersion = 1
-	knownChecks := knownAutomatedCheckNames()
+//
+// knownTelemetryConnectors (#4475) is the instance's configured
+// external-telemetry connector names (instance.Config.ExternalTelemetryConnectorNames).
+// Non-nil — even empty — rejects any task whose inputs.connector names a
+// connector the instance does not configure, at compile time rather than when
+// a run reaches the stage. Nil skips the check, for callers that compile
+// without the instance config's authority over connectors.
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	// The admission registry resolves harness config (model/options), and model
 	// resolution spawns the configured launcher for model discovery whenever a
 	// goober declares spec.Model — so the launcher override must apply here too,
@@ -729,6 +733,19 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	machines, err := compileWorkflowMachines(set, goobers, adapterRegistry.Names(), knownTelemetryConnectors)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return machines, resolvedGoobers, warnings, nil
+}
+
+// compileWorkflowMachines applies structural workflow admission independently
+// of harness model/options admission, so diagnostics can report invalid harness
+// configuration without inventing a different workflow compilation path.
+func compileWorkflowMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, harnessNames, knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
+	const workflowVersion = 1
+	knownChecks := knownAutomatedCheckNames()
 	// Gaggle-level runner requirements feed push-boundary admission (#2861):
 	// each stage's effective requirement set is its gaggle's
 	// RequiredCapabilities union its own. The DSL 3.0 successor surface — the
@@ -746,23 +763,29 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 		wf := &set.Workflows[i]
 		// Preview authorization is per-Workflow (#4220): wf's OWN annotations,
 		// never the Manifest's or its gaggle's.
+		opts := []workflow.Option{
+			workflow.WithGoobers(goobers),
+			workflow.WithKnownChecks(knownChecks),
+			workflow.WithKnownHarnesses(harnessNames),
+			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
+			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
+			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
+		}
+		if knownTelemetryConnectors != nil {
+			opts = append(opts, workflow.WithKnownExternalTelemetryConnectors(knownTelemetryConnectors))
+		}
 		m, err := workflow.Compile(
 			workflow.Definition{
 				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
 			},
-			workflow.WithGoobers(goobers),
-			workflow.WithKnownChecks(knownChecks),
-			workflow.WithKnownHarnesses(adapterRegistry.Names()),
-			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
-			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
-			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
+			opts...,
 		)
 		if err != nil {
-			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
+			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
-	return machines, resolvedGoobers, warnings, nil
+	return machines, nil
 }
 
 func admitGooberHarnessConfigs(adapterRegistry *harness.Registry, goobers map[string]apiv1.GooberSpec) (map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
@@ -871,4 +894,63 @@ func requireLabelsByGaggle(set *instance.ConfigSet) map[string]string {
 		out[g.Name] = strings.Join(g.Spec.RequireLabels, ",")
 	}
 	return out
+}
+
+func issueOwnershipAssigneesByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Spec.IssueOwnershipScope != nil {
+			out[g.Name] = strings.Join(g.Spec.IssueOwnershipScope.Assignees, ",")
+		}
+	}
+	return out
+}
+
+func issueOwnershipUnassignedByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Spec.IssueOwnershipScope != nil {
+			out[g.Name] = g.Spec.IssueOwnershipScope.Unassigned
+		}
+	}
+	return out
+}
+
+type issueOwnershipDefaults struct {
+	assignees  map[string]string
+	unassigned map[string]string
+}
+
+func issueOwnershipDefaultsByGaggle(set *instance.ConfigSet) issueOwnershipDefaults {
+	return issueOwnershipDefaults{
+		assignees:  issueOwnershipAssigneesByGaggle(set),
+		unassigned: issueOwnershipUnassignedByGaggle(set),
+	}
+}
+
+func backlogLabelsByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = strings.Join(g.Spec.Backlog.Labels, ",")
+	}
+	return out
+}
+
+func backlogLabelPredicatesByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = g.Spec.Backlog.LabelPredicate
+	}
+	return out
+}
+
+func (input runnerCompositionInput) resolvedSkillFiles() (map[string][]workflow.SkillFile, error) {
+	if input.SkillPackages != nil {
+		return input.SkillPackages, nil
+	}
+	return loadGooberSkillPackages(input.Layout.ConfigDir(), input.Layout.Gaggle(), input.Goobers)
 }

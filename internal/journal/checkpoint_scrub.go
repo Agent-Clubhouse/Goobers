@@ -88,14 +88,12 @@ func (nopScrubber) SafePrefix(input []byte) int { return len(input) }
 // Credentials must be registered before the producer is allowed to use them,
 // as required by the ordinary registry-scrubbing path too.
 func (s *RegistryScrubber) SafePrefix(input []byte) int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var targets []checkpointExactTarget
-	for _, secret := range s.secrets {
-		targets = append(targets, newCheckpointExactTarget(secret))
-		for _, escaped := range jsonEscapedForms(secret) {
-			targets = append(targets, newCheckpointExactTarget(escaped))
-		}
+	// The same snapshot Scrub uses, so a cut is never computed against a
+	// different registry generation than the scrub that follows it.
+	registered := s.redactionTargets()
+	targets := make([]checkpointExactTarget, 0, len(registered))
+	for _, value := range registered {
+		targets = append(targets, newCheckpointExactTarget(value))
 	}
 	safe := 0
 	for offset, b := range input {

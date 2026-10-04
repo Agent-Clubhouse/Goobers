@@ -149,6 +149,28 @@
                       }
                     },
                     {
+                      "name": "goobers.journal.exports_dropped",
+                      "description": "Committed journal events never handed to the OTLP Logs exporter, by cause. The journal file stays authoritative.",
+                      "unit": "{event}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.journal.drop_cause",
+                                "value": {
+                                  "string_value": "queue_full"
+                                }
+                              }
+                            ],
+                            "as_int": "2"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
                       "name": "goobers.journal.redactions_total",
                       "description": "Scrub events that removed secret material, separated by layer.",
                       "unit": "{event}",
@@ -168,6 +190,126 @@
                         ],
                         "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
                         "is_monotonic": true
+                      }
+                    },
+                    {
+                      "name": "goobers.queue.depth",
+                      "description": "Scheduler-visible queued work by queue kind and operating system.",
+                      "unit": "{item}",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "backlog"
+                                }
+                              }
+                            ],
+                            "as_int": "4"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "refill"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "schedule"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "goobers.queue.oldest_age",
+                      "description": "Age in seconds of the oldest scheduler-visible queue item by queue kind and operating system.",
+                      "unit": "s",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "backlog"
+                                }
+                              }
+                            ],
+                            "as_int": "90"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "refill"
+                                }
+                              }
+                            ],
+                            "as_int": "30"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "schedule"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ]
                       }
                     },
                     {
@@ -1367,6 +1509,26 @@
                               }
                             ],
                             "as_int": "8192"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "goobers.workers.available",
+                      "description": "Configured scheduler capacity not currently reserved, by operating system.",
+                      "unit": "{worker}",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              }
+                            ],
+                            "as_int": "2"
                           }
                         ]
                       }

@@ -31,20 +31,20 @@ themselves, so no cell can drift from the YAML.
 | --- | --- | --- | --- |
 | `ado-live-conformance.yml` | schedule, workflow_dispatch | active | — |
 | `ado-live-write.yml` | pull_request, schedule, workflow_dispatch | dormant | #5727 (scratch repository, `ADO_WRITE_REPOSITORY` variable, first green run) |
-| `ci.yml` | merge_group, pull_request, push | active | — |
+| `ci.yml` | merge_group, pull_request, push, workflow_dispatch | active | — |
 | `config-validate-gate-selftest.yml` | pull_request, push, workflow_dispatch | active | — |
 | `design-delivery.yml` | pull_request | active | — |
 | `design-ledger-reconcile.yml` | push, schedule, workflow_dispatch | active | — |
 | `evals-gate.yml` | workflow_dispatch | dormant | #2681 (direction superseded; #2667/#2668 closed as redirected — retire or re-scope after ratification) |
 | `evals-tests.yml` | pull_request, push, workflow_dispatch | active | — |
 | `flake-watch.yml` | schedule, workflow_dispatch | active | — |
-| `ghcp-echo.yml` | schedule, workflow_dispatch | active | — |
 | `large-repo-scale.yml` | schedule, workflow_dispatch | active | — |
 | `macos-nightly.yml` | schedule, workflow_dispatch | active | — |
 | `portal-package.yml` | pull_request, workflow_dispatch | active | — |
 | `provider-fixture-drift-ado.yml` | workflow_dispatch | dormant | #4602 (ADO fixture work item, PAT, first live-candidate review) |
 | `provider-fixture-drift.yml` | workflow_dispatch | dormant | #1478 (designated repo, issue, PR, credential) |
 | `release.yml` | push, workflow_dispatch | active | — |
+| `scale-suite.yml` | schedule, workflow_dispatch | active | — |
 | `scheduled-failure-alarm.yml` | schedule, workflow_dispatch | active | — |
 | `stress.yml` | schedule, workflow_dispatch | active | — |
 | `tracked-gap-references.yml` | push, schedule, workflow_dispatch | active | — |

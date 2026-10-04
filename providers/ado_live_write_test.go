@@ -40,7 +40,6 @@ import (
 	"context"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -179,11 +178,21 @@ func TestLiveADOWriteWorkItem(t *testing.T) {
 	}
 	t.Cleanup(func() { env.retireWorkItem(t, item.ID, scenario) })
 	t.Logf("work item %s (%s)", item.ID, item.Type)
+	// The re-create below is an immediate retry, the window where the footer's
+	// full-text search cannot see the item yet. Record whether it could, so
+	// a pass shows which of findRunItem's two queries carried the dedupe.
+	if _, indexed, err := env.provider.findRunItemByQuery(ctx, env.repo, adoRunItemFullTextQuery(req.RunID), adoRunItemFullTextTop, req.RunID); err != nil {
+		t.Logf("full-text footer search: %v", err)
+	} else {
+		t.Logf("full-text footer search sees the new item immediately: %v", indexed)
+	}
 	again, err := env.provider.CreateWorkItem(ctx, req)
 	if err != nil {
 		t.Fatalf("CreateWorkItem (re-create): %v", err)
 	}
 	if again.ID != item.ID {
+		// Retire the duplicate too: it carries the same footer.
+		t.Cleanup(func() { env.retireWorkItem(t, again.ID, scenario) })
 		t.Fatalf("re-create filed work item %s, want the existing item %s", again.ID, item.ID)
 	}
 	if !env.ns.ownsItemBody(item.Body, scenario) {
@@ -271,6 +280,12 @@ func (e adoLiveWriteEnv) checkLabels(ctx context.Context, t *testing.T, pullID s
 	}
 }
 
+// requireLabels compares ignoring case. ADO PR labels share the project's
+// case-insensitive tag namespace, which keeps the first writer's casing, and
+// PullRequestLabelNames folds only Goobers-owned labels (ado_labelcase.go): a
+// label such as Goobers-Live-Mixed comes back in whatever casing the project
+// first saw. An exact compare would fail the presence check and pass the
+// absence check vacuously.
 func (e adoLiveWriteEnv) requireLabels(ctx context.Context, t *testing.T, pullID string, present, absent []string) {
 	t.Helper()
 	names, err := e.provider.PullRequestLabelNames(ctx, e.repo, pullID)
@@ -278,12 +293,12 @@ func (e adoLiveWriteEnv) requireLabels(ctx context.Context, t *testing.T, pullID
 		t.Fatalf("PullRequestLabelNames: %v", err)
 	}
 	for _, name := range present {
-		if !slices.Contains(names, name) {
+		if !adoHasLabel(names, name) {
 			t.Errorf("labels %v lack %q", names, name)
 		}
 	}
 	for _, name := range absent {
-		if slices.Contains(names, name) {
+		if adoHasLabel(names, name) {
 			t.Errorf("labels %v still carry %q", names, name)
 		}
 	}
@@ -434,8 +449,8 @@ func (e adoLiveWriteEnv) retireWorkItem(t *testing.T, id, scenario string) {
 		t.Errorf("cleanup: read %s states: %v", item.Type, err)
 		return
 	}
-	target, ok := adoLiveRetireState(states)
-	if !ok || strings.EqualFold(stringField(raw.Fields, "System.State"), target) {
+	target, ok := adoLiveRetireState(states, stringField(raw.Fields, "System.State"))
+	if !ok {
 		return
 	}
 	endpoint, err := e.provider.workURL(e.provider.project(e.repo), "workitems", id)

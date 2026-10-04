@@ -3,9 +3,11 @@ package readservice
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/clustercheck"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -25,6 +27,8 @@ type instanceFold struct {
 // journal: everything SchedulerStatus reports plus the earliest recorded init
 // completion the time-to-first-PR metric measures from.
 type instanceState struct {
+	clusterChecks map[string]clustercheck.Result
+
 	engineFallbacks       engineFallbackFold
 	initCompletedAt       time.Time
 	providerQuotaResumeAt *time.Time
@@ -37,6 +41,7 @@ type instanceState struct {
 	workerDivergenceOrder []string
 	workerDivergence      map[string]WorkerConfigDivergenceStatus
 	telemetryRetention    *TelemetryRetentionStatus
+	configReloadRejection *ConfigReloadRejectionStatus
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -63,6 +68,8 @@ func (f *instanceFold) snapshot(ctx context.Context, schedulerDir string) (insta
 
 func (s *instanceState) apply(event journal.Event) {
 	s.engineFallbacks.apply(event)
+	s.applyConfigReload(event)
+	s.applyClusterCheck(event)
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -74,7 +81,7 @@ func (s *instanceState) apply(event journal.Event) {
 			delete(s.refillBlocked, localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow})
 		}
 	case journal.EventError:
-		if event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed && event.Workflow != "" {
+		if event.Error != nil && providers.IsAuthFailureCode(event.Error.Code) && event.Workflow != "" {
 			s.blockRefill(event.Gaggle, event.Workflow, localscheduler.ReasonProviderAuth)
 		}
 	case journal.EventPollShed:
@@ -156,9 +163,36 @@ func (s *instanceState) apply(event journal.Event) {
 		if s.restart != nil &&
 			runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
 			event.RunID != "" &&
-			!containsString(s.restart.RunIDs, event.RunID) {
+			!slices.Contains(s.restart.RunIDs, event.RunID) {
 			s.restart.RunIDs = append(s.restart.RunIDs, event.RunID)
 		}
+	}
+}
+
+func (s *instanceState) applyClusterCheck(event journal.Event) {
+	result, ok := clustercheck.FromEvent(event)
+	if !ok {
+		return
+	}
+	// A skipped/unverified probe cannot establish recovery or renew the
+	// freshness of an unresolved failure. Only a new pass or fail replaces it.
+	if result.Outcome == "warn" && s.clusterChecks[result.Check].Outcome == "fail" {
+		return
+	}
+	if s.clusterChecks == nil {
+		s.clusterChecks = make(map[string]clustercheck.Result)
+	}
+	s.clusterChecks[result.Check] = result
+}
+
+// applyConfigReload keeps the newest rejected reload until an accepted reload
+// or a daemon start supersedes it (#5596).
+func (s *instanceState) applyConfigReload(event journal.Event) {
+	switch event.Type {
+	case journal.EventConfigReloadRejected:
+		s.configReloadRejection = configReloadRejection(event)
+	case journal.EventConfigReloaded, journal.EventDaemonStarted:
+		s.configReloadRejection = nil
 	}
 }
 
@@ -217,6 +251,7 @@ func (s *instanceState) resetRefusals() {
 
 func (s instanceState) clone() instanceState {
 	clone := s
+	clone.clusterChecks = maps.Clone(s.clusterChecks)
 	clone.engineFallbacks = s.engineFallbacks.clone()
 	if s.providerQuotaResumeAt != nil {
 		resumeAt := *s.providerQuotaResumeAt

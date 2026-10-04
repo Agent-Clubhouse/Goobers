@@ -150,7 +150,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 	}
 
 	assets := make(map[string]*gooberassets.WireBundle, 1)
-	bundle, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, env.Goober), gooberassets.SourceDir))
+	bundle, err := gooberassets.Load(filepath.Join(resolvedGooberDefinitionDir(l.ConfigDir(), set, spec, env.Goober), gooberassets.SourceDir))
 	if err != nil {
 		return nil, fmt.Errorf("load goober %q assets: %w", env.Goober, err)
 	}
@@ -202,5 +202,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		HarnessEnvUnset:      slices.Clone(cfg.Runner.HarnessEnvUnset),
 		HarnessSessionArgs:   slices.Clone(cfg.Runner.HarnessSessionArgs[string(spec.Harness)]),
 		HarnessPreflightArgs: slices.Clone(cfg.Runner.HarnessPreflightArgs[string(spec.Harness)]),
+
+		RequiredMCPSettleTimeout: cfg.Runner.RequiredMCPSettleTimeout,
 	}, nil
 }

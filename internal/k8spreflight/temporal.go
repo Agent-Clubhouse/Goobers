@@ -6,8 +6,44 @@ import (
 
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/temporalcodec"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
+
+// ResolveTemporalOptions applies instance transport and payload settings to the
+// preflight. Explicit targets take precedence; without an instance, empty targets
+// remain empty so the Temporal check stays optional. Construction performs no key
+// operation or Temporal dial.
+func ResolveTemporalOptions(root string, opts Options) (Options, error) {
+	cfg := &instance.Config{}
+	if root != "" {
+		var err error
+		cfg, err = instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+		if err != nil {
+			return Options{}, err
+		}
+	}
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		return Options{}, fmt.Errorf("temporal payload codec: %w", err)
+	}
+	engineConfig := cfg.EffectiveEngineConfig()
+	opts.TemporalTLS = engineConfig.TLS
+	opts.TemporalDataConverter = dc
+	if root != "" {
+		if opts.TemporalHostPort == "" {
+			opts.TemporalHostPort = engineConfig.HostPort
+		}
+		if opts.TemporalNamespace == "" {
+			opts.TemporalNamespace = engineConfig.Namespace
+		}
+	}
+	return opts, nil
+}
 
 // temporalNamespaceDescriber is the narrow slice of client.Client this
 // package needs — just enough to check namespace existence, so a test can
@@ -30,12 +66,17 @@ func (d dialedTemporalClient) DescribeNamespace(ctx context.Context, in *workflo
 
 func (d dialedTemporalClient) Close() { d.c.Close() }
 
-func defaultDialTemporal(_ context.Context, hostPort string) (temporalNamespaceDescriber, error) {
-	c, err := client.Dial(client.Options{HostPort: hostPort})
-	if err != nil {
-		return nil, err
+// defaultDialTemporal dials through the shared temporaldial constructor
+// (#5289) with the check's TLS options; nil tls is the plaintext dial. The
+// namespace is left empty, as before: DescribeNamespace names it explicitly.
+func defaultDialTemporal(tls *temporaldial.TLS, dc ...converter.DataConverter) func(context.Context, string) (temporalNamespaceDescriber, error) {
+	return func(ctx context.Context, hostPort string) (temporalNamespaceDescriber, error) {
+		c, err := temporaldial.Dial(ctx, hostPort, "", tls, dc...)
+		if err != nil {
+			return nil, err
+		}
+		return dialedTemporalClient{c: c}, nil
 	}
-	return dialedTemporalClient{c: c}, nil
 }
 
 // checkTemporalNamespace verifies the Temporal namespace the worker/engine
@@ -65,14 +106,14 @@ func checkTemporalNamespace(ctx context.Context, _ kubernetes.Interface, opts Op
 	}
 	dial := opts.DialTemporal
 	if dial == nil {
-		dial = defaultDialTemporal
+		dial = defaultDialTemporal(opts.TemporalTLS, opts.TemporalDataConverter)
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
 	defer cancel()
 	c, err := dial(ctx, opts.TemporalHostPort)
 	if err != nil {
 		result.Status = StatusFail
-		result.Detail = fmt.Sprintf("could not reach Temporal frontend %s: %v", opts.TemporalHostPort, err)
+		result.Detail = fmt.Sprintf("could not reach Temporal frontend %s over %s: %v", opts.TemporalHostPort, opts.TemporalTLS.Transport(), err)
 		return result
 	}
 	defer c.Close()
@@ -83,6 +124,6 @@ func checkTemporalNamespace(ctx context.Context, _ kubernetes.Interface, opts Op
 		return result
 	}
 	result.Status = StatusPass
-	result.Detail = fmt.Sprintf("namespace %q is registered", namespace)
+	result.Detail = fmt.Sprintf("namespace %q is registered (transport: %s)", namespace, opts.TemporalTLS.Transport())
 	return result
 }

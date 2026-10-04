@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -49,9 +50,10 @@ import (
 // circuit-breaker instance — and the two would drift on the next change to
 // either, which is precisely how a "parity" path stops being parity.
 type engineTerminalHooks struct {
-	layout  instance.Layout
-	log     *journal.InstanceLog
-	repoRef apiv1.RepoRef
+	selfExecutionObserved func(bool)
+	layout                instance.Layout
+	log                   *journal.InstanceLog
+	repoRef               apiv1.RepoRef
 
 	existingFix  runner.ExistingFixHandler
 	blocked      runner.BlockedHandler
@@ -122,7 +124,7 @@ func (h *engineTerminalHooks) run(ctx context.Context, out engineTerminalOutcome
 	// the durable identity before invoking any terminal hook: blocked parking
 	// and escalation comments are daemon-authored GitHub writes and must carry
 	// the run that caused them.
-	if attributed, err := attributionContextForRun(ctx, h.layout, out.RunID, out.Result.FinalState); err == nil {
+	if attributed, err := escalationnotify.AttributionContextForRun(ctx, h.layout.RunsDir(), out.RunID, out.Result.FinalState); err == nil {
 		ctx = attributed
 	}
 	h.fireExistingFix(ctx, out)
@@ -205,6 +207,19 @@ const existingFixStage = "implement"
 // reason and blockers to record, and the two are told apart exactly as the
 // runner tells them apart: by the FINAL STAGE'S OWN reported status.
 func (h *engineTerminalHooks) fireBlocked(ctx context.Context, out engineTerminalOutcome) {
+	if engine.IsSelfExecutionDenied(out.Err) {
+		if h.selfExecutionObserved != nil {
+			h.selfExecutionObserved(true)
+		}
+		h.fireStageEscalation(ctx, out, out.Result.FinalState, out.Err.Error())
+		if h.blocked != nil {
+			if err := h.blocked(ctx, runner.BlockedOutcome{RunID: out.RunID, RepoRef: h.repoRef, Stage: out.Result.FinalState, ItemID: h.itemID(out), Reason: out.Err.Error()}); err != nil {
+				h.recordHookFailure(out, out.Result.FinalState, "blocked_handling_failed", err)
+			}
+		}
+		return
+	}
+
 	if out.Phase != journal.PhaseEscalated {
 		return
 	}
@@ -213,6 +228,9 @@ func (h *engineTerminalHooks) fireBlocked(ctx context.Context, out engineTermina
 		return
 	}
 	stage := out.Result.FinalState
+	if env.Error != nil && env.Error.Code == runner.SelfExecutionDeniedCode && h.selfExecutionObserved != nil {
+		h.selfExecutionObserved(true)
+	}
 	o := runner.BlockedOutcome{
 		RunID:    out.RunID,
 		RepoRef:  h.repoRef,
@@ -285,6 +303,7 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 	}
 	cause := out.Result.FailureMessage
 	code := out.Result.FailureCode
+	var faultClass telemetry.ErrorClass
 	if out.Err != nil {
 		// A walk-level failure returns (RunResult{}, err): there is no status,
 		// no final state and no failure code, so the workflow's error IS the
@@ -296,13 +315,15 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 		if code == "" {
 			code = engineTerminalFailureCode(out.Err)
 		}
+		faultClass = engineTerminalFaultClass(out.Err)
 	}
 	if err := h.failed(ctx, runner.FailedOutcome{
-		RunID:   out.RunID,
-		RepoRef: h.repoRef,
-		Stage:   out.Result.FinalState,
-		Cause:   cause,
-		Code:    code,
+		RunID:      out.RunID,
+		RepoRef:    h.repoRef,
+		Stage:      out.Result.FinalState,
+		Cause:      cause,
+		Code:       code,
+		FaultClass: faultClass,
 	}); err != nil {
 		h.recordHookFailure(out, out.Result.FinalState, "failed_handling_failed", err)
 	}
@@ -317,10 +338,24 @@ const engineWalkFailureCode = "run_failed"
 // classifier so an exhausted infrastructure budget cannot become an item
 // failure merely because RunResult is absent. Unknown errors keep the fallback.
 func engineTerminalFailureCode(err error) string {
+	if engine.IsSelfExecutionDenied(err) {
+		return runner.SelfExecutionDeniedCode
+	}
 	if class, classifyErr := engine.ClassifyDispatchFailure(err); classifyErr == nil && class == journal.AttemptInfra {
 		return telemetry.ErrCodeInfraFailure
 	}
 	return engineWalkFailureCode
+}
+
+// engineTerminalFaultClass is the engine arm's FailedOutcome.FaultClass
+// (#5638), from the same classifier as engineTerminalFailureCode, so the
+// failure streak sees the same explicit infra class from both drivers rather
+// than depending on this arm's choice of fallback code.
+func engineTerminalFaultClass(err error) telemetry.ErrorClass {
+	if class, classifyErr := engine.ClassifyDispatchFailure(err); classifyErr == nil && class == journal.AttemptInfra {
+		return telemetry.ErrorClassInfra
+	}
+	return ""
 }
 
 // itemID resolves the run's single driving backlog item: the one pinned at
@@ -375,7 +410,7 @@ func (h *engineTerminalHooks) recordHookFailure(out engineTerminalOutcome, stage
 		Type:   journal.EventError,
 		Stage:  stage,
 		Reason: "engine terminal hook failed",
-		Error:  &journal.ErrorDetail{Code: code, Message: err.Error()},
+		Error:  journal.ErrorDetailFor(code, err),
 		Runner: map[string]any{"driver": string(journal.DriverEngine)},
 	})
 }

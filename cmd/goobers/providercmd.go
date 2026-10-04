@@ -18,10 +18,12 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/internal/pushrejection"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -45,11 +47,7 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 	telemetryOpt := providers.WithRateLimitObserver(
 		telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
 	)
-	provider := providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
-	if attribution, ok := stageAttribution(os.Getenv(executor.InstanceRootEnvVar)); ok {
-		provider.SetAttribution(attribution)
-	}
-	return provider
+	return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
 }
 
 // claimLedgerFileName/claimLockFileName are the well-known files under an
@@ -280,18 +278,18 @@ func landingAuthority(repo providers.RepositoryRef) (capability.Capability, erro
 	}
 	// Each providerToken call names its capability as a constant so the
 	// manifest drift check (provider_capability_manifest_test.go) can see it.
-	authority := capability.GitHubPRMerge
-	var err error
+	// The error names the path taken: a declared ado:pr:complete never falls
+	// back, so suggesting github:pr:merge there would mislead the operator.
 	if os.Getenv(executor.CredentialEnvVar(string(capability.ADOPRComplete))) != "" {
-		authority = capability.ADOPRComplete
-		_, err = providerToken(capability.ADOPRComplete)
-	} else {
-		_, err = providerToken(capability.GitHubPRMerge)
+		if _, err := providerToken(capability.ADOPRComplete); err != nil {
+			return "", fmt.Errorf("landing on Azure DevOps with the declared %s (no fallback to %s): %w", capability.ADOPRComplete, capability.GitHubPRMerge, err)
+		}
+		return capability.ADOPRComplete, nil
 	}
-	if err != nil {
+	if _, err := providerToken(capability.GitHubPRMerge); err != nil {
 		return "", fmt.Errorf("landing on Azure DevOps needs %s (or %s): %w", capability.GitHubPRMerge, capability.ADOPRComplete, err)
 	}
-	return authority, nil
+	return capability.GitHubPRMerge, nil
 }
 
 // providerInput reads a declared Task.Inputs value the runner passed through
@@ -415,6 +413,12 @@ const (
 	// see one) — a real permission failure. Never retryable: retrying with
 	// the same bad or expired credential cannot succeed.
 	errorCodeAuthFailed = providers.ErrorCodeAuthFailed
+	// errorCodeProviderAuthFailed is a delivered Azure DevOps credential that
+	// Azure DevOps rejected (providers.ErrADODeliveredCredentialRejected):
+	// the same verdict as errorCodeAuthFailed under a code that does not
+	// name GitHub (Goobers#6120). Never retryable at this layer — the one
+	// re-resolve a refreshable credential gets already happened in send().
+	errorCodeProviderAuthFailed = providers.ErrorCodeProviderAuthFailed
 	// errorCodeNetwork is either a transport-level failure (dial/DNS/reset/
 	// timeout) that exhausted send()'s own in-request retry budget, or any
 	// other condition providers.IsTransientError recognizes without a
@@ -438,14 +442,21 @@ const (
 	errorCodePolicyNotMet = "provider_policy_not_met"
 	// errorCodeBranchPolicyProtected is a direct push (or force-push)
 	// refused because the target branch is protected by an enabled ADO
-	// branch policy (policyProtectedPushError, from git's own TF402455 /
-	// GitRefUpdateRejectedByPolicyException rejection of the raw `git
-	// push`, ADO-N26). Distinct from errorCodePolicyNotMet, which is the
+	// branch policy (pushrejection.PolicyProtectedError, from git's own
+	// TF402455 / GitRefUpdateRejectedByPolicyException rejection of the raw
+	// `git push`, ADO-N26). Distinct from errorCodePolicyNotMet, which is the
 	// REST completion API's own 403 refusal of a pull request that is
 	// already open — this is the git-protocol refusal of a push that never
 	// became a PR at all. Never an auth failure and never retried: retrying
 	// (as a ref race or with a fresh credential) hits the identical policy.
-	errorCodeBranchPolicyProtected = "branch_policy_protected"
+	errorCodeBranchPolicyProtected = "provider_branch_policy_protected"
+	// errorCodeWorkflowPermissionDenied is a push (or force-push) GitHub
+	// refused because it creates or updates a .github/workflows/ file and
+	// the pushing App installation lacks the `workflows` permission
+	// (pushrejection.WorkflowPermissionError, #5502). Never an auth failure
+	// and never retried: only granting the permission (or a manual push)
+	// clears it.
+	errorCodeWorkflowPermissionDenied = "github_workflow_permission_denied"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
 	// status such as a 422 validation error). Still typed and diagnosable —
@@ -485,6 +496,10 @@ func statusCodeFrom(err error) (int, bool) {
 // retryable/non-retryable split, never a second, independent opinion on
 // whether the failure is retryable.
 func classifyProviderError(err error) (code string, retryable bool, extra map[string]interface{}) {
+	var ownership *issueOwnershipScopeError
+	if errors.As(err, &ownership) {
+		return ownership.ErrorCode(), false, map[string]interface{}{"errorClass": ownership.ErrorClass()}
+	}
 	if rl, ok := providers.AsRateLimitError(err); ok {
 		extra = map[string]interface{}{}
 		if !rl.Reset.IsZero() {
@@ -502,15 +517,29 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if code, ok := classifyLandingRefusal(err); ok {
 		return code, false, nil
 	}
+	var claimDrift *providers.ClaimMetadataDriftError
+	if errors.As(err, &claimDrift) {
+		return "claim_metadata_drift", true, nil
+	}
+	if strings.Contains(message, "claim metadata drift") {
+		return "claim_metadata_drift", true, nil
+	}
 	// Checked ahead of IsAuthenticationError (ADO-N26): a policy-protected
 	// push's underlying git failure carries no HTTP status a credential
 	// classifier could recognize, but its message text alone must never be
 	// misread as a credential problem either.
-	var policyPush *policyProtectedPushError
+	var policyPush *pushrejection.PolicyProtectedError
 	if errors.As(err, &policyPush) {
 		return errorCodeBranchPolicyProtected, false, nil
 	}
-	if providers.IsAuthenticationError(err) {
+	var workflowPush *pushrejection.WorkflowPermissionError
+	if errors.As(err, &workflowPush) {
+		return errorCodeWorkflowPermissionDenied, false, nil
+	}
+	if isADODeliveredCredentialRejection(err, message) {
+		return errorCodeProviderAuthFailed, false, nil
+	}
+	if providers.IsAuthenticationError(err) || isUnrefreshedRejection(err, message) {
 		return errorCodeAuthFailed, false, nil
 	}
 	if status, ok := statusCodeFrom(err); ok {
@@ -552,6 +581,21 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 		return telemetry.ErrCodeInfraJournal, true, nil
 	}
 	return errorCodeProvider, false, nil
+}
+
+// isADODeliveredCredentialRejection recognizes an Azure DevOps rejection of a
+// delivered credential, typed in process or by its stable message prefix once
+// it has crossed a process boundary as text. lowered is err's lowercased text.
+func isADODeliveredCredentialRejection(err error, lowered string) bool {
+	return errors.Is(err, providers.ErrADODeliveredCredentialRejected) ||
+		strings.Contains(lowered, strings.ToLower(providers.ErrADODeliveredCredentialRejected.Error()))
+}
+
+// isUnrefreshedRejection recognizes a GitHub credential the provider rejected
+// and the stage's credential-refresh grant could not re-resolve (#6120).
+func isUnrefreshedRejection(err error, lowered string) bool {
+	return errors.Is(err, credentials.ErrRejectedCredentialNotRefreshed) ||
+		strings.Contains(lowered, strings.ToLower(credentials.ErrRejectedCredentialNotRefreshed.Error()))
 }
 
 // classifyLandingRefusal names the typed landing refusals (ADO-N9) ahead of
@@ -781,6 +825,25 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 	return 1
 }
 
+// failProviderStageWithCode is failProviderStage for a failure whose code the
+// stage already knows: it writes that code, non-retryable, instead of
+// classifying err as a provider error.
+func failProviderStageWithCode(stderr io.Writer, what string, err error, code, resultFileDefault string) int {
+	pf(stderr, "error: %s: %v\n", what, err)
+	resultFile := providerInput("resultFile", resultFileDefault)
+	if resultFile == "" {
+		return 1
+	}
+	if werr := writeProviderStageResult(resultFile, map[string]interface{}{
+		executor.OutputErrorCode:      code,
+		executor.OutputErrorMessage:   fmt.Sprintf("%s: %v", what, err),
+		executor.OutputErrorRetryable: false,
+	}); werr != nil {
+		pf(stderr, "warning: write typed error result %s: %v\n", resultFile, werr)
+	}
+	return 1
+}
+
 // withClaimLock serializes fn against every other process (a concurrent
 // `goobers backlog-query` from a racing run, or `goobers up`'s periodic
 // RecoverExpired) touching the same instance's claim ledger, via a bounded
@@ -953,10 +1016,7 @@ func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext,
 		Gaggle:   eventContext.Gaggle,
 		Workflow: eventContext.Workflow,
 		RunID:    eventContext.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    claimsLockTimeoutCode,
-			Message: timeoutErr.Error(),
-		},
+		Error:    journal.ErrorDetailFor(claimsLockTimeoutCode, timeoutErr),
 		Runner: map[string]any{
 			"operation":    timeoutErr.Operation,
 			"pid":          os.Getpid(),

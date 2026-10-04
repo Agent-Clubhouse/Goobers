@@ -5,6 +5,11 @@
 > come from `instance.yaml` token refs resolved by `internal/credentials`
 > (issue #14). Tier-3 identity (Key Vault, Entra) is out of scope here.
 
+> **GitHub Enterprise Server is unsupported.** `provider: github` always means
+> github.com. `goobers validate` and instance loading refuse `baseUrl` on a
+> github repository, backlog, additional repo or sibling (gaggle code
+> `CFG013`); `baseUrl` is only for `provider: gitea`.
+
 ## Create a fine-grained PAT for a repository
 
 Open GitHub's [fine-grained personal access token settings](https://github.com/settings/personal-access-tokens/new)
@@ -88,6 +93,7 @@ for this page; see [`ado-authentication.md`](ado-authentication.md).
 | `telemetry:read` | *(no GitHub permission)* | Read the local telemetry rollup and named host-governed external connectors. Backed by connector configuration, not a GitHub PAT. |
 | `journal:read` | *(no GitHub permission)* | Read-only, digest-verified access to **another** run's journal. Local filesystem authority, not a GitHub PAT. |
 | `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
+| `configrepo:write` | Contents: Read and write, Pull requests: Read and write (limited to the **config repository**) | Stage-declarable write sibling of `configrepo:read` (TUT-A8): lets a tutor stage push a branch and open a PR in the `workflowSource` repository. With a github-app `workflowSource` the daemon mints it automatically from the same App installation, down-scoped to that repository and to `contents:write` + `pull_requests:write` + `metadata:read` (the App needs those permissions granted). With a token-authed `workflowSource` there is no implicit write credential: provision a fine-grained PAT restricted to the config repository only and source it with `credentials: [{capability: configrepo:write, token: {env: ...}}]`. Never reuse the product-repo token. |
 | `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use; on claude-code, stored `claude` CLI sign-in (or a real `sk-ant-...` Anthropic API key for headless use) | Agent harness model authentication for agentic stages. An existing per-user CLI sign-in is the local default on either harness; a configured token is injected as `COPILOT_GITHUB_TOKEN` (copilot) or `ANTHROPIC_API_KEY` (claude-code) for services/CI. Only **one** `agent:model` grant exists per instance — see [Mixed-harness instances](#mixed-harness-instances-scoping-agentmodel-per-harness) below before configuring both harnesses. |
 
 Repository access: select **Only select repositories** and list exactly the
@@ -424,6 +430,7 @@ repos:
       kind: github-app
       appId: 123456            # or the App's client ID string
       installationId: 987654
+      slug: my-app             # login is my-app[bot]; installation tokens cannot GET /user
       privateKey:
         file: /run/secrets/goobers-app.pem   # env: and store: (#683) work too
 ```
@@ -475,6 +482,39 @@ requests (Read and write), Checks + Commit statuses (Read-only, for
 Verify with `goobers validate`: the repository preflight performs a real
 token exchange, so a missing installation or rejected key fails there with
 GitHub's diagnosis instead of mid-run.
+
+### Externally minted installation tokens (`auth.kind: github-app-token`)
+
+A trusted host or CI token broker can mint the installation token without giving
+Goobers the App private key. Declare the App identity alongside the token ref:
+
+```yaml
+repos:
+  - provider: github
+    owner: your-org
+    name: your-repo
+    token:
+      env: INSTALLATION_TOKEN  # file, keychain and store refs also work
+    auth:
+      kind: github-app-token
+      slug: my-app            # required, without the [bot] suffix
+```
+
+This mode does not mint, refresh or introspect an App identity. The trusted
+external issuer must verify that the token belongs to the declared App, narrow
+its repositories/permissions, and renew or replace it before expiry. With an
+environment ref, provision a fresh process for a new token; file/store refs are
+resolved through the normal credential resolver. An expired token fails closed;
+there is no fallback to the host's GitHub login. `token.githubCLI` is forbidden
+because it selects a user identity, not an externally minted installation token.
+
+`auth.slug` is an operator-owned trust declaration used by claim, release and
+trusted-comment checks, not proof obtained from the token. Bind it from verified
+issuer metadata, never from the repository being worked on. Per-capability
+overrides used by those checks must represent the same declared App. A separate
+reviewer still needs a separate identity. Do not use this mode to relabel a PAT.
+`appId`, `installationId` and `privateKey` are forbidden in this mode; the
+existing `github-app` mode continues to own minting. PAT configs are unchanged.
 
 ## Least privilege per workflow
 

@@ -356,7 +356,7 @@ func TestTelemetryStatsJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("telemetry stats --json: code = %d, stderr = %q", code, stderr)
 	}
-	var got rollup.StatsResult
+	var got readservice.TelemetryStatsResult
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("telemetry stats --json produced invalid JSON: %v\n%s", err, stdout)
 	}
@@ -374,10 +374,11 @@ func TestTelemetryStatsJSON(t *testing.T) {
 	}
 	if len(got.Models) != 1 || got.Models[0].Model != "gpt-5.4" ||
 		got.Models[0].UsageSamples != 1 ||
-		got.Models[0].InputTokenSamples != 1 || got.Models[0].InputTokens != 120 ||
-		got.Models[0].OutputTokenSamples != 1 || got.Models[0].OutputTokens != 30 ||
-		got.Models[0].PremiumRequestSamples != 1 || got.Models[0].CopilotPremiumRequests != 1 ||
-		got.Models[0].CostSamples != 1 || got.Models[0].CostUSD != 0.25 {
+		got.Models[0].InputTokenSamples != 1 || got.Models[0].InputTokens == nil || *got.Models[0].InputTokens != 120 ||
+		got.Models[0].OutputTokenSamples != 1 || got.Models[0].OutputTokens == nil || *got.Models[0].OutputTokens != 30 ||
+		got.Models[0].PremiumRequestSamples != 1 || got.Models[0].CopilotPremiumRequests == nil ||
+		*got.Models[0].CopilotPremiumRequests != 1 ||
+		got.Models[0].CostSamples != 1 || got.Models[0].CostAIC == nil || *got.Models[0].CostAIC != 25 {
 		t.Fatalf("model stats = %#v", got.Models)
 	}
 
@@ -413,7 +414,7 @@ func TestTelemetryStatsJSON(t *testing.T) {
 		"inputTokenSamples", "inputTokens",
 		"outputTokenSamples", "outputTokens",
 		"premiumRequestSamples", "copilotPremiumRequests",
-		"costSamples", "costUSD",
+		"costSamples", "costAIC",
 	)
 }
 
@@ -736,6 +737,56 @@ func TestTelemetryStatsKeepsMissingMetricsUnknown(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "unknown") {
 		t.Fatalf("stdout = %q, want unknown metric presentation", stdout)
+	}
+}
+
+func TestTelemetryMarkFixFeedsSubsequentStoredAudit(t *testing.T) {
+	root := initDemo(t)
+	writeAttributedCreditRun(t, root, "attribution-run-mark-fix")
+	store, err := readmodel.Open(instance.NewLayout(root).ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+	first, err := readservice.StoredFaultAudit(
+		context.Background(), root, store,
+		readservice.StoredAttributionQuery{Gaggle: "example", Workflow: "default-implement"},
+		config,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := append(first.WorkflowFindings, first.UnknownFindings...)
+	if len(findings) != 1 {
+		t.Fatalf("first report = %+v, want one finding", first)
+	}
+
+	appliedAt := now.Add(time.Hour)
+	code, stdout, stderr := runArgs(
+		t, "telemetry", "mark-fix",
+		"--finding="+findings[0].ID,
+		"--applied-at="+appliedAt.Format(time.RFC3339),
+		root,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	config.Now = appliedAt.Add(time.Hour)
+	next, err := readservice.StoredFaultAudit(
+		context.Background(), root, store,
+		readservice.StoredAttributionQuery{Gaggle: "example", Workflow: "default-implement"},
+		config,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextFindings := append(next.WorkflowFindings, next.UnknownFindings...)
+	if len(nextFindings) != 1 || nextFindings[0].Verification != creditgraph.VerificationPending {
+		t.Fatalf("next report = %+v, want verification pending from CLI marker", next)
 	}
 }
 

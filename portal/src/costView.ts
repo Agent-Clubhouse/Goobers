@@ -12,10 +12,8 @@ export interface ExternalCostRow {
   externalKind: "pr" | "issue";
   externalId: string;
   provider: string;
-  native: string;
-  nativeValue?: number;
-  normalized: string;
-  normalizedValue?: number;
+  aic: string;
+  aicValue?: number;
   coverage: string;
   coverageRatio: number;
   lowerBound: boolean;
@@ -26,8 +24,7 @@ export interface ExternalCostRow {
 export type ExternalCostSortKey =
   | "work-item"
   | "provider"
-  | "native"
-  | "normalized"
+  | "aic"
   | "runs";
 
 export type ExternalCostSortDirection = "asc" | "desc";
@@ -54,12 +51,14 @@ export function filterExternalCostRows(
     return [
       row.label,
       row.provider,
-      row.native,
-      row.normalized,
+      row.aic,
       row.coverage,
       ...row.models,
       ...row.runs.flatMap((run) => [
         run.runId,
+        run.gaggle ?? "",
+        run.workflow ?? "",
+        run.status ?? "",
         run.startedAt,
         ...run.billingModels,
         ...run.models.map((model) => model.model),
@@ -95,10 +94,8 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
     externalKind: aggregate.externalKind,
     externalId: aggregate.externalId,
     provider: aggregate.provider,
-    native: formatAmounts(aggregate.nativeTotals, "Unmeasured"),
-    nativeValue: aggregate.nativeTotals[0]?.value,
-    normalized: formatAmounts(aggregate.normalizedTotals, "Unavailable"),
-    normalizedValue: aggregate.normalizedTotals[0]?.value,
+    aic: formatAIC(aggregate.nativeTotals, aggregate.normalizedTotals, "Unmeasured"),
+    aicValue: findAIC(aggregate.nativeTotals, aggregate.normalizedTotals)?.value,
     coverage: coverage.lowerBound
       ? `Lower bound: ${coverage.measuredRuns} of ${coverage.totalRuns} runs and ${coverage.measuredAttempts} of ${coverage.totalAttempts} attempts measured.`
       : `Complete coverage: ${coverage.totalRuns} runs and ${coverage.totalAttempts} attempts measured.`,
@@ -107,7 +104,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
     lowerBound: coverage.lowerBound,
     models: aggregate.models.map(
       (model) =>
-        `${model.model}: ${formatAmounts(model.nativeTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
+        `${model.model}: ${formatAIC(model.nativeTotals, model.normalizedTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
     ),
     runs: aggregate.runs,
   };
@@ -126,10 +123,8 @@ function compareExternalCostRows(
       );
     case "provider":
       return left.provider.localeCompare(right.provider) || left.label.localeCompare(right.label);
-    case "native":
-      return compareOptionalNumbers(left.nativeValue, right.nativeValue);
-    case "normalized":
-      return compareOptionalNumbers(left.normalizedValue, right.normalizedValue);
+    case "aic":
+      return compareOptionalNumbers(left.aicValue, right.aicValue);
     case "runs":
       return left.runs.length - right.runs.length || left.label.localeCompare(right.label);
   }
@@ -153,52 +148,36 @@ function compareMissingValues(
   right: ExternalCostRow,
   key: ExternalCostSortKey,
 ): number {
-  if (key !== "native" && key !== "normalized") {
+  if (key !== "aic") {
     return 0;
   }
-  const leftValue = key === "native" ? left.nativeValue : left.normalizedValue;
-  const rightValue = key === "native" ? right.nativeValue : right.normalizedValue;
+  const leftValue = left.aicValue;
+  const rightValue = right.aicValue;
   if (leftValue === undefined) {
     return rightValue === undefined ? 0 : 1;
   }
   return rightValue === undefined ? -1 : 0;
 }
 
-function formatAmounts(
-  amounts: readonly TelemetryCostAmount[],
+function findAIC(
+  native: readonly TelemetryCostAmount[],
+  normalized: readonly TelemetryCostAmount[],
+): TelemetryCostAmount | undefined {
+  return [...native, ...normalized].find((amount) => amount.unit === "aiCredits");
+}
+
+function formatAIC(
+  native: readonly TelemetryCostAmount[],
+  normalized: readonly TelemetryCostAmount[],
   empty: string,
 ): string {
-  if (amounts.length === 0) {
+  const amount = findAIC(native, normalized);
+  if (!amount) {
     return empty;
   }
-  return amounts.map(formatAmount).join(" · ");
+  return `${formatAICNumber(amount.value)} AIC${amount.estimated ? " estimated" : ""}`;
 }
 
-function formatAmount(amount: TelemetryCostAmount): string {
-  let value: string;
-  switch (amount.unit) {
-    case "aiCredits":
-      value = `${formatWholeNumber(amount.value)} AIC`;
-      break;
-    case "usd":
-      value = new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(amount.value);
-      break;
-    case "premiumRequests":
-      value = `${formatNumber(amount.value)} premium requests`;
-      break;
-  }
-  return value;
-}
-
-function formatNumber(value: number): string {
+function formatAICNumber(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
-}
-
-function formatWholeNumber(value: number): string {
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }

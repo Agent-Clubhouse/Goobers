@@ -151,6 +151,7 @@ func TestBacklogQueryFatalProviderPathInventory(t *testing.T) {
 		"read ready-label transitions":              1,
 		"compute claimed-item staleness":            1,
 		"compute read-only re-sweep staleness":      1,
+		"advance backlog reconciliation cursor":     1,
 		"release backlog claims":                    1,
 		"verify decomposition publication barrier":  2,
 	}

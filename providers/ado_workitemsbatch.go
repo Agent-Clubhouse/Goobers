@@ -15,6 +15,10 @@ const adoWorkItemsBatchSize = 200
 // failure the same way it resends a GET.
 const adoWorkItemsBatchPath = "/_apis/wit/workitemsbatch"
 
+// adoWIQLPath is the path suffix of the WIQL query endpoint. A POST to it
+// runs a read-only query, so send may resend it after a transient failure.
+const adoWIQLPath = "/_apis/wit/wiql"
+
 type adoWorkItemsBatchRequest struct {
 	IDs    []int  `json:"ids"`
 	Expand string `json:"$expand"`
@@ -174,8 +178,9 @@ func adoListCandidateMatches(req ListWorkItemsRequest, requestedState string, it
 }
 
 // adoRetryableRequest reports whether send may resend a request after a
-// transient failure: an idempotent method, or a POST to workitemsbatch, which
-// only reads.
+// transient failure: an idempotent method, or a POST to one of the read-only
+// endpoints ADO serves over POST (workitemsbatch hydration and WIQL queries),
+// which commit nothing server-side.
 func adoRetryableRequest(method, endpoint string) bool {
 	if isIdempotentHTTPMethod(method) {
 		return true
@@ -187,5 +192,5 @@ func adoRetryableRequest(method, endpoint string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.HasSuffix(parsed.Path, adoWorkItemsBatchPath)
+	return strings.HasSuffix(parsed.Path, adoWorkItemsBatchPath) || strings.HasSuffix(parsed.Path, adoWIQLPath)
 }

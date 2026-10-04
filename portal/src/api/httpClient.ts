@@ -11,6 +11,10 @@ import {
   isRecord,
 } from "./errors";
 import { apiRoutes, type ApiRoute } from "./contract.generated";
+import {
+  normalizeLegacyTelemetryCosts,
+  normalizeLegacyWorkItemCost,
+} from "./legacyCostCompatibility";
 import { publishUpdateAvailability } from "../updateNotice";
 import type {
   PortalDiagnostics,
@@ -31,6 +35,7 @@ import type {
   GooberPage,
   Health,
   Instance,
+  InstanceReadiness,
   PageRequest,
   PortalConfig,
   RequestOptions,
@@ -206,6 +211,12 @@ export class HttpDaemonClient implements DaemonClient {
     const instance = await this.getJSON<Instance>(clientRoutes.instance, undefined, options);
     assertSupportedContractVersion(instance);
     return instance;
+  }
+
+  async getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness> {
+    const readiness = await this.getJSON<InstanceReadiness>(clientRoutes.readiness, undefined, options);
+    assertSupportedContractVersion(readiness);
+    return readiness;
   }
 
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
@@ -390,7 +401,7 @@ export class HttpDaemonClient implements DaemonClient {
     request?: TelemetryStatsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryStatsResult> {
-    return this.getJSON(
+    return this.getJSON<TelemetryStatsResult>(
       clientRoutes.telemetryStats,
       request && {
         workflow: request.workflow,
@@ -404,7 +415,7 @@ export class HttpDaemonClient implements DaemonClient {
         trendPreviousUntil: request.trendPreviousUntil,
       },
       options,
-    );
+    ).then(normalizeLegacyTelemetryCosts);
   }
 
   getTelemetryCosts(
@@ -488,12 +499,12 @@ export class HttpDaemonClient implements DaemonClient {
     externalId: string,
     options?: RequestOptions,
   ): Promise<WorkItemDetail> {
-    return this.getJSON(
+    return this.getJSON<WorkItemDetail>(
       clientRoutes.workItemDetail,
       { repository },
       options,
       { provider, kind, id: externalId },
-    );
+    ).then(normalizeLegacyWorkItemCost);
   }
 
   private async getJSON<T>(

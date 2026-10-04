@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -124,6 +127,47 @@ func TestServiceHealthRecordIsFindableWithoutARunID(t *testing.T) {
 		if _, ok := payload[key]; !ok {
 			t.Errorf("payload missing required field %q: %+v", key, payload)
 		}
+	}
+}
+
+func TestServiceHealthIncludesCredentialFreeHarnessAuth(t *testing.T) {
+	const secret = "github_pat_secret"
+	previous := serviceHealthHarnessAuth
+	serviceHealthHarnessAuth = func(string) []harness.AuthInfo {
+		return []harness.AuthInfo{{
+			Status:      harness.AuthStatusSignedOut,
+			Executable:  "launcher copilot",
+			Version:     "copilot version 1.0.0",
+			Runner:      "configured launcher",
+			ProfileDir:  "C:\\profile",
+			Remediation: "goobers harness auth copilot login",
+		}}
+	}
+	t.Cleanup(func() { serviceHealthHarnessAuth = previous })
+
+	payload := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, nil, nil, time.Unix(1_700_000_000, 0)))
+	auth, ok := payload["harnessAuth"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload missing harnessAuth: %+v", payload)
+	}
+	copilot, ok := auth["copilot"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload missing copilot auth: %+v", auth)
+	}
+	for key, want := range map[string]any{
+		"status":      harness.AuthStatusSignedOut,
+		"executable":  "launcher copilot",
+		"version":     "copilot version 1.0.0",
+		"runner":      "configured launcher",
+		"profile":     "C:\\profile",
+		"remediation": "goobers harness auth copilot login",
+	} {
+		if got := copilot[key]; got != want {
+			t.Fatalf("harnessAuth[%s] = %v, want %v in %+v", key, got, want, copilot)
+		}
+	}
+	if strings.Contains(fmt.Sprint(payload), secret) {
+		t.Fatalf("service health leaked credential text: %+v", payload)
 	}
 }
 

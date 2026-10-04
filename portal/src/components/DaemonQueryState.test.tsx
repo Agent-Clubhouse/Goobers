@@ -1,6 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { DaemonAuthError, DaemonUnavailableError } from "../api/errors";
+import {
+  DaemonAuthError,
+  DaemonUnavailableError,
+  UnsupportedApiVersionError,
+} from "../api/errors";
 import { DaemonErrorState } from "./DaemonQueryState";
 
 // #2916: a 401/403 must render as a distinct auth failure — with the status
@@ -32,6 +36,15 @@ describe("DaemonErrorState", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Access denied/i)).not.toBeInTheDocument();
+  });
+
+  it("identifies an incompatible older daemon without presenting it as unavailable", () => {
+    render(<DaemonErrorState error={new UnsupportedApiVersionError("v0")} retry={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { name: "Daemon update required" })).toBeInTheDocument();
+    expect(screen.getByText(/API version "v0" is unsupported/)).toBeInTheDocument();
+    expect(screen.getByText(/Update the daemon and reload the portal/)).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't load/i)).not.toBeInTheDocument();
   });
 
   it("explains how to recover when local instance data cannot be read", () => {

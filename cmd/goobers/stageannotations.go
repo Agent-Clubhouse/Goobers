@@ -7,8 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -208,13 +209,5 @@ func (a *planeAnnotator) annotationKey(ev journal.Event) string {
 // sortedRunnerKeys orders a Runner map's keys so the derived key is stable
 // across map iteration order.
 func sortedRunnerKeys(runner map[string]any) []string {
-	if len(runner) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(runner))
-	for key := range runner {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(runner))
 }

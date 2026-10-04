@@ -45,7 +45,8 @@ type adoWorkItemFieldChange struct {
 // ADO's tag namespace does. A transition's time is that update's
 // System.ChangedDate (an update's revisedDate is when the revision was
 // superseded, not when it was made). A history that reaches ADO's
-// 10,000-revision cap fails closed.
+// 10,000-revision cap, or a tag change without a readable change date, fails
+// closed with ErrLabelHistoryIncomplete.
 func (p *ADOProvider) ListWorkItemLabelTransitionsForItem(ctx context.Context, repo RepositoryRef, id, label string) ([]WorkItemLabelTransition, error) {
 	project := p.project(repo)
 	if err := p.requireWorkItemScope(project); err != nil {
@@ -74,7 +75,7 @@ func (p *ADOProvider) ListWorkItemLabelTransitionsForItem(ctx context.Context, r
 			}
 		}
 		if skip+len(page) >= adoMaxWorkItemRevisions {
-			return nil, fmt.Errorf("ADO work item %s has reached the %d-revision cap; its label history cannot be read completely", id, adoMaxWorkItemRevisions)
+			return nil, fmt.Errorf("%w: ADO work item %s has reached the %d-revision cap", ErrLabelHistoryIncomplete, id, adoMaxWorkItemRevisions)
 		}
 		if len(page) < adoUpdatesPageSize {
 			break
@@ -122,7 +123,7 @@ func adoLabelTransition(update adoWorkItemUpdate, id, label string) (WorkItemLab
 	}
 	changed, err := adoUpdateChangedDate(update)
 	if err != nil {
-		return WorkItemLabelTransition{}, false, fmt.Errorf("ADO work item %s update %d: %w", id, update.ID, err)
+		return WorkItemLabelTransition{}, false, fmt.Errorf("%w: ADO work item %s update %d: %w", ErrLabelHistoryIncomplete, id, update.ID, err)
 	}
 	return WorkItemLabelTransition{
 		EventID:    update.ID,

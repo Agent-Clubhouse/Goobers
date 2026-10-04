@@ -52,14 +52,18 @@ var exceptions = []exception{
 
 	// These are canonical stage-owned status labels, not config-facing routing
 	// labels. Configurable approval/readiness labels must come from stage inputs.
-	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:blocked-on-sibling", Reason: "canonical verdict label"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:approved", Reason: "canonical lifecycle label registry"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:claimed", Reason: "canonical lifecycle label registry"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:ready", Reason: "canonical lifecycle label registry"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:needs-human", Reason: "canonical lifecycle label registry"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:needs-remediation", Reason: "canonical lifecycle label registry"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:blocked-on-sibling", Reason: "canonical lifecycle label registry"},
 	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:merge-ready", Reason: "canonical verdict label"},
 	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
 	// No entry for goobers:needs-remediation here: applyverdict.go reaches it
 	// through the needsRemediationLabel constant, and this list rejects a stale
 	// exception (#2988).
 	{Path: "cmd/goobers/mergedemotion.go", Value: "goobers:merge-demoted", Reason: "canonical merge-review label"},
-	{Path: "cmd/goobers/postmerge.go", Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
 	{Path: "cmd/goobers/prcommentwatch.go", Value: "goobers:merge-ready", Reason: "canonical merge-review label the comment watcher treats as already-landing"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},

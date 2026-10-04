@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
@@ -19,11 +20,13 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+type podRecoveryTrace func(phase string, elapsed time.Duration, err error)
+
 // publishPodRecovery belongs to the supervisor, not the stage subprocess.
 // It uses the existing parent bearer and never exports additional authority.
 // Success acknowledges host custody of both dirty and committed work; it does
 // not make either eligible as a successful cross-stage workspace delta.
-func publishPodRecovery(ctx context.Context, repository string) error {
+func publishPodRecovery(ctx context.Context, repository string, trace podRecoveryTrace) error {
 	if !stageWorkspaceIsWritableRepo() {
 		return nil
 	}
@@ -33,7 +36,12 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if err != nil {
 		return err
 	}
-	claims, err := client.ForRunAll(ctx, runID)
+	var claims []claimsclient.Entry
+	err = podRecoveryPhase(ctx, trace, "claim lookup", func(ctx context.Context) error {
+		var err error
+		claims, err = client.ForRunAll(ctx, runID)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -61,8 +69,11 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if base == "" {
 		base = "main"
 	}
-	base, err = resolveRecoveryBaseRefWithFetch(ctx, repository, base)
-	if err != nil {
+	if err := podRecoveryPhase(ctx, trace, "resolve base ref", func(ctx context.Context) error {
+		var err error
+		base, err = resolveRecoveryBaseRefWithFetch(ctx, repository, base)
+		return err
+	}); err != nil {
 		return err
 	}
 	// The in-pod checkout is materialized outside worktree.Manager, so it never
@@ -71,9 +82,18 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	// `status --porcelain` and the capture below select untracked files, so
 	// without this a stage that only wrote its own result file and mutation
 	// sidecar publishes a bookkeeping-only archive and consumes a slot (#5119).
-	executor.ExcludeStageArtifacts(ctx, repository, os.Getenv(executor.InputEnvVar(executor.InputResultFile)))
-	needed, err := podWorkspaceNeedsRecovery(ctx, repository, base)
-	if err != nil {
+	if err := podRecoveryPhase(ctx, trace, "exclude stage artifacts", func(ctx context.Context) error {
+		executor.ExcludeStageArtifacts(ctx, repository, os.Getenv(executor.InputEnvVar(executor.InputResultFile)))
+		return nil
+	}); err != nil {
+		return err
+	}
+	var needed bool
+	if err := podRecoveryPhase(ctx, trace, "inspect workspace", func(ctx context.Context) error {
+		var err error
+		needed, err = podWorkspaceNeedsRecovery(ctx, repository, base)
+		return err
+	}); err != nil {
 		return err
 	}
 	if !needed {
@@ -85,8 +105,12 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if err != nil {
 		return err
 	}
-	inventory, err := prepareRecoveryInventory(root)
-	if err != nil {
+	var inventory string
+	if err := podRecoveryPhase(ctx, trace, "prepare inventory", func(ctx context.Context) error {
+		var err error
+		inventory, err = prepareRecoveryInventory(root)
+		return err
+	}); err != nil {
 		return err
 	}
 	publisher := recovery.HTTPArchivePublisher{BaseURL: endpoint, Token: token, RunID: runID}
@@ -105,11 +129,31 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 		},
 	}
 	publication := recoveryCleanupJournal{directory: filepath.Join(root, "journal"), scrubber: journal.NewRegistryScrubber()}
-	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
+	if err := podRecoveryPhase(ctx, trace, "retain abandoned preparation", func(ctx context.Context) error {
+		return recovery.RetainAbandonedPreparation(ctx, request, publication)
+	}); err != nil {
 		return err
 	}
-	_, _, err = recovery.Retain(ctx, request, publication)
-	return err
+	return podRecoveryPhase(ctx, trace, "retain archive", func(ctx context.Context) error {
+		_, _, err := recovery.Retain(ctx, request, publication)
+		return err
+	})
+}
+
+func podRecoveryPhase(ctx context.Context, trace podRecoveryTrace, phase string, run func(context.Context) error) error {
+	start := time.Now()
+	err := run(ctx)
+	elapsed := time.Since(start)
+	if err == nil {
+		err = ctx.Err()
+	}
+	if trace != nil {
+		trace(phase, elapsed, err)
+	}
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", phase, err)
 }
 
 // podWorkspaceNeedsRecovery reports whether a writable workspace has either
@@ -219,11 +263,9 @@ func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
 	if err != nil {
 		return err
 	}
-	var authEnv []string
-	if creds, credErr := resolveCheckoutCredential(ctx); credErr == nil {
-		if token := gitToken(creds); token != "" {
-			authEnv = gitAuthEnv(token)
-		}
+	authEnv, err := recoveryFetchAuthEnv(ctx, url)
+	if err != nil {
+		return err
 	}
 	var cmd *exec.Cmd
 	if authEnv != nil {
@@ -236,4 +278,26 @@ func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
 		return fmt.Errorf("fetch base %s: %w: %s", base, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// recoveryFetchAuthEnv is the git credential environment for the recovery
+// base fetch: the checkout credential, sent the way the checkout sends it. On
+// Azure DevOps with a scheme the credential plane stated, that is the
+// URL-scoped Authorization header (Bearer plus X-VSS-ForceMsaPassThrough for a
+// Microsoft Entra token); every other provider keeps the Basic extraheader.
+// A credential that cannot be resolved leaves the fetch anonymous, as before.
+func recoveryFetchAuthEnv(ctx context.Context, url string) ([]string, error) {
+	creds, scheme, credErr := resolveCheckoutCredential(ctx)
+	var token string
+	if credErr == nil {
+		token = gitToken(creds)
+	}
+	if token == "" {
+		return nil, nil
+	}
+	provider := apiv1.Provider(os.Getenv(executor.RepoProviderEnvVar))
+	if ado := adoCheckoutAuthFor(apiv1.RepoRef{Provider: provider}, scheme, url); ado.scheme != "" {
+		return adoCheckoutGitAuthEnv(ctx, token, ado)
+	}
+	return gitAuthEnv(token), nil
 }

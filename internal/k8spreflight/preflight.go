@@ -15,7 +15,10 @@ import (
 	"slices"
 	"time"
 
+	"go.temporal.io/sdk/converter"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // Status is a check outcome.
@@ -71,6 +74,10 @@ const DefaultTimeout = 10 * time.Second
 // Options carries the operator-supplied probe targets. The zero value runs
 // the cluster-only checks and reports the network probes as skipped warns.
 type Options struct {
+	// PSANamespaces overrides discovery of namespaces labeled goobers.dev/gaggle.
+	PSANamespaces []string
+	// PSAServiceAccount selects the account for the representative rendered stage probes.
+	PSAServiceAccount string
 	// Checks limits execution to these check IDs. Empty runs the full preflight.
 	Checks []string
 	// OverlayDir is the consumer kustomization directory. Empty means the
@@ -114,7 +121,13 @@ type Options struct {
 	// with no namespaces registered, so this must exist before first use —
 	// see deploy/reference/temporal/namespace-job.yaml.
 	TemporalNamespace string
-	// DialTemporal dials the Temporal frontend; nil uses client.Dial. Tests
+	// TemporalTLS is the frontend transport security the namespace check
+	// dials with (#5289); nil dials plaintext. The check reports which
+	// transport it used.
+	TemporalTLS           *temporaldial.TLS
+	TemporalDataConverter converter.DataConverter
+	// DialTemporal dials the Temporal frontend; nil uses temporaldial.Dial
+	// with TemporalTLS. Tests
 	// substitute a fake to avoid a live Temporal server.
 	DialTemporal func(ctx context.Context, hostPort string) (temporalNamespaceDescriber, error)
 	// HTTPClient serves the issuer/registry probes; nil builds one bounded
@@ -157,7 +170,9 @@ type checkDefinition struct {
 func checkDefinitions() []checkDefinition {
 	return []checkDefinition{
 		{"cluster-version", checkClusterVersion},
+		{"pod-security-admission", checkPodSecurityAdmission},
 		{"networkpolicy-api", checkNetworkPolicySupport},
+		{"network-none-dns", checkNetworkNoneDNS},
 		{"apiserver-ipblock-drift", checkAPIServerIPBlockDrift},
 		{"rbac-install", checkInstallRBAC},
 		{"rbac-gaggle", checkGaggleRBAC},

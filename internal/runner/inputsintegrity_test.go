@@ -130,6 +130,60 @@ func TestProducedIntegrityDecaysToWeakestInput(t *testing.T) {
 	}
 }
 
+// #2979: a grade the executor stamped on its own envelope survives the
+// input-derived grade. A deterministic stage with no graded input (so
+// producedIntegrity alone says trusted) whose executor stamped unapproved must
+// finish unapproved, and a downstream stage requiring derived must refuse it.
+func TestStageResultIntegrityKeepsExecutorStampedGrade(t *testing.T) {
+	telemetry := apiv1.Task{Name: "query"}
+	produced := producedIntegrity(telemetry, nil, nil, nil)
+	if produced != apiv1.IntegrityTrusted {
+		t.Fatalf("precondition: produced = %q, want %q", produced, apiv1.IntegrityTrusted)
+	}
+	got := StageResultIntegrity(apiv1.IntegrityUnapproved, produced)
+	if got != apiv1.IntegrityUnapproved {
+		t.Fatalf("stage integrity = %q, want the executor's %q", got, apiv1.IntegrityUnapproved)
+	}
+
+	completed := stageOutputs{}
+	completed.record("query", map[string]any{"telemetryValue": "42"}, got)
+	consumer := apiv1.Task{
+		Name:             "consume",
+		MinimumIntegrity: apiv1.IntegrityDerived,
+		InputsFrom:       map[string]string{"v": "query.telemetryValue"},
+	}
+	grades := map[string]apiv1.Integrity{
+		"v": inputsFromIntegrity("query.telemetryValue", apiv1.ResultEnvelope{}, completed, true),
+	}
+	if err := apiv1.ValidateResolvedInputIntegrity(grades, consumer.MinimumIntegrity); err == nil {
+		t.Fatal("unapproved executor output was admitted at the derived tier")
+	}
+}
+
+// The executor's stamp can only lower a grade, never raise it: an executor
+// claiming trusted over unapproved input must not launder it (TBH-4). With no
+// stamp the input-derived grade is unchanged, and an unknown stamp fails closed.
+func TestStageResultIntegrityTakesWeakerGrade(t *testing.T) {
+	cases := []struct {
+		name     string
+		executor apiv1.Integrity
+		produced apiv1.Integrity
+		want     apiv1.Integrity
+	}{
+		{"no stamp keeps produced", "", apiv1.IntegrityTrusted, apiv1.IntegrityTrusted},
+		{"no stamp keeps weak produced", "", apiv1.IntegrityUnapproved, apiv1.IntegrityUnapproved},
+		{"stamp cannot raise", apiv1.IntegrityTrusted, apiv1.IntegrityUnapproved, apiv1.IntegrityUnapproved},
+		{"stamp lowers", apiv1.IntegrityDerived, apiv1.IntegrityMaintainer, apiv1.IntegrityDerived},
+		{"equal stamp", apiv1.IntegrityTrusted, apiv1.IntegrityTrusted, apiv1.IntegrityTrusted},
+		{"unknown stamp fails closed", apiv1.Integrity("perfect"), apiv1.IntegrityTrusted, ""},
+	}
+	for _, tc := range cases {
+		if got := StageResultIntegrity(tc.executor, tc.produced); got != tc.want {
+			t.Errorf("%s: StageResultIntegrity(%q, %q) = %q, want %q", tc.name, tc.executor, tc.produced, got, tc.want)
+		}
+	}
+}
+
 func asIntegrityAdmission(err error, target *apiv1.IntegrityAdmissionError) bool {
 	admission := &apiv1.IntegrityAdmissionError{}
 	if !errors.As(err, &admission) {

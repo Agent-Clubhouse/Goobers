@@ -198,3 +198,72 @@ func TestAttributionDisabledWithoutRun(t *testing.T) {
 		t.Fatalf("body = %q, want unchanged %q", got, body)
 	}
 }
+
+func TestStripAttributionRecoversTheWrittenBody(t *testing.T) {
+	nanoAIU := int64(2_500_000_000)
+	attribution := Attribution{
+		Instance: "example-instance", Gaggle: "example-gaggle", Workflow: "decomposition",
+		Task: "publish-batch", Goober: "deterministic", Run: "run-strip-1",
+		Cost: &CostReceipt{JournalSequence: 1, NanoAIU: &nanoAIU},
+	}
+	written := "Child body.\n\n<!-- goobers-action:v1 key=YXBp -->\n<!-- goobers-action-digest:v1 sha256:00 -->\n"
+	stamped, err := StampAttribution(written, attribution, "issue-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := ParseAttribution(stamped); err != nil || !found {
+		t.Fatalf("StampAttribution body has no attribution: found=%v err=%v body=%q", found, err, stamped)
+	}
+	if got, want := StripAttribution(stamped), strings.TrimSpace(written); got != want {
+		t.Fatalf("StripAttribution(stamped) = %q, want %q", got, want)
+	}
+	if got := StripAttribution("  " + written); got != strings.TrimSpace(written) {
+		t.Fatalf("StripAttribution(unattributed) = %q, want trimmed input", got)
+	}
+	restamped, err := StampAttribution(stamped, attribution, "issue-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restamped != stamped {
+		t.Fatalf("re-stamp changed body:\n%q\nwant\n%q", restamped, stamped)
+	}
+	unchanged, err := StampAttribution(written, Attribution{}, "issue-create")
+	if err != nil || unchanged != written {
+		t.Fatalf("StampAttribution with zero attribution = %q, %v; want input unchanged", unchanged, err)
+	}
+}
+
+// TestStripAttributionRemovesTheOperationMarker: a keyed work-item update
+// stores its comment as text + operation marker + attribution footer (#2657).
+// Both are the provider's stamp, so a reader comparing against the intended
+// text must not see either; caller-authored markers stay.
+func TestStripAttributionRemovesTheOperationMarker(t *testing.T) {
+	written := "Implementation complete: https://example.test/pr/1 is open for merge-review.\n<!-- goobers-action:v1 key=YXBp -->"
+	keyed := written + "\n\n" + OperationCommentMarker("issue-close-out/run-1/7/in-review")
+	if got := StripAttribution(keyed); got != strings.TrimSpace(written) {
+		t.Fatalf("StripAttribution(unattributed) = %q, want %q", got, strings.TrimSpace(written))
+	}
+	stamped, err := StampAttribution(keyed, Attribution{
+		Gaggle: "example-gaggle", Workflow: "implementation", Task: "issue-close-out", Goober: "deterministic", Run: "run-1",
+	}, "state-change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := StripAttribution(stamped); got != strings.TrimSpace(written) {
+		t.Fatalf("StripAttribution(stamped) = %q, want %q", got, strings.TrimSpace(written))
+	}
+}
+
+func TestStripAttributionKeepsTextAddedAfterTheFooterOnItsOwnLine(t *testing.T) {
+	stamped, err := StampAttribution("Body.\n<!-- goobers-action-digest:v1 sha256:00 -->", Attribution{
+		Gaggle: "example-gaggle", Workflow: "decomposition", Task: "publish-batch", Goober: "deterministic", Run: "run-strip-2",
+	}, "issue-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := StripAttribution(stamped + "\nEdited later.")
+	want := "Body.\n<!-- goobers-action-digest:v1 sha256:00 -->\nEdited later."
+	if got != want {
+		t.Fatalf("StripAttribution = %q, want %q", got, want)
+	}
+}

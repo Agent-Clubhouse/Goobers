@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/selfupdate"
 	daemonservice "github.com/goobers/goobers/internal/service"
 )
 
@@ -204,6 +207,391 @@ func TestServiceStatusReportsQueryError(t *testing.T) {
 	}
 }
 
+func TestServiceStatusHumanAndJSONOutput(t *testing.T) {
+	status := daemonservice.Status{
+		Platform: "linux", Supervisor: "systemd", Installed: true, Loaded: true, Running: true, State: "active", Account: "alice",
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "human",
+			want: "service is running under systemd as alice\n",
+		},
+		{
+			name: "json",
+			args: []string{"--json"},
+			want: "{\n" +
+				"  \"platform\": \"linux\",\n" +
+				"  \"supervisor\": \"systemd\",\n" +
+				"  \"installed\": true,\n" +
+				"  \"loaded\": true,\n" +
+				"  \"running\": true,\n" +
+				"  \"state\": \"active\",\n" +
+				"  \"account\": \"alice\"\n" +
+				"}\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			useFakeDaemonServiceManager(t, &fakeDaemonServiceManager{status: status})
+			args := append([]string{"service", "status"}, test.args...)
+			args = append(args, root)
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 0 || stdout != test.want || stderr != "" {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestServiceNotInstalledExitCodesAndMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		wantCode   int
+		wantStdout string
+		wantStderr func(*testing.T, string) string
+	}{
+		{name: "uninstall", command: "uninstall", wantCode: 0, wantStdout: "service is not installed\n"},
+		{name: "stop", command: "stop", wantCode: 1, wantStdout: "service is not installed\n", wantStderr: func(t *testing.T, root string) string {
+			return stoppedStatusRootHeader(t, root, 0)
+		}},
+		{name: "start", command: "start", wantCode: 1, wantStdout: "service is not installed\n", wantStderr: manualServiceRootHeader},
+		{name: "status", command: "status", wantCode: 1, wantStdout: "service is not installed (systemd)\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			manager := &fakeDaemonServiceManager{
+				status:   daemonservice.Status{Platform: "linux", Supervisor: "systemd", State: "not-installed"},
+				stopErr:  daemonservice.ErrNotInstalled,
+				startErr: daemonservice.ErrNotInstalled,
+			}
+			useFakeDaemonServiceManager(t, manager)
+			code, stdout, stderr := runArgs(t, "service", test.command, root)
+			wantStderr := ""
+			if test.wantStderr != nil {
+				wantStderr = test.wantStderr(t, root)
+			}
+			if code != test.wantCode || stdout != test.wantStdout || stderr != wantStderr {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestServiceTaskStatusHumanAndJSONOutput(t *testing.T) {
+	status := daemonservice.Status{
+		Platform: "windows", Supervisor: "scheduled-task", Installed: true, Loaded: true, Running: true,
+		State: "running", Account: `CONTOSO\alice`, Trigger: "logon", TaskName: `\Goobers\daemon`,
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "human",
+			want: "scheduled task is running as CONTOSO\\alice\n",
+		},
+		{
+			name: "json",
+			args: []string{"--json"},
+			want: "{\n" +
+				"  \"platform\": \"windows\",\n" +
+				"  \"supervisor\": \"scheduled-task\",\n" +
+				"  \"installed\": true,\n" +
+				"  \"loaded\": true,\n" +
+				"  \"running\": true,\n" +
+				"  \"state\": \"running\",\n" +
+				"  \"account\": \"CONTOSO\\\\alice\",\n" +
+				"  \"trigger\": \"logon\",\n" +
+				"  \"taskName\": \"\\\\Goobers\\\\daemon\"\n" +
+				"}\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			manager := identityTaskManager{&fakeDaemonServiceManager{status: status}}
+			useFakeScheduledTaskManager(t, manager)
+			args := append([]string{"service", "task-status"}, test.args...)
+			args = append(args, root)
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 0 || stdout != test.want || stderr != "" {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestServiceTaskNotInstalledExitCodesAndMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		wantStderr func(*testing.T, string) string
+	}{
+		{name: "uninstall", command: "task-uninstall", wantStderr: func(t *testing.T, root string) string {
+			return stoppedStatusRootHeader(t, root, 0)
+		}},
+		{name: "stop", command: "task-stop", wantStderr: func(t *testing.T, root string) string {
+			return stoppedStatusRootHeader(t, root, 0)
+		}},
+		{name: "start", command: "task-start", wantStderr: manualServiceRootHeader},
+		{name: "status", command: "task-status"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			manager := identityTaskManager{&fakeDaemonServiceManager{
+				status:       daemonservice.Status{Platform: "windows", Supervisor: "scheduled-task", State: "not-installed"},
+				uninstallErr: daemonservice.ErrNotInstalled,
+				stopErr:      daemonservice.ErrNotInstalled,
+				startErr:     daemonservice.ErrNotInstalled,
+			}}
+			useFakeScheduledTaskManager(t, manager)
+			code, stdout, stderr := runArgs(t, "service", test.command, root)
+			wantStderr := ""
+			if test.wantStderr != nil {
+				wantStderr = test.wantStderr(t, root)
+			}
+			if code != 1 || stdout != "scheduled task is not installed\n" || stderr != wantStderr {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestServiceTaskStatusReportsLastFailureAndDaemonLog(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := identityTaskManager{&fakeDaemonServiceManager{status: daemonservice.Status{
+		Installed:   true,
+		State:       "ready",
+		Account:     `CONTOSO\alice`,
+		LastFailure: "0x00000001",
+	}}}
+	useFakeScheduledTaskManager(t, manager)
+
+	code, stdout, stderr := runArgs(t, "service", "task-status", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"last failure: 0x00000001", instance.NewLayout(root).DaemonLogFile()} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+}
+
+func TestExistingScheduledTaskStartupFailureIsCapturedInDaemonLogAndStatus(t *testing.T) {
+	root := serviceTestInstance(t)
+	diagnostic := `harness copilot preflight probe failed with configured runner.harnessPreflightArgs.copilot ["--obsolete-preflight"]: unknown flag: --obsolete-preflight; the installed CLI may no longer accept these flags`
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(context.Context, selfupdate.SupervisorOptions) error {
+			return errors.New(diagnostic)
+		},
+		isWindowsService: func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) {
+			t.Fatal("Windows service runner called by scheduled-task supervisor path")
+			return 0, nil
+		},
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	code := runServiceSuperviseWith([]string{serviceSuperviseDaemonLogFlag, root}, io.Discard, io.Discard, deps)
+	if code != 1 {
+		t.Fatalf("service supervisor code = %d, want startup failure", code)
+	}
+	logPath := instance.NewLayout(root).DaemonLogFile()
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	for _, want := range []string{serviceSupervisorFailureStartup + ":", diagnostic} {
+		if !strings.Contains(string(log), want) {
+			t.Fatalf("daemon log = %q, missing %q", log, want)
+		}
+	}
+
+	manager := identityTaskManager{&fakeDaemonServiceManager{status: daemonservice.Status{
+		Installed:   true,
+		State:       "ready",
+		Account:     `CONTOSO\alice`,
+		LastFailure: "0x00000001",
+	}}}
+	useFakeScheduledTaskManager(t, manager)
+	code, stdout, stderr := runArgs(t, "service", "task-status", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("task-status code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"last startup failure", diagnostic, logPath} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "service", "task-status", "--json", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("task-status --json code = %d, stderr = %q", code, stderr)
+	}
+	var status daemonservice.Status
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatalf("decode JSON status: %v; output = %q", err, stdout)
+	}
+	if status.DaemonLogPath != logPath {
+		t.Fatalf("daemonLogPath = %q, want %q", status.DaemonLogPath, logPath)
+	}
+	if status.SupervisorFailure == nil ||
+		status.SupervisorFailure.Kind != serviceSupervisorFailureStartup ||
+		!strings.Contains(status.SupervisorFailure.Message, diagnostic) ||
+		status.SupervisorFailure.RecordedAt == "" {
+		t.Fatalf("supervisorFailure = %+v, want startup diagnostic", status.SupervisorFailure)
+	}
+}
+
+func TestServiceSupervisorRecordsRuntimeFailureAfterReadiness(t *testing.T) {
+	root := serviceTestInstance(t)
+	diagnostic := "daemon child crashed after startup"
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(_ context.Context, opts selfupdate.SupervisorOptions) error {
+			pf(opts.Stdout, "daemon started at %s (1 workflow(s)); API listening at http://127.0.0.1:0/api\n", root)
+			return errors.New(diagnostic)
+		},
+		isWindowsService: func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) {
+			t.Fatal("Windows service runner called by scheduled-task supervisor path")
+			return 0, nil
+		},
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	code := runServiceSuperviseWith([]string{serviceSuperviseDaemonLogFlag, root}, io.Discard, io.Discard, deps)
+	if code != 1 {
+		t.Fatalf("service supervisor code = %d, want runtime failure", code)
+	}
+	logPath := instance.NewLayout(root).DaemonLogFile()
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	if !strings.Contains(string(log), serviceSupervisorFailureRuntime+":") || strings.Contains(string(log), serviceSupervisorFailureStartup+":") {
+		t.Fatalf("daemon log = %q, want runtime failure only", log)
+	}
+
+	manager := identityTaskManager{&fakeDaemonServiceManager{status: daemonservice.Status{
+		Installed:   true,
+		State:       "ready",
+		Account:     `CONTOSO\alice`,
+		LastFailure: "0x00000001",
+	}}}
+	useFakeScheduledTaskManager(t, manager)
+	code, stdout, stderr := runArgs(t, "service", "task-status", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("task-status code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"last supervisor failure", diagnostic, logPath} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+	if strings.Contains(stdout, "last startup failure") {
+		t.Fatalf("runtime failure was reported as startup: %q", stdout)
+	}
+}
+
+func TestServiceSupervisorWithoutDaemonLogFlagLeavesDaemonLogAlone(t *testing.T) {
+	root := serviceTestInstance(t)
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(context.Context, selfupdate.SupervisorOptions) error {
+			return errors.New("boom")
+		},
+		isWindowsService:  func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) { return 0, nil },
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	var stderr strings.Builder
+	if code := runServiceSuperviseWith([]string{root}, io.Discard, &stderr, deps); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "error: supervise daemon: boom") {
+		t.Fatalf("stderr = %q, want supervisor error", stderr.String())
+	}
+	if _, err := os.Stat(instance.NewLayout(root).DaemonLogFile()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("daemon log stat err = %v, want not exist (foreground/systemd/launchd keep their own streams)", err)
+	}
+}
+
+func TestServiceSupervisorDaemonLogRedactsAndCapturesChildOutput(t *testing.T) {
+	root := serviceTestInstance(t)
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(_ context.Context, opts selfupdate.SupervisorOptions) error {
+			pf(opts.Stderr, "child stderr line\n")
+			return errors.New("probe failed: Authorization: Bearer sekret-token")
+		},
+		isWindowsService:  func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) { return 0, nil },
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	if code := runServiceSuperviseWith([]string{serviceSuperviseDaemonLogFlag, root}, io.Discard, io.Discard, deps); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	log, err := os.ReadFile(instance.NewLayout(root).DaemonLogFile())
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	if !strings.Contains(string(log), "child stderr line") || strings.Contains(string(log), "sekret-token") {
+		t.Fatalf("daemon log = %q, want child output captured and credentials redacted", log)
+	}
+	if failure := latestServiceSupervisorFailure(instance.NewLayout(root).DaemonLogFile()); failure.Kind != serviceSupervisorFailureStartup {
+		t.Fatalf("latest failure = %+v, want startup failure", failure)
+	}
+}
+
+func TestServiceTaskStartIgnoresFailureLoggedBeforeThisStart(t *testing.T) {
+	root := serviceTestInstance(t)
+	stale := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano) + " " + serviceSupervisorFailureStartup + ": error: supervise daemon: stale diagnostic\n"
+	if err := os.WriteFile(instance.NewLayout(root).DaemonLogFile(), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := identityTaskManager{&fakeDaemonServiceManager{startErr: errors.New("service failed while starting: 0x00000001")}}
+	useFakeScheduledTaskManager(t, manager)
+
+	code, _, stderr := runArgs(t, "service", "task-start", root)
+	if code != 1 || strings.Contains(stderr, "stale diagnostic") {
+		t.Fatalf("code = %d, stderr = %q; want failure without the stale diagnostic", code, stderr)
+	}
+}
+
+func TestServiceTaskStartReportsDaemonLogOnStartupFailure(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := identityTaskManager{&fakeDaemonServiceManager{startErr: errors.New("service failed while starting: 0x00000001")}}
+	useFakeScheduledTaskManager(t, manager)
+
+	code, _, stderr := runArgs(t, "service", "task-start", root)
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"service failed while starting: 0x00000001", instance.NewLayout(root).DaemonLogFile()} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, missing %q", stderr, want)
+		}
+	}
+}
+
 func serviceTestInstance(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -233,5 +621,16 @@ func useFakeDaemonServiceManager(t *testing.T, manager daemonServiceManager) {
 	}
 	t.Cleanup(func() {
 		newDaemonServiceManager = previous
+	})
+}
+
+func useFakeScheduledTaskManager(t *testing.T, manager scheduledTaskManager) {
+	t.Helper()
+	previous := newScheduledTaskManager
+	newScheduledTaskManager = func(string) (scheduledTaskManager, error) {
+		return manager, nil
+	}
+	t.Cleanup(func() {
+		newScheduledTaskManager = previous
 	})
 }

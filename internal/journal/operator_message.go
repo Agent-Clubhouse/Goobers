@@ -25,19 +25,9 @@ const scrubbedOperatorMessageIdentifierPrefix = "scrubbed:sha256:"
 // existing idempotency key to its original record. Expired requests are not
 // accepted; they receive a typed terminal record containing the rejected input.
 func (r *Run) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
-	if err := request.Validate(); err != nil {
-		return apiv1.OperatorMessageRecord{}, false, err
-	}
-	request.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", request.RequestID)
-	request.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", request.IdempotencyKey)
-	requestID, idempotencyKey := request.RequestID, request.IdempotencyKey
-	request, err := scrubOperatorMessage(r.scrubber, request)
+	request, err := r.prepareOperatorMessageRequest(request)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
-	}
-	request.RequestID, request.IdempotencyKey = requestID, idempotencyKey
-	if err := request.Validate(); err != nil {
-		return apiv1.OperatorMessageRecord{}, false, fmt.Errorf("operator message: scrubbed request is invalid: %w", err)
 	}
 
 	r.mu.Lock()
@@ -84,6 +74,56 @@ func (r *Run) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
 	return apiv1.OperatorMessageRecord{Request: request, State: apiv1.OperatorMessageAccepted}, true, nil
+}
+
+// RejectOperatorMessage durably records a pre-acceptance request denial while
+// preserving the verified principal stamped by the caller.
+func (r *Run) RejectOperatorMessage(request apiv1.OperatorMessageRequest, code, detail string) (apiv1.OperatorMessageRecord, bool, error) {
+	request, err := r.prepareOperatorMessageRequest(request)
+	if err != nil {
+		return apiv1.OperatorMessageRecord{}, false, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return apiv1.OperatorMessageRecord{}, false, ErrClosed
+	}
+	records, err := r.operatorMessagesLocked()
+	if err != nil {
+		return apiv1.OperatorMessageRecord{}, false, err
+	}
+	for _, record := range records {
+		if record.Request.IdempotencyKey == request.IdempotencyKey {
+			return record, false, nil
+		}
+	}
+	outcome := apiv1.OperatorMessageOutcome{
+		Schema:         apiv1.OperatorMessageOutcomeSchema,
+		RequestID:      request.RequestID,
+		IdempotencyKey: request.IdempotencyKey,
+		CompletedAt:    r.now(),
+		Status:         apiv1.OperatorMessageRejected,
+		Code:           code,
+		Detail:         detail,
+		Request:        &request,
+	}
+	outcome, err = scrubOperatorMessage(r.scrubber, outcome)
+	if err != nil {
+		return apiv1.OperatorMessageRecord{}, false, err
+	}
+	if err := outcome.Validate(); err != nil {
+		return apiv1.OperatorMessageRecord{}, false, fmt.Errorf("operator message: scrubbed rejection is invalid: %w", err)
+	}
+	if err := r.appendOperatorMessageLocked(Event{
+		Type:                   EventOperatorMessageOutcome,
+		OperatorMessageOutcome: &outcome,
+	}); err != nil {
+		return apiv1.OperatorMessageRecord{}, false, err
+	}
+	return apiv1.OperatorMessageRecord{
+		Request: request, State: apiv1.OperatorMessageState(outcome.Status), Outcome: &outcome,
+	}, true, nil
 }
 
 // AcknowledgeOperatorMessage appends at most one acknowledgement for a request.
@@ -187,6 +227,24 @@ func (r *Run) operatorMessageLocked(idempotencyKey, requestID string) (apiv1.Ope
 		}
 	}
 	return apiv1.OperatorMessageRecord{}, ErrOperatorMessageNotFound
+}
+
+func (r *Run) prepareOperatorMessageRequest(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRequest, error) {
+	if err := request.Validate(); err != nil {
+		return apiv1.OperatorMessageRequest{}, err
+	}
+	request.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", request.RequestID)
+	request.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", request.IdempotencyKey)
+	requestID, idempotencyKey := request.RequestID, request.IdempotencyKey
+	request, err := scrubOperatorMessage(r.scrubber, request)
+	if err != nil {
+		return apiv1.OperatorMessageRequest{}, err
+	}
+	request.RequestID, request.IdempotencyKey = requestID, idempotencyKey
+	if err := request.Validate(); err != nil {
+		return apiv1.OperatorMessageRequest{}, fmt.Errorf("operator message: scrubbed request is invalid: %w", err)
+	}
+	return request, nil
 }
 
 func scrubOperatorMessage[T any](scrubber Scrubber, value T) (T, error) {

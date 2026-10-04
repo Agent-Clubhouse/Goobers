@@ -188,6 +188,9 @@ func (images *imageContexts) stage(target Target, binary, ldflags string, opts o
 	if err != nil {
 		return fmt.Errorf("build image operator %s: %w\n%s", target, err, output)
 	}
+	if err := verifyReleaseBinary(filepath.Join(directory, imageOperatorName(target)), opts.sourceCommit, operatorBuildPackage, target); err != nil {
+		return err
+	}
 	metadata := imageContextMetadata{
 		SchemaVersion: 1, Kind: "goobers-base-build-inputs", Version: opts.version,
 		Commit: opts.commit, Date: opts.date, Platform: target.String(),

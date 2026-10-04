@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // FindingKind classifies a candidate finding's detection family (TUT-010).
@@ -365,20 +368,26 @@ func (db *DB) stageFailingRuns(req StatsRequest, stage string, limit int) ([]Jou
 // unaffected: this exclusion is scoped to error-signature detection only.
 const errorSignatureTerminalCauseCode = "run_failed"
 
+// errorSignatureOperatorCancelCode is the terminal note for an explicit
+// operator cancellation. It is queryable in TopErrorSignatures, but it is not a
+// defect candidate: recurring cancels say the operator stopped runs, not that
+// the runner lost them.
+const errorSignatureOperatorCancelCode = telemetry.ErrCodeRunCanceled
+
 // detectErrorSignatures flags recurring (code, error_class) patterns
 // occurring at least th.MinErrorSignatureCount times — reuses
 // TopErrorSignatures, adding threshold-based flagging and a bounded list
 // of contributing runs (TopErrorSignatures itself only names one example).
 func (db *DB) detectErrorSignatures(req StatsRequest, th Thresholds) ([]Finding, error) {
-	sigs, err := db.TopErrorSignatures(context.Background(), req, 0)
+	sigs, err := db.topErrorSignatures(context.Background(), req, 0, []string{
+		errorSignatureTerminalCauseCode,
+		errorSignatureOperatorCancelCode,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("rollup: detect error signatures: %w", err)
 	}
 	var out []Finding
 	for _, sig := range sigs {
-		if sig.Code == errorSignatureTerminalCauseCode {
-			continue
-		}
 		if sig.Count < th.MinErrorSignatureCount {
 			continue
 		}
@@ -796,10 +805,5 @@ func queryRunIDs(ctx context.Context, db *DB, query string, args []any) ([]Journ
 // for a fixed input (T2's own test-plan requirement) even though Go map
 // iteration order is not.
 func sortedKeys(m map[string][]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m))
 }

@@ -7,6 +7,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: tutor
+  annotations:
+    goobers.dev/purpose: "Learns from recent run signals and proposes validated changes to the instance's own workflow configuration as a pull request, so the process improves over time."
 spec:
   gaggle: goobers
   displayName: Tutor (self-improvement loop)
@@ -46,6 +48,11 @@ spec:
     # finding, reassess each pending change against the exact expected
     # WorkflowDigest + GooberDigest transition. Only a version-segmented
     # `helped` verdict closes it.
+    #
+    # An empty holdout set is NOT a noWork result: the runner ends the whole
+    # run on any stage noWork, which would stop Tutor before it analyzed
+    # anything. With nothing pending the stage reports canProceed=true (and
+    # no noWork) so the run continues to gather-signals.
     - name: verify-live-holdouts
       type: deterministic
       goal: Verify mandatory post-promotion Tutor holdouts against their exact EffectiveVersion cohorts.

@@ -7,6 +7,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: backlog-curation
+  annotations:
+    goobers.dev/purpose: "Keeps the issue backlog healthy by reconciling claims, checking for duplicates and curating items so that implementation always has well-scoped, ready work."
 spec:
   gaggle: goobers
   displayName: Backlog curation
@@ -183,6 +185,9 @@ spec:
         Curate forward items and re-check selected ready items for drift using
         each item's deterministic staleness signal and the ranked duplicate
         candidates as evidence. Treat in-flight re-sweep items as read-only.
+        Only mutate items in the deterministic claim artifact; if no mutable
+        item was claimed, do not promote or otherwise change unclaimed backlog
+        items.
         Unclaimed candidate members are read-only except for narrowly scoped
         roadmap maintenance on directly linked tracking parents.
         Dedupe, handle staleness, tag, split oversized items, maintain milestone

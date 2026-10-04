@@ -200,6 +200,9 @@ func InitGuidedFromSource(root, sourceRoot string, cfg *Config) (*InitResult, er
 // with the validated local source recorded in instance.yaml.
 func MaterializeWorkflowSource(root string) (string, error) {
 	layout := NewLayout(root)
+	if err := RecoverConfigTransaction(layout); err != nil {
+		return "", err
+	}
 	runtimeConfig, err := LoadConfig(layout.ConfigFile())
 	if err != nil {
 		return "", err
@@ -254,96 +257,11 @@ func MaterializeWorkflowSource(root string) (string, error) {
 }
 
 func installMaterializedConfig(layout Layout, stagingRoot string) error {
-	release, err := gaggletemplate.LockConfig(layout.ConfigDir(), filepath.Join(stagingRoot, ConfigDirName))
+	swap, err := prepareConfigTransaction(layout, filepath.Join(stagingRoot, ConfigDirName), filepath.Join(stagingRoot, ConfigFileName), nil)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = release() }()
-	if err := gaggletemplate.GuardReplacement(layout.ConfigDir(), filepath.Join(stagingRoot, ConfigDirName)); err != nil {
-		return err
-	}
-	backupRoot, err := os.MkdirTemp(layout.Root, ".config-materialize-backup-")
-	if err != nil {
-		return fmt.Errorf("create config materialization backup directory: %w", err)
-	}
-	backupConfigFile := filepath.Join(backupRoot, ConfigFileName)
-	backupConfigDir := filepath.Join(backupRoot, ConfigDirName)
-
-	if err := os.Rename(layout.ConfigFile(), backupConfigFile); err != nil {
-		_ = os.RemoveAll(backupRoot)
-		return fmt.Errorf("back up %s: %w", ConfigFileName, err)
-	}
-	if err := os.Rename(layout.ConfigDir(), backupConfigDir); err != nil {
-		rollbackErr := wrapMaterializeRollbackError(os.Rename(backupConfigFile, layout.ConfigFile()))
-		return errors.Join(
-			fmt.Errorf("back up %s: %w", ConfigDirName, err),
-			rollbackErr,
-			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
-		)
-	}
-
-	stagedConfigFile := filepath.Join(stagingRoot, ConfigFileName)
-	if err := os.Rename(stagedConfigFile, layout.ConfigFile()); err != nil {
-		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
-		return errors.Join(
-			fmt.Errorf("install %s: %w", ConfigFileName, err),
-			rollbackErr,
-			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
-		)
-	}
-	if err := os.Rename(filepath.Join(stagingRoot, ConfigDirName), layout.ConfigDir()); err != nil {
-		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
-		return errors.Join(
-			fmt.Errorf("install %s: %w", ConfigDirName, err),
-			rollbackErr,
-			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
-		)
-	}
-	if err := os.RemoveAll(backupRoot); err != nil {
-		return fmt.Errorf("remove config materialization backup %s: %w", backupRoot, err)
-	}
-	return nil
-}
-
-func rollbackMaterializedConfig(layout Layout, backupConfigFile, backupConfigDir string) error {
-	var rollbackErrors []error
-	if err := os.Remove(layout.ConfigFile()); err != nil && !os.IsNotExist(err) {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := os.RemoveAll(layout.ConfigDir()); err != nil {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := os.Rename(backupConfigFile, layout.ConfigFile()); err != nil {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := os.Rename(backupConfigDir, layout.ConfigDir()); err != nil {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := errors.Join(rollbackErrors...); err != nil {
-		return fmt.Errorf("roll back config materialization: %w", err)
-	}
-	return nil
-}
-
-func wrapMaterializeRollbackError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("roll back config materialization: %w", err)
-}
-
-func removeMaterializeBackup(path string) error {
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove config materialization backup %s: %w", path, err)
-	}
-	return nil
-}
-
-func removeMaterializeBackupAfterRollback(path string, rollbackErr error) error {
-	if rollbackErr != nil {
-		return nil
-	}
-	return removeMaterializeBackup(path)
+	return swap.Commit()
 }
 
 // CheckGuidedSourceInstancePaths requires the desired-state source and runtime
@@ -635,12 +553,17 @@ func validateGuidedOptions(opts GuidedOptions) error {
 // validateGuidedProvider checks the repository provider and the options that
 // depend on it. Azure DevOps accepts every repository auth kind the instance
 // configuration accepts, and refuses work-nomination, whose file-issues stage
-// files GitHub issues only.
+// files GitHub issues only. Guided merge-review is offered on Azure DevOps
+// only: guided GitHub setup grants no pull-request token to it.
 func validateGuidedProvider(opts GuidedOptions) error {
 	switch opts.RepoProvider {
 	case string(apiv1.ProviderGitHub):
 		if opts.RepoProject != "" {
 			return fmt.Errorf("repository project is only valid for Azure DevOps")
+		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowMergeReview) {
+			return fmt.Errorf("guided setup offers the %s workflow on Azure DevOps only; on GitHub select %s, %s and/or %s",
+				GuidedWorkflowMergeReview, GuidedWorkflowImplementation, GuidedWorkflowBacklogCuration, GuidedWorkflowWorkNomination)
 		}
 	case string(apiv1.ProviderADO):
 		if opts.RepoProject == "" {
@@ -829,6 +752,15 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 		if task.Type == apiv1.TaskAgentic {
 			task.Capabilities = prependCapability(task.Capabilities, string(capability.AgentModel))
 		}
+		// On Azure DevOps, open-pr links the pull request natively to its
+		// claimed work item only when the stage declares ado:work-items:write
+		// (cmd/goobers/openpr.go openPRWorkItemLinker); without it the PR is
+		// referenced by text only, so Boards traceability, completion-driven
+		// work-item transitions and a "Work item linking" branch policy all
+		// fail. GitHub never resolves the name, so its scaffold is unchanged.
+		if opts.RepoProvider == string(apiv1.ProviderADO) && guidedTaskRunsBuiltin(*task, "open-pr") {
+			task.Capabilities = appendCapability(task.Capabilities, string(capability.ADOWorkItemsWrite))
+		}
 		// Template the operator's answered CI command into the generated
 		// local-ci stage instead of leaving the source example's literal
 		// command on disk: gaggle.yaml's ciCommand (ApplyGaggleCICommand) wins
@@ -969,6 +901,20 @@ func prependCapability(capabilities []string, name string) []string {
 		}
 	}
 	return append([]string{name}, capabilities...)
+}
+
+func appendCapability(capabilities []string, name string) []string {
+	if slices.Contains(capabilities, name) {
+		return capabilities
+	}
+	return append(capabilities, name)
+}
+
+// guidedTaskRunsBuiltin reports whether task runs the built-in
+// `goobers <command>` stage.
+func guidedTaskRunsBuiltin(task apiv1.Task, command string) bool {
+	return task.Type == apiv1.TaskDeterministic && task.Run != nil &&
+		len(task.Run.Command) >= 2 && task.Run.Command[0] == "goobers" && task.Run.Command[1] == command
 }
 
 func guidedManifest(opts GuidedOptions) []byte {

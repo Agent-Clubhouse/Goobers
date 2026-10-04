@@ -15,26 +15,33 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/k8spreflight"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
 )
 
-const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
+const doctorHelp = "Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
 	"                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n" +
 	"                          [--temporal-hostport <host:port>] [--temporal-namespace <name>]\n" +
 	"                          [--overlay-dir <dir>] [--image-runtime docker|podman]\n" +
 	"                          [--image-pull-policy always|never]\n" +
+	"                          [--record-instance <root>] [--result-max-age <duration>]\n" +
 	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
+	"                          [--psa-namespaces <namespace,...>] [--psa-service-account <name>]\n" +
 	"                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]\n" +
+	"       goobers doctor --temporal-codec [--report text|json] [instance-root]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
+	"       goobers doctor --harness-auth [--report text|json] [instance-root]\n" +
 	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
 	"--k8s preflights a target Kubernetes cluster against the documented\n" +
 	"infrastructure shape (docs/design/k8s-infra-shape.md) before installing\n" +
 	"Goobers on it — the install-time enforcement of that document (#668).\n\n" +
 	"The --k8s check set, each row citing the shape-doc section it enforces:\n\n" +
+	"  pod-security-admission optional #5284 rendered Linux/Windows stage pods (server dry-run)\n" +
 	"  cluster-version    required  §1     cluster reachable, supported version\n" +
+	"  network-none-dns    optional  D12    class DNS grants; dataplane UNVERIFIED\n" +
 	"  networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)\n" +
 	"  rbac-install       required  §1/§3  permissions to install goobers-system\n" +
 	"  rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces\n" +
@@ -51,16 +58,24 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"  overlay-pin-agreement required* #4298 remote base, image, and runner pins agree\n" +
 	"  overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks\n\n" +
 	"Checks marked required* apply when their probe target is configured; left\n" +
-	"unconfigured they report a skipped warn. Cluster checks are read-only: nothing is\n" +
-	"created on the cluster, and a check that cannot run reports fail with the\n" +
+	"unconfigured they report a skipped warn. Checks persist no cluster resources.\n" +
+	"Required checks that cannot run report fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
+	"--record-instance persists check outcomes in the instance journal for status.\n" +
+	"--result-max-age sets their freshness window (default 2h); the cluster monitoring\n" +
+	"CronJob owns scheduling. No recording occurs unless --record-instance is set.\n\n" +
 	"--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.\n" +
 	"For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.\n" +
 	"That check inspects only egress policies labeled goobers.dev/apiserver-egress=true.\n" +
 	"--apiserver-endpoint overrides the comparison endpoint when in-cluster service IPs\n" +
 	"differ from the actual control-plane endpoint used by the network policy. It does\n" +
 	"not change the authenticated Kubernetes client address.\n\n" +
+	"pod-security-admission is informational: --psa-namespaces selects targets (default:\n" +
+	"namespaces labeled goobers.dev/gaggle); --psa-service-account defaults to goobers-stage.\n" +
+	"Each Linux/Windows dispatcher image pod is submitted with dryRun=All. The report\n" +
+	"names current enforcement and admission errors. Baseline acceptance does not prove\n" +
+	"restricted compatibility; custom templates need a separate dry-run.\n\n" +
 	"--overlay-dir additionally renders the consumer overlay with kubectl and pulls\n" +
 	"its pinned images using --image-runtime (default docker). Image checks run\n" +
 	"temporary network-isolated containers and remove them afterwards. Use trusted\n" +
@@ -74,6 +89,8 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"silently. This check is API-discovery only; enforcement can only be proven\n" +
 	"by a denied attempt from an in-cluster negative control, never by doctor\n" +
 	"--k8s alone.\n\n" +
+	"--temporal-codec reports per-instance opt-in and strict mode without probing keys.\n" +
+	"--k8s --instance <root> applies the instance Temporal TLS and payload codec.\n\n" +
 	"--repo diffs each configured repo's declared forge-policy manifest\n" +
 	"(<instance-root>/instance.yaml repos[].policy: required merge method,\n" +
 	"merge-queue requirement, required status checks — issue #916, Tier 4 of\n" +
@@ -81,6 +98,9 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"skipped. Token-scope introspection is reported as unavailable when GitHub\n" +
 	"does not expose it (fine-grained PAT / GitHub App tokens) — never inferred\n" +
 	"from a failed call. instance-root defaults to \".\".\n\n" +
+	"--harness-auth reports credential-free Copilot harness authentication state\n" +
+	"for the configured launcher/profile: authenticated, signed-out, or unknown,\n" +
+	"plus executable, version when available, runner, and profile directory.\n\n" +
 	"--av-exclusions lists every directory Goobers writes and immediately reads\n" +
 	"back — the set real-time antivirus scanning on Windows must exclude, or a\n" +
 	"scan holding a handle on a just-written file surfaces minutes later as an\n" +
@@ -138,10 +158,15 @@ var doctorKubeClient = func(kubeconfig, contextName string, timeout time.Duratio
 func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	codecMode := fs.Bool("temporal-codec", false, "report configured Temporal payload codec state")
+	instanceRoot := fs.String("instance", "", "instance config for Kubernetes Temporal checks (--k8s only)")
 	k8sMode := fs.Bool("k8s", false, "preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md")
 	repoMode := fs.Bool("repo", false, "diff declared repo forge-policy manifests against live GitHub state")
+	harnessAuthMode := fs.Bool("harness-auth", false, "report credential-free harness authentication state")
 	avMode := fs.Bool("av-exclusions", false, "list the directories Goobers writes then reads and verify antivirus exclusions (advisory)")
 	workRoot := fs.String("work-root", "", "worker work root to enumerate with --av-exclusions (default: the worker's own default)")
+	psaNamespaces := fs.String("psa-namespaces", "", "comma-separated namespaces for informational stage-pod admission dry-runs (default: namespaces labeled goobers.dev/gaggle)")
+	psaAccount := fs.String("psa-service-account", "", "stage ServiceAccount for admission probes (default: goobers-stage)")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path (default: the standard loading rules)")
 	kubeContext := fs.String("context", "", "kubeconfig context (default: the current context)")
 	overlayDir := fs.String("overlay-dir", "", "consumer kustomization directory for pin and image checks (--k8s only)")
@@ -157,6 +182,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	temporalNamespace := fs.String("temporal-namespace", "", "Temporal namespace to check for (default \"default\")")
 	apiServerEndpoint := fs.String("apiserver-endpoint", "", "API-server comparison URL for egress-policy drift (default: kubeconfig server)")
 	checks := fs.String("checks", "", "comma-separated Kubernetes check IDs (omitted: all checks)")
+	recordRoot := fs.String("record-instance", "", "instance root receiving Kubernetes check results")
+	resultMaxAge := fs.Duration("result-max-age", 2*time.Hour, "recorded Kubernetes result freshness window")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
 	if !parseFlagsBeforePath(fs, args, stderr) {
@@ -167,14 +194,18 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	modes := 0
-	for _, on := range []bool{*k8sMode, *repoMode, *avMode} {
+	for _, on := range []bool{*k8sMode, *repoMode, *harnessAuthMode, *avMode, *codecMode} {
 		if on {
 			modes++
 		}
 	}
 	if modes != 1 {
-		pf(stderr, "goobers doctor: exactly one of --k8s, --repo or --av-exclusions is required\n\n")
+		pf(stderr, "goobers doctor: exactly one of --k8s, --repo, --harness-auth, --av-exclusions or --temporal-codec is required\n\n")
 		fs.Usage()
+		return 2
+	}
+	if err := k8spreflight.ValidateRecordingFlags(fs, *k8sMode, *recordRoot, *resultMaxAge); err != nil {
+		pf(stderr, "goobers doctor: %v\n", err)
 		return 2
 	}
 	checkIDs, err := validateDoctorCheckFlags(fs, *k8sMode, *checks, *apiServerEndpoint)
@@ -206,18 +237,16 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if *repoMode || *avMode {
-		root := "."
-		if fs.NArg() == 1 {
-			root = fs.Arg(0)
-		} else if fs.NArg() > 1 {
+	if *instanceRoot != "" && !*k8sMode {
+		pf(stderr, "error: --instance applies to --k8s only\n")
+		return 2
+	}
+	if !*k8sMode {
+		if fs.NArg() > 1 {
 			fs.Usage()
 			return 2
 		}
-		if *avMode {
-			return runDoctorAVExclusions(root, *workRoot, *reportFormat, stdout, stderr, realAVExclusionDeps())
-		}
-		return runDoctorRepo(root, *reportFormat, stdout, stderr)
+		return runDoctorInstanceMode(fs.Arg(0), *reportFormat, *workRoot, *repoMode, *harnessAuthMode, *avMode, *codecMode, stdout, stderr)
 	}
 
 	if fs.NArg() != 0 {
@@ -228,11 +257,16 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	client, host, err := doctorKubeClient(*kubeconfig, *kubeContext, *timeout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		if recordErr := k8spreflight.RecordUnavailable(*recordRoot, checkIDs, *resultMaxAge); recordErr != nil {
+			pf(stderr, "error: record check: %v\n", recordErr)
+		}
 		return 2
 	}
 
-	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
+	opts, err := k8spreflight.ResolveTemporalOptions(*instanceRoot, k8spreflight.Options{
 		Checks:            checkIDs,
+		PSANamespaces:     splitCommaList(*psaNamespaces),
+		PSAServiceAccount: *psaAccount,
 		OverlayDir:        *overlayDir,
 		ImageRuntime:      *imageRuntime,
 		ImagePullPolicy:   *imagePullPolicy,
@@ -246,9 +280,22 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		TemporalNamespace: *temporalNamespace,
 		Timeout:           *timeout,
 	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	report := k8spreflight.Run(context.Background(), client, opts)
 	report.Target = host
+	if err := k8spreflight.RecordResults(*recordRoot, report, *resultMaxAge); err != nil {
+		pf(stderr, "error: record check: %v\n", err)
+		return 2
+	}
 
-	if *reportFormat == "json" {
+	return writeDoctorKubernetesReport(*reportFormat, report, stdout, stderr)
+}
+
+func writeDoctorKubernetesReport(format string, report k8spreflight.Report, stdout, stderr io.Writer) int {
+	if format == "json" {
 		if err := k8spreflight.WriteJSON(stdout, report); err != nil {
 			pf(stderr, "error: encode report: %v\n", err)
 			return 2
@@ -298,6 +345,25 @@ var newDoctorGitHubProvider = func(token string) providers.PolicyProvider {
 	return providers.NewGitHubProvider(token)
 }
 
+func runDoctorInstanceMode(root, reportFormat, workRoot string, repoMode, harnessAuthMode, avMode, codecMode bool, stdout, stderr io.Writer) int {
+	if root == "" {
+		root = "."
+	}
+	switch {
+	case codecMode:
+		return runDoctorTemporalCodec(root, reportFormat, stdout, stderr)
+	case avMode:
+		return runDoctorAVExclusions(root, workRoot, reportFormat, stdout, stderr, realAVExclusionDeps())
+	case harnessAuthMode:
+		return runDoctorHarnessAuth(root, reportFormat, stdout, stderr)
+	case repoMode:
+		return runDoctorRepo(root, reportFormat, stdout, stderr)
+	default:
+		pf(stderr, "goobers doctor: no instance-root mode selected\n")
+		return 2
+	}
+}
+
 // doctorRepoReport is one repo's `goobers doctor --repo` result — the stable
 // --report json shape.
 type doctorRepoReport struct {
@@ -313,6 +379,63 @@ type doctorRepoFinding struct {
 	Field    string `json:"field"`
 	Declared string `json:"declared"`
 	Live     string `json:"live"`
+}
+
+type doctorHarnessAuthReport struct {
+	Harness     string             `json:"harness"`
+	Status      harness.AuthStatus `json:"status"`
+	Executable  string             `json:"executable,omitempty"`
+	Version     string             `json:"version,omitempty"`
+	Runner      string             `json:"runner,omitempty"`
+	ProfileDir  string             `json:"profile,omitempty"`
+	Remediation string             `json:"remediation,omitempty"`
+}
+
+func runDoctorHarnessAuth(root, reportFormat string, stdout, stderr io.Writer) int {
+	info, err := copilotAuthInfo(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	report := doctorHarnessAuthReport{
+		Harness:     "copilot",
+		Status:      info.Status,
+		Executable:  info.Executable,
+		Version:     info.Version,
+		Runner:      info.Runner,
+		ProfileDir:  info.ProfileDir,
+		Remediation: info.Remediation,
+	}
+	if reportFormat == "json" {
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			pf(stderr, "error: encode report: %v\n", err)
+			return 2
+		}
+	} else {
+		printCopilotAuthInfo(stdout, info)
+	}
+	if info.Status != harness.AuthStatusAuthenticated {
+		return 1
+	}
+	return 0
+}
+
+func copilotAuthInfo(root string) (harness.AuthInfo, error) {
+	return copilotAuthInfoWithTimeout(root, harnessPreflightTimeout)
+}
+
+func copilotAuthInfoWithTimeout(root string, timeout time.Duration) (harness.AuthInfo, error) {
+	adapter, err := copilotAuthAdapter(root)
+	if err != nil {
+		return harness.AuthInfo{}, err
+	}
+	reporter, ok := adapter.(copilotAuthReporter)
+	if !ok {
+		return harness.AuthInfo{}, fmt.Errorf("configured Copilot adapter does not expose authentication status")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return reporter.AuthStatus(ctx)
 }
 
 // runDoctorRepo diffs every configured repo's declared policy manifest
@@ -485,6 +608,9 @@ func validateDoctorCheckFlags(fs *flag.FlagSet, k8sMode bool, raw, endpoint stri
 	}
 	if supplied["apiserver-endpoint"] && (!k8sMode || strings.TrimSpace(endpoint) == "") {
 		return nil, fmt.Errorf("--apiserver-endpoint requires --k8s and a nonempty URL")
+	}
+	if !k8sMode && (supplied["psa-namespaces"] || supplied["psa-service-account"]) {
+		return nil, fmt.Errorf("--psa-namespaces and --psa-service-account require --k8s")
 	}
 	if err := k8spreflight.ValidateChecks(ids); err != nil {
 		return nil, err

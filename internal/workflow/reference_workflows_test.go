@@ -679,6 +679,101 @@ func TestReferenceWorkflowsCIPollRetriesOnDispatchFailure(t *testing.T) {
 	}
 }
 
+func TestReferenceWorkflowsCIPollDeclaresExplicitPollingBound(t *testing.T) {
+	for _, name := range []string{
+		"implementation.yaml",
+		"implementation-pre-review-experiment.yaml",
+		"implementation-recovery.yaml",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", name)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow: %v", err)
+			}
+			var w apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &w); err != nil {
+				t.Fatalf("unmarshal workflow: %v", err)
+			}
+			for _, g := range w.Spec.Gates {
+				if g.Name != "ci-gate" {
+					continue
+				}
+				if g.Automated == nil {
+					t.Fatalf("ci-gate has no automated evaluator")
+				}
+				if got := g.Automated.MaxTimeoutPolls; got != 30 {
+					t.Fatalf("ci-gate automated.maxTimeoutPolls = %d, want 30 so shipped polling policy does not silently fall back to the default", got)
+				}
+				return
+			}
+			t.Fatal("workflow has no ci-gate")
+		})
+	}
+}
+
+// TestShippedImplementationReviewGateRetriesInfrastructureFailure is #5397's
+// regression guard. The implementation `review` gate runs after a successful
+// implement turn; with no `agentic.retry` its single attempt turns a transient
+// reviewer-harness infrastructure failure (a required MCP server not yet
+// ready) into a terminal run failure that discards that implement turn.
+// Evaluator retries are bounded, journaled separately and never charge a
+// repass (#765), so every shipped implementation workflow — reference and
+// config-examples — declares a bounded retry with a non-zero backoff (#5084:
+// back-to-back retries land in the same failure window).
+func TestShippedImplementationReviewGateRetriesInfrastructureFailure(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "reference-workflows", "gaggles", "*", "workflows", "implementation*.yaml"))
+	if err != nil {
+		t.Fatalf("glob reference workflows: %v", err)
+	}
+	examples, err := filepath.Glob(filepath.Join("..", "..", "config-examples", "gaggles", "*", "workflows", "*implementation.yaml"))
+	if err != nil {
+		t.Fatalf("glob config-examples workflows: %v", err)
+	}
+	paths = append(paths, examples...)
+	// Loud precondition: a moved directory must not turn this into a no-op.
+	if len(paths) < 8 {
+		t.Fatalf("found %d shipped implementation workflows, want >= 8: %v", len(paths), paths)
+	}
+	for _, path := range paths {
+		t.Run(filepath.ToSlash(path), func(t *testing.T) {
+			assertReviewGateRetry(t, path)
+		})
+	}
+}
+
+func assertReviewGateRetry(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal workflow: %v", err)
+	}
+	for _, g := range w.Spec.Gates {
+		if g.Name != "review" {
+			continue
+		}
+		if g.Agentic == nil {
+			t.Fatalf("review gate is not agentic")
+		}
+		r := g.Agentic.Retry
+		if r == nil {
+			t.Fatalf("review gate declares no agentic.retry; want a bounded retry so a transient infrastructure failure does not discard the implement turn (#5397)")
+		}
+		if r.MaxAttempts < 2 || r.MaxAttempts > 5 {
+			t.Fatalf("review gate retry.maxAttempts = %d, want a bounded retry in [2,5]", r.MaxAttempts)
+		}
+		if r.BackoffSeconds <= 0 {
+			t.Fatalf("review gate retry.backoffSeconds = %d, want > 0 (#5084)", r.BackoffSeconds)
+		}
+		return
+	}
+	t.Fatalf("no review gate")
+}
+
 // TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImplement
 // is #4179's regression guard: a stalled `go mod download` inside the agentic
 // implement session used to burn the whole implement budget invisibly (one

@@ -258,6 +258,32 @@ describe("run stage inspector", () => {
     expect(await screen.findByText("auto", { selector: "code" })).toBeInTheDocument();
   });
 
+  it("renders structured attempt error causes when present", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "failure",
+        error: {
+          code: "review_failed",
+          message: "review gate failed: review requested changes",
+          causes: [
+            { message: "review gate failed" },
+            { code: "review_rejected", message: "review requested changes" },
+          ],
+        },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("review_failed: review gate failed: review requested changes"))
+      .toBeInTheDocument();
+    const chain = screen.getByRole("list", { name: "Attempt failure cause chain" });
+    expect(within(chain).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "review gate failed",
+      "review requested changes",
+    ]);
+  });
+
   it("omits the model line when telemetry has not indexed one", async () => {
     const client = stubClient([attempt({ number: 1, status: "success" })]);
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
@@ -453,6 +479,12 @@ describe("run stage inspector", () => {
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
     const preview = await screen.findByText(body);
     expect(preview).toBeInTheDocument();
+    const scrollRegion = screen.getByRole("region", {
+      name: "Artifact content; scroll horizontally for full content",
+    });
+    expect(scrollRegion.tagName).toBe("PRE");
+    expect(scrollRegion).toHaveAttribute("tabindex", "0");
+    expect(scrollRegion).toHaveClass("code-block");
     expect(preview.className).not.toContain("artifact-content-bounded");
     expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc", {
       signal: expect.any(AbortSignal),

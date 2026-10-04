@@ -2,21 +2,18 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -220,210 +217,140 @@ func buildEscalationNotifier(l instance.Layout, cfg *instance.Config, resolver c
 	}
 }
 
-// buildBlockedHandler wires runner.Config.Blocked (#544/#545/#552): the
-// instance-level consequences of a stage reporting status "blocked". Returns
-// nil when no repo is configured, mirroring buildEscalationNotifier.
-// Every blocked driving issue is parked (swap off goobers:ready and the
-// provider-visible claim marker) per the #544 ruling / #539 convention. This
-// prevents the released claim from making the same item immediately eligible
-// again.
-//
-// The park label depends on whether the stage named a blocker (#2028): a
-// named, non-cyclic blocker is goobers:blocked-on-sibling — a self-healing
-// dependency park, not a decision only a human can make; the record below is
-// what actually self-heals it (filterBlockedEligibility, blockedrecords.go),
-// the label just needs to say so. An unattributed block (no blocker named) or
-// a detected circular dependency is goobers:needs-human — the runner can't
-// resolve either on its own, so it genuinely is a human decision.
-//
-// When the stage also references blockers through outputs.blockedBy, record
-// them in scheduler/blocked.json so #552's selection guard still protects the
-// issue if a human re-promotes it before every dependency closes. Blockers
-// naming the driving item itself are dropped first (#2961) — an item cannot
-// depend on itself, and persisting that self-edge makes findBlockedCycle
-// report a one-node cycle and park the issue needs-human over a dependency
-// that does not exist. If a new record closes a real cycle, every issue in
-// that cycle is parked goobers:needs-human and receives a cycle-specific
-// comment for human resolution. The runner's shared EscalationNotifier owns
-// the normal explanatory provider comment.
-//
-// The handler runs before FinalizeTerminal releases the run's claims, so a
-// run with no StartInput.Item (scheduled/fan-out implementation runs claim
-// their item mid-run) resolves its driving item(s) from the claim ledger by
-// run id. Best-effort per item: one item's provider failure doesn't skip the
-// rest; the joined error is journaled by the runner (blocked_handling_failed),
-// never fatal to the terminal transition.
+// newEscalationPolicy builds the escalation notification policy the runner's
+// terminal handlers apply (#3054), posting through an escalationCommenter and
+// reading and updating the instance's state through escalationNotifyState.
+func newEscalationPolicy(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) *escalationnotify.Policy {
+	return &escalationnotify.Policy{
+		Poster: &escalationCommenter{
+			resolver:           resolver,
+			reg:                reg,
+			layout:             l,
+			needsHumanAssignee: cfg.NeedsHumanAssignee,
+		},
+		RunsDir: l.RunsDir(),
+		State:   escalationNotifyState{layout: l, cfg: cfg},
+	}
+}
+
+// buildBlockedHandler wires runner.Config.Blocked (#544/#545/#552) to
+// escalationnotify.Policy.Blocked. Returns nil when no repo is configured,
+// mirroring buildEscalationNotifier.
 func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.BlockedHandler {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	poster := &escalationCommenter{
-		resolver:           resolver,
-		reg:                reg,
-		layout:             l,
-		needsHumanAssignee: cfg.NeedsHumanAssignee,
-	}
-
-	return func(ctx context.Context, o runner.BlockedOutcome) error {
-		ctx = withDaemonAttributionTask(ctx, o.Stage)
-		itemIDs := []string{o.ItemID}
-		if o.ItemID == "" {
-			ids, err := claimedItemIDsForRun(l, o.RunID)
-			if err != nil {
-				return err
-			}
-			if len(ids) == 0 {
-				// No driving item anywhere (a producer run) — nothing to
-				// record or park; the journaled blocked_by_agent cause and the
-				// escalated phase are the whole story.
-				return nil
-			}
-			itemIDs = ids
-		}
-
-		var errs []error
-		repoRef := providers.RepositoryRef{
-			Provider: providers.ProviderKind(o.RepoRef.Provider),
-			Owner:    o.RepoRef.Owner,
-			Name:     o.RepoRef.Name,
-		}
-		if blockedRepositoryEmpty(repoRef) {
-			return fmt.Errorf("blocked outcome for run %s has no repository", o.RunID)
-		}
-		// Scope blocked records to the backlog project, not the code repo.
-		// Work items live in the gaggle's backlog project (e.g. "Example Backlog"), which
-		// is a different ADO project than the code repo ("Example Service").
-		// The selection guard (filterBlockedEligibility) evaluates records
-		// against the backlog repo, so records must be keyed/stored under the
-		// backlog repo or a parked parent is never skipped and gets re-claimed.
-		// Idempotent for GitHub (backlog == code repo) and re-applied safely by
-		// escalationCommenter before the work-item call.
-		repoRef = backlogRepoRefForGaggle(l, repoRef)
-		for _, itemID := range itemIDs {
-			// #2961: an item can never be its own blocker. The runner already
-			// drops the self-reference when the run carried its driving item,
-			// but a run that claims its item(s) mid-run resolves them here, so
-			// the same guard has to apply per item — otherwise a self-edge
-			// reaches blocked.json and findBlockedCycle parks the issue
-			// needs-human for a dependency cycle that does not exist.
-			blockers, _ := runner.FilterSelfBlockers(o.Blockers, itemID)
-			// #2028: a named blocker is a self-healing dependency park
-			// (blocked-on-sibling), not a human decision; only an
-			// unattributed block stays needs-human. A detected cycle
-			// overrides this below with its own needs-human cycleReq.
-			// A block whose only named blocker was the item itself is
-			// unattributed once filtered, so it correctly stays needs-human.
-			label := providers.LabelNeedsHuman
-			if len(blockers) > 0 {
-				label = blockedOnSiblingLabel
-			}
-			req := providers.UpdateWorkItemRequest{
-				Repository:   repoRef,
-				ID:           itemID,
-				AddLabels:    []string{label},
-				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
-			}
-			if len(blockers) > 0 {
-				var cycle blockedCycleResult
-				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
-					recordKey := blockedRecordKey(repoRef, itemID)
-					recs[recordKey] = blockedRecord{
-						Repository: repoRef,
-						ItemID:     itemID,
-						Blockers:   blockers,
-						RunID:      o.RunID,
-						Stage:      o.Stage,
-						Reason:     o.Reason,
-						RecordedAt: time.Now().UTC(),
-					}
-					cycle = findBlockedCycle(recs, recordKey)
-					return true
-				}); err != nil {
-					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
-				}
-				if len(cycle.Affected) > 0 {
-					comments := blockedcycle.Comments(cycle)
-					for _, cycleItem := range cycle.Affected {
-						for _, comment := range comments {
-							cycleReq := providers.UpdateWorkItemRequest{
-								Repository:   cycleItem.Repository,
-								ID:           cycleItem.ItemID,
-								Comment:      comment,
-								AddLabels:    []string{providers.LabelNeedsHuman},
-								RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
-							}
-							if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
-								errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
-							}
-						}
-					}
-					continue
-				}
-			}
-			if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
-				errs = append(errs, fmt.Errorf("park blocked item %s#%s: %w", repoRef.Name, itemID, err))
-			}
-		}
-		return errors.Join(errs...)
-	}
+	return newEscalationPolicy(l, cfg, resolver, reg).Blocked
 }
 
-// buildFailedHandler wires runner.Config.Failed (#1054): the instance-level
-// consequence of a run reaching terminal PhaseFailed. Returns nil when no repo
-// is configured, mirroring buildBlockedHandler. Leaves a human-visible trace on
-// the driving item — a comment recording a stable failure code and the run id —
-// so repeated terminal failures on the same item accumulate a countable signal
-// instead of the item silently returning to goobers:ready with no record.
-// Detailed causes remain in the local run trace because execution errors can
-// contain harness argv, prompts, credentials, environment values, or context.
-//
-// Circuit breaker: after failureStreakThreshold consecutive terminal failures
-// on the same item, applies goobers:needs-human and removes goobers:ready so
-// the retry loop stops. The threshold is counted via a single editable
-// failure-streak comment on the issue (one comment, updated in place, instead
-// of one per run).
-//
-// Like buildBlockedHandler, the handler runs before FinalizeTerminal releases
-// the run's claims, so it resolves the driving item(s) from the claim ledger by
-// run id. Best-effort per item: one item's provider failure doesn't skip the
-// rest; the joined error is journaled by the runner (failed_handling_failed),
-// never fatal to the terminal transition.
+// buildFailedHandler wires runner.Config.Failed (#1054) to
+// escalationnotify.Policy.Failed. Returns nil when no repo is configured,
+// mirroring buildBlockedHandler.
 func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.FailedHandler {
 	if len(cfg.Repos) == 0 {
 		return nil
 	}
-	poster := &escalationCommenter{
-		resolver:           resolver,
-		reg:                reg,
-		layout:             l,
-		needsHumanAssignee: cfg.NeedsHumanAssignee,
-	}
-
-	return func(ctx context.Context, o runner.FailedOutcome) error {
-		ctx = withDaemonAttributionTask(ctx, o.Stage)
-		// #3361/#3364: an infra-fault terminal (credential materialization, git,
-		// network, lock contention) is weather, not evidence about the item —
-		// it must not accumulate failure-streak strikes that eventually park
-		// the item goobers:needs-human. The item returns to the pool untouched
-		// and the scheduler's auth circuit / quota gates own the retry cadence.
-		// Item-judgment terminals (a verified ISSUE_NOT_APPLICABLE refusal,
-		// #3363) are likewise not work failures. Timeout deliberately still
-		// counts: a recurring harness session timeout is this circuit
-		// breaker's motivating case (#1054).
-		if class := telemetry.ClassifyError(o.Code); class.InfraFault() || class == telemetry.ErrorClassItemJudgment {
-			return nil
-		}
-		// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
-		// necessarily the repo the item this run actually claimed belongs
-		// to — applyCircuitBreaker resolves each claimed item's own
-		// recorded identity instead of trusting a single repo for all of
-		// them.
-		runURL, _ := failureRunURL(l, cfg, o.RunID)
-		return applyCircuitBreaker(ctx, poster, l, o.RunID, o.Stage, runURL)
-	}
+	return newEscalationPolicy(l, cfg, resolver, reg).Failed
 }
 
-const failureStreakThreshold = 3
+// buildTerminalCircuitBreaker wraps an existing TerminalNotifier with the
+// escalated/aborted circuit breaker and the completed-terminal streak resets
+// (escalationnotify.Policy.TerminalNotifier). Returns inner unchanged when no
+// repo is configured.
+func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
+	if len(cfg.Repos) == 0 {
+		return inner
+	}
+	return newEscalationPolicy(l, cfg, resolver, reg).TerminalNotifier(inner)
+}
+
+// buildExistingFixHandler wires runner.Config.ExistingFix (#3236) to
+// escalationnotify.Policy.ExistingFix. Returns nil when no repo is configured.
+func buildExistingFixHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.ExistingFixHandler {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	return newEscalationPolicy(l, cfg, resolver, reg).ExistingFix
+}
+
+// escalationNotifyState is escalationnotify.State over the instance layout:
+// the claim ledger, blocked records, failure-streak store, circuit-breaker
+// outbox, no-work streak and the portal run link.
+type escalationNotifyState struct {
+	layout instance.Layout
+	cfg    *instance.Config
+}
+
+func (s escalationNotifyState) ClaimedItemIDs(runID string) ([]string, error) {
+	return claimedItemIDsForRun(s.layout, runID)
+}
+
+func (s escalationNotifyState) ClaimedItems(runID string) ([]escalationnotify.Item, error) {
+	claimed, err := claimedItemsForRun(s.layout, runID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]escalationnotify.Item, 0, len(claimed))
+	for _, item := range claimed {
+		items = append(items, escalationnotify.Item{ItemID: item.ItemID, Repo: item.Repo})
+	}
+	return items, nil
+}
+
+func (s escalationNotifyState) BacklogRepository(repo providers.RepositoryRef) providers.RepositoryRef {
+	return backlogRepoRefForGaggle(s.layout, repo)
+}
+
+func (s escalationNotifyState) RecordBlock(b escalationnotify.Block) (blockedCycleResult, error) {
+	var cycle blockedCycleResult
+	err := updateBlockedRecords(s.layout, func(recs map[string]blockedRecord) bool {
+		recordKey := blockedRecordKey(b.Repository, b.ItemID)
+		recs[recordKey] = blockedRecord{
+			Repository: b.Repository,
+			ItemID:     b.ItemID,
+			Blockers:   b.Blockers,
+			RunID:      b.RunID,
+			Stage:      b.Stage,
+			Reason:     b.Reason,
+			RecordedAt: time.Now().UTC(),
+		}
+		cycle = findBlockedCycle(recs, recordKey)
+		return true
+	})
+	return cycle, err
+}
+
+func (s escalationNotifyState) LoadFailureStreak(ctx context.Context, poster gate.Commenter, repo providers.RepositoryRef, itemID string) (int, error) {
+	return loadFailureStreakCount(ctx, poster, s.layout, repo, itemID)
+}
+
+func (s escalationNotifyState) WriteFailureStreak(repo providers.RepositoryRef, itemID string, count int, runID, stage string) error {
+	return writeFailureStreakCount(s.layout, repo, itemID, count, runID, stage)
+}
+
+func (s escalationNotifyState) ReconcileParkOutbox(ctx context.Context, poster gate.Commenter) error {
+	return reconcileCircuitBreakerOutbox(ctx, poster, s.layout)
+}
+
+func (s escalationNotifyState) RecordParkFailure(repo providers.RepositoryRef, itemID, runID, stage string, streak int, cause error) error {
+	return recordCircuitBreakerMutationFailure(s.layout, repo, itemID, runID, stage, streak, cause)
+}
+
+func (s escalationNotifyState) ClearParks(repo providers.RepositoryRef, itemID string) error {
+	return clearCircuitBreakerMutations(s.layout, repo, itemID)
+}
+
+func (s escalationNotifyState) VoidRemediationCharge(ctx context.Context, poster gate.Commenter, runID string) error {
+	return voidRemediationChargeForRun(ctx, poster, s.layout, runID)
+}
+
+func (s escalationNotifyState) SettleNoWorkStreak(ctx context.Context, poster gate.Commenter, runID, finalState, runURL string) error {
+	return settleNoWorkStreak(ctx, poster, s.layout, runID, finalState, runURL)
+}
+
+func (s escalationNotifyState) RunURL(runID string) (string, error) {
+	return failureRunURL(s.layout, s.cfg, runID)
+}
 
 // failureStreakAnnotation marks a runner.annotation event as failure-streak
 // bookkeeping (#4364): the count is cached in the instance journal — already
@@ -467,188 +394,6 @@ func writeFailureStreakCount(l instance.Layout, repo providers.RepositoryRef, it
 		return fmt.Errorf("open failure-streak state: %w", err)
 	}
 	return writeFailureStreakState(stateContext(), store, l, repo, itemID, count, runID, stage)
-}
-
-// applyCircuitBreaker increments the failure streak for each claimed item and
-// parks the issue (needs-human + remove ready) once the threshold is reached.
-// Shared by buildFailedHandler (PhaseFailed) and buildTerminalCircuitBreaker
-// (PhaseEscalated/PhaseAborted) so that ALL non-completed terminals count
-// toward the same streak.
-//
-// Each claimed item is routed to ITS OWN recorded repository (#4417), not a
-// single repo shared across every item this run holds: on a multi-repo
-// instance a run can hold claims against different repos (e.g. a
-// decomposition parent from GaggleSpec.AdditionalRepos), and applying one
-// item's repo to another's provider call silently mutates the wrong issue.
-// claimedItemsForRun fails closed (ErrItemRepositoryUnknown) before this
-// function makes any provider call if an item's identity was never recorded.
-//
-// A park whose provider mutation fails is persisted to the circuit-breaker
-// outbox (#3646) and retried here on the next terminal: discarding it left the
-// item goobers:ready with no durable evidence the protection had been
-// attempted, so unhealthy work kept churning.
-func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, runID, stage, runURL string) error {
-	var errs []error
-	if err := reconcileCircuitBreakerOutbox(ctx, poster, l); err != nil {
-		errs = append(errs, err)
-	}
-	items, err := claimedItemsForRun(l, runID)
-	if err != nil {
-		errs = append(errs, err)
-		return errors.Join(errs...)
-	}
-	if len(items) == 0 {
-		return errors.Join(errs...)
-	}
-	for _, item := range items {
-		repoRef, itemID := item.Repo, item.ItemID
-		prevCount, loadErr := loadFailureStreakCount(ctx, poster, l, repoRef, itemID)
-		if loadErr != nil {
-			errs = append(errs, fmt.Errorf("load failure streak state on %s#%s: %w", repoRef.Name, itemID, loadErr))
-			continue
-		}
-		count := prevCount + 1
-
-		// The authoritative update happens FIRST (Goobers#3025): the streak
-		// that gates the circuit breaker must not depend on a provider
-		// comment write succeeding. The comment is posted after, as a
-		// best-effort projection — its failure is still reported, but it
-		// never blocks or rolls back the persisted count.
-		if err := writeFailureStreakCount(l, repoRef, itemID, count, runID, stage); err != nil {
-			errs = append(errs, fmt.Errorf("persist failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
-			continue
-		}
-		if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, stage, runID, runURL); err != nil {
-			errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
-		}
-
-		if count >= failureStreakThreshold {
-			if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-				Repository:   repoRef,
-				ID:           itemID,
-				AddLabels:    []string{providers.LabelNeedsHuman},
-				RemoveLabels: []string{providers.LabelReady},
-			}); err != nil {
-				errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
-				if rerr := recordCircuitBreakerMutationFailure(l, repoRef, itemID, runID, stage, count, err); rerr != nil {
-					errs = append(errs, fmt.Errorf("persist circuit breaker park for %s#%s: %w", repoRef.Name, itemID, rerr))
-				}
-			} else if cerr := clearCircuitBreakerMutations(l, repoRef, itemID); cerr != nil {
-				errs = append(errs, fmt.Errorf("clear circuit breaker park for %s#%s: %w", repoRef.Name, itemID, cerr))
-			}
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// resetCircuitBreaker mirrors applyCircuitBreaker's per-item repository
-// routing (#4417) for the completed-terminal reset path.
-func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, runID, runURL string) error {
-	items, err := claimedItemsForRun(l, runID)
-	if err != nil {
-		return err
-	}
-	var errs []error
-	for _, item := range items {
-		repoRef, itemID := item.Repo, item.ItemID
-		if err := writeFailureStreakCount(l, repoRef, itemID, 0, runID, ""); err != nil {
-			errs = append(errs, fmt.Errorf("reset failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
-		}
-		if err := gate.ResetFailureComment(ctx, poster, repoRef, itemID, runID, runURL); err != nil {
-			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
-		}
-		// A completed run resets the streak that motivated any still-pending
-		// park for this item, so the outbox entry is moot rather than owed
-		// (#3646).
-		if err := clearCircuitBreakerMutations(l, repoRef, itemID); err != nil {
-			errs = append(errs, fmt.Errorf("clear circuit breaker park on %s#%s: %w", repoRef.Name, itemID, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// buildTerminalCircuitBreaker wraps an existing TerminalNotifier with circuit
-// breaker logic for PhaseEscalated and PhaseAborted. PhaseFailed is handled by
-// buildFailedHandler (which calls applyCircuitBreaker directly), so this
-// wrapper skips PhaseFailed to avoid double-counting. Returns nil when no repo
-// is configured.
-//
-// Unlike before #4417, this no longer takes a gaggle project to compute one
-// shared repo for every item a run holds (#4243's fix, itself superseded):
-// applyCircuitBreaker/resetCircuitBreaker resolve each claimed item's OWN
-// recorded repository identity instead, since the gaggle's static project
-// and a mid-run-claimed item's actual repo are not always the same thing —
-// #4417's own incident was a terminal circuit-breaker path routing to a
-// completely unrelated repository because it reconstructed ownership from
-// exactly that kind of instance-level default.
-//
-// Breaker errors are returned, not discarded (#3646): the runner journals a
-// TerminalNotifier failure as terminal_notification_failed, so a park that did
-// not reach the provider — or a claimed item with no recorded repository
-// identity (ErrItemRepositoryUnknown) — leaves an actionable diagnostic in
-// the run trace alongside the durable outbox entry.
-func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
-	if len(cfg.Repos) == 0 {
-		return inner
-	}
-	poster := &escalationCommenter{
-		resolver:           resolver,
-		reg:                reg,
-		layout:             l,
-		needsHumanAssignee: cfg.NeedsHumanAssignee,
-	}
-
-	return func(runID string, phase journal.RunPhase, finalState string) error {
-		var errs []error
-		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			attributedCtx, _ := attributionContextForRun(ctx, l, runID, finalState)
-			runURL, _ := failureRunURL(l, cfg, runID)
-			if phase == journal.PhaseCompleted {
-				if err := resetCircuitBreaker(attributedCtx, poster, l, runID, runURL); err != nil {
-					errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
-				}
-				if err := settleNoWorkStreak(attributedCtx, poster, l, runID, finalState, runURL); err != nil {
-					errs = append(errs, fmt.Errorf("settle no-work streak for run %q: %w", runID, err))
-				}
-			} else if err := applyCircuitBreaker(attributedCtx, poster, l, runID, finalState, runURL); err != nil {
-				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
-			}
-		}
-		if inner != nil {
-			if err := inner(runID, phase, finalState); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		return errors.Join(errs...)
-	}
-}
-
-func withDaemonAttributionTask(ctx context.Context, task string) context.Context {
-	attribution, ok := providers.AttributionFromContext(ctx)
-	if !ok {
-		return ctx
-	}
-	attribution.Task = task
-	attribution.Goober = "runner"
-	return providers.WithAttributionContext(ctx, attribution)
-}
-
-func attributionContextForRun(ctx context.Context, l instance.Layout, runID, task string) (context.Context, error) {
-	reader, err := journal.OpenReadOnly(filepath.Join(l.RunsDir(), runID))
-	if err != nil {
-		return ctx, err
-	}
-	identity, err := reader.Identity()
-	if err != nil {
-		return ctx, err
-	}
-	return providers.WithAttributionContext(ctx, providers.Attribution{
-		Schema: 1, Goobers: true,
-		Gaggle: identity.Gaggle, Workflow: identity.Workflow,
-		Task: task, Goober: "runner", Run: runID,
-	}), nil
 }
 
 func failureRunURL(l instance.Layout, cfg *instance.Config, runID string) (string, error) {
@@ -695,38 +440,4 @@ func claimedItemIDsForRun(l instance.Layout, runID string) ([]string, error) {
 		return nil
 	})
 	return ids, err
-}
-
-// buildExistingFixHandler wires runner.Config.ExistingFix (#3236): the
-// instance-level handler strips goobers:ready and goobers:critical labels from
-// an issue when the implement stage returns no-work with existingFixCommit set,
-// preventing a permanent reclaim loop when the fix is already on main.
-func buildExistingFixHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.ExistingFixHandler {
-	if len(cfg.Repos) == 0 {
-		return nil
-	}
-	updater := &escalationCommenter{
-		resolver:           resolver,
-		reg:                reg,
-		layout:             l,
-		needsHumanAssignee: cfg.NeedsHumanAssignee,
-	}
-
-	return func(ctx context.Context, o runner.ExistingFixOutcome) error {
-		if o.ItemID == "" {
-			return nil
-		}
-		repoRef := providers.RepositoryRef{
-			Provider: providers.ProviderKind(o.RepoRef.Provider),
-			Owner:    o.RepoRef.Owner,
-			Name:     o.RepoRef.Name,
-		}
-		// Strip both goobers:ready and goobers:critical labels to prevent reclaim
-		_, err := updater.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repoRef,
-			ID:           o.ItemID,
-			RemoveLabels: []string{providers.LabelReady, providers.LabelCritical},
-		})
-		return err
-	}
 }

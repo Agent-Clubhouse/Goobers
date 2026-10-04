@@ -145,6 +145,54 @@ func TestOperatorMessageExpiredRequestIsTypedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestOperatorMessageRejectedRequestRetainsPrincipalAttribution(t *testing.T) {
+	run, _ := newRun(t)
+	defer func() { _ = run.Close() }()
+	request := testOperatorMessageRequest("denied-1", "denied-key")
+	request.PrincipalRef = "issuer:viewer"
+
+	record, appended, err := run.RejectOperatorMessage(request, "not_authorized", "viewer cannot operate on this run")
+	if err != nil {
+		t.Fatalf("RejectOperatorMessage: %v", err)
+	}
+	if !appended || record.State != apiv1.OperatorMessageState(apiv1.OperatorMessageRejected) ||
+		record.Outcome == nil || record.Outcome.Request == nil ||
+		record.Outcome.Request.PrincipalRef != "issuer:viewer" {
+		t.Fatalf("denied record = %#v, appended = %v", record, appended)
+	}
+
+	duplicate := request
+	duplicate.RequestID = "denied-duplicate"
+	record, appended, err = run.RejectOperatorMessage(duplicate, "not_authorized", "retry")
+	if err != nil {
+		t.Fatalf("duplicate RejectOperatorMessage: %v", err)
+	}
+	if appended || record.Request.RequestID != "denied-1" {
+		t.Fatalf("duplicate = (%v, %q), want original denied request", appended, record.Request.RequestID)
+	}
+}
+
+func TestOperatorMessageRejectedRequestScrubsReturnedOutcome(t *testing.T) {
+	run, _ := newRun(t)
+	defer func() { _ = run.Close() }()
+	secret := "ghp_" + strings.Repeat("d", 36)
+	request := testOperatorMessageRequest("denied-secret", "denied-secret-key")
+
+	record, appended, err := run.RejectOperatorMessage(request, "denied-"+secret, "credential "+secret+" is not authorized")
+	if err != nil {
+		t.Fatalf("RejectOperatorMessage: %v", err)
+	}
+	if !appended || record.Outcome == nil {
+		t.Fatalf("rejected record = %#v, appended = %v", record, appended)
+	}
+	if encoded := record.Outcome.Code + record.Outcome.Detail; strings.Contains(encoded, secret) {
+		t.Fatalf("returned rejection exposed raw secret: %#v", record.Outcome)
+	}
+	if !strings.Contains(record.Outcome.Code+record.Outcome.Detail, Redacted) {
+		t.Fatalf("returned rejection did not preserve redaction evidence: %#v", record.Outcome)
+	}
+}
+
 func TestOperatorMessageRejectedAndArtifactContentReplay(t *testing.T) {
 	run, _ := newRun(t)
 	defer func() { _ = run.Close() }()

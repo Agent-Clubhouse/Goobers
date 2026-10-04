@@ -2,6 +2,7 @@ package v30
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -211,7 +212,7 @@ func unsatisfiableInputsFromProblems(m *Machine) []string {
 				if len(pred.ExpectedOutputs) == 0 {
 					continue
 				}
-				if containsString(pred.ExpectedOutputs, outputKey) {
+				if slices.Contains(pred.ExpectedOutputs, outputKey) {
 					continue
 				}
 				problems = append(problems, fmt.Sprintf(
@@ -278,15 +279,6 @@ func sortedTaskNames(m *Machine) []string {
 	return names
 }
 
-func containsString(haystack []string, needle string) bool {
-	for _, v := range haystack {
-		if v == needle {
-			return true
-		}
-	}
-	return false
-}
-
 // isShellStage reports whether task runs through the shell executor, which
 // is the only executor that harvests Outputs from a declared result file.
 // An agentic stage, or a deterministic one naming a built-in inputs.kind
@@ -335,7 +327,7 @@ func qualifiedRefProblems(m *Machine, consumer, inputKey, stageName, key string)
 	}
 
 	producer, _ := m.Task(stageName)
-	if len(producer.ExpectedOutputs) > 0 && !containsString(producer.ExpectedOutputs, key) {
+	if len(producer.ExpectedOutputs) > 0 && !slices.Contains(producer.ExpectedOutputs, key) {
 		problems = append(problems, fmt.Sprintf(
 			"task %q reads inputsFrom %q as %q.%q, but task %q declares outputs %v and not %q",
 			consumer, inputKey, stageName, key, stageName, producer.ExpectedOutputs, key))

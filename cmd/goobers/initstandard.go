@@ -62,7 +62,7 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 	if strings.TrimSpace(input.Repo) != "" {
 		parsed, err := parseGuidedRepositoryIdentity(input.Repo)
 		if err != nil {
-			return nil, fmt.Errorf("--repo: %w", err)
+			return nil, standardRepoParseError(provider, err)
 		}
 		if provider != "" && provider != parsed.provider {
 			return nil, fmt.Errorf("--provider=%s conflicts with --repo provider %s", provider, parsed.provider)
@@ -91,8 +91,13 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		PullRequestCI: input.PullRequestCI, CICommand: argv, RequiredCapabilities: splitLabelList(input.Capabilities),
 	}
 	if provider == "ado" {
+		kind, err := standardADORepoAuthKind(input)
+		if err != nil {
+			return nil, err
+		}
 		// An unset or empty kind defaults to azure-cli (normalizeGuidedOptions);
 		// only PAT auth names a token variable.
+		opts.RepoAuthKind = kind
 		opts.RepoTokenEnv = ""
 		if strings.TrimSpace(opts.RepoAuthKind) == instance.ADOAuthPAT {
 			opts.RepoTokenEnv = "GOOBERS_ADO_TOKEN"
@@ -117,6 +122,38 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		opts.CopilotTokenEnv = input.ModelTokenEnv
 	}
 	return opts, nil
+}
+
+// standardRepoParseError words a --repo parse failure. An explicit
+// --provider=ado must not surface the GitHub parser's "host must be
+// github.com" for a URL that is not Azure DevOps cloud (for example Azure
+// DevOps Server, which is unsupported).
+func standardRepoParseError(provider string, err error) error {
+	if provider == "ado" {
+		return fmt.Errorf("--repo: not a supported Azure DevOps repository (expected https://dev.azure.com/<organization>/<project>/_git/<repository>; Azure DevOps Server is not supported)")
+	}
+	return fmt.Errorf("--repo: %w", err)
+}
+
+// standardADORepoAuthKind resolves the Azure DevOps repository auth kind.
+// Only PAT auth reads a token variable, so naming one with --repo-token-env
+// and no kind selects pat (as scripted ADO onboarding did before azure-cli
+// became the default); naming one with any other kind is a usage error
+// instead of a silently ignored flag. An empty --repo-token-env names nothing.
+func standardADORepoAuthKind(input standardInitInput) (string, error) {
+	kind := strings.TrimSpace(input.RepoAuthKind)
+	if !input.RepoTokenEnvSet || strings.TrimSpace(input.RepoTokenEnv) == "" {
+		return kind, nil
+	}
+	switch kind {
+	case "":
+		return instance.ADOAuthPAT, nil
+	case instance.ADOAuthPAT:
+		return kind, nil
+	default:
+		return "", fmt.Errorf("--repo-token-env is read only by --repo-auth-kind=%s on Azure DevOps; drop --repo-token-env or use --repo-auth-kind=%s instead of %q",
+			instance.ADOAuthPAT, instance.ADOAuthPAT, kind)
+	}
 }
 
 // standardDefaultWorkflows is the module set `init --template=standard` seeds

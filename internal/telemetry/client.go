@@ -47,6 +47,8 @@ type ExporterKind string
 // Config controls tracer/meter setup and exporter selection. ExporterOTLP
 // requires a non-empty, explicitly configured OTLPEndpoint.
 type Config struct {
+	// Destinations adds independently bounded named remote transports.
+	Destinations   []NamedDestination
 	ServiceName    string
 	ServiceVersion string
 	BuildCommit    string
@@ -73,6 +75,12 @@ type Config struct {
 	AzureMonitorReplayRoot     string
 	AzureMonitorReplayMaxAge   time.Duration
 	AzureMonitorReplayMaxBytes int64
+	// AzureMonitorReplayStart, when non-nil, delays only background replay
+	// until the caller closes the channel (for example, after daemon readiness).
+	// Accounting, durable admission, and bounded shutdown remain active. Each
+	// caller owns its signal; closing an exporter never releases another one.
+	// Nil preserves immediate replay for one-shot commands and other callers.
+	AzureMonitorReplayStart <-chan struct{}
 	// JournalLogs enables live export of committed journal events as OTLP Logs.
 	// It has no effect without ExporterOTLP and an explicit endpoint.
 	JournalLogs bool
@@ -104,6 +112,9 @@ type Config struct {
 	// MetricExporter is attached to the meter provider behind a periodic
 	// reader, exactly like the OTLP metric exporter.
 	MetricExporter metric.Exporter
+	// ExporterHealth receives bounded local observations for remote telemetry
+	// exporter health. Nil disables exporter-health accounting.
+	ExporterHealth *ExporterHealth
 	// MetricExportInterval overrides the periodic reader's export period.
 	// Zero uses metricExportInterval.
 	MetricExportInterval time.Duration
@@ -128,18 +139,25 @@ type Config struct {
 // ErrOTLPUnavailable), log the cause loudly (the daemon's convention is
 // instance-journal code telemetry_otlp_unavailable), and keep the returned
 // client rather than discarding it as a construction failure.
+// Named destinations also wrap construction failures with this sentinel so
+// legacy callers retain the usable local client and healthy destinations.
 var ErrOTLPUnavailable = errors.New("otlp exporter unavailable")
 
 // Client owns the OTel tracer and meter providers for a Goobers process.
 type Client struct {
-	tracerProvider     *sdktrace.TracerProvider
-	localSpanProcessor sdktrace.SpanProcessor
-	meterProvider      *metric.MeterProvider
-	instruments        *instruments
-	tracer             trace.Tracer
-	scrubber           journal.Scrubber
-	journalLogs        *journalLogPipeline
-	unregisterJournal  func()
+	namedMetricReaders  []metric.Reader
+	destinationName     string
+	journalDestinations []*Client
+	tracerProvider      *sdktrace.TracerProvider
+	localSpanProcessor  sdktrace.SpanProcessor
+	meterProvider       *metric.MeterProvider
+	instruments         *instruments
+	tracer              trace.Tracer
+	scrubber            journal.Scrubber
+	journalLogs         *journalLogPipeline
+	journalCatchup      *journalCatchup
+	unregisterJournal   func()
+	exporterHealth      *ExporterHealth
 }
 
 // InstanceJournalAppendDropped implements journal.InstanceAppendDropObserver.
@@ -205,12 +223,87 @@ func (c *Client) StorageHealthSampled(tier string, freeBytes uint64, tierChanged
 	}
 }
 
+// QueueSaturationSample is one scheduler-visible queue lane snapshot. QueueKind
+// must be a closed, bounded value such as "schedule", "backlog", or "refill".
+// OldestEnqueuedAt is the canonical enqueue/readiness time for the oldest item
+// represented by Depth; zero means no age source is available. Empty queues
+// still record age 0, but non-empty queues without a source omit age instead
+// of guessing.
+type QueueSaturationSample struct {
+	QueueKind        string
+	OperatingSystem  string
+	Depth            int
+	OldestEnqueuedAt time.Time
+	ObservedAt       time.Time
+}
+
+// WorkerAvailabilitySample is a scheduler capacity snapshot. Emit it only when
+// the scheduler has a reliable configured-capacity source; zero is a valid value.
+type WorkerAvailabilitySample struct {
+	OperatingSystem string
+	Available       int
+}
+
+// RecordSchedulerQueueSaturation publishes queue depth, oldest queue age, and
+// worker availability gauges. Nil clients and telemetry-disabled clients are
+// no-ops, preserving optional, non-blocking export semantics.
+func (c *Client) RecordSchedulerQueueSaturation(ctx context.Context, queues []QueueSaturationSample, workers *WorkerAvailabilitySample) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	for _, queue := range queues {
+		depth := queue.Depth
+		if depth < 0 {
+			depth = 0
+		}
+		attrs := queueSaturationAttrs(queue.QueueKind, queue.OperatingSystem)
+		c.instruments.queueDepth.Record(ctx, int64(depth), c.instruments.attributeSet(attrs...))
+		if depth > 0 && queue.OldestEnqueuedAt.IsZero() {
+			continue
+		}
+		ageSeconds := int64(0)
+		if depth > 0 {
+			observedAt := queue.ObservedAt
+			if observedAt.IsZero() {
+				observedAt = time.Now()
+			}
+			if age := observedAt.Sub(queue.OldestEnqueuedAt); age > 0 {
+				ageSeconds = int64(age.Seconds())
+			}
+		}
+		c.instruments.queueOldestAge.Record(ctx, ageSeconds, c.instruments.attributeSet(attrs...))
+	}
+	if workers == nil {
+		return
+	}
+	available := workers.Available
+	if available < 0 {
+		available = 0
+	}
+	c.instruments.workersAvailable.Record(ctx, int64(available),
+		c.instruments.attributeSet(queueSaturationAttrs("", workers.OperatingSystem)...))
+}
+
+func queueSaturationAttrs(queueKind, operatingSystem string) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 2)
+	if queueKind != "" {
+		attrs = append(attrs, attribute.String(MetricAttrQueueKind, queueKind))
+	}
+	if operatingSystem != "" {
+		attrs = append(attrs, attribute.String(MetricAttrOS, operatingSystem))
+	}
+	return attrs
+}
+
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
 func New(ctx context.Context, cfg Config) (*Client, error) {
 	// The SDK's default error handler logs every asynchronous export failure
 	// unconditionally; in a daemon that is one line a minute for as long as the
 	// condition lasts (#4159). Replace it before any exporter can report.
 	installExportErrorHandler()
+	if err := validateNamedConfig(cfg); err != nil {
+		return nil, err
+	}
 
 	scrubber := cfg.Scrubber
 	if scrubber == nil {
@@ -237,12 +330,14 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
 	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
+	cfg = prepareNamedDestinations(cfg)
 	if cfg.JournalLogsOnly {
 		client := &Client{
-			scrubber: scrubber,
-			tracer:   tracenoop.NewTracerProvider().Tracer(ScopeName),
+			scrubber:       scrubber,
+			tracer:         tracenoop.NewTracerProvider().Tracer(ScopeName),
+			exporterHealth: cfg.ExporterHealth,
 		}
-		return client, client.configureJournalLogs(ctx, cfg, res)
+		return client, client.configureAllJournalLogs(ctx, cfg, res)
 	}
 
 	// otlpDegraded, not err, carries an ErrOTLPUnavailable across the rest of
@@ -281,6 +376,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		options = append(options, sdktrace.WithSpanProcessor(processor))
 	}
 
+	named, namedErr := namedSpanProcessors(ctx, cfg)
+	if len(named) > 0 {
+		options = append(options, sdktrace.WithSpanProcessor(named))
+	}
+	otlpDegraded = errors.Join(otlpDegraded, namedErr)
 	tracerProvider := sdktrace.NewTracerProvider(options...)
 
 	readers, err := metricReaders(ctx, cfg)
@@ -295,6 +395,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	meterOptions := make([]metric.Option, 0, len(readers)+1)
 	meterOptions = append(meterOptions, metric.WithResource(res))
 	for _, reader := range readers {
+		if len(cfg.Destinations) > 0 {
+			reader = ownedMetricReader{reader}
+		}
 		meterOptions = append(meterOptions, metric.WithReader(reader))
 	}
 	meterProvider := metric.NewMeterProvider(meterOptions...)
@@ -304,6 +407,10 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		meterProvider:  meterProvider,
 		tracer:         tracerProvider.Tracer(ScopeName),
 		scrubber:       scrubber,
+		exporterHealth: cfg.ExporterHealth,
+	}
+	if len(cfg.Destinations) > 0 {
+		client.namedMetricReaders = readers
 	}
 	if len(readers) != 0 {
 		// A meter provider with no reader records nothing, so instruments are
@@ -318,7 +425,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.SpanExporter != nil {
 		client.localSpanProcessor = processors[0]
 	}
-	otlpDegraded = errors.Join(otlpDegraded, client.configureJournalLogs(ctx, cfg, res))
+	otlpDegraded = errors.Join(otlpDegraded, client.configureAllJournalLogs(ctx, cfg, res))
 	return client, otlpDegraded
 }
 
@@ -435,9 +542,17 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 // fail the caller (isCollectorUnreachable, #1124); a local-exporter error still
 // propagates.
 func (c *Client) Flush(ctx context.Context) error {
+	joinDestinations := c.startJournalDestinationCalls(ctx, false)
+	defer joinDestinations()
+	joinMetrics := c.startNamedMetricFlush(ctx)
+	defer joinMetrics()
 	if c.tracerProvider != nil {
-		if err := c.tracerProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
-			return fmt.Errorf("flush telemetry traces: %w", err)
+		if err := c.tracerProvider.ForceFlush(ctx); err != nil {
+			if !isCollectorUnreachable(err) {
+				return fmt.Errorf("flush telemetry traces: %w", err)
+			}
+		} else if c.exporterHealth != nil && c.exporterHealth.TraceExporterInstalled() {
+			c.exporterHealth.recordTraceProviderSuccess()
 		}
 	}
 	// Metric export is strictly best-effort: unlike traces it has no local
@@ -445,10 +560,15 @@ func (c *Client) Flush(ctx context.Context) error {
 	// remote-collector condition (unreachable, or a collector configured for
 	// traces only). The SDK still reports it through the global otel error
 	// handler; it must never fail the caller's work.
-	if c.meterProvider != nil {
-		_ = c.meterProvider.ForceFlush(ctx)
+	if c.meterProvider != nil && len(c.namedMetricReaders) == 0 {
+		if err := c.meterProvider.ForceFlush(ctx); err == nil && c.exporterHealth != nil && c.exporterHealth.MetricExporterInstalled() {
+			c.exporterHealth.recordMetricProviderSuccess()
+		}
 	}
 	if c.journalLogs != nil {
+		if c.journalCatchup != nil {
+			_ = c.journalCatchup.flush(ctx)
+		}
 		// Like metrics, journal Logs are remote-only and best-effort. The
 		// pipeline reports failures independently of the journal writer.
 		_ = c.journalLogs.flush(ctx)
@@ -477,15 +597,24 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	if c.unregisterJournal != nil {
 		c.unregisterJournal()
 	}
+	joinDestinations := c.startJournalDestinationCalls(ctx, true)
+	if c.journalCatchup != nil {
+		c.journalCatchup.shutdown(ctx)
+	}
 	var errs []error
 	if c.tracerProvider != nil {
-		if err := c.tracerProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
-			errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
+		if err := c.tracerProvider.Shutdown(ctx); err != nil {
+			if !isCollectorUnreachable(err) {
+				errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
+			}
+		} else if c.exporterHealth != nil && c.exporterHealth.TraceExporterInstalled() {
+			c.exporterHealth.recordTraceProviderSuccess()
 		}
 	}
 	if c.journalLogs != nil {
 		_ = c.journalLogs.shutdown(ctx)
 	}
+	joinDestinations()
 	// Journal shutdown can create the final stopping/shutdown drop counts, so
 	// it must settle them before the meter provider performs its final export.
 	// If the journal consumed the caller's deadline while abandoning a blocked
@@ -502,16 +631,31 @@ func (c *Client) Shutdown(ctx context.Context) error {
 			// contract even when the metric destination is also unresponsive.
 			metricCtx, cancel = context.WithTimeout(context.Background(), time.Second)
 		}
-		_ = c.meterProvider.Shutdown(metricCtx)
+		c.shutdownNamedMetrics(metricCtx)
+		if err := c.meterProvider.Shutdown(metricCtx); err == nil && c.exporterHealth != nil && c.exporterHealth.MetricExporterInstalled() {
+			c.exporterHealth.recordMetricProviderSuccess()
+		}
 		cancel()
 	}
 	return errors.Join(errs...)
+}
+
+// ExporterHealthSnapshot returns the client's bounded local exporter-health
+// view. A nil/disabled client reports telemetry disabled explicitly.
+func (c *Client) ExporterHealthSnapshot() ExporterHealthSnapshot {
+	if c == nil || c.exporterHealth == nil {
+		return DisabledExporterHealthSnapshot()
+	}
+	return c.exporterHealth.Snapshot()
 }
 
 func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, error) {
 	var exporters []sdktrace.SpanExporter
 	if cfg.SpanExporter != nil {
 		exporters = append(exporters, cfg.SpanExporter)
+	}
+	if cfg.Exporter == "" && len(cfg.Destinations) != 0 {
+		return exporters, nil
 	}
 	if cfg.Exporter == "" && len(exporters) != 0 {
 		if cfg.AzureMonitorConnectionString == "" || !cfg.AzureMonitorTraces {
@@ -521,14 +665,24 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		if err != nil {
 			return exporters, err
 		}
-		return append(exporters, azure), nil
+		var remote sdktrace.SpanExporter = azure
+		if cfg.ExporterHealth != nil {
+			cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterAzureMonitor)
+			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
+		}
+		return append(exporters, remote), nil
 	}
 	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
 		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
 		if err != nil {
 			return nil, err
 		}
-		return append(exporters, azure), nil
+		var remote sdktrace.SpanExporter = azure
+		if cfg.ExporterHealth != nil {
+			cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterAzureMonitor)
+			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
+		}
+		return append(exporters, remote), nil
 	}
 	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" {
 		// A health/journal profile intentionally has no remote span exporter.
@@ -570,6 +724,9 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 				// The exporter cannot be built, but exporters collected so
 				// far (cfg.SpanExporter's local journal export, if
 				// configured) are untouched — see ErrOTLPUnavailable's doc.
+				if cfg.ExporterHealth != nil {
+					cfg.ExporterHealth.recordTraceExporterFailure(exporterHealthExporterOTLP, tlsErr)
+				}
 				return exporters, fmt.Errorf("%w: %w", ErrOTLPUnavailable, tlsErr)
 			}
 			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
@@ -588,12 +745,21 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		return nil, fmt.Errorf("unsupported telemetry exporter %q", cfg.Exporter)
 	}
 	exporters = append(exporters, exporter)
+	if cfg.ExporterHealth != nil && cfg.Exporter == ExporterOTLP {
+		cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterOTLP)
+		exporters[len(exporters)-1] = observedSpanExporter{next: exporters[len(exporters)-1], health: cfg.ExporterHealth, exporter: exporterHealthExporterOTLP}
+	}
 	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
 		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
 		if err != nil {
 			return exporters, err
 		}
-		exporters = append(exporters, azure)
+		var remote sdktrace.SpanExporter = azure
+		if cfg.ExporterHealth != nil {
+			cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterAzureMonitor)
+			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
+		}
+		exporters = append(exporters, remote)
 	}
 	return exporters, nil
 }
@@ -681,4 +847,32 @@ func appendStartTime(opts []trace.SpanStartOption, at time.Time) []trace.SpanSta
 		return opts
 	}
 	return append(opts, trace.WithTimestamp(at))
+}
+
+// SelfExecutionPolicy records the effective policy (one means deny) and creates
+// explicit zero counter series before the daemon admits workflow work.
+func (c *Client) SelfExecutionPolicy(denied bool) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	var value int64
+	if denied {
+		value = 1
+	}
+	ctx := context.Background()
+	c.instruments.selfDenied.Record(ctx, value)
+	c.instruments.selfPlacements.Add(ctx, 0)
+	c.instruments.selfRefusals.Add(ctx, 0)
+}
+
+// SelfExecutionObserved counts only actual local work or a pre-execution refusal.
+func (c *Client) SelfExecutionObserved(refused bool) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	if refused {
+		c.instruments.selfRefusals.Add(context.Background(), 1)
+	} else {
+		c.instruments.selfPlacements.Add(context.Background(), 1)
+	}
 }

@@ -159,6 +159,7 @@ func TestReconcileRepollsScheduledDemandBeforeNextFire(t *testing.T) {
 		Gaggle:   "goobers",
 		Workflow: "pr-remediation",
 		Reason:   triggerReasonScheduled,
+		Time:     time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +181,7 @@ func TestReconcileRepollsScheduledDemandBeforeNextFire(t *testing.T) {
 	block := make(chan struct{})
 	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
 	counter := &fakeBacklogCounter{count: 2}
+	recorder := &queueTelemetryRecorder{}
 	sched := New([]WorkflowEntry{{
 		Gaggle:                "goobers",
 		Workflow:              "pr-remediation",
@@ -187,13 +189,33 @@ func TestReconcileRepollsScheduledDemandBeforeNextFire(t *testing.T) {
 		Schedules:             []Schedule{fakeSchedule{d: time.Hour}},
 		ScheduleDemandCounter: counter,
 		Starter:               starter,
-	}}, log)
+	}}, log, WithTelemetry(recorder))
 	restartedAt := time.Now().Add(30 * time.Minute)
 	if err := sched.Reconcile(runsDir, restartedAt); err != nil {
 		t.Fatal(err)
 	}
+	identity := WorkflowIdentity{Gaggle: "goobers", Workflow: "pr-remediation"}
+	sched.mu.Lock()
+	recoveredEnqueuedAt := sched.triggers[identity].LastEval
+	sched.mu.Unlock()
+	if recoveredEnqueuedAt.IsZero() {
+		t.Fatal("recovered trigger fire time is zero")
+	}
 
 	sched.Tick(context.Background(), restartedAt)
+	foundScheduleSample := false
+	for _, sample := range recorder.lastSamples() {
+		if sample.QueueKind != queueKindSchedule {
+			continue
+		}
+		foundScheduleSample = true
+		if !sample.OldestEnqueuedAt.Equal(recoveredEnqueuedAt) {
+			t.Fatalf("recovered schedule enqueue time = %s, want durable trigger fire time", sample.OldestEnqueuedAt)
+		}
+	}
+	if !foundScheduleSample {
+		t.Fatal("missing recovered schedule queue saturation sample")
+	}
 	if starter.count() != 0 {
 		t.Fatalf("scheduled runs = %d, want reconciled run to hold capacity", starter.count())
 	}

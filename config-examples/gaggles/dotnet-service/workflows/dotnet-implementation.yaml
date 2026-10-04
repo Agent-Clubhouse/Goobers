@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: dotnet-implementation
+  annotations:
+    goobers.dev/purpose: "Example .NET implementation workflow: an agent implements the change, local CI builds and tests it, and a reviewer gates the result."
 spec:
   gaggle: dotnet-service
   displayName: Implementation (.NET reference — implement → review → local-ci)
@@ -82,6 +84,15 @@ spec:
       agentic:
         goober: dotnet-reviewer
         workspace: repo
+        # #765/#5397: retry a transient reviewer-harness infrastructure failure
+        # (e.g. a required MCP server not yet ready) within this bound instead
+        # of failing the run and discarding the implement turn that already
+        # succeeded. Evaluator retries never charge a repass; the non-zero
+        # backoff keeps a retry out of the same failure window (#5084).
+        # Non-transient errors still fail fast.
+        retry:
+          maxAttempts: 3
+          backoffSeconds: 20
       branches:
         pass: local-ci
         needs-changes: implement

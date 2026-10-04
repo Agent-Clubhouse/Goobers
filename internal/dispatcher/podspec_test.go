@@ -322,8 +322,13 @@ func TestRenderPodStampsDurableGoCache(t *testing.T) {
 			if env["GOMODCACHE"] != tc.path {
 				t.Fatalf("GOMODCACHE = %q, want %q", env["GOMODCACHE"], tc.path)
 			}
-			if _, ok := env["GOCACHE"]; ok {
-				t.Fatalf("GOCACHE was stamped onto the durable cache volume at %q; it must remain under tmp:ephemeral", env["GOCACHE"])
+			// GOCACHE is neither on the durable claim nor under the tmpfs.
+			wantGoCache := LinuxGoBuildCachePath
+			if tc.name == "windows" {
+				wantGoCache = WindowsGoBuildCachePath
+			}
+			if env["GOCACHE"] != wantGoCache || env["GOCACHE"] == tc.path {
+				t.Fatalf("GOCACHE = %q, want the dedicated disk-backed %q", env["GOCACHE"], wantGoCache)
 			}
 		})
 	}
@@ -348,12 +353,15 @@ func TestRenderFromTemplateStampsDurableGoCache(t *testing.T) {
 	if env["GOMODCACHE"] != LinuxGoCachePath {
 		t.Fatalf("template GOMODCACHE = %q, want %q", env["GOMODCACHE"], LinuxGoCachePath)
 	}
-	if _, ok := env["GOCACHE"]; ok {
-		t.Fatalf("template GOCACHE was stamped onto the durable cache volume; it must remain under tmp:ephemeral")
+	if env["GOCACHE"] != LinuxGoBuildCachePath {
+		t.Fatalf("template GOCACHE = %q, want %q", env["GOCACHE"], LinuxGoBuildCachePath)
 	}
 	var allow []string
 	if err := json.Unmarshal([]byte(env[EnvStageEnvAllow]), &allow); err != nil {
 		t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+	}
+	if !slices.Contains(allow, "GOCACHE") {
+		t.Fatalf("env:default-deny allowlist = %v, missing GOCACHE", allow)
 	}
 	if !slices.Contains(allow, "GOMODCACHE") {
 		t.Fatalf("env:default-deny allowlist = %v, missing GOMODCACHE", allow)
@@ -523,14 +531,15 @@ func TestRenderPodEnvContract(t *testing.T) {
 		env[e.Name] = e.Value
 	}
 	for name, want := range map[string]string{
-		EnvRunID:        "run-2026-08-22-0001",
-		EnvInstanceID:   attempt.InstanceID,
-		EnvStage:        "build",
-		EnvAttempt:      "1",
-		EnvBlobEndpoint: "http://goobers-api.goobers-system:7777",
-		EnvDaemonAPI:    "http://goobers-api.goobers-system:7777",
-		EnvPodToken:     "goobers-pod.tok",
-		EnvStageTimeout: DefaultStageTimeout.String(),
+		EnvRunID:                  "run-2026-08-22-0001",
+		EnvInstanceID:             attempt.InstanceID,
+		EnvStage:                  "build",
+		EnvAttempt:                "1",
+		EnvBlobEndpoint:           "http://goobers-api.goobers-system:7777",
+		EnvDaemonAPI:              "http://goobers-api.goobers-system:7777",
+		EnvPodToken:               "goobers-pod.tok",
+		EnvStageTimeout:           DefaultStageTimeout.String(),
+		EnvRecoveryCustodyTimeout: DefaultRecoveryCustodyTimeout.String(),
 	} {
 		if env[name] != want {
 			t.Errorf("env %s = %q, want %q", name, env[name], want)
@@ -541,6 +550,22 @@ func TestRenderPodEnvContract(t *testing.T) {
 	}
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Errorf("restartPolicy = %q, want Never (one attempt per pod)", pod.Spec.RestartPolicy)
+	}
+}
+
+func TestRenderPodEnvContractCarriesConfiguredRecoveryCustodyTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.RecoveryCustodyTimeout = 17 * time.Minute
+	pod, err := RenderPod(cfg, testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if got := env[EnvRecoveryCustodyTimeout]; got != "17m0s" {
+		t.Fatalf("env %s = %q, want 17m0s", EnvRecoveryCustodyTimeout, got)
 	}
 }
 

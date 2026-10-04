@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/goobers/goobers/internal/engineoperator"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -40,8 +42,9 @@ const claimLockOperationAPIUnpushedWork = "api.journal.unpushed-work"
 
 // daemonRunJournalService serves the cross-run journal plane.
 type daemonRunJournalService struct {
-	layout instance.Layout
-	log    *journal.InstanceLog
+	operatorMessages engineoperator.Service
+	layout           instance.Layout
+	log              *journal.InstanceLog
 }
 
 func newDaemonRunJournalService(layout instance.Layout, log *journal.InstanceLog) *daemonRunJournalService {

@@ -35,17 +35,9 @@ func TestProjectionDoesNotExportHistoricalJournalEvents(t *testing.T) {
 			{Kind: opAppend, Time: at, Event: &journal.Event{Type: journal.EventRunStarted, Status: string(journal.PhaseRunning)}},
 			{Kind: opAppend, Time: at.Add(time.Second), Event: &journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}},
 		},
-		SchedulerOps: []JournalOp{{
-			Kind: opAppend, Time: at,
-			Event: &journal.Event{Type: journal.EventTriggerFired, RunID: id, Workflow: "synthetic", Gaggle: "test", Reason: "scheduled"},
-		}},
 	}
 	dir, err := ProjectRun(filepath.Join(root, "runs"), proj)
 	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler := filepath.Join(root, "scheduler")
-	if err := ProjectSchedulerEvents(scheduler, proj); err != nil {
 		t.Fatal(err)
 	}
 	if len(sink.events) != 0 {
@@ -59,7 +51,7 @@ func TestProjectionDoesNotExportHistoricalJournalEvents(t *testing.T) {
 	if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation}); err != nil {
 		t.Fatal(err)
 	}
-	log, _, err := journal.OpenInstanceLog(scheduler)
+	log, _, err := journal.OpenInstanceLog(filepath.Join(root, "scheduler"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +63,7 @@ func TestProjectionDoesNotExportHistoricalJournalEvents(t *testing.T) {
 		t.Fatalf("new live writes exported %d records, want 2", len(sink.events))
 	}
 	runEvent, schedulerEvent := <-sink.events, <-sink.events
-	if runEvent.Kind != "run" || runEvent.Seq != 3 || schedulerEvent.Kind != "scheduler" || schedulerEvent.Seq != 2 {
+	if runEvent.Kind != "run" || runEvent.Seq != 3 || schedulerEvent.Kind != "scheduler" || schedulerEvent.Seq != 1 {
 		t.Fatalf("wrong live events after projection: %+v %+v", runEvent, schedulerEvent)
 	}
 }

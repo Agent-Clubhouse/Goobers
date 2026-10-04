@@ -18,10 +18,12 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workflow"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -44,6 +46,7 @@ var ErrDeclaredArtifactPathEscape = errors.New("harness: declared artifact file 
 // stages (GBO-051) — checked at compile time so a signature drift is caught
 // here, not at the runner's wiring site.
 var _ invoke.Goober = (*Executor)(nil)
+var _ invoke.OperatorMessageTarget = (*Executor)(nil)
 
 // SpanRecorder captures a schema-aware within-stage trace span (GBO-020) —
 // satisfied by (*internal/journal.Run).RecordSpanWithSchema without this
@@ -180,6 +183,8 @@ type Executor struct {
 	validator       *validate.Validator
 	instructions    string
 	assets          *gooberassets.Bundle
+	skillsHarness   apiv1.Harness
+	skills          map[string][]workflow.SkillFile
 	model           string
 	harnessVersion  string
 	harnessOptions  map[string]apiextensionsv1.JSON
@@ -190,8 +195,18 @@ type Executor struct {
 	timeout         time.Duration
 	transcriptLimit int64
 	sandboxEnforced bool
+	observer        Observer
 	newSandbox      func() (sandbox.Sandbox, error)
+
+	guardedCredentialFiles bool
 }
+
+// Observer is told about every completed Invoke. It is advisory: it must not
+// block, and it cannot change the result it is given (it receives a copy).
+type Observer func(env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope)
+
+// WithObserver registers an advisory Observer. Nil leaves behavior unchanged.
+func WithObserver(o Observer) Option { return func(e *Executor) { e.observer = o } }
 
 // Option configures an Executor at construction.
 type Option func(*Executor)
@@ -308,6 +323,9 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.guardedCredentialFiles {
+		return nil, ErrGuardedCredentialFiles
+	}
 	if e.timeout <= 0 {
 		// A caller that never sets WithTimeout must still get a bounded
 		// session, not an unbounded one (#119) — DefaultTimeout is applied
@@ -366,9 +384,19 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// capability backstop so a missing-tool code keeps its own, more specific
 	// classification rather than being absorbed into the operational one.
 	reclassifyOperationalFailureBlock(&result)
+	// #5182: a success that left its work uncommitted goes back through the
+	// stage's retry budget with a typed reason instead of reaching review as
+	// an empty diff. The work is never committed on the agent's behalf.
+	if out.uncommitted != nil && result.Status == apiv1.ResultSuccess {
+		result = uncommittedChangesResult(result, out.uncommitted)
+		if out.uncommitted.diff != nil {
+			out.DiagnosticArtifacts = append(out.DiagnosticArtifacts, *out.uncommitted.diff)
+		}
+	}
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript
+	attachHandoffValidationOutput(ctx, &result)
 	if out.TranscriptTruncated {
 		// Mirrors internal/executor.ShellExecutor's stdoutTruncated/
 		// stderrTruncated outputs (#245): the recorded span already carries
@@ -380,18 +408,39 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		result.Outputs["transcriptTruncated"] = true
 		result.Outputs["transcriptDroppedBytes"] = float64(out.TranscriptDroppedBytes)
 	}
-	result.Artifacts, err = e.liftArtifacts(ctx, env, result.Artifacts)
+	reported := result.Artifacts
+	result.Artifacts, err = e.liftArtifacts(ctx, env, reported)
+	if err != nil && noWorkWithoutDeclaredArtifact(result.Status, err) {
+		result.Artifacts, err = reported, nil
+	}
 	if err != nil {
 		if code, summary, ok := declaredArtifactFailure(err); ok {
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{Code: code, Message: err.Error(), Retryable: false}
+			result.Error = journal.ErrorInfoFor(code, err, retryableDeclaredArtifactFailure(code))
 			result.Summary = summary
 			return result, nil
 		}
 		return result, err
 	}
 	result.Artifacts = append(result.Artifacts, out.DiagnosticArtifacts...)
+	if e.observer != nil {
+		e.observer(env, result)
+	}
 	return result, nil
+}
+
+func attachHandoffValidationOutput(ctx context.Context, result *apiv1.ResultEnvelope) {
+	if result == nil {
+		return
+	}
+	report, ok := handoffcheck.ReportFromContext(ctx)
+	if !ok {
+		return
+	}
+	if result.Outputs == nil {
+		result.Outputs = map[string]interface{}{}
+	}
+	result.Outputs[handoffcheck.OutputKey] = report
 }
 
 // Review implements invoke.Goober: runs an agentic reviewer gate through the
@@ -417,6 +466,7 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err := json.Unmarshal(out.Payload, &verdict); err != nil {
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
 	}
+	verdict = undeclaredDeferralAsNeedsChanges(verdict, env.ReviewerDeferralAllowed)
 	verdict.Evidence, err = e.liftArtifacts(ctx, env, verdict.Evidence)
 	if err != nil {
 		if _, summary, ok := declaredArtifactFailure(err); ok {
@@ -430,12 +480,36 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	return verdict, nil
 }
 
+// OperatorMessageDeliveryModes reports the live delivery modes supported by
+// the selected adapter.
+func (e *Executor) OperatorMessageDeliveryModes() []string {
+	target, ok := e.adapter.(invoke.OperatorMessageTarget)
+	if !ok {
+		return nil
+	}
+	return target.OperatorMessageDeliveryModes()
+}
+
+// DeliverOperatorMessage routes a durable operator message to the selected
+// adapter when it supports live delivery.
+func (e *Executor) DeliverOperatorMessage(ctx context.Context, req invoke.OperatorMessageDeliveryRequest) error {
+	target, ok := e.adapter.(invoke.OperatorMessageTarget)
+	if !ok {
+		return fmt.Errorf("harness: %s does not support operator-message delivery", e.adapter.Name())
+	}
+	return target.DeliverOperatorMessage(ctx, req)
+}
+
 // declaredArtifactFailure classifies an error from liftArtifactFile as a
 // normal, non-executor-fault stage failure (the declared file is missing, or
 // its path escapes the workspace lexically or via a symlink — #120) that
 // Invoke/Review should surface as ResultFailure/VerdictFail, vs. anything
 // else, which callers must propagate as a hard executor error instead.
 func declaredArtifactFailure(err error) (code, summary string, ok bool) {
+	var publication *artifactset.PublicationError
+	if errors.As(err, &publication) {
+		return publication.Code, publication.Error(), true
+	}
 	switch {
 	case errors.Is(err, artifactset.ErrInvalid):
 		return "invalid_declared_artifact_set", "declared artifact set is invalid", true
@@ -448,11 +522,26 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 	}
 }
 
+func retryableDeclaredArtifactFailure(code string) bool {
+	return code == "missing_declared_artifact" || code == "invalid_declared_artifact_set"
+}
+
+// noWorkWithoutDeclaredArtifact reports whether a liftArtifacts error is only
+// the declared artifactFile being absent from a no-work completion (#5332). A
+// stage that correctly found nothing has nothing to write into its declared
+// artifact, so requiring the success-path file would turn every empty tick
+// into missing_declared_artifact. Only absence is tolerated, and only for
+// no-work: a success still fails closed without its artifact, and a path
+// escape or an invalid artifact set fails closed whatever the status.
+func noWorkWithoutDeclaredArtifact(status apiv1.ResultStatus, err error) bool {
+	return status == apiv1.ResultNoWork && errors.Is(err, ErrDeclaredArtifactMissing)
+}
+
 // run materializes capability-scoped credentials, drives the adapter, and
 // records whatever transcript was captured — even on failure, so a runner has
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
-func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, *apiv1.ArtifactPointer, error) {
+func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (resultOutcome Outcome, resultTranscript *apiv1.ArtifactPointer, resultStderr *apiv1.ArtifactPointer, resultErr error) {
 	var envEffectivePolicy *apiv1.ChildExecutionPolicy
 	var nestedAdapter NestedPolicyCapability
 	var selectedEnvelopeSections map[string]any
@@ -496,6 +585,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
 		}
 	}
+	skills, skillsErr := e.prepareSkills(ctx, env.Workspace)
+	if skillsErr != nil {
+		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize skills: %w", skillsErr)
+	}
+	defer func() { resultErr = errors.Join(resultErr, skills.Close()) }()
 	telemetry.RecordAgentProvenance(ctx, e.model, e.harnessVersion)
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
@@ -553,6 +647,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
 		}
 	}
+	postcondition := armCommitPostcondition(ctx, mode, env, &req)
 	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
@@ -599,7 +694,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
-	out, runErr = e.runAdapter(ctx, req, nestedAdapter)
+	out, runErr = postcondition.settle(e.runAdapter(ctx, req, nestedAdapter))
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
@@ -672,42 +767,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			))
 		}
 	}
-	if len(out.MCPServerFailures) > 0 {
-		// A registered MCP server the harness reported as not connected
-		// (#3356): every tool it provides was absent from the agent's
-		// session even though the resolved config declared it. Journal it
-		// loudly next to whatever the stage goes on to report, so a
-		// tool-shaped failure (e.g. an agent-authored MISSING_REQUIRED_TOOLS
-		// block) names its actual cause instead of surfacing two layers away
-		// wearing an unrelated costume. Annotation only — the run's own
-		// outcome is untouched, so nothing that worked before changes.
-		servers := make([]map[string]string, 0, len(out.MCPServerFailures))
-		for _, failure := range out.MCPServerFailures {
-			servers = append(servers, map[string]string{
-				"server": failure.Server,
-				"status": failure.Status,
-			})
-		}
-		if appender, ok := e.recorder.(EventAppender); ok {
-			if err := appender.Append(journal.Event{
-				Type:  journal.EventRunnerAnnotation,
-				Stage: env.TaskID,
-				Runner: map[string]any{
-					"kind":    "mcp-server-unavailable",
-					"servers": servers,
-					"detail": "registered MCP servers were not connected at invocation; " +
-						"their tools were unavailable to the agent for this whole session — " +
-						"any missing-tool failure this stage reports is caused here",
-				},
-			}); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf(
-					"harness: journal MCP server availability for %q: %w",
-					env.TaskID,
-					err,
-				))
-			}
-		}
-	}
+	runErr = errors.Join(runErr, e.journalMCPServerFailures(env.TaskID, out.MCPServerFailures))
 	if out.TranscriptSchema == "" {
 		prompt := out.RenderedPrompt
 		if len(prompt) == 0 {
@@ -773,7 +833,46 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		err := fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
 		return out, transcript, nil, invoke.InfrastructureFailure(err)
 	}
+	out.uncommitted = postcondition.inspect(ctx, e, env.TaskID, out.Payload)
 	return out, transcript, nil, nil
+}
+
+// journalMCPServerFailures annotates a registered MCP server the harness
+// reported as not connected (#3356): every tool it provides was absent from the
+// agent's session even though the resolved config declared it. Journal it
+// loudly next to whatever the stage goes on to report, so a tool-shaped failure
+// (e.g. an agent-authored MISSING_REQUIRED_TOOLS block) names its actual cause
+// instead of surfacing two layers away wearing an unrelated costume.
+// Annotation only — the run's own outcome is untouched.
+func (e *Executor) journalMCPServerFailures(stage string, failures []MCPServerFailure) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	appender, ok := e.recorder.(EventAppender)
+	if !ok {
+		return nil
+	}
+	servers := make([]map[string]string, 0, len(failures))
+	for _, failure := range failures {
+		servers = append(servers, map[string]string{
+			"server": failure.Server,
+			"status": failure.Status,
+		})
+	}
+	if err := appender.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: stage,
+		Runner: map[string]any{
+			"kind":    "mcp-server-unavailable",
+			"servers": servers,
+			"detail": "registered MCP servers were not connected at invocation; " +
+				"their tools were unavailable to the agent for this whole session — " +
+				"any missing-tool failure this stage reports is caused here",
+		},
+	}); err != nil {
+		return fmt.Errorf("harness: journal MCP server availability for %q: %w", stage, err)
+	}
+	return nil
 }
 
 func (e *Executor) finalizeAdapterFailure(stage string, out Outcome, runErr error) (Outcome, *apiv1.ArtifactPointer, error) {
@@ -824,6 +923,10 @@ func classifyHarnessRunError(runErr, wrapped error) error {
 	switch {
 	case errors.Is(runErr, ErrTimeout):
 		return invoke.Timeout(wrapped)
+	case errors.Is(runErr, errRequiredMCPEnterpriseBlocked):
+		// Checked before the generic rejection it wraps (#6358): the lockdown
+		// refuses the server on every attempt, so this is never infra.
+		return executor.StageFailure(ErrorCodeRequiredMCPEnterpriseBlocked, wrapped)
 	case errors.Is(runErr, errRequiredMCPRejected):
 		return executor.StageFailure(ErrorCodeRequiredMCPRejected, wrapped)
 	case errors.Is(runErr, errRequiredMCPUnavailable):
@@ -1090,4 +1193,23 @@ func mediaTypeFor(path string) string {
 		return "application/json"
 	}
 	return "application/octet-stream"
+}
+
+// undeclaredDeferralAsNeedsChanges maps a reviewer "defer" to "needs-changes"
+// when the gate declares no defer route (#6061). completionContract only offers
+// "defer" when ReviewerDeferralAllowed, but a model can still return it, for
+// example by mirroring merge-review's own "verdict: defer" status comments on
+// the PR. An undeclared outcome would fail the run closed (GT-002), wasting the
+// review. A deferral is "not yet, and not a pass": needs-changes carries the
+// same meaning with the reviewer's findings intact, so a merge-review ordering
+// claim still reaches elect-lander and apply-verdict's ordering deferral. A gate
+// that also lacks a needs-changes route still fails closed as before.
+func undeclaredDeferralAsNeedsChanges(v apiv1.Verdict, deferralAllowed bool) apiv1.Verdict {
+	if deferralAllowed || v.Decision != apiv1.VerdictDefer {
+		return v
+	}
+	v.Decision = apiv1.VerdictNeedsChanges
+	v.ReasonCode = ""
+	v.Elected = false
+	return v
 }

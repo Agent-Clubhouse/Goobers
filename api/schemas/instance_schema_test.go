@@ -165,6 +165,7 @@ runner:
   capabilities: [dotnet@8, os=windows]
   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
   defaultStageTimeout: 25m
+  requiredMCPSettleTimeout: 45s
   harnessCommand:
     copilot: [agency, copilot]
   harnessPreflightArgs:
@@ -370,6 +371,17 @@ repos:
     name: web
     token:
       env: GOOBERS_GITEA_TOKEN
+`, "baseUrl"},
+		{"github repo with baseUrl (GHES unsupported, #6347)", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    baseUrl: https://ghe.example.com
+    owner: acme
+    name: web
+    token:
+      env: GOOBERS_GITHUB_TOKEN
 `, "baseUrl"},
 		{"unknown provider", `
 apiVersion: goobers.dev/v1alpha1
@@ -640,16 +652,14 @@ func TestInstanceSchemaDescriptionsCarryTheColdStartTraps(t *testing.T) {
 	}
 }
 
-// Retention's local-branch rule is ancestry-only today (#4861). Keep that
-// limitation in the operator-facing schema until a separate policy decision
-// chooses authoritative squash/queue/legacy landing evidence.
+// #2467 adds separate age authority without claiming alternate landing proof.
 func TestInstanceSchemaDescribesLocalBranchRetentionLimit(t *testing.T) {
 	raw, err := FS.ReadFile("instance.schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	document := string(raw)
-	for _, want := range []string{"requires Git ancestry", "squash", "merge-queue", "legacy", "may leave local branches behind"} {
+	for _, want := range []string{"Git ancestry", "terminalBranchMaxAge", "720h", "Parked runs/items", "unknown ownership"} {
 		if !strings.Contains(document, want) {
 			t.Errorf("instance schema no longer documents local branch retention limit %q", want)
 		}

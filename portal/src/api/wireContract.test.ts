@@ -18,6 +18,8 @@ describe("Go daemon wire contract", () => {
       "triggerStatus",
       "cancelRequest",
       "cancelResult",
+      "operatorMessageRequest",
+      "operatorMessageResponse",
       "queueEligibility",
       "health",
       "instance",
@@ -61,8 +63,15 @@ describe("Go daemon wire contract", () => {
       unreadable: 2,
       highWaterPercent: 80,
     });
+    expect(checkedFixtures.instance.telemetryExporterHealth?.destinations?.tenant).toMatchObject({
+      mode: "azure-monitor",
+      journal: { accepted: 12, dropped: 0, failures: 0 },
+      diagnostics: { accepted: 3 },
+      replay: { pendingRecords: 2, activeFailure: true, failureClass: "rejected" },
+    });
     expect(checkedFixtures.goobers.items[0].harness).toBe("claude-code");
     expect(checkedFixtures.runDetail.graphStatus).toBe("pinned");
+    expect(checkedFixtures.runDetail.terminalCauseStatus).toBe("unavailable");
     expect(checkedFixtures.runEvents.events[0].type).toBe("stage.finished");
     expect(checkedFixtures.runEvents.events[0]).toMatchObject({
       category: "transition",

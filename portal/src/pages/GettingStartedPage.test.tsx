@@ -532,6 +532,45 @@ describe("GettingStartedPage", () => {
     expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
   });
 
+  it("defaults Azure DevOps to the workflows init accepts and shows an init refusal", async () => {
+    const user = userEvent.setup();
+    const initBodies: unknown[] = [];
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => ({ body: adoReadyInspection }),
+          "/guided/actions/init-instance": (init) => {
+            initBodies.push(parseBody(init));
+            return { body: { exitCode: 2, stdout: "", stderr: "init refused the selected options" } };
+          },
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    await screen.findByText("Azure CLI authentication is ready as azure-user@example.com.");
+    await continueWizard(user);
+    await continueWizard(user);
+    expect(screen.getByRole("heading", { name: "Set up your first gaggle" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Work nomination/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /Merge review/ })).toBeChecked();
+    for (let page = 0; page < 3; page += 1) await continueWizard(user);
+    expect(screen.getByRole("heading", { name: "Review and create the instance" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create Goobers instance" }));
+
+    expect(initBodies).toHaveLength(1);
+    expect((initBodies[0] as { guided: { workflows: string[]; authKind: string } }).guided).toMatchObject({
+      provider: "ado",
+      workflows: ["backlog-curation", "implementation", "merge-review"],
+      authKind: "azure-cli",
+    });
+    expect(await screen.findByText("init refused the selected options")).toBeInTheDocument();
+    expect(screen.getByText("The instance was not created.")).toBeInTheDocument();
+  });
+
   it("links Azure DevOps runtime guidance to the provider authentication guide", async () => {
     const user = userEvent.setup();
     render(
@@ -666,6 +705,47 @@ describe("GettingStartedPage", () => {
     expect(screen.getByText("acme")).toBeInTheDocument();
     expect(screen.getByText(/Only select repositories/)).toBeInTheDocument();
     expect(screen.getByText("gh auth login")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "PowerShell" })).toBeChecked();
+    expect(
+      screen.getByText('$env:GH_TOKEN = "<your token>"; goobers init --guided'),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Bash / zsh" }));
+    expect(screen.getByText("GH_TOKEN=<your token> goobers init --guided")).toBeInTheDocument();
+    expect(
+      screen.queryByText('$env:GH_TOKEN = "<your token>"; goobers init --guided'),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders POSIX shell commands by default on non-Windows hosts", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState({ platform: "darwin" }) }),
+          "/guided/actions/inspect-repository": () => ({
+            body: {
+              ...inspection,
+              auth: { kind: "github-cli", ready: false, needsLogin: true },
+            },
+          }),
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+
+    expect(
+      await screen.findByText("GH_TOKEN=<your token> goobers init --guided"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Bash / zsh" })).toBeChecked();
+
+    await user.click(screen.getByRole("radio", { name: "PowerShell" }));
+    expect(
+      screen.getByText('$env:GH_TOKEN = "<your token>"; goobers init --guided'),
+    ).toBeInTheDocument();
   });
 
   it("ends after checks with a customization prompt and server shutdown", async () => {

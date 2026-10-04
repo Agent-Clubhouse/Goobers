@@ -118,15 +118,16 @@ func WithLoginSelfReportRefused(reason string) func(*GitHubProvider) {
 
 // NewGitHubProvider constructs a GitHub provider with optional overrides.
 func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvider {
+	defaults := newProviderConstructorDefaults()
 	p := &GitHubProvider{
 		BaseURL:             "https://api.github.com",
 		Token:               token,
-		maxRetries:          defaultRateLimitRetries,
-		maxRateLimitRetries: defaultRateLimitRetries,
-		maxRateLimitWait:    defaultRateLimitMaxWait,
-		now:                 time.Now,
-		sleep:               contextSleep,
-		jitter:              randomJitter,
+		maxRetries:          defaults.maxRetries,
+		maxRateLimitRetries: defaults.maxRetries,
+		maxRateLimitWait:    defaults.maxRateLimitWait,
+		now:                 defaults.now,
+		sleep:               defaults.sleep,
+		jitter:              defaults.jitter,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -137,15 +138,7 @@ func NewGitHubProvider(token string, opts ...func(*GitHubProvider)) *GitHubProvi
 		setter.SetQuotaRequestGate(p.quotaGate)
 		p.quotaGateInClient = true
 	}
-	if p.now == nil {
-		p.now = time.Now
-	}
-	if p.sleep == nil {
-		p.sleep = contextSleep
-	}
-	if p.jitter == nil {
-		p.jitter = randomJitter
-	}
+	p.now, p.sleep, p.jitter = defaults.runtimeOrDefaults(p.now, p.sleep, p.jitter)
 	return p
 }
 
@@ -176,7 +169,7 @@ func WithQuotaRequestGate(gate QuotaRequestGate) func(*GitHubProvider) {
 	return func(p *GitHubProvider) { p.quotaGate = gate }
 }
 
-// WithHTTPClient overrides the HTTP client every provider request is sent
+// WithHTTPClient overrides the HTTP client REST API requests are sent
 // through. It exists so a caller can wrap the default client with a
 // conditional-GET (ETag) caching layer that turns unchanged per-tick list GETs
 // into zero-quota 304s (#1053). A nil client is ignored so the constructor's
@@ -529,7 +522,10 @@ type githubCheckRun struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`
-	Output     struct {
+	App        struct {
+		ID int64 `json:"id"`
+	} `json:"app"`
+	Output struct {
 		Summary string `json:"summary"`
 	} `json:"output"`
 }
@@ -541,6 +537,7 @@ type githubActionsRunsResponse struct {
 type githubActionsRun struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
+	WorkflowID int64  `json:"workflow_id"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`

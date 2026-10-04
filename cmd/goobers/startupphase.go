@@ -24,6 +24,7 @@ type startupPhaseTracker struct {
 	budgetFloor   time.Duration
 	accumulation  startupAccumulation
 	recoveryScan  bool
+	recovery      *startupRecoveryCandidate
 	budgetUpdates chan struct{}
 }
 
@@ -52,6 +53,9 @@ func (t *startupPhaseTracker) clear(phase string) {
 	defer t.mu.Unlock()
 	if t.phase == phase {
 		t.phase, t.target, t.started = "", "", time.Time{}
+		if phase == "crash-resume" {
+			t.recovery = nil
+		}
 	}
 }
 
@@ -59,6 +63,60 @@ func (t *startupPhaseTracker) snapshot() (phase, target string, since time.Time)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.phase, t.target, t.started
+}
+
+type startupRecoveryCandidate struct {
+	Total          int
+	Examined       int
+	Resumed        int
+	Reattached     int
+	Terminal       int
+	Skipped        int
+	RunID          string
+	Gaggle         string
+	Workflow       string
+	Disposition    string
+	Phase          string
+	Operation      string
+	StartedAt      time.Time
+	LastProgressAt time.Time
+}
+
+func (t *startupPhaseTracker) observeRecoveryProgress(outcome resumeOutcome) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.phase != "crash-resume" {
+		return
+	}
+	candidate := &startupRecoveryCandidate{
+		Total:      outcome.Total,
+		Examined:   outcome.Examined,
+		Resumed:    len(outcome.Resumed),
+		Reattached: len(outcome.Reattached),
+		Terminal:   len(outcome.Terminal),
+		Skipped:    len(outcome.Warned),
+	}
+	if outcome.Blocking != nil {
+		candidate.RunID = outcome.Blocking.RunID
+		candidate.Gaggle = outcome.Blocking.Gaggle
+		candidate.Workflow = outcome.Blocking.Workflow
+		candidate.Disposition = outcome.Blocking.Disposition
+		candidate.Phase = outcome.Blocking.Phase
+		candidate.Operation = outcome.Blocking.Operation
+		candidate.StartedAt = outcome.Blocking.StartedAt
+		candidate.LastProgressAt = outcome.Blocking.LastProgressAt
+	}
+	t.recovery = candidate
+}
+
+func (t *startupPhaseTracker) recoverySnapshot() *startupRecoveryCandidate {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.recovery == nil {
+		return nil
+	}
+	copy := *t.recovery
+	return &copy
 }
 
 // syncWriter serializes concurrent writers onto one underlying io.Writer.

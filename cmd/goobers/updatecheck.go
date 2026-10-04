@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonheartbeat"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/version"
@@ -37,38 +37,6 @@ func (r updateCheckResult) report(stdout, stderr io.Writer) {
 	}
 }
 
-// updatePending publishes the current "a newer release exists" condition from
-// the checker goroutine to the heartbeat goroutine (#4920). An available
-// update is a CONDITION, not an event: the one-shot notice scrolls out of
-// journalctl behind the per-minute heartbeat, so the heartbeat carries a
-// compact clause for as long as the condition holds.
-//
-// It is an atomic rather than a channel because the heartbeat is a separate
-// goroutine that already owns its own stdout writes. Publishing state it reads
-// keeps the writer count unchanged; handing it a second channel to render from
-// would not.
-type updatePending struct{ version atomic.Pointer[string] }
-
-// set records the available version, or clears the condition when empty.
-func (p *updatePending) set(version string) {
-	if version == "" {
-		p.version.Store(nil)
-		return
-	}
-	p.version.Store(&version)
-}
-
-// clause renders the heartbeat suffix, or "" while the build is current. The
-// clause is deliberately terse: the actionable sentence naming the command is
-// the once-per-version notice, and repeating it every minute would be noise.
-func (p *updatePending) clause() string {
-	version := p.version.Load()
-	if version == nil {
-		return ""
-	}
-	return "; update " + *version + " available"
-}
-
 // updateChecker is the daemon's notify-only release check (#4903). It reports
 // when the newest release on the configured channel is ahead of the running
 // build and never applies anything: staging an update stays an explicit
@@ -88,7 +56,7 @@ type updateChecker struct {
 	warned bool
 	// pending is the condition the heartbeat renders. Nil is valid and means
 	// no heartbeat surface is wired up (the checker still announces).
-	pending *updatePending
+	pending *daemonheartbeat.PendingUpdate
 }
 
 // startUpdateCheck launches the background checker and returns the channel the
@@ -101,10 +69,10 @@ func startUpdateCheck(
 	root string,
 	cfg *instance.Config,
 	stderr io.Writer,
-) (<-chan updateCheckResult, <-chan struct{}, *updatePending) {
+) (<-chan updateCheckResult, <-chan struct{}, *daemonheartbeat.PendingUpdate) {
 	// pending is returned even for a disabled check so the heartbeat has a
 	// handle to read unconditionally. It simply never reports a version.
-	pending := &updatePending{}
+	pending := &daemonheartbeat.PendingUpdate{}
 	disabled := make(chan struct{})
 	close(disabled)
 	settings := cfg.UpdateCheckSettings()
@@ -214,10 +182,10 @@ func (c *updateChecker) setPending(result selfupdate.CheckResult) {
 		return
 	}
 	if !result.UpdateAvailable {
-		c.pending.set("")
+		c.pending.Set("")
 		return
 	}
-	c.pending.set(result.LatestVersion)
+	c.pending.Set(result.LatestVersion)
 }
 
 // reportFleetConnectorStopped reports a Fleet connector that stopped on its
@@ -233,14 +201,4 @@ func reportFleetConnectorStopped(stderr io.Writer, connectorErr, ctxErr error) {
 		return
 	}
 	pln(stderr, "Fleet connector stopped")
-}
-
-// updateClause is the heartbeat's view of the pending-update condition,
-// tolerating a nil holder so a caller that wired up no checker (tests, and any
-// future heartbeat caller) needs no special case.
-func updateClause(pending *updatePending) string {
-	if pending == nil {
-		return ""
-	}
-	return pending.clause()
 }

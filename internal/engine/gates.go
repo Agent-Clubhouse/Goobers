@@ -38,6 +38,10 @@ type gateResult struct {
 	GateAttempt int
 	// RepassTarget is the configured branch target charged by Attempt.
 	RepassTarget string
+	// PollAttempt is the configured timeout target's consecutive poll count.
+	PollAttempt int
+	// PollTarget is the configured timeout branch target charged by PollAttempt.
+	PollTarget string
 	// Escalated is true when Target was overridden by the repass budget.
 	Escalated bool
 	// DiffDigest is the content digest of the subject diff this gate was
@@ -75,6 +79,16 @@ type gateResult struct {
 	// across a repass, and the ones the authoritative diff cannot corroborate.
 	RepeatedFindingIDs         []string
 	UnverifiedRepeatFindingIDs []string
+}
+
+func newRepassBudget() gate.RepassBudget {
+	return gate.RepassBudget{
+		Attempts:                     map[string]int{},
+		InfrastructureAttempts:       map[string]int{},
+		RepassAttempts:               map[string]int{},
+		InfrastructureRepassAttempts: map[string]int{},
+		PollAttempts:                 map[string]int{},
+	}
 }
 
 // The walk (engine.go's walk) carries the run's repass accounting through
@@ -154,7 +168,8 @@ func resolveGateOutcome(g apiv1.Gate, outcome string, reentry bool, budget *gate
 	}
 	return gateResult{
 		Gate: g.Name, Outcome: outcome, Target: target, Attempt: charge.Attempt,
-		GateAttempt: charge.GateAttempt, RepassTarget: charge.RepassTarget, Escalated: charge.Exceeded,
+		GateAttempt: charge.GateAttempt, RepassTarget: charge.RepassTarget,
+		PollAttempt: charge.PollAttempt, PollTarget: charge.PollTarget, Escalated: charge.Exceeded,
 		Charge: charge,
 	}, nil
 }

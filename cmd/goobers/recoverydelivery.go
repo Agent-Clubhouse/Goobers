@@ -55,6 +55,9 @@ func (s recoveryDeliveryService) StreamRecovery(ctx context.Context, runID, repo
 		if _, err := authorizeRecoveryDelivery(ctx, s.layout, runID, repositoryKey, issueID, time.Now().UTC()); err != nil {
 			return err
 		}
+		if current.ArchiveBytes == 0 {
+			return s.overflowPending(ctx)
+		}
 		transferCtx, transferCancel := context.WithDeadline(ctx, current.RetainUntil)
 		defer transferCancel()
 		return recovery.WriteArchiveEnvelope(transferCtx, filepath.Join(filepath.Dir(selected.RecordPath), recovery.BundleFileName), current, 512<<20, out)
@@ -63,6 +66,24 @@ func (s recoveryDeliveryService) StreamRecovery(ctx context.Context, runID, repo
 		return fmt.Errorf("recovery source is busy")
 	}
 	return err
+}
+
+func (s recoveryDeliveryService) overflowPending(ctx context.Context) error {
+	cfg, err := instance.LoadConfig(s.layout.ConfigFile())
+	if err != nil {
+		return err
+	}
+	policy, _ := resolveRecoveryPolicy(s.layout, cfg)
+	free, err := recoveryInventoryFreeSlots(ctx, s.layout, policy)
+	if err != nil {
+		return err
+	}
+	// Unlike the inventory cap, the sweep's enabled/dry-run settings are
+	// startup configuration, so report the running daemon's values.
+	if s.setup != nil && s.setup.Config != nil {
+		cfg = s.setup.Config
+	}
+	return recovery.PendingPromotion(cfg.Retention.EnabledEffective(), cfg.Retention.DryRun, free)
 }
 
 // authorizeRecoveryDelivery checks the current lease and durable issue identity

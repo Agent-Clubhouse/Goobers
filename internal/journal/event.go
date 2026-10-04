@@ -55,6 +55,12 @@ const (
 	EventRunFinished EventType = "run.finished"
 	// EventStageStarted marks a stage attempt beginning.
 	EventStageStarted EventType = "stage.started"
+	// EventReviewerStarted and EventReviewerFinished delimit one reviewer
+	// dispatch, using the same Stage/Attempt/AttemptClass vocabulary as tasks.
+	// They are operational events: gate.started/evaluated still own workflow
+	// recovery and routing, and a reviewer is never a completed workflow task.
+	EventReviewerStarted  EventType = "runner.reviewer.started"
+	EventReviewerFinished EventType = "runner.reviewer.finished"
 	// EventStageHeartbeat records observable progress from an active stage
 	// attempt. It is lightweight operational telemetry and excluded from
 	// conformance.
@@ -235,6 +241,8 @@ const (
 	// EventConfigReloadRejected records a changed config directory that failed
 	// validation and was not applied.
 	EventConfigReloadRejected EventType = "config.reload.rejected"
+	// EventClusterCheckCompleted records an externally scheduled Kubernetes check.
+	EventClusterCheckCompleted EventType = "runner.cluster_check.completed"
 	// EventWorkerConfigDivergence records a worker's observed config-tree
 	// relationship with the daemon. Its operational payload lives under Runner.
 	EventWorkerConfigDivergence EventType = "runner.config_divergence"
@@ -418,6 +426,9 @@ type Event struct {
 	// circuit, produced is every other terminal. Empty is accepted only for
 	// journals written before this field existed.
 	Disposition string `json:"disposition,omitempty"`
+	// TerminalCause is an additive diagnostic record on run.finished. Excluded
+	// from conformance; its human text uses the normal event scrubber.
+	TerminalCause *TerminalCause `json:"terminalCause,omitempty"`
 	// WorkflowVersion is the immutable workflow version re-asserted by a
 	// run.resumed action. Normative.
 	WorkflowVersion int `json:"workflowVersion,omitempty"`
@@ -435,6 +446,10 @@ type Event struct {
 	// Outputs. Each entry's Digest and Integrity are normative;
 	// Path/Size/MediaType are not (see Ref).
 	Artifacts []Ref `json:"artifacts,omitempty"`
+	// WorkspaceRevision is the verified immutable authority promoted from a
+	// deterministic stage result. It is absent for legacy and non-authoritative
+	// results.
+	WorkspaceRevision *apiv1.WorkspaceRevision `json:"workspaceRevision,omitempty"`
 	// Integrity is the provenance grade on an input snapshot, artifact, or
 	// integrity-admission refusal. Normative.
 	Integrity apiv1.Integrity `json:"integrity,omitempty"`
@@ -524,6 +539,22 @@ type Event struct {
 	SkipCount int `json:"skipCount,omitempty"`
 }
 
+// RepassAttempt returns the runner-recorded per-gate attempt count, if present.
+func (e Event) RepassAttempt() int {
+	switch v := e.Runner["repassAttempt"].(type) {
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
 // BranchStatus is the terminal status of one parallel branch.
 type BranchStatus string
 
@@ -575,7 +606,17 @@ type ExternalRef struct {
 // ErrorDetail is the failure detail on an error event. Code is a stable,
 // machine-readable classifier (normative); Message is human-facing (excluded).
 type ErrorDetail struct {
-	Code    string `json:"code"`
+	Code    string       `json:"code"`
+	Message string       `json:"message,omitempty"`
+	Causes  []ErrorCause `json:"causes,omitempty"`
+}
+
+// ErrorCause is one ordered layer from a wrapped Go error chain. Message is
+// human-facing and excluded from conformance; Code/Class retain stable typed
+// metadata when a cause exposes it.
+type ErrorCause struct {
+	Code    string `json:"code,omitempty"`
+	Class   string `json:"class,omitempty"`
 	Message string `json:"message,omitempty"`
 }
 

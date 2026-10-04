@@ -192,19 +192,22 @@ func TestGitHubProviderLastObservedQuota(t *testing.T) {
 // issueMock is a minimal in-memory GitHub issue backend covering the endpoints the
 // issue operations touch: read issue, list/post comments, add/remove labels, patch.
 type issueMock struct {
-	mu        sync.Mutex
-	title     string
-	body      string
-	state     string
-	labels    []string
-	assignees []string
-	milestone int
-	comments  []map[string]interface{}
-	nextID    int64
-	authSeen  string
-	userLogin string
-	patchBody map[string]interface{}
-	children  []map[string]interface{}
+	mu             sync.Mutex
+	title          string
+	body           string
+	state          string
+	labels         []string
+	assignees      []string
+	milestone      int
+	comments       []map[string]interface{}
+	nextID         int64
+	authSeen       string
+	userLogin      string
+	patchBody      map[string]interface{}
+	children       []map[string]interface{}
+	now            func() time.Time
+	hideLabelUntil map[string]time.Time
+	labelAdds      int
 }
 
 func newIssueMock() *issueMock {
@@ -259,6 +262,7 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 			Labels []string `json:"labels"`
 		}
 		decodeJSON(t, r, &body)
+		m.labelAdds++
 		m.labels = uniqueStrings(append(m.labels, body.Labels...))
 		writeJSON(t, w, labelObjects(m.labels))
 	})
@@ -348,10 +352,21 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 }
 
 func (m *issueMock) issueJSON() map[string]interface{} {
+	labels := m.labels
+	if m.now != nil && len(m.hideLabelUntil) != 0 {
+		now := m.now()
+		labels = make([]string, 0, len(m.labels))
+		for _, label := range m.labels {
+			if until, hidden := m.hideLabelUntil[label]; hidden && now.Before(until) {
+				continue
+			}
+			labels = append(labels, label)
+		}
+	}
 	out := map[string]interface{}{
 		"id": 123, "number": 7, "title": m.title, "body": m.body, "state": m.state,
 		"html_url": "https://github.com/acme/app/issues/7",
-		"labels":   labelObjects(m.labels),
+		"labels":   labelObjects(labels),
 	}
 	assignees := make([]map[string]string, 0, len(m.assignees))
 	for _, login := range m.assignees {
@@ -983,6 +998,30 @@ func TestGitHubClaimSingleWinnerUnderConcurrency(t *testing.T) {
 	if !winner.Item.HasLabel(LabelClaimed) {
 		t.Fatalf("claimed label not applied to winner: %#v", winner.Item.Labels)
 	}
+	if m.labelAdds != 1 {
+		t.Fatalf("claim label additions = %d, want winner only", m.labelAdds)
+	}
+}
+
+func TestGitHubClaimWorkItemRequiresIDAndRunID(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	tests := []struct {
+		name string
+		req  ClaimWorkItemRequest
+		want error
+	}{
+		{name: "missing id", req: ClaimWorkItemRequest{Repository: repo, RunID: "run-A"}, want: errIssueIDRequired},
+		{name: "missing run id", req: ClaimWorkItemRequest{Repository: repo, ID: "7"}, want: fmt.Errorf("run id is required to claim an item")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.ClaimWorkItem(context.Background(), tc.req)
+			if err == nil || err.Error() != tc.want.Error() {
+				t.Fatalf("ClaimWorkItem() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
@@ -1003,6 +1042,11 @@ func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
 	if len(m.comments) != before {
 		t.Fatalf("idempotent re-claim posted extra comment: %d -> %d", before, len(m.comments))
 	}
+	m.labels = []string{"route/backend"}
+	restored, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"})
+	if err != nil || !restored.Claimed || !restored.Item.HasLabel(LabelClaimed) {
+		t.Fatalf("re-claim with stripped label = %+v, %v", restored, err)
+	}
 	// A different run loses and does not post a breadcrumb (fast path).
 	other, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-B"})
 	if err != nil {
@@ -1013,6 +1057,41 @@ func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
 	}
 	if len(m.comments) != before {
 		t.Fatalf("losing claim should not post a breadcrumb: %d -> %d", before, len(m.comments))
+	}
+}
+
+func TestGitHubClaimWaitsForLabelProjectionByElapsedWindow(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	visibleAt := now.Add(150 * time.Millisecond)
+	m := newIssueMock()
+	m.now = func() time.Time { return now }
+	m.hideLabelUntil = map[string]time.Time{LabelClaimed: visibleAt}
+	p, repo := newIssueProvider(t, m, func(p *GitHubProvider) {
+		p.jitter = func(time.Duration) time.Duration { return 0 }
+	})
+	var sleeps []time.Duration
+	p.sleep = func(ctx context.Context, delay time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		sleeps = append(sleeps, delay)
+		now = now.Add(delay)
+		return nil
+	}
+
+	result, err := p.ClaimWorkItem(context.Background(), ClaimWorkItemRequest{
+		Repository: repo, ID: "7", RunID: "run-A",
+	})
+	if err != nil || !result.Claimed {
+		t.Fatalf("claim = %+v, %v", result, err)
+	}
+	if !result.Item.HasLabel(LabelClaimed) {
+		t.Fatalf("claimed item labels = %v, want %s after convergence", result.Item.Labels, LabelClaimed)
+	}
+	if len(sleeps) < 2 || now.Before(visibleAt) {
+		t.Fatalf("sleeps = %v, now = %s, want elapsed convergence at or after %s", sleeps, now, visibleAt)
 	}
 }
 
@@ -1181,6 +1260,36 @@ func TestGitHubLedgerAuthorizedReleaseReconcilesHistoricalWinner(t *testing.T) {
 	}
 }
 
+func TestGitHubLedgerAuthorizedReleaseHonorsExpectedWinner(t *testing.T) {
+	m := newIssueMock()
+	m.labels = append(m.labels, LabelClaimed)
+	m.comments = append(m.comments, map[string]interface{}{
+		"id":   int64(1),
+		"body": claimBreadcrumb("new-live-run"),
+		"user": map[string]string{"login": "goobers"},
+	})
+	m.nextID = 1
+	p, repo := newIssueProvider(t, m)
+
+	_, err := p.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository:         repo,
+		ID:                 "7",
+		RunID:              "current-run",
+		LedgerAuthorized:   true,
+		ExpectedClaimRunID: "historical-run",
+	})
+	if err == nil || !strings.Contains(err.Error(), `not expected run "historical-run"`) {
+		t.Fatalf("ledger-authorized release error = %v, want expected-winner refusal", err)
+	}
+	winner, claimed, err := claimWinner(context.Background(), p, p.BaseURL, repo, "7")
+	if err != nil {
+		t.Fatalf("claimWinner after refused release: %v", err)
+	}
+	if !claimed || winner != "new-live-run" {
+		t.Fatalf("claimWinner after refused release = %q, %v; want new-live-run still claimed", winner, claimed)
+	}
+}
+
 func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) {
 	m := newIssueMock()
 	m.labels = append(m.labels, LabelClaimed, LabelReady)
@@ -1198,6 +1307,7 @@ func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) 
 		"7",
 		[]string{LabelClaimed, LabelReady},
 		"Removed drifted claim and ready labels.",
+		"historical-run",
 	)
 	if err != nil {
 		t.Fatalf("ReconcileOrphanedWorkItemClaim: %v", err)
@@ -1215,6 +1325,84 @@ func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) 
 	last := m.comments[len(m.comments)-1]["body"].(string)
 	if !strings.Contains(last, "Removed drifted claim and ready labels.") {
 		t.Fatalf("last comment = %q, want explanation", last)
+	}
+}
+
+func attributedClaimBreadcrumb(t *testing.T, runID, instanceID string) string {
+	t.Helper()
+	body, err := withAttribution(claimBreadcrumb(runID), Attribution{
+		InstanceID: instanceID, Gaggle: "goobers", Workflow: "implementation",
+		Task: "claim", Goober: "deterministic", Run: runID,
+	}, "claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// #5311: another instance's live claim must survive a reconciliation that
+// only established ownership of some other epoch (or of none).
+func TestGitHubReconcileOrphanedClaimRefusesEpochItDoesNotOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		author     string
+		ownedRunID string
+	}{
+		{name: "same-login foreign epoch, caller owns none", author: "goobers", ownedRunID: ""},
+		{name: "same-login foreign epoch, caller owns another run", author: "goobers", ownedRunID: "own-run"},
+		{name: "other-login epoch", author: "someone-else", ownedRunID: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newIssueMock()
+			m.labels = append(m.labels, LabelClaimed)
+			m.comments = append(m.comments, map[string]interface{}{
+				"id":   int64(1),
+				"body": attributedClaimBreadcrumb(t, "foreign-run", "0123456789abcdef0123456789abcdef"),
+				"user": map[string]string{"login": tc.author},
+			})
+			m.nextID = 1
+			p, repo := newIssueProvider(t, m)
+
+			_, err := p.ReconcileOrphanedWorkItemClaim(context.Background(), repo, "7",
+				[]string{LabelClaimed}, "Removed drifted claim label.", tc.ownedRunID)
+			if !errors.Is(err, ErrClaimEpochNotOwned) {
+				t.Fatalf("ReconcileOrphanedWorkItemClaim error = %v, want ErrClaimEpochNotOwned", err)
+			}
+			if len(m.comments) != 1 {
+				t.Fatalf("comments = %d, want the foreign claim alone (no release breadcrumb)", len(m.comments))
+			}
+			if !containsString(m.labels, LabelClaimed) {
+				t.Fatalf("labels = %v, want %q kept", m.labels, LabelClaimed)
+			}
+		})
+	}
+}
+
+func TestScanClaimEpochsTracksEachAuthorAndAttribution(t *testing.T) {
+	const instanceID = "0123456789abcdef0123456789abcdef"
+	comment := func(id int64, author, body string) restComment {
+		return restComment{ID: id, Body: body, User: githubUser{Login: author}}
+	}
+	epochs := scanClaimEpochs([]restComment{
+		comment(1, "bot", claimBreadcrumb("closed-run")),
+		comment(2, "other", claimBreadcrumb("other-run")),
+		// A trusted release never ends another author's epoch.
+		comment(3, "bot", claimReleaseBreadcrumb("other-run")),
+		comment(4, "bot", claimReleaseBreadcrumb("closed-run")),
+		comment(5, "Bot", attributedClaimBreadcrumb(t, "live-run", instanceID)),
+		comment(6, "bot", claimBreadcrumb("losing-racer")),
+	}, "BOT")
+	want := []ClaimEpoch{
+		{Author: "other", Trusted: false, RunID: "other-run"},
+		{Author: "Bot", Trusted: true, RunID: "live-run", InstanceID: instanceID},
+	}
+	if len(epochs) != len(want) {
+		t.Fatalf("epochs = %#v, want %#v", epochs, want)
+	}
+	for i := range want {
+		if epochs[i] != want[i] {
+			t.Fatalf("epochs[%d] = %#v, want %#v", i, epochs[i], want[i])
+		}
 	}
 }
 

@@ -27,7 +27,7 @@ import (
 // duration of the recovery pass and closes it through the returned func.
 var engineLivenessProbe = func(cfg *instance.Config, shared *daemonEngineClient) (localscheduler.RunLivenessProbe, func(), error) {
 	if shared != nil && shared.Temporal() != nil {
-		return engine.NewWorkflowLiveness(shared.Temporal(), shared.Namespace()), func() {}, nil
+		return engine.NewWorkflowLiveness(shared.Temporal(), shared.Namespace(), shared.DataConverter()), func() {}, nil
 	}
 	owned, err := newDaemonEngineClient(cfg)
 	if err != nil {
@@ -36,7 +36,7 @@ var engineLivenessProbe = func(cfg *instance.Config, shared *daemonEngineClient)
 	if owned == nil {
 		return nil, nil, errNoEngineClient
 	}
-	return engine.NewWorkflowLiveness(owned.Temporal(), owned.Namespace()), owned.Close, nil
+	return engine.NewWorkflowLiveness(owned.Temporal(), owned.Namespace(), owned.DataConverter()), owned.Close, nil
 }
 
 // buildClaimLivenessProbe assembles DS6's run-liveness signal

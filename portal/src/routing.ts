@@ -3,6 +3,7 @@ import { hasScopeFilters, type ScopeFilters } from "./scope";
 
 export type Route =
   | { page: "overview" }
+  | { page: "instance-detail"; detail: InstanceDetailKind }
   | { page: "workflows" }
   | { page: "goobers"; gaggle?: string }
   | { page: "gaggle"; id: string }
@@ -14,6 +15,7 @@ export type Route =
       page: "work-items";
       kind?: "pr" | "issue";
       gaggle?: string;
+      outcome?: "done" | "in-progress" | "bad-terminal";
       query?: string;
       provider?: string;
       repository?: string;
@@ -34,9 +36,11 @@ export type Route =
 // they're for, without three parallel field-by-field type declarations.
 export type RunStatusFilter = "active" | "attention" | "complete" | "all";
 export type RunDetailTab = "overview" | "artifacts" | "diagnostics" | "journal";
+export type InstanceDetailKind = "recovery" | "retention" | "warnings";
 
 export interface RunRouteFilters extends ScopeFilters {
   status?: RunStatusFilter;
+  showNoWork?: boolean;
 }
 
 export type InsightSection = "contributors" | "usage" | "failures" | "latency";
@@ -83,23 +87,47 @@ export function parseRoute(hash = window.location.hash): Route {
       ? { page: "run", id, tab, seq, node, event }
       : { page: "run", id };
   }
+  if (
+    area === "instance" &&
+    (id === "recovery" || id === "retention" || id === "warnings")
+  ) {
+    return { page: "instance-detail", detail: id };
+  }
   if (area === "work-items") {
+    // #/work-items/<provider>/<repository segments…>/<kind>/<id>. The repository
+    // has as many segments as its provider scopes it by: GitHub "<owner>/<repo>",
+    // an Azure Boards work item "<org>/<project>", an Azure Repos pull request
+    // "<org>/<project>/<repo>". Kind and id are read from the end so the
+    // repository can be any depth.
     const segments = path.split("/");
-    const detailKind = segments[4] === "pr" || segments[4] === "issue" ? segments[4] : undefined;
-    if (first && second && segments[3] && detailKind && segments[5]) {
+    const detailKind = segments.at(-2);
+    const repositorySegments = segments.slice(2, -2);
+    if (
+      first &&
+      repositorySegments.length >= 2 &&
+      repositorySegments.every(Boolean) &&
+      (detailKind === "pr" || detailKind === "issue") &&
+      segments.at(-1)
+    ) {
       return {
         page: "work-items",
         provider: decodeURIComponent(first),
-        repository: `${decodeURIComponent(second)}/${decodeURIComponent(segments[3])}`,
+        repository: repositorySegments.map(decodeURIComponent).join("/"),
         kind: detailKind,
-        id: decodeURIComponent(segments[5]),
+        id: decodeURIComponent(segments.at(-1) ?? ""),
       };
     }
     const filterKind = optionalQuery(search, "kind");
+    const filterOutcome = optionalQuery(search, "outcome");
     return {
       page: "work-items",
       kind: filterKind === "pr" || filterKind === "issue" ? filterKind : undefined,
       gaggle: optionalQuery(search, "gaggle"),
+      outcome: filterOutcome === "done" ||
+        filterOutcome === "in-progress" ||
+        filterOutcome === "bad-terminal"
+        ? filterOutcome
+        : undefined,
       query: optionalQuery(search, "q"),
     };
   }
@@ -114,8 +142,11 @@ export function parseRoute(hash = window.location.hash): Route {
     const filters: RunRouteFilters = {
       ...parseScopeFilters(search),
       status: runStatusQuery(search),
+      showNoWork: search.get("showNoWork") === "1" ? true : undefined,
     };
-    return hasScopeFilters(filters) || filters.status ? { page: "runs", filters } : { page: "runs" };
+    return hasScopeFilters(filters) || filters.status || filters.showNoWork
+      ? { page: "runs", filters }
+      : { page: "runs" };
   }
   if (area === "errors") {
     return {
@@ -144,6 +175,9 @@ export function parseRoute(hash = window.location.hash): Route {
 }
 
 export function routeHash(route: Route): string {
+  if (route.page === "instance-detail") {
+    return `#/instance/${route.detail}`;
+  }
   if (route.page === "gaggle") {
     return `#/gaggle/${encodeURIComponent(route.id)}`;
   }
@@ -168,14 +202,16 @@ export function routeHash(route: Route): string {
   }
   if (route.page === "work-items") {
     if (route.provider && route.repository && route.kind && route.id) {
-      const [owner, name] = route.repository.split("/", 2);
-      if (owner && name) {
-        return `#/work-items/${encodeURIComponent(route.provider)}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${route.kind}/${encodeURIComponent(route.id)}`;
+      const repositorySegments = route.repository.split("/");
+      if (repositorySegments.length >= 2 && repositorySegments.every(Boolean)) {
+        const repository = repositorySegments.map(encodeURIComponent).join("/");
+        return `#/work-items/${encodeURIComponent(route.provider)}/${repository}/${route.kind}/${encodeURIComponent(route.id)}`;
       }
     }
     const search = new URLSearchParams();
     writeQuery(search, "kind", route.kind);
     writeQuery(search, "gaggle", route.gaggle);
+    writeQuery(search, "outcome", route.outcome);
     writeQuery(search, "q", route.query);
     return `#/work-items${search.size > 0 ? `?${search.toString()}` : ""}`;
   }
@@ -187,6 +223,9 @@ export function routeHash(route: Route): string {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
     writeQuery(search, "status", route.filters.status);
+    if (route.filters.showNoWork) {
+      search.set("showNoWork", "1");
+    }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/runs${suffix}`;
   }
@@ -212,6 +251,9 @@ export function routeHash(route: Route): string {
 }
 
 export function activeArea(route: Route): PrimaryArea {
+  if (route.page === "instance-detail") {
+    return "overview";
+  }
   if (route.page === "gaggle" || route.page === "workflow") {
     return "workflows";
   }
@@ -224,7 +266,11 @@ export function activeArea(route: Route): PrimaryArea {
   return route.page;
 }
 
-export type Navigate = (route: Route) => void;
+export interface NavigateOptions {
+  replace?: boolean;
+}
+
+export type Navigate = (route: Route, options?: NavigateOptions) => void;
 
 function optionalQuery(search: URLSearchParams, name: string): string | undefined {
   return search.get(name) || undefined;

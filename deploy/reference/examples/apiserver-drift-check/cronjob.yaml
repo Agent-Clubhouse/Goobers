@@ -1,3 +1,6 @@
+# Cluster monitoring owns scheduling and alerts; the daemon only reads results.
+# Install alerts.yaml separately with the Prometheus Operator and a matching
+# rule selector. See deploy/reference/README.md: Scheduled check reporting.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -7,6 +10,8 @@ metadata:
 spec:
   schedule: "0 * * * *"
   concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 5
   jobTemplate:
     metadata:
       labels:
@@ -25,10 +30,24 @@ spec:
           restartPolicy: Never
           nodeSelector:
             kubernetes.io/os: linux
+          # The instance journal uses RWO block storage and local file locking.
+          # Co-locate with the API owner; do not replace this with RWX storage.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: goobers-api
+                  topologyKey: kubernetes.io/hostname
+          volumes:
+            - name: journal
+              persistentVolumeClaim:
+                claimName: goobers-journal
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
             runAsGroup: 65532
+            fsGroup: 65532
             seccompProfile:
               type: RuntimeDefault
           containers:
@@ -43,8 +62,18 @@ spec:
                 # in-cluster client's Kubernetes Service ClusterIP.
                 - --apiserver-endpoint
                 - https://CHANGE-ME.apiserver.example.com:443
+                - --record-instance
+                - /var/lib/goobers
+                - --result-max-age
+                - 2h
                 - --report
                 - json
+              # The daemon must initialize scheduler/ before enabling this job.
+              # Mount only that subdirectory, not credentials or configuration.
+              volumeMounts:
+                - name: journal
+                  mountPath: /var/lib/goobers/scheduler
+                  subPath: scheduler
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -195,6 +196,23 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 			daemonIdentityOverrides[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
 		}
 	}
+	// configrepo:write (TUT-A8, #1220): a github-app workflowSource mints a
+	// SECOND, write-scoped installation token for the config repository alone,
+	// under its own ref. It is never one of the repo-default grants (those bind
+	// a gaggle's product-repo token), so neither credential reaches the other's
+	// repository. A token-authed workflowSource has no implicit write source:
+	// its token is the read credential, so the operator names the write token
+	// explicitly with a credentials: entry for configrepo:write.
+	configWriteGrant, configWriteMint, err := workflowSourceWriteGrant(cfg.WorkflowSource, registrar, stores)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build credentials: workflowSource write credential: %w", err)
+	}
+	if configWriteMint != nil {
+		if sources == nil {
+			sources = make(map[string]credentials.ExpiringResolveFunc)
+		}
+		sources[workflowSourceWriteRefName] = configWriteMint
+	}
 	// Explicit credential refs: each sources one capability or named BYO MCP
 	// credential from its own token, namespaced away from repo refs.
 	for _, cg := range cfg.Credentials {
@@ -215,10 +233,6 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
 
-	caps := make([]string, len(credentialedCapabilities))
-	for i, c := range credentialedCapabilities {
-		caps[i] = string(c)
-	}
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityOverrides)+len(cfg.Credentials))
 	overrides = append(overrides, daemonIdentityOverrides...)
 	for _, cg := range cfg.Credentials {
@@ -228,7 +242,14 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 		}
 		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
 	}
-	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, caps, overrides)
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, repoCredentialedCapabilityNames(), overrides))
+	// An explicit credentials: entry for configrepo:write wins over the
+	// workflowSource-minted default, exactly as every other explicit entry wins.
+	if configWriteGrant != nil && !slices.ContainsFunc(grants, func(g credentials.Grant) bool {
+		return g.Goober == "" && g.Capability == configWriteGrant.Capability
+	}) {
+		grants = append(grants, *configWriteGrant)
+	}
 	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
 	// AdditionalRepos is granted only a repo-qualified contents:read token, drawn
 	// from that repo's own configured token binding. These runner-owned grants
@@ -443,14 +464,14 @@ func registerCredentialGrantSource(cg instance.CredentialGrant, key string, refs
 
 // newGitHubAppTokenSource builds the installation-token minting source for a
 // github-app repo (#686). A package var so CLI tests substitute an
-// httptest-backed source (mirrors newPRPoller / newOpenPRProvider); the
+// httptest-backed source (mirrors newPRPoller); the
 // production source caches until near expiry and single-flights refreshes.
 var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 	source, err := githubapp.Source(repo, registrar, stores)
 	if err != nil {
 		return nil, err
 	}
-	return source.TokenWithExpiry, nil
+	return source.DeliverySource(logShortCredentialDelivery("GitHub App token for repository " + repo.Owner + "/" + repo.Name)), nil
 }
 
 var newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
@@ -486,7 +507,7 @@ var newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppCo
 	if err != nil {
 		return nil, err
 	}
-	return source.TokenWithExpiry, nil
+	return source.DeliverySource(logShortCredentialDelivery("agent:model GitHub App token " + app.Name)), nil
 }
 
 // newDaemonIdentityGitHubAppTokenSource builds the installation-token minting
@@ -530,7 +551,7 @@ var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfi
 	if err != nil {
 		return nil, err
 	}
-	return source.TokenWithExpiry, nil
+	return source.DeliverySource(logShortCredentialDelivery("daemon identity GitHub App token")), nil
 }
 
 // newWorkflowSourceAppTokenSource builds the installation-token minting source
@@ -565,6 +586,70 @@ var newWorkflowSourceAppTokenSource = func(source instance.WorkflowSource, regis
 		},
 		Registrar: registrar,
 	})
+}
+
+// workflowSourceWriteRefName is the resolver ref the config-repo write token is
+// registered under, namespaced away from repo refs ("owner/name"), explicit
+// credentials: refs ("credential:<key>") and the read-only workflow-source ref.
+const workflowSourceWriteRefName = "workflow-source-write"
+
+// workflowSourceWritePermissions is the exact installation-token permission set
+// the config-repo write credential is down-scoped to: push a branch and open a
+// pull request, nothing else (no workflows, issues, or administration).
+var workflowSourceWritePermissions = map[string]string{
+	"contents":      "write",
+	"pull_requests": "write",
+	"metadata":      "read",
+}
+
+// workflowSourceWriteGrant returns the runner-owned configrepo:write grant and
+// its minting source when the instance's workflowSource is a remote git source
+// authenticated through a GitHub App, and (nil, nil, nil) otherwise: no
+// workflowSource, a local one, or a token-authed one has no implicit write
+// credential, so a stage declaring configrepo:write fails closed at use.
+func workflowSourceWriteGrant(source *instance.WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (*credentials.Grant, credentials.ExpiringResolveFunc, error) {
+	if source == nil || source.Kind != instance.WorkflowSourceKindGit || source.URL == "" || !source.GitHubAppAuth() {
+		return nil, nil, nil
+	}
+	mint, err := newWorkflowSourceWriteTokenSource(*source, registrar, stores)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &credentials.Grant{Capability: string(capability.ConfigRepoWrite), Ref: workflowSourceWriteRefName}, mint, nil
+}
+
+// newWorkflowSourceWriteTokenSource builds the write-scoped installation-token
+// source for a github-app workflowSource (TUT-A8): the same App identity and
+// installation the read path uses (#3274), down-scoped to the config repository
+// by name AND to contents:write + pull_requests:write by permission. A package
+// var, like its read sibling, so CLI tests substitute a fake minter.
+var newWorkflowSourceWriteTokenSource = func(source instance.WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	if !source.GitHubAppAuth() {
+		return nil, errors.New("workflowSource does not use github-app auth")
+	}
+	repository, err := workflowSourceRepositoryName(source.URL)
+	if err != nil {
+		return nil, err
+	}
+	const keyRefName = "workflow-source-write-private-key"
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{source.Auth.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure workflow-source App key source: %w", err)
+	}
+	minter, err := githubapp.New(githubapp.Config{
+		AppID:          string(source.Auth.AppID),
+		InstallationID: string(source.Auth.InstallationID),
+		Repositories:   []string{repository},
+		Permissions:    workflowSourceWritePermissions,
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return minter.DeliverySource(logShortCredentialDelivery("configrepo:write GitHub App token")), nil
 }
 
 // workflowSourceRepositoryName derives the repository name the minted

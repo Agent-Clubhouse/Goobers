@@ -84,7 +84,8 @@
         "stage.finished"
       ],
       "stableCodes": [
-        "github_auth_failed"
+        "github_auth_failed",
+        "provider_auth_failed"
       ],
       "requiredFields": [
         "goobers.instance.id",

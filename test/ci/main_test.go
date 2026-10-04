@@ -1603,3 +1603,43 @@ func TestExecuteChecksRunsCommandWhenSkipHookDeclines(t *testing.T) {
 		t.Fatalf("stdout unexpectedly logged the decline reason (only the skip branch should log):\n%s", &stdout)
 	}
 }
+
+// A full (ungrouped) `make ci` must honour the environment toggles too: the
+// cloud instance's local-ci sets GOOBERS_CI_RACE=0 and GOOBERS_CI_TEST_TIMEOUT
+// for an ungrouped run, and before applyEnvToggles both were silently ignored.
+func TestApplyEnvTogglesAffectsFullRun(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	env := func(name string) string {
+		switch name {
+		case "GOOBERS_CI_RACE":
+			return "0"
+		case "GOOBERS_CI_TEST_TIMEOUT":
+			return "40m"
+		}
+		return ""
+	}
+	full := applyEnvToggles(all, env)
+	args := labelArgs(full, "test")
+	if slices.Contains(args, "-race") {
+		t.Errorf("full run retained -race with GOOBERS_CI_RACE=0: %q", args)
+	}
+	if i := slices.Index(args, "-timeout"); i < 0 || i+1 >= len(args) || args[i+1] != "40m" {
+		t.Errorf("full run did not take GOOBERS_CI_TEST_TIMEOUT=40m: %q", args)
+	}
+	// The group-only portal-embed rewrite must not leak into a full run.
+	if !slices.Equal(labelArgs(full, "build-goobers"), labelArgs(all, "build-goobers")) {
+		t.Errorf("full run rewrote build-goobers: %q -> %q", labelArgs(all, "build-goobers"), labelArgs(full, "build-goobers"))
+	}
+}
+
+func TestApplyEnvTogglesIsNoopWithCleanEnvironment(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	full := applyEnvToggles(all, func(string) string { return "" })
+	for i := range all {
+		if !slices.Equal(all[i].args, full[i].args) || !slices.Equal(all[i].env, full[i].env) {
+			t.Errorf("check %q changed with a clean environment: %q -> %q", all[i].label, all[i].args, full[i].args)
+		}
+	}
+}

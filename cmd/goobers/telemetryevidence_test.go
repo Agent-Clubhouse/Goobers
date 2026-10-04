@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -227,8 +228,12 @@ func TestBacklogHealthFeedbackOverTheReadPlane(t *testing.T) {
 
 	// The rollup the daemon serves stays open behind the plane; the copy the
 	// stage could have read is gone.
-	if err := os.Remove(instance.NewLayout(root).TelemetryDB()); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		t.Log("Windows cannot remove the daemon's open SQLite file; the pod token still forces read-plane evidence")
+	} else {
+		if err := os.Remove(instance.NewLayout(root).TelemetryDB()); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	code, _, stderr := runArgs(t, "backlog-health", "--feedback", root)

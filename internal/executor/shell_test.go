@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1131,6 +1132,33 @@ func TestShellExecutor_ResultFileLiftedToArtifact(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_ResultFilePromotesWorkspaceRevision(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "out.json"}
+	sha := strings.Repeat("a", 40)
+	command := fmt.Sprintf(`echo '{"legacy":"kept","workspaceRevision":{"repository":{"provider":"github","url":"https://github.com","owner":"org","name":"repo"},"commitSha":"%s"}}' > out.json`, sha)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", command},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs["legacy"] != "kept" {
+		t.Fatalf("legacy scalar output = %#v, want kept", result.Outputs["legacy"])
+	}
+	if _, ok := result.Outputs["workspaceRevision"]; ok {
+		t.Fatal("workspaceRevision was promoted as a scalar output")
+	}
+	if result.WorkspaceRevision == nil || result.WorkspaceRevision.CommitSHA != sha {
+		t.Fatalf("workspace revision = %+v, want commit %s", result.WorkspaceRevision, sha)
+	}
+}
+
 func TestShellExecutor_ProviderResultPreservesWeakestIntegrity(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1140,6 +1168,9 @@ func TestShellExecutor_ProviderResultPreservesWeakestIntegrity(t *testing.T) {
 	}{
 		{name: "top-level", data: `{"id":"42","integrity":"maintainer"}`, want: apiv1.IntegrityMaintainer},
 		{name: "composite weakest source", data: `{"integrity":"maintainer","reviews":[{"integrity":"unapproved"}]}`, want: apiv1.IntegrityUnapproved},
+		{name: "empty claim array is derived", data: `[]`, want: apiv1.IntegrityDerived},
+		{name: "empty object still unlabeled", data: `{}`, wantErr: "no valid integrity label"},
+		{name: "array of unlabeled items", data: `[{"id":"42"}]`, wantErr: "no valid integrity label"},
 		{name: "missing label", data: `{"id":"42"}`, wantErr: "no valid integrity label"},
 		{name: "invalid nested label", data: `{"integrity":"maintainer","reviews":[{"integrity":"unknown"}]}`, wantErr: "invalid integrity label"},
 	}
@@ -1285,6 +1316,37 @@ func TestShellExecutor_ResultFileJSONMergedIntoOutputs(t *testing.T) {
 	}
 	if result.Outputs["draft"] != false {
 		t.Fatalf("outputs[draft] = %v, want false", result.Outputs["draft"])
+	}
+}
+
+func TestShellExecutor_ResultFileNonObjectJSONPreservesLegacySuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+	}{
+		{name: "array", json: `[1,2,3]`},
+		{name: "scalar", json: `true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, _ := newTestExecutor(t, nil)
+			env := baseEnvelope(t)
+			env.Inputs = map[string]interface{}{InputResultFile: "result.json"}
+
+			result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' > result.json", tc.json)},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success", result.Status)
+			}
+			delete(result.Outputs, OutputTimeoutSeconds)
+			delete(result.Outputs, OutputTimeoutSource)
+			if len(result.Outputs) != 0 {
+				t.Fatalf("result-file outputs = %#v, want no scalar outputs", result.Outputs)
+			}
+		})
 	}
 }
 
@@ -1599,6 +1661,9 @@ func TestShellExecutor_SelfBinResolvesGoobersToken(t *testing.T) {
 	if result2.Status != apiv1.ResultFailure || result2.Error == nil || result2.Error.Code != "exec_start" {
 		t.Fatalf("without SelfBin, bare \"goobers\" must fail at exec_start: %+v", result2)
 	}
+	if len(result2.Error.Causes) == 0 {
+		t.Fatalf("exec_start causes were not preserved: %+v", result2.Error)
+	}
 }
 
 // TestShellExecutor_RefusesScriptBodyNamingGuardedCredentialPath closes the
@@ -1731,5 +1796,34 @@ func TestShellExecutor_SecurityAlertIntakeIsRecordedUnapproved(t *testing.T) {
 	}
 	if ref.Integrity != apiv1.IntegrityUnapproved || rec.integrity["task-1/result"] != apiv1.IntegrityUnapproved {
 		t.Fatalf("integrity = %q / %q, want unapproved", ref.Integrity, rec.integrity["task-1/result"])
+	}
+}
+
+// TestShellExecutor_EmptyForwardCurationClaimRecordsThroughRun is the
+// regression for forward curation with nothing claimable: backlog-query
+// writes `[]` (writeEmptyForwardCurationResult, #6199), and Run must record it
+// as a derived-integrity result instead of failing the stage with "no valid
+// integrity label".
+func TestShellExecutor_EmptyForwardCurationClaimRecordsThroughRun(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "goobers")
+	body := "#!/bin/sh\nprintf '[]' > provider-result.json\nexit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = script
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputResultFile: "provider-result.json"}
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "backlog-query", "--claim"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, error = %+v, want success", result.Status, result.Error)
+	}
+	if got := rec.integrity["task-1/result"]; got != apiv1.IntegrityDerived {
+		t.Fatalf("integrity = %q, want derived", got)
 	}
 }

@@ -1,0 +1,33 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "unsupported_version",
+  "confidence": "high",
+  "nextAction": "Upgrade to a supported Goobers release and retry.",
+  "evidence": [
+    {
+      "kind": "binary_version",
+      "subject": "v0.2.0",
+      "detail": "binary version is outside the current supported Goobers release window"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-version"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "binaryVersion": "v0.2.0",
+    "fingerprint": "workflow"
+  },
+  "cluster": {
+    "fingerprint": "workflow",
+    "occurrenceCount": 1,
+    "affectedVersions": [
+      "v0.2.0"
+    ]
+  }
+}

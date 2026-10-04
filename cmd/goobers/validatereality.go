@@ -156,6 +156,7 @@ func appendStaticRealityWarnings(
 	instanceFile := diagnosticFile(root, configFile)
 	appendWindowsAVExclusionWarnings(instanceFile, cfg, add)
 	appendDaemonIdentitySlugWarning(instanceFile, cfg, add)
+	appendCrossProviderCredentialOverrideWarnings(instanceFile, cfg, set, add)
 	appendCobrandAssetWarnings(filepath.Dir(configFile), instanceFile, cfg, add)
 	return warnings
 }
@@ -297,7 +298,7 @@ func appendPlacementFindings(
 	if cfg == nil {
 		return
 	}
-	inventoryDeclared := len(cfg.Runners) > 0 || cfg.HasIsolationMandates()
+	inventoryDeclared := len(cfg.Runners) > 0 || cfg.HasIsolationMandates() || cfg.SelfExecutionDenied()
 	unsatSeverity := validate.Warning
 	if inventoryDeclared && !advisory {
 		unsatSeverity = validate.Error
@@ -333,7 +334,7 @@ func appendPlacementFindings(
 		}
 		requirements, err := workflow.IsolationStagePlacements(workflow.Definition{
 			Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
-		}, gaggleSpecs[wf.Spec.Gaggle], goobers, inventory.ClassMandates)
+		}, gaggleSpecs[wf.Spec.Gaggle], goobers, inventory.ClassMandates, inventory.SelfExecutionDenied)
 		if err != nil {
 			// An unresolvable dslVersion has already failed validation in the
 			// compile pass; nothing to solve here.
@@ -372,7 +373,7 @@ func appendPlacementFindings(
 			}
 			if ti, ok := taskIndex[placement.Stage]; ok {
 				appendInstanceRootFinding(&wf.Spec.Tasks[ti], placement, selfRunnerNames,
-					wf.Name, file, pathFor(placement.Stage), add)
+					wf.Name, file, pathFor(placement.Stage), add, cfg.SelfExecutionDenied())
 			}
 			if placement.Unsat == nil {
 				continue
@@ -384,9 +385,12 @@ func appendPlacementFindings(
 				remedy = "raise a runner's declared ceiling or lower the stage minimum"
 			}
 			severity := unsatSeverity
+			if cfg.SelfExecutionDenied() {
+				severity = validate.Error
+			}
 			message := placement.Unsat.Diagnostic
 			switch {
-			case selfOSUnknownUnsat(inventory, requirementFor[placement.Stage], placement):
+			case !cfg.SelfExecutionDenied() && selfOSUnknownUnsat(inventory, requirementFor[placement.Stage], placement):
 				// The ONLY reason this stage is unsatisfiable is that the self
 				// runner's OS is unknown at validate time (no declared
 				// provides.os; the stage would place on self if its OS
@@ -438,6 +442,7 @@ func appendInstanceRootFinding(
 	task *apiv1.Task, placement runnersolve.StagePlacement, selfRunnerNames map[string]bool,
 	workflowName, file, path string,
 	add func(code validate.WarningCode, severity validate.Severity, kind, name, file, path, message string),
+	selfDenied ...bool,
 ) {
 	if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 		return
@@ -452,6 +457,10 @@ func appendInstanceRootFinding(
 	why := fmt.Sprintf("command %v", task.Run.Command)
 	if kind != "" && kind != executor.KindShell {
 		why = fmt.Sprintf("inputs.kind=%q", kind)
+	}
+	if len(selfDenied) > 0 && selfDenied[0] {
+		add(validate.RunnerInstanceRootRequired, validate.Error, "Workflow", workflowName, file, path, fmt.Sprintf("stage %q: placement.selfExecution: deny forbids %s, which requires the daemon instance root; migrate this workflow command to a remote-safe equivalent before enabling deny", task.Name, why))
+		return
 	}
 	add(validate.RunnerInstanceRootRequired, validate.Warning, "Workflow", workflowName, file, path,
 		fmt.Sprintf(

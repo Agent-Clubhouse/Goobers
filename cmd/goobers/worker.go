@@ -11,7 +11,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/goobers/goobers/internal/blobstore"
+	"go.temporal.io/sdk/converter"
+
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
@@ -19,7 +20,9 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/version"
+	"github.com/goobers/goobers/internal/workerblob"
 	"github.com/goobers/goobers/internal/workerhost"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -40,9 +43,12 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             deterministic executors (default\n" +
 	"                             $GOOBERS_INSTANCE_ROOT)\n" +
 	"  --blob-store <dir>         directory backing the fleet-wide\n" +
-	"                             content-addressed artifact store; required\n" +
-	"                             for a run whose stages are served by more\n" +
-	"                             than one worker (default $GOOBERS_BLOB_STORE)\n" +
+	"                             content-addressed artifact store (default\n" +
+	"                             $GOOBERS_BLOB_STORE)\n" +
+	"  --blob-endpoint <url>      HTTP(S) blob plane; alternative to --blob-store\n" +
+	"                             (default $GOOBERS_BLOB_ENDPOINT only when no\n" +
+	"                             directory is selected). Instance-backed workers\n" +
+	"                             require exactly one store mode.\n" +
 	"  --task-queue <queue>       task queue to serve; repeatable (default\n" +
 	"                             engine.taskQueue, with env override)\n" +
 	"  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort,\n" +
@@ -85,8 +91,9 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             exists and that this worker's credentials\n" +
 	"                             hold the RBAC grants dispatch needs there,\n" +
 	"                             failing startup by name otherwise. Requires\n" +
-	"                             --instance and --blob-store (the surrender\n" +
-	"                             plane rides the same volume); cluster access\n" +
+	"                             --instance and one artifact store mode. In\n" +
+	"                             endpoint mode the worker reads surrendered\n" +
+	"                             results through --daemon-api; cluster access\n" +
 	"                             uses in-cluster credentials or the standard\n" +
 	"                             kubeconfig rules (default\n" +
 	"                             $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
@@ -149,6 +156,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
+	blobEndpoint := fs.String("blob-endpoint", "", "HTTP(S) artifact plane alternative to --blob-store (default GOOBERS_BLOB_ENDPOINT when no directory is selected)")
 	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
 	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "enables the dispatcher-backed stage-dispatch seam; each stage pod routes to its own gaggle's declared isolation.namespace (#4897), not to this value")
 	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
@@ -165,26 +173,21 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --config-history-depth must not be negative\n")
 		return 2
 	}
+	resolvedEndpoint, modeErr := workerblob.Resolve(*blobRoot, *blobEndpoint, os.Getenv("GOOBERS_BLOB_ENDPOINT"), *instanceRoot != "")
+	if modeErr != nil {
+		pf(stderr, "error: %v\n", modeErr)
+		return 2
+	}
+	*blobEndpoint = resolvedEndpoint
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
 	var recurringStageSweeper stageOrphanSweeper
-	if *dispatchNamespace != "" {
-		if *instanceRoot == "" {
-			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
-			return 2
-		}
-		cfg, err := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
-		if err != nil {
-			pf(stderr, "error: stage dispatch: load instance config: %v\n", err)
-			return 2
-		}
-		if _, err := validateStageDispatchConfig(cfg, *daemonAPI, os.Getenv("GOOBERS_BLOB_ENDPOINT")); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
+	if err := validateWorkerDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobEndpoint); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 
-	engineConfig, err := resolveEngineConfig(*instanceRoot)
+	engineConfig, dc, err := resolveWorkerTemporalConfig(*instanceRoot)
 	if err != nil {
 		pf(stderr, "error: load engine config: %v\n", err)
 		return 2
@@ -239,26 +242,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// identically whether its stage runs in this process or in a pod (#3884).
 	var seams *workerSeams
 	if *instanceRoot != "" {
-		// The fleet's content-addressed store, if one is configured. Without it
-		// a run is only safely served by a SINGLE worker: stage artifacts stay
-		// on the node that produced them, and the first ContextPointer resolved
-		// somewhere else fails closed (#2866). It is constructed HERE, its only
-		// consumer, so an instance-less worker with GOOBERS_BLOB_STORE set (a
-		// fleet-wide env var) does not MkdirAll, emit a store line, or fail
-		// closed on an unwritable path — the mode-1/2 self-only startup shape
-		// stays byte-for-byte unchanged. The --dispatch-namespace path requires
-		// --instance and reads *blobRoot directly (buildStageDispatch), never
-		// this store value.
-		var store blobstore.Store
-		if *blobRoot != "" {
-			dirStore, berr := blobstore.NewDir(*blobRoot)
-			if berr != nil {
-				pf(stderr, "error: %v\n", berr)
-				return 1
-			}
-			store = dirStore
-			pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
+		store, berr := openWorkerBlobStore(*instanceRoot, *blobRoot, *blobEndpoint, *dispatchNamespace)
+		if berr != nil {
+			pf(stderr, "error: %v\n", berr)
+			return 1
 		}
+		pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
 		builtSeams, serr := newWorkerSeams(*instanceRoot, store)
 		if serr != nil {
 			pf(stderr, "error: %v\n", serr)
@@ -338,7 +327,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
 			return 1
 		}
-		dispatch, derr := buildStageDispatch(*instanceRoot, *daemonAPI, *blobRoot, owner, seams)
+		dispatch, derr := buildStageDispatch(*instanceRoot, *daemonAPI, *blobRoot, owner, seams, *blobEndpoint)
 		if derr != nil {
 			pf(stderr, "error: %v\n", derr)
 			return 1
@@ -355,23 +344,26 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// only a settled attempt's pod is disposed. Never fatal — see
 		// sweepWorkerStageOrphans. The worker-lifetime loop below rechecks pods
 		// that become terminal after this initial sweep.
-		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
+		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr, dc)
 	}
 
 	host, err := newWorkerHost(workerhost.Config{
-		HostPort:     *hostPort,
-		Namespace:    *namespace,
-		TaskQueues:   queues,
-		DrainTimeout: *drain,
-		BuildVersion: version.Get().Version,
-		Deps:         engineRuntime.deps,
+		HostPort:      *hostPort,
+		Namespace:     *namespace,
+		TLS:           engineConfig.TLS,
+		DataConverter: dc,
+		TaskQueues:    queues,
+		DrainTimeout:  *drain,
+		BuildVersion:  version.Get().Version,
+		Versioning:    engineConfig.WorkerVersioning,
+		Deps:          engineRuntime.deps,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
-	ctx, stop := workerSignalContext(recurringStageSweeper, *hostPort, *namespace, stdout, stderr)
+	ctx, stop := workerSignalContext(recurringStageSweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr, dc)
 	defer stop()
 
 	// #4153: the worker's config tree has no live writer, so it can sit
@@ -395,8 +387,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s\n",
-		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version))
+	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s; worker versioning %s\n",
+		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version), onOff(engineConfig.WorkerVersioning))
 	err = runWorkerHost(ctx, host)
 	if errors.Is(err, workerhost.ErrAbandonedWork) {
 		pf(stderr, "error: %v\n", err)
@@ -410,12 +402,37 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// validateWorkerDispatch rejects invalid mode-3 authority before startup opens
+// background resources or prints potentially sensitive endpoints.
+func validateWorkerDispatch(root, dispatchNamespace, daemonAPI, blobEndpoint string) error {
+	if dispatchNamespace == "" {
+		return nil
+	}
+	if root == "" {
+		return fmt.Errorf("--dispatch-namespace requires --instance (the runner inventory names the dispatch queues)")
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return fmt.Errorf("stage dispatch: load instance config: %w", err)
+	}
+	_, err = validateStageDispatchConfig(cfg, daemonAPI, stageBlobEndpoint(blobEndpoint))
+	return err
+}
+
+// onOff renders an opt-in's state for the worker's startup line.
+func onOff(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
+}
+
 // workerSignalContext joins recurring reconciliation to the worker's signal
 // lifetime. Cleanup cancels an in-flight sweep and waits for its goroutine so
 // no background writer outlives runWorker's output streams.
-func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) (context.Context, func()) {
+func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer, dc ...converter.DataConverter) (context.Context, func()) {
 	ctx, stop := signals.SetupSignalContext()
-	done := startPeriodicWorkerStageOrphanSweeps(ctx, sweeper, hostPort, namespace, stdout, stderr, workerSweepInterval)
+	done := startPeriodicWorkerStageOrphanSweeps(ctx, sweeper, hostPort, namespace, tls, stdout, stderr, workerSweepInterval, dc...)
 	return ctx, func() {
 		stop()
 		<-done
@@ -423,6 +440,7 @@ func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string,
 }
 
 func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {
+	deps.AdmitSelfExecution = seams.admitSelfExecution
 	deps.Goober = seams.Agentic()
 	deps.Det = seams.Deterministic()
 	deps.Auto = seams.Automated()

@@ -14,6 +14,25 @@ require explicit adopter configuration, not a broad egress bypass.
 Every manifest carries a comment citing the shape-doc section it implements, so drift
 between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy/reference`).
 
+## Workflow execution policy
+
+Use [`instance.yaml`](instance.yaml) as the hosted instance policy baseline
+when provisioning the API and worker roots. It explicitly sets
+`placement.selfExecution: deny` and declares a Linux dispatcher runner; create
+its `goobers-work` Deployment template and configure repositories, credentials,
+and API TLS in your overlay. This file is instance configuration, not a
+Kubernetes resource, and is not passed to kustomize. Keep the deny setting in
+both the daemon and worker configuration mirrors. Validate the finished
+instance before enabling the API replica or admitting workflow work. For an
+existing deployment, drain work and restart the daemon and workers after
+changing this startup-scoped instance policy.
+
+Every workflow task and agentic reviewer must place remotely. The built-in
+implementation workflows may contain instance-root-only commands and need
+migration before this policy can be enabled. See the
+[self execution migration guide](../../docs/guides/instance-placement.md#deny-execution-on-the-daemon).
+Local installs retain the compatible `allow` default.
+
 ## Layout
 
 | Path | Contents | Shape doc |
@@ -21,6 +40,7 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`). Containers reference the bare image name `goobers`, left untransformed so the base stays consumable as a remote kustomize base (#3287) — point it at a registry via your own `images:` overlay, or see `examples/goobers-system-registry/` if you fork and edit instead | §2, §3, §4, §5 |
 | `telemetry/` | optional overlay for customer-owned Application Insights: Kubernetes Secret injection, `standard` profile initialization, persistent replay on the journal PVC, and the shared connectivity test | telemetry guide |
 | `examples/goobers-system-registry/` | example overlay stamping `goobers-system/` with a `registry.example.com/CHANGE-ME` placeholder image — copy and edit rather than apply as-is | §1 |
+| [`examples/netpol-drift/`](examples/netpol-drift/README.md) | offline CI fixture: committed per-class manifests, provenance snapshot and address-count baseline checked by `make deploy-validate`; not for deployment | §5, decision 016 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
@@ -75,7 +95,10 @@ namespace is a required step, not follow-up hardening; bring the stack up in thi
    and wait for the Job to complete
    (`kubectl wait --for=condition=complete -n goobers-temporal job/goobers-temporal-namespace`).
    The Job is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
-4. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
+4. For the authenticated reference, provision the dedicated [Temporal wrapping
+   key](temporal-codec/README.md) before the daemon and worker. Its generator opts
+   into payload encryption by default; keep the key with history backups.
+5. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
    registered).
 
 `namespace-job.yaml`'s `TEMPORAL_NAMESPACE`/`RETENTION` env vars are the single source for
@@ -109,6 +132,11 @@ scale-to-zero default.
   class by `goobers netpol-render` from `instance.yaml egress.allowlist` (issue #3568,
   decision 016 — the rendered output is the only authoritative copy, and the render
   refuses unfilled documentation-CIDR placeholders instead of shipping stubs).
+- **Policies compose additively**: NetworkPolicy has no deny and no precedence, so
+  the effective egress of a pod is the union of every policy selecting it. Never
+  grant to `goobers.dev/role=stage` without a runner-class label; a generic grant
+  makes every per-class policy a no-op. See
+  [NetworkPolicy composition](../../docs/design/networkpolicy-composition.md).
 - **Image**: containers reference the image name `goobers`; the kustomize `images:`
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
@@ -260,12 +288,18 @@ the class-independent floor (default-deny-all + allow-dns).
 The base also ships `dispatcher-rbac.yaml`, binding the **existing** `goobers-worker`
 ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to create,
 get, delete and list pods in this gaggle's namespace, read the worker's own
-Deployment (DI-9 template read), and read the Go module cache claim. This is what lets a worker actually dispatch
+Deployment (DI-9 template read), read the Go module cache claim, and verify stage ServiceAccounts. This is what lets a worker actually dispatch
 pod-per-stage runs into a gaggle namespace (#4286); stage pods themselves still get
 no token mount and no RBAC grants at all. The included `goobers-stage` ServiceAccount
-is still a target-topology template, not one the current dispatcher selects — every
-stage pod runs under its namespace's default ServiceAccount (workload identity
-federation, `spec.isolation.identityRef`, is tracked separately from #4897). As of
+is the default on both image and template render paths. Set
+`spec.isolation.serviceAccount` to use an existing account (including `default`
+as an explicit opt-out); every selected account must set
+`automountServiceAccountToken: false`. Worker startup fails closed with
+`STAGE_SERVICE_ACCOUNT` if an account is missing or unsafe. Apply
+`deploy/reference/gaggle-namespace/base/serviceaccount.yaml` in each target
+namespace before upgrading, and apply the updated dispatcher Role so the worker
+can read accounts. `goobers status` reports effective accounts per gaggle.
+Workload identity federation, `spec.isolation.identityRef`, remains separate. As of
 #4897, `--dispatch-namespace` no longer names a pod namespace at all — it is only
 the non-empty flag that enables mode-3 dispatch. The worker instead routes EACH
 stage pod to its OWNING gaggle's `spec.isolation.namespace`, resolved per attempt
@@ -377,6 +411,97 @@ endpoint as well as Azure DevOps. Display commands such as `goobers status`
 tolerate a missing identity, but the daemon's gaggle runtime builds the
 identity at startup to authenticate worktree git operations, so a daemon whose
 projection is missing fails to start.
+
+### Stage-pod dependency downloads through an instance-owned proxy
+
+A mounted `GOMODCACHE` gives a stage somewhere to retain modules; it does not
+provide a download route. A stage placed on `self` uses its host's environment,
+while a dispatched stage runs in a fresh pod. Setting `HTTPS_PROXY` on the daemon
+or worker alone does not configure that pod. Check the run's placement evidence
+before comparing a successful local build with a failing pod build.
+
+Proxy configuration is owned by the instance. Configure both the stage's
+environment and its network grants in your deployment/config overlay. Automatic
+product-default proxying is tracked separately in #1307.
+
+For an image-backed runner, declare the following **stage `env:` fragment** in
+the instance-owned workflow. For a Deployment-backed runner, put the equivalent
+named `env` entries on the **first container** in the runner Deployment's pod
+template; the dispatcher copies that container's environment into each attempt.
+Explicit template `env` names and stage-declared `env` names survive
+`env:default-deny`. Merely adding a name to `runner.envPassthrough` does not copy
+a daemon environment value into a pod.
+
+```yaml
+env:
+  HTTP_PROXY: http://egress-proxy.networking.svc.cluster.local:3128
+  HTTPS_PROXY: http://egress-proxy.networking.svc.cluster.local:3128
+  NO_PROXY: localhost,127.0.0.1,::1,.svc,.svc.cluster.local
+  GOPROXY: https://proxy.golang.org
+```
+
+Replace the example proxy with your service and port. Add the exact internal
+daemon/blob endpoints to `NO_PROXY` if they use other names or literal IPs, and
+retain their existing direct network grants. Use the module mirror your instance
+actually supports; omitting `,direct` avoids an accidental direct-fetch fallback.
+Keep checksum verification enabled. If the proxy intercepts TLS, provision its
+trusted CA in the stage image as well. Do not put proxy passwords in workflow
+documents.
+
+The stage namespace also needs egress to the proxy's backing pods and listening
+port. An example **additional NetworkPolicy** follows; replace the namespace,
+proxy labels, port, and runner-class value with values from your installation.
+Read the class value from the rendered `goobers netpol-render` policy or an actual
+stage pod; do not infer it from the runner's name.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-build-class-to-proxy
+  namespace: example-gaggle
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: stage
+      goobers.dev/runner-class: REPLACE-WITH-RENDERED-CLASS
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: networking
+          podSelector:
+            matchLabels:
+              app: egress-proxy
+      ports:
+        - protocol: TCP
+          port: 3128
+```
+
+NetworkPolicy grants are additive. Select only the intended build class, never
+all stage pods or a `network:none` class. Where the proxy namespace denies
+ingress, add the matching ingress grant there, scoped to that stage namespace
+and class. Preserve DNS access for proxy service resolution. The proxy itself
+must have outbound access and allow the exact module/checksum hosts and download
+redirect destinations required by the build (for the public Go service, commonly
+`proxy.golang.org`, `sum.golang.org`, and `storage.googleapis.com`). Review denials
+in its access log using the host policy described below.
+
+Validate with a short diagnostic stage placed on the **same runner and class**
+as the failing build. Confirm the rendered pod carries the intended proxy
+variable names, run `go env GOPROXY GOMODCACHE`, then perform a bounded module
+download using the repository's pinned `go.mod`. Use a fresh writable temporary
+`GOMODCACHE` for that probe so a warm shared cache cannot hide a broken route;
+remove the probe cache afterward. Verify an allowed request in the proxy log
+and completed module files, then retry the normal stage with its durable cache.
+A direct public-IP timeout points to missing proxy settings or a bypass; a
+timeout dialing the proxy points to service/network reachability; a proxy denial
+points to its host allowlist. Run this probe in the stage execution environment,
+not just a daemon shell.
+
+See [runtime acquisition](../../docs/guides/runtime-acquisition.md) for the
+additional dependencies needed by a complete CI run and offline provisioning.
 
 ### Egress allowlist: name hosts, not domain suffixes
 
@@ -649,6 +774,37 @@ process exit. Increase the pod grace period when increasing `--drain-timeout`.
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
 
+### Temporal worker versioning is opt-in
+
+By default the worker polls **unversioned**, which is what this reference's
+Temporal values expect (they enable none of the worker-versioning dynamic
+config). `engine.workerVersioning: true` in `instance.yaml` makes the worker
+register as worker deployment `goobers`, version `goobers.<build>`, and pin each
+new workflow to that build (#5950). Nothing in Goobers sets the deployment's
+current version (#5407), so an opted-in instance must, after every rollout that
+changes the build, run
+`temporal worker deployment set-current-version --deployment-name goobers --build-id <build>`.
+Until it does, the new worker's polls succeed and receive nothing, and runs
+pinned to the previous build wait for a worker of that build.
+
+The worker checks the deployment's routing 30 seconds after start and every 5
+minutes after that. It logs `goobers worker: error: worker deployment "goobers" current version is ...`
+while the current version does not route to it, in either mode. It never exits
+over it.
+
+**Upgrading an instance that already ran versioned** (anything built from main
+between #4083 and #5950, including v0.5.0 betas): the worker now starts
+unversioned unless you opt in, and the deployment's current version still names
+the old build, so the unversioned worker receives no new tasks. Choose one:
+
+- Keep versioning: set `engine.workerVersioning: true` before upgrading, then set
+  the current version to the new build as above.
+- Drop versioning: let in-flight engine runs finish first (a run pinned to the
+  old build is only ever served by that build), then point the deployment at
+  unversioned workers with
+  `temporal worker deployment set-current-version --deployment-name goobers --unversioned`
+  (older CLIs: `--version __unversioned__`).
+
 ### Scoped cloud preflight checks
 
 `goobers doctor --k8s --checks apiserver-ipblock-drift` runs only the
@@ -687,3 +843,134 @@ its library probe issues HTTP GET requests, whereas OTLP/HTTP ingestion uses
 POST. Do not count a skipped check or a generic HTTP success as proof that
 traces, metrics, and logs were received; capture actual collector/backend
 observations for the smoke until a protocol-correct check is wired.
+
+### Remote-base overlays: pin by full SHA and give the fetch a budget
+
+An overlay that consumes this tree as a kustomize remote base
+(`github.com/<org>/Goobers//deploy/reference/...?ref=<sha>`) has two traps, and
+both fail late and read like something else.
+
+- **Pin `ref` to the full 40-character SHA.** A short SHA can render from a
+  local clone but fails `git fetch` inside kustomize's remote-base checkout,
+  which cannot resolve an abbreviated object name against the remote.
+- **Add a fetch budget: `?ref=<sha>&timeout=<seconds>`.** Kustomize's default
+  checkout timeout is 27 seconds. Under load it aborts mid-fetch and the failure
+  surfaces as a render error, not a timeout.
+
+### A worker seeded with `instance.yaml` alone fails its first stage
+
+The worker needs the whole config tree (workflows, goobers, gaggles, assets),
+not just `instance.yaml`. A worker seeded with only `instance.yaml` starts,
+passes its probes and reports healthy, then fails the first stage that needs a
+definition it does not have. The symptom is fail-late, not fail-fast; seed the
+complete tree, as the `config-mirror` overlay does (#3314, #3290).
+
+### Grace-period inputs, and the AKS drain floor
+
+- **The input to the pod grace-period formula is the longest single-stage
+  ceiling, not the longest duration in the config.** A branch drains at a stage
+  boundary, so one stage attempt is the most a shutdown has to wait out.
+- **Per-attempt ceilings live in two places:** the goober's `timeoutSeconds`
+  (`GooberSpec.TimeoutSeconds`) and a task-level `timeoutSeconds`. An audit that
+  reads only the workflow files gets the number wrong without any error.
+- **On AKS, a pod grace period over 30 minutes is inert unless the node pool's
+  drain timeout exceeds it.** The node drain gives up first and force-deletes the
+  pod, so the drain timeout has to move with the grace period.
+
+### CSI `SecretProviderClass` is all-or-nothing
+
+One unresolvable entry in a `SecretProviderClass` fails the whole mount: the
+provider returns a 404 for the class and every other secret in it goes with the
+one that is missing. Use one class per blast-radius domain, so a missing
+optional secret cannot take down the daemon's credentials.
+
+### Static PV binding: `storageClassName: ""` is not the same as omitted
+
+To bind a PVC to a pre-provisioned PersistentVolume, set `storageClassName: ""`
+explicitly. An **omitted** field is not equivalent: the default StorageClass
+admission fills it in, and the default class dynamically provisions a fresh,
+empty disk next to the durable one you meant to bind.
+
+### NetworkPolicy engine on AKS with Windows nodes
+
+On an AKS cluster with Windows nodes, Calico is the only NetworkPolicy engine
+left: Cilium is Linux-only, and Azure NPM's Windows support retires on
+2026-09-30. Calico on AKS enforces by CIDR only, so an FQDN-based egress
+allowlist needs a forward proxy that the policy admits instead.
+
+### Default-deny in both namespaces needs both halves of a flow
+
+When the source and destination namespaces both default-deny, a flow needs an
+egress policy in the source namespace **and** an ingress policy in the
+destination. The symptom of the missing half is a connection **timeout**, not a
+401 or an x509 error, which sends the diagnosis toward credentials and TLS
+instead of the policy. The worker-to-daemon and worker-to-blob-plane flows each
+need both halves.
+
+### The config-tree ConfigMap transport has a ~1 MiB ceiling
+
+A config tree delivered through a ConfigMap is bounded by the Kubernetes object
+size limit of roughly 1 MiB. This is a hard limit of the transport, not a tuning
+knob: a tree that outgrows it needs a different delivery (the `config-mirror`
+overlay), so check its size before relying on ConfigMap delivery (#3290).
+
+### Scheduled check reporting
+
+Cluster monitoring owns periodic drift/overlay checks and notifications. The
+Goobers daemon **does not schedule checks**. The
+[reference CronJob](examples/apiserver-drift-check/cronjob.yaml) runs the existing
+scoped drift detector hourly and records its results with
+`--record-instance /var/lib/goobers --result-max-age 2h`. A manual
+`goobers doctor --k8s` can use the same flags. Without `--record-instance`, doctor
+remains an install-time, read-only probe with stdout and exit status only.
+
+Each result appends a `runner.cluster_check.completed` instance journal event
+containing the builtin check ID, outcome, and expiration time. Raw diagnostics,
+endpoints, and credentials are not copied into the journal; inspect the check's
+JSON output or pod logs for detail. A failure to initialize the Kubernetes client
+records failed outcomes for the selected checks. Failure to write the journal
+exits 2 and makes the Job fail. Required detector failures retain exit 1.
+
+`goobers status` reads the latest outcome **per check**, so a successful drift
+check cannot hide a failing overlay check. Failure appears as `degraded` until
+that same check succeeds. A later skipped/warning result cannot clear that
+failure or refresh its original check time and expiration; an expired failure
+remains degraded and also says `stale`. Expired passing/warning results appear
+as `stale`; skipped/warning
+checks are never called healthy. Every line includes the last outcome, check
+time, and expiration. A subsequent fresh success restores `healthy`, including
+after daemon restart. Journal retention preserves the latest result per check.
+An instance with no recorded results has no cluster-check status: this is not
+proof of health. Configure the external missing-success alert before relying on
+unattended operation.
+
+Before enabling the CronJob, initialize the instance's `scheduler/` directory
+and adopt the reference API pod label, PVC name and namespace (or change all
+selectors consistently). The monitor mounts only the scheduler subdirectory and
+must run on the API pod's node: the instance journal requires **RWO block storage
+with working local file locks**, not RWX/NFS. The monitor uses the same UID/GID
+as the API. Treat permission to write this journal as trusted operator access.
+No daemon lock takeover or daemon restart is needed. Missing API placement,
+volume permission, or image-pull failures are visible through cluster monitoring
+even if the process never starts and cannot publish a result.
+
+Install [alerts.yaml](examples/apiserver-drift-check/alerts.yaml) separately if
+you use Prometheus Operator. It requires kube-state-metrics CronJob creation,
+last-schedule and last-successful-time metrics; enable those metrics in your
+version, set labels matching Prometheus's rule selector, and route the warning
+alerts through Alertmanager. The rule flags a scheduled run with no success
+after ten minutes (the Job deadline is five minutes), plus stale/missing success
+after two hours. Historic failed Jobs do not prevent recovery from clearing the
+alert. Verify rule evaluation and notification delivery, and monitor the
+kube-state-metrics scrape itself: missing metrics are not a passing detector.
+Keep alert thresholds and `--result-max-age` aligned with any schedule change.
+
+For periodic overlay checks, use the same reporting flags in a monitoring-owned
+CronJob selecting `overlay-pin-agreement,overlay-image-contract`, supplying a
+trusted `--overlay-dir`, pinned tools/runtime and the probe inputs described
+above. Adapt the alert selectors to that CronJob. Overlay image probing needs
+its documented container runtime; the minimal drift image/NetworkPolicy-only
+RBAC is not a ready-made overlay probe host. Do not put either schedule in the
+daemon. [#4290](https://github.com/Agent-Clubhouse/Goobers/issues/4290) owns adding
+checks; [#4878](https://github.com/Agent-Clubhouse/Goobers/issues/4878) provides
+recording, freshness, status and alert wiring for the existing checks.

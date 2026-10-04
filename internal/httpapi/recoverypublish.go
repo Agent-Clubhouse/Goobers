@@ -5,8 +5,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // RecoveryPublisher authenticates the current issue claim before reading the
@@ -21,13 +19,8 @@ const maxRecoveryUploadBytes int64 = (512 << 20) + (16 << 10) + 4
 
 func recoveryPublishHandler(service RecoveryService, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
-		run := request.PathValue("run")
-		if !podRunContained(w, request, run, "recovery") {
-			return
-		}
-		key, issue := request.URL.Query().Get("repositoryKey"), request.URL.Query().Get("issue")
-		if !apiv1.ValidRunID(run) || key == "" || len(key) > 4096 || issue == "" || len(issue) > 256 {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "recovery requires bounded run, repository, and issue identities")
+		run, key, issue, ok := recoveryRequestScope(w, request)
+		if !ok {
 			return
 		}
 		publisher, ok := service.(RecoveryPublisher)
@@ -42,7 +35,7 @@ func recoveryPublishHandler(service RecoveryService, errorLog *log.Logger) http.
 		body := http.MaxBytesReader(w, request.Body, maxRecoveryUploadBytes)
 		defer func() { _ = body.Close() }()
 		if err := publisher.PublishRecovery(request.Context(), run, key, issue, body); err != nil {
-			errorLog.Printf("recovery publication failed for run %s", run)
+			errorLog.Printf("recovery publication failed for run %s: %v", run, err)
 			writeError(w, http.StatusForbidden, "recovery_refused", "recovery publication was refused or custody is unavailable")
 			return
 		}

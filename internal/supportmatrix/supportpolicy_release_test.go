@@ -103,12 +103,18 @@ func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 // a reviewer bumps the constant. A PR that writes a transition unshippable in
 // the declared release fails here, on the PR, every time — not only when the
 // checkout happens to sit near the right tag.
+//
+// It deliberately does NOT assert that the constant is later than the newest
+// published tag (#5852): that verdict flips the moment a tag is pushed, so it
+// failed every in-flight branch whose base predated the bump, on a check the
+// branch's diff could not have affected. Freshness is a release-time property,
+// enforced by TestReleaseTagWithinNextPlannedRelease from release.yml.
 func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
 	current := GetDSL()
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
 	released, latestTag, _ := loadLatestReleasedSupportMatrix(t, root)
 	firstTag, _, _ := supportReleaseTagRange(t, root)
-	planned, err := validateNextPlannedRelease(current, NextPlannedRelease, latestTag)
+	planned, err := validateNextPlannedRelease(current, NextPlannedRelease)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,15 +134,10 @@ func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
 	}
 }
 
-func validateNextPlannedRelease(matrix SupportMatrix, plannedTag, latestTag string) (releaseVersion, error) {
+func validateNextPlannedRelease(matrix SupportMatrix, plannedTag string) (releaseVersion, error) {
 	planned, err := parseSupportReleaseVersion(plannedTag, false)
 	if err != nil {
 		return releaseVersion{}, fmt.Errorf("parse NextPlannedRelease %q: %w", plannedTag, err)
-	}
-	// Freshness comes first so a staged transition cannot mask the diagnostic
-	// that tells the operator which published tag requires a constant bump.
-	if err := validateNextPlannedReleaseFreshness(planned, latestTag); err != nil {
-		return releaseVersion{}, err
 	}
 	if err := ValidateSupportPolicyForRelease(matrix, plannedTag); err != nil {
 		return releaseVersion{}, fmt.Errorf(
@@ -148,31 +149,60 @@ func validateNextPlannedRelease(matrix SupportMatrix, plannedTag, latestTag stri
 	return planned, nil
 }
 
-func TestValidateNextPlannedReleaseFreshness(t *testing.T) {
+// releaseTagEnv names the release tag being cut. Only release.yml sets it; the
+// per-PR suite leaves it unset, so no per-PR outcome depends on which tags
+// happen to be published when a branch runs CI (#5852).
+const releaseTagEnv = "GOOBERS_RELEASE_TAG"
+
+// TestReleaseTagWithinNextPlannedRelease is the release-time freshness check
+// (#5852; it replaces the per-PR assertion that NextPlannedRelease is later
+// than the newest live tag). release.yml runs it on the tagged commit with
+// GOOBERS_RELEASE_TAG set. A release whose line is past the declared
+// NextPlannedRelease would ship without the #4709 declared-release simulation
+// ever having targeted it, so the constant must be bumped on the commit being
+// tagged before the release can build.
+func TestReleaseTagWithinNextPlannedRelease(t *testing.T) {
+	tag := os.Getenv(releaseTagEnv)
+	if tag == "" {
+		t.Skipf("%s is unset; this check runs only in release.yml", releaseTagEnv)
+	}
+	if err := validateReleaseTagWithinNextPlannedRelease(NextPlannedRelease, tag); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateReleaseTagWithinNextPlannedRelease(t *testing.T) {
 	tests := []struct {
 		name      string
-		planned   releaseVersion
-		latestTag string
+		planned   string
+		tag       string
 		wantError string
 	}{
-		{name: "no published release", planned: releaseVersion{major: 1}, latestTag: ""},
-		{name: "later release", planned: releaseVersion{major: 1, minor: 1}, latestTag: "v1.0.9"},
+		{name: "cutting the planned release", planned: "v1.2.0", tag: "v1.2.0"},
+		{name: "prerelease of the planned release", planned: "v1.2.0", tag: "v1.2.0-rc.1"},
+		{name: "patch before the planned release", planned: "v1.2.0", tag: "v1.1.4"},
 		{
-			name:      "same release",
-			planned:   releaseVersion{major: 1, minor: 2, patch: 3},
-			latestTag: "v1.2.3",
-			wantError: "NextPlannedRelease v1.2.3 must be later than newest published release tag v1.2.3; bump NextPlannedRelease",
+			name:      "patch past the planned release",
+			planned:   "v1.2.0",
+			tag:       "v1.2.1",
+			wantError: "release tag v1.2.1 is later than NextPlannedRelease v1.2.0; bump NextPlannedRelease before tagging",
 		},
 		{
-			name:      "earlier release",
-			planned:   releaseVersion{major: 1, minor: 1},
-			latestTag: "v1.2.3",
-			wantError: "NextPlannedRelease v1.1.0 must be later than newest published release tag v1.2.3; bump NextPlannedRelease",
+			name:      "prerelease of a later line",
+			planned:   "v1.2.0",
+			tag:       "v1.3.0-beta.1",
+			wantError: "release tag v1.3.0-beta.1 is later than NextPlannedRelease v1.2.0; bump NextPlannedRelease before tagging",
+		},
+		{
+			name:      "malformed tag",
+			planned:   "v1.2.0",
+			tag:       "release-1",
+			wantError: `parse release tag "release-1": must use vMAJOR.MINOR.PATCH`,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateNextPlannedReleaseFreshness(test.planned, test.latestTag)
+			err := validateReleaseTagWithinNextPlannedRelease(test.planned, test.tag)
 			if test.wantError == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -186,36 +216,24 @@ func TestValidateNextPlannedReleaseFreshness(t *testing.T) {
 	}
 }
 
-func TestValidateNextPlannedReleaseReportsStalenessBeforePolicyFailure(t *testing.T) {
-	matrix := SupportMatrix{
-		"1.0": {
-			Level: LevelDeprecated,
-			History: []SupportTransition{
-				{Level: LevelSupported, SinceVersion: initialSupportVersion},
-				{Level: LevelDeprecated, SinceVersion: "v2.0.0"},
-			},
-		},
-	}
-	_, err := validateNextPlannedRelease(matrix, "v1.0.0", "v1.0.0")
-	const want = "NextPlannedRelease v1.0.0 must be later than newest published release tag v1.0.0; bump NextPlannedRelease"
-	if err == nil || err.Error() != want {
-		t.Fatalf("error = %v, want freshness error %q before the competing support-policy failure", err, want)
-	}
-}
-
-func validateNextPlannedReleaseFreshness(planned releaseVersion, latestTag string) error {
-	if latestTag == "" {
-		return nil
-	}
-	latest, err := parseSupportReleaseVersion(latestTag, false)
+// validateReleaseTagWithinNextPlannedRelease refuses a release tag whose
+// release line (the tag with any prerelease suffix stripped) is later than
+// plannedTag.
+func validateReleaseTagWithinNextPlannedRelease(plannedTag, releaseTag string) error {
+	planned, err := parseSupportReleaseVersion(plannedTag, false)
 	if err != nil {
-		return fmt.Errorf("parse newest published release tag %s: %w", latestTag, err)
+		return fmt.Errorf("parse NextPlannedRelease %q: %w", plannedTag, err)
 	}
-	if compareReleaseVersions(planned, latest) <= 0 {
+	releaseLine, _, _ := strings.Cut(releaseTag, "-")
+	release, err := parseSupportReleaseVersion(releaseLine, false)
+	if err != nil {
+		return fmt.Errorf("parse release tag %q: %w", releaseTag, err)
+	}
+	if compareReleaseVersions(release, planned) > 0 {
 		return fmt.Errorf(
-			"NextPlannedRelease %s must be later than newest published release tag %s; bump NextPlannedRelease",
-			planned.String(),
-			latestTag,
+			"release tag %s is later than NextPlannedRelease %s; bump NextPlannedRelease before tagging",
+			releaseTag,
+			plannedTag,
 		)
 	}
 	return nil
@@ -643,13 +661,19 @@ func runSupportCommand(t *testing.T, directory, name string, args ...string) str
 	t.Helper()
 	command := exec.Command(name, args...)
 	if name == "git" {
+		// The checkout can be mounted with a different owner in CI. Keep
+		// testgit's host-config isolation while trusting only this checkout,
+		// which the tests themselves need to inspect.
+		checkout := supportCheckoutRoot(t)
 		command = testgit.Command(args...)
 		command.Env = append(command.Env,
-			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_COUNT=3",
 			"GIT_CONFIG_KEY_0=core.autocrlf",
 			"GIT_CONFIG_VALUE_0=false",
 			"GIT_CONFIG_KEY_1=core.safecrlf",
 			"GIT_CONFIG_VALUE_1=false",
+			"GIT_CONFIG_KEY_2=safe.directory",
+			"GIT_CONFIG_VALUE_2="+checkout,
 		)
 	}
 	command.Dir = directory
@@ -658,4 +682,24 @@ func runSupportCommand(t *testing.T, directory, name string, args ...string) str
 		t.Fatalf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output)
+}
+
+func supportCheckoutRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("cannot find checkout .git directory")
+		}
+		dir = parent
+	}
 }

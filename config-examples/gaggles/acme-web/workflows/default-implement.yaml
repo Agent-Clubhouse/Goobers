@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: default-implement
+  annotations:
+    goobers.dev/purpose: "Minimal example that picks a ready backlog issue and has an agent implement it, with no review or pull-request stages."
 spec:
   gaggle: acme-web
   displayName: Default (implement-only)

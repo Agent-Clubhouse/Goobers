@@ -14,7 +14,7 @@ name: CI
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
-# dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
+# dedicated jobs: cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
 #   windows-smoke
 #
@@ -50,8 +50,11 @@ name: CI
 # green for the required `make ci` check (the required-ci aggregator, whose NAME
 # is pinned by the branch ruleset) to pass.
 #
-# Pull requests and merge groups run that complete matrix. A push to main also
-# validates the exact landed SHA with checks, lint, the Linux race shards, the
+# Pull requests, merge groups, and manual dispatches run that complete matrix.
+# For a frozen candidate, dispatch on a dedicated, never-updated validation
+# branch; its ref-scoped concurrency cannot be cancelled by pushes to main.
+# A push to main also validates the exact landed SHA with checks, lint, the Linux
+# race shards, the
 # darwin cross-compile gate, shipped-workflow contracts, and the Windows gate.
 # Failures on the landed tree are automatically escalated as critical issues.
 #
@@ -60,16 +63,21 @@ name: CI
 # inventoried in docs/reference/workflow-inventory.md.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    # No `edited`: a PR title/body edit changes no code, and re-running this
-    # workflow for it used to cancel the in-flight run on the same SHA
-    # (51 of 61 edit-triggered runs, Sep 2026). The only body-dependent check,
-    # design delivery against closingIssuesReferences, re-evaluates on edits
-    # in design-delivery.yml instead.
-    types: [opened, synchronize, reopened]
+    # `edited` is here ONLY for base-branch retargets (#6360): the merge ref
+    # changes, so the old-base result must not stand. A title/body edit
+    # (`edited` without `changes.base`) changes no code and must neither cancel
+    # nor shadow the in-flight run on the same SHA (#5491: 51 of 61 edit runs
+    # did, Sep 2026). Such a run therefore takes its own concurrency group,
+    # skips the two root jobs (preflight, unit) so every dependent skips, and
+    # renames required-ci so its skipped check cannot stand in for the pinned
+    # required `make ci` context. Design delivery re-evaluates body edits in
+    # design-delivery.yml. Pinned by TestCIRunsOnBaseRetargetNotMetadataEdits.
+    types: [opened, synchronize, reopened, edited]
   merge_group:
     branches: [main]
 
@@ -79,9 +87,10 @@ permissions:
   contents: read
   pull-requests: read
 
-# One in-flight run per ref; newer pushes cancel stale runs.
+# One in-flight run per ref; newer pushes (and base retargets) cancel stale
+# runs. A title/body-edit run is isolated so it cancels nothing.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ (github.event.action == 'edited' && !github.event.changes.base) && format('-metadata-edit-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 env:
@@ -133,6 +142,7 @@ jobs:
   # short Linux job would let it win and pin a near-empty cache.
   preflight:
     name: preflight (lint · format · policy · vet · build)
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -168,6 +178,30 @@ jobs:
 
       - name: Run preflight
         run: go run ./test/ci group preflight
+
+  # Compare each PR head with its merge-base; concurrent main growth is unrelated.
+  cmdgoobers-growth:
+    name: cmd/goobers growth ratchet
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Enforce cmd/goobers growth ratchet
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'HEAD' }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || '' }}
+        run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF" -head-ref "$HEAD_REF"
 
   # Unreachable-production-code report. Ran once, on this one runner — not
   # because the analysis is platform-independent (#4434: a symbol reachable
@@ -294,9 +328,10 @@ jobs:
         # whole timeout, unlike go mod download and golangci-lint which
         # already retry. Six timeouts in one night on the v0.2.0 wave.
         #
-        # --with-deps stays: the cache carries the BROWSER, not the apt-level
-        # system libraries it links against. On a cache hit Playwright installs
-        # those and skips the download.
+        # The cache carries the BROWSER, not the apt-level system libraries it
+        # links against. Hosted images normally already ship those, so the
+        # apt-backed install-deps runs only when ldd reports a missing library:
+        # runner boot-time apt work can hold the dpkg lock for minutes.
         timeout-minutes: 20
         shell: bash
         run: |
@@ -322,7 +357,20 @@ jobs:
           retry_network_command "portal npm install" \
             npm --prefix portal ci --no-audit --no-fund
           retry_network_command "Playwright Chromium install" \
-            npm --prefix portal exec -- playwright install --with-deps chromium
+            npm --prefix portal exec -- playwright install chromium
+
+          # Fail closed: an unrecognised browser layout also installs deps.
+          browser_bins=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name headless_shell \) 2>/dev/null)
+          if [ -z "$browser_bins" ] || ldd $browser_bins 2>&1 | grep -q 'not found'; then
+            # Hosted runners can still be running boot-time apt work, which
+            # holds the apt lists lock that DPkg::Lock::Timeout does not cover.
+            for _ in $(seq 1 180); do
+              pgrep -x 'apt|apt-.*|dpkg|unattended-upgr' >/dev/null || break
+              sleep 2
+            done
+            retry_network_command "Playwright Chromium system libraries" \
+              npm --prefix portal exec -- playwright install-deps chromium
+          fi
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
         env:
@@ -491,6 +539,7 @@ jobs:
   # latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     # Not gated on preflight: the shards are the long pole, and waiting for
     # preflight added its ~4.4 min to every run's wall clock. A preflight
     # failure cancels the run instead (cancel-on-preflight-failure).
@@ -634,6 +683,19 @@ jobs:
           path: test-timings/unit-race.part*.json
           if-no-files-found: warn
 
+      # Per-test JUnit results (one report per go test process) written by the
+      # same capture; failing tests are also annotated on the run summary.
+      # Observability only: the upload can never change the job's verdict.
+      # See docs/guides/ci-test-results.md (#681).
+      - name: Upload race shard test results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-race-linux-${{ strategy.job-index }}
+          path: test-timings/unit-race.part*.junit.xml
+          if-no-files-found: warn
+
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
@@ -761,6 +823,16 @@ jobs:
           path: test-timings/unit-${{ runner.os }}.json
           if-no-files-found: warn
 
+      # See the race shards' "Upload race shard test results" step (#681).
+      - name: Upload test results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-${{ runner.os }}
+          path: test-timings/unit-${{ runner.os }}.junit.xml
+          if-no-files-found: warn
+
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
   # it without -race. The macOS leg runs nightly in macos-nightly.yml.
   shipped:
@@ -832,6 +904,19 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
+
+      # #4615: the .NET and Python reference-gaggle legs. The gaggles declare
+      # dotnet@9 and python@3.12; these pins are what lets their tier rows in
+      # docs/guides/stack-support.md claim "Shipped, CI-green".
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
       - name: Download modules
         timeout-minutes: 12
@@ -939,6 +1024,95 @@ jobs:
           path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
           key: ${{ steps.declared-apt-key.outputs.key }}
 
+      # #4615: the .NET and Python legs get the same cache-first,
+      # network-fallback treatment #3322 gave the apt set and the Maven
+      # repository. Each fixture's packages are acquired HERE, in a bounded and
+      # retried step, so the test's own `dotnet test` / `python3 -m pytest`
+      # resolves from local disk instead of opening an unbounded fetch inside
+      # the integration tier. `dependency-cache-warm` writes both entries on
+      # main under the same keys, which is what makes them readable from every
+      # pull request.
+      - name: Restore .NET fixture NuGet packages
+        id: dotnet-fixture-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          # Exact key only, as with the apt archives: a prefix match would hand
+          # the leg a package set resolved for different project files.
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
+
+      - name: Provision .NET fixture packages
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
+        run: |
+          set -euo pipefail
+          # Restore a scratch copy so no obj/ output lands in the checked-in
+          # fixture. On a cache hit every exact-version package is already in
+          # the global packages folder and NuGet makes no request; the fixture
+          # run's implicit restore is then the same no-op.
+          warm="$RUNNER_TEMP/dotnet-fixture-restore"
+          rm -rf "$warm" && cp -R test/e2e/testdata/dotnetservice "$warm"
+          for attempt in 1 2 3; do
+            if timeout --signal=TERM --kill-after=10s 120s dotnet restore "$warm/DotnetService.sln"; then
+              exit 0
+            fi
+            echo "::warning::.NET fixture restore attempt ${attempt}/3 failed or hung; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::.NET fixture restore failed after 3 bounded attempts"
+          exit 1
+
+      - name: Save .NET fixture NuGet packages
+        if: ${{ success() && steps.dotnet-fixture-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
+
+      - name: Restore Python fixture wheelhouse
+        id: python-fixture-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
+
+      - name: Provision Python fixture pytest
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheels="$RUNNER_TEMP/python-fixture-wheelhouse"
+          reqs=test/e2e/testdata/pythonservice-ci-requirements.txt
+          # Cache hit: install the pinned set with no index at all. A miss (or a
+          # wheelhouse that no longer satisfies the pins) falls back to a
+          # bounded, retried download from PyPI, then installs offline from it.
+          if [ -d "$wheels" ] && python3 -m pip install --no-index --find-links "$wheels" -r "$reqs"; then
+            echo "pytest installed from the cached wheelhouse (no network)"
+            exit 0
+          fi
+          rm -rf "$wheels" && mkdir -p "$wheels"
+          for attempt in 1 2 3; do
+            if timeout --signal=TERM --kill-after=10s 120s \
+                 python3 -m pip download --timeout 20 --retries 3 --dest "$wheels" -r "$reqs"; then
+              python3 -m pip install --no-index --find-links "$wheels" -r "$reqs"
+              exit 0
+            fi
+            echo "::warning::pytest wheel download attempt ${attempt}/3 failed or hung; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::pytest wheel download failed after 3 bounded attempts"
+          exit 1
+
+      - name: Save Python fixture wheelhouse
+        if: ${{ success() && steps.python-fixture-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
+
       # Absorbed from the deleted `envtest` job. internal/operator is ALREADY in
       # this job's package set and TestIntegrationEnvtestReconcile already runs
       # here — it just reported `--- SKIP` because testdep.RequireEnv found
@@ -998,12 +1172,21 @@ jobs:
       - name: Run strict integration tier
         env:
           GOOBERS_JAVA_E2E: "1"
+          GOOBERS_DOTNET_E2E: "1"
+          GOOBERS_PYTHON_E2E: "1"
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
         shell: bash
         run: |
           set -euo pipefail
           make test-integration-strict 2>&1 | tee integration-tier.log
           grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' integration-tier.log
           grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' integration-tier.log
+          # #4615: the .NET and Python rows in docs/guides/stack-support.md claim
+          # "Shipped, CI-green" on the strength of these two legs, so a SKIP
+          # must be red here rather than a quiet pass that keeps the label.
+          grep -q -- '--- PASS: TestIntegrationDotnetServiceGaggleRunsLocalCIGreen' integration-tier.log
+          grep -q -- '--- PASS: TestIntegrationPythonServiceGaggleRunsPytestGreen' integration-tier.log
           # Assert the envtest reconcile actually EXECUTED. It is the only test
           # in CI that stands up a real API server, and the only thing that
           # caught #3168 (both shipped CRDs rejected: uniqueItems forbidden and
@@ -1034,7 +1217,7 @@ jobs:
     name: warm declared-dependency apt cache
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     continue-on-error: true
     steps:
       - name: Checkout
@@ -1137,6 +1320,79 @@ jobs:
           # marker ages out — a partially warmed repository that poisons the
           # consumers instead of helping them.
           find ~/.m2/repository -name '*.lastUpdated' -delete 2>/dev/null || true
+
+      # #4615: the default-branch writer for the .NET NuGet and Python wheel
+      # entries the `integration` job restores. Keys must stay byte-identical
+      # to the consumer's, or this warms entries nothing reads. `!cancelled()`
+      # keeps a failed Maven warm above from skipping these independent ones.
+      - name: Set up .NET
+        if: ${{ !cancelled() }}
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Set up Python
+        if: ${{ !cancelled() }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Restore .NET fixture NuGet packages
+        id: dotnet-fixture-cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
+
+      - name: Warm .NET fixture NuGet packages
+        id: dotnet-fixture-warm
+        if: ${{ !cancelled() && steps.dotnet-fixture-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
+        run: |
+          set -euo pipefail
+          warm="$RUNNER_TEMP/dotnet-fixture-restore"
+          rm -rf "$warm" && cp -R test/e2e/testdata/dotnetservice "$warm"
+          timeout --signal=TERM --kill-after=10s 300s dotnet restore "$warm/DotnetService.sln"
+
+      - name: Save .NET fixture NuGet packages
+        if: ${{ !cancelled() && steps.dotnet-fixture-warm.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
+
+      - name: Restore Python fixture wheelhouse
+        id: python-fixture-cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
+
+      - name: Warm Python fixture wheelhouse
+        id: python-fixture-warm
+        if: ${{ !cancelled() && steps.python-fixture-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheels="$RUNNER_TEMP/python-fixture-wheelhouse"
+          rm -rf "$wheels" && mkdir -p "$wheels"
+          timeout --signal=TERM --kill-after=10s 300s \
+            python3 -m pip download --timeout 20 --retries 3 --dest "$wheels" \
+            -r test/e2e/testdata/pythonservice-ci-requirements.txt
+
+      - name: Save Python fixture wheelhouse
+        if: ${{ !cancelled() && steps.python-fixture-warm.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
 
   # Default-branch writer of the race build cache the `unit` shards restore.
   # setup-go's cache cannot serve them: it is saved once per go.sum by the first
@@ -1418,7 +1674,7 @@ jobs:
       - name: Windows platform runtime
         env:
           GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock ./internal/platform/activetime
 
       - name: Windows service transitions
         run: go test ./internal/winsvc
@@ -1451,7 +1707,12 @@ jobs:
         run: go test ./internal/executor
 
       - name: Windows credential files
-        run: go test ./internal/credentials
+        run: go test ./internal/credentials ./internal/fleet
+
+      - name: Windows Azure CLI credential diagnostics
+        env:
+          TESTDEP_STRICT: '1'
+        run: go test -tags=integration ./providers -run '^(TestAzureCLICredential|TestIntegrationAzureCLI)' -count=1 -timeout=3m
 
       - name: Windows self-update
         run: go test ./internal/selfupdate
@@ -1465,14 +1726,17 @@ jobs:
       - name: Windows harness and toolkit
         run: go test ./internal/harness ./internal/agentkit
 
+      - name: Windows durable state services
+        run: go test ./internal/instanceannotations ./internal/branchretention ./internal/engineoperator
+
       - name: Windows containment and journals
-        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
+        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/pathutil ./internal/secretpattern
 
       # Exercise native Logs delivery and real journal-writing CLI lifetimes.
       # Keep the large CLI/engine suites filtered; test/ci checks this selection
       # against every test in the journal export regression files.
       - name: Windows journal OTLP export
-        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./cmd/goobers -run '^(TestCommitted.*|TestJournalLogs.*|TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun|TestClientShutdownExportsFinalJournalDropCauses|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
+        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./internal/runner ./cmd/goobers -run '^(TestNamed.*|TestCommitted.*|TestExportReader.*|TestJournalCatchup.*|TestJournalCoalescing.*|TestJournalLogs.*|TestAzureReplay.*|TestAzureMonitorJournalReplay.*|TestAzureMonitorHostIdentity.*|TestAzureMonitorCompression.*|TestRunnerTelemetryDispatchProbe.*|TestSchedulerTelemetryReplayStart.*|TestTelemetryInstanceIdentities|TestServiceHealthExportProductionWiring|TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun|TestClientShutdownExportsFinalJournalDropCauses|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestInstanceSchemaNamedExporters|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
 
       # The whole package, not one named test. #3064 added this step scoped to
       # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the
@@ -1514,7 +1778,7 @@ jobs:
         # Immutable generations also require native archive, shared-lease,
         # retention and relative-path execution coverage (#5382).
         # The rollback runner must also open native drive-letter SQLite paths.
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./test/diagnosticsrollback
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./internal/safeio ./test/diagnosticsrollback
 
       - name: Windows worktree and event stream
         env:
@@ -1593,8 +1857,8 @@ jobs:
         run: make vulncheck
 
   required-ci:
-    name: make ci (fmt-check · vet · build · test · lint)
-    if: ${{ always() && github.event_name != 'push' }}
+    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (skipped for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}
+    if: ${{ always() && github.event_name != 'push' && !(github.event.action == 'edited' && !github.event.changes.base) }}
     # unit-gate — the pre-parallelization `make ci` monolith — was retired once
     # every check it ran had a dedicated job; it duplicated the
     # checks/lint/unit/shipped/deadcode slices wholesale and doubled the
@@ -1615,12 +1879,13 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - name: Verify required gates
         env:
+          CMDGOOBERS_GROWTH_RESULT: ${{ needs.cmdgoobers-growth.result }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           DEPLOY_REFERENCE_RESULT: ${{ needs.deploy-reference.result }}
@@ -1655,6 +1920,7 @@ jobs:
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
+          check "cmd/goobers growth ratchet"         "$CMDGOOBERS_GROWTH_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
           check "Go vulnerability scan"              "$VULNCHECK_RESULT"
@@ -1914,6 +2180,23 @@ jobs:
         # won), or a fork PR's read-only token cannot cancel.
         run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
 
+  cancel-on-cmdgoobers-growth-failure:
+    name: cancel run on failure (cmdgoobers-growth)
+    needs: [cmdgoobers-growth]
+    if: ${{ !cancelled() && needs.cmdgoobers-growth.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
   cancel-on-deadcode-failure:
     name: cancel run on failure (deadcode)
     needs: [deadcode]
@@ -2037,7 +2320,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
+    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -2047,6 +2330,7 @@ jobs:
       - name: File or update critical main failure
         if: >-
           ${{
+            needs.cmdgoobers-growth.result == 'failure' ||
             needs.preflight.result == 'failure' ||
             needs.checks.result == 'failure' ||
             needs.deploy-reference.result == 'failure' ||
@@ -2107,6 +2391,7 @@ jobs:
       - name: Close resolved main failure
         if: >-
           ${{
+            needs.cmdgoobers-growth.result == 'success' &&
             needs.preflight.result == 'success' &&
             needs.checks.result == 'success' &&
             needs.deploy-reference.result == 'success' &&

@@ -2,8 +2,9 @@ package v30
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -78,6 +79,8 @@ func CheckWarnings(def Definition) []string {
 	for _, task := range def.Spec.Tasks {
 		warnings = append(warnings, overPrivilegeWarnings(task)...)
 	}
+	warnings = append(warnings, uncappedWaitBudgetWarnings(def)...)
+	warnings = append(warnings, parallelWarnings(def)...)
 	return warnings
 }
 
@@ -525,12 +528,7 @@ func stateNames(def Definition) []string {
 // sortedKeys returns the keys of a string-keyed map in sorted order, so any walk
 // over a map (e.g. gate branches) is deterministic.
 func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // toSet turns a slice into a membership set.

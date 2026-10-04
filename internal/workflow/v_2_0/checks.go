@@ -78,6 +78,8 @@ func CheckWarnings(def Definition) []string {
 	for _, task := range def.Spec.Tasks {
 		warnings = append(warnings, overPrivilegeWarnings(task)...)
 	}
+	warnings = append(warnings, uncappedWaitBudgetWarnings(def)...)
+	warnings = append(warnings, parallelWarnings(def)...)
 	return warnings
 }
 

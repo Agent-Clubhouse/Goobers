@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -30,6 +31,7 @@ type resumeOutcome struct {
 	// Terminal are candidates that were already terminal. They are finalized
 	// after readiness rather than ahead of it — see terminalFinalization.
 	Terminal []terminalFinalization
+	Blocking *resumeBlockingCandidate
 }
 
 // resumeProgressFunc observes one crash-resume pass as it advances. It is
@@ -47,6 +49,56 @@ func (o resumeOutcome) report(progress resumeProgressFunc) {
 func (o resumeOutcome) Summary() string {
 	return fmt.Sprintf("examined=%d/%d resumed=%d reattached=%d terminal=%d skipped=%d",
 		o.Examined, o.Total, len(o.Resumed), len(o.Reattached), len(o.Terminal), len(o.Warned))
+}
+
+func (o *resumeOutcome) markBlockingCandidate(runID, operation string) {
+	now := time.Now()
+	o.Blocking = &resumeBlockingCandidate{
+		RunID: runID, Disposition: "examining", Operation: operation,
+		StartedAt: now, LastProgressAt: now,
+	}
+}
+
+func (o *resumeOutcome) updateBlockingCandidate(disposition, operation string) {
+	if o.Blocking == nil {
+		return
+	}
+	if disposition != "" {
+		o.Blocking.Disposition = disposition
+	}
+	if operation != "" {
+		o.Blocking.Operation = operation
+	}
+	o.Blocking.LastProgressAt = time.Now()
+}
+
+func (o *resumeOutcome) identifyBlockingCandidate(id journal.RunIdentity) {
+	if o.Blocking == nil {
+		return
+	}
+	o.Blocking.RunID = id.RunID
+	o.Blocking.Gaggle = id.Gaggle
+	o.Blocking.Workflow = id.Workflow
+	o.Blocking.LastProgressAt = time.Now()
+}
+
+func (o *resumeOutcome) setBlockingPhase(phase journal.RunPhase) {
+	if o.Blocking == nil {
+		return
+	}
+	o.Blocking.Phase = string(phase)
+	o.Blocking.LastProgressAt = time.Now()
+}
+
+type resumeBlockingCandidate struct {
+	RunID          string
+	Gaggle         string
+	Workflow       string
+	Disposition    string
+	Phase          string
+	Operation      string
+	StartedAt      time.Time
+	LastProgressAt time.Time
 }
 
 // terminalFinalization is one already-terminal run found in the crash-resume
@@ -154,10 +206,7 @@ func (c terminalFinalization) finalize(log *journal.InstanceLog) error {
 	}
 	if appendErr := log.Append(journal.Event{
 		Type: journal.EventError, Gaggle: c.identity.Gaggle, Workflow: c.identity.Workflow, RunID: c.identity.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    "terminal_cleanup_deferred",
-			Message: fmt.Sprintf("terminal cleanup deferred for retry: %v", err),
-		},
+		Error: journal.ErrorDetailFor("terminal_cleanup_deferred", fmt.Errorf("terminal cleanup deferred for retry: %w", err)),
 	}); appendErr != nil {
 		return fmt.Errorf("journal deferred terminal cleanup for run %q: %w", c.identity.RunID, appendErr)
 	}

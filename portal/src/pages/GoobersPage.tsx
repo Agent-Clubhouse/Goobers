@@ -4,6 +4,7 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { type OperationalSnapshot, useOperationalSnapshot } from "../operationalData";
 import { routeHash } from "../routing";
+import { useCompactRecordDisclosure } from "../ui/compactRecordLayout";
 import { Icon } from "../ui/Icon";
 
 export function GoobersPage({
@@ -121,7 +122,7 @@ function GooberGroup({
 }: {
   inventory: OperationalSnapshot["inventories"][number];
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useCompactRecordDisclosure();
   const contentId = `goober-group-${inventory.gaggle.name}`;
 
   return (
@@ -140,7 +141,7 @@ function GooberGroup({
               <span className="definition-disabled-badge">Disabled</span>
             )}
           </span>
-          <code>{inventory.gaggle.name}</code>
+          <code title={inventory.gaggle.name}>{inventory.gaggle.name}</code>
         </span>
         <span className="goober-group-summary-meta">
           <span className="section-count">
@@ -187,11 +188,14 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
         type="button"
       >
         <span className="goober-card-toggle-label">
-          <h4 id={headingId}>{goober.displayName}</h4>
+          <h4 id={headingId} title={goober.displayName}>{goober.displayName}</h4>
           <span aria-hidden="true" className="goober-title-separator">/</span>
-          <span className="goober-role">{goober.role}</span>
+          <span className="goober-role" title={goober.role}>{goober.role}</span>
           <span aria-hidden="true" className="goober-title-separator">/</span>
-          <code className="goober-identity">{gaggle.name}/{goober.name}</code>
+          <code className="goober-identity" title={`${gaggle.name}/${goober.name}`}>
+            {gaggle.name}/{goober.name}
+          </code>
+          <span className="definition-status">{goober.status}</span>
         </span>
         <span className="goober-card-toggle-meta">
           <span aria-hidden="true" className="goober-card-chevron">

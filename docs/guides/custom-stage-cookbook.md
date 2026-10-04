@@ -85,6 +85,12 @@ should branch on one of its numeric results. The runnable reference is
 - `scripts/check-todos.sh` counts tracked TODO markers;
 - `workflows/todo-check.yaml` runs it and branches on `todoCount`.
 
+**Unix-only reference.** The script and the stage commands use `sh`, POSIX
+tools, `chmod` and signal traps, so every stage in the workflow below declares
+`requiredCapabilities: [os=linux]` and the sample does not run on Windows
+runners. On Windows, write an equivalent PowerShell or portable-executable
+script and constrain it with the matching capability instead.
+
 The stage runs in the configured project's fresh worktree. Put the script in the
 **project repository**, not only in the Goobers instance's `config/` directory,
 and commit it on the configured project branch.
@@ -168,6 +174,8 @@ spec:
         resultFile: "todo-check-result.json"
         maxOutputBytes: "65536"
       capabilities: []
+      requiredCapabilities:
+        - os=linux
       next: todos-found
     - name: report-todos
       type: deterministic
@@ -175,12 +183,16 @@ spec:
       run:
         command: ["sh", "-c", "printf '%s\n' 'TODO markers found; inspect the check-todos stdout artifact.'"]
       capabilities: []
+      requiredCapabilities:
+        - os=linux
     - name: report-clean
       type: deterministic
       goal: Report that no TODO markers were found.
       run:
         command: ["sh", "-c", "printf '%s\n' 'No TODO markers found.'"]
       capabilities: []
+      requiredCapabilities:
+        - os=linux
   gates:
     - name: todos-found
       evaluator: automated
@@ -300,7 +312,9 @@ the `todos-found` gate must evaluate.
   `run.env`. Goobers otherwise carries only tool/runtime
   basics (`PATH`, `HOME`, `TMPDIR`, XDG, locale, CA/proxy, and Go toolchain
   variables), declared inputs as normalized `GOOBERS_INPUT_*` variables, and
-  credentials for declared capabilities as `GOOBERS_CRED_*`.
+  credentials for declared capabilities as `GOOBERS_CRED_*`. A credential whose
+  source states an expiry (a GitHub App or Microsoft Entra token) also carries
+  the non-secret `GOOBERS_CREDENTIAL_EXPIRES_*`, an RFC 3339 UTC timestamp.
 - A custom command does not receive `GOOBERS_RUN_ID`, `GOOBERS_WORKFLOW`, or
   `GOOBERS_INSTANCE_ROOT`; those operational variables are reserved for stages
   whose command is the `goobers` CLI. It also does not inherit arbitrary daemon

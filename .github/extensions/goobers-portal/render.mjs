@@ -742,6 +742,32 @@ export function insightUsageForScope(stats, scope) {
     return (stats.usage || []).find((item) => item.scope === scope.kind && isInInsightScope(scope, item));
 }
 
+// Remove these wire fallbacks after the v0.5 compatibility window closes (#6687).
+export function normalizeLegacyInsightCosts(stats) {
+    const normalize = (item) => ({
+        ...item,
+        costAIC: item.costAIC ?? (item.costUSD === undefined ? undefined : item.costUSD * 100),
+        p50CostAIC: item.p50CostAIC ?? (item.p50CostUSD === undefined ? undefined : item.p50CostUSD * 100),
+        p95CostAIC: item.p95CostAIC ?? (item.p95CostUSD === undefined ? undefined : item.p95CostUSD * 100),
+        retryWasteCostAIC: item.retryWasteCostAIC ??
+            (item.retryWasteCostUSD === undefined ? undefined : item.retryWasteCostUSD * 100),
+    });
+    return {
+        ...stats,
+        stages: (stats.stages || []).map(normalize),
+        usage: (stats.usage || []).map(normalize),
+        models: (stats.models || []).map(normalize),
+        trend: stats.trend?.map((bucket) => ({
+            ...bucket,
+            usage: (bucket.usage || []).map(normalize),
+        })),
+        trendPrevious: stats.trendPrevious && {
+            ...stats.trendPrevious,
+            usage: (stats.trendPrevious.usage || []).map(normalize),
+        },
+    };
+}
+
 function insightFormatRate(value) {
     return value === undefined ? "Unmeasured" : (value * 100).toFixed(1) + "%";
 }
@@ -756,7 +782,9 @@ function insightFormatTokens(value) {
 }
 
 function insightFormatCost(value) {
-    return value === undefined ? "Unmeasured" : "$" + value.toFixed(2);
+    return value === undefined
+        ? "Unmeasured"
+        : new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value) + " AIC";
 }
 
 function insightFormatSamples(samples) {
@@ -952,13 +980,13 @@ function renderInsightUsageSection(stats, scope) {
     const rows = [
         ["Attempts", String(usage.totalAttempts)],
         ["Tokens (P50 / P95)", insightFormatTokens(usage.p50Tokens) + " / " + insightFormatTokens(usage.p95Tokens)],
-        ["Cost total", insightFormatCost(usage.costUSD)],
-        ["Cost (P50 / P95)", insightFormatCost(usage.p50CostUSD) + " / " + insightFormatCost(usage.p95CostUSD)],
+        ["AIC total", insightFormatCost(usage.costAIC)],
+        ["AIC (P50 / P95)", insightFormatCost(usage.p50CostAIC) + " / " + insightFormatCost(usage.p95CostAIC)],
         ["Samples", insightFormatSamples(usage.costSamples)],
         ["Retry waste", usage.retryWasteAttempts === 0
             ? "No retry waste"
             : usage.retryWasteAttempts + " attempts \u00b7 " + insightFormatTokens(usage.retryWasteTokens) +
-                " \u00b7 " + insightFormatCost(usage.retryWasteCostUSD)],
+                " \u00b7 " + insightFormatCost(usage.retryWasteCostAIC)],
     ];
     const items = rows.map(([label, value]) =>
         '<div class="kv"><div class="label">' + escapeAssociationHtml(label) +
@@ -980,12 +1008,12 @@ function renderInsightTrendSection(stats, scope, windowValue) {
     }
     const buckets = insightCurrentTrendBuckets(stats, windowValue);
     if (!buckets.length) {
-        return '<p class="inline-empty">No cost trend data is available for this window.</p>';
+        return '<p class="inline-empty">No AIC trend data is available for this window.</p>';
     }
     const rows = buckets.map((bucket) => {
         const usage = (bucket.usage || []).find((item) => item.scope === scope.kind && isInInsightScope(scope, item));
         return "<tr><td>" + escapeAssociationHtml(insightFormatBucketLabel(bucket.since, bucket.until)) + "</td>" +
-            "<td>" + escapeAssociationHtml(insightFormatCost(usage && usage.costUSD)) + "</td>" +
+            "<td>" + escapeAssociationHtml(insightFormatCost(usage && usage.costAIC)) + "</td>" +
             "<td>" + escapeAssociationHtml(insightFormatTokens(usage && usage.p50Tokens)) + "</td>" +
             "<td>" + escapeAssociationHtml(insightFormatSamples(usage ? usage.costSamples : 0)) + "</td></tr>";
     }).join("");
@@ -993,10 +1021,10 @@ function renderInsightTrendSection(stats, scope, windowValue) {
         (stats.trendPrevious.usage || []).find((item) => item.scope === scope.kind && isInInsightScope(scope, item));
     const currentUsage = insightUsageForScope(stats, scope);
     const comparison = previousUsage || currentUsage
-        ? '<p class="usage-trend-note">Previous window: ' + escapeAssociationHtml(insightFormatCost(previousUsage && previousUsage.costUSD)) +
-            " \u00b7 Current window: " + escapeAssociationHtml(insightFormatCost(currentUsage && currentUsage.costUSD)) + "</p>"
+        ? '<p class="usage-trend-note">Previous window: ' + escapeAssociationHtml(insightFormatCost(previousUsage && previousUsage.costAIC)) +
+            " \u00b7 Current window: " + escapeAssociationHtml(insightFormatCost(currentUsage && currentUsage.costAIC)) + "</p>"
         : "";
-    return '<div class="table-scroll"><table><thead><tr><th>Bucket</th><th>Cost</th><th>P50 tokens</th><th>Samples</th></tr></thead>' +
+    return '<div class="table-scroll"><table><thead><tr><th>Bucket</th><th>AIC</th><th>P50 tokens</th><th>Samples</th></tr></thead>' +
         "<tbody>" + rows + "</tbody></table></div>" + comparison;
 }
 
@@ -1027,6 +1055,7 @@ export function renderInsightPanel(stats, scope, windowValue) {
     if (!stats) {
         return '<p class="inline-empty">No telemetry loaded yet.</p>';
     }
+    stats = normalizeLegacyInsightCosts(stats);
     const outcomeHtml = renderInsightOutcomeSection(stats, scope);
     const curationHtml = renderInsightCurationSection(stats, scope);
     const creditHtml = renderInsightCreditSection(stats, scope);
@@ -1070,32 +1099,17 @@ function costAmountByUnit(amounts, unit) {
 
 function formatCostAmount(amount) {
     if (!amount) return "Unmeasured";
-    const suffix = amount.estimated ? " est." : "";
-    if (amount.unit === "usd") return "$" + Number(amount.value || 0).toFixed(2) + suffix;
-    if (amount.unit === "aiCredits") return Number(amount.value || 0).toLocaleString("en-US") + " credits" + suffix;
-    if (amount.unit === "premiumRequests") return Number(amount.value || 0).toLocaleString("en-US") + " premium requests" + suffix;
-    return String(amount.value) + " " + String(amount.unit || "units") + suffix;
+    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(Number(amount.value || 0)) +
+        " AIC" + (amount.estimated ? " estimated" : "");
 }
 
-function costAggregateNativeLabel(aggregate) {
-    const amounts = aggregate?.nativeTotals || [];
-    if (!amounts.length) return "Unmeasured";
-    return amounts.map(formatCostAmount).join(" / ");
-}
-
-function costAggregateNormalizedLabel(aggregate) {
-    const usd = costAmountByUnit(aggregate?.normalizedTotals, "usd");
-    return formatCostAmount(usd || (aggregate?.normalizedTotals || [])[0]);
+function costAggregateAIC(aggregate) {
+    return costAmountByUnit(aggregate?.nativeTotals, "aiCredits") ??
+        costAmountByUnit(aggregate?.normalizedTotals, "aiCredits");
 }
 
 function costAggregateComparableValue(aggregate) {
-    const usd = costAmountByUnit(aggregate?.nativeTotals, "usd") ?? costAmountByUnit(aggregate?.normalizedTotals, "usd");
-    const aiCredits = costAmountByUnit(aggregate?.normalizedTotals, "aiCredits") ?? costAmountByUnit(aggregate?.nativeTotals, "aiCredits");
-    return {
-        usd: usd?.value ?? null,
-        aiCredits: aiCredits?.value ?? null,
-        fallback: (aggregate?.nativeTotals || [])[0]?.value ?? (aggregate?.normalizedTotals || [])[0]?.value ?? 0,
-    };
+    return costAggregateAIC(aggregate)?.value ?? 0;
 }
 
 function costCoverageLabel(coverage = {}) {
@@ -1119,13 +1133,12 @@ export function deriveExternalCostRows(result = {}) {
         externalKind: aggregate.externalKind,
         externalId: aggregate.externalId,
         url: aggregate.url || "",
-        native: costAggregateNativeLabel(aggregate),
-        normalized: costAggregateNormalizedLabel(aggregate),
+        aic: formatCostAmount(costAggregateAIC(aggregate)),
         coverage: costCoverageLabel(aggregate.coverage),
         lowerBound: Boolean(aggregate.coverage?.lowerBound),
         models: (aggregate.models || []).map((model) =>
             model.model + " · " + insightFormatSamples(model.measuredAttempts) + " · " +
-            costAggregateNormalizedLabel(model),
+            formatCostAmount(costAggregateAIC(model)),
         ),
         runs: (aggregate.runs || []).map((run) => run.runId).filter(Boolean),
         comparable: costAggregateComparableValue(aggregate),
@@ -1133,43 +1146,37 @@ export function deriveExternalCostRows(result = {}) {
 }
 
 function compareExternalCostRows(a, b) {
-    if (a.comparable.usd != null || b.comparable.usd != null) {
-        return (b.comparable.usd ?? -Infinity) - (a.comparable.usd ?? -Infinity);
-    }
-    if (a.comparable.aiCredits != null || b.comparable.aiCredits != null) {
-        return (b.comparable.aiCredits ?? -Infinity) - (a.comparable.aiCredits ?? -Infinity);
-    }
-    return (b.comparable.fallback - a.comparable.fallback) || a.label.localeCompare(b.label);
+    return (b.comparable - a.comparable) || a.label.localeCompare(b.label);
 }
 
 function renderCostSummarySection(stats, scope) {
     const usage = insightUsageForScope(stats, scope);
     if (!usage) {
-        return '<section class="content-section"><h3>Cost summary</h3>' +
+        return '<section class="content-section"><h3>Cost Summary</h3>' +
             '<p class="inline-empty">No measured AI usage for this scope in the selected window.</p></section>';
     }
     const rows = [
         ["Scope", insightScopeLabel(scope)],
         ["Attempts", String(usage.totalAttempts ?? 0)],
-        ["AI cost total", insightFormatCost(usage.costUSD)],
-        ["AI cost P50 / P95", insightFormatCost(usage.p50CostUSD) + " / " + insightFormatCost(usage.p95CostUSD)],
+        ["AIC total", insightFormatCost(usage.costAIC)],
+        ["AIC P50 / P95", insightFormatCost(usage.p50CostAIC) + " / " + insightFormatCost(usage.p95CostAIC)],
         ["Token P50 / P95", insightFormatTokens(usage.p50Tokens) + " / " + insightFormatTokens(usage.p95Tokens)],
         ["Measured samples", insightFormatSamples(usage.costSamples)],
         ["Retry waste", (usage.retryWasteAttempts || 0) === 0
             ? "No retry waste"
-            : usage.retryWasteAttempts + " attempts · " + insightFormatCost(usage.retryWasteCostUSD) + " · " + insightFormatTokens(usage.retryWasteTokens)],
+            : usage.retryWasteAttempts + " attempts · " + insightFormatCost(usage.retryWasteCostAIC) + " · " + insightFormatTokens(usage.retryWasteTokens)],
     ];
     const items = rows.map(([label, value]) =>
         '<div class="kv"><div class="label">' + escapeAssociationHtml(label) +
             '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
     ).join("");
-    return '<section class="content-section"><h3>Cost summary</h3>' +
+    return '<section class="content-section"><h3>Cost Summary</h3>' +
         '<p class="section-description">Measured attempts only; unreported runner usage remains unmeasured.</p>' +
         '<div class="kv-grid">' + items + "</div></section>";
 }
 
 function renderCostTrendSection(stats, scope, windowValue) {
-    return '<section class="content-section"><h3>Cost trend</h3>' +
+    return '<section class="content-section"><h3>Cost over time</h3>' +
         renderInsightTrendSection(stats, scope, windowValue) + "</section>";
 }
 
@@ -1181,16 +1188,16 @@ function renderInstanceCostRollupSection(stats, scope, windowValue) {
             usage: (stats.usage || []).find((item) => item.scope === "gaggle" && item.gaggle === gaggle.gaggle),
         }))
         .filter((entry) => (entry.usage?.costSamples || 0) > 0)
-        .sort((a, b) => (b.usage?.costUSD || 0) - (a.usage?.costUSD || 0));
+        .sort((a, b) => (b.usage?.costAIC || 0) - (a.usage?.costAIC || 0));
     if (!rows.length) {
         return '<section class="content-section"><h3>Cost by gaggle</h3>' +
-            '<p class="inline-empty">No gaggle has a measured AI cost in this window.</p></section>';
+            '<p class="inline-empty">No gaggle has measured AIC in this window.</p></section>';
     }
     const body = rows.map(({ gaggle, usage }) =>
         "<tr><td>" + escapeAssociationHtml(gaggle) + "</td>" +
-        "<td>" + escapeAssociationHtml(insightFormatCost(usage.costUSD)) + "</td>" +
-        "<td>" + escapeAssociationHtml(insightFormatCost(usage.p50CostUSD)) + "</td>" +
-        "<td>" + escapeAssociationHtml(insightFormatCost(usage.p95CostUSD)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatCost(usage.costAIC)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatCost(usage.p50CostAIC)) + "</td>" +
+        "<td>" + escapeAssociationHtml(insightFormatCost(usage.p95CostAIC)) + "</td>" +
         "<td>" + escapeAssociationHtml(insightFormatSamples(usage.costSamples)) + "</td></tr>",
     ).join("");
     return '<section class="content-section"><h3>Cost by gaggle</h3>' +
@@ -1210,8 +1217,7 @@ function renderExternalCostBreakdownSection(costs, lookupCosts) {
         const modelLabel = visibleModels.join("; ") + modelOverflow;
         return '<tr><td>' + label + '<div class="muted">' + escapeAssociationHtml(row.repository || row.provider) + "</div></td>" +
             "<td>" + escapeAssociationHtml(row.provider) + "</td>" +
-            "<td>" + escapeAssociationHtml(row.native) + "</td>" +
-            "<td>" + escapeAssociationHtml(row.normalized) + "</td>" +
+            "<td>" + escapeAssociationHtml(row.aic) + "</td>" +
             '<td class="' + (row.lowerBound ? "cost-coverage-warning" : "muted") + '">' + escapeAssociationHtml(row.coverage) + "</td>" +
             "<td>" + escapeAssociationHtml(row.runs.length) + "</td>" +
             "<td>" + escapeAssociationHtml(modelLabel || "Unmeasured") + "</td></tr>";
@@ -1219,7 +1225,7 @@ function renderExternalCostBreakdownSection(costs, lookupCosts) {
     const lookupRows = lookupCosts ? deriveExternalCostRows(lookupCosts).sort(compareExternalCostRows) : [];
     const lookupHtml = lookupCosts
         ? '<h4>Lookup result</h4>' + (lookupRows.length
-            ? '<div class="table-scroll"><table><thead><tr><th>Work item</th><th>Provider</th><th>Provider-native</th><th>Normalized estimate</th><th>Coverage</th><th>Runs</th><th>Models</th></tr></thead><tbody>' +
+            ? '<div class="table-scroll"><table><thead><tr><th>Work item</th><th>Provider</th><th>AIC</th><th>Coverage</th><th>Runs</th><th>Models</th></tr></thead><tbody>' +
                 renderRows(lookupRows) + "</tbody></table></div>"
             : '<p class="inline-empty">No attributed costs match that pull request or issue in this window.</p>')
         : "";
@@ -1245,9 +1251,9 @@ function renderExternalCostBreakdownSection(costs, lookupCosts) {
             "</p>"
         : '<p class="usage-description">Attribution is instance-wide regardless of the selected operational scope.</p>';
     return '<section class="content-section"><h3>Cost by pull request and issue</h3>' +
-        '<p class="section-description">Exact recorded usage by external work item, sorted by comparable cost where available; lower-bound rows have incomplete cost coverage.</p>' +
+        '<p class="section-description">Exact recorded usage by external work item, sorted by AIC; lower-bound rows have incomplete coverage.</p>' +
         bounded +
-        '<div class="table-scroll"><table><thead><tr><th>Work item</th><th>Provider</th><th>Provider-native</th><th>Normalized estimate</th><th>Coverage</th><th>Runs</th><th>Models</th></tr></thead><tbody>' +
+        '<div class="table-scroll"><table><thead><tr><th>Work item</th><th>Provider</th><th>AIC</th><th>Coverage</th><th>Runs</th><th>Models</th></tr></thead><tbody>' +
         renderRows(rows) + "</tbody></table></div>" + overflow + lookupHtml + "</section>";
 }
 
@@ -1257,7 +1263,7 @@ export function renderCostPanel(stats, costs, scope, windowValue, lookupCosts = 
     }
     const statsUnavailable = stats
         ? ""
-        : '<section class="content-section"><h3>Cost summary</h3>' +
+        : '<section class="content-section"><h3>Cost Summary</h3>' +
             '<p class="inline-empty">Selected-scope usage, trend, and instance rollup are unavailable; attributed work-item costs remain available.</p></section>';
     const summaryHtml = stats ? renderCostSummarySection(stats, scope) : statsUnavailable;
     const trendHtml = stats ? renderCostTrendSection(stats, scope, windowValue) : "";
@@ -1284,16 +1290,8 @@ export function formatWorkItemTimestamp(value) {
 
 export function formatWorkItemCost(cost) {
     if (!cost) return "Not attributed";
-    if (cost.costUSD !== undefined && cost.costUSD !== null) {
-        return new Intl.NumberFormat("en-US", {
-            style: "currency",
-            currency: "USD",
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 4,
-        }).format(cost.costUSD);
-    }
     if (cost.nanoAIU !== undefined && cost.nanoAIU !== null) {
-        return new Intl.NumberFormat("en-US").format(cost.nanoAIU) + " nano-AIU";
+        return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(cost.nanoAIU / 1_000_000_000) + " AIC";
     }
     return "Not measured";
 }
@@ -2473,7 +2471,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     </section>
     <section id="dashboard-panel-insights" role="tabpanel" aria-labelledby="dashboard-tab-insights" hidden>
       <h2>Insights</h2>
-      <p class="section-description">Aggregate telemetry across runs: success/failure, cost and usage, curation health, and cost trend.</p>
+      <p class="section-description">Aggregate telemetry across runs: success/failure, AIC and usage, curation health, and AIC trend.</p>
       <div class="filters-bar" id="insights-filters">
         <select id="insight-scope" aria-label="Insight scope" title="Select instance, gaggle, or workflow scope">
           <option value="instance">Instance</option>
@@ -2485,12 +2483,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     </section>
     <section id="dashboard-panel-cost" role="tabpanel" aria-labelledby="dashboard-tab-cost" hidden>
       <h2>Cost</h2>
-      <p class="section-description">Instance spend, selected-scope AI cost, retry waste, and attributed pull request and issue costs.</p>
+      <p class="section-description">Instance spend, selected-scope cost, retry waste, and attributed pull request and issue costs.</p>
       <div class="filters-bar" id="cost-filters">
-        <select id="cost-scope" aria-label="Cost scope" title="Select instance, gaggle, or workflow scope">
+        <select id="cost-scope" aria-label="Scope" title="Select instance, gaggle, or workflow scope">
           <option value="instance">Instance</option>
         </select>
-        <select id="cost-window" aria-label="Cost time window" title="Select time window"></select>
+        <select id="cost-window" aria-label="Time window" title="Select time window"></select>
       </div>
       <div class="filters-bar" id="cost-lookup-filters" aria-label="External cost lookup">
         <select id="cost-lookup-kind" aria-label="External cost type">
@@ -4627,6 +4625,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderInsightCreditSection = ${renderInsightCreditSection.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const normalizeLegacyInsightCosts = ${normalizeLegacyInsightCosts.toString()};
   const renderInsightUsageSection = ${renderInsightUsageSection.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const insightCurrentTrendBuckets = ${insightCurrentTrendBuckets.toString()};
@@ -4639,8 +4638,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const costLookupRequestParams = ${costLookupRequestParams.toString()};
   const costAmountByUnit = ${costAmountByUnit.toString()};
   const formatCostAmount = ${formatCostAmount.toString()};
-  const costAggregateNativeLabel = ${costAggregateNativeLabel.toString()};
-  const costAggregateNormalizedLabel = ${costAggregateNormalizedLabel.toString()};
+  const costAggregateAIC = ${costAggregateAIC.toString()};
   const costAggregateComparableValue = ${costAggregateComparableValue.toString()};
   const costCoverageLabel = ${costCoverageLabel.toString()};
   const deriveExternalCostRows = ${deriveExternalCostRows.toString()};

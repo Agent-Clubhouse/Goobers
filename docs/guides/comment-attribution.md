@@ -42,3 +42,17 @@ never silently publish an unattributed comment.
 Claim and claim-release comments retain their existing
 `goobers-claim: run=...` markers for compatibility and also carry this general
 attribution block.
+
+## Reading back text Goobers wrote
+
+The forge stores the body with the attribution block appended, and provider
+calls return that stored body: the result of a create, update or reply, and
+every later list or get. Code that reads back text Goobers wrote and compares
+it with the text it meant to write must remove the block first. In Go, compare
+`providers.StripAttribution(stored)` with `strings.TrimSpace(intended)`. Never
+compare the raw body exactly, by suffix, or by token similarity.
+
+The `cmd/goobers` test suite runs stage providers with attribution on by
+default, as the daemon does, and the fake forges store Goobers' own seeded
+comments with the block. A test that pins the unattributed standalone behavior
+opts out with `withoutDefaultStageAttribution(t)`.

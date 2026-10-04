@@ -1,5 +1,27 @@
 [
   {
+    "command": "advisory-pr-publish",
+    "resultFile": "advisory-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the pull-request write credential is not injected, so advisory publication fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "advisory-pr-select",
+    "resultFile": "advisory-selection.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:pr:read",
+        "consequence": "the read-only pull-request credential is not injected, so advisory selection fails at runtime",
+        "exact": true
+      }
+    ]
+  },
+  {
     "command": "apply-verdict",
     "resultFile": "verdict-result.json",
     "capabilities": [
@@ -97,6 +119,15 @@
       {
         "capability": "github:issues:write",
         "consequence": "the capability-scoped credential is not injected, so the pinned originating issue lookup fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "config-checkout",
+    "capabilities": [
+      {
+        "capability": "configrepo:write",
+        "consequence": "the config-repository write credential is not injected, so the config repository cannot be cloned for a config-repo-targeted stage"
       }
     ]
   },
@@ -275,11 +306,21 @@
     "capabilities": [
       {
         "capability": "provider:pr:write",
-        "consequence": "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"
+        "consequence": "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime",
+        "unlessFlags": [
+          "config-repo"
+        ]
+      },
+      {
+        "capability": "configrepo:write",
+        "consequence": "the config-repository write credential is not available, so pull-request creation in the instance config repository fails at runtime",
+        "anyFlags": [
+          "config-repo"
+        ]
       },
       {
         "capability": "ado:work-items:write",
-        "consequence": "the separately brokered Azure Boards credential is required at runtime only when an ADO pull request is linked to its work item",
+        "consequence": "optional on Azure DevOps: when declared, the pull request is also linked natively to its claimed work item; without it the pull request opens with a text reference only",
         "optional": true
       },
       {
@@ -326,6 +367,11 @@
       {
         "capability": "github:issues:write",
         "consequence": "the capability-scoped credential is not injected, so PR comment watching fails at runtime"
+      },
+      {
+        "capability": "github:pr:write",
+        "consequence": "required on Azure DevOps: without it the pull-request comment read and label routing fail at runtime; unused on GitHub and Gitea",
+        "optional": true
       }
     ]
   },
@@ -364,7 +410,17 @@
     "capabilities": [
       {
         "capability": "repo:push",
-        "consequence": "the capability-scoped credential is not injected, so branch publication fails at runtime"
+        "consequence": "the capability-scoped credential is not injected, so branch publication fails at runtime",
+        "unlessFlags": [
+          "config-repo"
+        ]
+      },
+      {
+        "capability": "configrepo:write",
+        "consequence": "the config-repository write credential is not injected, so publishing the config-repo branch fails at runtime",
+        "anyFlags": [
+          "config-repo"
+        ]
       }
     ]
   },
@@ -561,6 +617,11 @@
         "consequence": "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime",
         "flag": "--format",
         "flagValue": "tutor-live-verification"
+      },
+      {
+        "capability": "configrepo:write",
+        "consequence": "optional with --format tutor-live-verification: it lets the holdout merge-state refresh read PRs the Tutor opened in the instance config repository; without it those holdouts stay pending",
+        "optional": true
       }
     ]
   },

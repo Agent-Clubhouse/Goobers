@@ -404,6 +404,42 @@
       }
     },
     {
+      "name": "goobers.placement.self",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{placement}",
+      "description": "Workflow work placements executed on the local self runner.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.placement.self_refused",
+      "kind": "counter",
+      "numberType": "int64",
+      "unit": "{refusal}",
+      "description": "Workflow work refused because instance policy denies self execution.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.placement.self_denied",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "1",
+      "description": "Effective instance self execution policy: one means deny, zero means allow.",
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
       "name": "goobers.storage.free_bytes",
       "kind": "gauge",
       "numberType": "int64",
@@ -423,6 +459,53 @@
       "description": "Tiered low-disk protection tier transitions, tagged by the tier entered.",
       "allowedDimensions": [
         "goobers.storage.tier"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.queue.depth",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "{item}",
+      "description": "Scheduler-visible queued work by queue kind and operating system.",
+      "allowedDimensions": [
+        "goobers.queue.kind",
+        "goobers.os"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.queue.oldest_age",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "s",
+      "description": "Age in seconds of the oldest scheduler-visible queue item by queue kind and operating system.",
+      "allowedDimensions": [
+        "goobers.queue.kind",
+        "goobers.os"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.workers.available",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "{worker}",
+      "description": "Configured scheduler capacity not currently reserved, by operating system.",
+      "allowedDimensions": [
+        "goobers.os"
       ],
       "lifecycle": {
         "stability": "ga",

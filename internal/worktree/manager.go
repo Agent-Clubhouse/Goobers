@@ -595,6 +595,9 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 	// friends) stops being re-fetched. The probe is mirror-scoped, not
 	// flag-scoped, so a full mirror that predates the option keeps its
 	// full-mirror fetch untouched.
+	if err := ensureMirrorInvariants(ctx, dir); err != nil {
+		return "", err
+	}
 	if err := m.fetchMirror(ctx, repoURL, dir, narrow || m.partialClone && mirrorIsPartial(ctx, dir)); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
@@ -617,7 +620,17 @@ func (m *Manager) fetchMirror(ctx context.Context, repoURL, dir string, narrow b
 	if narrow {
 		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
 	}
-	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
+	// --refmap= suppresses the configured remote.origin.fetch for this
+	// invocation so the explicit refspecs are the only mappings. A mirror a
+	// pinned workspace initialized (`init --bare` + `remote add origin`)
+	// carries git's default tracking refmap; combined with a pruned
+	// +refs/*:refs/* refresh, git prunes refs/remotes/origin/* (no source
+	// under the explicit refspec) and then fails its opportunistic tracking
+	// update of the same ref — the pinned-to-unpinned migration failure
+	// (#5647). With the refmap suppressed the prune simply retires those
+	// stale tracking refs, which would otherwise shadow the fresh
+	// refs/heads/<base> for linked worktrees that resolve origin/<base> first.
+	fetchArgs := append([]string{"fetch", "--prune", "--refmap=", "origin"}, refspecs...)
 	for _, ns := range m.runBranchNamespacesSnapshot() {
 		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
 	}
@@ -896,8 +909,17 @@ func ForegroundMaintenanceArgs() []string {
 // maintainMirror performs the housekeeping disabled by ForegroundMaintenanceArgs.
 // The caller must hold the mirror's per-repository lock so maintenance cannot
 // overlap a teardown or another operation that mutates the object store.
+//
+// Maintenance is opportunistic: when another git process already holds the
+// mirror's gc or lockfile, the pass is skipped with a warning and the next
+// refresh does it (#5653). Never --force: that would override a lock doing
+// its job. Every other failure stays fatal.
 func maintainMirror(ctx context.Context, dir string) error {
 	if err := runGit(ctx, dir, "maintenance", "run"); err != nil {
+		if isMaintenanceLockContention(err) {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: worktree: skipped maintenance of managed mirror %s: another git process holds its lock: %v\n", dir, err)
+			return nil
+		}
 		return fmt.Errorf("worktree: maintain mirror %s: %w", dir, err)
 	}
 	return nil
@@ -922,6 +944,17 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 // carrying the exit code and captured stderr, so IsTransientProvisionError can
 // classify it — unlike gitOutput's plain wrap.
 func rawGitOutput(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	return gitCommand(ctx, dir, env, gitRawOutput, args...)
+}
+
+type gitOutputMode uint8
+
+const (
+	gitRawOutput gitOutputMode = iota
+	gitCombinedOutput
+)
+
+func gitCommand(ctx context.Context, dir string, env []string, mode gitOutputMode, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
@@ -929,16 +962,27 @@ func rawGitOutput(ctx context.Context, dir string, env []string, args ...string)
 	if env != nil {
 		cmd.Env = env
 	}
-	out, err := cmd.Output()
+
+	var out []byte
+	var err error
+	switch mode {
+	case gitRawOutput:
+		out, err = cmd.Output()
+	case gitCombinedOutput:
+		out, err = cmd.CombinedOutput()
+	default:
+		panic(fmt.Sprintf("unsupported git output mode %d", mode))
+	}
 	if err != nil {
 		exitCode := -1
-		var stderr []byte
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
-			stderr = exitErr.Stderr
+			if mode == gitRawOutput {
+				out = exitErr.Stderr
+			}
 		}
-		return nil, &gitCommandError{args: args, cause: err, output: stderr, exitCode: exitCode}
+		return nil, &gitCommandError{args: args, cause: err, output: out, exitCode: exitCode}
 	}
 	return out, nil
 }
@@ -959,6 +1003,22 @@ func (e *gitCommandError) Error() string {
 
 func (e *gitCommandError) Unwrap() error {
 	return e.cause
+}
+
+// ErrBranchOccupied marks a worktree-add refusal caused by the requested branch
+// being temporarily checked out by a live managed worktree.
+var ErrBranchOccupied = errors.New("worktree branch occupied")
+
+// branchOccupancyError preserves the concrete refusal reason while allowing
+// callers to classify branch-occupancy conflicts without parsing messages.
+type branchOccupancyError struct {
+	reason string
+}
+
+func (e branchOccupancyError) Error() string { return e.reason }
+
+func (e branchOccupancyError) Is(target error) bool {
+	return target == ErrBranchOccupied
 }
 
 // remote5xxPattern matches git's own "HTTP 5xx"/"returned error: 5xx"
@@ -1013,6 +1073,13 @@ func IsTransientProvisionError(err error) bool {
 	return false
 }
 
+// IsRetryableProvisionError reports whether a workspace-provisioning failure is
+// retryable by a bounded caller: transient git transport/remote failures, or a
+// managed branch that is currently occupied by another live worktree.
+func IsRetryableProvisionError(err error) bool {
+	return IsTransientProvisionError(err) || errors.Is(err, ErrBranchOccupied)
+}
+
 // runGit runs git with args, using dir as the working directory (the process
 // default if dir is empty), and returns a typed *gitCommandError (carrying
 // exit code + combined output for IsTransientProvisionError's classification)
@@ -1022,23 +1089,8 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 }
 
 func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	if env != nil {
-		cmd.Env = env
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-		return &gitCommandError{args: args, cause: err, output: out, exitCode: exitCode}
-	}
-	return nil
+	_, err := gitCommand(ctx, dir, env, gitCombinedOutput, args...)
+	return err
 }
 
 // fileLockRetryAttempts and fileLockRetryBackoff bound the teardown retry loop

@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "a1db21948eb7aba19a921ac708dfd610674e0b5bc248fcdaf0ee24a556538926",
+  "snapshotSha256": "01e89043628d3ee769fbd773eff1c97a18a3d6be98b830c37e0d762d9c9a2e32",
   "changes": [
     {
       "version": 1,
@@ -55,6 +55,26 @@
     },
     {
       "version": 14,
+      "description": "Reword the consequence text of open-pr's optional ado:work-items:write use (#5925): native Azure Boards linking is best-effort, so without the capability the pull request opens with a text reference only, and the Azure DevOps repository credential backs the capability when declared. Text only: no capability, optional bit, flag or result-file field changes, so every shipped config's admission is unchanged."
+    },
+    {
+      "version": 15,
+      "description": "pr-comment-watch gains native Azure DevOps support (#6130) and an OPTIONAL github:pr:write use: on Azure DevOps the routing labels are native pull-request labels on the project provider, which github:pr:write authorizes there (docs/design/ado-parity-dsl-2-0.md section 3.1), and the stage builds its ADO provider from that credential. GitHub and Gitea keep routing through github:issues:write, which stays the one required use. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling."
+    },
+    {
+      "version": 16,
+      "description": "push-branch and open-pr gain an opt-in --config-repo flag (TUT-A8, #1220): with it, push-branch requires configrepo:write instead of repo:push and open-pr requires configrepo:write instead of provider:pr:write, so a config-repo-targeted stage declares only the config-repository credential. Add config-checkout (requires configrepo:write). Without the flag every requirement is unchanged (the existing uses become required-unless-flag), so no shipped config's admission changes; configrepo:write is a new stage-declarable capability no shipped config declares."
+    },
+    {
+      "version": 17,
+      "description": "telemetry-query declares configrepo:write as an OPTIONAL use (TUT-A8, #1220): the Tutor live-verification holdout refresh reads PRs opened in the instance config repository with it, and leaves such holdouts pending without it. Optional is never required, so no shipped config's admission changes."
+    },
+    {
+      "version": 18,
+      "description": "Add advisory-pr-select and advisory-pr-publish as separate workflow commands (#6184). Selection requires the exact github:pr:read credential and acquires a private lease; publication requires github:pr:write and owns the only public comment path. The addition changes no existing command requirement, result file, or claim behavior, so existing workflows retain their admission contract."
+    },
+    {
+      "version": 19,
       "description": "Give recovery-resume a typed recovery-resume.json result contract (#4418), allowing the ordinary implementation workflow to record whether it resumed retained work and the source run. The existing repo:push capability requirement is unchanged."
     }
   ]

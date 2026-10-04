@@ -24,11 +24,22 @@ import "fmt"
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
-const StageContractVersion = "v1alpha9"
+// v1alpha10 adds immutable workspace-revision authority.
+// v1alpha11 adds the runner-owned named artifact publication contract.
+const StageContractVersion = "v1alpha11"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
 // ---------------------------------------------------------------------------
+
+// ArtifactPublication is pinned by the runner from the admitted task. Visit is
+// a run/stage-scoped execution identity also recorded on stage.started.
+// +kubebuilder:object:generate=false
+type ArtifactPublication struct {
+	Stage string         `json:"stage"`
+	Visit uint64         `json:"visit"`
+	Slots []ArtifactSlot `json:"slots"`
+}
 
 // InvocationEnvelope is the standard context block delivered to a stage at
 // invocation (agentic via the harness adapter, or to a deterministic stage
@@ -44,6 +55,9 @@ const StageContractVersion = "v1alpha9"
 // deep-copied generically).
 // +kubebuilder:object:generate=false
 type InvocationEnvelope struct {
+	// ArtifactPublication authorizes named output publication. It is never
+	// populated from stage inputs or model-authored completion metadata.
+	ArtifactPublication *ArtifactPublication `json:"artifactPublication,omitempty"`
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
 	// Attempt identifies the scheduler attempt so adapter provenance remains
@@ -179,6 +193,9 @@ type InvocationEnvelope struct {
 	// It is carried in the mandatory execution envelope so adapters cannot
 	// implement nested-agent behavior from prompt text alone.
 	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
+	// WorkspaceRevision is optional immutable authority established by a
+	// successful deterministic predecessor.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 }
 
 // ContinuationRequest creates a new run journal linked to a terminal source
@@ -331,6 +348,9 @@ type ResultEnvelope struct {
 	// producer's artifact via contextFrom and still import that producer's
 	// provider-authored text through inputsFrom (TBH-4).
 	Integrity Integrity `json:"integrity,omitempty"`
+	// WorkspaceRevision is promoted only from the top-level deterministic
+	// result control; it is never represented as a scalar output.
+	WorkspaceRevision *WorkspaceRevision `json:"workspaceRevision,omitempty"`
 }
 
 // ErrorInfo describes a stage failure.
@@ -339,9 +359,19 @@ type ErrorInfo struct {
 	Code string `json:"code"`
 	// Message is the human-readable error message.
 	Message string `json:"message"`
+	// Causes is the ordered wrapped-error cause chain when a producer can
+	// provide structure. It is absent for legacy or unavailable structure.
+	Causes []ErrorCause `json:"causes,omitempty"`
 	// Retryable indicates whether a retry might succeed (informs the runner's
 	// retry decision alongside the stage's declared policy).
 	Retryable bool `json:"retryable,omitempty"`
+}
+
+// ErrorCause is one ordered layer from a producer's structured error chain.
+type ErrorCause struct {
+	Code    string `json:"code,omitempty"`
+	Class   string `json:"class,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +701,11 @@ func (r ResultEnvelope) Validate() error {
 	}
 	if r.Integrity != "" && !r.Integrity.Valid() {
 		return fmt.Errorf("result integrity %q is unknown", r.Integrity)
+	}
+	if r.WorkspaceRevision != nil {
+		if err := r.WorkspaceRevision.Validate(); err != nil {
+			return fmt.Errorf("result workspaceRevision: %w", err)
+		}
 	}
 	for i, a := range r.Artifacts {
 		if err := a.Validate(); err != nil {

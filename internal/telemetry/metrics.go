@@ -22,6 +22,10 @@ import (
 // in internal/telemetry/README.md and internal/telemetry/metric-contract-v1.json;
 // the collector pipeline is configured against those names.
 const (
+	// MetricSelfPlacements counts actual local workflow execution placements.
+	MetricSelfPlacements = "goobers.placement.self"
+	MetricSelfRefusals   = "goobers.placement.self_refused"
+	MetricSelfDenied     = "goobers.placement.self_denied"
 	// MetricRunDuration measures wall-clock workflow run duration.
 	MetricRunDuration = "goobers.run.duration"
 	// MetricRunOutcomes counts finished workflow runs by outcome.
@@ -76,6 +80,15 @@ const (
 	// is a small, fixed, non-sensitive set of values, unlike the paths and
 	// error text MetricJournalAppendsDropped's doc explains staying off of.
 	MetricStorageHealthTierChanges = "goobers.storage.health.tier_changes"
+	// MetricQueueDepth reports scheduler-visible queued work by bounded queue
+	// kind and operating system.
+	MetricQueueDepth = "goobers.queue.depth"
+	// MetricQueueOldestAge reports the oldest scheduler-visible queue item age
+	// in seconds, by bounded queue kind and operating system.
+	MetricQueueOldestAge = "goobers.queue.oldest_age"
+	// MetricWorkersAvailable reports configured scheduler capacity that is not
+	// currently reserved. It is emitted only when capacity is observable.
+	MetricWorkersAvailable = "goobers.workers.available"
 )
 
 const (
@@ -102,6 +115,12 @@ const (
 	// "lock_contention", "queue_full", "stopping", "shutdown". Bounded and
 	// non-sensitive, so unlike a path or an error string it belongs in a label.
 	MetricAttrJournalDropCause = "goobers.journal.drop_cause"
+	// MetricAttrQueueKind labels queue saturation gauges with the fixed
+	// scheduler lane: "schedule", "backlog", or "refill".
+	MetricAttrQueueKind = "goobers.queue.kind"
+	// MetricAttrOS labels scheduler capacity and queue gauges with a bounded
+	// operating-system value such as "linux", "darwin", or "windows".
+	MetricAttrOS = "goobers.os"
 
 	metricNameAttribute = "goobers.metric.name"
 
@@ -141,12 +160,17 @@ var metricAttributeAllowlist = map[string]struct{}{
 	MetricAttrSpanKind:               {},
 	MetricAttrRecoverySnapshotFormat: {},
 	MetricAttrRecoveryReason:         {},
+	MetricAttrQueueKind:              {},
+	MetricAttrOS:                     {},
 }
 
 // instruments owns the process-wide Goobers metric instruments. A nil
 // *instruments disables metric recording, which is what every client built
 // without a metric reader gets.
 type instruments struct {
+	selfPlacements           apimetric.Int64Counter
+	selfRefusals             apimetric.Int64Counter
+	selfDenied               apimetric.Int64Gauge
 	runDuration              apimetric.Float64Histogram
 	runOutcomes              apimetric.Int64Counter
 	stageDuration            apimetric.Float64Histogram
@@ -167,6 +191,9 @@ type instruments struct {
 	recoveryRestoreFailures  apimetric.Int64Counter
 	storageFreeBytes         apimetric.Int64Gauge
 	storageHealthChanges     apimetric.Int64Counter
+	queueDepth               apimetric.Int64Gauge
+	queueOldestAge           apimetric.Int64Gauge
+	workersAvailable         apimetric.Int64Gauge
 	limiter                  *cardinalityLimiter
 }
 
@@ -181,6 +208,12 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst := &instruments{limiter: newCardinalityLimiter(metricAttributeMaxValues)}
 	var err error
 
+	inst.selfPlacements, err = newInt64Counter(meter, MetricSelfPlacements)
+	record(err)
+	inst.selfRefusals, err = newInt64Counter(meter, MetricSelfRefusals)
+	record(err)
+	inst.selfDenied, err = newInt64Gauge(meter, MetricSelfDenied)
+	record(err)
 	inst.runDuration, err = newFloat64Histogram(meter, MetricRunDuration)
 	record(err)
 	inst.runOutcomes, err = newInt64Counter(meter, MetricRunOutcomes)
@@ -220,6 +253,12 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst.storageFreeBytes, err = newInt64Gauge(meter, MetricStorageFreeBytes)
 	record(err)
 	inst.storageHealthChanges, err = newInt64Counter(meter, MetricStorageHealthTierChanges)
+	record(err)
+	inst.queueDepth, err = newInt64Gauge(meter, MetricQueueDepth)
+	record(err)
+	inst.queueOldestAge, err = newInt64Gauge(meter, MetricQueueOldestAge)
+	record(err)
+	inst.workersAvailable, err = newInt64Gauge(meter, MetricWorkersAvailable)
 	record(err)
 
 	if len(errs) != 0 {
@@ -482,12 +521,29 @@ const (
 // configured. An OTLP TLS failure degrades exactly like the trace exporter's:
 // the readers built so far are returned alongside ErrOTLPUnavailable.
 func metricReaders(ctx context.Context, cfg Config) ([]metric.Reader, error) {
+	readers, err := singleMetricReaders(ctx, cfg)
+	for _, destination := range cfg.Destinations {
+		additional, destinationErr := singleMetricReaders(ctx, destination.Config)
+		readers = append(readers, additional...)
+		if destinationErr != nil {
+			err = errors.Join(err, fmt.Errorf("%w: destination %s: %w", ErrOTLPUnavailable, destination.Name, destinationErr))
+		}
+	}
+	return readers, err
+}
+
+func singleMetricReaders(ctx context.Context, cfg Config) ([]metric.Reader, error) {
 	var readers []metric.Reader
 	if cfg.MetricReader != nil {
 		readers = append(readers, cfg.MetricReader)
 	}
 	if cfg.MetricExporter != nil {
-		readers = append(readers, metric.NewPeriodicReader(cfg.MetricExporter,
+		exporter := cfg.MetricExporter
+		if cfg.ExporterHealth != nil {
+			cfg.ExporterHealth.ConfigureMetric()
+			exporter = observedMetricExporter{next: exporter, health: cfg.ExporterHealth}
+		}
+		readers = append(readers, metric.NewPeriodicReader(exporter,
 			metric.WithInterval(metricInterval(cfg))))
 	}
 	if cfg.Exporter != ExporterOTLP {
@@ -526,6 +582,9 @@ func metricExporter(ctx context.Context, cfg Config) (metric.Exporter, error) {
 	} else {
 		tlsConfig, tlsErr := buildOTLPTLSConfig(cfg)
 		if tlsErr != nil {
+			if cfg.ExporterHealth != nil {
+				cfg.ExporterHealth.recordMetricExporterFailure(exporterHealthExporterOTLP, tlsErr)
+			}
 			return nil, fmt.Errorf("%w: %w", ErrOTLPUnavailable, tlsErr)
 		}
 		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
@@ -539,5 +598,10 @@ func metricExporter(ctx context.Context, cfg Config) (metric.Exporter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create otlp telemetry metric exporter: %w", err)
 	}
-	return exporter, nil
+	var observed metric.Exporter = exporter
+	if cfg.ExporterHealth != nil {
+		cfg.ExporterHealth.configureMetricExporter(exporterHealthExporterOTLP)
+		observed = observedMetricExporter{next: observed, health: cfg.ExporterHealth, exporter: exporterHealthExporterOTLP}
+	}
+	return observed, nil
 }

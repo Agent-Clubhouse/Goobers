@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,13 +24,23 @@ const (
 	azureReplayHeaderLimit  = 4096
 	azureReplayRetryMinimum = time.Second
 	azureReplayRetryMaximum = time.Minute
+	azureReplayDrainLimit   = 32
+	azureReplayBatchRecords = 128
+	azureReplayBatchBytes   = 1 << 20
+	// Shutdown is a last-chance remote send, not a backlog recovery window.
+	// Each signal closes separately; ordinary five-second attempts otherwise
+	// accumulate into a long daemon shutdown while Azure Monitor is stalled.
+	azureReplayShutdownDrainTimeout = time.Second
 )
+
+var errAzureReplayYield = errors.New("azure monitor replay work budget exhausted")
 
 type azureReplayConfig struct {
 	root     string
 	dir      string
 	maxAge   time.Duration
 	maxBytes int64
+	start    <-chan struct{}
 }
 
 func (c Config) azureReplayConfig(stream string) azureReplayConfig {
@@ -41,12 +51,14 @@ func (c Config) azureReplayConfig(stream string) azureReplayConfig {
 		root:   c.AzureMonitorReplayRoot,
 		dir:    filepath.Join(c.AzureMonitorReplayRoot, stream),
 		maxAge: c.AzureMonitorReplayMaxAge, maxBytes: c.AzureMonitorReplayMaxBytes,
+		start: c.AzureMonitorReplayStart,
 	}
 }
 
 type azureReplayHeader struct {
 	Schema    string    `json:"schema"`
 	CreatedAt time.Time `json:"createdAt"`
+	Records   int       `json:"records,omitempty"` // Absent in older v1 spool files.
 }
 
 // AzureReplayStats is a low-cardinality snapshot of one signal spool.
@@ -57,6 +69,24 @@ type AzureReplayStats struct {
 	PendingRecords               int
 	PendingBytes                 int64
 	OldestPendingAge             time.Duration
+	PendingFiles                 int
+	AccountingReady              bool
+	AdmissionFailures            uint64
+	QueueDropped, ExportFailures uint64
+	// Delivery evidence (#5940). LastSuccess, LastFailure and FailureClass
+	// survive a restart; ActiveFailure means the latest delivery attempt
+	// failed and none has succeeded since. Aggregates take the latest
+	// success, the latest failure with its class, and any active failure.
+	LastSuccess, LastFailure time.Time
+	FailureClass             string
+	ActiveFailure            bool
+}
+
+// mergeDelivery folds one stream's delivery evidence into an aggregate.
+func (s *AzureReplayStats) mergeDelivery(status azureDeliveryStatus, active bool) {
+	merged := azureDeliveryStatus{LastSuccess: s.LastSuccess, LastFailure: s.LastFailure, FailureClass: s.FailureClass}.merge(status)
+	s.LastSuccess, s.LastFailure, s.FailureClass = merged.LastSuccess, merged.LastFailure, merged.FailureClass
+	s.ActiveFailure = s.ActiveFailure || active
 }
 
 var activeAzureReplaySpools = struct {
@@ -64,38 +94,49 @@ var activeAzureReplaySpools = struct {
 	spools map[*azureReplaySpool]struct{}
 }{spools: make(map[*azureReplaySpool]struct{})}
 
-// Bounds span all three signal directories. This process-wide lock prevents
-// concurrent workers from each observing room and collectively exceeding the
-// configured per-instance byte ceiling.
-var azureReplayBoundsMu sync.Mutex
-
 // InspectAzureReplayRoot returns aggregate pending state across the trace,
 // journal, and diagnostic subspools without starting an exporter.
 func InspectAzureReplayRoot(root string) AzureReplayStats {
-	var result AzureReplayStats
-	for _, stream := range []string{"traces", "journal", "diagnostics"} {
-		dir := filepath.Join(root, stream)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
-				continue
-			}
-			info, err := entry.Info()
+	result, indexed := inspectReplayIndex(root)
+	if !indexed {
+		complete := true
+		for _, stream := range []string{"traces", "journal", "diagnostics"} {
+			dir := filepath.Join(root, stream)
+			entries, err := os.ReadDir(dir)
 			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					complete = false
+				}
 				continue
 			}
-			result.PendingBytes += info.Size()
-			createdAt, payload, err := readAzureReplayFile(filepath.Join(dir, entry.Name()))
-			if err == nil {
-				result.PendingRecords += azureReplayRecordCount(payload)
-				age := time.Since(createdAt)
-				if age > result.OldestPendingAge {
-					result.OldestPendingAge = age
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					complete = false
+					continue
+				}
+				result.PendingBytes += info.Size()
+				result.PendingFiles++
+				createdAt, records, err := readAzureReplayMetadata(filepath.Join(dir, entry.Name()))
+				if err == nil {
+					result.PendingRecords += records
+					age := time.Since(createdAt)
+					if age > result.OldestPendingAge {
+						result.OldestPendingAge = age
+					}
+				} else {
+					complete = false
 				}
 			}
+		}
+		result.AccountingReady = result.AccountingReady && complete
+	}
+	for _, stream := range []string{"traces", "journal", "diagnostics"} {
+		if status, err := readAzureDeliveryStatus(root, stream); err == nil {
+			result.mergeDelivery(status, false)
 		}
 	}
 	activeAzureReplaySpools.Lock()
@@ -109,24 +150,44 @@ func InspectAzureReplayRoot(root string) AzureReplayStats {
 		result.PrunedAge += spool.prunedAge.Load()
 		result.PrunedBytes += spool.prunedBytes.Load()
 		result.Malformed += spool.malformed.Load()
+		result.AdmissionFailures += spool.admissionFailures.Load()
+		if source := spool.lossSource.Load(); source != nil {
+			loss := source.sample()
+			result.QueueDropped += loss.Dropped
+			result.ExportFailures += loss.ExportFailures
+		}
+		result.mergeDelivery(spool.delivery.snapshot())
 	}
 	activeAzureReplaySpools.Unlock()
 	return result
 }
 
 type azureReplaySpool struct {
-	cfg    azureReplayConfig
-	send   func(context.Context, []byte) error
-	now    func() time.Time
-	mu     sync.Mutex
-	wake   chan struct{}
-	done   chan struct{}
-	cancel context.CancelFunc
-	closed atomic.Bool
+	cfg        azureReplayConfig
+	send       func(context.Context, []byte) error
+	now        func() time.Time
+	indexOnce  sync.Once
+	index      *azureReplayIndex
+	stream     string
+	indexErr   error
+	lastStats  atomic.Pointer[AzureReplayStats]
+	lossSource atomic.Pointer[replayLossSource]
+	healthDone chan struct{}
+	wake       chan struct{}
+	done       chan struct{}
+	cancel     context.CancelFunc
+	closed     atomic.Bool
 
 	accepted, delivered, retried atomic.Uint64
 	prunedAge, prunedBytes       atomic.Uint64
 	malformed                    atomic.Uint64
+	admissionFailures            atomic.Uint64
+	delivery                     azureDeliveryState
+}
+
+func (s *azureReplaySpool) ensureIndex() error {
+	s.indexOnce.Do(func() { s.index, s.stream, s.indexErr = acquireReplayIndex(s.cfg) })
+	return s.indexErr
 }
 
 func newAzureReplaySpool(cfg azureReplayConfig, send func(context.Context, []byte) error) (*azureReplaySpool, error) {
@@ -136,25 +197,44 @@ func newAzureReplaySpool(cfg azureReplayConfig, send func(context.Context, []byt
 	if cfg.maxAge <= 0 || cfg.maxBytes <= 0 {
 		return nil, errors.New("azure monitor replay requires positive age and byte bounds")
 	}
-	if err := os.MkdirAll(cfg.dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create Azure Monitor replay spool: %w", err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &azureReplaySpool{cfg: cfg, send: send, now: time.Now, wake: make(chan struct{}, 1), done: make(chan struct{}), cancel: cancel}
+	if err := s.ensureIndex(); err != nil {
+		cancel()
+		return nil, err
+	}
+	if status, err := readAzureDeliveryStatus(s.healthRoot(), s.healthStream()); err == nil {
+		s.delivery.restore(status)
+	}
 	activeAzureReplaySpools.Lock()
 	activeAzureReplaySpools.spools[s] = struct{}{}
 	activeAzureReplaySpools.Unlock()
 	go s.run(ctx)
+	s.healthDone = make(chan struct{})
+	go s.runHealth(ctx)
 	s.signal()
 	return s, nil
 }
 
-func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) error {
+func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) (submitErr error) {
 	if s == nil {
 		return errors.New("azure monitor replay spool is unavailable")
 	}
+	defer func() {
+		if submitErr != nil {
+			s.admissionFailures.Add(uint64(azureReplayRecordCount(payload)))
+			// Admission refused by local storage, not by the destination.
+			// Cancellation and shutdown are not spool evidence.
+			if !s.closed.Load() && !errors.Is(submitErr, context.Canceled) && !errors.Is(submitErr, context.DeadlineExceeded) {
+				s.delivery.failed(s.now(), azureDeliverySpoolIO, false)
+			}
+		}
+	}()
 	if s.closed.Load() {
 		return errors.New("azure monitor replay spool is closed")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	now := s.now().UTC()
 	id, err := azureReplayID()
@@ -162,24 +242,65 @@ func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) error {
 		return err
 	}
 	name := fmt.Sprintf("%020d-%s%s", now.UnixNano(), id, azureReplayFileSuffix)
-	azureReplayBoundsMu.Lock()
-	s.mu.Lock()
-	path, err := s.writeLocked(name, now, payload)
-	if err == nil {
-		s.accepted.Add(uint64(azureReplayRecordCount(payload)))
-		err = s.enforceBoundsLocked(now, path)
+	if err := s.ensureIndex(); err != nil {
+		return err
 	}
-	s.mu.Unlock()
-	azureReplayBoundsMu.Unlock()
+	if s.cfg.start != nil {
+		select {
+		case <-s.index.ready:
+		default:
+			if err = s.submitBootstrap(ctx, name, now, payload); !errors.Is(err, errAzureBootstrapReady) {
+				return err
+			}
+		}
+	}
+	var rejected bool
+	err = s.index.withLock(ctx, func(tx *sql.Tx) error {
+		if s.closed.Load() {
+			return errors.New("azure monitor replay spool is closed")
+		}
+		path, err := s.writeLocked(name, now, payload)
+		if err != nil {
+			return err
+		}
+		s.index.dirty = true // Publication must be reconciled if this transaction rolls back.
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		f := indexedReplayFile{stream: s.stream, name: name, bytes: info.Size(), modified: info.ModTime().UnixNano(), created: now.UnixNano(), records: azureReplayRecordCount(payload)}
+		if err = s.index.put(ctx, tx, f); err != nil {
+			return err
+		}
+		if err = s.enforceIndexedBounds(ctx, tx, now); err != nil {
+			return err
+		}
+		_, err = os.Stat(path)
+		rejected = errors.Is(err, os.ErrNotExist)
+		if rejected {
+			return nil
+		} // Commit the pruning/accounting, then report rejection.
+		return err
+	})
 	if err != nil {
 		return err
 	}
+	if rejected {
+		return errors.New("azure monitor replay byte bound rejected the newest batch")
+	}
+	s.accepted.Add(uint64(azureReplayRecordCount(payload)))
 	s.signal()
-	return s.drain(ctx)
+	// Acknowledges durable local admission, not remote ingestion. Only the
+	// replay worker sends; producers cannot bypass its retry backoff.
+	return nil
 }
 
 func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload []byte) (string, error) {
-	tmp, err := os.CreateTemp(s.cfg.dir, ".pending-*")
+	return writeAzureReplayBatch(s.cfg.dir, name, createdAt, payload)
+}
+
+func writeAzureReplayBatch(dir, name string, createdAt time.Time, payload []byte) (string, error) {
+	tmp, err := os.CreateTemp(dir, ".pending-*")
 	if err != nil {
 		return "", fmt.Errorf("create Azure Monitor replay batch: %w", err)
 	}
@@ -191,7 +312,7 @@ func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload
 			_ = os.Remove(tmpName)
 		}
 	}()
-	header, err := json.Marshal(azureReplayHeader{Schema: azureReplaySchema, CreatedAt: createdAt})
+	header, err := json.Marshal(azureReplayHeader{Schema: azureReplaySchema, CreatedAt: createdAt, Records: azureReplayRecordCount(payload)})
 	if err != nil {
 		return "", fmt.Errorf("encode Azure Monitor replay header: %w", err)
 	}
@@ -207,7 +328,7 @@ func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("close Azure Monitor replay batch: %w", err)
 	}
-	destination := filepath.Join(s.cfg.dir, name)
+	destination := filepath.Join(dir, name)
 	if err := os.Rename(tmpName, destination); err != nil {
 		return "", fmt.Errorf("publish Azure Monitor replay batch: %w", err)
 	}
@@ -215,135 +336,61 @@ func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload
 	return destination, nil
 }
 
-func (s *azureReplaySpool) enforceBoundsLocked(now time.Time, submitted string) error {
-	files, err := s.boundFilesLocked()
-	if err != nil {
-		return err
-	}
-	var total int64
-	for _, file := range files {
-		createdAt, payload, readErr := readAzureReplayFile(file.path)
-		if readErr != nil {
-			s.malformed.Add(1)
-			_ = os.Remove(file.path)
-			continue
-		}
-		if now.Sub(createdAt) > s.cfg.maxAge {
-			if err := os.Remove(file.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("prune expired Azure Monitor replay batch: %w", err)
-			}
-			s.prunedAge.Add(uint64(azureReplayRecordCount(payload)))
-			continue
-		}
-		total += file.size
-	}
-	files, err = s.boundFilesLocked()
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
-		if total <= s.cfg.maxBytes {
-			break
-		}
-		_, payload, readErr := readAzureReplayFile(file.path)
-		if err := os.Remove(file.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("prune Azure Monitor replay batch: %w", err)
-		}
-		if readErr == nil {
-			s.prunedBytes.Add(uint64(azureReplayRecordCount(payload)))
-		}
-		total -= file.size
-	}
-	if submitted != "" {
-		if _, err := os.Stat(submitted); errors.Is(err, os.ErrNotExist) {
-			return errors.New("azure monitor replay byte bound rejected the newest batch")
-		}
-	}
-	return nil
-}
-
-type azureReplayFile struct {
-	path string
-	size int64
-}
-
-func (s *azureReplaySpool) filesLocked() ([]azureReplayFile, error) {
-	return azureReplayFiles(s.cfg.dir)
-}
-
-func (s *azureReplaySpool) boundFilesLocked() ([]azureReplayFile, error) {
-	if s.cfg.root == "" {
-		return s.filesLocked()
-	}
-	var files []azureReplayFile
-	for _, stream := range []string{"traces", "journal", "diagnostics"} {
-		streamFiles, err := azureReplayFiles(filepath.Join(s.cfg.root, stream))
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
-		}
-		files = append(files, streamFiles...)
-	}
-	sort.Slice(files, func(i, j int) bool {
-		left, right := filepath.Base(files[i].path), filepath.Base(files[j].path)
-		if left == right {
-			return files[i].path < files[j].path
-		}
-		return left < right
-	})
-	return files, nil
-}
-
-func azureReplayFiles(dir string) ([]azureReplayFile, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("list Azure Monitor replay spool: %w", err)
-	}
-	files := make([]azureReplayFile, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		files = append(files, azureReplayFile{path: filepath.Join(dir, entry.Name()), size: info.Size()})
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
-	return files, nil
-}
-
 func (s *azureReplaySpool) drain(ctx context.Context) error {
-	azureReplayBoundsMu.Lock()
-	defer azureReplayBoundsMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.enforceBoundsLocked(s.now().UTC(), ""); err != nil {
+	if err := s.ensureIndex(); err != nil {
 		return err
 	}
-	files, err := s.filesLocked()
-	if err != nil {
+	if err := s.index.withLock(ctx, func(tx *sql.Tx) error { return s.enforceIndexedBounds(ctx, tx, s.now().UTC()) }); err != nil {
 		return err
 	}
-	for _, file := range files {
-		_, payload, err := readAzureReplayFile(file.path)
-		if err != nil {
-			s.malformed.Add(1)
-			_ = os.Remove(file.path)
-			continue
+	initialDelivered := s.delivered.Load()
+	for range azureReplayDrainLimit {
+		if err := ctx.Err(); err != nil {
+			s.signal()
+			return errors.Join(errAzureReplayYield, err)
 		}
-		if err := s.send(ctx, payload); err != nil {
-			s.retried.Add(1)
+		batch, err := s.claimBatch(ctx)
+		if err != nil {
+			if ctx.Err() == nil && !errors.Is(err, errAzureReplayLeased) {
+				s.delivery.failed(s.now(), azureDeliverySpoolIO, true)
+			}
+			if ctx.Err() != nil && s.delivered.Load() > initialDelivered {
+				s.signal()
+				return errors.Join(errAzureReplayYield, err)
+			}
 			return err
 		}
-		if err := os.Remove(file.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("acknowledge Azure Monitor replay batch: %w", err)
+		s.delivery.spoolReadable()
+		if len(batch.files) == 0 {
+			return nil
 		}
-		s.delivered.Add(uint64(azureReplayRecordCount(payload)))
+		// The OS lock and database transaction are released before HTTP.
+		attempt, cancelSend := context.WithTimeout(ctx, 5*time.Second)
+		sendErr := s.send(attempt, batch.payload)
+		cancelSend()
+		// Cancellation must not strand a live process's claims for the entire lease.
+		ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err = s.finishBatch(ackCtx, batch, sendErr == nil)
+		cancel()
+		if sendErr != nil {
+			s.retried.Add(1)
+			// A shutdown's last-chance drain has a short budget of its own;
+			// running out of it is not evidence about the destination.
+			if !errors.Is(sendErr, context.Canceled) && !s.closed.Load() {
+				s.delivery.failed(s.now(), classifyAzureDelivery(sendErr), true)
+			}
+			return sendErr
+		}
+		// The destination acknowledged the batch even if the local
+		// acknowledgement below fails and the batch is delivered again.
+		s.delivery.succeeded(s.now())
+		if err != nil {
+			s.delivery.failed(s.now(), azureDeliverySpoolIO, false)
+			return err
+		}
+		s.delivered.Add(uint64(azureReplayRecordCount(batch.payload)))
 	}
+	s.signal()
 	return nil
 }
 
@@ -354,13 +401,9 @@ func readAzureReplayFile(path string) (time.Time, []byte, error) {
 	}
 	defer func() { _ = file.Close() }()
 	reader := bufio.NewReaderSize(file, azureReplayHeaderLimit)
-	headerLine, err := reader.ReadString('\n')
-	if err != nil || len(headerLine) > azureReplayHeaderLimit {
-		return time.Time{}, nil, errors.New("invalid Azure Monitor replay header")
-	}
-	var header azureReplayHeader
-	if err := json.Unmarshal([]byte(strings.TrimSuffix(headerLine, "\n")), &header); err != nil || header.Schema != azureReplaySchema || header.CreatedAt.IsZero() {
-		return time.Time{}, nil, errors.New("invalid Azure Monitor replay header")
+	header, err := readAzureReplayHeader(reader)
+	if err != nil {
+		return time.Time{}, nil, err
 	}
 	payload, err := io.ReadAll(reader)
 	if err != nil || len(payload) == 0 {
@@ -371,7 +414,40 @@ func readAzureReplayFile(path string) (time.Time, []byte, error) {
 			return time.Time{}, nil, errors.New("invalid Azure Monitor replay envelope")
 		}
 	}
+	if header.Records > 0 && header.Records != azureReplayRecordCount(payload) {
+		return time.Time{}, nil, errors.New("invalid Azure Monitor replay record count")
+	}
 	return header.CreatedAt, payload, nil
+}
+
+func readAzureReplayHeader(reader *bufio.Reader) (azureReplayHeader, error) {
+	// ReadSlice bounds allocation even if a damaged file has no newline.
+	line, err := reader.ReadSlice('\n')
+	var header azureReplayHeader
+	if err != nil || json.Unmarshal(line, &header) != nil || header.Schema != azureReplaySchema || header.CreatedAt.IsZero() || header.Records < 0 {
+		return header, errors.New("invalid Azure Monitor replay header")
+	}
+	return header, nil
+}
+
+// Reconciliation reads a small header; old v1 files without record counts need
+// one full payload read. Routine bounds and health queries use the manifest.
+// Payload validation still happens before each delivery.
+func readAzureReplayMetadata(path string) (time.Time, int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	header, err := readAzureReplayHeader(bufio.NewReaderSize(file, azureReplayHeaderLimit))
+	_ = file.Close()
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	if header.Records > 0 {
+		return header.CreatedAt, header.Records, nil
+	}
+	createdAt, payload, err := readAzureReplayFile(path)
+	return createdAt, azureReplayRecordCount(payload), err
 }
 
 func bytesLines(payload []byte) [][]byte {
@@ -409,14 +485,37 @@ func (s *azureReplaySpool) signal() {
 
 func (s *azureReplaySpool) run(ctx context.Context) {
 	defer close(s.done)
+	if s.cfg.start != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.cfg.start:
+		}
+	}
 	delay := azureReplayRetryMinimum
 	retrying := false
+	bootstrapRetry := false
+	sweep := time.NewTicker(azureBootstrapSweepInterval)
+	defer sweep.Stop()
 	for {
 		var retry <-chan time.Time
+		var indexReady <-chan struct{}
+		wake := s.wake
+		periodic := sweep.C
+		sweepBootstrap := bootstrapRetry
 		var timer *time.Timer
 		if retrying {
+			// Leave new-work notifications pending until the backoff expires.
+			// Continuous traffic must not turn an outage into a retry storm.
+			wake = nil
+			periodic = nil
 			timer = time.NewTimer(jitterAzureReplayDelay(delay))
 			retry = timer.C
+			select {
+			case <-s.index.ready:
+			default:
+				indexReady = s.index.ready
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -424,20 +523,39 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 				timer.Stop()
 			}
 			return
-		case <-s.wake:
+		case <-wake:
+		case <-periodic:
+			if !s.index.hasBootstrapFiles() {
+				continue
+			}
+			sweepBootstrap = true
 		case <-retry:
+		case <-indexReady:
 		}
 		if timer != nil {
 			timer.Stop()
 		}
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := s.drain(attempt)
-		cancel()
+		var err error
+		var migrationErr error
+		if sweepBootstrap {
+			migrationErr = s.index.wait(attempt)
+			if migrationErr == nil {
+				migrationErr = s.index.migrateBootstrap(attempt)
+			}
+			err = migrationErr
+		}
 		if err == nil {
+			err = s.drain(attempt)
+		}
+		cancel()
+		if err == nil || errors.Is(err, errAzureReplayYield) {
+			bootstrapRetry = false
 			delay = azureReplayRetryMinimum
 			retrying = false
 			continue
 		}
+		bootstrapRetry = migrationErr != nil
 		retrying = true
 		delay = min(delay*2, azureReplayRetryMaximum)
 	}
@@ -471,26 +589,27 @@ func (s *azureReplaySpool) stats() AzureReplayStats {
 	if s == nil {
 		return AzureReplayStats{}
 	}
-	stats := AzureReplayStats{
-		Accepted: s.accepted.Load(), Delivered: s.delivered.Load(), Retried: s.retried.Load(),
-		PrunedAge: s.prunedAge.Load(), PrunedBytes: s.prunedBytes.Load(), Malformed: s.malformed.Load(),
+	var stats AzureReplayStats
+	if s.ensureIndex() == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		stats, _ = s.index.stats(ctx, s.stream, s.now())
+		cancel()
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	files, err := s.filesLocked()
-	if err != nil {
-		return stats
+	if stats.AccountingReady {
+		snapshot := stats
+		s.lastStats.Store(&snapshot)
+	} else if prior := s.lastStats.Load(); prior != nil {
+		stats = *prior
+		stats.AccountingReady = s.closed.Load()
 	}
-	now := s.now()
-	for _, file := range files {
-		stats.PendingBytes += file.size
-		createdAt, payload, err := readAzureReplayFile(file.path)
-		if err == nil {
-			stats.PendingRecords += azureReplayRecordCount(payload)
-			if now.Sub(createdAt) > stats.OldestPendingAge {
-				stats.OldestPendingAge = now.Sub(createdAt)
-			}
-		}
+	stats.Accepted, stats.Delivered, stats.Retried = s.accepted.Load(), s.delivered.Load(), s.retried.Load()
+	stats.PrunedAge, stats.PrunedBytes, stats.Malformed = s.prunedAge.Load(), s.prunedBytes.Load(), s.malformed.Load()
+	stats.AdmissionFailures = s.admissionFailures.Load()
+	stats.mergeDelivery(s.delivery.snapshot())
+	if source := s.lossSource.Load(); source != nil {
+		loss := source.sample()
+		stats.QueueDropped = loss.Dropped
+		stats.ExportFailures = loss.ExportFailures
 	}
 	return stats
 }
@@ -506,9 +625,42 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 	}()
 	s.cancel()
 	select {
+	case <-s.healthDone:
+	case <-ctx.Done():
+	}
+	select {
 	case <-s.done:
 	case <-ctx.Done():
+		go func() {
+			<-s.done
+			s.reportShutdownHealth(s.stats())
+			_ = s.index.release(context.Background())
+		}()
 		return ctx.Err()
 	}
-	return s.drain(ctx)
+	// No batch can be admitted before indexing is ready. Do not wait for a
+	// still-unavailable directory to initialize just to attempt a final drain;
+	// existing files remain authoritative for the next start. Releasing the
+	// last stream below cancels the shared initializer.
+	var err error
+	select {
+	case <-s.index.ready:
+		// Keep the shorter caller deadline, and bound the entire final drain,
+		// not each request independently. Unacknowledged files stay durable
+		// for restart. Local claim cleanup retains its own bounded context;
+		// this limit is not a promise about a wedged local filesystem.
+		drainCtx, cancel := context.WithTimeout(ctx, azureReplayShutdownDrainTimeout)
+		err = s.drain(drainCtx)
+		cancel()
+		// A short-lived process sharing the spool with the daemon often finds
+		// the remaining batches already claimed by the daemon's upload. Those
+		// files are durable and owned; this process has nothing left to send,
+		// so its shutdown is not an export failure (#6058).
+		if errors.Is(err, errAzureReplayLeased) {
+			err = nil
+		}
+	default:
+	}
+	s.reportShutdownHealth(s.stats())
+	return errors.Join(err, s.index.release(ctx))
 }

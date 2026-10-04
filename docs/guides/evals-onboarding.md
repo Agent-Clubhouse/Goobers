@@ -34,7 +34,7 @@ All EvalSuite tooling lives under [`evals/`](../../evals/) at the repo root.
   ```
 - [ ] Install the pinned dependencies:
   ```sh
-  pip install -r requirements.txt
+  pip install --require-hashes -r requirements.txt
   ```
 - [ ] Run the test suite — this validates `eval_schema.json` itself, every
       sample suite under `samples/` against it (including deliberately

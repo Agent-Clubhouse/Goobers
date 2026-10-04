@@ -244,11 +244,23 @@ type continuationPullRequestProvider interface {
 
 type continuationEligibilityPolicy struct {
 	requireLabels   []string
+	routingLabels   []string
 	excludeLabels   []string
 	labelFilter     *labelpredicate.Predicate
 	fieldFilter     *fieldpredicate.Predicate
 	respectAssignee bool
 	assignedTo      string
+}
+
+// comparedLabels lists every label the policy compares a re-read item's
+// labels against exactly, so an ADO tag first written in another case is
+// folded onto the configured spelling before the check.
+func (policy *continuationEligibilityPolicy) comparedLabels() []string {
+	if policy == nil {
+		return nil
+	}
+	labels := append(append([]string(nil), policy.requireLabels...), policy.excludeLabels...)
+	return append(labels, policy.labelFilter.Labels()...)
 }
 
 func validateContinuationClaims(root string, claims []localscheduler.ClaimEntry, sourceIdentity journal.RunIdentity, provider providers.Provider, repo providers.RepositoryRef) error {
@@ -302,7 +314,7 @@ func validateContinuationClaims(root string, claims []localscheduler.ClaimEntry,
 		case item.State != "" && !strings.EqualFold(item.State, "open"):
 			return fmt.Errorf("revalidate continuation claims: source claim %q is no longer open (state %q)", claimID, item.State)
 		}
-		if err := validateContinuationEligibility(item, claimID, policy); err != nil {
+		if err := validateContinuationEligibility(item, workItemRepo.Provider, claimID, policy); err != nil {
 			return fmt.Errorf("revalidate continuation claims: %w", err)
 		}
 	}
@@ -484,10 +496,15 @@ func continuationClaimID(claim localscheduler.ClaimEntry) string {
 	return claim.ItemID
 }
 
-func validateContinuationEligibility(item providers.WorkItem, claimID string, policy *continuationEligibilityPolicy) error {
+// validateContinuationEligibility re-checks a re-read source claim against the
+// workflow's eligibility policy. The item's labels are first folded onto the
+// policy's spellings for a case-insensitive provider (ADO), so a human-added
+// exclude tag in another case still stops the continuation.
+func validateContinuationEligibility(item providers.WorkItem, kind providers.ProviderKind, claimID string, policy *continuationEligibilityPolicy) error {
 	if policy == nil {
 		return nil
 	}
+	item.Labels = providers.FoldLabelsForCompare(kind, item.Labels, policy.comparedLabels())
 	if policy.respectAssignee && !item.AssigneeMatches(policy.assignedTo) {
 		return fmt.Errorf("source claim %q is assigned to %q, need %q", claimID, item.Assignee, policy.assignedTo)
 	}
@@ -509,6 +526,11 @@ func validateContinuationEligibility(item providers.WorkItem, claimID string, po
 }
 
 func continuationLabelExclusionReason(item providers.WorkItem, policy *continuationEligibilityPolicy) string {
+	for _, label := range policy.routingLabels {
+		if !item.HasLabel(label) {
+			return fmt.Sprintf("missing required label %q", label)
+		}
+	}
 	for _, label := range policy.requireLabels {
 		if !item.HasLabel(label) {
 			return fmt.Sprintf("missing required label %q", label)
@@ -556,12 +578,15 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 		if trigger.Type != apiv1.TriggerBacklogItem {
 			continue
 		}
-		labels := make([]string, 0, len(trigger.Selector))
+		labels := append([]string(nil), gaggle.Spec.Backlog.Labels...)
+		routingLabels := make([]string, 0, len(trigger.Selector))
 		for label := range trigger.Selector {
 			labels = append(labels, label)
+			routingLabels = append(routingLabels, label)
 		}
-		sort.Strings(labels)
-		labelFilter, err := labelpredicate.Compile(trigger.LabelPredicate, labels, nil)
+		labels = uniqueSortedLabels(labels)
+		routingLabels = uniqueSortedLabels(routingLabels)
+		labelFilter, err := labelpredicate.Compile(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, trigger.LabelPredicate), labels, nil)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q backlog label predicate: %w", definition.Name, err)
 		}
@@ -571,6 +596,7 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 		}
 		return &continuationEligibilityPolicy{
 			requireLabels: labels,
+			routingLabels: routingLabels,
 			labelFilter:   labelFilter,
 			fieldFilter:   fieldFilter,
 		}, nil
@@ -581,6 +607,8 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 			continue
 		}
 		inputs := backlogdefaults.Apply(task, task.Inputs, instance.EffectiveSelfIdentity(cfg, gaggle), strings.Join(gaggle.Spec.RequireLabels, ","))
+		routingLabels := splitLabelList(inputs["requireLabels"])
+		inputs = backlogdefaults.ApplyBacklogScope(task, inputs, strings.Join(gaggle.Spec.Backlog.Labels, ","), gaggle.Spec.Backlog.LabelPredicate)
 		requireLabels := splitLabelList(inputs["requireLabels"])
 		excludeLabels := splitLabelList(inputs["excludeLabels"])
 		labelFilter, excludeLabels, err := compileBacklogLabelSelection(inputs["labelPredicate"], requireLabels, excludeLabels, inputs["parkLabels"], inputs["filterParkLabels"])
@@ -593,6 +621,7 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 		}
 		return &continuationEligibilityPolicy{
 			requireLabels:   requireLabels,
+			routingLabels:   routingLabels,
 			excludeLabels:   excludeLabels,
 			labelFilter:     labelFilter,
 			fieldFilter:     fieldFilter,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -12,11 +11,15 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/prqueue"
+	"github.com/goobers/goobers/internal/runner"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -68,8 +71,9 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"defaults to goobers;\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
 	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
-	"PRs labeled goobers:no-merge-review or goobers:run-aborted are always\n" +
-	"excluded. Before selection,\n" +
+	"PRs labeled goobers:no-merge-review are always excluded. A run-aborted\n" +
+	"PR is excluded unless audited recovery proves a later remediation completed.\n" +
+	"Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
 	"selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared\n" +
@@ -77,22 +81,11 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runPRSelect(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("pr-select", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "pr-select")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommand(args, "pr-select", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
-
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	root, repo := env.root, env.repo
 	source, gateProvider, err := newPRSelectSources(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -116,7 +109,7 @@ func runPRSelectCore(
 	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
 	authorScope := providerInput("authorScope", authorScopeGoobers)
-	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+	if !validMergeReviewAuthorScope(authorScope) {
 		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
 		return 1
 	}
@@ -128,8 +121,9 @@ func runPRSelectCore(
 	}
 	// abortedRunLabel and LabelNeedsHuman are always excluded, never
 	// operator-overridable via the excludeLabels input, same as
-	// noMergeReviewLabel: a cancelled run's PR must stay ineligible for
-	// auto-merge until a human removes the label directly (#2238).
+	// noMergeReviewLabel. A cancelled run's PR stays ineligible until a human
+	// removes the label or pr-select verifies a later successful remediation
+	// from provider-issued provenance (#2238/#6407).
 	// LabelNeedsHuman mirrors the exclusion pr-remediation's
 	// filterRemediationPullRequests and backlog-query's re-sweep filter
 	// already apply: the #2947 failure-streak circuit breaker applies this
@@ -171,6 +165,7 @@ func runPRSelectCore(
 		return 1
 	}
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
+	targetedPullNumber, hasTargetedPullNumber := webhookhttp.PullNumberFromTriggerRef(triggerRef)
 	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
 	if err != nil {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
@@ -188,9 +183,13 @@ func runPRSelectCore(
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
+	safetyGateBases := []string{base}
+	if targeted, ok := targetedPullRequest(prs, targetedPullNumber, hasTargetedPullNumber); ok && targeted.Base != "" && targeted.Base != base {
+		safetyGateBases = append(safetyGateBases, targeted.Base)
+	}
 
 	gateState, gateCode := loadPRSelectSafetyGateState(
-		ctx, gateProvider, repo, openPRs, base, headPrefixes, expectedAuthorLogin, stdout, stderr,
+		ctx, gateProvider, repo, openPRs, safetyGateBases, headPrefixes, expectedAuthorLogin, stdout, stderr,
 	)
 	if gateCode != 0 {
 		return gateCode
@@ -209,8 +208,14 @@ func runPRSelectCore(
 	exclusions := newPRSelectExclusions()
 	exclusions.report.ObservedAt = now
 	exclusions.report.CompleteSnapshot = bool(completeness)
+	branchOccupancies, err := prSelectBranchOccupancies(ctx, root, repo)
+	if err != nil {
+		pf(stderr, "error: inspect PR branch occupancy: %v\n", err)
+		return 1
+	}
 	for _, pr := range prs {
-		if pr.State != "open" || pr.Base != base ||
+		matchesTargetedPull := hasTargetedPullNumber && strconv.Itoa(pr.Number) == targetedPullNumber
+		if pr.State != "open" || (!matchesTargetedPull && pr.Base != base) ||
 			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
 			continue
 		}
@@ -224,6 +229,17 @@ func runPRSelectCore(
 		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
 			exclusions.recordPR(pr.Number, exclusionChecks)
 			continue
+		}
+		if hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr)
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
+			}
+			pr = refreshed
+			if cleared {
+				pf(stdout, "re-queued PR #%d: removed stale %s after verified recovery checks\n",
+					pr.Number, abortedRunLabel)
+			}
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			exclusions.recordPR(pr.Number, exclusionLabel)
@@ -242,6 +258,13 @@ func runPRSelectCore(
 			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
 				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
 			exclusions.recordPR(pr.Number, exclusionPolicy)
+			continue
+		}
+		occupancy, occupied := branchOccupancies[pr.Head]
+		if occupied {
+			pf(stdout, "excluded PR #%d: branch %s is registered to run %s\n",
+				pr.Number, pr.Head, occupancy.OwnerRunID)
+			exclusions.recordPR(pr.Number, exclusionBranchOccupied)
 			continue
 		}
 		blocked, blockCode, blockReason, gateCode := prSelectSafetyGatesBlock(
@@ -266,6 +289,22 @@ func runPRSelectCore(
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
 		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
+}
+
+func validMergeReviewAuthorScope(authorScope string) bool {
+	return authorScope == authorScopeGoobers || authorScope == authorScopeAny
+}
+
+func targetedPullRequest(prs []providers.PullRequestSummary, targetedPullNumber string, targeted bool) (providers.PullRequestSummary, bool) {
+	if !targeted {
+		return providers.PullRequestSummary{}, false
+	}
+	for _, pr := range prs {
+		if strconv.Itoa(pr.Number) == targetedPullNumber {
+			return pr, true
+		}
+	}
+	return providers.PullRequestSummary{}, false
 }
 
 // completePRSelection is the provider-neutral selection decision after a
@@ -407,37 +446,124 @@ func pullRequestsForSelection(
 	if err != nil {
 		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
 	}
-	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
-	if targeted && completeness != prSelectCompleteSnapshot {
-		pr, err := provider.GetPullRequest(ctx, repo, pullID)
+	req := prSelectSourceRequest{
+		base:                base,
+		headPrefixes:        headPrefixes,
+		authorScope:         authorScope,
+		identityFilters:     identityFilters,
+		triggerRef:          triggerRef,
+		completeness:        completeness,
+		expectedAuthorLogin: expectedAuthorLogin,
+	}
+	return pullRequestsForSelectionCommon(ctx, openPRs, req, selectionResolver{
+		target: func(ctx context.Context, pullID string) (providers.PullRequestSummary, error) {
+			return provider.GetPullRequest(ctx, repo, pullID)
+		},
+		resolveTarget: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+			checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+			if err == nil {
+				pr.CheckState = checkState
+			}
+			return err
+		},
+		resolve: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+			checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+			if err == nil {
+				pr.CheckState = checkState
+			}
+			return err
+		},
+		listBase: func(ctx context.Context, base string) ([]providers.PullRequestSummary, error) {
+			return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+				Repository: repo, Base: base, SkipCheckState: true,
+			})
+		},
+	})
+}
+
+type selectionResolver struct {
+	target        func(context.Context, string) (providers.PullRequestSummary, error)
+	resolveTarget func(context.Context, *providers.PullRequestSummary) error
+	resolve       func(context.Context, *providers.PullRequestSummary) error
+	listBase      func(context.Context, string) ([]providers.PullRequestSummary, error)
+}
+
+func pullRequestsForSelectionCommon(
+	ctx context.Context,
+	openPRs []providers.PullRequestSummary,
+	req prSelectSourceRequest,
+	resolver selectionResolver,
+) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(req.triggerRef)
+	var targetedPR *providers.PullRequestSummary
+	if targeted {
+		pr, err := resolver.target(ctx, pullID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
-		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
-			return nil, openPRs, nil
+		if !req.identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+			if req.completeness != prSelectCompleteSnapshot {
+				return nil, openPRs, nil
+			}
+			targeted = false
 		}
-		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
+		if targeted {
+			if resolver.resolveTarget != nil {
+				if err := resolver.resolveTarget(ctx, &pr); err != nil {
+					return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
+				}
+			}
+			targetedPR = &pr
+			if pr.Base != "" && pr.Base != req.base {
+				basePRs, err := resolver.listBase(ctx, pr.Base)
+				if err != nil {
+					return nil, nil, fmt.Errorf("list open pull requests for webhook pull request #%s base %q: %w", pullID, pr.Base, err)
+				}
+				openPRs = mergePullRequestSummaries(openPRs, basePRs)
+			}
+			if req.completeness != prSelectCompleteSnapshot {
+				return []providers.PullRequestSummary{pr}, openPRs, nil
+			}
 		}
-		return []providers.PullRequestSummary{pr}, openPRs, nil
 	}
 
 	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
 	for _, pr := range openPRs {
-		if authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) {
+		if req.authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, req.headPrefixes, req.expectedAuthorLogin) {
 			continue
 		}
-		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+		if !req.identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
 			continue
 		}
-		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
-		if err != nil {
+		if err := resolver.resolve(ctx, &pr); err != nil {
 			return nil, nil, fmt.Errorf("read pull request #%d checks: %w", pr.Number, err)
 		}
 		prs = append(prs, pr)
 	}
+	if targetedPR != nil {
+		prs = mergePullRequestSummaries(prs, []providers.PullRequestSummary{*targetedPR})
+	}
 	return prs, openPRs, nil
+}
+
+func mergePullRequestSummaries(base []providers.PullRequestSummary, extras []providers.PullRequestSummary) []providers.PullRequestSummary {
+	if len(extras) == 0 {
+		return base
+	}
+	seen := make(map[int]bool, len(base)+len(extras))
+	out := make([]providers.PullRequestSummary, 0, len(base)+len(extras))
+	for _, pr := range base {
+		seen[pr.Number] = true
+		out = append(out, pr)
+	}
+	for _, pr := range extras {
+		if seen[pr.Number] {
+			continue
+		}
+		seen[pr.Number] = true
+		out = append(out, pr)
+	}
+	return out
 }
 
 // prSelectSource contains only the provider-dependent reads that construct the
@@ -549,7 +675,96 @@ const (
 	exclusionDemoted           = prqueue.Demoted
 	exclusionSiblingBlocked    = prqueue.SiblingBlocked
 	exclusionTutorSignoff      = prqueue.TutorSignoff
+	exclusionBranchOccupied    = prqueue.BranchOccupied
 )
+
+func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.RepositoryRef) (map[string]worktree.BranchOccupancy, error) {
+	// Stage pods use fresh clones and have neither shared host occupancies nor instance config.
+	if os.Getenv(dispatcher.EnvPodToken) != "" {
+		return map[string]worktree.BranchOccupancy{}, nil
+	}
+	layout := layoutFor(root)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return nil, err
+	}
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		return nil, err
+	}
+	if report == nil {
+		return nil, errors.New("load config directory: validation report is nil")
+	}
+
+	gaggleName := strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
+	var gaggles []*apiv1.Gaggle
+	if gaggleName != "" {
+		gaggle := configuredGaggle(set, gaggleName)
+		if gaggle == nil {
+			gaggles = append(gaggles, &apiv1.Gaggle{})
+		} else {
+			gaggles = append(gaggles, gaggle)
+		}
+	} else {
+		for i := range set.Gaggles {
+			gaggles = append(gaggles, &set.Gaggles[i])
+		}
+	}
+
+	cloneURLFn := repoCloneURL
+	if cloneURLFn == nil {
+		cloneURLFn = runner.DefaultRepoCloneURL
+	}
+	repoURL, err := cloneURLFn(apiv1.RepoRef{
+		Provider: apiv1.Provider(repo.Provider),
+		BaseURL:  repo.URL,
+		Owner:    repo.Owner,
+		Project:  repo.Project,
+		Name:     repo.Name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository clone URL: %w", err)
+	}
+
+	occupancies := make(map[string]worktree.BranchOccupancy)
+	seenRoots := make(map[string]bool)
+	for _, gaggle := range gaggles {
+		scopedGaggle := gaggle.Name
+		if scopedGaggle == "" {
+			scopedGaggle = gaggleName
+		}
+		scoped, err := instance.EffectiveWorkcopiesLayout(layout.ForGaggle(scopedGaggle), cfg, gaggle)
+		if err != nil {
+			return nil, fmt.Errorf("resolve workcopies root for gaggle %q: %w", gaggle.Name, err)
+		}
+		workcopiesRoot := scoped.WorkcopiesDir()
+		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+			workcopiesRoot = scoped.WorkcopiesBaseDir()
+		}
+		if seenRoots[workcopiesRoot] {
+			continue
+		}
+		seenRoots[workcopiesRoot] = true
+		manager, err := worktree.NewManager(workcopiesRoot)
+		if err != nil {
+			return nil, err
+		}
+		found, err := manager.BranchOccupancies(ctx, repoURL)
+		if err != nil {
+			return nil, err
+		}
+		for branch, occupancy := range found {
+			if existing, duplicate := occupancies[branch]; duplicate &&
+				(existing.OwnerRunID != occupancy.OwnerRunID ||
+					existing.Status != occupancy.Status ||
+					existing.OwnerProcessLive != occupancy.OwnerProcessLive) {
+				return nil, fmt.Errorf("branch %q has conflicting occupancy records across workcopies roots", branch)
+			}
+			occupancies[branch] = occupancy
+		}
+	}
+	return occupancies, nil
+}
 
 // prSelectExclusions tallies why the pull requests this workflow is
 // responsible for did not become eligible (#2969).
@@ -634,7 +849,7 @@ func loadPRSelectSafetyGateState(
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	openPRs []providers.PullRequestSummary,
-	base string,
+	bases []string,
 	headPrefixes []string,
 	expectedAuthorLogin string,
 	stdout, stderr io.Writer,
@@ -653,12 +868,27 @@ func loadPRSelectSafetyGateState(
 	liveSiblingBlockers := make(map[int][]int)
 	// #5602: a recorded blocker this instance cannot land never holds a PR.
 	unlandable := unlandableSiblingSet(openPRs, headPrefixes, expectedAuthorLogin)
+	recordedBlockers := make(map[int][]int, len(openPRs))
 	for _, pr := range openPRs {
 		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
-		blockers = withoutDemoted(blockers, unlandable)
+		recordedBlockers[pr.Number] = blockers
+	}
+	// A recorded blocker the election has dropped from candidacy (demoted,
+	// parked needs-human, or escalated with a park that still blocks) can
+	// never be crowned, so it must not hold its successors either. Without
+	// this, elect-lander crowns the next FIFO member while pr-select keeps that
+	// member held behind the parked blocker, and the cluster never drains.
+	// Only PRs actually named as live blockers are resolved, so the common
+	// no-hold path costs no extra provider reads.
+	excluded, err := blockerElectionExclusions(blockerScanCtx, provider, repo, openPRs, recordedBlockers, unlandable, stderr)
+	if err != nil {
+		return state, failProviderStage(stderr, "resolve election exclusions for recorded sibling blockers", err, "selected-pr.json")
+	}
+	for _, pr := range openPRs {
+		blockers := withoutDemoted(recordedBlockers[pr.Number], excluded)
 		liveSiblingBlockers[pr.Number] = blockers
 		for _, blocker := range blockers {
 			state.blockedDependents[blocker]++
@@ -666,7 +896,7 @@ func loadPRSelectSafetyGateState(
 		// #3095: selection asks the fail-closed question, which also covers the
 		// PR that holds the label with no readable blocker record — the shape
 		// liveBlockedOnSiblingBlockers reports as unblocked by design.
-		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr, unlandable)
+		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr, excluded)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
@@ -675,40 +905,47 @@ func loadPRSelectSafetyGateState(
 			state.siblingHoldReason[pr.Number] = reason
 		}
 	}
-	var couplingDependents []providers.PullRequestSummary
-	for _, pr := range openPRs {
-		if pr.State == "open" && pr.Base == base && mergeReviewCanLand(pr, headPrefixes, expectedAuthorLogin) {
-			couplingDependents = append(couplingDependents, pr)
+	for _, base := range bases {
+		var basePRs []providers.PullRequestSummary
+		var couplingDependents []providers.PullRequestSummary
+		for _, pr := range openPRs {
+			if pr.Base != base {
+				continue
+			}
+			basePRs = append(basePRs, pr)
+			if pr.State == "open" && mergeReviewCanLand(pr, headPrefixes, expectedAuthorLogin) {
+				couplingDependents = append(couplingDependents, pr)
+			}
 		}
-	}
-	couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, openPRs, state.siblingBlocked)
-	if err != nil {
-		return state, failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
-	}
-	for _, warning := range couplingWarnings {
-		pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
-	}
-	for _, coupling := range couplings {
-		changed, err := flagFoundationCoupling(
-			blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
-		)
+		couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, basePRs, state.siblingBlocked)
 		if err != nil {
-			return state, failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), err, "selected-pr.json")
+			return state, failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
 		}
-		if !changed {
-			continue
+		for _, warning := range couplingWarnings {
+			pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
 		}
-		liveSiblingBlockers[coupling.dependent.Number] = append(
-			liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
-		)
-		state.siblingBlocked[coupling.dependent.Number] = true
-		state.siblingHoldReason[coupling.dependent.Number] = fmt.Sprintf(
-			"foundation-coupled behind PR #%d (%s)",
-			coupling.foundation.Number, strings.Join(coupling.files, ", "),
-		)
-		state.blockedDependents[coupling.foundation.Number]++
-		pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
-			coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
+		for _, coupling := range couplings {
+			changed, err := flagFoundationCoupling(
+				blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
+			)
+			if err != nil {
+				return state, failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), err, "selected-pr.json")
+			}
+			if !changed {
+				continue
+			}
+			liveSiblingBlockers[coupling.dependent.Number] = append(
+				liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
+			)
+			state.siblingBlocked[coupling.dependent.Number] = true
+			state.siblingHoldReason[coupling.dependent.Number] = fmt.Sprintf(
+				"foundation-coupled behind PR #%d (%s)",
+				coupling.foundation.Number, strings.Join(coupling.files, ", "),
+			)
+			state.blockedDependents[coupling.foundation.Number]++
+			pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
+				coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
+		}
 	}
 	return state, 0
 }
@@ -853,14 +1090,12 @@ type adoSelectProvider interface {
 	PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
 }
 
-// pullRequestsForSelectionADO is pullRequestsForSelection's Azure DevOps
-// counterpart (merge-wiring-plan §1b/§2). ADO has no RefCheckState/RefCheckStates
-// and no GetPullRequest, so each candidate's CheckState — and its open/merged
-// State, which ADO's ListPullRequests leaves empty — is resolved from
-// PollPullRequest's branch-policy evaluations, and the webhook-targeted PR is
-// resolved via PollPullRequest rather than GetPullRequest. The second return
-// value preserves the shared source contract; the selection core receives it
-// but skips the unsupported sibling/foundation scans for this source.
+// pullRequestsForSelectionADO adapts Azure DevOps candidate resolution to the
+// shared selection loop (merge-wiring-plan §1b/§2). ADO has no
+// RefCheckState/RefCheckStates or GetPullRequest, so PollPullRequest supplies
+// each candidate's CheckState and non-empty State, including webhook targets.
+// The second return value preserves the shared source contract; the selection
+// core receives it but skips unsupported sibling/foundation scans for this source.
 func pullRequestsForSelectionADO(
 	ctx context.Context,
 	provider adoSelectProvider,
@@ -879,42 +1114,38 @@ func pullRequestsForSelectionADO(
 	if err != nil {
 		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
 	}
-	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
-	if targeted && completeness != prSelectCompleteSnapshot {
-		pr, err := adoSelectionCandidate(ctx, provider, repo, pullID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
-		}
-		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
-			return nil, openPRs, nil
-		}
-		return []providers.PullRequestSummary{pr}, openPRs, nil
+	req := prSelectSourceRequest{
+		base:                base,
+		headPrefixes:        headPrefixes,
+		authorScope:         authorScope,
+		identityFilters:     identityFilters,
+		triggerRef:          triggerRef,
+		completeness:        completeness,
+		expectedAuthorLogin: expectedAuthorLogin,
 	}
-
-	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
-	for _, pr := range openPRs {
-		if authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) {
-			continue
-		}
-		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
-			continue
-		}
-		poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
-			Repository: repo, PullID: strconv.Itoa(pr.Number),
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("read pull request #%d checks: %w", pr.Number, err)
-		}
-		pr.CheckState = poll.CheckState
-		// ADO's ListPullRequests only returns active PRs but leaves Summary.State
-		// empty; the eligibility filter gates on State=="open", so take the live
-		// open/merged/abandoned mapping PollPullRequest already computed.
-		if poll.State != "" {
-			pr.State = poll.State
-		}
-		prs = append(prs, pr)
-	}
-	return prs, openPRs, nil
+	return pullRequestsForSelectionCommon(ctx, openPRs, req, selectionResolver{
+		target: func(ctx context.Context, pullID string) (providers.PullRequestSummary, error) {
+			return adoSelectionCandidate(ctx, provider, repo, pullID)
+		},
+		resolve: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+			poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+				Repository: repo, PullID: strconv.Itoa(pr.Number),
+			})
+			if err != nil {
+				return err
+			}
+			pr.CheckState = poll.CheckState
+			if poll.State != "" {
+				pr.State = poll.State
+			}
+			return nil
+		},
+		listBase: func(ctx context.Context, base string) ([]providers.PullRequestSummary, error) {
+			return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+				Repository: repo, Base: base, SkipCheckState: true,
+			})
+		},
+	})
 }
 
 // adoSelectionCandidate resolves one Azure DevOps PR into the selection summary
@@ -1085,6 +1316,256 @@ func hasPRSelectExclusion(labels, excludeLabels []string) bool {
 	return false
 }
 
+func clearStaleRunAbortedPR(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pr providers.PullRequestSummary,
+) (providers.PullRequestSummary, bool, error) {
+	if provider == nil || !hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+		return pr, false, nil
+	}
+	if pr.State != "open" || pr.Draft || pr.CheckState != providers.CheckStatePassing {
+		return pr, false, nil
+	}
+	pullID := strconv.Itoa(pr.Number)
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return pr, false, nil
+	}
+	refreshed := pullRequestSummaryFromPoll(pr, poll)
+	if poll.State != "open" || poll.Draft || poll.CheckState != providers.CheckStatePassing {
+		return pr, false, nil
+	}
+	if !hasAnyLabel(refreshed.Labels, []string{abortedRunLabel}) {
+		return refreshed, false, nil
+	}
+	if poll.Mergeable == nil || !*poll.Mergeable {
+		return pr, false, nil
+	}
+	if len(poll.CommentsSince) != 0 {
+		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+		if err != nil || !recovered {
+			return pr, false, nil
+		}
+	} else {
+		if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll); err != nil || reviewed {
+			return pr, false, nil
+		}
+	}
+	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository:   repo,
+		ID:           pullID,
+		RemoveLabels: []string{abortedRunLabel},
+	}); err != nil {
+		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
+	}
+	refreshed.Labels = removeLabel(refreshed.Labels, abortedRunLabel)
+	verified, safe, err := verifyClearedRunAbortedPR(ctx, provider, repo, pullID, refreshed, len(poll.CommentsSince) != 0)
+	if err == nil && safe {
+		return verified, true, nil
+	}
+	if _, restoreErr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         pullID,
+		AddLabels:  []string{abortedRunLabel},
+	}); restoreErr != nil {
+		if err != nil {
+			return pr, false, fmt.Errorf("revalidate cleared %s: %w; restore label: %w", abortedRunLabel, err, restoreErr)
+		}
+		return pr, false, fmt.Errorf("restore %s after unsafe revalidation: %w", abortedRunLabel, restoreErr)
+	}
+	if !hasAnyLabel(verified.Labels, []string{abortedRunLabel}) {
+		verified.Labels = append(verified.Labels, abortedRunLabel)
+	}
+	return verified, false, nil
+}
+
+type runAbortedLabelHistoryProvider interface {
+	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
+}
+
+func verifyClearedRunAbortedPR(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+	pr providers.PullRequestSummary,
+	reviewedRemediation bool,
+) (providers.PullRequestSummary, bool, error) {
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return pr, false, err
+	}
+	refreshed := pullRequestSummaryFromPoll(pr, poll)
+	if poll.State != "open" || poll.Draft || poll.CheckState != providers.CheckStatePassing ||
+		poll.Mergeable == nil || !*poll.Mergeable ||
+		hasAnyLabel(refreshed.Labels, []string{
+			abortedRunLabel,
+			noMergeReviewLabel,
+			providers.LabelNeedsHuman,
+			needsRemediationLabel,
+			remediationEscalatedLabel,
+			scopeGateLabel,
+		}) {
+		return refreshed, false, nil
+	}
+	if reviewedRemediation {
+		safe, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+		return refreshed, safe, err
+	}
+	if len(poll.CommentsSince) != 0 {
+		return refreshed, false, nil
+	}
+	reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll)
+	return refreshed, !reviewed && err == nil, err
+}
+
+func runAbortedPRHasVerifiedRemediation(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+	labels []string,
+	poll providers.PullRequestPollResult,
+) (bool, error) {
+	if hasAnyLabel(labels, []string{
+		noMergeReviewLabel,
+		providers.LabelNeedsHuman,
+		needsRemediationLabel,
+		remediationEscalatedLabel,
+		scopeGateLabel,
+	}) {
+		return false, nil
+	}
+	if poll.ReviewDecision == providers.ReviewDecisionChangesRequested || poll.RequestedChanges > 0 {
+		return false, nil
+	}
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return false, err
+	}
+	responseAt := latestTrustedRemediationResponse(poll.CommentsSince, author)
+	if responseAt.IsZero() {
+		return false, nil
+	}
+	historyProvider, ok := provider.(runAbortedLabelHistoryProvider)
+	if !ok {
+		return false, nil
+	}
+	transitions, err := historyProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, pullID, abortedRunLabel)
+	if err != nil {
+		return false, err
+	}
+	var latest, latestAdded providers.WorkItemLabelTransition
+	for _, transition := range transitions {
+		if transition.OccurredAt.After(latest.OccurredAt) {
+			latest = transition
+		}
+		if transition.Added && transition.OccurredAt.After(latestAdded.OccurredAt) {
+			latestAdded = transition
+		}
+	}
+	if latestAdded.OccurredAt.IsZero() || !latestAdded.OccurredAt.Before(responseAt) {
+		return false, nil
+	}
+	if hasAnyLabel(labels, []string{abortedRunLabel}) != latest.Added {
+		return false, nil
+	}
+	threads, err := provider.ListPullRequestReviewThreads(ctx, repo, pullID)
+	if err != nil {
+		return false, err
+	}
+	return countLiveUnresolvedReviewThreads(threads) == 0, nil
+}
+
+func latestTrustedRemediationResponse(comments []providers.PullRequestComment, author string) time.Time {
+	const markerPrefix = "<!-- goobers:remediation-response:"
+	var latest time.Time
+	for _, comment := range comments {
+		if !strings.EqualFold(comment.Author, author) ||
+			!strings.HasPrefix(comment.Body, markerPrefix) ||
+			comment.CreatedAt.IsZero() {
+			continue
+		}
+		end := strings.Index(comment.Body[len(markerPrefix):], " -->")
+		if end <= 0 {
+			continue
+		}
+		runID := comment.Body[len(markerPrefix) : len(markerPrefix)+end]
+		if strings.ContainsAny(runID, "<>\r\n\t ") {
+			continue
+		}
+		if comment.CreatedAt.After(latest) {
+			latest = comment.CreatedAt
+		}
+	}
+	return latest
+}
+
+func runAbortedPRHasReviewAttention(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+	poll providers.PullRequestPollResult,
+) (bool, error) {
+	if poll.ReviewDecision != "" && poll.ReviewDecision != providers.ReviewDecisionPending {
+		return true, nil
+	}
+	if poll.RequestedChanges > 0 {
+		return true, nil
+	}
+	threads, err := provider.ListPullRequestReviewThreads(ctx, repo, pullID)
+	if err != nil {
+		return true, err
+	}
+	return len(threads.Reviews) > 0 || len(threads.InlineComments) > 0, nil
+}
+
+func pullRequestSummaryFromPoll(pr providers.PullRequestSummary, poll providers.PullRequestPollResult) providers.PullRequestSummary {
+	if poll.Number != 0 {
+		pr.ID = strconv.Itoa(poll.Number)
+		pr.Number = poll.Number
+	}
+	if poll.URL != "" {
+		pr.URL = poll.URL
+	}
+	pr.Author = poll.Author
+	pr.Assignees = append([]string(nil), poll.Assignees...)
+	pr.RequestedReviewers = append([]string(nil), poll.RequestedReviewers...)
+	pr.State = poll.State
+	pr.Merged = poll.Merged
+	pr.Head = poll.HeadBranch
+	pr.Base = poll.BaseBranch
+	pr.HeadSHA = poll.HeadSHA
+	pr.BaseSHA = poll.BaseSHA
+	pr.Draft = poll.Draft
+	if poll.Labels != nil {
+		pr.Labels = append([]string(nil), poll.Labels...)
+	}
+	pr.CheckState = poll.CheckState
+	pr.Body = poll.Body
+	pr.Integrity = poll.Integrity
+	return pr
+}
+
+func removeLabel(labels []string, remove string) []string {
+	filtered := labels[:0]
+	for _, label := range labels {
+		if label != remove {
+			filtered = append(filtered, label)
+		}
+	}
+	return filtered
+}
+
 // scopeGateVerdictStillParks skips only the exact PR state that was already
 // reviewed as parked. A head/base change or operator acknowledgement changes
 // the digest and makes the PR eligible for another review.
@@ -1116,7 +1597,7 @@ func scopeGateVerdictStillParks(
 		}
 		verdict, ok := parseVerdictComment(comment.Body)
 		return ok &&
-			strings.Contains(comment.Body, scopeGateParkedCommentMarker) &&
+			hasScopeGateParkedMarker(comment.Body) &&
 			cachedVerdictUsable(verdict, digest, pr.HeadSHA, pr.BaseSHA), nil
 	}
 	return false, nil

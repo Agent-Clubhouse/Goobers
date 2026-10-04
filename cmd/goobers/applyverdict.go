@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,7 +25,7 @@ import (
 
 // blockedOnSiblingLabel marks a PR that's correct in isolation but must wait
 // behind a named sibling (#747) — see verdictLabel's doc comment.
-const blockedOnSiblingLabel = "goobers:blocked-on-sibling"
+const blockedOnSiblingLabel = providers.LabelBlockedOnSibling
 
 const mergeReviewStatusMarker = "<!-- goobers:merge-review-status -->"
 
@@ -524,31 +525,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	resultFile := providerInput("resultFile", "verdict-result.json")
 
-	selectedNumberStr := providerInput("selectedNumber", "")
-	if selectedNumberStr == "" {
-		pf(stderr, "error: selectedNumber is required (inputsFrom pr-select's number output)\n")
-		return 1
+	selectedPR, code, ok := readSelectedPREnvelope(stderr, applyVerdictEnvelopeSource)
+	if !ok {
+		return code
 	}
-	selectedNumber, err := strconv.Atoi(selectedNumberStr)
-	if err != nil {
-		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
-		return 1
-	}
-	selectedHeadSHA := providerInput("selectedHeadSha", "")
-	if selectedHeadSHA == "" {
-		pf(stderr, "error: selectedHeadSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
-		return 1
-	}
-	selectedBaseSHA := providerInput("selectedBaseSha", "")
-	if selectedBaseSHA == "" {
-		pf(stderr, "error: selectedBaseSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
-		return 1
-	}
-	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	if err != nil {
-		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
-		return 1
-	}
+	selectedNumber := selectedPR.Number
+	selectedNumberStr := selectedPR.NumberString
+	selectedHeadSHA := selectedPR.HeadSHA
+	selectedBaseSHA := selectedPR.BaseSHA
 	publishAdvisory, err := strconv.ParseBool(providerInput("publishAdvisory", "true"))
 	if err != nil {
 		pf(stderr, "error: invalid publishAdvisory input: %v\n", err)
@@ -575,11 +559,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repoRef()
 	provider, err := newApplyVerdictProviderForRepo(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -601,7 +585,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	if advisoryMode {
+	if selectedPR.Advisory {
 		if !providerRouted {
 			pf(stderr, "error: apply-verdict advisory mode is not supported for repository provider %q\n", repo.Provider)
 			return 1
@@ -612,13 +596,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		)
 	}
 
-	base := providerInput("base", providerBaseBranch())
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
-	})
-	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "")
+	var exclusionProvider remediationProvider
+	if providerRouted {
+		exclusionProvider = prProvider
+	}
+	prSource := electionPRSource{
+		lister:            provider,
+		exclusionProvider: exclusionProvider,
+	}
+	prs, code, ok := listElectionPRs(ctx, prSource, repo, stderr)
+	if !ok {
+		return code
 	}
 
 	// #950: which open PRs are currently demoted (repeatedly could not merge at
@@ -629,12 +617,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
 	// #5602 adds the PRs this instance cannot land, identically to elect-lander.
-	var demoted map[int]bool
-	if providerRouted {
-		var ierr error
-		if demoted, ierr = electionExcludedSet(ctx, prProvider, repo, prs, providerInput("unlandableSiblings", ""), stderr); ierr != nil {
-			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
-		}
+	demoted, code, ok := resolveElectionPRExclusions(ctx, prSource, repo, prs, stderr)
+	if !ok {
+		return code
 	}
 
 	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)
@@ -969,6 +954,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
+		releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
 	}
@@ -988,6 +974,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
+	releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
 	if posted.Decision == apiv1.VerdictFail && hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
 		if err := refreshEscalationSnapshotAfterRepeatFail(ctx, prProvider, repo, current, statusComments); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("refresh merge-escalation snapshot for PR #%d", selectedNumber), err, resultFile)
@@ -1148,42 +1135,29 @@ func markMergeReviewVerdictStale(ctx context.Context, provider remediationProvid
 
 func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {
 	id := strconv.Itoa(prNumber)
-	comments, err := provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("list merge-review status comments: %w", err)
-	}
-	marked := mergeReviewStatusComments(comments, author)
-	if len(marked) == 0 {
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         id,
-			Comment:    body,
-		}); err != nil {
-			return fmt.Errorf("create merge-review status comment: %w", err)
-		}
-	} else if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
-		return fmt.Errorf("update merge-review status comment: %w", err)
-	}
-
-	comments, err = provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("relist merge-review status comments: %w", err)
-	}
-	marked = mergeReviewStatusComments(comments, author)
-	if len(marked) == 0 {
-		return fmt.Errorf("merge-review status comment disappeared during reconciliation")
-	}
-	if marked[0].Body != body {
-		if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
-			return fmt.Errorf("update canonical merge-review status comment: %w", err)
-		}
-	}
-	for _, duplicate := range marked[1:] {
-		if err := provider.DeleteComment(ctx, repo, duplicate.ID); err != nil {
-			return fmt.Errorf("delete duplicate merge-review status comment %s: %w", duplicate.ID, err)
-		}
-	}
-	return nil
+	return reconcileCanonicalProviderComment(body, canonicalProviderCommentSpec{
+		noun: "merge-review status",
+		list: func() ([]providers.Comment, error) {
+			return provider.ListComments(ctx, repo, id)
+		},
+		create: func(body string) error {
+			_, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository: repo,
+				ID:         id,
+				Comment:    body,
+			})
+			return err
+		},
+		update: func(commentID, body string) error {
+			return provider.UpdateComment(ctx, repo, commentID, body)
+		},
+		remove: func(commentID string) error {
+			return provider.DeleteComment(ctx, repo, commentID)
+		},
+		match: func(comments []providers.Comment) []providers.Comment {
+			return mergeReviewStatusComments(comments, author)
+		},
+	})
 }
 
 func mergeReviewStatusComments(comments []providers.Comment, author string) []providers.Comment {
@@ -1622,7 +1596,7 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 	default:
 		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
 	}
-	return newMergeReviewProvider(root, repo, false, opts...)
+	return providerForEnvAs[providers.Provider](stageCommandEnv{root: root, repo: repo}, false, opts...)
 }
 
 // adoPassVerdictPublisher is the ADO surface publishADOPassVerdict writes to:
@@ -1673,6 +1647,10 @@ func publishADOPassVerdict(
 		Name:        "validation",
 		State:       providers.CheckStatePassing,
 		Description: "goobers merge-review verdict: pass",
+		// Pin to the reviewed head: a push after the pin check must not
+		// inherit this pass on ADO's latest iteration. The non-pass path
+		// stays unpinned, since a failing status on a newer head only blocks.
+		HeadSHA: current.HeadSHA,
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
 	}
@@ -1849,16 +1827,16 @@ func writeApplyVerdictResultWithPriorityDispatch(path string, selectedNumber int
 
 func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, priorityDispatchRequested bool, stderr io.Writer) int {
 	advisoryMode, _ := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	out := map[string]string{
-		"selectedNumber":            strconv.Itoa(selectedNumber),
-		"selectedHeadSha":           headSHA,
-		"selectedBaseSha":           baseSHA,
-		"decision":                  decision,
-		"verdictAuthor":             verdictAuthor,
-		"advisoryMode":              strconv.FormatBool(advisoryMode),
-		"priorityDispatchRequested": strconv.FormatBool(priorityDispatchRequested),
-		"scopeGateParked":           providerInput("scopeGateParked", ""),
-	}
+	out := selectedPREnvelope{
+		Number:          selectedNumber,
+		HeadSHA:         headSHA,
+		BaseSHA:         baseSHA,
+		Advisory:        advisoryMode,
+		ScopeGateParked: providerInput("scopeGateParked", ""),
+	}.baseResult()
+	out["decision"] = decision
+	out["verdictAuthor"] = verdictAuthor
+	out["priorityDispatchRequested"] = strconv.FormatBool(priorityDispatchRequested)
 	if reason != "" {
 		out["reason"] = reason
 	}
@@ -1962,7 +1940,21 @@ func verdictJSONComment(v apiv1.Verdict) (string, error) {
 	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
 }
 
-const scopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+// scopeGateParkedCommentMarker records, in the verdict comment, that the
+// verdict was published while the scope gate parked the PR (#4219: namespaced
+// under goobers: like every other durable comment marker).
+// legacyScopeGateParkedCommentMarker is the pre-#4219 spelling, still
+// recognized on read so PRs parked before the rename are not silently
+// un-parked.
+const (
+	scopeGateParkedCommentMarker       = "<!-- goobers:scope-gate-parked -->"
+	legacyScopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+)
+
+func hasScopeGateParkedMarker(body string) bool {
+	return strings.Contains(body, scopeGateParkedCommentMarker) ||
+		strings.Contains(body, legacyScopeGateParkedCommentMarker)
+}
 
 func renderScopeGateStateComment(comment string, parked bool) string {
 	if !parked {
@@ -2086,16 +2078,8 @@ func findingSetDigest(findings []apiv1.Finding) (string, error) {
 	encoded := make([]string, 0, len(findings))
 	for _, finding := range findings {
 		blockers := append([]int(nil), finding.BlockingPRs...)
-		sort.Ints(blockers)
-		if len(blockers) > 1 {
-			unique := blockers[:1]
-			for _, blocker := range blockers[1:] {
-				if blocker != unique[len(unique)-1] {
-					unique = append(unique, blocker)
-				}
-			}
-			blockers = unique
-		}
+		slices.Sort(blockers)
+		blockers = slices.Compact(blockers)
 		data, err := json.Marshal(canonicalFinding{
 			Severity:    finding.Severity,
 			Class:       finding.Class,
@@ -2108,16 +2092,8 @@ func findingSetDigest(findings []apiv1.Finding) (string, error) {
 		}
 		encoded = append(encoded, string(data))
 	}
-	sort.Strings(encoded)
-	if len(encoded) > 1 {
-		unique := encoded[:1]
-		for _, finding := range encoded[1:] {
-			if finding != unique[len(unique)-1] {
-				unique = append(unique, finding)
-			}
-		}
-		encoded = unique
-	}
+	slices.Sort(encoded)
+	encoded = slices.Compact(encoded)
 	data, err := json.Marshal(encoded)
 	if err != nil {
 		return "", fmt.Errorf("marshal canonical finding set: %w", err)
