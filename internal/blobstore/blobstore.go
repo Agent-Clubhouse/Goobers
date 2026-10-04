@@ -153,6 +153,10 @@ func (d *Dir) Has(ctx context.Context, digest string) (bool, error) {
 	}
 }
 
+// chmodStaged applies the requested mode to the staged blob; tests replace it
+// to simulate filesystems (CIFS nounix) whose chmod always fails.
+var chmodStaged = os.Chmod
+
 // Put writes data under digest, or does nothing if it is already present.
 //
 // The write is staged and renamed rather than written in place. Two workers on
@@ -185,7 +189,10 @@ func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("blobstore: create %s: %w", dir, err)
 	}
-	options := []durability.Option{durability.WithTempPattern(".put-*")}
+	// Best-effort mode: the production store is an Azure Files CIFS mount
+	// (nounix) where chmod always returns EPERM. Blobs are content-addressed
+	// and not secret-bearing, and never chmodded before the durable writer.
+	options := []durability.Option{durability.WithTempPattern(".put-*"), durability.WithBestEffortMode(), durability.WithChmod(chmodStaged)}
 	if !repairCorrupt {
 		options = append(options, durability.WithPublishRaceCheck(func(string) error {
 			_, err := d.Get(ctx, digest)
