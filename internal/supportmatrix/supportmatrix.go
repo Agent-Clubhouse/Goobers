@@ -72,7 +72,7 @@ const (
 	// docs/guides/releases.md. Its freshness (no tag past it) is enforced at
 	// release time by TestReleaseTagWithinNextPlannedRelease in release.yml,
 	// never per PR, so a pushed tag cannot redden in-flight branches (#5852).
-	NextPlannedRelease = "v0.5.0"
+	NextPlannedRelease = "v0.6.0"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.

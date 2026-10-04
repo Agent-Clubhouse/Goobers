@@ -839,7 +839,7 @@ export function CostTrend({
   if (costTrend.status === "loading") {
     return (
       <div className="usage-trend">
-        <SectionQueryStatus loading message="Loading AIC trend…" />
+        <SectionQueryStatus loading message="Loading cost trend…" />
       </div>
     );
   }
@@ -850,8 +850,8 @@ export function CostTrend({
         error
         message={
           unavailable
-            ? "AIC trends are not supported by this daemon. Upgrade Goobers to enable this section."
-            : "Unable to load the AIC trend."
+            ? "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section."
+            : "Unable to load the cost trend."
         }
         retry={unavailable ? undefined : retry}
       />
@@ -872,19 +872,19 @@ export function CostTrend({
           loading={refreshing}
           message={
             costTrend.status === "stale" && costTrend.error
-              ? "AIC trend refresh failed. Showing the last successful read."
-              : "Refreshing AIC trend…"
+              ? "Cost trend refresh failed. Showing the last successful read."
+              : "Refreshing cost trend…"
           }
           retry={retry}
         />
       )}
       <div className="usage-trend-heading">
-        <h3>AIC over time</h3>
+        <h3>Cost over time</h3>
       </div>
       {hasSamples ? (
         <CostTrendSparkline points={points} window={window} />
       ) : (
-        <p className="usage-trend-note">No AIC samples across buckets in this scope.</p>
+        <p className="usage-trend-note">No cost samples across buckets in this scope.</p>
       )}
       <CostTrendComparison current={currentUsage} previous={data.previousUsage} window={window} />
     </div>
@@ -1018,7 +1018,7 @@ function sparklineAriaLabel(
       return `${formatBucketLabel(point.since, point.until)}: cumulative ${formatMeasuredAIC(cumulativeCost)}, P95 ${formatMeasuredAIC(point.usage?.p95CostAIC)}`;
     })
     .join("; ");
-  return `AIC trend by bucket. ${summary}`;
+  return `Cost trend by bucket. ${summary}`;
 }
 
 function formatBucketLabel(since: string, until: string): string {
@@ -1051,7 +1051,7 @@ function CostTrendComparison({
   return (
     <dl className="usage-trend-comparison">
       <div>
-        <dt>AIC vs. previous {duration}</dt>
+        <dt>Cost vs. previous {duration}</dt>
         <dd>
           {formatMeasuredAIC(current.p50CostAIC)}
           <DeltaBadge current={current.p50CostAIC} previous={previous.p50CostAIC} />
@@ -1195,7 +1195,7 @@ export function ExternalCostBreakdown({
         <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
       ) : (
         <>
-          <div aria-label="AIC work item filters" className="filter-bar external-cost-controls" role="group">
+          <div aria-label="Cost work item filters" className="filter-bar external-cost-controls" role="group">
             <label className="filter-search external-cost-filter-field">
               <span>Filter</span>
               <input
@@ -1388,7 +1388,7 @@ function ExternalCostHeading({
   return (
     <div className="section-heading">
       <div>
-        <h2>AIC by pull request and issue</h2>
+        <h2>Cost by pull request and issue</h2>
       </div>
       <div className="section-heading-meta">
         <span className="section-count">
@@ -1474,7 +1474,7 @@ function RollupHeading({
 }) {
   return (
     <div className="section-heading">
-      <h2>AIC by gaggle</h2>
+      <h2>Cost by gaggle</h2>
       <div className="section-heading-meta">
         <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
         {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
@@ -1504,7 +1504,7 @@ function GaggleSpendRow({
   });
   return (
     <a
-      aria-label={`View instance AIC for gaggle ${entry.gaggle}: total ${formatMeasuredAIC(usage?.costAIC)}, ${formatRunCount(usage?.costSamples ?? 0)}, P50 ${formatMeasuredAIC(usage?.p50CostAIC)}, P95 ${formatMeasuredAIC(usage?.p95CostAIC)}`}
+      aria-label={`View instance cost for gaggle ${entry.gaggle}: total ${formatMeasuredAIC(usage?.costAIC)}, ${formatRunCount(usage?.costSamples ?? 0)}, P50 ${formatMeasuredAIC(usage?.p50CostAIC)}, P95 ${formatMeasuredAIC(usage?.p95CostAIC)}`}
       className="gaggle-spend-row"
       href={href}
     >

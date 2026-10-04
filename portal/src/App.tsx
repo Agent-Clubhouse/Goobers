@@ -35,7 +35,13 @@ import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { WorkItemsPage } from "./pages/WorkItemsPage";
 import { instanceWarnings } from "./prototypeFixtures";
-import { activeArea, parseRoute, routeHash, type Route } from "./routing";
+import {
+  activeArea,
+  parseRoute,
+  routeHash,
+  type NavigateOptions,
+  type Route,
+} from "./routing";
 import { scopeIdentity } from "./scope";
 import { GettingStartedShell } from "./shell/GettingStartedShell";
 import { PortalShell, type PortalHeaderHost } from "./shell/PortalShell";
@@ -326,9 +332,12 @@ function Portal({
   // intervention UI exists yet, and the underlying gate-resolution/rerun
   // wiring is #466/#468's scope, not this seam's.
   const { navigate, revealRun } = bindUIActions({
-    navigate: (nextRoute: Route) => {
+    navigate: (nextRoute: Route, options?: NavigateOptions) => {
       const nextHash = routeHash(nextRoute);
       if (window.location.hash === nextHash) {
+        setRoute(nextRoute);
+      } else if (options?.replace) {
+        window.history.replaceState(window.history.state, "", nextHash);
         setRoute(nextRoute);
       } else {
         rememberCurrentRoutePosition();

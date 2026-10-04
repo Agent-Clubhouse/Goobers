@@ -99,12 +99,12 @@ func TestClassifyUnsupportedVersionUsesBinaryVersion(t *testing.T) {
 }
 
 func TestVersionSupportWindowIncludesCurrentPrereleaseAndPreviousStable(t *testing.T) {
-	for _, version := range []string{"v0.5.0", "v0.5.0-beta.11", "v0.4.5", "v0.4.0-rc.1"} {
+	for _, version := range []string{"v0.6.0", "v0.6.0-alpha.1", "v0.5.1", "v0.5.0-rc.1"} {
 		if versionUnsupported(version) {
 			t.Fatalf("versionUnsupported(%q) = true, want false", version)
 		}
 	}
-	for _, version := range []string{"v0.3.3", "v0.2.0", "v0.1.0-beta.2"} {
+	for _, version := range []string{"v0.4.5", "v0.3.3", "v0.1.0-beta.2"} {
 		if !versionUnsupported(version) {
 			t.Fatalf("versionUnsupported(%q) = false, want true", version)
 		}
@@ -131,9 +131,9 @@ func TestClassifyDoesNotPromoteProductCandidateWithCollectionGaps(t *testing.T) 
 
 func TestClusterFingerprintIsStableAcrossVersionAndPlatform(t *testing.T) {
 	left := bundleWithError("run", "goobers_internal", "goobers invariant violation reproduced on supported version")
-	left.Binary = diagnostics.BinaryInfo{Version: "v0.5.0-beta.11", OS: "linux", Arch: "amd64"}
+	left.Binary = diagnostics.BinaryInfo{Version: "v0.6.0-alpha.1", OS: "linux", Arch: "amd64"}
 	right := bundleWithError("run", "goobers_internal", "goobers invariant violation reproduced on supported version")
-	right.Binary = diagnostics.BinaryInfo{Version: "v0.4.5", OS: "windows", Arch: "arm64"}
+	right.Binary = diagnostics.BinaryInfo{Version: "v0.5.1", OS: "windows", Arch: "arm64"}
 
 	leftResult := Classify(left)
 	rightResult := Classify(right)
