@@ -218,6 +218,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if err != nil {
 		return nil, err
 	}
+	return m.createInMirror(ctx, opts, repoDir, false)
+}
+
+// createInMirror shares normal provisioning with already-verified child
+// snapshots. Child retries preserve owned work instead of adopting and resetting.
+func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDir string, preserveChild bool) (_ *Worktree, retErr error) {
 	cleanupBaseRef := resolvedCleanupBaseRef(ctx, repoDir, opts.BaseRef)
 	key := repoKey(opts.RepoURL)
 	directory := worktreeDirectoryName(opts.RunID)
@@ -235,24 +241,18 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		}
 	}()
 
+	if preserveChild {
+		if existing, found, err := m.existingChildWorktree(ctx, key, repoDir, path, opts); found || err != nil {
+			return existing, err
+		}
+	}
 	if err := m.prepareBranchAcquisition(ctx, key, repoDir, path, opts); err != nil {
 		return nil, err
 	}
 
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
-	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
-		refs := []string{opts.BaseRef}
-		if existingBranch {
-			refs[0] = opts.Branch
-			if opts.SyncBase {
-				refs = append(refs, opts.BaseRef)
-			}
-		}
-		for _, ref := range refs {
-			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
-				return nil, err
-			}
-		}
+	if err := m.preflightCreatePathLength(ctx, opts, path, repoDir, existingBranch); err != nil {
+		return nil, err
 	}
 
 	if _, err := os.Stat(path); err == nil {
@@ -1211,4 +1211,23 @@ func samePathOnDisk(a, b string) bool {
 	aInfo, aErr := os.Stat(a)
 	bInfo, bErr := os.Stat(b)
 	return aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo)
+}
+
+func (m *Manager) preflightCreatePathLength(ctx context.Context, opts CreateOptions, path, repoDir string, existingBranch bool) error {
+	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
+		refs := []string{opts.BaseRef}
+		if existingBranch {
+			refs[0] = opts.Branch
+			if opts.SyncBase {
+				refs = append(refs, opts.BaseRef)
+			}
+		}
+		for _, ref := range refs {
+			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
