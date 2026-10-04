@@ -125,9 +125,14 @@ func (h *HTTP) endpointPath(key string) string {
 
 // planeError decodes a non-success response into a typed refusal.
 func planeError(status int, raw []byte) *Error {
-	return planehttp.DecodeError(status, raw, func(status int, code, message string) error {
-		return &Error{Status: status, Code: code, Message: message}
-	}, planehttp.ErrorFallback{CodePrefix: "http_", DetailLimit: 400, Ellipsis: "…"}).(*Error)
+	// The factory captures the typed refusal directly, so no type assertion on
+	// the returned error interface is needed (errorlint).
+	planeErr := &Error{Status: status}
+	_ = planehttp.DecodeError(status, raw, func(_ int, code, message string) error {
+		planeErr.Code, planeErr.Message = code, message
+		return planeErr
+	}, planehttp.ErrorFallback{CodePrefix: "http_", DetailLimit: 400, Ellipsis: "…"})
+	return planeErr
 }
 
 // Get implements Store over the route's read half. A 404 is the key's ABSENT
