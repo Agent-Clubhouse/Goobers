@@ -31,6 +31,18 @@ func (Credential) GoString() string { return "[interactive credential redacted]"
 // only its explicitly named source, registers the secret before use, and fences
 // policy reload through the complete callback. The caller must not retain it.
 func (s *Service) WithCredential(ctx context.Context, p httpapi.Principal, gaggle string, action apiv1.InteractiveAction, target Target, use func(context.Context, Credential) error) error {
+	return s.withCredential(ctx, p, gaggle, action, target, use)
+}
+
+// WithRunObservationCredential requires both run intervention and repository
+// reading in one applied policy. The host callback may inspect an existing
+// external effect, but must not create, push, update or delete provider state.
+// Credential material is scoped to this bounded callback, just as WithCredential.
+func (s *Service) WithRunObservationCredential(ctx context.Context, p httpapi.Principal, gaggle string, target Target, use func(context.Context, Credential) error) error {
+	return s.withCredential(ctx, p, gaggle, "repository.read", target, use, "run.intervene")
+}
+
+func (s *Service) withCredential(ctx context.Context, p httpapi.Principal, gaggle string, action apiv1.InteractiveAction, target Target, use func(context.Context, Credential) error, also ...apiv1.InteractiveAction) error {
 	if use == nil || !actionTarget(action, target) {
 		return ErrDenied
 	}
@@ -39,6 +51,11 @@ func (s *Service) WithCredential(ctx context.Context, p httpapi.Principal, gaggl
 	g := s.gaggles[gaggle]
 	if err := authorize(p, g, action); err != nil {
 		return err
+	}
+	for _, required := range also {
+		if err := authorize(p, g, required); err != nil {
+			return err
+		}
 	}
 	source, err := selectSource(g, s.sources, target)
 	if err != nil {
