@@ -42,7 +42,7 @@ func recoveryPublishHandler(service RecoveryService, errorLog *log.Logger) http.
 		body := http.MaxBytesReader(w, request.Body, maxRecoveryUploadBytes)
 		defer func() { _ = body.Close() }()
 		if err := publisher.PublishRecovery(request.Context(), run, key, issue, body); err != nil {
-			errorLog.Printf("recovery publication failed for run %s", run)
+			errorLog.Printf("recovery publication failed for run %s: %v", run, err)
 			writeError(w, http.StatusForbidden, "recovery_refused", "recovery publication was refused or custody is unavailable")
 			return
 		}
