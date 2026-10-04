@@ -31,6 +31,8 @@ type Executor struct {
 	Surrenders dispatcher.SurrenderPlane
 	Blobs      blobstore.Store
 	Recorder   runner.ArtifactRecorder
+	// KeepAttempt persists exact host custody before a writer-started marker or dispatch.
+	KeepAttempt func(context.Context, RetainedAttempt) error
 }
 
 // Execute runs one accepted generated stage. Callers hold the managed child's
@@ -48,6 +50,10 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 	if err != nil {
 		return out, report, err
 	}
+	request.Attempt.ChildExecutionDigest = digest
+	if err = e.keepAttempt(ctx, request, expected); err != nil {
+		return out, report, err
+	}
 	binder, canBind := e.Blobs.(interface {
 		BindContract(context.Context, string) error
 	})
@@ -59,7 +65,6 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 			return out, report, err
 		}
 	}
-	request.Attempt.ChildExecutionDigest = digest
 	custodyImported := false
 	ack := invoke.RegisterWorkspaceWriter(ctx)
 	defer func() {

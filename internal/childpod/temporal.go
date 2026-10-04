@@ -33,7 +33,7 @@ type TemporalDispatch struct {
 
 // Dispatch submits or rejoins one worker-owned pod attempt and retains cleanup proof.
 func (d TemporalDispatch) Dispatch(ctx context.Context, a dispatcher.Attempt, eligible []dispatcher.RunnerSpec) (dispatcher.Report, error) {
-	in := engine.ChildDispatchInput{Attempt: a, Eligible: eligible, Queue: d.DispatchQueue}
+	in := d.RetainedInput(a, eligible)
 	if d.Client == nil || d.WorkflowQueue == "" {
 		return dispatcher.Report{}, errors.New("isolated child worker transport unavailable")
 	}
@@ -68,6 +68,11 @@ func (d TemporalDispatch) Dispatch(ctx context.Context, a dispatcher.Attempt, el
 	if err != nil {
 		return unknown, err
 	}
+	return checkedDispatchResult(in, result)
+}
+
+func checkedDispatchResult(in engine.ChildDispatchInput, result engine.ChildDispatchResult) (dispatcher.Report, error) {
+	unknown := dispatcher.Report{ChildCreateAttempted: true}
 	if result.BindingDigest != in.BindingDigest() {
 		return unknown, errors.New("isolated child worker response differs from submitted custody")
 	}
@@ -88,4 +93,37 @@ func (d TemporalDispatch) submit(ctx context.Context, id string, in engine.Child
 	run, err := d.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: d.WorkflowQueue,
 		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE, WorkflowExecutionErrorWhenAlreadyStarted: true}, engine.ChildDispatchOne, in)
 	return run, true, err
+}
+
+// RetainedInput returns the exact immutable worker payload for host recovery.
+func (d TemporalDispatch) RetainedInput(a dispatcher.Attempt, eligible []dispatcher.RunnerSpec) engine.ChildDispatchInput {
+	return engine.ChildDispatchInput{Attempt: a, Eligible: eligible, Queue: d.DispatchQueue}
+}
+
+// Reconcile stops and rejoins an existing exact attempt. It never calls
+// ExecuteWorkflow, consults current placement, or obtains new launch authority.
+// Missing history is uncertainty, not evidence that no pod was created.
+func (d TemporalDispatch) Reconcile(ctx context.Context, in engine.ChildDispatchInput) (dispatcher.Report, error) {
+	unknown := dispatcher.Report{ChildCreateAttempted: true}
+	if d.Client == nil {
+		return unknown, errors.New("isolated worker recovery unavailable")
+	}
+	if err := in.Validate(); err != nil {
+		return unknown, err
+	}
+	bounded, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer cancel()
+	id := engine.ChildDispatchWorkflowID(in.Attempt)
+	// A completed workflow may reject the stop signal; its immutable terminal
+	// result can still prove custody. The result binding is always checked.
+	signalErr := d.Client.SignalWorkflow(bounded, id, "", engine.ChildDispatchStopSignal, true)
+	run := d.Client.GetWorkflow(bounded, id, "")
+	if run == nil {
+		return unknown, errors.Join(signalErr, errors.New("isolated worker history unavailable"))
+	}
+	var result engine.ChildDispatchResult
+	if err := run.Get(bounded, &result); err != nil {
+		return unknown, errors.Join(signalErr, err)
+	}
+	return checkedDispatchResult(in, result)
 }
