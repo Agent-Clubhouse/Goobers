@@ -6,7 +6,7 @@ Baseline: `04198152b63d228a9714ae2f92a7dca079ba5213` (2026-10-03)
 Task prefix: `HAW-EVT`; task identifiers are stable planning identifiers, not GitHub issues.
 
 Implementation checkpoint: the internal JSON envelope, immutable gaggle/binding
-receipt, pinned matched-route snapshot, shared storage reservations, transactional
+receipt, bounded subscription matcher, pinned matched-route snapshot, shared storage reservations, transactional
 route/group/start custody, bounded `all`/`latest` debounce and production receipt
 retention sweep are implemented in the local stack. See
 [receipt profile and limits](../reference/gaggle-event-receipts.md). This foundation

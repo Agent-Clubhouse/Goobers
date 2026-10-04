@@ -76,6 +76,7 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-parent-authority` | `codex/haw-interactive-execution` | Bind contained parent authority and execution custody |
 | `codex/haw-contained-launcher` | `codex/haw-parent-authority` | Install contained child factories and recover parent secret delivery |
 | `codex/haw-contained-recovery` | `codex/haw-contained-launcher` | Contained serial parent routing, exact child attempt authority, and durable replacement refusal |
+| `codex/haw-event-subscriptions` | `codex/haw-contained-recovery` | Pin bounded subscriptions and transactionally route debounce groups into durable starts |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the

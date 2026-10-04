@@ -26,6 +26,19 @@ Normalization orders object keys and removes insignificant whitespace. It keeps
 JSON number spelling and precision: `1` and `1.0` are different payloads. The
 digest identifies normalized bytes; it is not a claim of RFC 8785 canonical JSON.
 
+## Subscription matching
+
+Each immutable gaggle catalog contains at most 128 subscriptions, with at most 32
+matches per publication. Filters support equality on `id`, `source`, `type` and
+`subject`, plus bounded `all`, `any` and `not` expressions. Payload data cannot
+select authority or run expressions. Each match pins its consumer revision,
+workflow/Goober digests and retained configuration generation.
+
+Debounce uses one explicit envelope attribute or constant key. A missing key
+records a failed delivery without failing unrelated consumers. Configured filters
+are bounded by depth and node count; compiled catalogs copy definitions so later
+caller edits cannot change accepted matching behavior.
+
 ## Custody and retries
 
 Identity is `(gaggle, producer binding, source, id)`. A matching payload and actor
