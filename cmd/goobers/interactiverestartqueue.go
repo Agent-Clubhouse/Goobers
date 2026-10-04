@@ -22,7 +22,7 @@ func (s *interactiveStageRestart) installQueue(durable *durableTriggerService) {
 	if durable == nil {
 		return
 	}
-	s.queued = &restartintent.Service{Queue: durable.queue, Now: time.Now, Launch: s.launchOrdinaryRestart, Observe: func(ctx context.Context, plan runner.StageRestartPlan) (bool, error) {
+	s.queued = &restartintent.Service{Queue: durable.queue, Now: time.Now, WaitingReason: restartWaitingReason, Launch: s.launchOrdinaryRestart, Observe: func(ctx context.Context, plan runner.StageRestartPlan) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
@@ -61,7 +61,7 @@ func (s *interactiveStageRestart) acceptOrdinaryRestart(ctx context.Context, p h
 		if err != nil {
 			return err
 		}
-		accepted = intervention.StageRestartAcceptance{RunID: plan.Continuation.RunID, Duplicate: duplicate, Queued: record.State != triggerqueue.Dispatched}
+		accepted = intervention.StageRestartAcceptance{RunID: plan.Continuation.RunID, Duplicate: duplicate, Queued: record.State != triggerqueue.Dispatched, PendingReason: restartPendingReason(record)}
 		return nil
 	})
 	if errors.Is(err, triggerqueue.ErrConflict) {
@@ -104,7 +104,7 @@ func (s *interactiveStageRestart) LookupStageRestart(ctx context.Context, p http
 			return restartRefusal("idempotency_key_reused", "This restart key belongs to a different command.")
 		}
 		found = true
-		accepted = intervention.StageRestartAcceptance{RunID: plan.Continuation.RunID, Duplicate: true, Queued: record.State != triggerqueue.Dispatched}
+		accepted = intervention.StageRestartAcceptance{RunID: plan.Continuation.RunID, Duplicate: true, Queued: record.State != triggerqueue.Dispatched, PendingReason: restartPendingReason(record)}
 		return nil
 	})
 	return accepted, found, err

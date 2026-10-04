@@ -2175,6 +2175,7 @@ export interface InteractiveRunCommand {
   guidanceIds?: string[];
 }
 export interface InteractiveRunCommandResult {
+ pendingReason?: string;
   status: "applied" | "saved" | "pending" | "failed" | "started";
   accepted: boolean;
   runId: string;

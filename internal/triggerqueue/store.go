@@ -198,7 +198,7 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]Record, error) {
 // BeginDispatch durably claims one request before any scheduler side effect.
 // Concurrent workers cannot both claim it, including across Store instances.
 func (s *Store) BeginDispatch(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state='dispatching' WHERE id=? AND state='accepted'", id)
+	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state='dispatching',reason='' WHERE id=? AND state='accepted'", id)
 	return changed(result, err)
 }
 

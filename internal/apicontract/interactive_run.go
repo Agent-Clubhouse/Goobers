@@ -38,6 +38,7 @@ type InteractiveRunCommand struct {
 // InteractiveRunCommandResult identifies durable evidence of acceptance.
 // Saved guidance is not evidence that an agent received it or work resumed.
 type InteractiveRunCommandResult struct {
+	PendingReason     string                       `json:"pendingReason,omitempty"`
 	Status            string                       `json:"status"`
 	Accepted          bool                         `json:"accepted"`
 	RunID             string                       `json:"runId"`

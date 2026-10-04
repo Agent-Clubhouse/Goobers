@@ -832,3 +832,17 @@ gaggle visibility. It returns routing state, bounded delivery/group/acceptance
 links and confirmed consumer run links, excluding payload and raw machine
 identity. A producer grant alone does not grant this read. Missing human policy
 keeps receipt reads disabled without disabling configured producer acceptance.
+
+### Bounded sweep and waiting explanations
+
+The daemon bounds each complete drain pass to five seconds while preserving its
+pending cursor after each attempted record. Execution keeps the daemon lifetime
+context, so a pass timeout cannot cancel an admitted run. A timed-out or ambiguous
+attempt retains dispatch custody and is not resent on the next pass.
+
+Human restart admission stores only a closed waiting vocabulary: capacity/budget,
+current access/credential configuration, changed source, busy source, unsupported
+execution wiring, or unavailable validation. Exact command checks expose that
+reason in the existing portal form. The publication barrier clears stale waiting
+text; an uncertain restart instead says it is awaiting execution confirmation.
+No raw provider errors or credential material are retained in these explanations.

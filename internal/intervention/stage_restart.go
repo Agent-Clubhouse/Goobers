@@ -18,9 +18,10 @@ import (
 // StageRestartAcceptance identifies the one durable continuation for a command.
 // Acceptance does not assert that an agent has already received its guidance.
 type StageRestartAcceptance struct {
-	RunID     string
-	Duplicate bool
-	Queued    bool
+	RunID         string
+	Duplicate     bool
+	Queued        bool
+	PendingReason string
 }
 
 // StageRestartService admits a prepared human continuation using configured

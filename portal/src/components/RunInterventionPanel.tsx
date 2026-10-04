@@ -76,7 +76,7 @@ function HumanActionForm({ action, guidance, client, runId, refresh }: { action:
       if (result.continuationRunId) setContinuation(result.continuationRunId);
       if (result.status === "pending") {
         setPending(true); setNotice(result.accepted && result.continuationRunId
-          ? "Restart queued. Check the same request for admission; its execution will be available after it starts."
+          ? `Restart queued. ${result.pendingReason ?? "Check the same request for admission; its execution will be available after it starts."}`
           : "The outcome is still pending. Check the same request before issuing another command.");
       } else {
         request.current = undefined; setPending(false); setText("");

@@ -72,6 +72,13 @@ func TestHumanRestartQueueAcceptsWhileCapacityUnavailable(t *testing.T) {
 	if err != nil || record.State != triggerqueue.Accepted {
 		t.Fatal("refusal lost custody", record, err)
 	}
+	if record.Reason != triggerqueue.WaitingCapacity.Message() {
+		t.Fatal("missing capacity explanation", record)
+	}
+	waiting := f.command(t, "capacity-queued", command)
+	if waiting.PendingReason != record.Reason || waiting.Status != "pending" {
+		t.Fatal("receipt lost waiting explanation", waiting)
+	}
 	f.process.mu.Lock()
 	count := len(f.process.requests)
 	f.process.mu.Unlock()

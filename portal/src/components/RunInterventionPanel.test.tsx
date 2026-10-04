@@ -147,12 +147,12 @@ it("retains queued restart identity without implying its execution already exist
   state.guidance = [{ request: { schema: "goobers.dev/operator-message/request/v1", requestId: "note", idempotencyKey: "note-key", targetAddress: "stage:review@8", principalRef: "issuer:human", requestedAt: "2026-10-04T10:00:00Z", purpose: "stage-restart-guidance", content: { text: "Use the corrected requirements." }, deliveryMode: "shared-guidance" }, state: "accepted" }];
   const client: DaemonClient = new FixtureDaemonClient(populatedDaemonFixtures());
   vi.spyOn(client, "getInteractiveRun").mockResolvedValue(state);
-  const command = vi.spyOn(client, "commandInteractiveRun").mockResolvedValueOnce({ status: "pending", accepted: true, runId: "run-1", continuationRunId: "reserved-run", phase: "escalated", journalSequence: 8 }).mockResolvedValueOnce({ status: "started", accepted: true, runId: "run-1", continuationRunId: "reserved-run", phase: "escalated", journalSequence: 8 });
+  const command = vi.spyOn(client, "commandInteractiveRun").mockResolvedValueOnce({ status: "pending", accepted: true, pendingReason: "Waiting for workflow capacity or budget.", runId: "run-1", continuationRunId: "reserved-run", phase: "escalated", journalSequence: 8 }).mockResolvedValueOnce({ status: "started", accepted: true, runId: "run-1", continuationRunId: "reserved-run", phase: "escalated", journalSequence: 8 });
   render(<RunInterventionPanel client={client} runId="run-1" />);
   fireEvent.click(await screen.findByRole("checkbox", { name: /corrected requirements/ }));
   fireEvent.change(screen.getByLabelText("Rationale"), { target: { value: "Ready to resume" } });
   fireEvent.click(screen.getByRole("button", { name: "Restart stage" }));
-  await screen.findByText(/Restart queued/);
+  await screen.findByText(/Restart queued.*Waiting for workflow capacity or budget/);
   expect(screen.getByText("reserved-run")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Open restarted execution" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Check same request" }));

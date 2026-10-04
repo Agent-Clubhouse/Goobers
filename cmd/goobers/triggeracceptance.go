@@ -157,7 +157,15 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 // are never replayed here: crash reconciliation must prove whether a run exists
 // before releasing their custody. The request's HTTP context is never used.
 func (s *durableTriggerService) Drain(ctx context.Context) error {
-	s.sweepMu.Lock()
+	return s.drainWithin(ctx, triggerPassBudget)
+}
+
+func (s *durableTriggerService) drainWithin(ctx context.Context, budget time.Duration) error {
+	ctx, cancelPass := triggerPassContext(ctx, s.dispatch.lifecycleContext(ctx), budget)
+	defer cancelPass()
+	if err := acquireTriggerPass(ctx, &s.sweepMu); err != nil {
+		return err
+	}
 	defer s.sweepMu.Unlock()
 	// Child custody shares the ordinary queue database. Retention must run
 	// even while no scheduler is attached; otherwise inactive installations

@@ -35,10 +35,11 @@ func Key(epoch string) string { return "human-restart:" + epoch }
 // Service delegates current authorization and execution to the existing human
 // runner. BeforePublication is called only after capacity and claims succeed.
 type Service struct {
-	Queue   *triggerqueue.Store
-	Now     func() time.Time
-	Launch  func(context.Context, context.Context, runner.StageRestartPlan, func(context.Context) error) error
-	Observe func(context.Context, runner.StageRestartPlan) (bool, error)
+	Queue         *triggerqueue.Store
+	Now           func() time.Time
+	Launch        func(context.Context, context.Context, runner.StageRestartPlan, func(context.Context) error) error
+	Observe       func(context.Context, runner.StageRestartPlan) (bool, error)
+	WaitingReason func(error) triggerqueue.WaitingReason
 }
 
 // Accept durably retains the already authorized immutable plan before admission.
@@ -83,7 +84,19 @@ func (s *Service) Load(ctx context.Context, record triggerqueue.Record) (runner.
 
 // Dispatch leaves pre-publication refusals queued. Once the barrier commits, an
 // error is uncertain: only exact journal observation can release start custody.
-func (s *Service) Dispatch(ctx, execution context.Context, record triggerqueue.Record) error {
+func (s *Service) Dispatch(ctx, execution context.Context, record triggerqueue.Record) (err error) {
+	defer func() {
+		if err == nil {
+			return
+		}
+		reason := triggerqueue.WaitingValidation
+		if s.WaitingReason != nil {
+			reason = s.WaitingReason(err)
+		}
+		update, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		err = errors.Join(err, s.Queue.SetWaitingReason(update, record.ID, reason))
+	}()
 	plan, err := s.Load(ctx, record)
 	if err != nil {
 		return err

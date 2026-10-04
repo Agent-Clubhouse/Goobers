@@ -132,7 +132,7 @@ func stageRestartCommandResult(accepted StageRestartAcceptance, epoch string, re
 	if accepted.Queued {
 		status = "pending"
 	}
-	return apicontract.InteractiveRunCommandResult{Status: status, Accepted: true, RunID: resolved.runID, ContinuationRunID: accepted.RunID, JournalSequence: input.ExpectedSubjectSequence, Phase: string(resolved.phase)}, nil
+	return apicontract.InteractiveRunCommandResult{Status: status, PendingReason: accepted.PendingReason, Accepted: true, RunID: resolved.runID, ContinuationRunID: accepted.RunID, JournalSequence: input.ExpectedSubjectSequence, Phase: string(resolved.phase)}, nil
 }
 
 func (s *HumanService) childRestartSupported() bool {
