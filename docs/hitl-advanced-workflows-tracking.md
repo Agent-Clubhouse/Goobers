@@ -314,7 +314,7 @@ launches bypass cache reuse. Daemon counter/open-PR callers now use gaggle and
 configuration partitions, including ADO GETs. ADO WIQL/batch hydration remains
 pending under HAW-EVT-008; no claim of complete shared polling is made.
 
-### Backlog — source metadata contracts implemented; browse/edit pending
+### Backlog — authorized native browsing and repository readers implemented
 
 The source metadata foundation now validates stable gaggle-qualified references,
 objective frontmatter, relationship manifests and explicit ownership. Candidate
@@ -323,9 +323,13 @@ no provider access or writes. See `reference/workbench-source-metadata.md`.
 Explicit `spec.workbench` bindings now resolve only the singleton backlog or
 configured project/additional repository files. Source selection and interactive
 credentials share one current-policy boundary; session source reads can reuse a
-live lease without blocking its revocation. Browse routes remain the next slice.
+live lease without blocking its revocation. Native backlog read routes and portal
+browsing now show source-owned items, objective classification, associated native
+items and relationship coverage. Exact-credential repository readers return bounded
+commit-pinned Markdown objectives and relationship manifests; repository API/UI,
+graph composition and write service installation are the next slices.
 
-The backlog workbench still requires browse/edit surfaces and consistent explicit
+The backlog workbench still requires editing surfaces and consistent explicit
 relations to items, PRs, dependencies and source-owned Markdown objectives in any
 configured gaggle repository. Repository mutations use policy-governed PRs;
 provider/repository truth stays external to Goobers. Organization precedes progress
@@ -365,7 +369,9 @@ The daemon now installs the pinned model-only session runtime and shared turn
 coordinator, restores all unsettled session custody before admission, and retains
 journals/configuration while writers remain uncertain. Actual HTTP-to-Runner
 adapter tests cover accepted turns, publication refusal and unknown writers.
-Source read/write tools and live model/worker qualification remain follow-up.
+Native backlog source read tools now use the same installed human-authorized
+service as browser reads. Write tools and live model/worker qualification remain
+follow-up.
 
 
 ### Durable demand-sized schedule delivery
@@ -376,4 +382,6 @@ transfer transactionally through shared queued/live capacity without recounting
 or rebinding after a restart. Capacity release wakes the remaining obligation.
 Existing priority, quota and transient fallback behavior is preserved. Unresolved
 obligations retain source generations; disabling a source does not silently delete
-them. Standalone/manual/detached and direct-engine admission remain follow-up.
+them. Standalone/manual/detached starts now use the pinned ordinary queue and
+preserve request identity through detached execution. Direct-engine admission
+remains the next queue integration slice.

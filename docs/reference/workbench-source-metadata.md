@@ -201,3 +201,22 @@ Tools bind the exact initiating human, live execution lease and retained source
 configuration; providers remain in the host. A missing source or read grant leaves
 the session in conversation-only mode. Read availability is advertised only after
 the daemon installs the reader. Manual source edits remain a later slice.
+
+## Repository document reads
+
+The repository service resolves the configured branch to an exact commit and reads
+only declared literal paths. GitHub reads verify regular-file tree entries and blob
+identity; ADO reads verify the exact repository, commit, path, file type and Git
+blob hash. Symlinks, LFS expansion and linked remote content are not followed.
+
+Each page contains at most eight files, with a 1-MiB file limit, 4-MiB page limit
+and 15-second operation deadline. File results distinguish available, unavailable,
+invalid-source and oversized content. Ordinary Markdown has no invented objective
+identity; declared objective IDs and manifest edges use the shared source parser.
+Commit, blob and content digest identify the observed bytes.
+
+Continuation cursors bind source, target and branch commit. If the branch moves,
+the caller restarts its read. Exhausting a page is not deletion evidence or proof
+of a coherent multi-page scan. Repository credentials and conditional caching use
+the same current interactive policy boundary as native backlog reads. Repository
+HTTP/portal installation follows in a separate review slice.
