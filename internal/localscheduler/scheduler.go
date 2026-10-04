@@ -233,6 +233,7 @@ type runAdmission struct {
 	generation        uint64
 	owners            int
 	retained          bool
+	suspended         bool // durable child wait; owner remains, concurrency is released
 }
 
 // Scheduler is the embedded scheduler daemon (§7, SCH-001): it ties cron
@@ -727,7 +728,7 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
-	if ok && reconciledWorkflow.workflow == workflow {
+	if ok && reconciledWorkflow.workflow == workflow && !reconciledWorkflow.suspended {
 		s.conditions.ReleaseWorkflow(reconciledWorkflow.identity)
 		s.wakeForDemand(reconciledWorkflow.identity)
 	}
@@ -753,11 +754,11 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	released := false
 	var releasedIdentity WorkflowIdentity
 	switch {
-	case admitted && admission.workflowName() == workflow:
+	case admitted && admission.workflowName() == workflow && !admission.suspended:
 		s.conditions.ReleaseWorkflow(admission.identity)
 		released = true
 		releasedIdentity = admission.identity
-	case reconciled && reconciledIdentity.workflow == workflow:
+	case reconciled && reconciledIdentity.workflow == workflow && !reconciledIdentity.suspended:
 		s.conditions.ReleaseWorkflow(reconciledIdentity.identity)
 		released = true
 		releasedIdentity = reconciledIdentity.identity
@@ -786,8 +787,10 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
 
-	s.conditions.ReleaseWorkflow(admission.identity)
-	s.wakeForDemand(admission.identity)
+	if !admission.suspended {
+		s.conditions.ReleaseWorkflow(admission.identity)
+		s.wakeForDemand(admission.identity)
+	}
 }
 
 func (s *Scheduler) admissionOwnerRelease(runID, workflow string, generation uint64) func() {
@@ -836,8 +839,10 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
 
-	s.conditions.ReleaseWorkflow(admission.identity)
-	s.wakeForDemand(admission.identity)
+	if !admission.suspended {
+		s.conditions.ReleaseWorkflow(admission.identity)
+		s.wakeForDemand(admission.identity)
+	}
 }
 
 // ReserveContinuation reserves the configured workflow's concurrency slot for
@@ -856,6 +861,9 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 	case !configured:
 		s.mu.Unlock()
 		return func() {}, false, "workflow unavailable"
+	case admitted && admission.suspended:
+		s.mu.Unlock()
+		return func() {}, false, "run suspended awaiting child"
 	case admitted && admission.identity == identity:
 		admission.owners++
 		s.admittedRuns[runID] = admission

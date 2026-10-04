@@ -14,8 +14,9 @@ import (
 // Ordinary runs use the same workflow for both. A generated child charges its
 // immutable parent's bucket even if its display name collides with the catalog.
 type reconciledRun struct {
-	identity WorkflowIdentity
-	workflow string
+	identity  WorkflowIdentity
+	workflow  string
+	suspended bool
 }
 
 func reconciledRunFor(id journal.RunIdentity) reconciledRun {
