@@ -69,6 +69,9 @@ func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *ru
 func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup, errorLog *log.Logger) *intervention.Service {
 	cfg := interventionServiceConfig(layout, setup.Interventions, setup.RunnerRegistry, setup.InstanceLog, wg, errorLog)
 	cfg.StageRestartExecution = setup.InteractiveRestartExecution
+	if setup.CredentialPlane != nil {
+		cfg.PinnedInspection = setup.CredentialPlane.inspectChildExecution
+	}
 	return intervention.New(cfg)
 }
 

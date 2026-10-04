@@ -80,6 +80,8 @@ type Config struct {
 	Runners RunnerRegistry
 	// PinnedExecution resolves the execution generation a run is pinned to.
 	PinnedExecution func(context.Context, journal.RunIdentity) (Execution, error)
+	// PinnedInspection resolves retained child metadata without returning execution authority.
+	PinnedInspection func(context.Context, journal.RunIdentity) (Execution, error)
 	// StageRestartExecution must build a human credential-bound pinned runner.
 	StageRestartExecution func(context.Context, runner.StageRestartPlan) (Execution, error)
 	// LocateRun finds the one retained run directory for runID across the
@@ -103,6 +105,7 @@ type Service struct {
 	definitions           func() Definitions
 	runnerRegistry        RunnerRegistry
 	pinnedExecution       func(context.Context, journal.RunIdentity) (Execution, error)
+	pinnedInspection      func(context.Context, journal.RunIdentity) (Execution, error)
 	stageRestartExecution func(context.Context, runner.StageRestartPlan) (Execution, error)
 	locateRun             func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
 	claims                ClaimStore
@@ -147,6 +150,7 @@ func New(cfg Config) *Service {
 		definitions:           cfg.Definitions,
 		runnerRegistry:        cfg.Runners,
 		pinnedExecution:       cfg.PinnedExecution,
+		pinnedInspection:      cfg.PinnedInspection,
 		stageRestartExecution: cfg.StageRestartExecution,
 		locateRun:             cfg.LocateRun,
 		claims:                cfg.Claims,
@@ -559,6 +563,14 @@ func (s *Service) denyEscalation(resolved resolvedInterventionRun, input httpapi
 }
 
 func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
+	return s.resolveRun(runID, false)
+}
+
+func (s *Service) inspect(runID string) (resolvedInterventionRun, error) {
+	return s.resolveRun(runID, true)
+}
+
+func (s *Service) resolveRun(runID string, inspection bool) (resolvedInterventionRun, error) {
 	if !apiv1.ValidRunID(runID) {
 		return resolvedInterventionRun{}, interventionBadRequest("invalid_run_id", "run ID is invalid")
 	}
@@ -624,7 +636,7 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 		}
 		return s.resolveEngineDriven(runID, foundDir, identity.Gaggle, identity.Workflow, reader)
 	}
-	execution, err := s.interventionExecution(identity, definitions, fallbackRunner)
+	execution, err := s.resolveRunDefinition(identity, definitions, fallbackRunner, inspection)
 	if err != nil {
 		return resolvedInterventionRun{}, err
 	}
@@ -647,7 +659,10 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 	if identity.ConfigGeneration != "" && !owned {
 		runRunner = fallbackRunner
 	}
-	if runRunner == nil {
+	if inspection && identity.Child != nil {
+		runRunner = nil
+	}
+	if runRunner == nil && (!inspection || identity.Child == nil) {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
 			http.StatusInternalServerError, "runner_unavailable", "run owner is unavailable", nil,
 		)

@@ -76,7 +76,7 @@ func (s *HumanService) resolve(ctx context.Context, p httpapi.Principal, run str
 	if info.Size() > 32<<20 {
 		return resolvedInterventionRun{}, interventionConflict("interactive_history_too_large", "This run exceeds the interactive history read budget.")
 	}
-	resolved, err := s.interventions.resolve(run)
+	resolved, err := s.interventions.inspect(run)
 	if err != nil {
 		return resolvedInterventionRun{}, err
 	}
@@ -290,7 +290,7 @@ func scopedHumanKey(p httpapi.Principal, gaggle, key string) string {
 }
 
 func (s *HumanService) saveGuidance(ctx context.Context, p httpapi.Principal, resolved resolvedInterventionRun, key string, input apicontract.InteractiveRunCommand) (apicontract.InteractiveRunCommandResult, error) {
-	current, err := s.interventions.resolve(resolved.runID)
+	current, err := s.interventions.inspect(resolved.runID)
 	if err != nil {
 		return apicontract.InteractiveRunCommandResult{}, err
 	}

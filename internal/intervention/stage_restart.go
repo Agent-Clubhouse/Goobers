@@ -45,7 +45,7 @@ func (s *Service) LaunchStageRestart(admission, execution context.Context, plan 
 	if err := execution.Err(); err != nil {
 		return StageRestartAcceptance{}, err
 	}
-	source, err := s.resolve(plan.Source.RunID)
+	source, err := s.inspect(plan.Source.RunID)
 	if err != nil {
 		return StageRestartAcceptance{}, err
 	}

@@ -130,6 +130,9 @@ func newChildRestartFixture(t *testing.T) *childRestartFixture {
 		PinnedExecution: func(context.Context, journal.RunIdentity) (Execution, error) {
 			return Execution{Runner: base, Machine: machine, GooberDigest: gooberDigest, RepoRef: repo}, nil
 		},
+		PinnedInspection: func(context.Context, journal.RunIdentity) (Execution, error) {
+			return Execution{Machine: machine, GooberDigest: gooberDigest, RepoRef: repo}, nil
+		},
 		StageRestartExecution: func(context.Context, runner.StageRestartPlan) (Execution, error) {
 			return Execution{Runner: human, Machine: machine, GooberDigest: gooberDigest, RepoRef: repo, ChildRestart: &ChildStageRestartAdmission{Entry: f.entry, Fence: func(ctx context.Context, callback func() error) error {
 				f.fences++
@@ -231,5 +234,28 @@ func TestCommonChildRestartCancellationAfterPublicationPreventsEffects(t *testin
 	f.wg.Wait()
 	if f.fences != 2 || f.agent.calls != 1 {
 		t.Fatal("cancelled parent resumed effects", f.fences, f.agent.calls)
+	}
+}
+
+func TestSealedChildInspectionDoesNotAcquireExecutableGeneration(t *testing.T) {
+	f := newChildRestartFixture(t)
+	f.service.pinnedExecution = func(context.Context, journal.RunIdentity) (Execution, error) {
+		return Execution{}, errors.New("source execution sealed")
+	}
+	inspected, err := f.service.inspect(f.child.RunID)
+	if err != nil || inspected.machine == nil || inspected.runner != nil {
+		t.Fatal(inspected, err)
+	}
+	if _, err = f.service.resolve(f.child.RunID); err == nil {
+		t.Fatal("inspection authority escaped into legacy execution")
+	}
+	existing := f.service.pinnedInspection
+	f.service.pinnedInspection = func(ctx context.Context, id journal.RunIdentity) (Execution, error) {
+		out, err := existing(ctx, id)
+		out.Runner = &runner.Runner{}
+		return out, err
+	}
+	if _, err = f.service.inspect(f.child.RunID); err == nil {
+		t.Fatal("inspection accepted executable runner")
 	}
 }
