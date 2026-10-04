@@ -128,6 +128,7 @@ type schedulerSetup struct {
 	// alongside the intervention definitions. Nil outside the `up` daemon.
 	CredentialPlane   *daemonCredentialService
 	InteractiveAccess *interactiveaccess.Service
+	ChildRestarts     *queuedChildLauncher
 	// Installed only when the dedicated human execution builder is available.
 	InteractiveRestartExecution func(context.Context, runner.StageRestartPlan) (intervention.Execution, error)
 	InteractiveRestartRecovery  func(context.Context, journal.RunIdentity) (intervention.Execution, error)

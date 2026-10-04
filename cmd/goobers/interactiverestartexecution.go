@@ -42,6 +42,12 @@ type interactiveRestartExecution struct {
 // buildInteractiveRestartExecution performs only offline pin/backend validation.
 // Admission holds the policy lease; live credential access starts in Resume.
 func (s *schedulerSetup) buildInteractiveRestartExecution(ctx context.Context, plan runner.StageRestartPlan) (intervention.Execution, error) {
+	if plan.Source.Child != nil {
+		if s.ChildRestarts == nil {
+			return intervention.Execution{}, errors.New("child restart unavailable")
+		}
+		return s.ChildRestarts.buildRestartExecution(ctx, plan)
+	}
 	id := plan.Source
 	id.RunID = plan.Continuation.RunID
 	return s.buildInteractiveRestartIdentity(ctx, id)

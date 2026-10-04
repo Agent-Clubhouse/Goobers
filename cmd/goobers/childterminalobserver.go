@@ -57,6 +57,8 @@ func childTerminalInput(rd *journal.Reader, events []journal.Event, phase journa
 		state = triggerqueue.ChildCompleted
 	case journal.PhaseFailed:
 		state = triggerqueue.ChildFailed
+	case journal.PhaseEscalated:
+		state = triggerqueue.ChildAwaitingHuman
 	case journal.PhaseAborted:
 		state = triggerqueue.ChildCancelled
 	default:

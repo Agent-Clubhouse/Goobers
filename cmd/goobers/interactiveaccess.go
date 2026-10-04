@@ -45,7 +45,11 @@ func (u *upSession) configureInteractiveRuns(messages httpapi.OperatorMessageSer
 		return err
 	}
 	if u.setup.InteractiveRestartExecution != nil {
-		service.AttachStageRestarts(&interactiveStageRestart{layout: u.l, setup: u.setup, service: u.interventions})
+		adapter := &interactiveStageRestart{layout: u.l, setup: u.setup, service: u.interventions}
+		service.AttachStageRestarts(adapter)
+		if u.setup.ChildRestarts != nil {
+			u.setup.ChildRestarts.restart = adapter.reconcileChildRestart
+		}
 		u.setup.InteractiveAccess.SetStageRestartAvailable(true)
 	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithInteractiveRuns(service))

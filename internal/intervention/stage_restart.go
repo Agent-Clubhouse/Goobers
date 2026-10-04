@@ -20,6 +20,7 @@ import (
 type StageRestartAcceptance struct {
 	RunID     string
 	Duplicate bool
+	Queued    bool
 }
 
 // StageRestartService admits a prepared human continuation using configured
@@ -28,6 +29,10 @@ type StageRestartAcceptance struct {
 type StageRestartService interface {
 	RestartStage(admission, execution context.Context, principal httpapi.Principal, plan runner.StageRestartPlan) (StageRestartAcceptance, error)
 }
+
+// ChildStageRestartService is an optional trusted adapter capability. It is
+// advertised only when durable child admission and contained execution are wired.
+type ChildStageRestartService interface{ SupportsChildStageRestart() bool }
 
 // LaunchStageRestart reserves normal execution capacity, reclaims the verified
 // source claims, persists the immutable epoch and starts its pinned execution.

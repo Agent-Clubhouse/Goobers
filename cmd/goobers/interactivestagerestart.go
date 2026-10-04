@@ -32,6 +32,9 @@ func (s *interactiveStageRestart) RestartStage(admission, execution context.Cont
 	if s == nil || s.setup == nil || s.setup.InteractiveAccess == nil || s.service == nil {
 		return intervention.StageRestartAcceptance{}, restartRefusal("restart_unavailable", "Interactive restart admission is unavailable.")
 	}
+	if plan.Source.Child != nil {
+		return s.restartChildStage(admission, execution, principal, plan)
+	}
 	// A policy reload cannot wait behind an unbounded provider preflight.
 	ctx, cancel := context.WithTimeout(admission, 30*time.Second)
 	defer cancel()

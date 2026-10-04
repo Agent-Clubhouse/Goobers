@@ -64,9 +64,13 @@ type actualChildFixture struct {
 	releases  atomic.Int32
 }
 
-func actualChildLaunchFixture(t *testing.T) *actualChildFixture {
+func actualChildLaunchFixture(t *testing.T, customSource ...string) *actualChildFixture {
 	t.Helper()
-	f := &actualChildFixture{childDrainFixture: newChildDrainFixture(t, strings.Replace(dispatchChildSource, "      type: deterministic", "      type: deterministic\n      workspace: scratch", 1))}
+	source := strings.Replace(dispatchChildSource, "      type: deterministic", "      type: deterministic\n      workspace: scratch", 1)
+	if len(customSource) > 0 {
+		source = customSource[0]
+	}
+	f := &actualChildFixture{childDrainFixture: newChildDrainFixture(t, source)}
 	a := f.childDrainFixture.launcher.authority
 	f.authority = &launchAuthority{authority: a}
 	layout := f.childDrainFixture.launcher.layout

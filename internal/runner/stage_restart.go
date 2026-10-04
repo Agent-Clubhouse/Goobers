@@ -176,6 +176,12 @@ func ValidateStageRestartTarget(id journal.RunIdentity, machine *workflow.Machin
 	return validateStageRestartTarget(id, machine, stage, false)
 }
 
+// ValidateChildStageRestartTarget validates the common restart target after
+// a trusted adapter declares durable child custody support.
+func ValidateChildStageRestartTarget(id journal.RunIdentity, machine *workflow.Machine, stage string) error {
+	return validateStageRestartTarget(id, machine, stage, true)
+}
+
 func validateStageRestartTarget(id journal.RunIdentity, machine *workflow.Machine, stage string, child bool) error {
 	if machine == nil || machine.Def.DSLVersion != supportmatrix.V31DSLVersion {
 		return errors.New("stage restart requires the local DSL 3.1 preview runner")

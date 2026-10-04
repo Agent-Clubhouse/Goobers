@@ -50,6 +50,9 @@ func TestRetainedRestartPlanRefusesAuthorityAndChangedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(string(raw), "ChildWorkspace") {
+		t.Fatal("runtime workspace selector entered versioned durable plan")
+	}
 	for _, changed := range [][]byte{append(raw, '\n'), append(raw, raw...), []byte(strings.Replace(string(raw), `"version":1`, `"version":2`, 1)), []byte(strings.Replace(string(raw), `"version":1`, `"unknown":true,"version":1`, 1))} {
 		if _, err := ParseStageRestartPlan(changed); err == nil {
 			t.Fatal("noncanonical/unknown plan parsed")

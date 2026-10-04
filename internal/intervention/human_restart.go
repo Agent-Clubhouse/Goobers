@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // AttachStageRestarts installs the production credential-bound restart adapter.
@@ -57,7 +58,7 @@ func (s *HumanService) addRestartActions(p httpapi.Principal, resolved resolvedI
 		}
 		reason := ""
 		supported := true
-		if err := runner.ValidateStageRestartTarget(id, resolved.machine, action.Stage); err != nil {
+		if err := s.validateRestartTarget(id, resolved.machine, action.Stage); err != nil {
 			reason = err.Error()
 			supported = false
 		}
@@ -85,7 +86,18 @@ func (s *HumanService) restartStage(admission, execution context.Context, p http
 	if err != nil {
 		return apicontract.InteractiveRunCommandResult{}, err
 	}
-	plan, err := runner.PrepareStageRestart(reader, resolved.machine, runner.StageRestartRequest{EpochID: epoch, Stage: input.Stage, PrincipalRef: principalIdentity(p), ExpectedTerminalSeq: input.ExpectedSubjectSequence, GuidanceIDs: input.GuidanceIDs, Rationale: input.Rationale}, s.scrubber)
+	prepare := runner.PrepareStageRestart
+	if s.childRestartSupported() {
+		prepare = runner.PrepareChildStageRestart
+		id, readErr := reader.Identity()
+		if readErr != nil {
+			return apicontract.InteractiveRunCommandResult{}, readErr
+		}
+		if id.Child == nil {
+			prepare = runner.PrepareStageRestart
+		}
+	}
+	plan, err := prepare(reader, resolved.machine, runner.StageRestartRequest{EpochID: epoch, Stage: input.Stage, PrincipalRef: principalIdentity(p), ExpectedTerminalSeq: input.ExpectedSubjectSequence, GuidanceIDs: input.GuidanceIDs, Rationale: input.Rationale}, s.scrubber)
 	if err != nil {
 		return apicontract.InteractiveRunCommandResult{}, interventionConflict("restart_refused", err.Error())
 	}
@@ -96,5 +108,24 @@ func (s *HumanService) restartStage(admission, execution context.Context, p http
 	if !apiv1.ValidRunID(accepted.RunID) || accepted.RunID != epoch {
 		return apicontract.InteractiveRunCommandResult{}, interventionConflict("restart_receipt_invalid", "The restart receipt did not identify its reserved epoch.")
 	}
-	return apicontract.InteractiveRunCommandResult{Status: "started", Accepted: true, RunID: resolved.runID, ContinuationRunID: accepted.RunID, JournalSequence: input.ExpectedSubjectSequence, Phase: string(resolved.phase)}, nil
+	status := "started"
+	if accepted.Queued {
+		status = "pending"
+	}
+	return apicontract.InteractiveRunCommandResult{Status: status, Accepted: true, RunID: resolved.runID, ContinuationRunID: accepted.RunID, JournalSequence: input.ExpectedSubjectSequence, Phase: string(resolved.phase)}, nil
+}
+
+func (s *HumanService) childRestartSupported() bool {
+	adapter := s.restarts.Load()
+	if adapter == nil {
+		return false
+	}
+	child, ok := (*adapter).(ChildStageRestartService)
+	return ok && child.SupportsChildStageRestart()
+}
+func (s *HumanService) validateRestartTarget(id journal.RunIdentity, machine *workflow.Machine, stage string) error {
+	if id.Child != nil && s.childRestartSupported() {
+		return runner.ValidateChildStageRestartTarget(id, machine, stage)
+	}
+	return runner.ValidateStageRestartTarget(id, machine, stage)
 }
