@@ -2,8 +2,7 @@ package intervention
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
+	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -82,7 +81,10 @@ func (s *HumanService) restartStage(admission, execution context.Context, p http
 	}
 	// The key selects an epoch independently of the payload: changing a request
 	// after uncertain acknowledgement conflicts with its retained manifest.
-	epoch := fmt.Sprintf("human-restart-%x", sha256.Sum256([]byte(resolved.runID+"\x00"+scopedHumanKey(p, resolved.gaggle, key))))
+	epoch, err := restartEpochForCommand(filepath.Dir(resolved.runDir), resolved.runID, scopedHumanKey(p, resolved.gaggle, key))
+	if err != nil {
+		return apicontract.InteractiveRunCommandResult{}, err
+	}
 	plan, err := runner.PrepareStageRestart(reader, resolved.machine, runner.StageRestartRequest{EpochID: epoch, Stage: input.Stage, PrincipalRef: principalIdentity(p), ExpectedTerminalSeq: input.ExpectedSubjectSequence, GuidanceIDs: input.GuidanceIDs, Rationale: input.Rationale}, s.scrubber)
 	if err != nil {
 		return apicontract.InteractiveRunCommandResult{}, interventionConflict("restart_refused", err.Error())

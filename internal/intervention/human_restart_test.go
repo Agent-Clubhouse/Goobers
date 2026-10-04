@@ -130,7 +130,7 @@ func TestHumanRestartLaunchesOneEpochAfterLostAcknowledgement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Status != "started" || !result.Accepted || result.ContinuationRunID == "" {
+			if result.Status != "started" || !result.Accepted || len(result.ContinuationRunID) != 32 {
 				t.Fatalf("receipt=%+v", result)
 			}
 			if preflights.Load() != 1 {
