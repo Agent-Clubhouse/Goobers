@@ -408,7 +408,9 @@ permissions; a denied or unsupported selected owner does not permit fallback.
 Derived run observations cannot be authored in these files. Competing edge IDs
 or source owners are visible conflicts. No progress rollups are introduced.
 
-This slice is a reusable source contract only. Gaggle source configuration,
-credential-bound ingestion, projection/read routes, mutation receipts and portal
-browsing/editing are still pending. No provider is contacted and no source file is
-written by these primitives. See [source metadata reference](../reference/workbench-source-metadata.md).
+These source primitives contact no provider and write no source file. Subsequent
+slices now install gaggle source configuration, exact-credential native ingestion,
+read routes, portal backlog browsing, and live-session source tools. The field edit
+adapter is implemented; durable command installation and editing UI, repository
+objective ingestion, graph projection and governed repository PR proposals remain
+separate delivery slices. See [source metadata reference](../reference/workbench-source-metadata.md).

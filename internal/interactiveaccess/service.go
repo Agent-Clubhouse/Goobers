@@ -34,6 +34,7 @@ type Service struct {
 	executionDrainTimeout time.Duration
 	stageRestartAvailable atomic.Bool
 	sessionsAvailable     atomic.Bool
+	backlogReadAvailable  atomic.Bool
 	mu                    sync.RWMutex
 	gaggles               map[string]*apiv1.Gaggle
 	sources               map[string]instance.InteractiveCredential
@@ -178,7 +179,7 @@ func (s *Service) permission(p httpapi.Principal, g *apiv1.Gaggle, action apiv1.
 		result.ReasonCode = "credential_not_configured"
 		return result
 	}
-	if action == "run.intervene" || (action == "run.restartStage" && s.stageRestartAvailable.Load()) || ((action == "session.create" || action == "session.message") && s.sessionsAvailable.Load()) {
+	if s.operationAvailable(g, action) {
 		result.Available = true
 		return result
 	}
@@ -187,6 +188,30 @@ func (s *Service) permission(p httpapi.Principal, g *apiv1.Gaggle, action apiv1.
 	result.ReasonCode = "operation_not_implemented"
 	return result
 }
+
+func (s *Service) operationAvailable(g *apiv1.Gaggle, action apiv1.InteractiveAction) bool {
+	switch action {
+	case "run.intervene":
+		return true
+	case "run.restartStage":
+		return s.stageRestartAvailable.Load()
+	case "session.create", "session.message":
+		return s.sessionsAvailable.Load()
+	case "backlog.read":
+		if !s.backlogReadAvailable.Load() || g.Spec.Workbench == nil {
+			return false
+		}
+		for _, source := range g.Spec.Workbench.Sources {
+			if source.Kind == "backlog" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SetBacklogReadAvailable advertises an installed source reader, never a grant.
+func (s *Service) SetBacklogReadAvailable(available bool) { s.backlogReadAvailable.Store(available) }
 
 func (s *Service) hasCredential(g *apiv1.Gaggle, action apiv1.InteractiveAction) bool {
 	if actionTarget(action, Target{Kind: "backlog"}) {

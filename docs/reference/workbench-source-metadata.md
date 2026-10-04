@@ -151,7 +151,7 @@ consistent scan or deletion. Each operation has a 15-second limit, a 2-MiB raw
 reply bound, a 256-KiB item bound and a 1-MiB projected page bound.
 
 The provider adapter itself has no credentials, cache, polling loop or write path.
-Public browse routes and interactive execution wiring are separate delivery slices.
+The daemon installs this reader for browser requests and authorized native sessions.
 
 
 ## Native field edit adapter
@@ -184,5 +184,20 @@ separate from automation, even if credentials match. Refreshes conditionally
 revalidate with the provider; they never reuse an hour-long scheduler snapshot.
 A live session uses its already-held human lease, checks exact retained source
 configuration, and cancels/joins an active read before changed policy is published.
-The service exists independently of route installation; daemon/API integration
-follows in the next review slices.
+The daemon installs the following human-authenticated, no-store routes:
+
+- `GET /api/v1/gaggles/{gaggle}/workbench/sources`
+- `GET /api/v1/gaggles/{gaggle}/workbench/sources/{source}/items`
+- `GET /api/v1/gaggles/{gaggle}/workbench/sources/{source}/items/{item}`
+
+The portal's gaggle workbench lists configured backlog sources, explicitly loads
+one bounded page, and shows item details, objective classification, associated
+native items and relationship coverage. Refresh replaces the visible window;
+source or access changes clear old content. Item navigation supplies the expected
+stable ID. Only verified targets in a configured source can load linked details.
+
+The same service is the default source reader for native shared-session tools.
+Tools bind the exact initiating human, live execution lease and retained source
+configuration; providers remain in the host. A missing source or read grant leaves
+the session in conversation-only mode. Read availability is advertised only after
+the daemon installs the reader. Manual source edits remain a later slice.
