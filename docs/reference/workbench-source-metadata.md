@@ -103,6 +103,7 @@ workbench:
       writes:
         fields: [title, description]
         relationships: [contributes-to, references]
+        metadata: [assign-objective]
     - name: planning-links
       kind: relationships
       repository:
@@ -112,6 +113,7 @@ workbench:
       paths: [planning/relationships.yaml]
       writes:
         relationships: [contributes-to, references]
+        metadata: [aliases]
 ```
 
 Every document/manifest repository must already appear in the gaggle's `project`
@@ -335,10 +337,9 @@ a draft PR. Each operation verifies its exact repository, file, branch and comma
 marker; observation is separate from provider acknowledgement. An unknown response
 cannot be converted to an acknowledged mutation just because matching state exists.
 
-These adapters are not yet an installed portal publication path. Durable proposal
-custody, current-policy checks at each phase, review/submission controls and receipt
-inspection follow in the next slice. The current portal continues to offer source
-reads and native field commands while that installation is completed.
+These adapters now serve the installed portal publication path, with durable
+proposal custody, current-policy checks at each phase, reviewed submission and
+separate receipt inspection. See the governed metadata API below.
 
 
 ## Agent relationship proposal artifact
@@ -436,3 +437,22 @@ rechecks current permission and advances only an unattempted next phase for the
 retained intent. A matching observation never rewrites the original uncertain
 acknowledgement. Changing keys to retry an uncertain write can create another
 proposal; use the original receipt instead.
+
+
+### Assigning objective identities and editing aliases
+
+With `writes.metadata: [assign-objective]`, an existing declared Markdown file can
+receive an objective ID through the same preview and draft-PR flow. The portal
+creates one ID for the reviewed request and keeps it through retries. Existing
+objective IDs cannot be replaced. The Markdown body and unrelated frontmatter
+are preserved; the file remains an ordinary reference until the PR is merged.
+
+With `writes.metadata: [aliases]`, the configured owning relationship manifest
+can add or remove a named alias for an exact gaggle-qualified target. Removal
+matches both name and target; a conflicting name cannot silently retarget an
+alias. An alias supplies a label for an existing reference, not a new objective.
+
+Both operations require current repository-write authority, exact source/path and
+commit/blob/content pins, and the source-specific metadata allowlist. They are
+exclusive with field or edge changes in a single proposal. Omitted metadata
+permission disables these controls without granting any other source write.

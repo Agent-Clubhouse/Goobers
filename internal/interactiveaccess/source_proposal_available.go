@@ -19,6 +19,9 @@ func workbenchProposableSource(g *apiv1.Gaggle) bool {
 		if (source.Kind != "documents" && source.Kind != "relationships") || source.Writes == nil {
 			continue
 		}
+		if (source.Kind == "documents" && slices.Contains(source.Writes.Metadata, "assign-objective")) || (source.Kind == "relationships" && slices.Contains(source.Writes.Metadata, "aliases")) {
+			return true
+		}
 		if slices.Contains(source.Writes.Fields, "title") || slices.Contains(source.Writes.Fields, "description") || slices.Contains(source.Writes.Relationships, "references") || slices.Contains(source.Writes.Relationships, "contributes-to") {
 			return true
 		}

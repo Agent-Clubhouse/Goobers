@@ -232,6 +232,17 @@
                           ]
                         }
                       },
+                      "metadata": {
+                        "type": "array",
+                        "description": "Source-owned identity operations allowed through reviewed PRs. Documents allow assign-objective; the owning relationship manifest allows aliases.",
+                        "maxItems": 2,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "description": "One explicitly permitted metadata operation, additionally restricted by source kind at validation.",
+                          "enum": ["assign-objective", "aliases"]
+                        }
+                      },
                       "relationships": {
                         "type": "array",
                         "description": "Authored relationship kinds permitted for this source.",

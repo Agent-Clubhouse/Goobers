@@ -402,8 +402,12 @@ provenance, deduplicates source evidence and holds provisional item references
 until their exact creation receipt exists. Its review storage/portal/command
 installation remains outstanding; suggestions do not become graph edges.
 
-Remaining workbench delivery includes governed repository metadata PRs, supported
-native relationship edits and creation/curation relationship suggestions. Sources
+Objective identity assignment and manifest alias editing now use that same
+reviewed PR flow, gated by explicit source metadata permissions. Existing
+objective IDs remain immutable; alias removal matches the exact name and target.
+
+Remaining workbench delivery includes supported native relationship edits and
+creation/curation relationship suggestions. Sources
 may reside in any configured gaggle repository. Repository mutations use policy-governed PRs;
 provider/repository truth stays external to Goobers. Organization precedes progress
 tracking. See the respective designs for the complete stable task list.

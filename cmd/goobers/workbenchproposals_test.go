@@ -145,6 +145,13 @@ func TestWorkbenchHostInstallsGovernedRepositoryProposals(t *testing.T) {
 					t.Fatal("proposal custody or replay differed", command, client.phases)
 				}
 			}
+			g.Spec.Workbench.Sources[0].Writes = &apiv1.WorkbenchWrites{Metadata: []apiv1.WorkbenchMetadataOperation{"assign-objective"}}
+			if err = setup.InteractiveAccess.Apply([]apiv1.Gaggle{*g}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !available() {
+				t.Fatal("explicit metadata-only source was not advertised")
+			}
 			g.Spec.Workbench.Sources[0].Writes = nil
 			if err = setup.InteractiveAccess.Apply([]apiv1.Gaggle{*g}, nil); err != nil {
 				t.Fatal(err)
