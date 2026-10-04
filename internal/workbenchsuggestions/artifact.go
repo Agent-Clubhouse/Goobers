@@ -26,31 +26,14 @@ const (
 var ErrArtifact = errors.New("workbench suggestions: retained artifact evidence is unavailable")
 
 // Selection picks an actual artifact event, never caller-supplied provenance.
-type Selection struct {
-	RunID    string `json:"runId"`
-	Sequence uint64 `json:"sequence"`
-}
+type Selection = workbench.SuggestionSelection
 
 // Artifact identifies committed stage evidence. Name is inert display text.
 // Sequence is the artifact.recorded event; StageSequence proves its attempt.
-type Artifact struct {
-	Sequence      uint64 `json:"sequence"`
-	StageSequence uint64 `json:"stageSequence"`
-	StageID       string `json:"stageId"`
-	Attempt       int    `json:"attempt"`
-	Branch        int    `json:"branch"`
-	Name          string `json:"name"`
-	Digest        string `json:"digest"`
-	Bytes         int64  `json:"bytes"`
-}
+type Artifact = workbench.SuggestionArtifact
 
 // Inventory contains one explicit bounded window, with no artifact body reads.
-type Inventory struct {
-	RunID        string     `json:"runId"`
-	Artifacts    []Artifact `json:"artifacts"`
-	NextSequence uint64     `json:"nextSequence,omitempty"`
-	Partial      bool       `json:"partial"`
-}
+type Inventory = workbench.SuggestionInventory
 
 // Loaded is host provenance plus parsed candidates. It is not source truth and
 // must never be fed to the source graph or accepted without fresh source checks.
