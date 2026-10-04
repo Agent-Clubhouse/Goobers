@@ -110,8 +110,16 @@ func runCleanupGitOutput(ctx context.Context, dir, op string, args ...string) (s
 		return "", err
 	}
 
+	waitJoined := false
 	if acknowledge := invoke.RegisterWorkspaceWriter(ctx); acknowledge != nil {
 		defer func() {
+			// This exact intrinsic query cannot invoke hooks, fsmonitor or
+			// maintenance under hardenedGitArgs. Wait also drains its pipes.
+			// Other commands and unjoined exits still require the tree census.
+			if waitJoined && len(args) == 3 && args[0] == "worktree" && args[1] == "list" && args[2] == "--porcelain" {
+				acknowledge(nil)
+				return
+			}
 			cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), cleanupKillWaitDelay)
 			defer stop()
 			acknowledge(tree.StopAndWait(cleanup))
@@ -122,6 +130,7 @@ func runCleanupGitOutput(ctx context.Context, dir, op string, args ...string) (s
 
 	select {
 	case err = <-waitDone:
+		waitJoined = true
 	case <-boundedCtx.Done():
 		_ = tree.Kill()
 		select {
