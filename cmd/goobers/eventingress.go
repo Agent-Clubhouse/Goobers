@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/eventing"
@@ -22,7 +23,9 @@ func (u *upSession) configureEventIngress() {
 // An external binding grants no run identity. Applied policy and its retained
 // catalog remain locked until the shared ledger commits the matched receipt.
 func (p *daemonEventPublisher) authorizeIngress(ctx context.Context, principal httpapi.Principal, gaggle, name string, accept func(apiv1.EventIngressBinding, *eventing.Catalog) error) error {
-	p.mu.RLock()
+	if err := p.lockIngressSnapshot(ctx); err != nil {
+		return err
+	}
 	defer p.mu.RUnlock()
 	denied := httpapi.NewInterventionError(http.StatusForbidden, "event_scope_denied", "Event producer binding is not authorized.", nil)
 	policy := p.snapshot.policies[gaggle]
@@ -50,4 +53,24 @@ func (p *daemonEventPublisher) authorizeIngress(ctx context.Context, principal h
 	}
 	defer func() { _ = lease.Release() }()
 	return accept(*binding.DeepCopy(), p.snapshot.catalogs[gaggle])
+}
+
+// A reload can hold the publisher write lock while it installs the applied
+// archive. Waiting for that lock must honor the listener request budget.
+func (p *daemonEventPublisher) lockIngressSnapshot(ctx context.Context) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if p.mu.TryRLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

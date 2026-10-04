@@ -307,9 +307,9 @@ until their corresponding ancestry/transport contract exists.
 
 Durable admission is installed for manual, scheduled, demand-sized, signal,
 standalone/detached, direct-engine, child, shared-session and human restart starts.
-Consumer debounce and workflow event emission are installed. External authenticated
-ingress, queue inspection/cancellation/deadline policy and broader transport parity
-remain distinct completion/qualification work.
+Consumer debounce, workflow event emission and explicit authenticated external
+CloudEvents ingress are installed. Queue inspection/cancellation/deadline policy
+and broader transport parity remain distinct completion/qualification work.
 
 Internal event receipt custody now uses bounded CloudEvents JSON, explicit gaggle
 and authenticated producer binding, immutable routing snapshots, no-match success,
@@ -325,8 +325,9 @@ local-runner consumers through ordinary scheduler budgets, claims, capacity and
 shutdown ownership. Input manifests and journal lineage reconcile uncertain
 starts without duplication; only verified terminal journals settle groups.
 Dependency inventories protect source journals and archived configuration before
-routing is installed. Public external ingress, queue lifecycle controls and engine
-consumer event-input transport remain pending. Trusted consumer ancestry now carries
+routing is installed. Explicit machine ingress uses the existing listener and durable receipt commit;
+human receipt visibility requires current gaggle authority. Queue lifecycle
+controls and engine consumer event-input transport remain pending. Trusted consumer ancestry now carries
 up to 32 original roots across another event generation, survives source-history
 pruning, and charges every root atomically. A new consumer RunID cannot reset those
 limits. Child and human-continuation ancestry still require verified adapters.

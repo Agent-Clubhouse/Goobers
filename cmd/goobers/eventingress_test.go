@@ -222,3 +222,36 @@ func TestExternalEventAcceptanceFencesAppliedPolicyReload(t *testing.T) {
 		t.Fatal("revocation was not published")
 	}
 }
+
+func TestExternalEventAuthorizationHonorsDeadlineWhileReloadOwnsSnapshot(t *testing.T) {
+	f, _ := externalEventHost(t, false)
+	publisher := f.setup.EventPublisher
+	publisher.mu.Lock()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- publisher.authorizeIngress(ctx, httpapi.Principal{}, "example", "builds", func(apiv1.EventIngressBinding, *eventing.Catalog) error {
+			return errors.New("cancelled request reached acceptance")
+		})
+	}()
+	select {
+	case err := <-done:
+		publisher.mu.Unlock()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		publisher.mu.Unlock()
+		<-done
+		t.Fatal("event authorization exceeded its request deadline waiting for reload")
+	}
+	cancelled, stop := context.WithCancel(t.Context())
+	stop()
+	if err := publisher.lockIngressSnapshot(cancelled); !errors.Is(err, context.Canceled) {
+		if err == nil {
+			publisher.mu.RUnlock()
+		}
+		t.Fatal("already-cancelled request acquired a snapshot", err)
+	}
+}
