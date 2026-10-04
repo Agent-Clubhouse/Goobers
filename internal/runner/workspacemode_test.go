@@ -206,7 +206,7 @@ func TestReadOnlyWorkspaceRejectsSyncBaseAndReboundBranch(t *testing.T) {
 	}
 }
 
-func TestPinnedWorkspaceBacksEveryStageWithoutWorktrees(t *testing.T) {
+func TestPinnedWorkspaceBacksRepositoryStagesButHonorsScratch(t *testing.T) {
 	r, in := readOnlyWorkspaceRunner(t)
 	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 	if err != nil {
@@ -221,9 +221,30 @@ func TestPinnedWorkspaceBacksEveryStageWithoutWorktrees(t *testing.T) {
 	defer func() { _ = lease.Release() }()
 	in.pinnedWorkspace = lease.Worktree
 	in.pinnedStage = &sync.Mutex{}
+	pinnedBranch := gitOutput(t, lease.Worktree.Path, "rev-parse", "--abbrev-ref", "HEAD")
+
+	scratch, err := r.createStageWorkspace(context.Background(), in, "scratch", apiv1.WorkspaceScratch, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scratch.path == lease.Worktree.Path {
+		t.Fatalf("scratch stage used pinned workspace %q", scratch.path)
+	}
+	if scratch.worktree != nil {
+		t.Fatalf("scratch stage has worktree metadata: %+v", scratch.worktree)
+	}
+	if _, err := os.Stat(filepath.Join(scratch.path, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("scratch stage is repository-backed: %v", err)
+	}
+	if got := gitOutput(t, lease.Worktree.Path, "rev-parse", "--abbrev-ref", "HEAD"); got != pinnedBranch {
+		t.Fatalf("scratch stage changed pinned checkout branch from %q to %q", pinnedBranch, got)
+	}
+	if err := scratch.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	var paths []string
-	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceScratch, apiv1.WorkspaceRepo, apiv1.WorkspaceRepoReadOnly} {
+	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceRepo, apiv1.WorkspaceRepoReadOnly} {
 		workspace, err := r.createStageWorkspace(context.Background(), in, string(mode), mode, false, "")
 		if err != nil {
 			t.Fatal(err)
@@ -234,7 +255,7 @@ func TestPinnedWorkspaceBacksEveryStageWithoutWorktrees(t *testing.T) {
 		}
 	}
 
-	if paths[0] != lease.Worktree.Path || paths[1] != lease.Worktree.Path || paths[2] != lease.Worktree.Path {
+	if paths[0] != lease.Worktree.Path || paths[1] != lease.Worktree.Path {
 		t.Fatalf("stage paths = %v, want shared pin %q", paths, lease.Worktree.Path)
 	}
 	runDirs, err := filepath.Glob(filepath.Join(r.cfg.Worktrees.Root, "*", "runs"))
