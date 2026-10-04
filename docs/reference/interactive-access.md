@@ -1,5 +1,13 @@
 # Interactive human access
 
+Restart admission uses a single policy lease when checking repository and backlog
+sources. The two sources resolve independently through their named interactive
+credentials; repository access never supplies a missing backlog identity. The
+callback may verify source state and accept a restart while policy is stable.
+Asynchronous execution needs its own interactive credential binding and must not
+retain these callback-scoped credentials. This prerequisite does not itself
+enable the Restart action.
+
 Interactive access is opt-in per gaggle. Existing monitoring retains its instance
 role behavior. New interactive sessions, provider-backed browsing and writes
 require both a verified instance role and an explicit gaggle grant. An instance

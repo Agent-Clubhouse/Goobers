@@ -47,28 +47,38 @@ func (s *Service) WithCredential(ctx context.Context, p httpapi.Principal, gaggl
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	credential, err := s.resolveCredential(ctx, source, action)
+	if err != nil {
+		return err
+	}
+	return use(ctx, credential)
+}
+
+// resolveCredential requires the caller's policy lease. Returned material may
+// only be used inside that caller's bounded callback, never in an async runner.
+func (s *Service) resolveCredential(ctx context.Context, source instance.InteractiveCredential, action apiv1.InteractiveAction) (Credential, error) {
 	resolver, scheme, err := s.resolver(source)
 	if err != nil {
-		return ErrCredentialUnavailable
+		return Credential{}, ErrCredentialUnavailable
 	}
 	key := "interactive:" + string(action)
 	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{Capability: key, Ref: source.Name}}, s.deps.Registrar)
 	if err != nil {
-		return err
+		return Credential{}, err
 	}
 	set, err := injector.Materialize(ctx, []string{key})
 	if err != nil {
-		return ErrCredentialUnavailable
+		return Credential{}, ErrCredentialUnavailable
 	}
 	token, err := set.Token(ctx, key)
 	if err != nil {
-		return ErrCredentialUnavailable
+		return Credential{}, ErrCredentialUnavailable
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return Credential{}, err
 	}
 	expiresAt, _ := set.Expiry(key)
-	return use(ctx, Credential{Value: token, Scheme: scheme, ExpiresAt: expiresAt})
+	return Credential{Value: token, Scheme: scheme, ExpiresAt: expiresAt}, nil
 }
 
 type resolvedSource struct {
