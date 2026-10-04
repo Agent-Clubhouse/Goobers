@@ -186,5 +186,5 @@ func (r *interactiveRestartContext) prepareGit(ctx context.Context, provided []s
 }
 
 func interactiveCredentialInstructions() string {
-	return fmt.Sprintln("This is a human-authorized restart. Use only the declared GOOBERS_CRED_<CAPABILITY> environment variables for provider operations; repository and backlog credentials are separate. Model credentials are solely for the configured model. Make repository changes through a pull request. Do not load host credentials or invoke instance-configured Goobers provider commands.")
+	return fmt.Sprintln("This is a human-authorized interactive execution. Use only the declared GOOBERS_CRED_<CAPABILITY> environment variables for provider operations; repository and backlog credentials are separate. Model credentials are solely for the configured model. Make repository changes through a pull request. Do not load host credentials or invoke instance-configured Goobers provider commands.")
 }

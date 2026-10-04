@@ -99,3 +99,13 @@ func (s *Scheduler) installSessionOwner(id journal.RunIdentity) func() {
 	s.mu.Unlock()
 	return s.admissionOwnerRelease(id.RunID, id.Workflow, generation)
 }
+
+// Session execution echoes must not spend a catalog workflow's cadence when
+// its display name happens to be interactive-session.
+func bindSessionBudgetOwners(owners map[string]WorkflowIdentity, events []journal.Event) {
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == "session.admission" && apiv1.ValidRunID(event.RunID) && event.Gaggle != "" {
+			owners[event.Gaggle+"/"+event.RunID] = WorkflowIdentity{Gaggle: event.Gaggle, Workflow: sessionBudget}
+		}
+	}
+}

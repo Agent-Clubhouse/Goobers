@@ -151,3 +151,24 @@ func TestSessionAdmissionRefusesInvalidOrUnauditableIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionBudgetHistoryDoesNotChargeSameNamedAutomation(t *testing.T) {
+	id := sessionAdmissionFixture(1)
+	configured := WorkflowEntry{Gaggle: id.Gaggle, Workflow: id.Workflow}
+	s, _ := newTestScheduler(t, []WorkflowEntry{configured})
+	now := time.Now()
+	release, err := s.ReserveSession(t.Context(), id, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err = s.log.Append(journal.Event{Type: journal.EventRunStarted, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow, Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Reconcile(t.TempDir(), now); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.conditions.starts[entryIdentity(configured)]) != 0 {
+		t.Fatal("session echo charged automation cadence")
+	}
+}

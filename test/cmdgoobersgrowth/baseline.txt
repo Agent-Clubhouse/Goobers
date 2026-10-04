@@ -2,7 +2,7 @@
 # Physical lines (including blanks/comments) in direct non-test .go files, all build tags.
 # Informational snapshot; PR enforcement compares head against merge-base.
 # Snapshot updates require !<dimension>-justification\t<exact target>\t<why>.
-!non-test-line-count-justification	133401	Inherited concurrent sprint growth on main before per-PR delta enforcement; one-time informational snapshot refresh.
-!non-test-line-count 133401
-!non-test-file-count-justification	434	Inherited concurrent sprint growth on main before per-PR delta enforcement; one-time informational snapshot refresh.
-!non-test-file-count 434
+!non-test-line-count-justification	142477	Wire accepted shared sessions through existing native human execution, applied profile pins, scheduler and HTTP lifecycle, and verified custody retention.
+!non-test-line-count 142477
+!non-test-file-count-justification	521	Wire accepted shared sessions through existing native human execution, applied profile pins, scheduler and HTTP lifecycle, and verified custody retention.
+!non-test-file-count 521

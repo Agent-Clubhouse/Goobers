@@ -20,6 +20,7 @@ func reconstructBudgetStarts(events []journal.Event, runsDirs []string, workflow
 		runID    string
 	}
 	childOwners := childBudgetOwners(events)
+	bindSessionBudgetOwners(childOwners, events)
 	seen := make(map[admission]struct{})
 	starts := make(map[WorkflowIdentity][]time.Time)
 	for _, event := range events {

@@ -26,6 +26,7 @@ func (r *Runner) ForSessionExecution(id journal.RunIdentity, agent NewAgenticFun
 	cfg := r.cfg
 	cfg.sessionExecution = &id
 	cfg.ConfigGeneration = id.ConfigGeneration
+	cfg.InstanceID = id.InstanceID
 	cfg.NewAgentic = agent
 	cfg.NewDeterministic = nil
 	cfg.Escalation, cfg.ClaimedItems = nil, nil
@@ -101,7 +102,7 @@ func (r *Runner) refuseSessionResume(runID string) error {
 	if id.Session == nil || r.cfg.sessionExecution == nil || !sameSessionIdentity(id, *r.cfg.sessionExecution) {
 		return errors.New("runner: session resume requires exact accepted driver")
 	}
-	return nil
+	return errors.New("runner: interrupted native session requires custody reconciliation and a new accepted message")
 }
 
 func sameSessionIdentity(a, b journal.RunIdentity) bool {

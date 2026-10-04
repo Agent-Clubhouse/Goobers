@@ -1521,6 +1521,9 @@ func (u *upSession) startScheduler() int {
 		pf(u.stderr, "error: %v\n", err)
 		return 1
 	}
+	if err := u.restoreInteractiveSessions(); err != nil {
+		return reportDaemonStartupError(u.stderr, "restore shared session custody", err)
+	}
 	// #3806: the scheduler's run-tracking state has been reconciled from the
 	// run directories already on disk.
 	u.stateOpen.Store(true)

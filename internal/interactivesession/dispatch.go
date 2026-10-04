@@ -61,7 +61,11 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 	}
 	s.execution.owners[record.ID] = owner
 	s.execution.workers.Add(1)
-	go s.runTurn(claimed, inputs, prepared, owner)
+	done := func() {}
+	if s.Runtime.RegisterDispatch != nil {
+		done = s.Runtime.RegisterDispatch()
+	}
+	go func() { defer done(); s.runTurn(claimed, inputs, prepared, owner) }()
 	return nil
 }
 

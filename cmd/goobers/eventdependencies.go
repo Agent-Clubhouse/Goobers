@@ -32,6 +32,9 @@ func retainEventGenerationPins(ctx context.Context, layout instance.Layout, pins
 		return err
 	}
 	defer func() { _ = queue.Close() }()
+	if err := retainSessionGenerationPins(ctx, queue, pins); err != nil {
+		return err
+	}
 	dependencies, err := eventexecution.RetainedDependencies(ctx, queue)
 	if err != nil {
 		return fmt.Errorf("retained event generation custody: %w", err)

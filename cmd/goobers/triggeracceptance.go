@@ -17,8 +17,10 @@ import (
 	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/interactivesession"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/sessioning"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -27,6 +29,8 @@ import (
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
 	ordinary               *startintent.Service
+	sessions               *interactivesession.Service
+	sessionCursor          string
 	childFamilies          *childFamilyLifecycle
 	queue                  *triggerqueue.Store
 	dispatch               *daemonTriggerService
@@ -162,8 +166,8 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	if s.childFamilies != nil {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}
-	pruneErr = errors.Join(pruneErr, s.sweepEvents(ctx))
-	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil {
+	pruneErr = errors.Join(pruneErr, s.sweepEvents(ctx), s.sweepSessions(ctx))
+	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil && s.sessions == nil {
 		return pruneErr
 	}
 	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
@@ -195,6 +199,12 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	}
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.drainChild(ctx, record)
+	}
+	if header.Kind == sessioning.StartKind {
+		if s.sessions == nil {
+			return nil
+		}
+		return s.sessions.Dispatch(ctx, s.dispatch.lifecycleContext(ctx), record)
 	}
 	if header.Kind == eventing.StartKind {
 		if s.events == nil {

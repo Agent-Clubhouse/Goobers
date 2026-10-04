@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 
@@ -22,7 +21,6 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
-	"github.com/goobers/goobers/internal/worktree"
 )
 
 type interactiveRestartExecution struct {
@@ -178,27 +176,17 @@ func (e *interactiveRestartExecution) begin(ctx context.Context, id journal.RunI
 		_ = pin.Release()
 		return nil, nil, err
 	}
-	if err = lease.RequireSources(e.gaggle.Spec.Project, e.gaggle.Spec.Backlog, e.gaggle.Spec.AdditionalRepos); err != nil {
-		lease.Close()
-		_ = pin.Release()
-		return nil, nil, err
-	}
-	home, err := os.MkdirTemp("", "goobers-human-runtime-")
+	ctx, closeRuntime, err := e.enterHumanRuntime(lease, reg)
 	if err != nil {
 		lease.Close()
 		_ = pin.Release()
 		return nil, nil, err
 	}
-	ctx, proof := invoke.WithWorkspaceQuiescence(lease.Context())
-	runtime := &interactiveRestartContext{lease: lease, home: home, execution: e, registrar: teeRegistrar{run: reg, shared: e.setup.SharedRegistry}, proof: proof}
-	ctx = context.WithValue(ctx, interactiveRestartContextKey{}, runtime)
-	ctx = worktree.WithGitExecution(ctx, worktree.GitExecution{Environment: runtime.gitEnvironment, Prepare: runtime.prepareGit})
 	cleanup := func() {
-		if proof.VerifyIdle() != nil {
-			_ = lease.CloseAfter(proof.VerifyIdle())
+		if proofErr := closeRuntime(); proofErr != nil {
+			_ = lease.CloseAfter(proofErr)
 			return
 		}
-		_ = os.RemoveAll(home)
 		_ = pin.Release()
 		lease.Close()
 	}

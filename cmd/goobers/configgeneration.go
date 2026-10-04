@@ -137,7 +137,7 @@ func generationResolverFor(layout instance.Layout, retainer *configgeneration.Re
 	return func(ctx context.Context, identity journal.RunIdentity) (executionGenerationRuntime, error) {
 		// Generated runs require retained source plus parent-generation custody;
 		// their display names must never select a mutable catalog definition.
-		if identity.Child != nil {
+		if identity.Child != nil || identity.Session != nil {
 			return executionGenerationRuntime{}, errors.New("generated child recovery requires retained proposal resolver")
 		}
 		directory, lease, err := retainer.Store.Acquire(ctx, identity.ConfigGeneration)
@@ -175,6 +175,9 @@ func (r *daemonRunnerRegistry) setGenerationResolver(resolve executionGeneration
 }
 
 func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity journal.RunIdentity) (executionGenerationRuntime, error) {
+	if identity.Session != nil {
+		return executionGenerationRuntime{}, errors.New("interactive session recovery is observed through its durable conversation queue; submit another message after custody settles")
+	}
 	if r == nil {
 		return executionGenerationRuntime{}, errors.New("no registry for pinned execution generation")
 	}

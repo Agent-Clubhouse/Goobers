@@ -334,7 +334,7 @@ func (r *configReloader) poll(now time.Time) error {
 	// entries go live, or every engine lane fails closed from this reload on.
 	definitions.EngineRuntime.adoptFrom(r.setup.EngineRuntime)
 	publish := func() error {
-		return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest)
+		return r.publishSchedulerAndSessions(definitions, now, digest)
 	}
 	if err := r.publishOrdinaryDefinitions(definitions, func() error {
 		return r.publishEventDefinitions(definitions.EventCatalog, func() error { return r.publishInteractiveDefinitions(definitions.Set, publish) })

@@ -27,7 +27,7 @@ func openTriggerPruneGuard(layout instance.Layout, dryRun bool, now time.Time) (
 		return nil, noop, err
 	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return guardParentContributionPrune, noop, nil
+		return guardSessionJournalWithoutQueue, noop, nil
 	} else if err != nil {
 		return nil, noop, err
 	}
@@ -47,6 +47,9 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 		return err
 	}
 	if err := protectChildJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
+	if err := protectSessionJournal(ctx, queue, candidate); err != nil {
 		return err
 	}
 	if err := protectEventJournal(ctx, queue, candidate); err != nil {

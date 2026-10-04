@@ -44,21 +44,23 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
-	OrdinaryRuntime ordinaryRuntimeBuilder
-	OrdinaryCatalog *ordinaryStartCatalog
-	SourceStarts    localscheduler.SourceQueue
-	ChildRuntime    childRuntimeBuilder
-	EventRuntime    eventRuntimeBuilder
-	EventCatalog    eventPublicationSnapshot
-	EventPublisher  *daemonEventPublisher
-	observation     *schedulerObservation
-	runtime         *schedulerRuntime
-	Generations     *configgeneration.Retainer
-	Root            string
-	Runner          *runner.Runner
-	Runners         map[string]*runner.Runner
-	LegacyRunner    *runner.Runner
-	Telemetry       *telemetry.Client
+	SessionGeneration string
+	SessionRuntime    *daemonSessionRuntime
+	OrdinaryRuntime   ordinaryRuntimeBuilder
+	OrdinaryCatalog   *ordinaryStartCatalog
+	SourceStarts      localscheduler.SourceQueue
+	ChildRuntime      childRuntimeBuilder
+	EventRuntime      eventRuntimeBuilder
+	EventCatalog      eventPublicationSnapshot
+	EventPublisher    *daemonEventPublisher
+	observation       *schedulerObservation
+	runtime           *schedulerRuntime
+	Generations       *configgeneration.Retainer
+	Root              string
+	Runner            *runner.Runner
+	Runners           map[string]*runner.Runner
+	LegacyRunner      *runner.Runner
+	Telemetry         *telemetry.Client
 	// Shared only by this setup's trace, journal, and diagnostic exporters.
 	TelemetryReplayStart <-chan struct{}
 	RollupDB             *rollup.DB
@@ -373,6 +375,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	return &schedulerSetup{
 		observation:              observation,
 		runtime:                  runtime,
+		SessionGeneration:        definitions.sessionGeneration(),
 		ChildRuntime:             definitions.ChildRuntime,
 		EventRuntime:             definitions.EventRuntime,
 		OrdinaryRuntime:          definitions.OrdinaryRuntime,

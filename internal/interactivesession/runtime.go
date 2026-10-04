@@ -38,10 +38,11 @@ type PreparedTurn struct {
 // shared scheduler capacity; Observe independently verifies the real journal.
 // Installation is host-only and completed before serving or sweeping requests.
 type Runtime struct {
-	Build   func(context.Context, triggerqueue.SessionTurn, sessioning.ExecutionInputs) (PreparedTurn, error)
-	Observe func(context.Context, triggerqueue.SessionTurn, sessioning.ExecutionInputs) (Observation, error)
-	Reserve func(context.Context, journal.RunIdentity, time.Time) (func(), error)
-	Restore func(journal.RunIdentity) (func(), error)
+	Build            func(context.Context, triggerqueue.SessionTurn, sessioning.ExecutionInputs) (PreparedTurn, error)
+	Observe          func(context.Context, triggerqueue.SessionTurn, sessioning.ExecutionInputs) (Observation, error)
+	Reserve          func(context.Context, journal.RunIdentity, time.Time) (func(), error)
+	Restore          func(journal.RunIdentity) (func(), error)
+	RegisterDispatch func() func()
 }
 
 type executionOwner struct {
