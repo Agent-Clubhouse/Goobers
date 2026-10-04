@@ -73,7 +73,9 @@ func (p *parentStagePod) Invoke(ctx context.Context, env apiv1.InvocationEnvelop
 		return apiv1.ResultEnvelope{}, err
 	}
 	transport := childpod.TemporalDispatch{Client: p.client, WorkflowQueue: p.service.config.EffectiveEngineConfig().TaskQueue, DispatchQueue: pin.Queue, Admit: p.admission(env)}
-	executor := childpod.Executor{Dispatcher: transport, Surrenders: p.surrenders, Blobs: blobs, Recorder: p.journal, KeepAttempt: blobs.KeepAttempt}
+	executor := childpod.Executor{Dispatcher: transport, Surrenders: p.surrenders, Blobs: blobs, Recorder: p.journal, KeepAttempt: blobs.KeepAttempt, KeepContribution: func(_ context.Context, request childpod.Request, ref journal.Ref) error {
+		return runner.RecordParentContribution(p.journal, *request.Attempt.Envelope, request.Attempt.ChildExecutionDigest, ref)
+	}}
 	executionCtx, podProof := invoke.WithWorkspaceQuiescence(ctx)
 	out, report, callErr := executor.Execute(executionCtx, request)
 	outputCustodyErr = podProof.Verify()

@@ -40,8 +40,11 @@ func containedParentShape(cfg *instance.Config, goobers map[string]apiv1.GooberS
 		return refuse("contained parent currently requires serial agentic tasks without gates")
 	}
 	for _, task := range spec.Tasks {
-		if task.Type != apiv1.TaskAgentic || task.ChildWorkflows == nil || task.EffectiveWorkspace() != apiv1.WorkspaceRepo || len(task.RepoFrom) != 0 {
+		if task.Type != apiv1.TaskAgentic || task.ChildWorkflows == nil || task.EffectiveWorkspace() != apiv1.WorkspaceRepo {
 			return refuse("every contained parent task must opt in and use an ordinary managed repository workspace")
+		}
+		if !containedLinearRepoFrom(machine, task) {
+			return refuse("contained parent repoFrom must name its single direct predecessor")
 		}
 		for _, key := range task.Capabilities {
 			if key != string(capability.AgentModel) {
@@ -57,6 +60,17 @@ func containedParentShape(cfg *instance.Config, goobers map[string]apiv1.GooberS
 		}
 	}
 	return nil
+}
+
+func containedLinearRepoFrom(machine *workflow.Machine, task apiv1.Task) bool {
+	if len(task.RepoFrom) == 0 {
+		return task.Name == machine.Def.Spec.Start
+	}
+	if len(task.RepoFrom) != 1 {
+		return false
+	}
+	producer, found := machine.Task(task.RepoFrom[0])
+	return found && producer.Next == task.Name && producer.EffectiveWorkspace() == apiv1.WorkspaceRepo
 }
 
 func containedParentPlacements(cfg *instance.Config, set *instance.ConfigSet, machine *workflow.Machine) ([]dispatcher.PinnedPlacement, error) {

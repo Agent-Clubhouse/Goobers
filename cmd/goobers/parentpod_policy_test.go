@@ -17,11 +17,14 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-func containedParentFixture(t *testing.T) pinnedChildFixture {
+func containedParentFixture(t *testing.T, change ...func(string) string) pinnedChildFixture {
 	t.Helper()
 	return newPinnedChildFixture(t, func(root string) {
 		path := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
+		for _, apply := range change {
+			parent = apply(parent)
+		}
 		writeFileContent(t, path, parent)
 		path = filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
 		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))

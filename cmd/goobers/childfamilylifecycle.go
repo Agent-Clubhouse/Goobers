@@ -126,6 +126,9 @@ func (f *childFamilyLifecycle) settle(ctx context.Context, parent triggerqueue.C
 	if err != nil || (phase != journal.PhaseCompleted && phase != journal.PhaseAborted) {
 		return err
 	}
+	if err = requireRetiredParentContributions(rd); err != nil {
+		return err
+	}
 	if err = f.queue.FenceChildParent(ctx, parent, "parent-terminal", time.Now()); err != nil {
 		return err
 	}

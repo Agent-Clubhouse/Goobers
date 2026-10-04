@@ -219,7 +219,9 @@ func (p *parentStagePod) importRecovery(ctx context.Context, reader *journal.Rea
 		return err
 	}
 	request := childpod.Request{ParentOrigin: c.ParentOrigin, Identity: c.Identity, Attempt: retained.Input.Attempt, Eligible: retained.Input.Eligible, Workspace: &childpod.WorkspaceInput{Path: workspace.Path}, Ceiling: c.Ceiling, StartedAt: c.StartedAt}
-	executor := childpod.Executor{Blobs: scoped, Surrenders: p.surrenders, Recorder: recorder, RecoveryReader: reader}
+	executor := childpod.Executor{Blobs: scoped, Surrenders: p.surrenders, Recorder: recorder, RecoveryReader: reader, KeepContribution: func(_ context.Context, request childpod.Request, ref journal.Ref) error {
+		return runner.RecordParentContribution(recorder, *request.Attempt.Envelope, request.Attempt.ChildExecutionDigest, ref)
+	}}
 	out, err := executor.Reconcile(ctx, request, retained, report)
 	if err != nil {
 		return err

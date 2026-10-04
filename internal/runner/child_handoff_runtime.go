@@ -202,7 +202,7 @@ func (r *Runner) restoreChildWait(ctx context.Context, tf *taskFrame, cumulative
 }
 
 func finishChildStageCustody(ctx context.Context, tf *taskFrame) error {
-	if tf.heldChildWorkspace == nil {
+	if tf.heldChildWorkspace == nil || tf.heldChildWorkspace.parentContribution {
 		return nil
 	}
 	workspace := tf.heldChildWorkspace

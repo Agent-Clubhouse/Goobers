@@ -48,6 +48,10 @@ func (wt *Worktree) HoldForChild(ctx context.Context) (StageCustody, error) {
 // AdoptHeldStage verifies custody without creating, fetching, or resetting a
 // checkout. The caller already owns the run execution lease.
 func (m *Manager) AdoptHeldStage(ctx context.Context, repoURL string, custody StageCustody) (*Worktree, error) {
+	return m.adoptHeldStage(ctx, repoURL, custody, false)
+}
+
+func (m *Manager) adoptHeldStage(ctx context.Context, repoURL string, custody StageCustody, retiring bool) (*Worktree, error) {
 	if !validRunID(custody.WorkspaceID) || !validRunID(custody.OwnerRunID) || custody.RepositoryDigest != RepositoryDigest(repoURL) || custody.Branch == "" || custody.StartRef == "" {
 		return nil, fmt.Errorf("worktree: invalid held stage custody")
 	}
@@ -58,7 +62,7 @@ func (m *Manager) AdoptHeldStage(ctx context.Context, repoURL string, custody St
 		if err != nil {
 			return err
 		}
-		if primary.Status != statusCleanupRetained || primary.CleanupDisposition != childWaitDisposition || primary.OwnerRunID != custody.OwnerRunID || primary.RepositoryDigest != custody.RepositoryDigest || primary.StartRef != custody.StartRef || primary.Branch != custody.Branch {
+		if !stageCustodyMatches(primary, custody) || !stageRetirementStatus(primary, retiring) {
 			return fmt.Errorf("worktree: held stage identity has changed")
 		}
 		registered, err := worktreeRegistered(ctx, repository, wt.Path)
@@ -128,4 +132,15 @@ func (wt *Worktree) writeCustodyMarkers(primary, ownership marker) error {
 		return err
 	}
 	return writeMarker(wt.manager.markerPath(wt.key, wt.RunID), primary)
+}
+
+func stageCustodyMatches(primary marker, custody StageCustody) bool {
+	return primary.RunID == custody.WorkspaceID && primary.OwnerRunID == custody.OwnerRunID && primary.RepositoryDigest == custody.RepositoryDigest && primary.StartRef == custody.StartRef && primary.Branch == custody.Branch
+}
+
+func stageRetirementStatus(primary marker, retiring bool) bool {
+	if primary.Status == statusCleanupRetained && primary.CleanupDisposition == childWaitDisposition {
+		return true
+	}
+	return retiring && primary.CleanupDisposition == "" && (primary.Status == statusActive || primary.Status == statusCleanupPending)
 }

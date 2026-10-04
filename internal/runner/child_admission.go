@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -46,7 +47,14 @@ func (r *Runner) verifyChildWorkflowCustody(dir string) error {
 func (r *Runner) localTaskDenied(tf taskFrame) bool {
 	return r.cfg.SelfExecutionDenied && !r.containedParentTask(tf)
 }
-func (r *Runner) taskCustodyReady(tf taskFrame, branch int) error {
+func (r *Runner) taskCustodyReady(ctx context.Context, tf *taskFrame, branch int) error {
+	if err := r.taskPhysicalCustodyReady(*tf, branch); err != nil {
+		return err
+	}
+	return r.restoreParentContribution(ctx, tf, branch)
+}
+
+func (r *Runner) taskPhysicalCustodyReady(tf taskFrame, branch int) error {
 	if tf.t.ChildWorkflows == nil {
 		return nil
 	}

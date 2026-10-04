@@ -33,6 +33,9 @@ type Executor struct {
 	Recorder   runner.ArtifactRecorder
 	// KeepAttempt persists exact host custody before a writer-started marker or dispatch.
 	KeepAttempt func(context.Context, RetainedAttempt) error
+	// KeepContribution publishes host custody only after exact return import.
+	// A failure poisons writer acknowledgement and preserves the checkout.
+	KeepContribution func(context.Context, Request, journal.Ref) error
 	// RecoveryReader supplies host-only application intent for exact replay.
 	RecoveryReader *journal.Reader
 }
@@ -231,7 +234,8 @@ func (e *Executor) receive(ctx context.Context, request Request, contract Contra
 	if err != nil {
 		return out, err
 	}
-	if _, err = e.keep(ctx, request, "output", returned); err != nil {
+	outputRef, err := e.keepRef(ctx, request, "output", returned)
+	if err != nil {
 		return out, err
 	}
 	if returned.Workspace != nil && (request.Attempt.Review || request.Attempt.Workspace == "repo-readonly") && returned.Workspace.Snapshot.TreeSHA != expected.TreeSHA {
@@ -239,6 +243,11 @@ func (e *Executor) receive(ctx context.Context, request Request, contract Contra
 	}
 	if returned.Workspace != nil {
 		if err = e.applyReturn(ctx, request, *expected, *returned.Workspace, plan); err != nil {
+			return out, err
+		}
+	}
+	if e.KeepContribution != nil {
+		if err := e.KeepContribution(ctx, request, outputRef); err != nil {
 			return out, err
 		}
 	}

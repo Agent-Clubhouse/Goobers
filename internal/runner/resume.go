@@ -549,6 +549,9 @@ func (r *Runner) resumeTerminalPhase(rd *journal.Reader, jr *journal.Run, in Res
 			return res, true, err
 		}
 		res := Result{Phase: phase}
+		if err := r.retireContainedParentContributions(in.RunID, phase, jr); err != nil {
+			return res, true, err
+		}
 		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, true, err
 		}

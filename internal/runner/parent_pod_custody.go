@@ -3,8 +3,6 @@ package runner
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -32,7 +30,7 @@ func (r *Runner) holdContainedParentWorkspace(ctx context.Context, tf taskFrame,
 		return nil, err
 	}
 	// On any publication error preserve custody rather than reaping the original
-	// parent work. A normal joined invocation releases this hold below.
+	// parent work. Terminal archive authorization releases this hold.
 	preserve := func(context.Context) error { return nil }
 	workspace.retainedChild = preserve
 	data, err := json.Marshal(ContainedParentWorkspaceCustody{Version: 1, Origin: env.ChildWorkflowOrigin, Workspace: custody})
@@ -46,24 +44,9 @@ func (r *Runner) holdContainedParentWorkspace(ctx context.Context, tf taskFrame,
 	if err = tf.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: tf.t.Name, Attempt: int(env.Attempt), Runner: map[string]any{"kind": ContainedParentWorkspaceKind, "custody": record}}); err != nil {
 		return nil, err
 	}
-	workspace.retainedChild = nil
-	if tf.heldChildWorkspace == workspace {
-		workspace.retainedChild = preserve
-	}
-	return func() error {
-		if workspace.retainedChild != nil {
-			return nil
-		} // transferred to child wait
-		if err := r.verifyChildWorkflowCustody(tf.jr.Dir()); err != nil {
-			workspace.retainedChild = preserve
-			return err
-		}
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if err := workspace.worktree.ReleaseChildHold(releaseCtx); err != nil {
-			workspace.retainedChild = preserve
-			return errors.Join(err, ctx.Err())
-		}
-		return nil
-	}, nil
+	// Keep one exact checkout through completed stages. The imported output
+	// artifact is the bounded durable contribution; terminal retirement handles
+	// cleanup after verifying that artifact and all physical writer joins.
+	workspace.parentContribution = true
+	return func() error { return nil }, nil
 }

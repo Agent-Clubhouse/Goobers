@@ -3110,6 +3110,9 @@ func (r *Runner) notifyTerminal(jr *journal.Run, runID string, phase journal.Run
 }
 
 func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journal.Run) error {
+	if err := r.retireContainedParentContributions(runID, phase, jr); err != nil {
+		return err
+	}
 	if r.cfg.PrepareTerminal == nil {
 		return nil
 	}
@@ -3122,6 +3125,9 @@ func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journ
 // FinalizeTerminal runs the configured idempotent instance-level finalizer.
 // Startup recovery uses the same entrypoint after discovering a terminal run.
 func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
+	if err := r.replayContainedParentRetirements(runID, phase); err != nil {
+		return err
+	}
 	if r.cfg.FinalizeTerminal == nil {
 		return nil
 	}
@@ -3442,7 +3448,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	}
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
-		if err := r.taskCustodyReady(tf, branch); err != nil {
+		if err := r.taskCustodyReady(ctx, &tf, branch); err != nil {
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 		if _, ok := stalledRequestFromContext(ctx); ok {

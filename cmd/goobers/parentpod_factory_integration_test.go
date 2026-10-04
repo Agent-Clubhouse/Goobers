@@ -61,6 +61,10 @@ func TestIntegrationParentFactoryCancellationReturnsDirtyTreeAndTranscript(t *te
 	}
 	recoveryCLIGit(t, repo, "add", "unrelated.txt")
 	head := recoveryCLIGit(t, repo, "rev-parse", "HEAD")
+	custody := runner.ContainedParentWorkspaceCustody{Version: 1, Origin: env.ChildWorkflowOrigin, Workspace: worktree.StageCustody{WorkspaceID: "fixture-checkout", OwnerRunID: env.RunID, RepositoryDigest: worktree.RepositoryDigest(repo), Branch: "main", StartRef: head}}
+	if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: int(env.Attempt), Runner: map[string]any{"kind": runner.ContainedParentWorkspaceKind, "custody": custody}}); err != nil {
+		t.Fatal(err)
+	}
 	index := recoveryCLIGit(t, repo, "write-tree")
 	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
@@ -216,9 +220,9 @@ func (c *recoverableParentWorker) SignalWorkflow(context.Context, string, string
 	return nil
 }
 
-func testParentRunnerStart(t *testing.T, uncertain, recoverWorker bool) {
+func testParentRunnerStart(t *testing.T, uncertain, recoverWorker bool, change ...func(string) string) {
 	testdep.Require(t, "git")
-	f := containedParentFixture(t)
+	f := containedParentFixture(t, change...)
 	_, machine, err := childStageCatalog(f.cfg, f.applied, childworkflow.ParentSelection{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow, Stage: "plan"}, childworkflow.BackendRunner)
 	if err != nil {
 		t.Fatal(err)
@@ -280,7 +284,7 @@ func testParentRunnerStart(t *testing.T, uncertain, recoverWorker bool) {
 		if !a.WorkflowParent || contract.ParentOrigin == nil || a.Envelope.Workspace != "" {
 			t.Fatal("actual runner escaped contained parent route")
 		}
-		if recoverWorker {
+		if recoverWorker || len(change) > 0 {
 			pod := t.TempDir()
 			if err = childpod.Materialize(ctx, pod, *contract.Workspace); err != nil {
 				t.Fatal(err)
@@ -294,12 +298,22 @@ func testParentRunnerStart(t *testing.T, uncertain, recoverWorker bool) {
 				for _, pointer := range a.Envelope.ContextPointers {
 					found = found || pointer.Name == "recovered-parent-transcript"
 				}
-				if !found {
+				if !found && len(change) == 0 {
 					t.Fatal("recovery transcript not given to continuation")
 				}
 			}
 			if err = os.WriteFile(filepath.Join(pod, "source.txt"), []byte("recovered edits\n"), 0600); err != nil {
 				t.Fatal(err)
+			}
+			if len(change) > 0 {
+				if worker.starts > 1 {
+					if data, err := os.ReadFile(filepath.Join(pod, "new.txt")); err != nil || string(data) != "untracked contribution" {
+						t.Fatal("new contribution was lost", err)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(pod, "new.txt"), []byte("untracked contribution"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			carrier, _, err := childpod.CaptureCarrier(ctx, pod, contract.Workspace.Snapshot.Record.RepositoryKey, id.RunID, contract.StartedAt, contract.Workspace.Snapshot.Policy)
 			if err != nil {
@@ -399,7 +413,7 @@ func testParentRunnerStart(t *testing.T, uncertain, recoverWorker bool) {
 		}
 		return
 	}
-	if err != nil || result.Phase != journal.PhaseCompleted || worker.starts != 1 || base.calls != 0 {
+	if err != nil || result.Phase != journal.PhaseCompleted || worker.starts != len(machine.Def.Spec.Tasks) || base.calls != 0 {
 		t.Fatal("actual parent runner failed", result, err, worker.starts, base.calls)
 	}
 	dir, err := f.layout.FindRunDir(strings.Repeat("d", 32))
@@ -412,6 +426,9 @@ func testParentRunnerStart(t *testing.T, uncertain, recoverWorker bool) {
 	}
 	if err = verifyParentPodCustody(reader); err != nil {
 		t.Fatal(err)
+	}
+	if len(change) > 0 {
+		assertRetiredParentContribution(t, reader, manager, repo)
 	}
 }
 
@@ -454,4 +471,82 @@ func assertParentWorkspaceRetained(t *testing.T, f pinnedChildFixture, manager *
 		return
 	}
 	t.Fatal("parent workspace has no durable custody receipt")
+}
+
+func TestIntegrationParentContributionFeedsDeclaredNextStage(t *testing.T) {
+	testParentRunnerStart(t, false, false, func(source string) string {
+		return strings.Replace(source, "      goal:", "      next: verify\n      goal:", 1) + `    - name: verify
+      type: agentic
+      goober: coder
+      goal: Verify returned contribution
+      workspace: repo
+      repoFrom: plan
+      runsOn: {os: linux, capabilities: [isolated-parent]}
+      capabilities: [agent:model]
+      childWorkflows:
+        allowedGoobers: [coder]
+        allowedCapabilities: [agent:model]
+`
+	})
+}
+
+func assertRetiredParentContribution(t *testing.T, reader *journal.Reader, manager *worktree.Manager, repo string) {
+	t.Helper()
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workspaceID string
+	var occurrences []string
+	var final journal.Ref
+	for _, event := range events {
+		if event.Runner["kind"] == runner.ContainedParentWorkspaceKind {
+			data, _ := json.Marshal(event.Runner["custody"])
+			var custody runner.ContainedParentWorkspaceCustody
+			if err := json.Unmarshal(data, &custody); err != nil {
+				t.Fatal(err)
+			}
+			if workspaceID != "" && workspaceID != custody.Workspace.WorkspaceID {
+				t.Fatal("declared handoff switched checkout")
+			}
+			workspaceID = custody.Workspace.WorkspaceID
+			occurrences = append(occurrences, custody.Origin.StageOccurrence)
+			if _, err := manager.AdoptHeldStage(t.Context(), repo, custody.Workspace); err == nil {
+				t.Fatal("completed contribution checkout retained")
+			}
+		}
+		if event.Runner["kind"] == runner.ParentContributionRetiredKind {
+			data, _ := json.Marshal(event.Runner["contribution"])
+			var receipt struct {
+				Output journal.Ref `json:"output"`
+			}
+			if err := json.Unmarshal(data, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			final = receipt.Output
+			if event.Stage != "verify" {
+				t.Fatal("retired intermediate contribution")
+			}
+		}
+	}
+	if len(occurrences) != 2 || occurrences[0] == occurrences[1] {
+		t.Fatal("stage histories not distinct", occurrences)
+	}
+	data, err := reader.ArtifactBytesBounded(final, 24<<20)
+	if err != nil {
+		t.Fatal("final source context no longer readable", err)
+	}
+	var out childpod.Output
+	if err := json.Unmarshal(data, &out); err != nil || out.Workspace == nil {
+		t.Fatal(err)
+	}
+	restored := t.TempDir()
+	if err := childpod.Materialize(t.Context(), restored, *out.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"source.txt": "recovered edits\n", "new.txt": "untracked contribution"} {
+		if got, err := os.ReadFile(filepath.Join(restored, path)); err != nil || string(got) != want {
+			t.Fatal("archived contribution differs", path, string(got), err)
+		}
+	}
 }
