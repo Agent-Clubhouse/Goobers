@@ -363,8 +363,9 @@ URL or model-supplied receipt resolves it. Rejection is a review decision and ne
 removes an existing edge.
 
 This slice provides the artifact contract and pure binding/materialization helpers.
-Workflow ingestion, retained review decisions, portal accept/reject and source
-command submission remain separate installation work. Suggestions are not input
+Bounded journal artifact ingestion and retained review decisions are now implemented.
+Portal accept/reject, fresh source verification and command submission remain
+separate installation work. Suggestions are not input
 to the authoritative graph projector and grant no source permission.
 
 ## Dedicated needs-human resolution custody
@@ -456,3 +457,17 @@ Both operations require current repository-write authority, exact source/path an
 commit/blob/content pins, and the source-specific metadata allowlist. They are
 exclusive with field or edge changes in a single proposal. Omitted metadata
 permission disables these controls without granting any other source write.
+
+
+### Retained suggestion decisions
+
+Operational review custody now keeps the actual producing run, stage event and
+artifact digest with the human's accept/reject decision. Acceptance links to one
+exact repository proposal request; an uncertain submission cannot be replaced
+by another key. A link records the handoff, not PR publication or a graph edge.
+
+Unresolved decisions retain the source journal/artifact, archived configuration
+and linked proposal. Settled reviews use 30 days of detail followed by 30 days of
+compact replay identity. Review custody shares the command count, byte budget and
+bounded maintenance with source edits, marker resolutions and PR repairs. The
+repository/provider remains the owner of planning truth.
