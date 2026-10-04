@@ -44,6 +44,9 @@ func (b *Bridge) call(ctx context.Context, token, run, operation, binding string
 	if err = b.active(g, run); err != nil {
 		return err
 	}
+	if g.invocation.Reader == nil {
+		return ErrDenied
+	}
 	if g.calls >= sessioning.MaxOperationsPerTurn || g.bytes >= sessioning.MaxOperationTurnBytes {
 		return ErrLimit
 	}

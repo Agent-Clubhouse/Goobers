@@ -797,6 +797,39 @@
       "recoverySafe": false
     },
     {
+      "id": "sessionBacklogEditCapabilities",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/get_backlog_edit_capabilities",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionBacklogEdit",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/edit_backlog_item",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionBacklogReceipt",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/get_backlog_edit_receipt",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workbenchWriteCapabilities",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/write-capabilities",

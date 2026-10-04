@@ -17,7 +17,7 @@ func TestSessionOperationContractIsClosedAndGrantScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := doc["paths"].(map[string]any)
-	for _, name := range []string{"get_backlog_item", "list_backlog_items"} {
+	for _, name := range []string{"get_backlog_item", "list_backlog_items", "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt"} {
 		operation := paths[sessioning.OperationPath+"/"+name].(map[string]any)["post"].(map[string]any)
 		if operation["x-goobers-session-grant"] != "live-turn" || len(operation["security"].([]any)) != 1 {
 			t.Fatal("operation lacks turn-only authority")

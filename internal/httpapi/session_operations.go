@@ -68,13 +68,13 @@ func authorizeSessionOperation(r *http.Request, p Principal) error {
 	run, ok := strings.CutPrefix(p.Subject, "run:")
 	prefix := strings.ReplaceAll(sessioning.OperationPath, "{run}", run) + "/"
 	name, matched := strings.CutPrefix(r.URL.Path, prefix)
-	if !ok || !apiv1.ValidRunID(run) || !matched || r.Method != http.MethodPost || (name != "get_backlog_item" && name != "list_backlog_items") {
-		return errors.New("session grant is confined to its own read operations")
+	if !ok || !apiv1.ValidRunID(run) || !matched || r.Method != http.MethodPost || !sessionOperationName(name) {
+		return errors.New("session grant is confined to its own session operations")
 	}
 	return nil
 }
 func registerSessionOperationRoutes(router *Router, service SessionOperationService, errorLog *log.Logger) {
-	for _, id := range []apicontract.RouteID{apicontract.RouteSessionBacklogRead, apicontract.RouteSessionBacklogList} {
+	for _, id := range []apicontract.RouteID{apicontract.RouteSessionBacklogRead, apicontract.RouteSessionBacklogList, apicontract.RouteSessionBacklogEditCapabilities, apicontract.RouteSessionBacklogEdit, apicontract.RouteSessionBacklogReceipt} {
 		router.Handle(id, sessionOperationHandler(id, service, errorLog))
 	}
 }
@@ -99,9 +99,13 @@ func sessionOperationHandler(id apicontract.RouteID, service SessionOperationSer
 			writeError(w, 400, CodeInvalidRequest, "Query arguments are not allowed.")
 			return
 		}
-		raw, err := io.ReadAll(io.LimitReader(r.Body, sessioning.MaxOperationRequestBytes+1))
+		limit := sessioning.MaxOperationRequestBytes
+		if id == apicontract.RouteSessionBacklogEdit {
+			limit = sessioning.MaxOperationWriteBytes
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 		_ = r.Body.Close()
-		if err != nil || len(raw) > sessioning.MaxOperationRequestBytes {
+		if err != nil || len(raw) > limit {
 			writeError(w, 400, CodeInvalidRequest, "Invalid bounded operation body.")
 			return
 		}
@@ -120,6 +124,9 @@ func callSessionOperation(ctx context.Context, service SessionOperationService, 
 			return nil, sessionBadRequest("Invalid item read arguments.")
 		}
 		return service.GetBacklogItem(ctx, token, run, request)
+	}
+	if id != apicontract.RouteSessionBacklogList {
+		return callSessionWrite(ctx, service, id, token, run, raw)
 	}
 	request, err := sessioning.DecodeBacklogList(raw)
 	if err != nil {

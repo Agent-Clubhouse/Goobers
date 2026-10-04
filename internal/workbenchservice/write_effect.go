@@ -21,7 +21,11 @@ func (s *WriterService) execute(ctx context.Context, bound ReadBinding, load int
 	// attempting custody, preventing replay after any potentially committed effect.
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	return s.Queue.CompleteWorkbenchCommand(cleanup, record.Input.Scope, record.ID, record.RequestDigest, receipt, s.now())
+	completed, err := s.Queue.CompleteWorkbenchCommand(cleanup, record.Input.Scope, record.ID, record.RequestDigest, receipt, s.now())
+	if err != nil {
+		return record, err
+	}
+	return completed, nil
 }
 func (s *WriterService) invokePatch(ctx context.Context, bound ReadBinding, credential interactiveaccess.Credential, record triggerqueue.WorkbenchCommand, fallback workbench.BacklogPatchReceipt) workbench.BacklogPatchReceipt {
 	client, err := s.ReadService.Backlog(ctx, bound, credential)

@@ -388,32 +388,35 @@ const (
 	RouteGaggleStatePut RouteID = "gaggleStatePut"
 
 	// The cross-run journal plane (decision 005 R1, finding 002 C4).
-	RouteJournalRunPhase               RouteID = "journalRunPhase"
-	RouteJournalConflictTouches        RouteID = "journalConflictTouches"
-	RouteJournalUnpushedWork           RouteID = "journalUnpushedWork"
-	RouteJournalEscalationCandidates   RouteID = "journalEscalationCandidates"
-	RouteJournalMergeAuthority         RouteID = "journalMergeAuthority"
-	RouteJournalBranchOwnership        RouteID = "journalBranchOwnership"
-	RouteOperatorMessageSubmit         RouteID = "operatorMessageSubmit"
-	RouteChildWorkflowValidate         RouteID = "childWorkflowValidate"
-	RouteChildWorkflowStart            RouteID = "childWorkflowStart"
-	RouteChildWorkflowStatus           RouteID = "childWorkflowStatus"
-	RouteChildWorkflowResolve          RouteID = "childWorkflowResolve"
-	RouteChildWorkflowAccessAcquire    RouteID = "childWorkflowAccessAcquire"
-	RouteChildWorkflowAccessRevoke     RouteID = "childWorkflowAccessRevoke"
-	RouteSessionBacklogRead            RouteID = "sessionBacklogRead"
-	RouteSessionBacklogList            RouteID = "sessionBacklogList"
-	RouteSessionList                   RouteID = "sessionList"
-	RouteSessionCreate                 RouteID = "sessionCreate"
-	RouteSessionGet                    RouteID = "sessionGet"
-	RouteSessionMessages               RouteID = "sessionMessages"
-	RouteSessionMessage                RouteID = "sessionMessage"
-	RouteSessionClose                  RouteID = "sessionClose"
-	RouteInteractiveRun                RouteID = "interactiveRun"
-	RouteChildWorkflowMonitor          RouteID = "childWorkflowMonitor"
-	RouteChildPublicationCheck         RouteID = "childPublicationCheck"
-	RouteInteractiveRunCommand         RouteID = "interactiveRunCommand"
-	RouteGaggleInteractiveCapabilities RouteID = "gaggleInteractiveCapabilities"
+	RouteJournalRunPhase                RouteID = "journalRunPhase"
+	RouteJournalConflictTouches         RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork            RouteID = "journalUnpushedWork"
+	RouteJournalEscalationCandidates    RouteID = "journalEscalationCandidates"
+	RouteJournalMergeAuthority          RouteID = "journalMergeAuthority"
+	RouteJournalBranchOwnership         RouteID = "journalBranchOwnership"
+	RouteOperatorMessageSubmit          RouteID = "operatorMessageSubmit"
+	RouteChildWorkflowValidate          RouteID = "childWorkflowValidate"
+	RouteChildWorkflowStart             RouteID = "childWorkflowStart"
+	RouteChildWorkflowStatus            RouteID = "childWorkflowStatus"
+	RouteChildWorkflowResolve           RouteID = "childWorkflowResolve"
+	RouteChildWorkflowAccessAcquire     RouteID = "childWorkflowAccessAcquire"
+	RouteChildWorkflowAccessRevoke      RouteID = "childWorkflowAccessRevoke"
+	RouteSessionBacklogRead             RouteID = "sessionBacklogRead"
+	RouteSessionBacklogList             RouteID = "sessionBacklogList"
+	RouteSessionBacklogEditCapabilities RouteID = "sessionBacklogEditCapabilities"
+	RouteSessionBacklogEdit             RouteID = "sessionBacklogEdit"
+	RouteSessionBacklogReceipt          RouteID = "sessionBacklogReceipt"
+	RouteSessionList                    RouteID = "sessionList"
+	RouteSessionCreate                  RouteID = "sessionCreate"
+	RouteSessionGet                     RouteID = "sessionGet"
+	RouteSessionMessages                RouteID = "sessionMessages"
+	RouteSessionMessage                 RouteID = "sessionMessage"
+	RouteSessionClose                   RouteID = "sessionClose"
+	RouteInteractiveRun                 RouteID = "interactiveRun"
+	RouteChildWorkflowMonitor           RouteID = "childWorkflowMonitor"
+	RouteChildPublicationCheck          RouteID = "childPublicationCheck"
+	RouteInteractiveRunCommand          RouteID = "interactiveRunCommand"
+	RouteGaggleInteractiveCapabilities  RouteID = "gaggleInteractiveCapabilities"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -668,6 +671,9 @@ var v1Routes = []Route{
 	{ID: RouteSessionBacklogRead, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionBacklogList, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/list_backlog_items", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchGraph, Method: http.MethodGet, Path: WorkbenchGraphPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionBacklogEditCapabilities, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_capabilities", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogEdit, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/edit_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchWriteCapabilities, Method: http.MethodGet, Path: WorkbenchWriteCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchPatch, Method: http.MethodPatch, Path: WorkbenchItemPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchCommand, Method: http.MethodGet, Path: WorkbenchCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

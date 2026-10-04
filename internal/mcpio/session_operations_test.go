@@ -90,3 +90,33 @@ func TestSessionMCPBoundsRefusesRedirectsAndRedactsGrant(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionMCPNativeWritePreservesEmptySetAndDoesNotRetry(t *testing.T) {
+	tools := sessionToolset(t)
+	tools.cfg.SessionOperations.BacklogWriteSources = []string{"items"}
+	calls := 0
+	tools.sessionTransport = sessionRoundTrip(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if !strings.HasSuffix(r.URL.Path, "/edit_backlog_item") {
+			t.Fatal(r.URL)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		request, err := sessioning.DecodeBacklogEdit(raw)
+		if err != nil || request.Values == nil || request.RequestID != "same-command" {
+			t.Fatal(string(raw), err)
+		}
+		return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader(`{"error":"uncertain"}`))}, nil
+	})
+	server := NewServer(tools)
+	args := json.RawMessage(`{"sourceBindingId":"items","requestId":"same-command","id":"42","sourceId":"99","expectedRevision":"1","field":"labels","values":[]}`)
+	if _, err := server.callSessionOperation("edit_backlog_item", args); err == nil {
+		t.Fatal("failed request succeeded")
+	}
+	if calls != 1 {
+		t.Fatal("automatic provider retry", calls)
+	}
+	tools.cfg.SessionOperations.BacklogWriteSources = nil
+	if _, err := server.callSessionOperation("edit_backlog_item", args); err == nil || calls != 1 {
+		t.Fatal("ungranted write sent")
+	}
+}

@@ -44,7 +44,7 @@ func operationError(err error) error {
 		return httpapi.NewInterventionError(http.StatusForbidden, "session_operation_denied", "The session operation is no longer authorized.", nil)
 	}
 	if errors.Is(err, ErrLimit) {
-		return httpapi.NewInterventionError(http.StatusTooManyRequests, "session_operation_limit", "This turn reached its source-read allowance.", nil)
+		return httpapi.NewInterventionError(http.StatusTooManyRequests, "session_operation_limit", "This turn reached its source-operation allowance.", nil)
 	}
-	return httpapi.NewInterventionError(http.StatusServiceUnavailable, "session_operation_unavailable", "The source read could not be completed.", nil)
+	return httpapi.NewInterventionError(http.StatusServiceUnavailable, "session_operation_unavailable", "The source operation could not be completed.", nil)
 }

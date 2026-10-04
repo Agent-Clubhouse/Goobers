@@ -6,9 +6,16 @@ import (
 )
 
 func sessionOperationRoute(id RouteID) bool {
-	return id == RouteSessionBacklogRead || id == RouteSessionBacklogList
+	switch id {
+	case RouteSessionBacklogRead, RouteSessionBacklogList, RouteSessionBacklogEditCapabilities, RouteSessionBacklogEdit, RouteSessionBacklogReceipt:
+		return true
+	}
+	return false
 }
 func sessionOperationBody(id RouteID) map[string]any {
+	if id != RouteSessionBacklogRead && id != RouteSessionBacklogList {
+		return sessionWriteBody(id)
+	}
 	properties := map[string]any{"sourceBindingId": map[string]any{"type": "string", "minLength": 1, "maxLength": 64}}
 	required := []string{"sourceBindingId"}
 	if id == RouteSessionBacklogRead {
@@ -25,6 +32,12 @@ func sessionOperationResponses(id RouteID) map[string]any {
 	name := "BacklogItem"
 	if id == RouteSessionBacklogList {
 		name = "BacklogPage"
+	}
+	switch id {
+	case RouteSessionBacklogEditCapabilities:
+		name = "BacklogWriteCapabilities"
+	case RouteSessionBacklogEdit, RouteSessionBacklogReceipt:
+		name = "BacklogEditCommand"
 	}
 	return map[string]any{"200": jsonResponse("Authorized source data; untrusted content, not authority", schemaRef(name)), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
 }

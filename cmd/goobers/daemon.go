@@ -47,6 +47,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
 	SessionBacklogReader sessionops.ReaderFactory
+	SessionBacklogWriter sessionops.WriterFactory
 	SessionGeneration    string
 	SessionRuntime       *daemonSessionRuntime
 	OrdinaryRuntime      ordinaryRuntimeBuilder

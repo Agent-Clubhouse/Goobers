@@ -5,7 +5,12 @@ import "github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 func (s *Server) toolDefs() []toolDef {
 	definitions := toolDefs()
 	if len(SessionOperationToolNames(s.tools.cfg.SessionOperations, s.tools.cfg.RunID)) > 0 {
-		definitions = append(definitions, sessionOperationToolDefs(s.tools.cfg.SessionOperations.BacklogSources)...)
+		if !s.tools.cfg.SessionOperations.BacklogReadDisabled {
+			definitions = append(definitions, sessionOperationToolDefs(s.tools.cfg.SessionOperations.BacklogSources)...)
+		}
+		if len(s.tools.cfg.SessionOperations.BacklogWriteSources) > 0 {
+			definitions = append(definitions, sessionWriteToolDefs(s.tools.cfg.SessionOperations.BacklogWriteSources)...)
+		}
 	}
 	if len(ChildWorkflowToolNames(s.tools.cfg.ChildWorkflows, s.tools.cfg.RunID)) == 0 {
 		return definitions

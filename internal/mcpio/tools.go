@@ -42,6 +42,7 @@ func NewToolset(cfg Config) *Toolset {
 	if cfg.SessionOperations != nil {
 		access := *cfg.SessionOperations
 		access.BacklogSources = append([]string(nil), access.BacklogSources...)
+		access.BacklogWriteSources = append([]string(nil), access.BacklogWriteSources...)
 		cfg.SessionOperations = &access
 	}
 	if cfg.ChildWorkflows != nil {

@@ -27,8 +27,11 @@ func DecodeBacklogList(raw []byte) (BacklogListRequest, error) {
 	return r, ValidateBacklogList(r)
 }
 func decodeOperation(raw []byte, allowed map[string]bool, out any) error {
+	return decodeBoundedOperation(raw, allowed, out, MaxOperationRequestBytes)
+}
+func decodeBoundedOperation(raw []byte, allowed map[string]bool, out any, limit int) error {
 	invalid := errors.New("invalid bounded session operation arguments")
-	if len(raw) > MaxOperationRequestBytes || !utf8.Valid(raw) {
+	if len(raw) > limit || !utf8.Valid(raw) {
 		return invalid
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
