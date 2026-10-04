@@ -13,12 +13,16 @@ import (
 
 func (u *upSession) configureWorkbenchReads() {
 	factory := workbenchservice.ProviderFactory{SchedulerDirectory: u.l.SchedulerDir(), Registrar: u.setup.SharedRegistry}
-	u.installWorkbenchReads(&workbenchservice.Service{Permissions: u.setup.InteractiveAccess, Backlog: factory.Backlog})
+	u.installWorkbenchReads(&workbenchservice.Service{Permissions: u.setup.InteractiveAccess, Backlog: factory.Backlog, Repository: factory.Repository})
 }
 
 func (u *upSession) installWorkbenchReads(service *workbenchservice.Service) {
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithWorkbenchReads(service))
-	u.setup.InteractiveAccess.SetBacklogReadAvailable(true)
+	u.setup.InteractiveAccess.SetBacklogReadAvailable(service.Backlog != nil)
+	if service.Repository != nil {
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithWorkbenchDocuments(service))
+		u.setup.InteractiveAccess.SetRepositoryReadAvailable(true)
+	}
 	if u.setup.SessionBacklogReader == nil && u.credentialPlane != nil && u.credentialPlane.grants != nil {
 		u.setup.SessionBacklogReader = workbenchSessionReader(service)
 	}

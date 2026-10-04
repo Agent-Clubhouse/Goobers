@@ -29,18 +29,19 @@ type Dependencies struct {
 // An operation callback must complete its bounded provider effect before
 // returning and must not retain a credential or start asynchronous effects.
 type Service struct {
-	executionMu           sync.Mutex
-	executions            map[*ExecutionLease]struct{}
-	executionDrainTimeout time.Duration
-	stageRestartAvailable atomic.Bool
-	sessionsAvailable     atomic.Bool
-	backlogReadAvailable  atomic.Bool
-	mu                    sync.RWMutex
-	gaggles               map[string]*apiv1.Gaggle
-	sources               map[string]instance.InteractiveCredential
-	deps                  Dependencies
-	sourceMu              sync.Mutex
-	resolved              map[string]resolvedSource
+	executionMu             sync.Mutex
+	executions              map[*ExecutionLease]struct{}
+	executionDrainTimeout   time.Duration
+	stageRestartAvailable   atomic.Bool
+	sessionsAvailable       atomic.Bool
+	backlogReadAvailable    atomic.Bool
+	repositoryReadAvailable atomic.Bool
+	mu                      sync.RWMutex
+	gaggles                 map[string]*apiv1.Gaggle
+	sources                 map[string]instance.InteractiveCredential
+	deps                    Dependencies
+	sourceMu                sync.Mutex
+	resolved                map[string]resolvedSource
 }
 
 // New pins configuration without resolving or minting secrets.
@@ -198,11 +199,17 @@ func (s *Service) operationAvailable(g *apiv1.Gaggle, action apiv1.InteractiveAc
 	case "session.create", "session.message":
 		return s.sessionsAvailable.Load()
 	case "backlog.read":
-		if !s.backlogReadAvailable.Load() || g.Spec.Workbench == nil {
-			return false
-		}
+		return s.backlogReadAvailable.Load() && workbenchSourceKind(g, "backlog")
+	case "repository.read":
+		return s.repositoryReadAvailable.Load() && (workbenchSourceKind(g, "documents") || workbenchSourceKind(g, "relationships"))
+	}
+	return false
+}
+
+func workbenchSourceKind(g *apiv1.Gaggle, kind string) bool {
+	if g.Spec.Workbench != nil {
 		for _, source := range g.Spec.Workbench.Sources {
-			if source.Kind == "backlog" {
+			if source.Kind == kind {
 				return true
 			}
 		}
@@ -212,6 +219,11 @@ func (s *Service) operationAvailable(g *apiv1.Gaggle, action apiv1.InteractiveAc
 
 // SetBacklogReadAvailable advertises an installed source reader, never a grant.
 func (s *Service) SetBacklogReadAvailable(available bool) { s.backlogReadAvailable.Store(available) }
+
+// SetRepositoryReadAvailable advertises installed configured-file reads only.
+func (s *Service) SetRepositoryReadAvailable(available bool) {
+	s.repositoryReadAvailable.Store(available)
+}
 
 func (s *Service) hasCredential(g *apiv1.Gaggle, action apiv1.InteractiveAction) bool {
 	if actionTarget(action, Target{Kind: "backlog"}) {

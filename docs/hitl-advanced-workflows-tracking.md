@@ -326,8 +326,10 @@ credentials share one current-policy boundary; session source reads can reuse a
 live lease without blocking its revocation. Native backlog read routes and portal
 browsing now show source-owned items, objective classification, associated native
 items and relationship coverage. Exact-credential repository readers return bounded
-commit-pinned Markdown objectives and relationship manifests; repository API/UI,
-graph composition and write service installation are the next slices.
+commit-pinned Markdown objectives and relationship manifests. Repository read
+routes and portal file browsing now expose source provenance, explicit objective
+relationships and aliases. Aggregate graph and write service installation are the
+next slices.
 
 The pure graph foundation now composes trusted source pages with verified target
 and commit pins, explicit authored/native edges, unresolved targets and visible

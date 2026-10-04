@@ -803,7 +803,7 @@
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "bounded",
-      "budgetMs": 20000,
+      "budgetMs": 8000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -814,7 +814,7 @@
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "bounded",
-      "budgetMs": 20000,
+      "budgetMs": 8000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -825,7 +825,7 @@
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "bounded",
-      "budgetMs": 20000,
+      "budgetMs": 8000,
       "streaming": false,
       "recoverySafe": false
     },

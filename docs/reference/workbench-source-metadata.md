@@ -233,7 +233,14 @@ Continuation cursors bind source, target and branch commit. If the branch moves,
 the caller restarts its read. Exhausting a page is not deletion evidence or proof
 of a coherent multi-page scan. Repository credentials and conditional caching use
 the same current interactive policy boundary as native backlog reads. Repository
-HTTP/portal installation follows in a separate review slice.
+The daemon installs `GET /api/v1/gaggles/{gaggle}/workbench/sources/{source}/documents`.
+Workbench HTTP reads use the existing eight-second bounded request budget, which
+narrows the provider's maximum and completes before the portal's client timeout.
+The portal shows one bounded window and one selected file, source provenance,
+objective identities, authored relationships and manifest aliases. Source text is
+displayed without executing Markdown or loading linked content. Refresh discards
+old content after source, branch, access or client changes. Repository edits still
+require a separate policy-governed PR path.
 
 ## Rebuildable graph projection
 
