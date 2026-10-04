@@ -320,6 +320,10 @@ The source metadata foundation now validates stable gaggle-qualified references,
 objective frontmatter, relationship manifests and explicit ownership. Candidate
 Markdown edits preserve body bytes and unrelated metadata; these parsers perform
 no provider access or writes. See `reference/workbench-source-metadata.md`.
+Explicit `spec.workbench` bindings now resolve only the singleton backlog or
+configured project/additional repository files. Source selection and interactive
+credentials share one current-policy boundary; session source reads can reuse a
+live lease without blocking its revocation. Browse routes remain the next slice.
 
 The backlog workbench still requires browse/edit surfaces and consistent explicit
 relations to items, PRs, dependencies and source-owned Markdown objectives in any
