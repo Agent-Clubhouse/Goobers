@@ -100,6 +100,8 @@ describe("WorkItemsPage", () => {
     );
 
     await screen.findByText("acme/app#42");
+    expect(screen.getByRole("heading", { name: "Work Items", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByText("External activity")).not.toBeInTheDocument();
     expect(screen.getAllByText("Done", { selector: ".status-badge" })).toHaveLength(2);
     const row = screen.getByRole("button", { name: /Open PR #42 in acme\/app/i });
     expect(row.querySelector(".data-table-primary")).toHaveAttribute("title", "acme/app#42");
