@@ -241,6 +241,40 @@ func TestSafetyPatchMustBelongToSelectedSubject(t *testing.T) {
 	assertFinding(t, compile(t, d), EvidenceCode, false)
 }
 
+func TestSafetyConditionalRebindSeparatesManagedAndAdvisoryReview(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-sibling-context"
+	d.Spec.Tasks = []apiv1.Task{shell("gather-sibling-context", "review", "goobers", "gather-sibling-context")}
+	d.Spec.Gates[0].Branches["needs-changes"] = wf.TargetAbort
+	d.Spec.Tasks[0].InputsFrom = map[string]string{"selectedNumber": "number", "advisoryMode": "advisoryMode"}
+	d.Spec.Tasks[0].Inputs = map[string]string{"resultFile": "sibling-context.json"}
+	d.Spec.Tasks[0].PolicyActions = []string{"flag-scope-drift", "route-verdict"}
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-sibling-context", nil) {
+		d.Spec.Tasks[0].Capabilities = append(d.Spec.Tasks[0].Capabilities, string(use.Capability))
+	}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+
+	got := assertFinding(t, compile(t, d), EvidenceCode, true)
+	if len(got) != 1 {
+		t.Fatalf("conditional rebind should report only the advisory path, got %+v", got)
+	}
+	witness := strings.Join(got[0].Details.WitnessPath, " -> ")
+	if !strings.Contains(witness, "advisoryMode=true without workspaceBranch") ||
+		strings.Contains(witness, "managed subject workspaceBranch") {
+		t.Fatalf("SAF001 witness does not isolate advisory path: %+v", got[0])
+	}
+	if got[0].Details.Confidence != "high" || got[0].Details.Coverage != "modeled" {
+		t.Fatalf("advisory path should be a modeled classification, got %+v", got[0].Details)
+	}
+
+	d.Spec.Tasks[0].Run.Command = []string{"goobers", "gather-pr-context"}
+	d.Spec.Tasks[0].Capabilities = nil
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+		d.Spec.Tasks[0].Capabilities = append(d.Spec.Tasks[0].Capabilities, string(use.Capability))
+	}
+	assertFinding(t, compile(t, d), EvidenceCode, false)
+}
+
 func TestSafetyFeedbackUsesRuntimeContextSelection(t *testing.T) {
 	d := reviewDefinition()
 	d.Spec.Tasks[0].ContextFrom = []string{"check"}
