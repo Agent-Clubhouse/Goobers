@@ -11,7 +11,7 @@ type PRRepairChange struct {
 }
 
 // PRRepairRequest never supplies the repository, actor or human selection. A
-// parent command may advance only to this turn's exact confirmed descendant.
+// parent command may advance only to this turn's exactly proven descendant.
 type PRRepairRequest struct {
 	RequestID       string           `json:"requestId"`
 	ExpectedHeadSHA string           `json:"expectedHeadSha"`
@@ -34,7 +34,7 @@ type PRRepairOrigin struct {
 }
 
 // PRRepairReceipt separates native acknowledgement from exact observed commit
-// evidence. An unknown receipt never authorizes the next iterative repair head.
+// evidence. Later authoritative observation is retained separately from this receipt.
 type PRRepairReceipt struct {
 	OperationDigest      string `json:"operationDigest"`
 	Outcome              string `json:"outcome"`
@@ -44,21 +44,32 @@ type PRRepairReceipt struct {
 	CommitID             string `json:"commitId,omitempty"`
 }
 
+// PRRepairObservation is a read-only check by a current authorized human.
+// Matches proves the exact original marker, ancestry and file delta, never acknowledgement.
+type PRRepairObservation struct {
+	Checker  Actor     `json:"checker"`
+	At       time.Time `json:"at"`
+	Matches  bool      `json:"matches"`
+	CommitID string    `json:"commitId,omitempty"`
+}
+
 // PRRepairCommandView is safe retained evidence under current actor/target
 // authorization. Commands are not workflow runs; RunID is the actual source turn.
 type PRRepairCommandView struct {
-	ID              string           `json:"id"`
-	SourceBindingID string           `json:"sourceBindingId"`
-	State           string           `json:"state"`
-	RequestDigest   string           `json:"requestDigest"`
-	OperationDigest string           `json:"operationDigest"`
-	SelectedHeadSHA string           `json:"selectedHeadSha"`
-	ExpectedHeadSHA string           `json:"expectedHeadSha"`
-	ParentCommandID string           `json:"parentCommandId,omitempty"`
-	RunID           string           `json:"runId"`
-	Actor           Actor            `json:"actor"`
-	AcceptedAt      time.Time        `json:"acceptedAt"`
-	AttemptedAt     *time.Time       `json:"attemptedAt,omitempty"`
-	CompletedAt     *time.Time       `json:"completedAt,omitempty"`
-	Receipt         *PRRepairReceipt `json:"receipt,omitempty"`
+	ID                  string                `json:"id"`
+	SourceBindingID     string                `json:"sourceBindingId"`
+	State               string                `json:"state"`
+	RequestDigest       string                `json:"requestDigest"`
+	OperationDigest     string                `json:"operationDigest"`
+	SelectedHeadSHA     string                `json:"selectedHeadSha"`
+	ExpectedHeadSHA     string                `json:"expectedHeadSha"`
+	ParentCommandID     string                `json:"parentCommandId,omitempty"`
+	RunID               string                `json:"runId"`
+	Actor               Actor                 `json:"actor"`
+	AcceptedAt          time.Time             `json:"acceptedAt"`
+	AttemptedAt         *time.Time            `json:"attemptedAt,omitempty"`
+	CompletedAt         *time.Time            `json:"completedAt,omitempty"`
+	Receipt             *PRRepairReceipt      `json:"receipt,omitempty"`
+	Observations        []PRRepairObservation `json:"observations,omitempty"`
+	OmittedObservations int64                 `json:"omittedObservations,omitempty"`
 }

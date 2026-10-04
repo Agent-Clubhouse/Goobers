@@ -11,7 +11,7 @@ import (
 
 func prRepairView(record triggerqueue.PRRepairCommand) sessioning.PRRepairCommandView {
 	i := record.Input
-	return sessioning.PRRepairCommandView{ID: record.ID, SourceBindingID: i.Scope.SourceBindingID, State: record.State, RequestDigest: record.RequestDigest, OperationDigest: i.OperationDigest, SelectedHeadSHA: i.Selection.ExpectedHeadSHA, ExpectedHeadSHA: i.Request.ExpectedHeadSHA, ParentCommandID: i.Request.ParentCommandID, RunID: i.Origin.RunID, Actor: i.Scope.Actor, AcceptedAt: record.AcceptedAt, AttemptedAt: record.AttemptedAt, CompletedAt: record.CompletedAt, Receipt: record.Receipt}
+	return sessioning.PRRepairCommandView{ID: record.ID, SourceBindingID: i.Scope.SourceBindingID, State: record.State, RequestDigest: record.RequestDigest, OperationDigest: i.OperationDigest, SelectedHeadSHA: i.Selection.ExpectedHeadSHA, ExpectedHeadSHA: i.Request.ExpectedHeadSHA, ParentCommandID: i.Request.ParentCommandID, RunID: i.Origin.RunID, Actor: i.Scope.Actor, AcceptedAt: record.AcceptedAt, AttemptedAt: record.AttemptedAt, CompletedAt: record.CompletedAt, Receipt: record.Receipt, Observations: record.Observations, OmittedObservations: record.OmittedObservations}
 }
 func prRepairError(err error) error {
 	if errors.Is(err, providers.ErrPRRepair) {

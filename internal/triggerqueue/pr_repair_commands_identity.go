@@ -134,7 +134,7 @@ func verifyPRRepairParent(ctx context.Context, tx *sql.Tx, input PRRepairCommand
 	if err != nil {
 		return err
 	}
-	if prior.TombstonedAt != nil || prior.State != "confirmed" || prior.Receipt == nil || !prior.Receipt.ProviderAcknowledged || !prior.Receipt.ObservedMatches || prior.Input.Origin != input.Origin || prior.Input.Selection != input.Selection || prior.Input.TargetDigest != input.TargetDigest || prior.Receipt.CommitID != input.Request.ExpectedHeadSHA {
+	if prior.TombstonedAt != nil || prior.ProvenCommit() == "" || prior.Input.Origin != input.Origin || prior.Input.Selection != input.Selection || prior.Input.TargetDigest != input.TargetDigest || prior.ProvenCommit() != input.Request.ExpectedHeadSHA {
 		return ErrConflict
 	}
 	if prior.Input.Target == nil || input.Target == nil || prior.Input.Target.Head != input.Target.Head || prior.Input.Target.Base != input.Target.Base {
@@ -152,7 +152,7 @@ func prRepairPhysicalTarget(selection sessioning.PRRepairTarget) string {
 
 func verifyPRRepairWriterCustody(ctx context.Context, tx *sql.Tx, selection sessioning.PRRepairTarget) error {
 	var active int
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pr_repair_commands WHERE physical_target=? AND state IN ('accepted','attempting','unknown'))`, prRepairPhysicalTarget(selection)).Scan(&active)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pr_repair_commands WHERE physical_target=? AND state IN ('accepted','attempting','unknown') AND observed_ns IS NULL)`, prRepairPhysicalTarget(selection)).Scan(&active)
 	if err != nil {
 		return err
 	}

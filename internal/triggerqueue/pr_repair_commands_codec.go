@@ -12,7 +12,7 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-const prRepairColumns = "id,gaggle,source_binding,issuer,subject,request_id,request_digest,target_digest,operation_digest,request,evidence,evidence_digest,state,accepted_ns,attempted_ns,completed_ns,tombstoned_ns,receipt,receipt_digest,turn_id,parent_id,physical_target"
+const prRepairColumns = "id,gaggle,source_binding,issuer,subject,request_id,request_digest,target_digest,operation_digest,request,evidence,evidence_digest,state,accepted_ns,attempted_ns,completed_ns,tombstoned_ns,receipt,receipt_digest,turn_id,parent_id,physical_target,observation,observation_digest,observed_ns"
 
 type prRepairRequestEnvelope struct {
 	Request   sessioning.PRRepairRequest
@@ -51,13 +51,15 @@ func encodePRRepairTarget(input PRRepairCommandInput) ([]byte, error) {
 }
 func scanPRRepairCommand(row scanner) (PRRepairCommand, error) {
 	var record PRRepairCommand
-	var raw, evidence, receipt []byte
+	var raw, evidence, receipt, observation []byte
+	var observationDigest string
+	var observed sql.NullInt64
 	var evidenceDigest, physicalTarget string
 	var accepted int64
 	var attempted, completed, tombstoned sql.NullInt64
 	var turn, parent sql.NullString
 	input := &record.Input
-	err := row.Scan(&record.ID, &input.Scope.Gaggle, &input.Scope.SourceBindingID, &input.Scope.Actor.Issuer, &input.Scope.Actor.Subject, &input.RequestID, &record.RequestDigest, &input.TargetDigest, &input.OperationDigest, &raw, &evidence, &evidenceDigest, &record.State, &accepted, &attempted, &completed, &tombstoned, &receipt, &record.ReceiptDigest, &turn, &parent, &physicalTarget)
+	err := row.Scan(&record.ID, &input.Scope.Gaggle, &input.Scope.SourceBindingID, &input.Scope.Actor.Issuer, &input.Scope.Actor.Subject, &input.RequestID, &record.RequestDigest, &input.TargetDigest, &input.OperationDigest, &raw, &evidence, &evidenceDigest, &record.State, &accepted, &attempted, &completed, &tombstoned, &receipt, &record.ReceiptDigest, &turn, &parent, &physicalTarget, &observation, &observationDigest, &observed)
 	if err != nil {
 		return record, err
 	}
@@ -67,7 +69,7 @@ func scanPRRepairCommand(row scanner) (PRRepairCommand, error) {
 		return record, ErrTransition
 	}
 	if record.TombstonedAt != nil {
-		if turn.Valid || parent.Valid || len(raw) > 0 || len(evidence) > 0 || len(receipt) > 0 {
+		if turn.Valid || parent.Valid || prRepairTombstoneHasPayload(raw, evidence, receipt, observation) || observationDigest != "" || observed.Valid {
 			return record, ErrTransition
 		}
 		return record, validatePRRepairState(record)
@@ -85,8 +87,23 @@ func scanPRRepairCommand(row scanner) (PRRepairCommand, error) {
 		return record, err
 	}
 
-	return record, validatePRRepairState(record)
+	if err = validatePRRepairState(record); err != nil {
+		return record, err
+	}
+	if err = decodePRRepairObservation(&record, observation, observationDigest, observed); err != nil {
+		return record, err
+	}
+	return record, nil
 }
+func prRepairTombstoneHasPayload(values ...[]byte) bool {
+	for _, value := range values {
+		if len(value) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func decodePRRepairInput(input *PRRepairCommandInput, raw, evidence []byte, digest, evidenceDigest string) error {
 	var envelope prRepairRequestEnvelope
 	if len(raw) > MaxPRRepairIntentBytes || childDigest(raw) != digest || json.Unmarshal(raw, &envelope) != nil {

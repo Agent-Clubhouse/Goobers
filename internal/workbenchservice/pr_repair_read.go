@@ -18,10 +18,10 @@ func (s *SessionPRRepair) expected(ctx context.Context, parent string) (string, 
 	if err != nil {
 		return "", nil, err
 	}
-	if record.Input.Selection != s.selection || record.Input.Origin != s.origin || record.State != "confirmed" || record.Receipt == nil || !record.Receipt.ProviderAcknowledged || !record.Receipt.ObservedMatches || record.Input.Target == nil {
+	if record.Input.Selection != s.selection || record.Input.Origin != s.origin || record.ProvenCommit() == "" || record.Input.Target == nil {
 		return "", nil, interactiveaccess.ErrDenied
 	}
-	return record.Receipt.CommitID, record.Input.Target, nil
+	return record.ProvenCommit(), record.Input.Target, nil
 }
 func (s *SessionPRRepair) inspect(ctx context.Context, client PRRepairClient, parent string) (providers.RepairPullRequest, error) {
 	head, prior, err := s.expected(ctx, parent)

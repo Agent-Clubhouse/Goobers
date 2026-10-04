@@ -40,6 +40,8 @@ type PRRepairCommand struct {
 	AttemptedAt, CompletedAt, TombstonedAt *time.Time
 	Receipt                                *sessioning.PRRepairReceipt
 	ReceiptDigest                          string
+	Observations                           []sessioning.PRRepairObservation
+	OmittedObservations                    int64
 }
 
 // FindPRRepairCommand checks a verified actor's exact command key without
