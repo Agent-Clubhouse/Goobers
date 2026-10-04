@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -216,5 +218,30 @@ func TestDirLayoutMatchesJournal(t *testing.T) {
 	want := filepath.Join("sha256", hex[:2], hex[2:])
 	if rel != want {
 		t.Fatalf("layout = %q; want %q", rel, want)
+	}
+}
+
+// TestPutSucceedsWhenChmodUnsupported simulates the production Azure Files
+// CIFS mount (nounix), where chmod returns EPERM (outage 2026-10-04).
+func TestPutSucceedsWhenChmodUnsupported(t *testing.T) {
+	old := chmodStaged
+	chmodStaged = func(string, fs.FileMode) error {
+		return &os.PathError{Op: "chmod", Path: "x", Err: syscall.EPERM}
+	}
+	t.Cleanup(func() { chmodStaged = old })
+
+	dir, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("cifs blob")
+	digest := digestOf(data)
+	ctx := context.Background()
+	if err := dir.Put(ctx, digest, data); err != nil {
+		t.Fatalf("Put with EPERM chmod: %v", err)
+	}
+	got, err := dir.Get(ctx, digest)
+	if err != nil || string(got) != string(data) {
+		t.Fatalf("Get = %q, %v", got, err)
 	}
 }

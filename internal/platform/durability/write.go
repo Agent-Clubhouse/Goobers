@@ -1,10 +1,12 @@
 package durability
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // AtomicWriteOperation identifies the step that failed during WriteFileAtomic.
@@ -46,6 +48,8 @@ type atomicWriteConfig struct {
 	remove           func(string) error
 	replace          func(string, string) error
 	syncDir          func(string) error
+	bestEffortMode   bool
+	chmod            func(path string, mode fs.FileMode) error
 }
 
 // Option configures WriteFileAtomic.
@@ -57,6 +61,33 @@ func WithTempPattern(pattern string) Option {
 	return func(config *atomicWriteConfig) {
 		config.tempPattern = pattern
 	}
+}
+
+// WithBestEffortMode makes a chmod failure that means the filesystem has no
+// permission bits to set (EPERM, ENOTSUP, EOPNOTSUPP, as returned by CIFS/SMB
+// mounts with nounix) non-fatal. The staged file keeps the owner-only mode
+// os.CreateTemp gave it. Only callers whose data is not secret-bearing and
+// that must work on such mounts should opt in; by default a mode failure
+// fails closed.
+func WithBestEffortMode() Option {
+	return func(config *atomicWriteConfig) {
+		config.bestEffortMode = true
+	}
+}
+
+// WithChmod overrides how the requested mode is applied to the staged file
+// (by temp path). It exists mainly as a fault-injection seam.
+func WithChmod(chmod func(path string, mode fs.FileMode) error) Option {
+	return func(config *atomicWriteConfig) {
+		config.chmod = chmod
+	}
+}
+
+// isModeUnsupported reports whether err means the filesystem cannot apply
+// permission bits at all.
+func isModeUnsupported(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.EOPNOTSUPP)
 }
 
 // WithPublishRaceCheck publishes without replacing an existing target and
@@ -92,7 +123,16 @@ func WriteFileAtomic(path string, data []byte, mode fs.FileMode, opts ...Option)
 	tempPath := file.Name()
 	defer func() { _ = config.remove(tempPath) }()
 
-	if err := file.Chmod(mode); err != nil {
+	var chmodErr error
+	if config.chmod != nil {
+		chmodErr = config.chmod(tempPath, mode)
+	} else {
+		chmodErr = file.Chmod(mode)
+	}
+	if chmodErr != nil && config.bestEffortMode && isModeUnsupported(chmodErr) {
+		chmodErr = nil
+	}
+	if err := chmodErr; err != nil {
 		_ = file.Close()
 		return atomicWriteError(AtomicWriteChmod, err)
 	}
