@@ -19,11 +19,13 @@ type WorkspaceQuiescence struct {
 	started  int
 	active   int
 	failures error
+	parent   *WorkspaceQuiescence
 }
 
 // WithWorkspaceQuiescence tracks writers for one child-enabled invocation.
 func WithWorkspaceQuiescence(ctx context.Context) (context.Context, *WorkspaceQuiescence) {
-	state := &WorkspaceQuiescence{}
+	parent, _ := ctx.Value(workspaceQuiescenceKey{}).(*WorkspaceQuiescence)
+	state := &WorkspaceQuiescence{parent: parent}
 	return context.WithValue(ctx, workspaceQuiescenceKey{}, state), state
 }
 
@@ -35,17 +37,24 @@ func RegisterWorkspaceWriter(ctx context.Context) func(error) {
 	if state == nil {
 		return nil
 	}
-	state.mu.Lock()
-	state.started++
-	state.active++
-	state.mu.Unlock()
+	// A stage may require its own proof inside a run-wide revocable credential
+	// lease. Replacing the local tracker must never hide that stage's writers
+	// or failed acknowledgements from the enclosing lease owner.
+	for current := state; current != nil; current = current.parent {
+		current.mu.Lock()
+		current.started++
+		current.active++
+		current.mu.Unlock()
+	}
 	var once sync.Once
 	return func(err error) {
 		once.Do(func() {
-			state.mu.Lock()
-			defer state.mu.Unlock()
-			state.active--
-			state.failures = errors.Join(state.failures, err)
+			for current := state; current != nil; current = current.parent {
+				current.mu.Lock()
+				current.active--
+				current.failures = errors.Join(current.failures, err)
+				current.mu.Unlock()
+			}
 		})
 	}
 }
