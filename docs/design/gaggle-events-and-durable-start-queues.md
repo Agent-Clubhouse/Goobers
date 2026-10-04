@@ -41,7 +41,11 @@ Related designs:
 - [Interactive factory operations](interactive-factory-operations.md): human identity, permissions, and portal actions.
 - `source-owned-backlog-workbench.md`: portable declarations and source write-through.
 
-## 2. Current implementation and reuse
+## 2. Original baseline and reuse
+
+This section records the original main-branch baseline. Installed local queue,
+event and shared-read behavior is described in the delivery sections below and
+the [review ledger](../hitl-advanced-workflows-tracking.md).
 
 `internal/triggerqueue` already durably accepts explicit trigger requests with actor/payload conflict detection.
 Its states are accepted, dispatching, dispatched, and rejected; uncertain dispatch requires reconciliation.
@@ -336,17 +340,21 @@ Agents suggest relationships only during creation/curation; portal v1 browses an
 
 ## 12. Rollout and compatibility
 
-Land the store/service seams before changing scheduler behavior; initially support shadow comparison without dispatching shadow starts.
-Use an explicit gaggle opt-in, proposed `execution.startQueue: durable-v1`, while compatibility evidence is collected.
-Opt-in switches every source for that gaggle together; a child or manual route cannot bypass the queue.
+The local implementation installs durable admission for every supported start
+source. There is no separate queue-enable opt-in. `spec.startQueue` configures
+pending deadlines; it does not enable an alternate dispatch path. Children and
+manual routes use the same durable custody. Unsupported execution/transport shapes
+remain explicit refusals pending their qualified adapters.
 The migration transaction adds/derives gaggle partitions and imports accepted/dispatching legacy receipts with actor, key, and reserved identity intact.
 An ambiguous legacy gaggle binding requires explicit reconciliation; migration never assigns it to a broader default scope.
 Mark the legacy drainer read-only before enabling the replacement; never run both dispatchers for the same acceptance.
 Recover in-flight runs independently; an existing run is not re-enqueued as a fresh start.
 Existing explicit requests keep durable acceptance and exit-code semantics; CLI wait defaults follow the receipt to a run/terminal custody outcome.
-`signal` gains daemon-backed publication and no-match success; deprecate lock-bound publication only after compatibility coverage.
+Daemon-backed signal admission and generic no-match event publication are installed.
+Retain compatibility checks for legacy signal semantics.
 Schedule catch-up, temporary admission wait, queue expiry, and asynchronous event acknowledgement are documented behavior changes.
-The intended end state is durable queues for all starts; remove the opt-in only after local/Temporal parity and migration gates pass.
+All supported starts use durable queues. Live Temporal parity and migration
+qualification remain required before claiming equivalent backend delivery.
 Rollback drains or parks accepted custody under the new reader; older binaries must refuse unsupported queue schema rather than discard it.
 Generic publication must not inherit the older unknown-signal-is-error wording from issue #648.
 
@@ -777,14 +785,17 @@ The cursor is process-local scheduling progress, not durable custody. Restarting
 begins a new pass without changing records, run identities, capacity or effect
 claims. Tests cover equal-time ordering after a cursor record leaves the pending
 set and an actual eligible start behind 100 held requests. This closes head-of-line
-starvation; queue inspection/cancellation/deadline policy remains a separate slice.
+starvation. Queue inspection, cancellation and deadline policy are installed in
+the control sections below.
 
 ### Queued ordinary human restart epochs
 
 The ordinary human affected-stage restart now commits a typed shared-ledger
 receipt and bounded immutable context before reserving scheduler capacity.
-The accepted source terminal occurrence and stage can own only one epoch;
-changing a command or selecting another key cannot fork that occurrence.
+An actionable source terminal occurrence can own only one unresolved restart
+epoch. A proven unattempted cancellation or expiry permits a fresh command to
+reserve a new epoch after current source and permission checks. Exact old-key
+replay remains terminal; an uncertain prior attempt cannot fork the occurrence.
 Current human permission is checked on receipt lookup and again on dispatch.
 Provider/source checks use the configured interactive credentials, and may
 refuse a changed source but cannot retarget the accepted epoch. Selected guidance,
@@ -796,7 +807,8 @@ journal transfers custody to the existing pinned human recovery path; a missing
 or mismatched journal after that barrier remains uncertain and retains source,
 context and generation pins. This slice does not infer worker termination from
 journal absence or automatically resend an uncertain attempt. An explicit repair
-that proves publication and writer custody absent remains a queue-lifecycle task.
+requires proven publication and writer absence; a missing journal alone is
+insufficient. Queue controls below preserve that distinction.
 HTTP returns accepted/pending and the reserved continuation ID while queued;
 that run becomes navigable after journal publication. Generated-child epochs
 continue through their existing parent/result/cancellation queue custody.
@@ -865,16 +877,18 @@ captured deadline requires the host's explicit clock and atomically checks it;
 clockless legacy admission refuses deadlines. Expiry never settles attempted
 custody, and child starts have no default deadline in this layer.
 
-This foundation is dormant until host scope pinning, current human policy checks,
-inspection/cancellation routes and deadline configuration are installed. Typed
+The installed controls below supply host scope pinning, current human policy
+checks, inspection/cancellation routes and deadline configuration. Typed
 pre-start settlement now validates the exact retained child/session owner. Session
 settlement appends a system response and releases only that queued turn; cancelling
 a later message preserves the active writer and FIFO. Child rejection remains
 owned by the existing result observer: it captures the actual disposition time
 and cancelled/failed result before the parent can acknowledge its slot. A queue
 receipt never fabricates a child execution or result reference.
-Actual execution cancellation and observed terminal acknowledgement remain host
-work, not claims made by storing a cancellation request.
+Installed host adapters cancel supported local ordinary, event, human, session
+and initial child executions only with exact owner and terminal evidence. A stored
+request alone does not establish cancellation; direct-engine cancellation still
+requires a qualified adapter.
 
 ### Installed start queue controls
 

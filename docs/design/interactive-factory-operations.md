@@ -43,7 +43,8 @@ The table records the original main-branch baseline above. It is historical inpu
 to this design, not the current local delivery status. The stack now installs
 per-gaggle human access, sequence-bound decisions, queued stage restarts, shared
 native agent sessions, source browsing and audited manual/session field edits.
-Needs-human resolution and agent PR repair remain active implementation slices.
+Needs-human resolution, selected-PR repair and post-turn receipt inspection are
+also installed in the local daemon, with current source authority and bounded effects.
 See the [delivery ledger](../hitl-advanced-workflows-tracking.md). No deployed
 end-to-end qualification is claimed.
 
@@ -84,17 +85,16 @@ repository/backlog as required by the workbench design, never in a private sessi
 
 ## 4. Interactive access and execution policy
 
-The policy and named credential vocabulary below is implemented by the first
-HAW-HITL-001/002 slice. Session/persona and operation contracts remain subsequent
-work. See [interactive access](../reference/interactive-access.md) for the current
+The policy and named credential vocabulary below is implemented alongside
+bounded shared sessions using an existing configured Goober and independently
+authorized typed source operations. See [interactive access](../reference/interactive-access.md) for the current
 permissions route, source formats and implementation boundaries.
 
-The first concrete portal slice now implements human-only local run inspection,
-occurrence-bound approval/override/denial and saved shared guidance through the
-existing runner and journal services. It is a partial HAW-HITL-005/010 delivery,
-not completion of the session ledger or HAW-HITL-007 restart epochs. Saved notes
-are not agent delivery; engine execution is unsupported on this surface until
-an equivalent authority and receipt path is tested. See the reference above for
+The portal implements human-only local run inspection, occurrence-bound decisions,
+saved shared guidance, queued affected-stage restart epochs and shared native
+sessions through the existing runner and journal services. Saved notes alone are
+not agent delivery. Engine intervention remains unsupported on this surface until
+an equivalent authority and receipt path is qualified. See the reference above for
 bounds, idempotency, pending outcomes and the actual routes.
 
 ```yaml
@@ -295,7 +295,8 @@ and PR IDs, locator and inspected head in structured session input. The accepted
 and immutable execution input bind that selection; prose and earlier turns cannot grant it.
 Any same-repository PR may be selected under current `pr.repair`; forks and active
 agent/worktree custody are refused. An iterative repair may advance only to the confirmed
-descendant in this turn/actor/PR's previous command receipt, retaining the original selection
+descendant proven by this turn/actor/PR's previous command receipt or exact retained
+positive observation, retaining the original selection
 and ancestor command ID. Foreign or uncertain head movements require fresh human intent.
 The initial native primitive supports at most 32 regular UTF-8 file additions, edits or
 deletions and 1 MiB of content; executable edits, symlinks, submodules and binary changes
@@ -413,7 +414,9 @@ and supervised execution. These are product/source precedents, not dependencies 
 that Goobers has been live-tested against those products.
 
 The implemented source selector uses named `instance.interactiveCredentials`, backed by
-existing token/auth sources. Initial session admission capacities and persona configuration
-remain to be finalized.
+existing token/auth sources. Initial shared sessions select an existing Goober
+and admit at most 32 open sessions per gaggle, four executing turns per gaggle and
+64 queued turns per session. See the shared-session reference for retention and
+current runtime bounds; more extensive persona configuration is later scope.
 These choices do not reopen explicit per-gaggle grants, PR-only repository changes,
 cascading child cancellation, shared sessions, source ownership or human attribution.

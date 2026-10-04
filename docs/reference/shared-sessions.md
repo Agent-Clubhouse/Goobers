@@ -21,9 +21,10 @@ verified. An accepted or queued turn is not proof the model has begun working.
 Messages are processed one turn at a time in durable order. New messages do not
 interrupt the active turn, and closing the browser does not cancel accepted work.
 The first runtime reconstructs bounded conversational context; it does not claim
-native harness session continuity. Explicit interruption and linked source-write
-operations remain later typed capabilities. Source repository changes must pass
-policy-governed PR publication before those operations can be enabled.
+native harness session continuity. A queued cancellation can stop one turn while
+preserving the conversation and later messages. Typed source reads, field edits, needs-human resolution and selected
+PR repairs are installed under their own grants. Repository changes use governed
+PR publication; conversational permission alone grants no source mutation.
 
 The portal uses explicit refresh and bounded pages. A failed authorization refresh
 removes previously displayed conversation data. A request with an unknown outcome
@@ -45,7 +46,7 @@ listed fields; unknown authority fields are rejected. Responses use `no-store`.
 | `POST /api/v1/gaggles/{gaggle}/sessions` | `title`, configured `goober`; durable acceptance |
 | `GET /api/v1/gaggles/{gaggle}/sessions/{session}` | Current session state |
 | `GET /api/v1/gaggles/{gaggle}/sessions/{session}/messages` | Numeric `after`, `limit`; ordered messages |
-| `POST /api/v1/gaggles/{gaggle}/sessions/{session}/messages` | `text`; durable message and turn acceptance |
+| `POST /api/v1/gaggles/{gaggle}/sessions/{session}/messages` | `text`, optional inspected `repairTarget`; durable message and turn acceptance |
 | `POST /api/v1/gaggles/{gaggle}/sessions/{session}/close` | Optional `reason`; intake closure and cancellation request |
 
 Mutation responses are HTTP 202, including exact replay. They acknowledge custody
@@ -66,8 +67,9 @@ Transport tests cover verified actor binding, forged authority rejection,
 malformed/oversized requests, bounded pagination and permission refusal. Portal
 tests cover attribution, queued-versus-executed links, retry after a lost response,
 refresh, close-pending status and permission revocation. Real model, worker and
-browser qualification remains outstanding. The initial portal does not stream
-agent output or expose backlog/PR mutations from a conversation.
+browser qualification remains outstanding. The portal does not stream agent
+output. It exposes typed backlog operations and explicit selected-PR repair through
+the authorized session tools described below.
 
 
 ## Execution identity and queued context
@@ -123,8 +125,9 @@ Composed HTTP acceptance tests execute the actual Runner and Claude adapter with
 a fake process boundary. They cover queued response context, cancellation, journal
 publication failure and a writer whose exit cannot be proven. Exact host writer
 markers distinguish model completion from whole-runtime cleanup. These checks do
-not qualify live model, Kubernetes or provider execution. The initial native
-session remains model-only until typed source operations are installed.
+not qualify live model, Kubernetes or provider execution. The native
+model process remains isolated from provider credentials. Installed typed host
+operations independently authorize and audit source effects.
 
 
 ## Typed backlog read tools
@@ -158,5 +161,28 @@ Inspection only reads with the gaggle's explicit interactive repository credenti
 It does not grant repair permission or reserve the branch. The executing turn
 checks the same native PR/repository identities, current repair policy and writer
 custody before each change. Fork PRs are unsupported; a changed head requires a
-fresh human selection unless it is the confirmed result of this turn's own repair.
-The picker is installed; the actual host repair adapter is a separate review slice.
+fresh human selection unless it is the verified result recorded in this turn's
+repair receipt or separate positive observation.
+The picker and local daemon repair adapter are installed. The host holds claim,
+admission and repository-manager locks through the bounded effect and receipt,
+and uses an immutable snapshot during reload. Shared/Temporal ownership, pinned
+workspaces and custom provider endpoints remain refused pending qualified adapters.
+
+
+## Retained PR repair checks
+
+The conversation view exposes **Check a retained PR repair**, including in closed
+sessions, to current operators with repository-read and PR-repair authority and
+an explicit credential binding. Enter the repair command ID returned by the agent.
+`GET /api/v1/gaggles/{gaggle}/pr-repairs/{command}` loads retained evidence without
+a provider read. An explicit `POST` to the same route plus `/check`, with `{}`,
+checks only a joined unknown effect against its original repository, commit parent,
+command marker and files. Callers cannot override the actor, target or credentials.
+
+A verified result is shown as `observed-applied`; the original provider
+acknowledgement and outcome remain unchanged. Exact positive proof releases the
+reserved target. Missing, moved or foreign evidence remains unknown; a check never
+repeats a branch update. An unjoined `attempting` effect cannot be settled here.
+The original human and checking operator are separate attributed fields. History
+retains at most 16 checks plus an omitted count; settled retention starts from the
+positive observation time (30 days of detail, then 30 days of replay tombstone).

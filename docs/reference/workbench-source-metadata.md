@@ -146,10 +146,12 @@ remain a distinct field. Objective classification uses configured native IDs,
 types or labels. Assignees and source tags retain their native values.
 
 Pages report omissions, remaining candidates and relationship coverage explicitly.
-GitHub milestone identity is available inline; its parent/blocker relations are
-currently not loaded. ADO inline parent/dependency targets remain unresolved until
-their membership in this source is verified. A page ending is not proof of a full
-consistent scan or deletion. Each operation has a 15-second limit, a 2-MiB raw
+GitHub milestone identity is available inline. Explicit selected-item browsing
+also reads one parent and a bounded blocker window. ADO selected-item browsing
+hydrates at most 64 inline parent/dependency candidates in one project-verified
+batch. Missing or foreign membership stays unresolved. Inventory and mutation
+preflight retain their unexpanded reads; malformed or ambiguous evidence stays
+partial. A page ending is not proof of a full consistent scan or deletion. Each operation has a 15-second limit, a 2-MiB raw
 reply bound, a 256-KiB item bound and a 1-MiB projected page bound.
 
 The provider adapter itself has no credentials, cache, polling loop or write path.
@@ -362,11 +364,10 @@ creation receipt for that exact request and occurrence. No guessed issue number,
 URL or model-supplied receipt resolves it. Rejection is a review decision and never
 removes an existing edge.
 
-This slice provides the artifact contract and pure binding/materialization helpers.
-Bounded journal artifact ingestion and retained review decisions are now implemented.
-Portal accept/reject, fresh source verification and command submission remain
-separate installation work. Suggestions are not input
-to the authoritative graph projector and grant no source permission.
+The artifact contract, bounded journal ingestion, fresh source verification and
+retained accept/reject decisions are installed through the API and portal. Accepted
+suggestions use the governed metadata proposal service described below. Suggestions
+are not authoritative graph input and grant no source permission.
 
 ## Dedicated needs-human resolution custody
 
@@ -381,8 +382,8 @@ the native command capacity and byte budget. Lost responses remain uncertain,
 even if a later read sees the marker gone. Complete source and learned-dependency
 coverage is required; unresolved or unknown blockers prevent acceptance.
 
-This provider/ledger slice does not install a portal action by itself. The live
-session resolver, host learned-record lock and portal entry point follow next.
+The installed session resolver, host learned-record lock and portal entry point
+use this provider/ledger custody.
 It neither approves a gate nor restarts a run or publishes a PR. Settled receipt
 retention follows the same 30-day detail plus 30-day tombstone policy; unresolved
 custody never expires automatically.
@@ -397,8 +398,9 @@ infer that general workflow eligibility has been granted.
 
 Confirmed replay reads its receipt without minting another provider credential or
 re-reading the obsolete pre-edit revision. A cancellation during the effect joins
-a bounded receipt save before releasing authority and claim custody. Session
-tools and the portal entry point remain the next installation slice.
+a bounded receipt save before releasing authority and claim custody. Installed
+session tools provide inspection, resolution and receipt reads; the portal can open
+that assessment in a new or existing shared conversation.
 
 ## Repository proposal phase receipts
 
@@ -410,12 +412,13 @@ submission to continue. An uncertain ADO branch creation cannot advance merely
 because a matching base ref appears. A final observed PR is recorded as observed,
 distinct from a provider-acknowledged PR.
 
-Native field commands, marker resolutions and repository proposals share one
-1,000-command gaggle limit and the database byte budget. The installed maintenance
-pass allocates cleanup across all three kinds within its existing row/time bound.
+Native field commands, marker resolutions, repository proposals, PR repairs and
+suggestion reviews share one 1,000-command gaggle limit and the database byte budget.
+The installed maintenance pass allocates cleanup across these five kinds within
+its existing row/time bound.
 Uncertain and partially visible proposal effects stay pinned; settled results use
-the existing detail/tombstone retention policy. Custody alone does not install the
-repository submission API or portal controls; those remain the next slice.
+the existing detail/tombstone retention policy. The repository submission API and
+portal controls below use this retained custody.
 
 ### Governed metadata proposal API
 
