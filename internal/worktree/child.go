@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/goobers/goobers/internal/workspacedelta"
@@ -33,11 +34,9 @@ type ChildOptions struct {
 // Identical retries preserve owned child edits; incomplete or mismatched custody
 // refuses for coordinator recovery.
 func (m *Manager) CreateChildFromSnapshot(ctx context.Context, opts ChildOptions) (*Worktree, error) {
-	if opts.RepoURL == "" || !validRunID(opts.RunID) || !validRunID(opts.OwnerRunID) {
-		return nil, fmt.Errorf("child workspace requires valid ownership and repository")
-	}
-	if _, err := hex.DecodeString(opts.SnapshotSHA); err != nil || opts.SnapshotSHA != strings.ToLower(opts.SnapshotSHA) || (len(opts.SnapshotSHA) != 40 && len(opts.SnapshotSHA) != 64) {
-		return nil, fmt.Errorf("child workspace requires an exact snapshot commit")
+	create, err := childCreateOptions(opts)
+	if err != nil {
+		return nil, err
 	}
 	var repository string
 	found, err := m.WithExistingMirror(ctx, opts.RepoURL, func(dir string) error {
@@ -51,8 +50,47 @@ func (m *Manager) CreateChildFromSnapshot(ctx context.Context, opts ChildOptions
 	if !found {
 		return nil, fmt.Errorf("child snapshot has not been imported into the managed mirror")
 	}
-	create := CreateOptions{RepoURL: opts.RepoURL, RunID: opts.RunID, OwnerRunID: opts.OwnerRunID, Gaggle: opts.Gaggle, BaseRef: opts.SnapshotSHA, Branch: "goobers/children/" + opts.OwnerRunID, RetainOnCleanup: true}
 	return m.createInMirror(ctx, create, repository, true)
+}
+
+func childCreateOptions(opts ChildOptions) (CreateOptions, error) {
+	if opts.RepoURL == "" || !validRunID(opts.RunID) || !validRunID(opts.OwnerRunID) {
+		return CreateOptions{}, fmt.Errorf("child workspace requires valid ownership and repository")
+	}
+	if _, err := hex.DecodeString(opts.SnapshotSHA); err != nil || opts.SnapshotSHA != strings.ToLower(opts.SnapshotSHA) || (len(opts.SnapshotSHA) != 40 && len(opts.SnapshotSHA) != 64) {
+		return CreateOptions{}, fmt.Errorf("child workspace requires an exact snapshot commit")
+	}
+	return CreateOptions{RepoURL: opts.RepoURL, RunID: opts.RunID, OwnerRunID: opts.OwnerRunID, Gaggle: opts.Gaggle, BaseRef: opts.SnapshotSHA, Branch: "goobers/children/" + opts.OwnerRunID, RetainOnCleanup: true}, nil
+}
+
+// AdoptChildFromSnapshot verifies existing exact custody without provisioning,
+// fetching, resetting, or removing anything. The caller holds the child run's
+// execution lease; this repository lock only serializes manager operations.
+// Missing or incomplete custody requires explicit recovery, never recreation.
+func (m *Manager) AdoptChildFromSnapshot(ctx context.Context, opts ChildOptions) (*Worktree, error) {
+	create, err := childCreateOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	var adopted *Worktree
+	found, err := m.WithExistingMirror(ctx, opts.RepoURL, func(dir string) error {
+		key := repoKey(opts.RepoURL)
+		path := filepath.Join(m.runsDirForKey(key), worktreeDirectoryName(opts.RunID))
+		var exists bool
+		var err error
+		adopted, exists, err = m.existingChildWorktree(ctx, key, dir, path, create)
+		if err == nil && !exists {
+			return fmt.Errorf("child workspace custody is missing; recovery is required")
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("child workspace mirror is missing; recovery is required")
+	}
+	return adopted, nil
 }
 
 func (m *Manager) existingChildWorktree(ctx context.Context, key, repository, path string, opts CreateOptions) (*Worktree, bool, error) {
