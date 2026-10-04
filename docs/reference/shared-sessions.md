@@ -141,3 +141,22 @@ outstanding read before runtime custody settles. A gaggle with no authorized
 source reader continues with model-only conversation. Native source mutations
 need separately installed durable typed command custody; these read tools grant
 no edit, PR or repository publication capability.
+
+
+## Choosing a PR for an agent message
+
+When current repository-read and PR-repair permissions are available, the session
+composer offers a configured repository source and PR number. Inspect the PR,
+review its branch and exact head, then select it for the message. The retained
+human message shows that selection to other authorized participants. A lost
+submission reply retries the same message, key and selected head against the
+original connection and target. A different connection cannot replay that pending
+command. Refresh clears a PR selection that has not yet been submitted; inspect
+and select it again before sending.
+
+Inspection only reads with the gaggle's explicit interactive repository credential.
+It does not grant repair permission or reserve the branch. The executing turn
+checks the same native PR/repository identities, current repair policy and writer
+custody before each change. Fork PRs are unsupported; a changed head requires a
+fresh human selection unless it is the confirmed result of this turn's own repair.
+The picker is installed; the actual host repair adapter is a separate review slice.

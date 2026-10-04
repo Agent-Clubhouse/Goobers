@@ -6,6 +6,7 @@ import (
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/interactiveaccess"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sessionops"
 	"github.com/goobers/goobers/internal/workbench"
 	"github.com/goobers/goobers/internal/workbenchservice"
@@ -15,6 +16,10 @@ func (u *upSession) configureWorkbenchReads() {
 	factory := workbenchservice.ProviderFactory{SchedulerDirectory: u.l.SchedulerDir(), Registrar: u.setup.SharedRegistry}
 	read := &workbenchservice.Service{Permissions: u.setup.InteractiveAccess, Backlog: factory.Backlog, Repository: factory.Repository}
 	u.installWorkbenchReads(read)
+	if u.setup.SharedRegistry != nil {
+		selection := &workbenchservice.PRSelectionService{Permissions: read.Permissions, Client: factory.PRRepair, Scrubber: journal.Chain(u.setup.SharedRegistry, journal.NewPatternScrubber())}
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithPRSelection(selection))
+	}
 	u.installWorkbenchProposals(read, factory.RepositoryProposal)
 }
 

@@ -25,3 +25,9 @@ it("retains the exact human-selected PR as typed message content", async () => {
   expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ text: "Repair this", repairTarget });
   expect(new Headers(fetcher.mock.calls[0][1]?.headers).get("Idempotency-Key")).toBe("same-key");
 });
+
+it("inspects a selected repository PR through an encoded read-only path", async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({}));
+  await new HttpDaemonClient({ fetch: fetcher }).inspectPullRequest("team space", "code/source", "12");
+  expect(fetcher).toHaveBeenCalledWith("/api/v1/gaggles/team%20space/workbench/sources/code%2Fsource/pull-requests/12", expect.objectContaining({ method: "GET" }));
+});

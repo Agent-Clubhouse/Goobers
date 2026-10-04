@@ -697,6 +697,7 @@ var v1Routes = []Route{
 	{ID: RouteWorkbenchWriteCapabilities, Method: http.MethodGet, Path: WorkbenchWriteCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchPatch, Method: http.MethodPatch, Path: WorkbenchItemPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchCommand, Method: http.MethodGet, Path: WorkbenchCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchPRSelection, Method: http.MethodGet, Path: WorkbenchPRSelectionPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchSources, Method: http.MethodGet, Path: WorkbenchSourcesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteStartQueue, Method: http.MethodGet, Path: StartQueuePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteStartQueueItem, Method: http.MethodGet, Path: StartQueueItemPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

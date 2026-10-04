@@ -551,6 +551,10 @@ export class HttpDaemonClient implements DaemonClient {
     return this.getJSON(clientRoutes.workbenchCommand, undefined, options, { gaggle, source, command });
   }
 
+  inspectPullRequest(gaggle: string, source: string, pullRequest: string, options?: RequestOptions): Promise<import("./types").SessionPRRepairInspection> {
+    return this.getJSON(clientRoutes.workbenchPRSelection, undefined, options, { gaggle, source, pullRequest });
+  }
+
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage> {
     return this.getJSON(clientRoutes.workbenchSources, undefined, options, { gaggle });
   }

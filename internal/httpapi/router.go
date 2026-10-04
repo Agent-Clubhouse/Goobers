@@ -642,6 +642,7 @@ type handlerConfig struct {
 	interactiveSessions     InteractiveSessionService
 	sessionOperations       SessionOperationService
 	workbenchReads          WorkbenchReadService
+	prSelection             PRSelectionReader
 	workbenchGraph          WorkbenchGraphService
 	workbenchDocuments      WorkbenchDocumentService
 	gaggleEvents            GaggleEventService
@@ -1245,6 +1246,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerChildPublicationCheckRoute(router, config, errorLog)
 	registerSessionRoutes(router, config, errorLog)
 	registerWorkbenchRoutes(router, config, errorLog)
+	router.Handle(apicontract.RouteWorkbenchPRSelection, prSelectionHandler(config.prSelection, errorLog))
 	registerWorkbenchGraphRoute(router, config, errorLog)
 	registerGaggleEventRoutes(router, config, errorLog)
 	registerStartQueueRoutes(router, config, errorLog)

@@ -44,7 +44,7 @@ function ScopedResolution({ client, item, source, goobers }: Props) {
     const result = await client.sendSessionMessage(gaggle, sessionId, `blocker:message:${key}`, { text: input.text });
     verifySession(result, gaggle, sessionId);
     return result;
-  }, (value) => { setSelected(value.session.id); setGuidance(""); });
+  }, (value) => { setSelected(value.session.id); setGuidance(""); }, { client, key: JSON.stringify([gaggle, item.ref.sourceBindingId, item.ref.sourceId]) });
   const pending = command.busy || command.uncertain || conversationPending;
   useEffect(() => {
     const controller = new AbortController(); setLoaded(undefined); setError("");
@@ -77,7 +77,7 @@ function ScopedResolution({ client, item, source, goobers }: Props) {
         {destination === "new" && <label>Resolution agent<select required disabled={pending} value={goober} onChange={(event) => setGoober(event.target.value)}><option value="">Select an agent</option>{goobers.map((entry) => <option key={entry.name} value={entry.name}>{entry.displayName || entry.name}</option>)}</select></label>}
         <label>Your answer or guidance<textarea required rows={4} maxLength={8192} disabled={pending} value={guidance} onChange={(event) => setGuidance(event.target.value)} /></label>
         <p>The agent will verify current source evidence and report any dependencies or missing information that still prevent resolution. Work continues if you close this browser.</p>
-        <button type="submit" disabled={command.busy || conversationPending || (!command.uncertain && (!guidance.trim() || (destination === "new" && !goober)))}>{command.busy ? "Starting inspection…" : command.uncertain ? "Retry same resolution request" : "Ask agent to resolve blocker"}</button>
+        <button type="submit" disabled={command.busy || command.scopeChanged || conversationPending || (!command.uncertain && (!guidance.trim() || (destination === "new" && !goober)))}>{command.busy ? "Starting inspection…" : command.uncertain ? "Retry same resolution request" : "Ask agent to resolve blocker"}</button>
       </form>}
       {selected && available && <><p role="status">Resolution request accepted. Follow the agent’s assessment below; refresh the source item to confirm its current marker.</p><SharedSessionDetail key={selected} client={client} gaggle={gaggle} id={selected} parentRevision={revision} pendingChanged={setConversationPending} /></>}
     </>}

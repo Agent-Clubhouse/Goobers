@@ -91,6 +91,7 @@ export const apiRoutes = {
   "workbenchWriteCapabilities": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/write-capabilities", actionClass: "read-only-navigation" },
   "workbenchPatch": { method: "PATCH", path: "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/items/{item}", actionClass: "workflow-execution" },
   "workbenchCommand": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/commands/{command}", actionClass: "read-only-navigation" },
+  "workbenchPRSelection": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/pull-requests/{pullRequest}", actionClass: "read-only-navigation" },
   "workbenchSources": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/sources", actionClass: "read-only-navigation" },
   "startQueue": { method: "GET", path: "/api/v1/gaggles/{gaggle}/start-queue", actionClass: "read-only-navigation" },
   "startQueueItem": { method: "GET", path: "/api/v1/gaggles/{gaggle}/start-queue/{acceptance}", actionClass: "read-only-navigation" },

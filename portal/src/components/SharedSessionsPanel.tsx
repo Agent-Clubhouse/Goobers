@@ -42,13 +42,13 @@ export function SharedSessionsPanel({ client, gaggle, goobers }: { client: Daemo
 function NewSession({ client, gaggle, goobers, created, available, pendingChanged }: { client: DaemonClient; gaggle: string; goobers: Goober[]; created: (value: SessionAcceptance) => void; available: boolean; pendingChanged: (value: boolean) => void }) {
   const [title, setTitle] = useState("");
   const [goober, setGoober] = useState("");
-  const command = useSessionCommand<{ title: string; goober: string }>((key, input) => client.createSession(gaggle, key, input), (value) => { setTitle(""); created(value); });
+  const command = useSessionCommand<{ title: string; goober: string }>((key, input) => client.createSession(gaggle, key, input), (value) => { setTitle(""); created(value); }, { client, key: gaggle });
   useEffect(() => { pendingChanged(command.busy || command.uncertain); }, [command.busy, command.uncertain, pendingChanged]);
   if (!available) return null;
   return <form className="new-session" onSubmit={(event) => { event.preventDefault(); void command.submit({ title, goober }); }}>
     <label>Session title<input required maxLength={256} value={title} disabled={command.busy || command.uncertain} onChange={(e) => setTitle(e.target.value)} /></label>
     <label>Agent<select required value={goober} disabled={command.busy || command.uncertain} onChange={(e) => setGoober(e.target.value)}><option value="">Select an agent</option>{goobers.map((item) => <option key={item.name} value={item.name}>{item.displayName || item.name}</option>)}</select></label>
-    <button type="submit" disabled={command.busy || !title.trim() || !goober}>{command.busy ? "Creating…" : command.uncertain ? "Retry same session creation" : "Create session"}</button>
+    <button type="submit" disabled={command.busy || command.scopeChanged || !title.trim() || !goober}>{command.busy ? "Creating…" : command.uncertain ? "Retry same session creation" : "Create session"}</button>
     {command.notice && <p role="status">{command.notice}</p>}
   </form>;
 }

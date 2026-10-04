@@ -49,6 +49,8 @@ func workbenchReadParameters(id RouteID) []map[string]any {
 func workbenchReadResponses(id RouteID) map[string]any {
 	name := "WorkbenchSourcePage"
 	switch id {
+	case RouteWorkbenchPRSelection:
+		name = "SessionPRRepairInspection"
 	case RouteWorkbenchDocuments:
 		name = "WorkbenchDocumentPage"
 	case RouteWorkbenchItems:

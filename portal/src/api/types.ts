@@ -1911,6 +1911,7 @@ export interface DaemonClient {
   getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities>;
   patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand>;
   getWorkbenchCommand(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<BacklogEditCommand>;
+  inspectPullRequest(gaggle: string, source: string, pullRequest: string, options?: RequestOptions): Promise<SessionPRRepairInspection>;
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage>;
   getWorkbenchDocuments(gaggle: string, source: string, request?: WorkbenchDocumentPageRequest, options?: RequestOptions): Promise<WorkbenchDocumentPage>;
   getWorkbenchItems(gaggle: string, source: string, request?: BacklogPageRequest, options?: RequestOptions): Promise<BacklogPage>;
@@ -2203,6 +2204,10 @@ export interface SessionPRRepairTarget {
   sourceBindingId: string;
   repository: { provider: "github" | "ado"; owner: string; project?: string; name: string };
   repositorySourceId: string; id: string; sourceId: string; expectedHeadSha: string;
+}
+export interface SessionPRRepairInspection {
+  target: SessionPRRepairTarget; headSha: string; baseSha: string; head: string; base: string;
+  title: string; description: string; url: string; open: boolean; draft: boolean; parentCommandId?: string;
 }
 export interface SessionMessageRequest { text: string; repairTarget?: SessionPRRepairTarget }
 export interface SessionCloseRequest { reason: string }

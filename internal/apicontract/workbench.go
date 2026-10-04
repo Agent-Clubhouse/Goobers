@@ -8,14 +8,16 @@ import (
 
 // WorkbenchSourcesPath and related routes expose bounded human source reads.
 const (
-	WorkbenchSourcesPath            = V1Prefix + "/gaggles/{gaggle}/workbench/sources"
-	WorkbenchItemsPath              = WorkbenchSourcesPath + "/{source}/items"
-	WorkbenchItemPath               = WorkbenchItemsPath + "/{item}"
-	WorkbenchDocumentsPath          = WorkbenchSourcesPath + "/{source}/documents"
-	RouteWorkbenchDocuments RouteID = "workbenchDocuments"
-	RouteWorkbenchSources   RouteID = "workbenchSources"
-	RouteWorkbenchItems     RouteID = "workbenchItems"
-	RouteWorkbenchItem      RouteID = "workbenchItem"
+	WorkbenchSourcesPath              = V1Prefix + "/gaggles/{gaggle}/workbench/sources"
+	WorkbenchItemsPath                = WorkbenchSourcesPath + "/{source}/items"
+	WorkbenchItemPath                 = WorkbenchItemsPath + "/{item}"
+	WorkbenchPRSelectionPath          = WorkbenchSourcesPath + "/{source}/pull-requests/{pullRequest}"
+	RouteWorkbenchPRSelection RouteID = "workbenchPRSelection"
+	WorkbenchDocumentsPath            = WorkbenchSourcesPath + "/{source}/documents"
+	RouteWorkbenchDocuments   RouteID = "workbenchDocuments"
+	RouteWorkbenchSources     RouteID = "workbenchSources"
+	RouteWorkbenchItems       RouteID = "workbenchItems"
+	RouteWorkbenchItem        RouteID = "workbenchItem"
 )
 
 // WorkbenchSourcePage describes explicit source scope, without credentials.
@@ -31,7 +33,7 @@ type BacklogItem = workbench.BacklogItem
 type WorkbenchDocumentPage = workbench.DocumentPage
 
 func workbenchReadRoute(id RouteID) bool {
-	return id == RouteWorkbenchSources || id == RouteWorkbenchItems || id == RouteWorkbenchItem || id == RouteWorkbenchDocuments
+	return id == RouteWorkbenchPRSelection || id == RouteWorkbenchSources || id == RouteWorkbenchItems || id == RouteWorkbenchItem || id == RouteWorkbenchDocuments
 }
 func withWorkbenchFixtures(fixtures wireFixtures) wireFixtures {
 	fixtures.WorkbenchDocuments = workbenchDocumentFixture()
