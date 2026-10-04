@@ -12,6 +12,7 @@ import (
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -52,7 +53,10 @@ func (b *TemporalBackend) Observe(ctx context.Context, in engine.RunInput, diges
 	if err != nil {
 		return false, err
 	}
-	if response == nil || len(response.RawHistory) > 0 || len(response.GetHistory().GetEvents()) != 1 {
+	// Temporal pages contain persistence batches: MaximumPageSize=1 can return
+	// the start event and later events from that same batch. Inspect only event1,
+	// while independently bounding the complete returned page.
+	if response == nil || len(response.RawHistory) > 0 || len(response.GetHistory().GetEvents()) == 0 || len(response.GetHistory().GetEvents()) > 4096 || proto.Size(response) > 4<<20 {
 		return false, errors.New("direct engine: bounded start history unavailable")
 	}
 	event := response.History.Events[0]

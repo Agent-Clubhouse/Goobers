@@ -383,5 +383,8 @@ or rebinding after a restart. Capacity release wakes the remaining obligation.
 Existing priority, quota and transient fallback behavior is preserved. Unresolved
 obligations retain source generations; disabling a source does not silently delete
 them. Standalone/manual/detached starts now use the pinned ordinary queue and
-preserve request identity through detached execution. Direct-engine admission
-remains the next queue integration slice.
+preserve request identity through detached execution. Direct-engine admission also
+retains the exact canonical input in the same queue database before attempting a
+start. Its separate daemon recovery cursor verifies the actual first history event
+with the configured codec and target; missing history never permits resending an
+uncertain effect. Live Temporal qualification remains outstanding.

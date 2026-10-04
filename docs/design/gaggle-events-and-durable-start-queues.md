@@ -662,6 +662,13 @@ authorizes a resend. The receipt remains uncertain; explicit operator dispositio
 of permanently unavailable evidence is future work. A dial/configuration refusal
 before the attempted marker leaves the receipt accepted for retry.
 
+History verification inspects event 1 within a bounded first page, allowing later
+events from the same persistence batch. Temporal's history manager expands whole
+batches, so a requested page size of one is not an exact event-count guarantee
+([server implementation](https://github.com/temporalio/temporal/blob/main/common/persistence/history_manager.go)).
+The adapter caps the returned page at 4 MiB and 4,096 events before decoding the
+accepted start input; it never scans later pages to manufacture a match.
+
 The daemon uses a separate bounded cursor so an unavailable direct target cannot
 take over ordinary pending batches. Direct receipts cannot enter the ordinary
 name-based launcher or count as scheduler worker demand. Their retained generation

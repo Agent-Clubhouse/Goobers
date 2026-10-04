@@ -29,15 +29,16 @@ import (
 
 type directHistoryClient struct {
 	client.Client
-	t       *testing.T
-	dc      converter.DataConverter
-	starts  int
-	dials   int
-	lost    bool
-	hide    bool
-	input   engine.RunInput
-	started *historypb.WorkflowExecutionStartedEventAttributes
-	before  func(engine.RunInput)
+	t            *testing.T
+	dc           converter.DataConverter
+	starts       int
+	dials        int
+	lost         bool
+	hide         bool
+	extraHistory []*historypb.HistoryEvent
+	input        engine.RunInput
+	started      *historypb.WorkflowExecutionStartedEventAttributes
+	before       func(engine.RunInput)
 }
 type directHistoryRun struct {
 	client.WorkflowRun
@@ -90,7 +91,9 @@ func (c *directHistoryClient) GetWorkflowExecutionHistory(_ context.Context, req
 	if c.hide || c.started == nil {
 		return nil, serviceerror.NewNotFound("history not available")
 	}
-	return &workflowservice.GetWorkflowExecutionHistoryResponse{History: &historypb.History{Events: []*historypb.HistoryEvent{{EventId: 1, Attributes: &historypb.HistoryEvent_WorkflowExecutionStartedEventAttributes{WorkflowExecutionStartedEventAttributes: c.started}}}}}, nil
+	events := []*historypb.HistoryEvent{{EventId: 1, Attributes: &historypb.HistoryEvent_WorkflowExecutionStartedEventAttributes{WorkflowExecutionStartedEventAttributes: c.started}}}
+	events = append(events, c.extraHistory...)
+	return &workflowservice.GetWorkflowExecutionHistoryResponse{History: &historypb.History{Events: events}}, nil
 }
 func installDirectHistoryClient(t *testing.T, c *directHistoryClient) {
 	t.Helper()
@@ -112,7 +115,8 @@ func directArgs(root string) []string {
 
 func TestDirectEngineCLIPersistsExactInputBeforeProviderAndReplaysAcrossSourceChange(t *testing.T) {
 	root := initDeterministicDemo(t)
-	c := &directHistoryClient{}
+	// A real first persistence batch commonly includes workflow task scheduling.
+	c := &directHistoryClient{extraHistory: []*historypb.HistoryEvent{{EventId: 2, Attributes: &historypb.HistoryEvent_WorkflowTaskScheduledEventAttributes{WorkflowTaskScheduledEventAttributes: &historypb.WorkflowTaskScheduledEventAttributes{}}}}}
 	installDirectHistoryClient(t, c)
 	queue := standaloneQueue(t, root)
 	c.before = func(in engine.RunInput) {
@@ -280,6 +284,11 @@ func TestDirectEngineBindingChangeRefusesBeforeEffectAndWrongHistoryStaysUncerta
 	// A legacy history may lack the new memo, but its actual original input
 	// and task queue still have to verify through the configured converter.
 	c.started = original
+	c.extraHistory = make([]*historypb.HistoryEvent, 4096)
+	if err = service.Dispatch(t.Context(), record); err == nil || c.starts != 1 {
+		t.Fatal("oversized event page was acknowledged", err, c.starts)
+	}
+	c.extraHistory = []*historypb.HistoryEvent{{EventId: 2, Attributes: &historypb.HistoryEvent_WorkflowTaskScheduledEventAttributes{WorkflowTaskScheduledEventAttributes: &historypb.WorkflowTaskScheduledEventAttributes{}}}}
 	c.started.Memo = nil
 	if err = service.Dispatch(t.Context(), record); err != nil || c.starts != 1 {
 		t.Fatal(err, c.starts)
