@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -33,11 +34,12 @@ type HumanService struct {
 	messages      httpapi.OperatorMessageService
 	scrubber      journal.Scrubber
 	mu            sync.Mutex
+	restarts      atomic.Pointer[StageRestartService]
 }
 
 // NewHumanService enables the local-run intervention surface. The scrubber must
-// include the daemon's shared credential registry. Engine execution and fresh
-// stage restart allowances are intentionally not offered by this service.
+// include the daemon's shared credential registry. Engine execution is not offered. Stage restart requires an explicitly
+// attached credential-bound adapter.
 func NewHumanService(interventions *Service, policy *interactiveaccess.Service, messages httpapi.OperatorMessageService, scrubber journal.Scrubber) (*HumanService, error) {
 	if interventions == nil || policy == nil || messages == nil || scrubber == nil {
 		return nil, errors.New("interactive run service requires interventions, policy, shared messages and scrubber")
@@ -106,6 +108,7 @@ func (s *HumanService) InspectInteractiveRun(ctx context.Context, p httpapi.Prin
 	}
 	allowed := s.policy.Authorize(p, resolved.gaggle, "run.intervene") == nil
 	result.Actions = humanActions(resolved, allowed, p.Subject)
+	s.addRestartActions(p, resolved, &result)
 	return result, nil
 }
 
@@ -223,6 +226,9 @@ func (s *HumanService) AcceptInteractiveRun(admission, execution context.Context
 	// Scrub before fingerprints and persistence; no raw human content is logged.
 	input.Guidance = string(s.scrubber.Scrub([]byte(input.Guidance)))
 	input.Rationale = string(s.scrubber.Scrub([]byte(input.Rationale)))
+	if input.Kind == "restart" {
+		return s.restartStage(admission, execution, p, resolved, key, input)
+	}
 	var result apicontract.InteractiveRunCommandResult
 	err = s.policy.WithAuthorization(admission, p, resolved.gaggle, "run.intervene", func(ctx context.Context) error {
 		s.mu.Lock()
@@ -251,7 +257,12 @@ func validateHumanCommand(key string, input apicontract.InteractiveRunCommand) e
 	if len(input.Guidance) > maxSharedGuidanceBytes || len(input.Rationale) > 4096 {
 		return interventionBadRequest("interactive_content_too_large", "Guidance must be at most 64 KiB and rationale at most 4096 bytes.")
 	}
+	if input.Kind != "restart" && len(input.GuidanceIDs) > 0 {
+		return interventionBadRequest("invalid_interactive_command", "Only restart may select saved guidance.")
+	}
 	switch input.Kind {
+	case "restart":
+		return validateRestartCommand(input)
 	case "guidance":
 		if strings.TrimSpace(input.Guidance) == "" || input.Decision != "" || input.Rationale != "" {
 			return interventionBadRequest("invalid_interactive_command", "Saved guidance requires text only.")

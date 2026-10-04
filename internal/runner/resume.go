@@ -311,6 +311,7 @@ type resumeFrame struct {
 	seedEvents []journal.Event
 	segment    []journal.Event
 
+	restart            *stageRestartManifest
 	rerun              *rerunContext
 	parallelTransition *parallelResumeTransition
 	concurrentResume   bool
@@ -371,17 +372,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err := validateHumanResumeDecision(in, humanProgress); err != nil {
 		return Result{}, err
 	}
-	rerun, seedEvents, err := pendingRerun(events, in.Machine)
+	ctx, f, err := r.restoreResumeFrame(ctx, jr, rd, in, id, registrar, events, humanProgress)
 	if err != nil {
-		return Result{}, fmt.Errorf("runner: restore pending stage rerun for run %q: %w", in.RunID, err)
-	}
-	if rerun == nil {
-		seedEvents = events
-	}
-
-	f, err := r.newResumeFrame(ctx, jr, rd, in, id, registrar, events, seedEvents, rerun, humanProgress)
-	if err != nil {
-		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
+		return Result{}, err
 	}
 	ws := f.ws
 
@@ -435,7 +428,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	}
 	ws.state = startState
 	ws.resume = resume
-	ws.rerun = rerun
+	ws.rerun = f.rerun
 	if err := r.journalRecovery(jr, in, startState, resume); err != nil {
 		return Result{}, err
 	}
@@ -1011,6 +1004,7 @@ func (f *resumeFrame) seedGateBudgets(machine *workflow.Machine) {
 	ws.infraRepassAttempts = infrastructureTargetRepassSeed(f.segment)
 	ws.pollAttempts = pollingTargetSeed(f.segment)
 	ws.evidenceRejections = remediationEvidenceRejectionSeed(f.segment)
+	seedRestartGateBudgets(f, machine)
 }
 
 type humanGateProgress struct {

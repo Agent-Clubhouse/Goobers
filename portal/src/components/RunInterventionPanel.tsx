@@ -29,7 +29,7 @@ export function RunInterventionPanel({ client, runId, revision }: { client: Daem
     {view && <>
       <p>Decisions apply to the observed stage occurrence. Saved guidance is shared with authorized gaggle viewers; it does not deliver a message or restart work.</p>
       {view.actions.length === 0 && <p>No approval or escalation action is available at this run position.</p>}
-      <div className="run-human-actions">{view.actions.map((action) => <HumanActionForm key={`${action.kind}:${action.stage}`} action={action} client={client} runId={runId} refresh={() => setRefresh((n) => n + 1)} />)}</div>
+      <div className="run-human-actions">{view.actions.map((action) => <HumanActionForm key={`${action.kind}:${action.stage}`} action={action} guidance={view.guidance} client={client} runId={runId} refresh={() => setRefresh((n) => n + 1)} />)}</div>
       <p>{view.restartReason}</p>
       <h3>Saved guidance</h3>
       {view.guidance.length === 0 ? <p>No shared guidance has been saved.</p> : <ol>{view.guidance.map(({ request }) => <li key={request.requestId}>
@@ -39,19 +39,22 @@ export function RunInterventionPanel({ client, runId, revision }: { client: Daem
   </section>;
 }
 
-function HumanActionForm({ action, client, runId, refresh }: { action: InteractiveRunAction; client: DaemonClient; runId: string; refresh: () => void }) {
+function HumanActionForm({ action, guidance, client, runId, refresh }: { action: InteractiveRunAction; guidance: InteractiveRunView["guidance"]; client: DaemonClient; runId: string; refresh: () => void }) {
+  const [guidanceIds, setGuidanceIds] = useState<string[]>([]);
+  const [continuation, setContinuation] = useState("");
   const [decision, setDecision] = useState(action.decisions[0] ?? "");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState(false);
   const request = useRef<{ key: string; command: InteractiveRunCommand } | undefined>(undefined);
-  const label = action.kind === "guidance" ? "Save guidance" : action.kind === "deny" ? "Deny escalation" : action.kind === "override" ? "Override gate" : "Apply gate decision";
+  const label = action.kind === "restart" ? "Restart stage" : action.kind === "guidance" ? "Save guidance" : action.kind === "deny" ? "Deny escalation" : action.kind === "override" ? "Override gate" : "Apply gate decision";
   async function submit() {
     setBusy(true); setNotice("");
     if (!request.current) request.current = { key: crypto.randomUUID(), command: {
       kind: action.kind, stage: action.stage, expectedSubjectSequence: action.subjectSequence,
       ...(action.decisions.length > 0 ? { decision } : {}),
+      ...(action.kind === "restart" ? { guidanceIds } : {}),
       ...(action.kind === "guidance" ? { guidance: text } : text ? { rationale: text } : {}),
     } };
     try {
@@ -60,7 +63,8 @@ function HumanActionForm({ action, client, runId, refresh }: { action: Interacti
         setPending(true); setNotice("The outcome is still pending. Check the same request before issuing another command.");
       } else {
         request.current = undefined; setPending(false); setText("");
-        setNotice(result.status === "failed" ? "The intervention failed. Review the run journal before issuing a new command." : result.status === "saved" ? "Guidance saved. It has not been delivered to an agent." : "Decision applied to the journal.");
+        if (result.continuationRunId) setContinuation(result.continuationRunId);
+        setNotice(result.status === "started" ? "Restart accepted as a linked execution. Open it to follow progress." : result.status === "failed" ? "The intervention failed. Review the run journal before issuing a new command." : result.status === "saved" ? "Guidance saved. It has not been delivered to an agent." : "Decision applied to the journal.");
         refresh();
       }
     } catch (error) {
@@ -79,9 +83,11 @@ function HumanActionForm({ action, client, runId, refresh }: { action: Interacti
     <h3>{action.stage} · {label}</h3>
     <small>Observed occurrence {action.subjectSequence}</small>
     {action.decisions.length > 0 && <label>Decision<select value={decision} disabled={busy || pending || !action.available} onChange={(event) => setDecision(event.target.value)}>{action.decisions.map((value) => <option key={value}>{value}</option>)}</select></label>}
+    {action.kind === "restart" && <fieldset disabled={busy || pending || !action.available}><legend>Saved guidance to deliver (up to 16)</legend>{guidance.length === 0 ? <p>Save guidance before restarting.</p> : guidance.map(({ request }) => <label key={request.requestId}><input type="checkbox" checked={guidanceIds.includes(request.requestId)} disabled={!guidanceIds.includes(request.requestId) && guidanceIds.length >= 16} onChange={(event) => setGuidanceIds((ids) => event.target.checked ? [...ids, request.requestId] : ids.filter((id) => id !== request.requestId))} />{request.content.text} · {request.principalRef}</label>)}</fieldset>}
     <label>{action.kind === "guidance" ? "Guidance" : "Rationale"}<textarea value={text} maxLength={action.kind === "guidance" ? 65536 : 4096} required={action.kind !== "approve"} disabled={busy || pending || !action.available} onChange={(event) => setText(event.target.value)} /></label>
-    <button type="submit" disabled={busy || !action.available}>{busy ? "Submitting…" : pending ? "Check same request" : label}</button>
+    <button type="submit" disabled={busy || !action.available || (action.kind === "restart" && guidanceIds.length === 0)}>{busy ? "Submitting…" : pending ? "Check same request" : label}</button>
     {!action.available && <p>{action.reason}</p>}
     {notice && <p role="status">{notice}</p>}
+    {continuation && <a href={`#/run/${encodeURIComponent(continuation)}`}>Open restarted execution</a>}
   </form>;
 }

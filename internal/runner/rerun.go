@@ -88,23 +88,10 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 		}
+		if err := validateStageRerunIdentity(rd, id, in); err != nil {
+			return Result{}, err
+		}
 		ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
-		phase, err := rd.Phase()
-		if err != nil {
-			return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
-		}
-		if phase != journal.PhaseEscalated {
-			return Result{}, fmt.Errorf("runner: run %q has phase %s, not escalated", in.RunID, phase)
-		}
-		if id.WorkflowDigest == "" || id.WorkflowDigest != in.Machine.Digest() {
-			return Result{}, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot rerun against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
-		}
-		if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
-			return Result{}, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
-		}
-		if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
-			return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
-		}
 		runControls, err := r.resolveRunControls(id.RunControls)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
@@ -423,4 +410,28 @@ func resetRerunGateSeeds(machine *workflow.Machine, rerun *rerunContext, attempt
 		delete(digests, rerun.stage)
 	}
 	return attempts
+}
+
+func validateStageRerunIdentity(rd *journal.Reader, id journal.RunIdentity, in RerunStageInput) error {
+	if IsStageRestart(id) {
+		return errors.New("runner: a human continuation requires a new authorized restart epoch; legacy rerun is unsupported")
+	}
+	phase, err := rd.Phase()
+	if err != nil {
+		return fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
+	}
+	if phase != journal.PhaseEscalated {
+		return fmt.Errorf("runner: run %q has phase %s, not escalated", in.RunID, phase)
+	}
+	if id.WorkflowDigest == "" || id.WorkflowDigest != in.Machine.Digest() {
+		return fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot rerun against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
+	}
+	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
+		return fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
+	}
+	if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
+		return fmt.Errorf("runner: invalid pinned run controls: %w", err)
+	}
+
+	return nil
 }

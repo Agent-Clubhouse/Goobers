@@ -26,21 +26,23 @@ type InteractiveRunAction struct {
 // InteractiveRunCommand contains human data only. Identity and gaggle are
 // resolved from the authenticated request and retained run.
 type InteractiveRunCommand struct {
-	Kind                    string `json:"kind"`
-	Stage                   string `json:"stage"`
-	ExpectedSubjectSequence uint64 `json:"expectedSubjectSequence"`
-	Decision                string `json:"decision,omitempty"`
-	Rationale               string `json:"rationale,omitempty"`
-	Guidance                string `json:"guidance,omitempty"`
+	Kind                    string   `json:"kind"`
+	Stage                   string   `json:"stage"`
+	ExpectedSubjectSequence uint64   `json:"expectedSubjectSequence"`
+	Decision                string   `json:"decision,omitempty"`
+	Rationale               string   `json:"rationale,omitempty"`
+	Guidance                string   `json:"guidance,omitempty"`
+	GuidanceIDs             []string `json:"guidanceIds,omitempty"`
 }
 
 // InteractiveRunCommandResult identifies durable evidence of acceptance.
 // Saved guidance is not evidence that an agent received it or work resumed.
 type InteractiveRunCommandResult struct {
-	Status          string                       `json:"status"`
-	Accepted        bool                         `json:"accepted"`
-	RunID           string                       `json:"runId"`
-	JournalSequence uint64                       `json:"journalSequence"`
-	Phase           string                       `json:"phase"`
-	Guidance        *apiv1.OperatorMessageRecord `json:"guidance,omitempty"`
+	Status            string                       `json:"status"`
+	Accepted          bool                         `json:"accepted"`
+	RunID             string                       `json:"runId"`
+	JournalSequence   uint64                       `json:"journalSequence"`
+	Phase             string                       `json:"phase"`
+	Guidance          *apiv1.OperatorMessageRecord `json:"guidance,omitempty"`
+	ContinuationRunID string                       `json:"continuationRunId,omitempty"`
 }

@@ -2069,7 +2069,7 @@ export interface InteractiveRunView {
   restartReason: string;
 }
 export interface InteractiveRunAction {
-  kind: "approve" | "override" | "deny" | "guidance";
+  kind: "approve" | "override" | "deny" | "guidance" | "restart";
   stage: string;
   subjectSequence: number;
   decisions: string[];
@@ -2083,12 +2083,14 @@ export interface InteractiveRunCommand {
   decision?: string;
   rationale?: string;
   guidance?: string;
+  guidanceIds?: string[];
 }
 export interface InteractiveRunCommandResult {
-  status: "applied" | "saved" | "pending" | "failed";
+  status: "applied" | "saved" | "pending" | "failed" | "started";
   accepted: boolean;
   runId: string;
   journalSequence: number;
   phase: string;
   guidance?: OperatorMessageRecord;
+  continuationRunId?: string;
 }

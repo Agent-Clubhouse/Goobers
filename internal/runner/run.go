@@ -436,6 +436,10 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
+	// StageRestartContext is set only on a dedicated interactive-credential
+	// runner. Recovery of a human restart refuses automation fallback.
+	StageRestartContext func(context.Context, journal.RunIdentity) (context.Context, error)
+
 	ChildHandoff        ChildHandoff
 	ChildParentCapacity ChildParentCapacity
 	SelfExecutionDenied bool

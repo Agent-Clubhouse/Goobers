@@ -68,3 +68,23 @@ describe("shared human operations", () => {
     expect(screen.getByText(/Human operations require sign-in/)).toBeInTheDocument();
   });
 });
+
+it("restarts with explicitly selected saved guidance and links the distinct execution", async () => {
+  const state = view();
+  state.actions = [{ kind: "restart", stage: "implement", subjectSequence: 8, decisions: [], available: true, reason: "" }];
+  state.guidance = [{ request: { schema: "goobers.dev/operator-message/request/v1", requestId: "chosen-note", idempotencyKey: "note-key", targetAddress: "stage:implement@8", principalRef: "https://id.test:alice", requestedAt: "2026-10-04T10:00:00Z", purpose: "stage-restart-guidance", content: { text: "Keep the established boundary." }, deliveryMode: "shared-guidance" }, state: "accepted" }];
+  const requests: RequestInit[] = [];
+  const fetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== "POST") return json(state);
+    requests.push(init);
+    return json({ status: "started", accepted: true, runId: "run-1", continuationRunId: "human-restart-1", phase: "escalated", journalSequence: 8 });
+  });
+  render(<RunInterventionPanel client={new HttpDaemonClient({ fetch })} runId="run-1" />);
+  expect(await screen.findByRole("button", { name: "Restart stage" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("checkbox", { name: /Keep the established boundary/ }));
+  fireEvent.change(screen.getByLabelText("Rationale"), { target: { value: "Retry after review." } });
+  fireEvent.click(screen.getByRole("button", { name: "Restart stage" }));
+  expect(await screen.findByRole("link", { name: "Open restarted execution" })).toHaveAttribute("href", "#/run/human-restart-1");
+  expect(JSON.parse(requests[0].body as string)).toEqual({ kind: "restart", stage: "implement", expectedSubjectSequence: 8, guidanceIds: ["chosen-note"], rationale: "Retry after review." });
+  expect(requests).toHaveLength(1);
+});

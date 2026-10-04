@@ -17,10 +17,10 @@ use the interactive permission route.
 The current implementation provides policy authorization, named credential
 selection, `GET /api/v1/gaggles/{gaggle}/interactive-capabilities`, and a shared
 portal surface for local run gate decisions and saved guidance. Sessions, live
-agent steering, source editing and fresh-allowance stage restarts remain
-unavailable. The permission response separates `authorized`,
-`credentialConfigured` and `available`; `run.intervene` is implemented, with
-run-specific availability checked by the interactive run service.
+agent steering and source editing remain unavailable. Stage restart requires
+an installed interactive execution adapter; its daemon capability defaults off. The permission response separates `authorized`,
+`credentialConfigured` and `available`; `run.intervene` is implemented. `run.restartStage` is advertised only after the
+daemon installs its execution adapter. The run service checks target support.
 
 ## Human membership
 
@@ -45,7 +45,7 @@ interactiveAccess:
     operators:
       - issuer: https://identity.example
         subject: alice
-  actions: [run.intervene, backlog.read, backlog.edit, repository.read, source.proposeChange]
+  actions: [run.intervene, run.restartStage, backlog.read, backlog.edit, repository.read, source.proposeChange]
   credentials:
     backlog: human-issues
     repositories:
@@ -110,8 +110,8 @@ The run page shows a **Human operations** panel independently of ordinary
 monitoring. Its two human-only routes are:
 
 - `GET /api/v1/runs/{run}/interactive`: current actions and shared saved guidance.
-- `POST /api/v1/runs/{run}/interactive-commands`: `approve`, `override`, `deny`, or
-  `guidance`, with `Idempotency-Key`, a stage and `expectedSubjectSequence` from
+- `POST /api/v1/runs/{run}/interactive-commands`: `approve`, `override`, `deny`,
+  `guidance`, or `restart`, with `Idempotency-Key`, a stage and `expectedSubjectSequence` from
   the read. The body cannot supply an actor, gaggle or credential source.
 
 An operator needs the explicit gaggle `run.intervene` action and the instance
@@ -133,14 +133,44 @@ mutation. A failure in subsequent resumed work remains that work's failure.
 Guidance is durably saved as an operator-message record with delivery mode
 `shared-guidance`, purpose `stage-restart-guidance` and target
 `stage:<name>@<observed-sequence>`. Authorized gaggle viewers share these records.
-A saved note has not been delivered to an agent and does not resume work. Future
-restart operations must explicitly select retained note IDs as context. The
+A saved note has not been delivered to an agent and does not resume work. Restart operations explicitly select retained note IDs as context. The
 current surface accepts at most 64 KiB UTF-8 guidance or 4096 bytes of rationale,
 retains at most 100 shared notes per run, and refuses a retained journal larger
 than 32 MiB on this initial event-scan path. The journal remains the authoritative
 history; monitoring and existing journal interfaces stay available.
 
 Human content passes through the shared credential registry and pattern scrubber
-before fingerprinting and persistence. Provider identities are unnecessary for
-these journal/runner operations. Repository changes continue to require the
+before fingerprinting and persistence. Provider identities are unnecessary for saving guidance and recording gate
+decisions. Restart admission and execution require configured interactive identities. Repository changes continue to require the
 configured source identity and a pull request.
+
+## Restart a settled stage
+
+With the production adapter installed, an operator with `run.restartStage` can
+select one to 16 saved notes and a rationale in the run panel. The API command
+uses `kind: restart`, `guidanceIds`, `rationale`, the affected `stage`, and its
+observed terminal `expectedSubjectSequence`.
+
+The first supported target is an agentic task or reviewer in a settled failed
+or escalated local DSL 3.1 run. The restart creates a distinct linked execution.
+The original journal is immutable. Upstream scalar context and selected retained
+artifact pointers are restored; input and guidance snapshots are bounded and
+scrubbed. The affected stage and its returning review gates receive a fresh
+retry/repass allowance. Other counters remain in force. Recovery consumes the
+same epoch allowance and guidance snapshot; it cannot mint another allowance.
+The original run duration limit is retained, and prior usage and history remain
+in the linked source journals.
+
+`started` means a durable execution was accepted; it does not claim the agent
+already read the guidance. `continuationRunId` links to that execution. Retrying
+an uncertain response with the same key and payload returns the same epoch.
+An existing active or terminal epoch does not repeat provider admission checks;
+an unowned unfinished epoch is revalidated before recovery. A changed payload
+with the same key is rejected. Ordinary automation runners refuse a human
+restart marker, including after daemon recovery.
+
+Paused same-run fresh allowances, parallel branch/fan-in restoration, Temporal,
+and settled generated-child continuations require additional runtime support.
+They are unavailable in this adapter. In particular, a child's sealed terminal
+result cannot be replaced without an accepted parent-observation and workspace
+mapping. Existing paused gate decisions and saved guidance remain available.

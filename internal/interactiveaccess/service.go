@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
@@ -27,12 +28,13 @@ type Dependencies struct {
 // An operation callback must complete its bounded provider effect before
 // returning and must not retain a credential or start asynchronous effects.
 type Service struct {
-	mu       sync.RWMutex
-	gaggles  map[string]*apiv1.Gaggle
-	sources  map[string]instance.InteractiveCredential
-	deps     Dependencies
-	sourceMu sync.Mutex
-	resolved map[string]resolvedSource
+	stageRestartAvailable atomic.Bool
+	mu                    sync.RWMutex
+	gaggles               map[string]*apiv1.Gaggle
+	sources               map[string]instance.InteractiveCredential
+	deps                  Dependencies
+	sourceMu              sync.Mutex
+	resolved              map[string]resolvedSource
 }
 
 // New pins configuration without resolving or minting secrets.
@@ -168,7 +170,7 @@ func (s *Service) permission(p httpapi.Principal, g *apiv1.Gaggle, action apiv1.
 		result.ReasonCode = "credential_not_configured"
 		return result
 	}
-	if action == "run.intervene" {
+	if action == "run.intervene" || (action == "run.restartStage" && s.stageRestartAvailable.Load()) {
 		result.Available = true
 		return result
 	}
@@ -190,3 +192,7 @@ func (s *Service) hasCredential(g *apiv1.Gaggle, action apiv1.InteractiveAction)
 	}
 	return false
 }
+
+// SetStageRestartAvailable advertises the daemon's installed interactive
+// execution adapter. It defaults off and does not grant human permission.
+func (s *Service) SetStageRestartAvailable(available bool) { s.stageRestartAvailable.Store(available) }

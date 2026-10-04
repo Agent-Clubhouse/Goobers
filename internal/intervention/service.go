@@ -77,6 +77,8 @@ type Config struct {
 	Runners RunnerRegistry
 	// PinnedExecution resolves the execution generation a run is pinned to.
 	PinnedExecution func(context.Context, journal.RunIdentity) (Execution, error)
+	// StageRestartExecution must build a human credential-bound pinned runner.
+	StageRestartExecution func(context.Context, runner.StageRestartPlan) (Execution, error)
 	// LocateRun finds the one retained run directory for runID across the
 	// declared gaggles (and the legacy root when includeLegacy is set). gaggle
 	// is empty for a legacy run. Its error is returned to the API client
@@ -95,13 +97,14 @@ type Config struct {
 
 // Service performs operator interventions on retained runs.
 type Service struct {
-	definitions         func() Definitions
-	runnerRegistry      RunnerRegistry
-	pinnedExecution     func(context.Context, journal.RunIdentity) (Execution, error)
-	locateRun           func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
-	claims              ClaimStore
-	engineDrivenRefusal func(runID, action string) error
-	errorLog            *log.Logger
+	definitions           func() Definitions
+	runnerRegistry        RunnerRegistry
+	pinnedExecution       func(context.Context, journal.RunIdentity) (Execution, error)
+	stageRestartExecution func(context.Context, runner.StageRestartPlan) (Execution, error)
+	locateRun             func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
+	claims                ClaimStore
+	engineDrivenRefusal   func(runID, action string) error
+	errorLog              *log.Logger
 	// hitl delivers operator intents to engine-driven runs (#3883). When it
 	// is nil — a daemon with no engine client — engine-driven runs keep the
 	// #3847 refusal exactly as they had it.
@@ -138,14 +141,15 @@ type resolvedInterventionRun struct {
 // New builds the intervention service over the daemon's collaborators.
 func New(cfg Config) *Service {
 	return &Service{
-		definitions:         cfg.Definitions,
-		runnerRegistry:      cfg.Runners,
-		pinnedExecution:     cfg.PinnedExecution,
-		locateRun:           cfg.LocateRun,
-		claims:              cfg.Claims,
-		engineDrivenRefusal: cfg.EngineDrivenRefusal,
-		errorLog:            cfg.ErrorLog,
-		wg:                  cfg.WaitGroup,
+		definitions:           cfg.Definitions,
+		runnerRegistry:        cfg.Runners,
+		pinnedExecution:       cfg.PinnedExecution,
+		stageRestartExecution: cfg.StageRestartExecution,
+		locateRun:             cfg.LocateRun,
+		claims:                cfg.Claims,
+		engineDrivenRefusal:   cfg.EngineDrivenRefusal,
+		errorLog:              cfg.ErrorLog,
+		wg:                    cfg.WaitGroup,
 	}
 }
 
