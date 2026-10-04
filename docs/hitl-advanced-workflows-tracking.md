@@ -300,8 +300,9 @@ all producers/descendants can be proven settled. See
 Child inspection now reads retained source pins without acquiring execution
 authority. Cancellation, drain and observation follow the current child epoch and
 refuse late results from the original run. Queued epoch cancellation retains its
-own result. The final common human admission adapter and publication from later
-child epochs remain explicit follow-up work.
+own result. The common human admission adapter now queues and restarts the exact affected
+child stage, with saved guidance, current authority, cancellation and capacity
+fences. Publication from later child epochs remains explicit follow-up work.
 
 Shared provider reads now have an explicit gaggle/binding/generation partition,
 full request-representation isolation, bounded body capture, and an ADO GET

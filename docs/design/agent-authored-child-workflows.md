@@ -445,6 +445,30 @@ the sealed child before any ordinary workflow-catalog lookup.
 
 Composed queue/runner tests cover superseded read-only inspection, late result
 fencing, and cancellation before the replacement starts. Public human restart
-admission remains gated until its common queued adapter is installed. Publication
+admission is now installed through the common queued adapter described below. Publication
 from later child epochs still needs explicit emitter identity support; an existing
 publication intent keeps its original epoch identity.
+
+
+### Delivered common human child restart admission
+
+The daemon connects generated children to the same authenticated human restart
+service used for ordinary affected-stage restarts. The adapter verifies selected
+saved guidance, current human and parent policy, exact source terminal generation,
+and contained execution support before accepting a new child epoch. It seals an
+escalated source before creating the replacement. The accepted plan is pinned in
+the existing child queue; a capacity refusal leaves that same epoch queued. Exact
+retries reuse it, and changed content under its key refuses.
+
+The normal child drain rechecks current authority and resumes that exact affected
+stage using the common launch path, its prior inputs, fresh attempt/repass budget,
+explicit human instructions and isolated epoch workspace. Parent capacity,
+cancellation, child-policy and interactive credential leases cover execution and
+writer shutdown. Cancelling the parent or revoking policy while queued prevents
+new effects. Original journals and previous results remain immutable. The runtime
+workspace binding is not serialized back into the pre-admission plan.
+
+Composed tests exercise HumanService, real SQLite acceptance, queued capacity,
+Runner continuation, fresh attempt/guidance, completion, escalation sealing,
+revocation and parent cancellation. Later-epoch PR publication remains a separate
+explicit emitter-identity change; the adapter does not bypass that restriction.
