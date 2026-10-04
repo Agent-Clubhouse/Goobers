@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if sessionOperationRoute(route.ID) {
@@ -110,6 +110,7 @@ func openAPIParameters(route Route) []map[string]any {
 	}
 	parameters = append(parameters, openAPIServiceParameters(route.ID)...)
 	parameters = append(parameters, sessionParameters(route.ID)...)
+	parameters = append(parameters, workbenchReadParameters(route.ID)...)
 	if route.ID == RouteRuns {
 		for _, name := range []string{"gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger"} {
 			parameters = append(parameters, map[string]any{
@@ -262,6 +263,9 @@ func openAPIRequestBody(route Route) map[string]any {
 func openAPIResponses(route Route) map[string]any {
 	if sessionOperationRoute(route.ID) {
 		return sessionOperationResponses(route.ID)
+	}
+	if workbenchReadRoute(route.ID) {
+		return workbenchReadResponses(route.ID)
 	}
 	if sessionRoute(route.ID) {
 		return sessionResponses(route)

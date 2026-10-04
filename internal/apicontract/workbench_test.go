@@ -18,7 +18,7 @@ func TestWorkbenchReadWireContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range map[string]any{"BacklogItem": item, "BacklogPage": page, "BacklogPageRequest": workbench.BacklogPageRequest{Limit: 50}, "BacklogItemRequest": workbench.BacklogItemRequest{ID: "42", ExpectedSourceID: "123456"}} {
+	for name, value := range map[string]any{"WorkbenchSourcePage": newWireFixtures().WorkbenchSources, "BacklogItem": item, "BacklogPage": page, "BacklogPageRequest": workbench.BacklogPageRequest{Limit: 50}, "BacklogItemRequest": workbench.BacklogItemRequest{ID: "42", ExpectedSourceID: "123456"}} {
 		compiler := jsonschema.NewCompiler()
 		if err = compiler.AddResource("workbench.json", bytes.NewReader(raw)); err != nil {
 			t.Fatal(err)

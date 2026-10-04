@@ -786,6 +786,39 @@
       "recoverySafe": false
     },
     {
+      "id": "workbenchSources",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchItems",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/items",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 20000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchItem",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/items/{item}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 20000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "sessionList",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/sessions",

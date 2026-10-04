@@ -124,6 +124,9 @@ func sourceRepository(g apiv1.Gaggle, identity *apiv1.InteractiveRepositoryIdent
 			if repository.Branch == "" {
 				repository.Branch = "main"
 			}
+			if !textValue(repository.Branch, 1024) {
+				return apiv1.RepoRef{}, errors.New("repository branch exceeds the source reference bound")
+			}
 			if matched != nil {
 				return apiv1.RepoRef{}, errors.New("repository identity has multiple configured targets")
 			}

@@ -12,6 +12,10 @@ func workbenchCoverage() map[string]any {
 
 func openAPIWorkbenchSchemas() map[string]any {
 	return map[string]any{
+		"WorkbenchSourceView": closedChildObject([]string{"bindingId", "kind", "provider", "owner"}, map[string]any{
+			"bindingId": sessionString(64), "kind": map[string]any{"type": "string", "enum": []string{"backlog", "documents", "relationships"}}, "provider": map[string]any{"type": "string", "enum": []string{"github", "ado"}}, "owner": sessionString(256), "project": sessionString(256), "repository": sessionString(256), "branch": sessionString(1024), "paths": workbenchStrings(128, 1024), "writeFields": workbenchStrings(5, 32), "writeRelationships": workbenchStrings(6, 32),
+		}),
+		"WorkbenchSourcePage": closedChildObject([]string{"items", "generation"}, map[string]any{"items": map[string]any{"type": "array", "maxItems": 32, "items": schemaRef("WorkbenchSourceView")}, "generation": map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}}),
 		"WorkbenchNodeRef": closedChildObject([]string{"gaggleId", "sourceBindingId", "kind", "sourceId"}, map[string]any{
 			"gaggleId": sessionString(253), "sourceBindingId": sessionString(64), "kind": map[string]any{"type": "string", "enum": []string{"work-item", "milestone", "pull-request", "document", "objective-document"}}, "sourceId": sessionString(512),
 		}),
@@ -28,4 +32,25 @@ func openAPIWorkbenchSchemas() map[string]any {
 			"items": map[string]any{"type": "array", "maxItems": workbench.MaxBacklogPageItems, "items": schemaRef("BacklogItem")}, "nextCursor": sessionString(workbench.MaxBacklogCursorBytes), "exhausted": map[string]any{"type": "boolean"}, "partial": map[string]any{"type": "boolean"}, "reasons": workbenchStrings(32, 128), "candidates": workbenchNonnegative(), "omitted": workbenchNonnegative(), "sourceTargetDigest": map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"},
 		}),
 	}
+}
+
+func workbenchReadParameters(id RouteID) []map[string]any {
+	switch id {
+	case RouteWorkbenchItems:
+		return []map[string]any{{"name": "cursor", "in": "query", "schema": sessionString(workbench.MaxBacklogCursorBytes)}, {"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": workbench.MaxBacklogPageItems, "default": 50}}}
+	case RouteWorkbenchItem:
+		return []map[string]any{{"name": "expectedSourceId", "in": "query", "schema": sessionString(512)}}
+	default:
+		return nil
+	}
+}
+func workbenchReadResponses(id RouteID) map[string]any {
+	name := "WorkbenchSourcePage"
+	switch id {
+	case RouteWorkbenchItems:
+		name = "BacklogPage"
+	case RouteWorkbenchItem:
+		name = "BacklogItem"
+	}
+	return map[string]any{"200": jsonResponse("Current authorized source projection; coverage may be partial", schemaRef(name)), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
 }
