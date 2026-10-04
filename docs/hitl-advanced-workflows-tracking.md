@@ -311,7 +311,12 @@ launches bypass cache reuse. Daemon counter/open-PR callers now use gaggle and
 configuration partitions, including ADO GETs. ADO WIQL/batch hydration remains
 pending under HAW-EVT-008; no claim of complete shared polling is made.
 
-### Backlog — design prepared, implementation pending
+### Backlog — source metadata contracts implemented; browse/edit pending
+
+The source metadata foundation now validates stable gaggle-qualified references,
+objective frontmatter, relationship manifests and explicit ownership. Candidate
+Markdown edits preserve body bytes and unrelated metadata; these parsers perform
+no provider access or writes. See `reference/workbench-source-metadata.md`.
 
 The backlog workbench still requires browse/edit surfaces and consistent explicit
 relations to items, PRs, dependencies and source-owned Markdown objectives in any
