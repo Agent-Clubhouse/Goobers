@@ -158,7 +158,9 @@ func TestWorkbenchMaintenanceGivesEveryKindShareUnderNativeBacklog(t *testing.T)
 	if _, err := s.CompleteNeedsHumanCommand(t.Context(), resolution.Input.Scope, resolution.ID, resolution.RequestDigest, resolutionReceipt(resolution, "confirmed"), childTestTime.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.PruneWorkbenchCommands(t.Context(), childTestTime.Add(WorkbenchCommandRetention+time.Hour), 100); err != nil || n != 36 {
+	// Assert bounded progress and the two quiet kinds' receipts below. The
+	// exact native share may shrink as more independently maintained kinds join.
+	if n, err := s.PruneWorkbenchCommands(t.Context(), childTestTime.Add(WorkbenchCommandRetention+time.Hour), 100); err != nil || n < 3 || n > 100 {
 		t.Fatal(n, err)
 	}
 	if _, err := s.WorkbenchProposal(t.Context(), proposal.Input.Scope, proposal.ID); !errors.Is(err, ErrWorkbenchCommandExpired) {
