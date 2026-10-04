@@ -135,9 +135,13 @@ slot. A child cannot ask for more authority than the submitted grant.
 2. Parse with closed schema, require explicit supported `dslVersion`, preserve
    original source and digest. Compile using the normal compiler, including
    references, contracts, feature status, integrity and placement constraints.
-3. Reject recursion, external triggers, foreign gaggle/repository bindings, unknown
-   Goobers/capabilities, and effects outside the parent grant. A child is started
-   only by its parent; it does not register itself with the background scheduler.
+3. Require the canonical DSL's explicit-start declaration: exactly one
+   `type: manual` trigger with no additional trigger fields. Reject background
+   schedule/backlog/signal/webhook triggers, recursion, foreign gaggle/repository
+   bindings, unknown Goobers/capabilities, and effects outside the parent grant.
+   The parent is the only authorized starter; generated definitions never enter
+   the configured workflow scheduler catalog. This keeps generated source valid
+   under the ordinary schema without injecting synthetic trigger fields.
 4. Evaluate effective permissions across task and Goober defaults, gates, tool
    surfaces, nested harness behavior, and deterministic commands. Publication
    denial must constrain actual credentials/egress/capability enforcement, not
