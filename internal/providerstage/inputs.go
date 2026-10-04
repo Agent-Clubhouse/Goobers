@@ -245,7 +245,7 @@ var inputSchemas = map[string][]Input{
 	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir")),
 	"config-checkout":    schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "head")),
 	"recovery-restore":   {},
-	"recovery-resume":    {},
+	"recovery-resume":    schema(pathsIn("resultFile")),
 	"ios-simulator-test": schema(integersIn("maxOutputBytes"), pathsIn("resultFile")),
 	"mcp-io":             {},
 	"validate":           {},

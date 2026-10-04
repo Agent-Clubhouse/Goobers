@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -230,6 +231,17 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	}
 	if resume {
 		assertRecoverySecretAbsent(t, stageToken, stdout.String(), stderr.String(), root, retained)
+		data, err := os.ReadFile(filepath.Join(destination, recoveryResumeResultFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result recoveryResumeResult
+		if err := json.Unmarshal(data, &result); err != nil || !result.Resumed || result.ResumedFromRun != record.RunID || result.RestoredCommit == "" {
+			t.Fatalf("resume result = %+v, %v", result, err)
+		}
+		if err := os.Remove(filepath.Join(destination, recoveryResumeResultFile)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if parent := recoveryCLIGit(t, destination, "rev-parse", target+"^"); parent != liveBase {
 		t.Fatalf("restore used stale base: %s != %s", parent, liveBase)
@@ -267,6 +279,9 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	}
 	if resume {
 		assertRecoverySecretAbsent(t, stageToken, stdout.String(), stderr.String(), root, retained)
+		if err := os.Remove(filepath.Join(destination, recoveryResumeResultFile)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if after := recoveryCLIGit(t, destination, "rev-parse", target); after != before {
 		t.Fatal("retry overwrote operator branch")

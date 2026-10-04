@@ -508,6 +508,7 @@
   },
   {
     "command": "recovery-resume",
+    "resultFile": "recovery-resume.json",
     "capabilities": [
       {
         "capability": "repo:push",

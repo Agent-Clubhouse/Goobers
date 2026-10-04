@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "e0d7589efd501b6801c5d9ee388420c6049b55fb95370ff9d81d2962f9a9932e",
+  "snapshotSha256": "01e89043628d3ee769fbd773eff1c97a18a3d6be98b830c37e0d762d9c9a2e32",
   "changes": [
     {
       "version": 1,
@@ -72,6 +72,10 @@
     {
       "version": 18,
       "description": "Add advisory-pr-select and advisory-pr-publish as separate workflow commands (#6184). Selection requires the exact github:pr:read credential and acquires a private lease; publication requires github:pr:write and owns the only public comment path. The addition changes no existing command requirement, result file, or claim behavior, so existing workflows retain their admission contract."
+    },
+    {
+      "version": 19,
+      "description": "Give recovery-resume a typed recovery-resume.json result contract (#4418), allowing the ordinary implementation workflow to record whether it resumed retained work and the source run. The existing repo:push capability requirement is unchanged."
     }
   ]
 }
