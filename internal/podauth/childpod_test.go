@@ -1,6 +1,7 @@
 package podauth
 
 import (
+	"encoding/base64"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -52,7 +53,7 @@ func TestWorkflowParentPodHasIndependentSignedCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := key.MintWorkflowParentPod("parent-run", time.Hour)
+	token, err := key.MintWorkflowParentPod("parent-run", "sha256:"+strings.Repeat("a", 64), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +64,14 @@ func TestWorkflowParentPodHasIndependentSignedCustody(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	p, err := auth.Authenticate(request)
-	if err != nil || !p.WorkflowParent || p.GeneratedChild || p.Subject != "run:parent-run" {
+	if err != nil || !p.WorkflowParent || p.GeneratedChild || p.Subject != "run:parent-run" || p.WorkflowParentContractDigest != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatal(p, err)
+	}
+	original := base64.RawURLEncoding.EncodeToString([]byte("sha256:" + strings.Repeat("a", 64)))
+	replacement := base64.RawURLEncoding.EncodeToString([]byte("sha256:" + strings.Repeat("b", 64)))
+	request.Header.Set("Authorization", "Bearer "+strings.Replace(token, original, replacement, 1))
+	if _, err := auth.Authenticate(request); err == nil {
+		t.Fatal("parent contract changed without invalidating signature")
 	}
 	for _, prefix := range []string{tokenPrefix, childPodTokenPrefix} {
 		request.Header.Set("Authorization", "Bearer "+strings.Replace(token, workflowParentPodPrefix, prefix, 1))

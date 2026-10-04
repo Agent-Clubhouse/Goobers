@@ -88,7 +88,8 @@ type Principal struct {
 	GeneratedChild bool
 	// WorkflowParent identifies a contained parent pod. Its run/attempt authority
 	// is checked independently of generated-child lineage.
-	WorkflowParent bool
+	WorkflowParent               bool
+	WorkflowParentContractDigest string
 	// ChildWorkflow is populated only by the stage-grant authenticator.
 	ChildWorkflow *ChildWorkflowPrincipal
 	Subject       string
