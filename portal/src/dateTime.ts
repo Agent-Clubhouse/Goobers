@@ -15,6 +15,8 @@ const OPTIONS: Record<DateTimeFormat, Intl.DateTimeFormatOptions> = {
   hour: { hour: "numeric" },
 };
 
+const formatters = new Map<DateTimeFormat, Intl.DateTimeFormat>();
+
 export function timestampDate(value: TimestampValue): Date | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   const date = value instanceof Date ? value : new Date(value);
@@ -26,7 +28,13 @@ export function formatDateTime(
   format: DateTimeFormat = "date-time",
 ): string {
   const date = timestampDate(value);
-  return date ? new Intl.DateTimeFormat("en-US", OPTIONS[format]).format(date) : "Unavailable";
+  if (!date) return "Unavailable";
+  let formatter = formatters.get(format);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", OPTIONS[format]);
+    formatters.set(format, formatter);
+  }
+  return formatter.format(date);
 }
 
 export function formatTimestamp(value: TimestampValue): string {

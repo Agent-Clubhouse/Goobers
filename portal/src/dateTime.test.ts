@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   formatDateTime,
   formatPreciseTimestamp,
@@ -7,6 +7,24 @@ import {
 } from "./dateTime";
 
 describe("canonical portal dates", () => {
+  it("reuses a bounded set of formatters for repeated table and chart dates", async () => {
+    vi.resetModules();
+    const { formatDateTime: formatCachedDate } = await import("./dateTime");
+    const constructor = vi.spyOn(Intl, "DateTimeFormat");
+    try {
+      const formats = ["date-time", "precise", "date", "hour"] as const;
+      const expected = formats.map((format) => formatCachedDate(0, format));
+      for (let index = 0; index < 20; index++) {
+        formats.forEach((format, position) => {
+          expect(formatCachedDate(0, format)).toBe(expected[position]);
+        });
+      }
+      expect(constructor).toHaveBeenCalledTimes(formats.length);
+    } finally {
+      constructor.mockRestore();
+    }
+  });
+
   it("uses one local-time English format with seconds across string, epoch and Date inputs", () => {
     const value = "2026-10-04T06:00:01Z";
     const expected = new Intl.DateTimeFormat("en-US", {
