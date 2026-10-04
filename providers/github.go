@@ -570,7 +570,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 	var parent *WorkItemRef
 	hierarchy := map[string]interface{}{}
 	if issue.Milestone != nil {
-		parent = &WorkItemRef{Provider: ProviderGitHub, ID: strconv.Itoa(issue.Milestone.Number), URL: issue.Milestone.HTMLURL, Type: "milestone"}
+		parent = &WorkItemRef{Provider: ProviderGitHub, ID: strconv.Itoa(issue.Milestone.Number), StableID: positiveNativeID(issue.Milestone.ID), URL: issue.Milestone.HTMLURL, Type: "milestone"}
 		hierarchy["milestone"] = issue.Milestone
 	}
 	assignee := ""
@@ -582,28 +582,30 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		blockedByCount = issue.IssueDependenciesSummary.TotalBlockedBy
 	}
 	return WorkItem{
-		Provider:       ProviderGitHub,
-		ID:             strconv.Itoa(issue.Number),
-		ExternalID:     strconv.FormatInt(issue.ID, 10),
-		Revision:       timeRevision(issue.UpdatedAt),
-		Type:           "issue",
-		Title:          issue.Title,
-		Body:           issue.Body,
-		Labels:         labels,
-		State:          issue.State,
-		StateReason:    issue.StateReason,
-		Status:         statusFromLabels(labels, issue.State),
-		Assignee:       assignee,
-		Links:          links,
-		Parent:         parent,
-		Hierarchy:      hierarchy,
-		URL:            issue.HTMLURL,
-		CreatedAt:      issue.CreatedAt,
-		UpdatedAt:      issue.UpdatedAt,
-		Fields:         githubIssueFields(issue),
-		BlockedByCount: blockedByCount,
-		Raw:            issue,
-		Integrity:      apiintegrity.Unapproved,
+		Provider:        ProviderGitHub,
+		ID:              strconv.Itoa(issue.Number),
+		StableID:        positiveNativeID(issue.ID),
+		ExternalID:      strconv.FormatInt(issue.ID, 10),
+		Revision:        timeRevision(issue.UpdatedAt),
+		Type:            "issue",
+		Title:           issue.Title,
+		Body:            issue.Body,
+		Labels:          labels,
+		State:           issue.State,
+		StateReason:     issue.StateReason,
+		Status:          statusFromLabels(labels, issue.State),
+		Assignee:        assignee,
+		NativeAssignees: githubAssigneeLogins(issue.Assignees),
+		Links:           links,
+		Parent:          parent,
+		Hierarchy:       hierarchy,
+		URL:             issue.HTMLURL,
+		CreatedAt:       issue.CreatedAt,
+		UpdatedAt:       issue.UpdatedAt,
+		Fields:          githubIssueFields(issue),
+		BlockedByCount:  blockedByCount,
+		Raw:             issue,
+		Integrity:       apiintegrity.Unapproved,
 	}
 }
 

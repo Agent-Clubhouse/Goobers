@@ -107,6 +107,6 @@ func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endp
 			transientRetries++
 			continue
 		}
-		return resp, nil
+		return boundSuccessResponse(ctx, resp)
 	}
 }
