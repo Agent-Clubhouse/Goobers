@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/workbench-source.schema.json",
+  "title": "WorkbenchSource",
+  "description": "Bounded source-owned objective metadata or relationship manifest. Never runtime instructions or authorization.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/objective"
+    },
+    {
+      "$ref": "#/$defs/manifest"
+    }
+  ],
+  "$defs": {
+    "node": {
+      "type": "object",
+      "description": "Qualified stable source object. Current authorization is always required.",
+      "additionalProperties": false,
+      "properties": {
+        "gaggleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "description": "The enclosing configured gaggle; cross-gaggle references are refused."
+        },
+        "sourceBindingId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Stable configured source binding name.",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Semantic source object type, independent of its current title or location.",
+          "enum": [
+            "work-item",
+            "milestone",
+            "pull-request",
+            "document",
+            "objective-document"
+          ]
+        },
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Immutable provider object ID or persistent objective ID; a locator is not identity."
+        }
+      },
+      "required": [
+        "gaggleId",
+        "sourceBindingId",
+        "kind",
+        "sourceId"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "objective-document"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "sourceId": {
+                "pattern": "^obj-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "description": "Persistent objective identity."
+              }
+            }
+          }
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "description": "One source-authored canonical directed relationship. Run observations are not authorable.",
+      "additionalProperties": false,
+      "properties": {
+        "edgeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 41,
+          "description": "Stable identity retained across edits to this relationship.",
+          "pattern": "^edge-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Relationship semantics; grouping, hierarchy, contribution and dependency stay distinct.",
+          "enum": [
+            "parent-of",
+            "blocked-by",
+            "contributes-to",
+            "references",
+            "milestone-member",
+            "implemented-by"
+          ]
+        },
+        "from": {
+          "$ref": "#/$defs/node",
+          "description": "Canonical source node."
+        },
+        "to": {
+          "$ref": "#/$defs/node",
+          "description": "Canonical destination node."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Optional explanation authored with the relationship."
+        }
+      },
+      "required": [
+        "edgeId",
+        "kind",
+        "from",
+        "to"
+      ]
+    },
+    "alias": {
+      "type": "object",
+      "description": "Portable name pointing to one existing source object; never a second objective.",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Unique alias within this manifest.",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+        },
+        "target": {
+          "$ref": "#/$defs/node",
+          "description": "Existing qualified object identity."
+        }
+      },
+      "required": [
+        "name",
+        "target"
+      ]
+    },
+    "objective": {
+      "type": "object",
+      "description": "The closed goobers namespace inside Markdown frontmatter. Other top-level namespaces are preserved.",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "objectives/v1",
+          "description": "Version of the objective metadata contract."
+        },
+        "objectiveId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Persistent identity generated once and retained through rename or move.",
+          "pattern": "^obj-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Human-authored objective title."
+        },
+        "edges": {
+          "type": "array",
+          "description": "Only edges whose from node is this objective.",
+          "maxItems": 2000,
+          "items": {
+            "$ref": "#/$defs/edge",
+            "description": "Explicit outgoing edge owned by this document."
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "objectiveId",
+        "title"
+      ]
+    },
+    "manifest": {
+      "type": "object",
+      "description": "Source-owned relationship manifest in one explicitly configured repository file.",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "relationships/v1",
+          "description": "Version of the relationship manifest contract."
+        },
+        "aliases": {
+          "type": "array",
+          "description": "Optional source-owned aliases.",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/alias",
+            "description": "Portable name for one existing object."
+          }
+        },
+        "edges": {
+          "type": "array",
+          "description": "Canonical relationships owned by this manifest.",
+          "maxItems": 2000,
+          "items": {
+            "$ref": "#/$defs/edge",
+            "description": "One explicit authored relationship."
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "edges"
+      ]
+    }
+  }
+}

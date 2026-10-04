@@ -381,3 +381,34 @@ Source text and agent suggestions are untrusted content. They cannot grant human
 roles, expand credential scope, configure a new repository, or authorize commands.
 Implementation follows the merged program's priority order and normal review gates;
 this draft does not publish issues, source changes, or PRs on its own.
+
+
+## Delivered source metadata foundation
+
+The first HAW-BKL-001 slice defines a provider-neutral qualified `NodeRef` with
+`gaggleId`, `sourceBindingId`, semantic `kind`, and stable `sourceId`; it is data,
+not authority. Existing node titles, URLs and locations are not used as identity.
+The `workbench-source` JSON Schema describes the closed `objectives/v1` Goobers
+frontmatter namespace and a `relationships/v1` repository manifest. Runtime source
+validation adds configured-binding, same-gaggle, edge direction and duplicate
+identity/ownership checks that require context beyond the JSON shape.
+
+The parser treats ordinary Markdown as reference material. Metadata proposals
+retain an existing objective ID, preserve the exact Markdown body, and retain
+unrelated YAML values and comments. YAML formatting can normalize; a proposal is
+returned as bytes for a reviewed source diff, never written by the parser. Source
+files are limited to 1 MiB, each file to 2,000 explicit edges, manifests to 128
+aliases, and YAML to 24 levels/20,000 nodes with no aliases, duplicate keys or
+multiple documents. Two live locations with one objective ID conflict.
+
+Canonical hierarchy ownership points at the child's native parent field, while
+milestone membership points at the item's milestone field. Native, frontmatter
+and explicitly configured manifest ownership are selected without mutation
+permissions; a denied or unsupported selected owner does not permit fallback.
+Derived run observations cannot be authored in these files. Competing edge IDs
+or source owners are visible conflicts. No progress rollups are introduced.
+
+This slice is a reusable source contract only. Gaggle source configuration,
+credential-bound ingestion, projection/read routes, mutation receipts and portal
+browsing/editing are still pending. No provider is contacted and no source file is
+written by these primitives. See [source metadata reference](../reference/workbench-source-metadata.md).
