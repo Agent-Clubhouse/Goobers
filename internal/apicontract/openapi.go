@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if eventIngressRoute(route.ID) || workbenchProposalRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if eventIngressRoute(route.ID) || workbenchSuggestionRoute(route.ID) || workbenchProposalRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if sessionOperationRoute(route.ID) {
@@ -121,6 +121,9 @@ func openAPIParameters(route Route) []map[string]any {
 	parameters = append(parameters, openAPIServiceParameters(route.ID)...)
 	parameters = append(parameters, sessionParameters(route.ID)...)
 	parameters = append(parameters, workbenchReadParameters(route.ID)...)
+	if route.ID == RouteWorkbenchSuggestionArtifacts {
+		parameters = append(parameters, map[string]any{"name": "after", "in": "query", "schema": suggestionSequence(0)})
+	}
 	if route.ID == RouteRuns {
 		for _, name := range []string{"gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger"} {
 			parameters = append(parameters, map[string]any{
@@ -219,6 +222,9 @@ func openAPIRequestBody(route Route) map[string]any {
 	}
 	if route.Method == http.MethodGet || route.Method == http.MethodHead {
 		return nil
+	}
+	if workbenchSuggestionRoute(route.ID) {
+		return workbenchSuggestionRequestBody(route.ID)
 	}
 	if workbenchProposalRoute(route.ID) {
 		return workbenchProposalRequestBody(route.ID)

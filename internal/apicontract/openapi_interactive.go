@@ -9,6 +9,7 @@ func openAPIInteractiveSchemas() map[string]any {
 	schemas = mergeSchemaProperties(schemas, openAPIResolutionSchemas())
 	schemas = mergeSchemaProperties(schemas, openAPIWorkbenchProposalSchemas())
 	schemas = mergeSchemaProperties(schemas, openAPIPRRepairSchemas())
+	schemas = mergeSchemaProperties(schemas, openAPIWorkbenchSuggestionSchemas())
 	for name, schema := range map[string]any{
 		"InteractiveCapabilities": closedChildObject([]string{"gaggle", "policyConfigured", "viewer", "operator", "sourceWriteMode", "actions"}, map[string]any{
 			"gaggle": stringSchema(), "policyConfigured": map[string]any{"type": "boolean"}, "viewer": map[string]any{"type": "boolean"}, "operator": map[string]any{"type": "boolean"}, "sourceWriteMode": map[string]any{"type": "string", "const": "pull-request"},

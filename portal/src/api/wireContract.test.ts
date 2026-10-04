@@ -13,6 +13,7 @@ const checkedErrorEnvelope: ApiErrorEnvelope = checkedFixtures.errorEnvelope;
 describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
+      "suggestionSelection", "suggestionInventory", "suggestionBatch", "suggestionPreviewRequest", "suggestionPreview", "suggestionDecision", "suggestionReview",
       "startQueue", "startQueueItem", "startQueueCancel",
       "gaggleEventEnvelope", "gaggleEventReceipt",
       "metadataChange", "metadataObjective", "metadataAlias", "metadataPreview", "metadataProposal",

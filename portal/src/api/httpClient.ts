@@ -1,3 +1,4 @@
+import type { SuggestionSelection, SuggestionInventory, SuggestionBatch, SuggestionPreviewRequest, SuggestionPreview, SuggestionDecisionRequest, SuggestionReview } from "./workbenchSuggestionTypes";
 import type { MetadataChangeRequest, MetadataPreview, MetadataProposalCommand } from "./workbenchProposalTypes";
 import { readMetadataResponse } from "./workbenchProposalTransport";
 import type { StartQueuePage, StartQueueItem, StartQueueCancelInput } from "./startQueueTypes";
@@ -507,6 +508,27 @@ export class HttpDaemonClient implements DaemonClient {
       options,
       { provider, kind, id: externalId },
     ).then(normalizeLegacyWorkItemCost);
+  }
+
+  listSuggestionArtifacts(gaggle: string, run: string, after?: number, options?: RequestOptions): Promise<SuggestionInventory> {
+    return this.withResponse(clientRoutes.workbenchSuggestionArtifacts, after === undefined ? undefined : { after }, options, "application/json", (response) => readMetadataResponse<SuggestionInventory>(response, 1 << 20), { gaggle, run });
+  }
+  loadSuggestions(gaggle: string, selection: SuggestionSelection, options?: RequestOptions): Promise<SuggestionBatch> {
+    return this.withResponse(clientRoutes.workbenchSuggestionLoad, undefined, options, "application/json", (response) => readMetadataResponse<SuggestionBatch>(response, 1 << 20), { gaggle, run: selection.runId, sequence: String(selection.sequence) });
+  }
+  previewSuggestion(gaggle: string, input: SuggestionPreviewRequest, options?: RequestOptions): Promise<SuggestionPreview> {
+    return this.suggestionRequest(clientRoutes.workbenchSuggestionPreview, gaggle, input, (4 << 20) + 4096, options);
+  }
+  decideSuggestion(gaggle: string, input: SuggestionDecisionRequest, options?: RequestOptions): Promise<SuggestionReview> {
+    return this.suggestionRequest(clientRoutes.workbenchSuggestionDecide, gaggle, input, 1 << 20, options);
+  }
+  getSuggestionReview(gaggle: string, review: string, options?: RequestOptions): Promise<SuggestionReview> {
+    return this.withResponse(clientRoutes.workbenchSuggestionReview, undefined, options, "application/json", (response) => readMetadataResponse<SuggestionReview>(response, 1 << 20), { gaggle, review });
+  }
+  private suggestionRequest<T>(route: ApiRoute, gaggle: string, input: SuggestionPreviewRequest | SuggestionDecisionRequest, limit: number, options?: RequestOptions): Promise<T> {
+    const body = JSON.stringify(input);
+    if (new TextEncoder().encode(body).byteLength > 16384) throw new Error("The suggestion request exceeds its byte bound.");
+    return this.withResponse(route, undefined, options, "application/json", (response) => readMetadataResponse<T>(response, limit), { gaggle }, { body, headers: { "Content-Type": "application/json" } });
   }
 
   previewMetadataChange(gaggle: string, source: string, input: MetadataChangeRequest, options?: RequestOptions): Promise<MetadataPreview> {

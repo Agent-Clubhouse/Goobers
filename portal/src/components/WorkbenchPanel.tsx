@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { DaemonClient, Goober, WorkbenchSourcePage } from "../api/types";
 import { WorkbenchBrowser } from "./WorkbenchBrowser";
 import { WorkbenchDocuments } from "./WorkbenchDocuments";
+import { WorkbenchSuggestions } from "./WorkbenchSuggestions";
 import { WorkbenchGraph } from "./WorkbenchGraph";
 import "../workbench.css";
 
@@ -29,6 +30,7 @@ function WorkbenchSources({ client, gaggle, goobers = [] }: { client: DaemonClie
     {!page && !error && <p role="status">Loading planning sources…</p>}
     {error && <p role="status">{error}</p>}
     {page && <>
+      <WorkbenchSuggestions key={`${page.generation}:${revision}`} client={client} gaggle={gaggle} sources={page.items} />
       {page.items.length > 0 && <WorkbenchGraph key={`${page.generation}:${revision}`} client={client} gaggle={gaggle} generation={page.generation} sources={page.items} />}
       {page.items.length === 0 ? <p>No planning sources are configured for this gaggle.</p> : <label>Planning source<select value={source?.bindingId ?? ""} onChange={(event) => setBinding(event.target.value)}><option value="">Select a source</option>{page.items.map((item) => <option key={item.bindingId} value={item.bindingId}>{item.bindingId} · {item.provider} · {item.kind}</option>)}</select></label>}
       {source && <>

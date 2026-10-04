@@ -18,6 +18,14 @@ import (
 )
 
 type wireFixtures struct {
+	SuggestionSelection      SuggestionSelection       `json:"suggestionSelection"`
+	SuggestionInventory      SuggestionInventory       `json:"suggestionInventory"`
+	SuggestionBatch          SuggestionBatch           `json:"suggestionBatch"`
+	SuggestionPreviewRequest SuggestionPreviewRequest  `json:"suggestionPreviewRequest"`
+	SuggestionPreview        SuggestionPreview         `json:"suggestionPreview"`
+	SuggestionDecision       SuggestionDecisionRequest `json:"suggestionDecision"`
+	SuggestionReview         SuggestionReview          `json:"suggestionReview"`
+
 	StartQueue                 StartQueuePage           `json:"startQueue"`
 	StartQueueItem             StartQueueItem           `json:"startQueueItem"`
 	StartQueueCancel           StartQueueCancelInput    `json:"startQueueCancel"`
@@ -97,6 +105,14 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "suggestionSelection", scriptType: "SuggestionSelection"},
+	{name: "suggestionInventory", scriptType: "SuggestionInventory"},
+	{name: "suggestionBatch", scriptType: "SuggestionBatch"},
+	{name: "suggestionPreviewRequest", scriptType: "SuggestionPreviewRequest"},
+	{name: "suggestionPreview", scriptType: "SuggestionPreview"},
+	{name: "suggestionDecision", scriptType: "SuggestionDecisionRequest"},
+	{name: "suggestionReview", scriptType: "SuggestionReview"},
+
 	{name: "gaggleEventEnvelope", scriptType: "GaggleEventEnvelope"},
 	{name: "gaggleEventReceipt", scriptType: "GaggleEventReceipt"},
 	{name: "metadataChange", scriptType: "MetadataChangeRequest"},
@@ -1134,6 +1150,7 @@ func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
 	fixtures.WorkbenchGraph = workbenchGraphFixture()
 	fixtures = withWorkbenchWriteFixtures(fixtures)
 	fixtures = withWorkbenchProposalFixtures(fixtures)
+	fixtures = withSuggestionFixtures(fixtures)
 	fixtures.ChildPublicationCheck = ChildPublicationCheckRequest{Action: "pr", ExpectedIntentDigest: "sha256:" + strings.Repeat("a", 64)}
 	fixtures.ChildPublicationResult = ChildPublicationCheckResult{RunID: "child-run", RequestID: "human-one", Publication: ChildPublicationSummary{SourceRunID: "original-child", ExecutionEpoch: 0, Action: "pr", IntentDigest: fixtures.ChildPublicationCheck.ExpectedIntentDigest, State: "effect_pending", Head: "goobers/children/child-run", Base: "main", Commit: strings.Repeat("a", 40), NeedsHuman: true, Observation: "not_observed", CreatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}
 	fixtures.ChildWorkflowPage = ChildWorkflowPage{RunID: "parent-run", Gaggle: "web", Children: []ChildWorkflowSummary{{ChildID: "child-one", InvocationKey: "inspect", Sequence: 1, State: "queued", AcceptedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}}

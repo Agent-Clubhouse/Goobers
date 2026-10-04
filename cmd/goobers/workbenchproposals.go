@@ -13,4 +13,5 @@ func (u *upSession) installWorkbenchProposals(read *workbenchservice.Service, pr
 	}
 	service := &workbenchservice.ProposalService{ReadService: read, Queue: u.durableTriggers.queue, Provider: provider, Now: u.durableTriggers.dispatch.now}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithWorkbenchProposals(service))
+	u.installWorkbenchSuggestions(service)
 }

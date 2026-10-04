@@ -112,6 +112,11 @@ interface FixtureRunCursor {
 
 export class FixtureDaemonClient implements DaemonClient {
 
+  async listSuggestionArtifacts(): Promise<import("./types").SuggestionInventory> { throw new Error("Artifact review requires a connected daemon."); }
+  async loadSuggestions(): Promise<import("./types").SuggestionBatch> { throw new Error("Artifact review requires a connected daemon."); }
+  async previewSuggestion(): Promise<import("./types").SuggestionPreview> { throw new Error("Artifact review requires a connected daemon."); }
+  async decideSuggestion(): Promise<import("./types").SuggestionReview> { throw new Error("Artifact review requires a connected daemon."); }
+  async getSuggestionReview(): Promise<import("./types").SuggestionReview> { throw new Error("Artifact review requires a connected daemon."); }
   async previewMetadataChange(): Promise<import("./types").MetadataPreview> { throw new Error("Source previews require a connected daemon."); }
   async submitMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Source proposals require a connected daemon."); }
   async getMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Proposal receipts require a connected daemon."); }

@@ -1898,6 +1898,11 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+  listSuggestionArtifacts(gaggle: string, run: string, after?: number, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionInventory>;
+  loadSuggestions(gaggle: string, selection: import("./workbenchSuggestionTypes").SuggestionSelection, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionBatch>;
+  previewSuggestion(gaggle: string, input: import("./workbenchSuggestionTypes").SuggestionPreviewRequest, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionPreview>;
+  decideSuggestion(gaggle: string, input: import("./workbenchSuggestionTypes").SuggestionDecisionRequest, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionReview>;
+  getSuggestionReview(gaggle: string, review: string, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionReview>;
   previewMetadataChange(gaggle: string, source: string, input: import("./workbenchProposalTypes").MetadataChangeRequest, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataPreview>;
   submitMetadataProposal(gaggle: string, source: string, key: string, input: import("./workbenchProposalTypes").MetadataChangeRequest, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
   getMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
@@ -2229,3 +2234,5 @@ export type { GaggleEventEnvelope, GaggleEventReceipt, GaggleEventDelivery } fro
 export type { MetadataRevision, MetadataChangeRequest, MetadataPreview, MetadataProposalPR, MetadataProposalPhase, MetadataProposalObservation, MetadataProposalCommand } from "./workbenchProposalTypes";
 
 export type { MetadataObjectiveRequest, MetadataAliasRequest } from "./workbenchProposalTypes";
+
+export type { SuggestionSelection, SuggestionArtifact, SuggestionInventory, SuggestionEvidence, SuggestionEndpoint, BoundSuggestion, SuggestionCandidate, SuggestionBatch, SuggestionPreviewRequest, SuggestionPreview, SuggestionDecisionRequest, SuggestionReview } from "./workbenchSuggestionTypes";

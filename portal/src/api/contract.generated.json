@@ -907,6 +907,61 @@
       "recoverySafe": false
     },
     {
+      "id": "workbenchSuggestionArtifacts",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/suggestions/artifacts/{run}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchSuggestionLoad",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/suggestions/artifacts/{run}/{sequence}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchSuggestionPreview",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/suggestions/preview",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchSuggestionDecide",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/suggestions/decisions",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchSuggestionReview",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/suggestions/reviews/{review}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workbenchProposalPreview",
       "method": "POST",
       "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/proposal-preview",
