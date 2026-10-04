@@ -82,7 +82,11 @@ func (s *Store) KeepChildResult(ctx context.Context, child ChildRecord, result C
 	if !current.AcknowledgedAt.IsZero() || (current.State.Terminal() && current.ResultRef != result.ReceiptDigest) {
 		return ErrTransition
 	}
-	if err := childByteCapacity(ctx, tx, len(result.Receipt)+len(result.Bundle)); err != nil {
+	credit, err := resultStorageCredit(ctx, tx, current.ChildID)
+	if err != nil {
+		return err
+	}
+	if err := consumeChildStorage(ctx, tx, current.ChildID, credit, len(result.Receipt)+len(result.Bundle)); err != nil {
 		return err
 	}
 	if result.Bundle == nil {

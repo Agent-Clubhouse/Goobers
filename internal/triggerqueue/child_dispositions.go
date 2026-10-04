@@ -95,7 +95,7 @@ func (s *Store) RequestChildDisposition(ctx context.Context, request ChildDispos
 	if !child.AcknowledgedAt.IsZero() || now.Before(child.UpdatedAt) {
 		return ChildDisposition{}, ErrTransition
 	}
-	if err := childByteCapacity(ctx, tx, 1024); err != nil {
+	if err := consumeChildStorage(ctx, tx, child.ChildID, childRequestAllowance, 1024); err != nil {
 		return ChildDisposition{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO child_dispositions(child_id,action,result_ref,attempt_id,requested_ns,plan,plan_digest) VALUES(?,?,?,?,?,x'','')`, child.ChildID, request.Action, request.ResultRef, request.Authority.AttemptID, now.UnixNano()); err != nil {
@@ -198,7 +198,7 @@ func (s *Store) KeepChildDispositionPlan(ctx context.Context, expected ChildDisp
 	if !current.AppliedAt.IsZero() {
 		return ErrTransition
 	}
-	if err := childByteCapacity(ctx, tx, len(plan)); err != nil {
+	if err := consumeChildStorage(ctx, tx, child.ChildID, childPlanAllowance, len(plan)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE child_dispositions SET plan=?,plan_digest=? WHERE child_id=?`, plan, "sha256:"+childDigest(plan), child.ChildID); err != nil {

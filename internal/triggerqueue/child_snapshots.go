@@ -92,7 +92,14 @@ func (s *Store) KeepChildSnapshot(ctx context.Context, child ChildRecord, snapsh
 	if current.State != ChildQueued {
 		return ErrTransition
 	}
-	if err := childByteCapacity(ctx, tx, len(snapshot.Receipt)+len(snapshot.Bundle)); err != nil {
+	var terminalReceipt string
+	if err := tx.QueryRowContext(ctx, `SELECT result_digest FROM child_lineages WHERE child_id=?`, current.ChildID).Scan(&terminalReceipt); err != nil {
+		return err
+	}
+	if terminalReceipt != "" {
+		return ErrTransition
+	}
+	if err := consumeChildStorage(ctx, tx, current.ChildID, childSnapshotAllowance, len(snapshot.Receipt)+len(snapshot.Bundle)); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO child_snapshots(child_id,receipt,bundle_digest,bundle) VALUES(?,?,?,?)`, current.ChildID, snapshot.Receipt, snapshot.BundleDigest, snapshot.Bundle); err != nil {

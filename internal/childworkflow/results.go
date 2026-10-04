@@ -159,6 +159,9 @@ func (c *WorkspaceCoordinator) ReadResult(ctx context.Context, child triggerqueu
 		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
 	}
 	result := TerminalResult{Input: receipt.Input, ResultRef: stored.ReceiptDigest, Snapshot: receipt.Snapshot}
+	if current.State.Terminal() && (current.State != receipt.Input.State || current.ResultRef != result.ResultRef) {
+		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
+	}
 	if receipt.Snapshot == nil {
 		if len(stored.Bundle) != 0 || receipt.RepositoryDigest != "" {
 			return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
