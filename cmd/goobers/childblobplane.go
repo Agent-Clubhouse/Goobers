@@ -1,0 +1,98 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"io/fs"
+	"reflect"
+	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/triggerqueue"
+)
+
+func (s *daemonCredentialService) childBlobPlane(base blobstore.Store) blobstore.Store {
+	return childpod.BlobOverlay{Base: base, Queue: s.childQueue, Scope: s.childBlobScope}
+}
+
+func (s *daemonCredentialService) childBlobScope(ctx context.Context) (triggerqueue.ChildIdentity, bool, error) {
+	principal, ok := httpapi.PrincipalFromContext(ctx)
+	if !ok {
+		return triggerqueue.ChildIdentity{}, false, errors.New("blob custody requires an authenticated principal")
+	}
+	if !httpapi.IsPodPrincipal(principal) {
+		return triggerqueue.ChildIdentity{}, false, nil
+	}
+	runID, ok := strings.CutPrefix(principal.Subject, "run:")
+	if !ok || !apiv1.ValidRunID(runID) || s.childQueue == nil {
+		return triggerqueue.ChildIdentity{}, false, errors.New("blob custody run identity unavailable")
+	}
+	child, err := s.childQueue.ChildForRun(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A retained journal still identifies a child after queue expiry. Missing
+		// ordinary journals are legitimate for engine-driven remote runs.
+		dir, findErr := s.layout.FindRunDir(runID)
+		if findErr != nil && !errors.Is(findErr, fs.ErrNotExist) {
+			return triggerqueue.ChildIdentity{}, false, findErr
+		}
+		if findErr == nil {
+			reader, readErr := journal.OpenReadOnly(dir)
+			if readErr != nil {
+				return triggerqueue.ChildIdentity{}, false, readErr
+			}
+			id, readErr := reader.Identity()
+			if readErr != nil || id.Child != nil {
+				return triggerqueue.ChildIdentity{}, true, errors.New("child blob lineage expired or unavailable")
+			}
+		}
+		return triggerqueue.ChildIdentity{}, false, nil
+	}
+	if err != nil {
+		return triggerqueue.ChildIdentity{}, true, err
+	}
+	if err := s.verifyChildBlobOwner(ctx, child); err != nil {
+		return triggerqueue.ChildIdentity{}, true, err
+	}
+	return child.Identity, true, nil
+}
+
+func (s *daemonCredentialService) verifyChildBlobOwner(ctx context.Context, child triggerqueue.ChildRecord) error {
+	if child.State.Terminal() || !child.AcknowledgedAt.IsZero() || !child.TombstonedAt.IsZero() {
+		return errors.New("child blob custody is closed")
+	}
+	receipt, err := s.childQueue.ChildStart(ctx, child.Identity)
+	if err != nil {
+		return err
+	}
+	if receipt.State != triggerqueue.Dispatching && receipt.State != triggerqueue.Dispatched {
+		return errors.New("child blob custody has no claimed execution")
+	}
+	ref, err := (&durableTriggerService{queue: s.childQueue}).childReference(ctx, receipt)
+	if err != nil {
+		return err
+	}
+	dir, err := s.layout.FindRunDir(child.RunID)
+	if err != nil {
+		return err
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return err
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return err
+	}
+	if id.RunID != child.RunID || id.Gaggle != child.Identity.Gaggle || !reflect.DeepEqual(id.Child, &ref.Lineage) || id.ConfigGeneration != ref.Envelope.ConfigGeneration || id.WorkflowDigest != ref.Envelope.WorkflowDigest {
+		return errors.New("child blob custody differs from journal provenance")
+	}
+	// Cancellation prevents new execution/credentials, but the existing pod
+	// still must surrender bounded output during teardown. No shared-store
+	// access or new authority follows from this custody-only permission.
+	return id.ValidateChildLineage()
+}

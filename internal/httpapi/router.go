@@ -543,7 +543,13 @@ func PrincipalFromRequest(request *http.Request) (Principal, bool) {
 	if request == nil {
 		return Principal{}, false
 	}
-	principal, ok := request.Context().Value(principalContextKey{}).(Principal)
+	return PrincipalFromContext(request.Context())
+}
+
+// PrincipalFromContext exposes only the identity established by the router.
+// Scoped storage adapters use it without accepting identity from a payload.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
 	return principal, ok
 }
 

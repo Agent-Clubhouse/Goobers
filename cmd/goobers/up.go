@@ -1138,7 +1138,7 @@ func (u *upSession) configureAPI() int {
 		httpapi.WithCancelService(u.cancelPlane),
 		httpapi.WithCredentialService(u.credentialPlane),
 		httpapi.WithChildWorkflowService(u.credentialPlane.children.HTTPService()),
-		httpapi.WithBlobService(u.blobStore),
+		httpapi.WithBlobService(u.credentialPlane.childBlobPlane(u.blobStore)),
 		httpapi.WithRecoveryService(recoveryDeliveryService{layout: u.l, setup: u.setup}),
 		httpapi.WithSurrenderService(surrenderStore),
 		httpapi.WithStateService(statePlane),
