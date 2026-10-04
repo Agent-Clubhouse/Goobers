@@ -50,6 +50,7 @@ type atomicWriteConfig struct {
 	syncDir          func(string) error
 	bestEffortMode   bool
 	chmod            func(path string, mode fs.FileMode) error
+	link             func(oldname, newname string) error
 }
 
 // Option configures WriteFileAtomic.
@@ -95,8 +96,51 @@ func isModeUnsupported(err error) bool {
 func WithPublishRaceCheck(check func(path string) error) Option {
 	return func(config *atomicWriteConfig) {
 		config.publishRaceCheck = check
-		config.replace = os.Link
+		config.replace = func(source, destination string) error {
+			link := config.link
+			if link == nil {
+				link = os.Link
+			}
+			return publishNoClobber(link, source, destination)
+		}
 	}
+}
+
+// WithLink overrides the hard-link primitive used by the no-clobber publish
+// (WithPublishRaceCheck). It exists mainly as a fault-injection seam.
+func WithLink(link func(oldname, newname string) error) Option {
+	return func(config *atomicWriteConfig) {
+		config.link = link
+	}
+}
+
+// isLinkUnsupported reports whether err means the filesystem or mount cannot
+// create hard links (CIFS/SMB with nounix returns EPERM or ENOTSUP).
+func isLinkUnsupported(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.EXDEV)
+}
+
+// publishNoClobber publishes source at destination without replacing an
+// existing destination. It prefers an atomic hard link. On filesystems without
+// hard links it falls back to stat-then-rename: an existing destination is
+// reported as fs.ErrExist (so the race check decides), otherwise the staged
+// file is renamed into place. That fallback is not atomic against a concurrent
+// publisher that creates the destination between the stat and the rename; the
+// later rename wins. Callers whose payloads are content-addressed are
+// unaffected.
+func publishNoClobber(link func(string, string) error, source, destination string) error {
+	err := link(source, destination)
+	if err == nil || !isLinkUnsupported(err) {
+		return err
+	}
+	if _, statErr := os.Lstat(destination); statErr == nil {
+		return fs.ErrExist
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return statErr
+	}
+	return os.Rename(source, destination)
 }
 
 // WriteFileAtomic writes data to a sibling temporary file and atomically

@@ -356,6 +356,7 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 		// (nounix) where chmod returns EPERM (outage 2026-10-04).
 		durability.WithBestEffortMode(),
 		durability.WithChmod(chmodStaged),
+		durability.WithLink(linkStaged),
 		durability.WithPublishRaceCheck(func(path string) error {
 			_, err := os.Stat(path)
 			return err
@@ -383,3 +384,7 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 // chmodStaged applies the requested mode to the staged result; tests replace
 // it to simulate CIFS mounts whose chmod always fails.
 var chmodStaged = os.Chmod
+
+// linkStaged is the hard-link primitive for the no-clobber publish; tests
+// replace it to simulate mounts without hard links (CIFS nounix).
+var linkStaged = os.Link
