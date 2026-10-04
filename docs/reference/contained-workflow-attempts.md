@@ -83,8 +83,8 @@ HTTP saved guidance, fresh retry allowance, recovery and current-policy refusal;
 its model process and provider transport are simulated.
 
 Live Kubernetes, Temporal and model execution are not claimed by those tests.
-Parallel parent stages, PR publication delegation and shared human intervention
-on sealed child results remain delivery work. Recursion
+Parallel parent stages and shared human intervention on sealed child results
+remain delivery work. Delegated publication uses the host-only path below. Recursion
 is deferred as agreed.
 
 ## Generated child attempts and retained parent work
@@ -187,3 +187,27 @@ retained result and repository binding must still verify, and stale grants remai
 refused. Existing published application plans are immutable and still follow
 their recorded recovery path before the occurrence can be released. Discard does
 not retract a child PR.
+
+## Delegated child publication
+
+An accepted parent grant may permit publication up front. The generated workflow
+must also declare the push or PR capability on its canonical typed deterministic
+stage (`goobers push-branch` or `goobers open-pr`). Flags, shell scripts, environment
+and target overrides do not qualify for this host path. The host rechecks archived
+and current authority, immutable repository/base and the child-owned branch.
+Model pods continue to receive model credentials only.
+
+Each child may retain one branch intent and one PR intent. The branch snapshot
+preserves ancestry and restores excluded tracked paths from the original source;
+publication leaves the checkout, HEAD and index unchanged. Desired intent and
+observed receipt are distinct. PR effect admission is a compare-and-set: a lost
+or concurrent request cannot send a second create. The provider is queried for
+the exact owned head/base. Unobserved outcomes remain pending and retain family
+custody even after the child result is acknowledged or the parent is cancelled.
+New effects remain forbidden after cancellation; later exact observations may
+still settle an already submitted effect.
+
+Real Git command-factory and Runner.Resume tests exercise push then PR with dirty
+child output and production repository URL resolution. Native GitHub and Azure
+DevOps fake HTTP tests cover lost create replies. These tests do not publish a
+real PR or qualify a live worker deployment.

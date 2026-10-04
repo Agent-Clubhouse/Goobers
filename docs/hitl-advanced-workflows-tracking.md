@@ -98,6 +98,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-child-repository-custody` | `codex/haw-discard-settlement` | Resolve production child repository URLs and verify both custody identities |
 
+| `codex/haw-child-host-publication` | `codex/haw-child-repository-custody` | Publish delegated immutable child branches and PRs through host-owned effects |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -156,8 +158,13 @@ a live Kubernetes or model qualification. Remaining delivery gates:
   fenced against parent cancellation and terminal result capture. Combined race
   and real Git tests pass with simulated worker transport. See the
   [contained attempt contract](reference/contained-workflow-attempts.md).
-- Verify explicit PR publication delegation against the actual credential surface,
-  including ambient credentials and model credentials that also authorize GitHub.
+- Canonical typed child push/PR stages now use host-only delegated credentials;
+  child model pods receive no provider token. Immutable intents precede effects,
+  concurrent PR admission uses compare-and-set, and uncertain create replies only
+  reconcile the exact branch/base. Pending external effects pin the family after
+  acknowledgement and cancellation. Real Git production runner tests, native
+  GitHub/ADO fake HTTP tests, queue/credential races and lint pass. Complete the
+  human observation surface and validate on live provider/worker deployments.
 - Owned discard now survives narrower workspace policy without importing or
   recapturing parent files. An unplanned conflict can use a revision-bound changed
   choice; already published plans remain immutable and require reconciliation.
