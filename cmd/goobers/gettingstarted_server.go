@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	daemonservice "github.com/goobers/goobers/internal/service"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -35,7 +37,7 @@ import (
 // wizard can submit structured choices without simulating terminal input.
 
 const (
-	guidedStateVersion    = 2
+	guidedStateVersion    = 3
 	guidedMaxBodyBytes    = 1 << 20
 	guidedOutputRingLines = 500
 	guidedRunIDMarker     = "created run "
@@ -55,19 +57,22 @@ var (
 )
 
 type guidedServer struct {
-	workdir        string
-	instancePath   string
-	instancePinned bool
-	executable     string
-	platform       string
-	errorLog       *log.Logger
-	allowEphemeral bool
+	workdir         string
+	instancePath    string
+	instancePinned  bool
+	executable      string
+	platform        string
+	runtimeIdentity string
+	errorLog        *log.Logger
+	allowEphemeral  bool
+	execAction      func(context.Context, ...string) (guidedExecResult, error)
 
-	mu       sync.Mutex
-	authMu   sync.Mutex
-	job      *guidedJob
-	api      http.Handler
-	apiClose func() error
+	mu             sync.Mutex
+	authMu         sync.Mutex
+	job            *guidedJob
+	api            http.Handler
+	apiClose       func() error
+	completionMode guidedRuntimeMode
 
 	completed      chan struct{}
 	completionOnce sync.Once
@@ -79,12 +84,13 @@ func newGuidedServer(workdir, instancePath string, errorLog *log.Logger) (*guide
 		return nil, fmt.Errorf("resolve own executable: %w", err)
 	}
 	return &guidedServer{
-		workdir:      workdir,
-		instancePath: instancePath,
-		executable:   executable,
-		platform:     runtime.GOOS,
-		errorLog:     errorLog,
-		completed:    make(chan struct{}),
+		workdir:         workdir,
+		instancePath:    instancePath,
+		executable:      executable,
+		platform:        runtime.GOOS,
+		runtimeIdentity: guidedRuntimeIdentity(),
+		errorLog:        errorLog,
+		completed:       make(chan struct{}),
 	}, nil
 }
 
@@ -160,6 +166,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleState(w, r)
 	case r.URL.Path == "/guided/status":
 		s.handleStatus(w, r)
+	case r.URL.Path == "/guided/supervision":
+		s.handleSupervisionPreview(w, r)
 	case r.URL.Path == "/guided/actions/init-instance":
 		s.handleInitInstance(w, r)
 	case r.URL.Path == "/guided/actions/inspect-repository":
@@ -200,66 +208,264 @@ func (s *guidedServer) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if !decodeGuidedBody(w, r, &input) {
 		return
 	}
-	scheduledTaskInstalled := false
-	if input.InstallScheduledTask {
-		if s.platform != "windows" {
-			writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
-				Code:    "scheduled_task_unsupported",
-				Message: "scheduled task supervision is only supported on Windows",
-			})
-			return
-		}
-		if err := ensureGuidedScheduledTask(r.Context(), s.instancePath); err != nil {
-			writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{
-				Code:    "scheduled_task_install_failed",
-				Message: fmt.Sprintf("start Goobers automatically at sign-in: %v", err),
-			})
-			return
-		}
-		scheduledTaskInstalled = true
+	if input.Mode == "" {
+		input.Mode = guidedRuntimeForeground
 	}
-	writeGuidedJSON(w, http.StatusOK, guidedCompleteBody{
-		Complete:               true,
-		ScheduledTaskInstalled: scheduledTaskInstalled,
-	})
+	if input.Mode != guidedRuntimeForeground && input.Mode != guidedRuntimeTask &&
+		input.Mode != guidedRuntimeService && input.Mode != guidedRuntimeLater {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{Code: "invalid_runtime_mode", Message: "choose foreground, scheduled-task, machine-service, or not-now"})
+		return
+	}
+	if (input.Mode == guidedRuntimeTask || input.Mode == guidedRuntimeService) && s.platform != "windows" {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{Code: "windows_supervision_unsupported", Message: "Windows supervision is only supported on Windows"})
+		return
+	}
+	if input.Mode == guidedRuntimeService && !input.ConfirmLocalSystem {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{Code: "local_system_confirmation_required", Message: "explicitly confirm the LocalSystem account limitations before installing the machine service"})
+		return
+	}
+	workflows, err := guidedWorkflowFacts(s.instancePath, s.executable)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{Code: "guided_config_unavailable", Message: fmt.Sprintf("load configured workflows: %v", err)})
+		return
+	}
+	response := guidedCompleteBody{
+		Complete:        true,
+		SupervisionMode: string(input.Mode),
+		Foreground:      guidedCommand(s.executable, "up", s.instancePath),
+		Workflows:       workflows,
+	}
+	switch input.Mode {
+	case guidedRuntimeTask:
+		status, err := s.ensureGuidedSupervisor(r.Context(), true)
+		if err != nil {
+			writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{Code: "scheduled_task_install_failed", Message: fmt.Sprintf("start Goobers automatically at sign-in: %v", err)})
+			return
+		}
+		response.DaemonRunning = status.Running
+		response.Account = status.Account
+	case guidedRuntimeService:
+		status, err := s.ensureGuidedSupervisor(r.Context(), false)
+		if err != nil {
+			writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{Code: "machine_service_install_failed", Message: fmt.Sprintf("install the LocalSystem machine service: %v", err)})
+			return
+		}
+		response.DaemonRunning = status.Running
+		response.Account = status.Account
+	}
+	s.mu.Lock()
+	s.completionMode = input.Mode
+	s.mu.Unlock()
+	writeGuidedJSON(w, http.StatusOK, response)
 	s.completionOnce.Do(func() {
 		close(s.completed)
 	})
 }
 
+func (s *guidedServer) handleSupervisionPreview(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodGet) {
+		return
+	}
+	if s.platform != "windows" {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{Code: "windows_supervision_unsupported", Message: "Windows supervision is only supported on Windows"})
+		return
+	}
+	task, err := s.guidedSupervisorPreview(r.Context(), true)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{Code: "scheduled_task_status_failed", Message: fmt.Sprintf("inspect per-user Scheduled Task: %v", err)})
+		return
+	}
+	service, err := s.guidedSupervisorPreview(r.Context(), false)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{Code: "machine_service_status_failed", Message: fmt.Sprintf("inspect LocalSystem machine service: %v", err)})
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedSupervisionPreviewBody{
+		ScheduledTask:  task,
+		MachineService: service,
+	})
+}
+
+func (s *guidedServer) ensureGuidedSupervisor(ctx context.Context, task bool) (daemonservice.Status, error) {
+	statusArgs, installArgs, startArgs := guidedSupervisorArgs(s.instancePath, task)
+	status, err := s.guidedSupervisorStatus(ctx, statusArgs)
+	if err != nil {
+		return daemonservice.Status{}, err
+	}
+	actionArgs := installArgs
+	if status.Installed {
+		actionArgs = startArgs
+	}
+	if status.Running {
+		actionArgs = nil
+	}
+	if actionArgs != nil {
+		if err := s.runGuidedLifecycle(ctx, actionArgs); err != nil {
+			return daemonservice.Status{}, err
+		}
+	}
+	status, err = s.guidedSupervisorStatus(ctx, statusArgs)
+	if err != nil {
+		return daemonservice.Status{}, err
+	}
+	if !status.Installed || !status.Running {
+		return daemonservice.Status{}, fmt.Errorf("supervisor reported state %q after installation", status.State)
+	}
+	return status, nil
+}
+
+func (s *guidedServer) guidedSupervisorPreview(ctx context.Context, task bool) (guidedSupervisorPreview, error) {
+	statusArgs, installArgs, startArgs := guidedSupervisorArgs(s.instancePath, task)
+	status, err := s.guidedSupervisorStatus(ctx, statusArgs)
+	if err != nil {
+		return guidedSupervisorPreview{}, err
+	}
+	preview := guidedSupervisorPreview{
+		Installed: status.Installed,
+		Running:   status.Running,
+	}
+	switch {
+	case !status.Installed:
+		preview.Command = guidedCommand(s.executable, installArgs...)
+	case !status.Running:
+		preview.Command = guidedCommand(s.executable, startArgs...)
+	}
+	return preview, nil
+}
+
+func guidedSupervisorArgs(instancePath string, task bool) (status, install, start []string) {
+	statusArgs := []string{"service", "status", "--json", instancePath}
+	installArgs := []string{"service", "install", "--acknowledge-local-system", instancePath}
+	startArgs := []string{"service", "start", instancePath}
+	if task {
+		statusArgs[1] = "task-status"
+		installArgs = []string{"service", "task-install", instancePath}
+		startArgs[1] = "task-start"
+	}
+	return statusArgs, installArgs, startArgs
+}
+
+func (s *guidedServer) runGuidedLifecycle(ctx context.Context, argv []string) error {
+	result, err := s.execSync(ctx, argv...)
+	if err != nil {
+		return err
+	}
+	if result.exitCode != 0 {
+		return fmt.Errorf("`%s` exited %d: %s", strings.Join(argv, " "), result.exitCode, strings.TrimSpace(result.stderr))
+	}
+	return nil
+}
+
+func (s *guidedServer) guidedSupervisorStatus(ctx context.Context, argv []string) (daemonservice.Status, error) {
+	result, err := s.execSync(ctx, argv...)
+	if err != nil {
+		return daemonservice.Status{}, err
+	}
+	var status daemonservice.Status
+	if err := json.Unmarshal([]byte(result.stdout), &status); err != nil {
+		// A status command that failed outright prints nothing on stdout;
+		// surface its own diagnostic rather than a bare JSON decode error.
+		if result.exitCode != 0 && strings.TrimSpace(result.stderr) != "" {
+			return daemonservice.Status{}, fmt.Errorf("`%s` exited %d: %s", strings.Join(argv, " "), result.exitCode, strings.TrimSpace(result.stderr))
+		}
+		return daemonservice.Status{}, fmt.Errorf("decode `%s` output: %w", strings.Join(argv, " "), err)
+	}
+	return status, nil
+}
+
+// guidedRuntimeIdentity names the account the wizard (and a foreground or
+// per-user supervised daemon) runs as. It is display-only, so a host where
+// os/user cannot resolve the current account (no passwd entry, no cgo) falls
+// back to the environment instead of refusing to start guided setup.
+func guidedRuntimeIdentity() string {
+	if current, err := user.Current(); err == nil && current.Username != "" {
+		return current.Username
+	}
+	for _, key := range []string{"USERNAME", "USER"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return "the current user"
+}
+
+func guidedCommand(executable string, args ...string) string {
+	parts := make([]string, 0, len(args)+1)
+	for _, part := range append([]string{executable}, args...) {
+		parts = append(parts, `"`+strings.ReplaceAll(part, `"`, `\"`)+`"`)
+	}
+	return strings.Join(parts, " ")
+}
+
+func guidedWorkflowFacts(instancePath, executable string) ([]guidedWorkflowFact, error) {
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(instancePath).ConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("%w (%s)", err, validationIssueSummary(report))
+	}
+	disabledGaggles := make(map[string]bool, len(set.Gaggles))
+	for _, gaggle := range set.Gaggles {
+		disabledGaggles[gaggle.Name] = gaggle.Spec.Enabled != nil && !*gaggle.Spec.Enabled
+	}
+	facts := make([]guidedWorkflowFact, 0, len(set.Workflows))
+	for _, workflow := range set.Workflows {
+		if disabledGaggles[workflow.Spec.Gaggle] ||
+			(workflow.Spec.Enabled != nil && !*workflow.Spec.Enabled) {
+			continue
+		}
+		fact := guidedWorkflowFact{
+			Name:      workflow.Name,
+			Schedules: []string{},
+			Command:   guidedCommand(executable, "run", workflow.Name, instancePath),
+		}
+		for _, trigger := range workflow.Spec.Triggers {
+			if trigger.Type == apiv1.TriggerSchedule && trigger.Schedule != "" &&
+				(trigger.Enabled == nil || *trigger.Enabled) {
+				fact.Schedules = append(fact.Schedules, trigger.Schedule)
+			}
+		}
+		facts = append(facts, fact)
+	}
+	return facts, nil
+}
+
 type guidedCompleteRequest struct {
-	InstallScheduledTask bool `json:"installScheduledTask"`
+	Mode               guidedRuntimeMode `json:"mode"`
+	ConfirmLocalSystem bool              `json:"confirmLocalSystem,omitempty"`
 }
 
 type guidedCompleteBody struct {
-	Complete               bool `json:"complete"`
-	ScheduledTaskInstalled bool `json:"scheduledTaskInstalled"`
+	Complete        bool                 `json:"complete"`
+	DaemonRunning   bool                 `json:"daemonRunning"`
+	SupervisionMode string               `json:"supervisionMode"`
+	Account         string               `json:"account,omitempty"`
+	Foreground      string               `json:"foregroundCommand"`
+	Workflows       []guidedWorkflowFact `json:"workflows"`
 }
 
-func ensureGuidedScheduledTask(ctx context.Context, instancePath string) error {
-	if err := prepareManualRoot(instance.NewLayout(instancePath), io.Discard); err != nil {
-		return err
-	}
-	manager, err := newScheduledTaskManager(instancePath)
-	if err != nil {
-		return err
-	}
-	status, err := manager.TaskStatus(ctx)
-	if err != nil {
-		return fmt.Errorf("query scheduled task: %w", err)
-	}
-	if !status.Installed {
-		if _, err := manager.InstallTask(ctx); err != nil {
-			return fmt.Errorf("install scheduled task: %w", err)
-		}
-		return nil
-	}
-	if !status.Running {
-		if _, err := manager.StartTask(ctx); err != nil {
-			return fmt.Errorf("start scheduled task: %w", err)
-		}
-	}
-	return nil
+type guidedRuntimeMode string
+
+const (
+	guidedRuntimeForeground guidedRuntimeMode = "foreground"
+	guidedRuntimeTask       guidedRuntimeMode = "scheduled-task"
+	guidedRuntimeService    guidedRuntimeMode = "machine-service"
+	guidedRuntimeLater      guidedRuntimeMode = "not-now"
+)
+
+type guidedWorkflowFact struct {
+	Name      string   `json:"name"`
+	Schedules []string `json:"schedules"`
+	Command   string   `json:"command"`
+}
+
+type guidedSupervisionPreviewBody struct {
+	ScheduledTask  guidedSupervisorPreview `json:"scheduledTask"`
+	MachineService guidedSupervisorPreview `json:"machineService"`
+}
+
+type guidedSupervisorPreview struct {
+	Installed bool   `json:"installed"`
+	Running   bool   `json:"running"`
+	Command   string `json:"command,omitempty"`
 }
 
 type guidedErrorBody struct {
@@ -297,6 +503,8 @@ type guidedJobDetail struct {
 type guidedStateBody struct {
 	Version             int                  `json:"version"`
 	Platform            string               `json:"platform"`
+	Executable          string               `json:"executable"`
+	RuntimeIdentity     string               `json:"runtimeIdentity"`
 	Workdir             string               `json:"workdir"`
 	InstancePath        string               `json:"instancePath"`
 	InstancePathPinned  bool                 `json:"instancePathPinned,omitempty"`
@@ -355,6 +563,8 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 	writeGuidedJSON(w, http.StatusOK, guidedStateBody{
 		Version:             guidedStateVersion,
 		Platform:            s.platform,
+		Executable:          s.executable,
+		RuntimeIdentity:     s.runtimeIdentity,
 		Workdir:             s.workdir,
 		InstancePath:        s.instancePath,
 		InstancePathPinned:  s.instancePinned,
@@ -1335,6 +1545,9 @@ type guidedExecResult struct {
 // execSync runs one synchronous CLI action with the shared timeout. The
 // returned error is a start failure only; a nonzero exit is a normal result.
 func (s *guidedServer) execSync(parent context.Context, argv ...string) (guidedExecResult, error) {
+	if s.execAction != nil {
+		return s.execAction(parent, argv...)
+	}
 	ctx, cancel := context.WithTimeout(parent, guidedSyncActionTimeout)
 	defer cancel()
 	command := guidedExecCommand(ctx, s.executable, argv...)

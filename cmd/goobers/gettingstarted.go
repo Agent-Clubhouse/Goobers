@@ -25,6 +25,8 @@ import (
 // dashboard` does, so the dashboard's own startup contract is untouched.
 const dashboardModeGettingStarted dashboardMode = "getting-started"
 
+var guidedForegroundRun = runUpContext
+
 const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>]\n\n" +
 	"Serve and open the browser-based instance setup. It inspects an existing\n" +
 	"GitHub or Azure DevOps clone, discovers its identity, default branch, CI and\n" +
@@ -184,7 +186,7 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 			pf(stderr, "error: shut down completed getting-started server: %v\n", err)
 			return 1
 		}
-		return 0
+		return runGuidedCompletion(ctx, guided, stdout, stderr)
 	case err := <-serveDone:
 		cancelRequests()
 		closeErr := guided.close()
@@ -194,6 +196,17 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 		pf(stderr, "error: getting-started server stopped: %v\n", errors.Join(err, closeErr))
 		return 1
 	}
+}
+
+func runGuidedCompletion(ctx context.Context, guided *guidedServer, stdout, stderr io.Writer) int {
+	guided.mu.Lock()
+	mode := guided.completionMode
+	instancePath := guided.instancePath
+	guided.mu.Unlock()
+	if mode == guidedRuntimeForeground {
+		return guidedForegroundRun(ctx, []string{instancePath}, stdout, stderr)
+	}
+	return 0
 }
 
 func stopGettingStarted(server *http.Server, cancelRequests context.CancelFunc, guided *guidedServer) error {
