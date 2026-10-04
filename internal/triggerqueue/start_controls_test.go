@@ -319,14 +319,17 @@ func TestStartControlMigrationRetainsReservedEventStartCapacity(t *testing.T) {
 	acceptRoutedEvent(t, s, "open", childTestTime, eventRoute("repair", "all", time.Minute, 2*time.Minute, 3))
 	routeEventTest(t, s, childTestTime)
 	acceptRoutedEvent(t, s, "pending", childTestTime, eventRoute("immediate", "", 0, 0, 0))
-	// Recreate the immediately previous schema with accepted routing/group custody.
+	// Remove only this migration's state from the seeded fixture. Keep later
+	// independent migrations installed; lowering schema_meta would replay them.
 	for _, query := range []string{`DROP TRIGGER start_control_insert`, `DROP TRIGGER start_control_delete`, `DROP TABLE start_controls`, `UPDATE event_receipts SET reserved_bytes=reserved_bytes-24576*reserved_starts WHERE state='routing_pending'`, `UPDATE event_groups SET reserved_bytes=reserved_bytes-24576*reserved_starts WHERE state='open'`} {
 		if _, err := s.db.Exec(query); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.db.Exec(`UPDATE schema_meta SET version=?`, slices.Index(migrations, startControlSchema)); err != nil {
-		t.Fatal(err)
+	for _, migration := range []string{startControlSchema, startControlOutcomeSchema} {
+		if _, err := s.db.Exec(migration); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
