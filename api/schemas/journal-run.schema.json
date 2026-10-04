@@ -48,35 +48,35 @@
         "envelopeDigest"
       ],
       "properties": {
-        "gaggle": {
+        "gaggle": {"description": "Gaggle shared by the parent and generated child.",
           "type": "string",
           "minLength": 1,
           "maxLength": 128
         },
-        "stageOccurrence": {
+        "stageOccurrence": {"description": "Durable logical parent stage occurrence that accepted the child.",
           "type": "string",
           "minLength": 1,
           "maxLength": 256
         },
-        "invocationKey": {
+        "invocationKey": {"description": "Parent-supplied idempotency key within the stage occurrence.",
           "type": "string",
           "minLength": 1,
           "maxLength": 256
         },
-        "parentWorkflow": {"type":"string","minLength":1,"maxLength":256},
-        "parentRunId": {
+        "parentWorkflow": {"description": "Configured parent workflow whose scheduling and budget limits apply.","type":"string","minLength":1,"maxLength":256},
+        "parentRunId": {"description": "Exact parent run owning this child.",
           "type": "string",
           "pattern": "^[0-9a-f]{32}$"
         },
-        "acceptanceId": {
+        "acceptanceId": {"description": "Durable queue receipt that fixed this child run identity.",
           "type": "string",
           "pattern": "^trigger-[0-9a-f]{32}$"
         },
-        "sourceDigest": {
+        "sourceDigest": {"description": "Digest of the admitted generated workflow source.",
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "envelopeDigest": {
+        "envelopeDigest": {"description": "Digest of the exact admitted child start envelope.",
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         }

@@ -23,8 +23,8 @@
       "additionalProperties": false,
       "required": ["stageOccurrence", "attemptId"],
       "properties": {
-        "stageOccurrence": { "type": "string", "pattern": "^sta_[A-Za-z0-9_-]{43}$" },
-        "attemptId": { "type": "string", "pattern": "^sta_[A-Za-z0-9_-]{43}$" }
+        "stageOccurrence": { "description": "First durable stage attempt identity for this logical branch and loop visit; retained through retries and human replacements.", "type": "string", "pattern": "^sta_[A-Za-z0-9_-]{43}$" },
+        "attemptId": { "description": "Unique identity bound to this committed stage.started event and dispatch attempt.", "type": "string", "pattern": "^sta_[A-Za-z0-9_-]{43}$" }
       }
     },
     "artifactPublication": {

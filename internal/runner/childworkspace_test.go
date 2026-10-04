@@ -29,7 +29,7 @@ func childWorkspaceMachine(t *testing.T, mode apiv1.WorkspaceMode, pause bool) *
 func childWorkspaceStart(machine *workflow.Machine) StartInput {
 	return StartInput{RunID: "child-run", Gaggle: "web", Machine: machine, GooberDigest: journal.Digest([]byte("goober")), Trigger: journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
-		Child:   &journal.ChildLineage{Gaggle: "web", ParentRunID: "parent-run", StageOccurrence: "parent-stage", InvocationKey: "check", AcceptanceID: "trigger-child-run", SourceDigest: journal.Digest([]byte("source")), EnvelopeDigest: journal.Digest([]byte("admitted-envelope"))}}
+		Child:   &journal.ChildLineage{Gaggle: "web", ParentRunID: "parent-run", ParentWorkflow: "parent", StageOccurrence: "parent-stage", InvocationKey: "check", AcceptanceID: "trigger-child-run", SourceDigest: journal.Digest([]byte("source")), EnvelopeDigest: journal.Digest([]byte("admitted-envelope"))}}
 }
 
 func TestChildWorkspaceScratchRunNeedsNoRepositoryCustody(t *testing.T) {

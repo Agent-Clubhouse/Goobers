@@ -450,7 +450,7 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	// LAST event read false in exactly that case and escalated a run parked for
 	// a human — see journal.ParkedAtGate, which skips observational events and
 	// stops at the first one that actually moves control flow.
-	if journal.ParkedAtGate(events) {
+	if journal.ParkedAtGate(events) || ParkedOnChild(events) {
 		return candidate, false, nil
 	}
 	// Take the newest event that actually carries a TIMESTAMP. An event written
