@@ -43,8 +43,8 @@ func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invoc
 	if tf.t.ChildWorkflows == nil || r.cfg.ChildHandoff == nil {
 		return invocation.Invoke(ctx, env)
 	}
-	if len(tf.in.Machine.Def.Spec.Parallels) != 0 || tf.in.pinnedWorkspace != nil || workspace.worktree == nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: child handoff currently requires a serial parent with a managed repository workspace")
+	if tf.in.pinnedWorkspace != nil || workspace.worktree == nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: child handoff requires a managed repository workspace")
 	}
 	releaseHold, err := r.holdContainedParentWorkspace(ctx, tf, workspace, env)
 	if err != nil {
@@ -110,7 +110,7 @@ func (r *Runner) waitForChild(ctx context.Context, tf *taskFrame, attempt int, c
 	if err != nil {
 		return err
 	}
-	if err := tf.jr.Append(event); err != nil {
+	if err := publishChildWait(ctx, tf, event); err != nil {
 		return err
 	}
 	err = r.continueChildWait(ctx, tf, attempt, class, record, yielded.workspace)
@@ -123,6 +123,15 @@ func (r *Runner) waitForChild(ctx context.Context, tf *taskFrame, attempt int, c
 func (r *Runner) continueChildWait(ctx context.Context, tf *taskFrame, attempt int, class journal.AttemptClass, record childWaitRecord, workspace *stageWorkspace) error {
 	if r.cfg.ChildHandoff == nil || r.cfg.ChildParentCapacity == nil {
 		return fmt.Errorf("runner: child wait requires host custody and capacity services")
+	}
+	if tf.in.parallelChild != nil {
+		if err := r.continueParallelChildWait(ctx, tf, attempt, class, record, workspace); err != nil {
+			if ctx.Err() != nil {
+				return errors.Join(errChildWaitDrain, err)
+			}
+			return err
+		}
+		return nil
 	}
 	dispositionIssue, err := r.yieldChildCustody(ctx, tf, attempt, class, record.Request, ChildWorkspaceCustody{Path: workspace.path, RepoRef: tf.in.RepoRef})
 	if err != nil {

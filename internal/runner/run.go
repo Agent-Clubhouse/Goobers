@@ -910,6 +910,8 @@ func New(cfg Config) (*Runner, error) {
 
 // StartInput is what triggers one run.
 type StartInput struct {
+	// parallelChild is host-owned branch lane/capacity custody, never serialized.
+	parallelChild    *parallelChildLane
 	configGeneration string
 	// instanceID is assigned by Start or recovered from the durable journal
 	// on resume. A worker/config reload cannot replace a run's provenance.
@@ -1594,7 +1596,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		ws.state = outcome.target
 		return Result{}, false, nil
 	}
-	if ws.parallel != nil && ws.parallel.spec.MaxConcurrentBranches > 1 {
+	if ws.parallel != nil && r.concurrentChildBranches(ws.in.Machine, ws.parallel.spec) {
 		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel)
 		if done || err != nil {
 			return result, err
@@ -1719,7 +1721,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
 					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
 			}
-			if p.MaxConcurrentBranches > 1 {
+			if r.concurrentChildBranches(ws.in.Machine, p) {
 				result, done, err := runConcurrent(p, nil)
 				if done || err != nil {
 					return result, err

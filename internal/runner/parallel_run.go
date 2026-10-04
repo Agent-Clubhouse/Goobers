@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -292,6 +291,10 @@ func (r *Runner) runConcurrentParallel(
 		workspaceBranch = lastWorkspaceBranch(rootEvents, in.Machine, r.branchNamespaceFor(in.Gaggle))
 	}
 	branchEvents := newParallelBranchEventIndex(events, p.Name)
+	childRuntime, err := r.newParallelChildRuntime(in, p, par, events)
+	if err != nil {
+		return concurrentParallelResult{}, err
+	}
 
 	limit := int(p.MaxConcurrentBranches)
 	if limit > len(p.Branches) {
@@ -329,21 +332,22 @@ func (r *Runner) runConcurrentParallel(
 	draining := false
 
 	launch := func(index int) error {
-		branch := par.branchSnapshot(index)
-		if !branch.started {
-			var cursors []journal.BranchCursor
-			branch, cursors = par.startBranch(index)
-			jr.SetBranchCursors(cursors)
-			if err := jr.Append(journal.Event{
-				Type:       journal.EventBranchStarted,
-				Branch:     branch.id,
-				Parallel:   p.Name,
-				BranchName: branch.name,
-				Stage:      branch.start,
-			}); err != nil {
-				return err
-			}
+		if childRuntime != nil {
+			running++
+			go func() {
+				results <- childRuntime.runBranch(branchCtx, jr, par, p, index, func(branch branchState, lane *parallelChildLane) parallelBranchResult {
+					branchInput := in
+					branchInput.parallelChild = lane
+					return r.runParallelBranch(branchCtx, jr, par, branchInput, branch, basePointers, baseLastStage, baseLastResult, baseCompleted, workspaceBranch, reg, branchEvents.events(branch.id), stepBudget)
+				})
+			}()
+			return nil
 		}
+		branch, err := startConcurrentBranch(jr, par, p, index)
+		if err != nil {
+			return err
+		}
+
 		running++
 		go func() {
 			results <- r.runParallelBranch(
@@ -358,7 +362,7 @@ func (r *Runner) runConcurrentParallel(
 	if err := cancelQueuedWhenTriggered(terminalTriggered, jr, par, p, queue, &next, outcomes, baseCompleted, branchEvents, in); err != nil {
 		return concurrentParallelResult{}, err
 	}
-	for next < len(queue) && running < limit {
+	for canLaunchParallel(next, len(queue), running, limit, childRuntime) {
 		if err := launch(queue[next]); err != nil {
 			firstErr = err
 			cancel(err)
@@ -371,7 +375,7 @@ func (r *Runner) runConcurrentParallel(
 		result := <-results
 		running--
 		outcomes[result.index] = &result
-		if result.paused {
+		if result.paused || childRuntime.branchParked(result.index+1) {
 			draining = true
 		} else {
 			branch := par.branchSnapshot(result.index)
@@ -380,7 +384,7 @@ func (r *Runner) runConcurrentParallel(
 				result.produced, result.failed, result.noOutput,
 			)
 			jr.SetBranchCursors(cursors)
-			if err := jr.Append(journal.Event{
+			if err := finishConcurrentBranch(ctx, childRuntime, jr, journal.Event{
 				Type:         journal.EventBranchFinished,
 				Branch:       branch.id,
 				Parallel:     p.Name,
@@ -408,7 +412,7 @@ func (r *Runner) runConcurrentParallel(
 				firstErr = err
 			}
 		}
-		for firstErr == nil && !terminalTriggered && !failFast && !draining && next < len(queue) && running < limit {
+		for firstErr == nil && !terminalTriggered && !failFast && !draining && canLaunchParallel(next, len(queue), running, limit, childRuntime) {
 			if err := launch(queue[next]); err != nil {
 				firstErr = err
 				cancel(err)
@@ -566,7 +570,13 @@ func (r *Runner) runParallelBranch(
 	var firstClass journal.AttemptClass
 	var committedWorkOnInfra bool
 	var resumeAccounting *resumeRetryAccounting
-	if boundary, ok := lastParallelBoundary(history); ok {
+	childResume, childErr := parallelChildTaskResume(in, history, state, &startAttempt, &firstClass, &resumeAccounting)
+	if childErr != nil {
+		result.status, result.err = journal.BranchFailed, childErr
+		return result
+	}
+
+	if boundary, ok := parallelRecoveryBoundary(history, childResume); ok {
 		if task, isTask := in.Machine.Task(state); isTask {
 			switch {
 			case boundary.Type == journal.EventStageFinished && boundary.Stage == state && !isInterruptedAttemptMarker(boundary):
@@ -622,21 +632,12 @@ func (r *Runner) runParallelBranch(
 			result.paused = parallelDrainCancellation(ctx)
 			return result
 		}
-		// Exceeding branchTimeoutSeconds terminates at the next stage
-		// boundary (never mid-stage — see the field's doc comment), so this
-		// is a plain check here, not a context deadline: a stage that is
-		// already running finishes on its own, exactly like the sequential
-		// path (run.go).
-		if deadline := branch.deadline(par.spec.BranchTimeoutSeconds); !deadline.IsZero() && !time.Now().Before(deadline) {
-			result.status = journal.BranchTimedOut
-			result.failed = true
+		if status, err := r.checkParallelBranchBoundary(ctx, jr, in, branch, par.spec.BranchTimeoutSeconds, stepBudget, &childResume); status != "" {
+			result.status, result.err = status, err
+			result.failed = status == journal.BranchTimedOut
 			return result
 		}
-		if stepBudget.Add(1) > int64(r.maxSteps) {
-			result.status = journal.BranchFailed
-			result.err = fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps)
-			return result
-		}
+
 		branchJournal.SetMachineState(state)
 
 		if task, ok := in.Machine.Task(state); ok {
@@ -650,7 +651,7 @@ func (r *Runner) runParallelBranch(
 			} else {
 				stageResult, produced, err = r.runTask(
 					ctx,
-					taskFrame{
+					withParallelChildResume(taskFrame{
 						jr: branchJournal, in: in, ex: ex, t: task,
 						upstream:        branchContextPointers(basePointers, result.pointers),
 						upstreamResult:  result.lastResult,
@@ -658,13 +659,18 @@ func (r *Runner) runParallelBranch(
 						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
 						workspaceRevision: &in.workspaceRevision,
 						repoRef:           &in.RepoRef,
-					},
+					}, childResume),
 					branch.id, startAttempt, firstClass, "",
 					nil, committedWorkOnInfra, resumeAccounting,
 				)
+				childResume = nil
 				startAttempt = 1
 				firstClass = ""
 				resumeAccounting = nil
+			}
+			if errors.Is(err, errChildWaitDrain) {
+				result.status, result.paused = journal.BranchCancelled, parallelDrainCancellation(ctx)
+				return result
 			}
 			if err = taskDispatchError(task.Name, stageResult, err); err != nil {
 				result.status, result.err = journal.BranchFailed, err
