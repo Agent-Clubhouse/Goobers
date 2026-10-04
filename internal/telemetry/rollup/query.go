@@ -152,7 +152,7 @@ func (db *DB) Runs(ctx context.Context) ([]RunSummary, error) {
 		FROM runs r
 		LEFT JOIN run_goober_digests rgd ON rgd.run_id = r.run_id
 		ORDER BY r.started_at, r.run_id`,
-		nil, "rollup: query runs", "",
+		nil, "rollup: query runs",
 		func(rows *sql.Rows) (RunSummary, error) {
 			var r RunSummary
 			var digest, gooberDigest, triggerKind, triggerRef, status, startedAt, finishedAt, instanceID sql.NullString
@@ -322,7 +322,7 @@ func runRefPageQuery(filter RunListFilter, cursorStartedAt time.Time, cursorRunI
 
 // runRefRows executes a run-reference statement and scans its rows.
 func (db *DB) runRefRows(ctx context.Context, query string, args []any) ([]RunRef, error) {
-	return queryRows(ctx, db.readDB(), query, args, "rollup: query run refs", "",
+	return queryRows(ctx, db.readDB(), query, args, "rollup: query run refs",
 		func(rows *sql.Rows) (RunRef, error) {
 			var ref RunRef
 			var startedAt sql.NullString
@@ -365,7 +365,7 @@ func (db *DB) LatestWorkflowRunRefs(ctx context.Context, gaggle, workflow string
 		WHERE row_rank = 1
 		ORDER BY started_at DESC, run_id ASC`
 
-	return queryRows(ctx, db.readDB(), query, args, "rollup: query latest workflow run refs", "",
+	return queryRows(ctx, db.readDB(), query, args, "rollup: query latest workflow run refs",
 		func(rows *sql.Rows) (WorkflowRunRef, error) {
 			var ref WorkflowRunRef
 			var startedAt sql.NullString
@@ -397,7 +397,7 @@ func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, 
 			ON ai.run_id = sa.run_id AND ai.stage = sa.stage AND ai.traversal = sa.traversal
 			AND ai.kind = 'task'
 		WHERE sa.run_id = ? ORDER BY sa.stage, sa.traversal`,
-		[]any{runID}, "rollup: query stage_attempts", "",
+		[]any{runID}, "rollup: query stage_attempts",
 		func(rows *sql.Rows) (StageAttempt, error) {
 			var s StageAttempt
 			var class, status, startedAt, finishedAt, errCode, errClass sql.NullString
@@ -442,7 +442,7 @@ func (db *DB) AgentInvocations(ctx context.Context, runID string) ([]AgentInvoca
 	return queryRows(ctx, db.readDB(), `
 		SELECT span_id, kind, stage, traversal, attempt, model, harness_version
 		FROM agent_invocations WHERE run_id = ? ORDER BY span_id`,
-		[]any{runID}, "rollup: query agent_invocations", "",
+		[]any{runID}, "rollup: query agent_invocations",
 		func(rows *sql.Rows) (AgentInvocation, error) {
 			var invocation AgentInvocation
 			var traversal, attempt sql.NullInt64
@@ -477,7 +477,7 @@ func (db *DB) GateVerdicts(ctx context.Context, runID string) ([]GateVerdict, er
 	return queryRows(ctx, db.readDB(), `
 		SELECT seq, branch, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
 		WHERE run_id = ? ORDER BY seq`,
-		[]any{runID}, "rollup: query gate_verdicts", "",
+		[]any{runID}, "rollup: query gate_verdicts",
 		func(rows *sql.Rows) (GateVerdict, error) {
 			var g GateVerdict
 			var verdict, target, occurredAt, runnerJSON sql.NullString
@@ -516,7 +516,7 @@ func (db *DB) HarnessTranscripts(ctx context.Context, runID string) ([]HarnessTr
 		FROM harness_transcripts h
 		LEFT JOIN harness_transcript_schemas s ON s.run_id = h.run_id AND s.seq = h.seq
 		WHERE h.run_id = ? ORDER BY h.seq`,
-		[]any{runID}, "rollup: query harness_transcripts", "",
+		[]any{runID}, "rollup: query harness_transcripts",
 		func(rows *sql.Rows) (HarnessTranscript, error) {
 			var h HarnessTranscript
 			var digest, occurredAt sql.NullString
@@ -565,7 +565,7 @@ func (db *DB) SchedulerEvents(ctx context.Context, workflow string) ([]Scheduler
 	}
 	query += ` ORDER BY s.seq`
 
-	return queryRows(ctx, db.readDB(), query, args, "rollup: query scheduler_events", "",
+	return queryRows(ctx, db.readDB(), query, args, "rollup: query scheduler_events",
 		func(rows *sql.Rows) (SchedulerEvent, error) {
 			var e SchedulerEvent
 			var wf, runID, reason, status, errorCode, errorClass, errorMessage, occurredAt sql.NullString
@@ -588,7 +588,7 @@ func (db *DB) ProviderMutations(ctx context.Context, runID string) ([]ProviderMu
 	return queryRows(ctx, db.readDB(), `
 		SELECT seq, provider, kind, external_id, url, operation, occurred_at FROM provider_mutations
 		WHERE run_id = ? ORDER BY seq`,
-		[]any{runID}, "rollup: query provider_mutations", "",
+		[]any{runID}, "rollup: query provider_mutations",
 		func(rows *sql.Rows) (ProviderMutation, error) {
 			var m ProviderMutation
 			var url, operation, occurredAt sql.NullString
@@ -611,7 +611,7 @@ func (db *DB) RunErrors(ctx context.Context, runID string) ([]RunError, error) {
 		FROM run_errors re
 		LEFT JOIN run_error_causes rec ON rec.run_id = re.run_id AND rec.seq = re.seq
 		WHERE re.run_id = ? ORDER BY re.seq`,
-		[]any{runID}, "rollup: query run_errors", "",
+		[]any{runID}, "rollup: query run_errors",
 		func(rows *sql.Rows) (RunError, error) {
 			var e RunError
 			var stage, class, message, causesJSON, occurredAt sql.NullString
@@ -640,7 +640,7 @@ func (db *DB) Spans(ctx context.Context, runID string) ([]SpanSummary, error) {
 		SELECT s.span_id, s.parent_span_id, s.name, s.kind, s.status, s.status_message, s.start_time, s.end_time, s.duration_ms, b.business_status
 		FROM spans s LEFT JOIN span_business_status b ON b.run_id = s.run_id AND b.span_id = s.span_id
 		WHERE s.run_id = ? ORDER BY s.start_time, s.span_id`,
-		[]any{runID}, "rollup: query spans", "",
+		[]any{runID}, "rollup: query spans",
 		func(rows *sql.Rows) (SpanSummary, error) {
 			var s SpanSummary
 			var parent, kind, statusMsg, start, end, businessStatus sql.NullString
@@ -668,7 +668,7 @@ func (db *DB) SpanEvents(ctx context.Context, runID, spanID string) ([]SpanEvent
 	return queryRows(ctx, db.readDB(), `
 		SELECT seq, name, occurred_at, attributes_json FROM span_events
 		WHERE run_id = ? AND span_id = ? ORDER BY seq`,
-		[]any{runID, spanID}, "rollup: query span_events", "",
+		[]any{runID, spanID}, "rollup: query span_events",
 		func(rows *sql.Rows) (SpanEventSummary, error) {
 			var e SpanEventSummary
 			var occurredAt, attrsJSON sql.NullString

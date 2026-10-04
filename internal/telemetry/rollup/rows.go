@@ -10,13 +10,15 @@ type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// queryRows runs a list-style projection query and scans every row with scan.
+// A query failure is wrapped with queryErr; scan errors and the iteration
+// error from rows.Err are returned unwrapped, and an empty result stays nil.
 func queryRows[T any](
 	ctx context.Context,
 	q queryer,
 	query string,
 	args []any,
 	queryErr string,
-	iterErr string,
 	scan func(*sql.Rows) (T, error),
 ) ([]T, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
@@ -32,9 +34,6 @@ func queryRows[T any](
 			return nil, err
 		}
 		out = append(out, value)
-	}
-	if err := rows.Err(); err != nil && iterErr != "" {
-		return nil, fmt.Errorf("%s: %w", iterErr, err)
 	}
 	return out, rows.Err()
 }
