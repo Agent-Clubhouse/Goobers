@@ -2889,25 +2889,15 @@ summary:focus-visible {
 }
 
 .configuration-warning-heading {
-  align-items: start;
-}
-
-.configuration-warning-heading > div:first-child {
-  max-width: 680px;
-}
-
-.configuration-warning-heading p:last-child {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-  margin: 5px 0 0;
+  align-items: center;
 }
 
 .configuration-warning-actions {
-  align-items: end;
-  display: grid;
-  gap: 6px;
-  justify-items: end;
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .configuration-warning-groups {
@@ -9172,7 +9162,7 @@ code,
   }
 
   .configuration-warning-actions {
-    justify-items: start;
+    justify-content: flex-start;
   }
 
   .configuration-warning {
