@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -228,16 +226,9 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		result["reviewDigest"] = reviewDigest
 		result["overlappingSiblingsCsv"] = overlappingSiblingsCsv
 		result["unlandableSiblingsCsv"] = providerInput("unlandableSiblings", "")
-		data, err := json.Marshal(result)
-		if err != nil {
-			pf(stderr, "error: marshal election result: %v\n", err)
-			return 1
-		}
-		if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-			pf(stderr, "error: write %s: %v\n", resultFile, err)
-			return 1
-		}
-		return 0
+		return writeStageResultJSON(stderr, resultFile, result, stageResultOptions{
+			MarshalLabel: "marshal election result",
+		})
 	}
 	if selectedPR.Advisory {
 		pf(stdout, "PR #%d is advisory-only — skipping lander election\n", selectedNumber)
