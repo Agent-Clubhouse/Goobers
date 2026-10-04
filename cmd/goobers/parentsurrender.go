@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
+
+	"github.com/goobers/goobers/api/validate"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -40,6 +44,10 @@ func (p containedSurrenderPlane) Put(ctx context.Context, run, stage string, att
 }
 
 func validateParentSurrender(ctx context.Context, a parentAttemptCustody, data []byte) error {
+	return validateContainedSurrender(ctx, a.contract, a.digest, a.blobs, false, data)
+}
+
+func validateContainedSurrender(ctx context.Context, contract childpod.Contract, digest string, blobs blobstore.BoundedReader, review bool, data []byte) error {
 	var out dispatcher.SurrenderedResult
 	if len(data) > 1<<20 {
 		return errors.New("parent surrender exceeds bound")
@@ -52,28 +60,83 @@ func validateParentSurrender(ctx context.Context, a parentAttemptCustody, data [
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return errors.New("parent surrender must contain one document")
 	}
-	if out.Validate() != nil || out.ChildWorkspaceDigest == "" || !out.RecoveryAcknowledged || out.WorkspaceDelta != "" || out.WorkspaceDeltaUnchanged || out.WorkspaceDeltaBase != "" || out.WorkspaceDeltaTip != "" || len(out.Mutations) != 0 || len(out.MutationIssues) != 0 || out.Result.WorkspaceRevision != nil || out.Verdict != nil {
+	if out.Validate() != nil || out.ChildWorkspaceDigest == "" || !out.RecoveryAcknowledged || out.WorkspaceDelta != "" || out.WorkspaceDeltaUnchanged || out.WorkspaceDeltaBase != "" || out.WorkspaceDeltaTip != "" || len(out.Mutations) != 0 || len(out.MutationIssues) != 0 || out.Result.WorkspaceRevision != nil || !containedOutputGrade(out.Result.Integrity) || !validContainedVerdict(out, review) {
 		return errors.New("parent surrender exceeds contained execution authority")
 	}
-	raw, err := a.blobs.Get(ctx, out.ChildWorkspaceDigest)
+	raw, err := blobs.GetBounded(ctx, out.ChildWorkspaceDigest, childpod.MaxContractBytes)
 	if err != nil {
 		return err
 	}
-	if _, err = childpod.DecodeOutput(raw, out.ChildWorkspaceDigest, a.digest, a.contract); err != nil {
+	if _, err = childpod.DecodeOutput(raw, out.ChildWorkspaceDigest, digest, contract); err != nil {
 		return err
+	}
+	return validateContainedReturnedPointers(ctx, blobs, out)
+}
+
+func validateContainedReturnedPointers(ctx context.Context, blobs blobstore.BoundedReader, out dispatcher.SurrenderedResult) error {
+	if len(out.Result.Artifacts) > 128 || (out.Verdict != nil && len(out.Verdict.Evidence) > 128) {
+		return errors.New("contained output exceeds pointer bound")
 	}
 	artifacts := append([]apiv1.ArtifactPointer(nil), out.Result.Artifacts...)
 	if out.Result.Transcript != nil {
 		artifacts = append(artifacts, *out.Result.Transcript)
 	}
+	if out.Verdict != nil {
+		if err := validateContainedVerdict(*out.Verdict); err != nil {
+			return err
+		}
+		artifacts = append(artifacts, out.Verdict.Evidence...)
+	}
+	seen := map[string]int64{}
 	for _, artifact := range artifacts {
-		raw, err := a.blobs.Get(ctx, artifact.Digest)
+		if !containedOutputGrade(artifact.Integrity) {
+			return errors.New("contained output cannot claim source trust")
+		}
+		if err := artifact.Validate(); err != nil {
+			return err
+		}
+		if size, ok := seen[artifact.Digest]; ok {
+			if size != artifact.Size {
+				return errors.New("contained artifact has inconsistent sizes")
+			}
+			continue
+		}
+		raw, err := blobs.GetBounded(ctx, artifact.Digest, artifact.Size)
 		if err != nil {
 			return err
 		}
 		if int64(len(raw)) != artifact.Size {
-			return errors.New("parent returned artifact size differs from scoped custody")
+			return errors.New("returned artifact size differs from scoped custody")
 		}
+		seen[artifact.Digest] = artifact.Size
 	}
 	return nil
+}
+
+func validContainedVerdict(out dispatcher.SurrenderedResult, review bool) bool {
+	if !review || out.Result.Status != apiv1.ResultSuccess {
+		return out.Verdict == nil
+	}
+	return out.Verdict != nil
+}
+
+var containedVerdictValidator = sync.OnceValues(validate.New)
+
+func validateContainedVerdict(verdict apiv1.Verdict) error {
+	if !verdict.Decision.IsValid() {
+		return errors.New("contained reviewer verdict has invalid decision")
+	}
+	validator, err := containedVerdictValidator()
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(verdict)
+	if err != nil {
+		return err
+	}
+	return validator.ValidateEnvelope("verdict", raw)
+}
+
+func containedOutputGrade(grade apiv1.Integrity) bool {
+	return grade == "" || grade == apiv1.IntegrityDerived || grade == apiv1.IntegrityUnapproved
 }

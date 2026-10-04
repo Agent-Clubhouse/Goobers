@@ -56,13 +56,17 @@ func (p containedJournalPlane) Emit(ctx context.Context, req livejournal.EmitReq
 // Namespace keys and transcript captures by signed physical attempt, while
 // preserving the writer's existing per-run handle and transcript state machine.
 func parentJournalRequest(a parentAttemptCustody, req livejournal.EmitRequest) (livejournal.EmitRequest, error) {
-	if req.RunID != a.contract.Identity.RunID || req.Gaggle != a.contract.Identity.Gaggle || req.Open != nil {
+	return containedJournalRequest(a.contract, a.digest, req)
+}
+
+func containedJournalRequest(contract childpod.Contract, digest string, req livejournal.EmitRequest) (livejournal.EmitRequest, error) {
+	if req.RunID != contract.Identity.RunID || req.Gaggle != contract.Identity.Gaggle || req.Open != nil {
 		return req, parentAuthorityRefusal()
 	}
 	req.Ops = append([]livejournal.Op(nil), req.Ops...)
 	for i, op := range req.Ops {
-		op = normalizeContainedJournalStage(op, a.contract.Identity.RunID, a.contract.Stage, a.contract.Attempt)
-		if err := parentJournalOp(a, op); err != nil {
+		op = normalizeContainedJournalStage(op, contract.Identity.RunID, contract.Stage, contract.Attempt)
+		if err := containedJournalOp(contract, op); err != nil {
 			return req, err
 		}
 		if op.Checkpoint != nil {
@@ -71,11 +75,11 @@ func parentJournalRequest(a parentAttemptCustody, req livejournal.EmitRequest) (
 			if !ok {
 				return req, errors.New("parent transcript key differs from capture")
 			}
-			cp.Capture = strings.TrimPrefix(journal.Digest([]byte(a.digest+"/"+cp.Capture)), "sha256:")[:32]
+			cp.Capture = strings.TrimPrefix(journal.Digest([]byte(digest+"/"+cp.Capture)), "sha256:")[:32]
 			op.Checkpoint = &cp
 			op.Key = cp.Capture + "/" + suffix
 		} else {
-			op.Key = "parent/" + strings.TrimPrefix(a.digest, "sha256:") + "/" + op.Key
+			op.Key = "contained/" + strings.TrimPrefix(digest, "sha256:") + "/" + op.Key
 		}
 		req.Ops[i] = op
 	}
@@ -117,7 +121,7 @@ func normalizeContainedJournalStage(op livejournal.Op, run, stage string, attemp
 	return op
 }
 
-func parentJournalOp(a parentAttemptCustody, op livejournal.Op) error {
+func containedJournalOp(contract childpod.Contract, op livejournal.Op) error {
 	stage, attempt := "", 0
 	switch {
 	case op.Event != nil:
@@ -127,11 +131,11 @@ func parentJournalOp(a parentAttemptCustody, op livejournal.Op) error {
 	case op.Span != nil:
 		stage, attempt = op.Span.Stage, op.Span.Attempt
 	case op.Checkpoint != nil:
-		stage, attempt = op.Checkpoint.Stage, a.contract.Attempt
+		stage, attempt = op.Checkpoint.Stage, contract.Attempt
 	default:
 		return errors.New("parent journal operation has no attempt identity")
 	}
-	if stage != a.contract.Stage || attempt != a.contract.Attempt {
+	if stage != contract.Stage || attempt != contract.Attempt {
 		return errors.New("parent journal operation names another stage attempt")
 	}
 	// Ordinary telemetry keys are namespaced above; only captures need their

@@ -323,3 +323,55 @@ func TestParentJournalAcceptsOnlyOwnHarnessTaskAlias(t *testing.T) {
 		t.Fatal("foreign task alias accepted")
 	}
 }
+
+func TestContainedSurrenderVerifiesDeclaredArtifactCustody(t *testing.T) {
+	f := newParentAuthorityFixture(t)
+	output, _ := json.Marshal(childpod.Output{Version: 1, ContractDigest: f.digest})
+	outputDigest := journal.Digest(output)
+	if err := f.scoped.Put(t.Context(), outputDigest, output); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("returned evidence")
+	ref, err := journal.ArtifactRef(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.scoped.Put(t.Context(), ref.Digest, data); err != nil {
+		t.Fatal(err)
+	}
+	pointer := apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, Integrity: apiv1.IntegrityDerived}
+	baseline := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: outputDigest, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Artifacts: []apiv1.ArtifactPointer{pointer}}}
+	for _, tc := range []struct {
+		name          string
+		edit          func(*dispatcher.SurrenderedResult)
+		review, valid bool
+	}{
+		{name: "own artifact", valid: true},
+		{name: "wrong size", edit: func(out *dispatcher.SurrenderedResult) { out.Result.Artifacts[0].Size++ }},
+		{name: "artifact trust", edit: func(out *dispatcher.SurrenderedResult) { out.Result.Artifacts[0].Integrity = apiv1.IntegrityTrusted }},
+		{name: "result trust", edit: func(out *dispatcher.SurrenderedResult) { out.Result.Integrity = apiv1.IntegrityMaintainer }},
+		{name: "task cannot verdict", edit: func(out *dispatcher.SurrenderedResult) { out.Verdict = &apiv1.Verdict{Decision: "pass"} }},
+		{name: "review requires verdict", review: true},
+		{name: "review own evidence", review: true, valid: true, edit: func(out *dispatcher.SurrenderedResult) {
+			out.Verdict = &apiv1.Verdict{Decision: "pass", Evidence: []apiv1.ArtifactPointer{pointer}}
+		}},
+		{name: "review foreign evidence", review: true, edit: func(out *dispatcher.SurrenderedResult) {
+			foreign := pointer
+			foreign.Digest = journal.Digest([]byte("sibling"))
+			out.Verdict = &apiv1.Verdict{Decision: "pass", Evidence: []apiv1.ArtifactPointer{foreign}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := baseline
+			out.Result.Artifacts = append([]apiv1.ArtifactPointer(nil), baseline.Result.Artifacts...)
+			if tc.edit != nil {
+				tc.edit(&out)
+			}
+			raw, _ := json.Marshal(out)
+			err := validateContainedSurrender(t.Context(), f.contract, f.digest, f.scoped, tc.review, raw)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%t: %v", tc.valid, err)
+			}
+		})
+	}
+}
