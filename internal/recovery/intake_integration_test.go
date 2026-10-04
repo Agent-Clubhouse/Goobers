@@ -86,8 +86,37 @@ func TestIntegrationArchiveIntakeRequiresVerifiedDurableAcknowledgement(t *testi
 	if entries, err := ReadInventory(ctx, largeInventory, 500); err != nil || len(entries) != 130 {
 		t.Fatalf("post-publication inventory: entries=%d err=%v, want 130", len(entries), err)
 	}
+	cancelHost, cancelInventory := t.TempDir(), t.TempDir()
+	recoveryTestGit(t, cancelHost, "init", "--bare")
+	recoveryTestGit(t, cancelHost, "fetch", source, "main")
+	cancelRequest := request
+	cancelRequest.Repository = cancelHost
+	cancelRequest.InventoryRoot = cancelInventory
+	cancelRequest.CleanupRoots = []string{cancelHost}
+	deadlined, stopDeadline := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
+	defer stopDeadline()
+	cancelCtx, cancelUpload := context.WithCancel(deadlined)
+	cancelUpload()
+	cancelStaged := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cancelStaged, BundleFileName), mustReadFile(t, filepath.Join(archive, BundleFileName)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgedAfterCancel bool
+	got, path, err := acceptReceivedArchive(cancelCtx, cancelStaged, record, cancelRequest, retentionJournalFunc(func(journal.Event) error {
+		if cancelCtx.Err() == nil {
+			t.Fatal("test context was not cancelled before acknowledgement")
+		}
+		acknowledgedAfterCancel = true
+		return nil
+	}))
+	if err != nil || got == (Record{}) || path == "" || !acknowledgedAfterCancel {
+		t.Fatalf("post-upload request cancellation aborted custody: got=%+v path=%q acknowledged=%t err=%v", got, path, acknowledgedAfterCancel, err)
+	}
+	if data := recoveryTestGit(t, cancelHost, "show", got.Ref+":implementation"); data != "worker implementation" {
+		t.Fatalf("host pin after request cancellation: %q", data)
+	}
 	denied := errors.New("journal acknowledgement failed")
-	got, path, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, retentionJournalFunc(func(journal.Event) error { return denied }))
+	got, path, err = AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, retentionJournalFunc(func(journal.Event) error { return denied }))
 	if !errors.Is(err, denied) || got != (Record{}) || path != "" {
 		t.Fatalf("false acknowledgement: %+v %q %v", got, path, err)
 	}
@@ -205,4 +234,13 @@ func TestIntegrationArchiveIntakeEnsuresMissingDeltaBase(t *testing.T) {
 	if refreshed != 1 || staleGot.archiveFormat() != archiveFormatDelta {
 		t.Fatalf("stale base ref: refreshed=%d format=%q, want 1 and delta", refreshed, staleGot.archiveFormat())
 	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
