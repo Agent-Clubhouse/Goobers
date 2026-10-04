@@ -84,6 +84,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-accepted-child-recovery` | `codex/haw-host-recovery` | Restore a committed child acceptance before dispatching parent continuation |
 
+| `codex/haw-event-host-routing` | `codex/haw-accepted-child-recovery` | Dispatch and recover pinned event consumers through ordinary scheduler ownership |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -181,7 +183,7 @@ simulated. Transient sessions, backlog edits, PR repair, paused-stage fresh
 allowances, parallel restarts and sealed-child continuation remain acceptance work. Saved guidance alone is explicitly labeled
 as saved; it is not described as delivered or resumed.
 
-### Events — receipt and routing store implemented; host integration pending
+### Events — pinned local consumer execution implemented; publication pending
 
 The agreed event stream still requires all workflow starts to enter durable queues,
 gaggle-local authenticated ingress/emit, configurable consumer debounce, causal
@@ -196,9 +198,14 @@ state cleanup are covered. The routing store now atomically transfers reservatio
 into independent `all`/`latest` groups and typed pinned starts, with crash/concurrent
 timer tests, immutable membership, bounded dependency inventories and a persistent
 100-start root-chain budget. Migration refuses missing historical pins rather than
-rematching current configuration. Host ingress, routing sweeps, pinned execution,
-terminal settlement and dependency-aware host pruning remain pending; these APIs
-do not yet enable consumer execution. Workflow root counters remain retained until
+rematching current configuration. Gaggle YAML now declares bounded same-gaggle
+subscriptions and debounce policy. Host routing sweeps dispatch exact archived
+local-runner consumers through ordinary scheduler budgets, claims, capacity and
+shutdown ownership. Input manifests and journal lineage reconcile uncertain
+starts without duplication; only verified terminal journals settle groups.
+Dependency inventories protect source journals and archived configuration before
+routing is installed. Public ingress, workflow emission, all-source normalization
+and engine consumer transport remain pending. Workflow root counters remain retained until
 all producers/descendants can be proven settled. See
 [receipt limits](reference/gaggle-event-receipts.md).
 
