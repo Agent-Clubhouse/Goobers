@@ -47,6 +47,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.validateTimezone,
 		c.Runner.validateDefaultStageTimeout,
 		c.Runner.validateStageMemoryLimit,
+		c.Runner.validatePodTmpfsSize,
 		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
 		c.validateExternalTelemetry,
 		c.Telemetry.Retention.validate,
@@ -221,6 +222,11 @@ func (c RunnerConfig) validateDefaultStageTimeout() error {
 // exactly like a bound that was never breached (#4070).
 func (c RunnerConfig) validateStageMemoryLimit() error {
 	_, err := c.ResolveStageMemoryBound()
+	return err
+}
+
+func (c RunnerConfig) validatePodTmpfsSize() error {
+	_, err := c.ResolvePodTmpfsSize()
 	return err
 }
 

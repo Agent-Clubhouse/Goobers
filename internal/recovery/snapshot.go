@@ -42,7 +42,7 @@ func CaptureSnapshot(ctx context.Context, repository, runID string, identityTime
 	if !gitObjectID.MatchString(parent) {
 		return "", fmt.Errorf("invalid recovery snapshot parent")
 	}
-	directory, err := os.MkdirTemp("", "goobers-recovery-index-*")
+	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-index-*")
 	if err != nil {
 		return "", err
 	}
