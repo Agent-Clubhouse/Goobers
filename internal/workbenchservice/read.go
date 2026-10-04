@@ -39,7 +39,7 @@ func (s *Service) Get(ctx context.Context, p httpapi.Principal, gaggle, binding 
 	var result workbench.BacklogItem
 	err := s.read(ctx, p, gaggle, binding, func(ctx context.Context, r *workbenchprovider.BacklogReader) error {
 		var err error
-		result, err = r.Get(ctx, request)
+		result, err = r.GetWithRelationships(ctx, request)
 		return err
 	})
 	return result, err

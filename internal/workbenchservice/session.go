@@ -36,7 +36,7 @@ func (s *SessionReader) Get(ctx context.Context, binding string, request workben
 	var result workbench.BacklogItem
 	err := s.read(ctx, binding, func(ctx context.Context, r *workbenchprovider.BacklogReader) error {
 		var err error
-		result, err = r.Get(ctx, request)
+		result, err = r.GetWithRelationships(ctx, request)
 		return err
 	})
 	return result, err

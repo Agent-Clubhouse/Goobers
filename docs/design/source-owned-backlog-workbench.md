@@ -416,3 +416,32 @@ Configured repository objective ingestion, graph projection and bounded portal
 relationship navigation are also installed. Governed repository metadata PRs,
 native relationship mutations and suggestion acceptance remain separate active
 implementation slices. See [source metadata reference](../reference/workbench-source-metadata.md).
+
+
+## Selected backlog relationship reads
+
+Portal item detail and shared-session item browsing explicitly expand the selected
+item's native parent and blocker targets. Plain `BacklogReader.Get` remains a
+single-item projection for suggestion, needs-human and mutation preflight. Page
+reads keep their bounded provider window and never fan out per listed item.
+
+GitHub detail adds one native parent request and the first blocker page, capped
+at 64 blockers. A target becomes a same-source `NodeRef` only with a positive
+stable issue ID, native issue number, and exact configured repository URL. A
+foreign target remains unresolved. Parent 404 remains partial: the official
+[parent endpoint](https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue)
+documents resource-not-found, which cannot prove that no parent exists. A next
+page on the [dependency endpoint](https://docs.github.com/en/rest/issues/issue-dependencies#list-dependencies-an-issue-is-blocked-by)
+also keeps blocker coverage partial. Milestones remain distinct from hierarchy.
+
+ADO detail selects at most 64 parent/blocker relation candidates and verifies
+membership in one [work-item batch](https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/get-work-items-batch?view=azure-devops-rest-7.1).
+The returned `System.TeamProject` must match the configured backlog project;
+organization-scoped IDs or inline URLs alone are insufficient. Missing, foreign,
+ambiguous duplicate and invalid targets stay unresolved. The reader does not
+load target state catalogs, expand descendants, or follow further relations.
+
+All requests use the existing callback-scoped source credential, deadline and
+response bounds. Cancellation interrupts the whole detail read, and no client
+request may enable expansion during mutation preflight. These projections write
+no native links and do not change graph ownership or progress semantics.

@@ -146,6 +146,15 @@ func (r *BacklogReader) projectPage(items []providers.WorkItem, page *workbench.
 // ADO lookups additionally verify System.TeamProject because its REST lookup is
 // organization-scoped even when the requested URI includes a project.
 func (r *BacklogReader) Get(ctx context.Context, request workbench.BacklogItemRequest) (workbench.BacklogItem, error) {
+	return r.get(ctx, request, false)
+}
+
+// GetWithRelationships is reserved for explicit item browsing. Inventory and
+// write/revision preflight continue to call Get without relationship expansion.
+func (r *BacklogReader) GetWithRelationships(ctx context.Context, request workbench.BacklogItemRequest) (workbench.BacklogItem, error) {
+	return r.get(ctx, request, true)
+}
+func (r *BacklogReader) get(ctx context.Context, request workbench.BacklogItemRequest, expand bool) (workbench.BacklogItem, error) {
 	if !positiveID(request.ID) || (request.ExpectedSourceID != "" && !positiveID(request.ExpectedSourceID)) {
 		return workbench.BacklogItem{}, ErrInvalidItem
 	}
@@ -167,6 +176,11 @@ func (r *BacklogReader) Get(ctx context.Context, request workbench.BacklogItemRe
 	}
 	if request.ExpectedSourceID != "" && result.Ref.SourceID != request.ExpectedSourceID {
 		return workbench.BacklogItem{}, ErrIdentityChanged
+	}
+	if expand {
+		if err := r.expandRelationships(ctx, item, &result); err != nil {
+			return workbench.BacklogItem{}, err
+		}
 	}
 	return result, nil
 }

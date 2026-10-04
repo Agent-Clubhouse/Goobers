@@ -30,6 +30,12 @@ func TestWorkbenchHostSharesAuthorizedReaderWithNativeSessions(t *testing.T) {
 	t.Setenv("GH_TOKEN", "automation-must-not-be-used")
 	reads := 0
 	factory := workbenchservice.ProviderFactory{SchedulerDirectory: pin.layout.SchedulerDir(), Registrar: setup.SharedRegistry, Client: &http.Client{Transport: sessionSourceTransport(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/parent") {
+			return &http.Response{Request: r, StatusCode: 404, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"Not Found"}`))}, nil
+		}
+		if strings.HasSuffix(r.URL.Path, "/dependencies/blocked_by") {
+			return &http.Response{Request: r, StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[]`))}, nil
+		}
 		if r.Header.Get("Authorization") != "Bearer human-read-canary" || r.URL.Host != "api.github.com" || r.URL.Path != "/repos/"+g.Spec.Backlog.Project+"/issues/42" {
 			t.Fatalf("wrong provider target or identity: %s", r.URL)
 		}

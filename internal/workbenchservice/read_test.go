@@ -60,6 +60,12 @@ func issueResponse(r *http.Request, status int, body string) *http.Response {
 func TestAuthorizedBacklogReadUsesStableIdentityAndRevalidatesSharedCache(t *testing.T) {
 	var calls atomic.Int32
 	service, g, p := fixture(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/repos/acme/issues/issues/42/parent" {
+			return issueResponse(r, 404, `{"message":"Not Found"}`), nil
+		}
+		if r.URL.Path == "/repos/acme/issues/issues/42/dependencies/blocked_by" {
+			return issueResponse(r, 200, `[]`), nil
+		}
 		if r.Header.Get("Authorization") != "Bearer human-read-canary" || r.URL.Host != "api.github.com" || r.URL.Path != "/repos/acme/issues/issues/42" {
 			t.Fatalf("wrong authorized target: %s", r.URL)
 		}
@@ -76,7 +82,7 @@ func TestAuthorizedBacklogReadUsesStableIdentityAndRevalidatesSharedCache(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		if item.Ref.SourceID != "987654" || item.Locator.ID != "42" || !item.Objective || item.RelationshipCoverage.Parents != "not-loaded" {
+		if item.Ref.SourceID != "987654" || item.Locator.ID != "42" || !item.Objective || item.RelationshipCoverage.Parents != "partial" {
 			t.Fatal(item)
 		}
 	}
