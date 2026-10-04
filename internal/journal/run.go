@@ -431,7 +431,7 @@ type ContinuationRequest struct {
 	// ChildContinuation is populated only after exact queue epoch admission.
 	ChildContinuation *ChildLineage
 	// VerifySourceBranch checks the provider's current branch head before reuse.
-	VerifySourceBranch func(branch, sha string) error
+	VerifySourceBranch func(branch, sha string) error `json:"-"`
 }
 
 // CreateContinuation creates a distinct journal from a terminal source

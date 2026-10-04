@@ -79,12 +79,16 @@ func (s *Service) LaunchStageRestart(admission, execution context.Context, plan 
 	if candidate.Runner == nil || candidate.Machine == nil || candidate.Machine.Digest() != plan.Source.WorkflowDigest || candidate.GooberDigest != plan.Source.GooberDigest {
 		return StageRestartAcceptance{}, interventionConflict("restart_execution_changed", "Interactive execution differs from the retained workflow or goober pin.")
 	}
-	target := resolvedInterventionRun{runID: plan.Continuation.RunID, runner: candidate.Runner, machine: candidate.Machine, gooberDigest: candidate.GooberDigest, repoRef: candidate.RepoRef, runDir: dir, gaggle: plan.Source.Gaggle, workflow: plan.Source.Workflow}
-	lease, err := s.beginExecution(target, false)
+	reserve, err := stageRestartReservation(admission, plan, candidate)
 	if err != nil {
 		return StageRestartAcceptance{}, err
 	}
-	if err := s.persistRestartEpoch(admission, lease, plan, verifiedClaims, duplicate); err != nil {
+	target := resolvedInterventionRun{runID: plan.Continuation.RunID, runner: candidate.Runner, machine: candidate.Machine, gooberDigest: candidate.GooberDigest, repoRef: candidate.RepoRef, runDir: dir, gaggle: plan.Source.Gaggle, workflow: plan.Source.Workflow}
+	lease, err := s.beginExecutionWithReservation(target, false, reserve)
+	if err != nil {
+		return StageRestartAcceptance{}, err
+	}
+	if err := s.persistRestartEpoch(admission, lease, plan, verifiedClaims, duplicate, candidate.ChildRestart); err != nil {
 		return StageRestartAcceptance{}, err
 	}
 	s.executeStageRestart(execution, lease, candidate)
@@ -114,7 +118,7 @@ func (s *Service) executeStageRestart(ctx context.Context, lease *interventionEx
 			defer s.wg.Done()
 		}
 		result, err := s.finishExecution(ctx, lease, func(ctx context.Context) (runner.Result, error) {
-			return candidate.Runner.Resume(ctx, runner.ResumeInput{RunID: lease.resolved.runID, Machine: candidate.Machine, GooberDigest: candidate.GooberDigest, RepoRef: candidate.RepoRef})
+			return candidate.Runner.Resume(ctx, restartResumeInput(ctx, lease, candidate))
 		})
 		if terminalInterventionPhase(result.Phase) {
 			err = errors.Join(err, lease.releaseReacquiredClaims())
@@ -151,7 +155,7 @@ func stageRestartReplay(dir string, plan runner.StageRestartPlan) (bool, error) 
 	}
 	// The immutable snapshot carries the human request. Branch freshness is
 	// checked only on first admission; later effects must not break receipt replay.
-	if !reflect.DeepEqual(id.RunControls, plan.Source.RunControls) {
+	if !reflect.DeepEqual(id.RunControls, plan.Source.RunControls) || !reflect.DeepEqual(id.Child, req.ChildContinuation) {
 		return false, restartKeyConflict()
 	}
 	return true, nil
@@ -169,25 +173,32 @@ func restartTerminal(dir string) bool {
 	return err == nil && terminalInterventionPhase(phase)
 }
 
-func (s *Service) persistRestartEpoch(admission context.Context, lease *interventionExecutionLease, plan runner.StageRestartPlan, verifiedClaims []localscheduler.ClaimEntry, duplicate bool) error {
-	if err := s.claimRestart(lease, verifiedClaims); err != nil {
-		lease.Close()
-		return err
+func (s *Service) persistRestartEpoch(admission context.Context, lease *interventionExecutionLease, plan runner.StageRestartPlan, verifiedClaims []localscheduler.ClaimEntry, duplicate bool, child *ChildStageRestartAdmission) error {
+	if child == nil {
+		if err := s.claimRestart(lease, verifiedClaims); err != nil {
+			lease.Close()
+			return err
+		}
 	}
 	if err := admission.Err(); err != nil {
 		lease.Close()
 		return errors.Join(err, lease.releaseReacquiredClaims())
 	}
 	if !duplicate {
-		created, createErr := journal.CreateContinuation(filepath.Dir(lease.resolved.runDir), plan.Continuation)
-		if createErr != nil {
+		err := child.fence(admission, func() error {
+			created, createErr := journal.CreateContinuation(filepath.Dir(lease.resolved.runDir), plan.Continuation)
+			if createErr != nil {
+				return createErr
+			}
+			if closeErr := created.Close(); closeErr != nil {
+				lease.retainAdmission = true
+				return closeErr
+			}
+			return nil
+		})
+		if err != nil {
 			lease.Close()
-			return errors.Join(createErr, lease.releaseReacquiredClaims())
-		}
-		if closeErr := created.Close(); closeErr != nil {
-			lease.retainAdmission = true
-			lease.Close()
-			return closeErr
+			return errors.Join(err, lease.releaseReacquiredClaims())
 		}
 	}
 	return nil

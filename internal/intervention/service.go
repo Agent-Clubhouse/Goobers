@@ -48,6 +48,9 @@ type Execution struct {
 	Machine      *workflow.Machine
 	GooberDigest string
 	RepoRef      apiv1.RepoRef
+	// ChildRestart is host admission for a queued generated human epoch. It is
+	// never accepted from an HTTP body or used by ordinary interventions.
+	ChildRestart *ChildStageRestartAdmission
 }
 
 // RunnerRegistry is the daemon's live run-owner registry.
@@ -825,6 +828,10 @@ func (s *Service) finishExecution(
 }
 
 func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
+	return s.beginExecutionWithReservation(resolved, reacquireClaims, nil)
+}
+
+func (s *Service) beginExecutionWithReservation(resolved resolvedInterventionRun, reacquireClaims bool, reserve func(*localscheduler.Scheduler) (func(), error)) (*interventionExecutionLease, error) {
 	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
 	if !exclusive {
 		return nil, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
@@ -848,10 +855,10 @@ func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClai
 		)
 	}
 	lease.scheduler = scheduler
-	release, admitted, reason := scheduler.ReserveContinuation(resolved.runID, resolved.gaggle, resolved.workflow)
-	if !admitted {
+	release, err := reserveIntervention(scheduler, resolved, reserve)
+	if err != nil {
 		lease.Close()
-		return nil, interventionConflict("run_not_admitted", "run could not reacquire workflow admission: "+reason)
+		return nil, err
 	}
 	lease.releaseAdmission = release
 
@@ -863,6 +870,17 @@ func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClai
 		lease.reacquiredClaims = true
 	}
 	return lease, nil
+}
+
+func reserveIntervention(scheduler *localscheduler.Scheduler, resolved resolvedInterventionRun, reserve func(*localscheduler.Scheduler) (func(), error)) (func(), error) {
+	if reserve != nil {
+		return reserve(scheduler)
+	}
+	release, admitted, reason := scheduler.ReserveContinuation(resolved.runID, resolved.gaggle, resolved.workflow)
+	if !admitted {
+		return nil, interventionConflict("run_not_admitted", "run could not reacquire workflow admission: "+reason)
+	}
+	return release, nil
 }
 
 func (s *Service) trackActiveIntervention(runID string) (func(), bool) {

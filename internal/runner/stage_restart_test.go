@@ -81,6 +81,15 @@ func TestStageRestartExecutesPinnedGuidanceInDistinctContinuation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	retainedPlan, err := MarshalStageRestartPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredPlan, err := ParseStageRestartPlan(retainedPlan)
+	if err != nil || !reflect.DeepEqual(plan, restoredPlan) {
+		t.Fatal("durable restart plan changed", err)
+	}
+	plan = restoredPlan
 	continued, err := journal.CreateContinuation(runsDir, plan.Continuation)
 	if err != nil {
 		t.Fatal(err)

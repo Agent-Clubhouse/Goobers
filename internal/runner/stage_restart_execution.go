@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"reflect"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -23,14 +24,17 @@ type StageRestartExecutionFactories struct {
 // ForStageRestartExecution creates a driver which can only resume the exact
 // human epoch. It cannot start ordinary automation or invoke automation hooks.
 func (r *Runner) ForStageRestartExecution(id journal.RunIdentity, f StageRestartExecutionFactories) (*Runner, error) {
-	if r == nil || id.RunID == "" || id.Child != nil || f.Context == nil || f.NewAgentic == nil || f.NewDeterministic == nil {
+	if r == nil || id.RunID == "" || f.Context == nil || f.NewAgentic == nil || f.NewDeterministic == nil {
 		return nil, errors.New("runner: human restart execution factories unavailable")
+	}
+	if id.Child != nil && (id.Child.ExecutionEpoch == 0 || id.ValidateChildLineage() != nil || r.cfg.childExecution == nil || r.cfg.childExecution.RunID != id.RunID || !reflect.DeepEqual(r.cfg.childExecution.Child, id.Child)) {
+		return nil, errors.New("runner: human child restart requires its contained execution driver")
 	}
 	cfg := r.cfg
 	cfg.ConfigGeneration = id.ConfigGeneration
 	cfg.NewAgentic, cfg.NewDeterministic = f.NewAgentic, f.NewDeterministic
 	cfg.StageRestartContext = func(ctx context.Context, actual journal.RunIdentity, reg SecretRegistrar) (context.Context, func(), error) {
-		if actual.RunID != id.RunID || actual.Gaggle != id.Gaggle || actual.WorkflowDigest != id.WorkflowDigest || actual.GooberDigest != id.GooberDigest || actual.ConfigGeneration != id.ConfigGeneration {
+		if actual.RunID != id.RunID || actual.Gaggle != id.Gaggle || actual.WorkflowDigest != id.WorkflowDigest || actual.GooberDigest != id.GooberDigest || actual.ConfigGeneration != id.ConfigGeneration || !reflect.DeepEqual(actual.Child, id.Child) {
 			return nil, nil, errors.New("runner: human driver cannot resume another identity")
 		}
 		return f.Context(ctx, actual, reg)

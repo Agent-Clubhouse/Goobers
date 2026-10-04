@@ -67,6 +67,17 @@ type stageRestartManifest struct {
 // chooses provider credentials. Settled child runs require a separate accepted
 // parent-observation/workspace mapping and are refused here until that exists.
 func PrepareStageRestart(reader *journal.Reader, machine *workflow.Machine, request StageRestartRequest, scrubber journal.Scrubber) (StageRestartPlan, error) {
+	return prepareStageRestart(reader, machine, request, scrubber, false)
+}
+
+// PrepareChildStageRestart snapshots a generated child's prior context and
+// selected guidance. This is preparation only: a trusted caller must admit its
+// new linked epoch and workspace through the durable child queue before launch.
+func PrepareChildStageRestart(reader *journal.Reader, machine *workflow.Machine, request StageRestartRequest, scrubber journal.Scrubber) (StageRestartPlan, error) {
+	return prepareStageRestart(reader, machine, request, scrubber, true)
+}
+
+func prepareStageRestart(reader *journal.Reader, machine *workflow.Machine, request StageRestartRequest, scrubber journal.Scrubber, child bool) (StageRestartPlan, error) {
 	if reader == nil || scrubber == nil {
 		return StageRestartPlan{}, errors.New("restart requires retained journal and credential scrubber")
 	}
@@ -74,7 +85,7 @@ func PrepareStageRestart(reader *journal.Reader, machine *workflow.Machine, requ
 	if err != nil {
 		return StageRestartPlan{}, err
 	}
-	if err := validateStageRestartIdentity(id, machine, request); err != nil {
+	if err := validateStageRestartIdentity(id, machine, request, child); err != nil {
 		return StageRestartPlan{}, err
 	}
 	phase, err := reader.Phase()
@@ -148,8 +159,8 @@ func PrepareStageRestart(reader *journal.Reader, machine *workflow.Machine, requ
 	return StageRestartPlan{Source: id, SourceWorkspaceRevision: sourceRevision.DeepCopy(), GuidanceDigest: manifest.GuidanceDigest, PreviousRepasses: targetRepassSeed(budgetHistory), Continuation: journal.ContinuationRequest{RunID: request.EpochID, SourceRunID: id.RunID, ExpectedTerminalSeq: request.ExpectedTerminalSeq, Operator: request.PrincipalRef, Target: request.Stage, Inputs: inputs, InputIntegrity: grades, InputSource: sources, ContextPointers: pointers}}, nil
 }
 
-func validateStageRestartIdentity(id journal.RunIdentity, machine *workflow.Machine, request StageRestartRequest) error {
-	if err := ValidateStageRestartTarget(id, machine, request.Stage); err != nil {
+func validateStageRestartIdentity(id journal.RunIdentity, machine *workflow.Machine, request StageRestartRequest, child bool) error {
+	if err := validateStageRestartTarget(id, machine, request.Stage, child); err != nil {
 		return err
 	}
 	if !apiv1.ValidRunID(request.EpochID) || request.EpochID == id.RunID || request.ExpectedTerminalSeq == 0 || strings.TrimSpace(request.PrincipalRef) == "" || len(request.PrincipalRef) > 1024 || strings.TrimSpace(request.Rationale) == "" || len(request.Rationale) > 4096 {
@@ -162,11 +173,18 @@ func validateStageRestartIdentity(id journal.RunIdentity, machine *workflow.Mach
 // ValidateStageRestartTarget explains whether the local runner can restore this
 // settled target without changing its workflow or child custody identity.
 func ValidateStageRestartTarget(id journal.RunIdentity, machine *workflow.Machine, stage string) error {
+	return validateStageRestartTarget(id, machine, stage, false)
+}
+
+func validateStageRestartTarget(id journal.RunIdentity, machine *workflow.Machine, stage string, child bool) error {
 	if machine == nil || machine.Def.DSLVersion != supportmatrix.V31DSLVersion {
 		return errors.New("stage restart requires the local DSL 3.1 preview runner")
 	}
-	if id.EngineDriven() || id.Child != nil {
+	if id.EngineDriven() || (!child && id.Child != nil) {
 		return errors.New("this stage restart adapter does not support engine runs or settled generated children")
+	}
+	if child && (id.Child == nil || id.ValidateChildLineage() != nil) {
+		return errors.New("child stage restart requires exact generated provenance")
 	}
 	if id.WorkflowDigest == "" || id.WorkflowDigest != machine.Digest() {
 		return errors.New("stage restart requires the exact retained workflow pin")
@@ -259,7 +277,7 @@ func readStageRestartManifest(reader *journal.Reader, id journal.RunIdentity, ma
 		if input.Name != StageRestartInputName {
 			continue
 		}
-		if input.Integrity != apiv1.IntegrityTrusted || id.ContinuedFromRunID == "" || machine == nil || machine.Def.DSLVersion != supportmatrix.V31DSLVersion || id.EngineDriven() || id.Child != nil {
+		if input.Integrity != apiv1.IntegrityTrusted || id.ContinuedFromRunID == "" || machine == nil || machine.Def.DSLVersion != supportmatrix.V31DSLVersion || id.EngineDriven() || !validRestartManifestChild(id) {
 			return nil, errors.New("restart manifest requires a trusted continuation input")
 		}
 		raw, err := reader.ArtifactBytesBounded(input.Ref, maxStageRestartBytes)
@@ -282,6 +300,10 @@ func readStageRestartManifest(reader *journal.Reader, id journal.RunIdentity, ma
 		return &manifest, nil
 	}
 	return nil, nil
+}
+
+func validRestartManifestChild(id journal.RunIdentity) bool {
+	return id.Child == nil || (id.Child.ExecutionEpoch > 0 && id.ValidateChildLineage() == nil)
 }
 
 func pendingStageRestart(manifest *stageRestartManifest, events []journal.Event) *rerunContext {
