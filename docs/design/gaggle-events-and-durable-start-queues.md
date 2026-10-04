@@ -760,3 +760,17 @@ concurrent request counts, source/generation/credential separation, partial
 hydration, fresh reads, revocation, cancellation, and 429 feedback. Existing ADO
 backlog/refill counters remain unsupported; ADO remediation demand intentionally
 remains unsized. This change does not alter those scheduler eligibility rules.
+
+## Delivered bounded pending-start fairness
+
+The daemon now retains a sweep cursor over immutable acceptance time and ID. A
+bounded pass advances past held, disabled or currently unsupported starts instead
+of repeatedly loading the oldest 100 records. After reaching the end it wraps and
+reconsiders those held starts. Direct-engine work keeps its separate cursor;
+dispatching uncertainty is never included in pending admission.
+
+The cursor is process-local scheduling progress, not durable custody. Restarting
+begins a new pass without changing records, run identities, capacity or effect
+claims. Tests cover equal-time ordering after a cursor record leaves the pending
+set and an actual eligible start behind 100 held requests. This closes head-of-line
+starvation; queue inspection/cancellation/deadline policy remains a separate slice.

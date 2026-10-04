@@ -39,6 +39,7 @@ type durableTriggerService struct {
 	dispatch               *daemonTriggerService
 	sweepMu                sync.Mutex
 	reconcileCursor        string
+	pendingCursor          triggerqueue.PendingCursor
 	bootUncertain          map[string]bool
 	auditLog               *journal.InstanceLog
 	observe                func(context.Context, triggerqueue.Record) (bool, error)
@@ -174,7 +175,7 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 		return pruneErr
 	}
 	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
-	records, err := s.queue.Pending(ctx, 100)
+	records, err := s.queue.PendingAfter(ctx, s.pendingCursor, 100)
 	if err != nil {
 		return errors.Join(reconcileErr, err)
 	}
@@ -183,6 +184,10 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 			return err
 		}
 		reconcileErr = errors.Join(reconcileErr, s.drainOne(ctx, record))
+		s.pendingCursor = triggerqueue.PendingCursor{AcceptedAt: record.AcceptedAt, ID: record.ID}
+	}
+	if len(records) < 100 {
+		s.pendingCursor = triggerqueue.PendingCursor{}
 	}
 	return reconcileErr
 }

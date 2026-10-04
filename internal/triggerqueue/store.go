@@ -192,23 +192,7 @@ func (s *Store) ForRun(ctx context.Context, runID string) (Record, error) {
 // Pending returns a bounded FIFO batch. Dispatching is deliberately excluded:
 // a process may have died after starting the run but before recording its ID.
 func (s *Store) Pending(ctx context.Context, limit int) ([]Record, error) {
-	if limit < 1 || limit > 100 {
-		return nil, errors.New("triggerqueue: batch limit must be 1..100")
-	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='accepted' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) ORDER BY accepted_ns,id LIMIT ?", limit)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var records []Record
-	for rows.Next() {
-		r, err := scanRecord(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, r)
-	}
-	return records, rows.Err()
+	return s.PendingAfter(ctx, PendingCursor{}, limit)
 }
 
 // BeginDispatch durably claims one request before any scheduler side effect.
