@@ -34,6 +34,7 @@ type NeedsHumanDependency struct {
 // completion; that assessment belongs to the authorized agent.
 type NeedsHumanObservation struct {
 	Digest               string                 `json:"digest"`
+	HumanInstruction     *NeedsHumanEvidenceRef `json:"humanInstruction,omitempty"`
 	Item                 BacklogItem            `json:"item"`
 	MarkerPresent        bool                   `json:"markerPresent"`
 	Comments             []NeedsHumanComment    `json:"comments"`
@@ -82,4 +83,26 @@ type NeedsHumanResolutionOrigin struct {
 	MessageID     string `json:"messageId"`
 	MessageDigest string `json:"messageDigest"`
 	GooberDigest  string `json:"gooberDigest"`
+}
+
+// NeedsHumanResolutionCommand is the actor-attributed receipt of one narrow
+// marker operation. Its origin points to an actual session turn, never a new run.
+type NeedsHumanResolutionCommand struct {
+	ID              string                       `json:"id"`
+	Gaggle          string                       `json:"gaggle"`
+	SourceBindingID string                       `json:"sourceBindingId"`
+	Actor           CommandActor                 `json:"actor"`
+	ItemID          string                       `json:"itemId"`
+	SourceID        string                       `json:"sourceId"`
+	State           string                       `json:"state"`
+	Duplicate       bool                         `json:"duplicate"`
+	RequestDigest   string                       `json:"requestDigest"`
+	OperationDigest string                       `json:"operationDigest"`
+	Origin          NeedsHumanResolutionOrigin   `json:"origin"`
+	Assessment      NeedsHumanResolutionRequest  `json:"assessment"`
+	AcceptedAt      time.Time                    `json:"acceptedAt"`
+	AttemptedAt     *time.Time                   `json:"attemptedAt,omitempty"`
+	CompletedAt     *time.Time                   `json:"completedAt,omitempty"`
+	Receipt         *NeedsHumanResolutionReceipt `json:"receipt,omitempty"`
+	NextAction      string                       `json:"nextAction"`
 }
