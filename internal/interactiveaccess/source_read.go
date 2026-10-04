@@ -20,7 +20,9 @@ func (s *Service) WithSourceRead(ctx context.Context, p httpapi.Principal, gaggl
 	if use == nil || (action != "backlog.read" && action != "repository.read") {
 		return ErrDenied
 	}
-	s.mu.RLock()
+	if err := s.lockSourceSnapshot(ctx); err != nil {
+		return err
+	}
 	defer s.mu.RUnlock()
 	g := s.gaggles[gaggle]
 	if err := authorize(p, g, action); err != nil {
@@ -43,7 +45,9 @@ func (s *Service) WithSourceView(ctx context.Context, p httpapi.Principal, gaggl
 	if use == nil || !human(p) || p.ChildWorkflow != nil || p.GeneratedChild || p.WorkflowParent || len(p.Scopes) != 0 {
 		return ErrDenied
 	}
-	s.mu.RLock()
+	if err := s.lockSourceSnapshot(ctx); err != nil {
+		return err
+	}
 	defer s.mu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return err

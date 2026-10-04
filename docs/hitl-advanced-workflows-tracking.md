@@ -282,7 +282,11 @@ outcomes retry the same key and content; access failures clear the visible
 conversation. The native daemon runtime is now installed with pinned model profiles, live human
 leases and writer join evidence. Source operations remain separately gated. See [shared sessions](reference/shared-sessions.md).
 Manual and typed-session native backlog field edits are installed with one-attempt
-command receipts. Needs-human resolution and PR repair remain acceptance work. The installed human restart
+command receipts. Shared sessions now expose installed typed needs-human inspection,
+resolution and receipt tools under actual initiating-human authority. The host checks
+the current label-edit policy, inspected source revision, dependency coverage and
+verified evidence, then retains the assessment and one-attempt marker-removal receipt.
+The portal entry control and PR repair remain follow-up delivery. The installed human restart
 adapters cover affected-stage fresh allowances, queued capacity and sealed-child
 continuation; live worker qualification remains outstanding. Saved guidance alone is
 explicitly labeled as saved; it is not described as delivered or resumed.
@@ -431,9 +435,11 @@ The daemon now installs the pinned model-only session runtime and shared turn
 coordinator, restores all unsettled session custody before admission, and retains
 journals/configuration while writers remain uncertain. Actual HTTP-to-Runner
 adapter tests cover accepted turns, publication refusal and unknown writers.
-Native backlog source read tools now use the same installed human-authorized
-service as browser reads. Write tools and live model/worker qualification remain
-follow-up.
+Native backlog read, field-edit and needs-human resolution tools now use the same
+installed human-authorized services as browser operations. Availability requires
+the configured source policy and installed session runtime. Source read/view requests
+also include policy-lock contention in their request deadline. PR repair tools and
+live model/worker qualification remain follow-up.
 
 
 ### Durable demand-sized schedule delivery
