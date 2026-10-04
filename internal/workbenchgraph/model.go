@@ -44,14 +44,15 @@ type BacklogWindow struct {
 // endpoints prohibit completeness assumptions. No output implies progress,
 // deletion, movement, write authority, or permission to read referenced content.
 type Graph struct {
-	GaggleID  string     `json:"gaggleId"`
-	Nodes     []Node     `json:"nodes"`
-	Edges     []Edge     `json:"edges"`
-	Documents []Document `json:"documents"`
-	Aliases   []Alias    `json:"aliases"`
-	Sources   []Coverage `json:"sources"`
-	Conflicts []Conflict `json:"conflicts"`
-	Partial   bool       `json:"partial"`
+	Generation string     `json:"generation,omitempty"`
+	GaggleID   string     `json:"gaggleId"`
+	Nodes      []Node     `json:"nodes"`
+	Edges      []Edge     `json:"edges"`
+	Documents  []Document `json:"documents"`
+	Aliases    []Alias    `json:"aliases"`
+	Sources    []Coverage `json:"sources"`
+	Conflicts  []Conflict `json:"conflicts"`
+	Partial    bool       `json:"partial"`
 }
 
 // Node retains all distinct observed representations. Conflict never selects a
