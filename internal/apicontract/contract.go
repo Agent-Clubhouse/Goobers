@@ -678,6 +678,8 @@ var v1Routes = []Route{
 	{ID: RouteWorkbenchPatch, Method: http.MethodPatch, Path: WorkbenchItemPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchCommand, Method: http.MethodGet, Path: WorkbenchCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchSources, Method: http.MethodGet, Path: WorkbenchSourcesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleEventPublish, Method: http.MethodPost, Path: GaggleEventPublishPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteGaggleEventReceipt, Method: http.MethodGet, Path: GaggleEventReceiptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchDocuments, Method: http.MethodGet, Path: WorkbenchDocumentsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchItems, Method: http.MethodGet, Path: WorkbenchItemsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchItem, Method: http.MethodGet, Path: WorkbenchItemPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

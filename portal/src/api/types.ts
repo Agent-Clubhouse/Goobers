@@ -2202,3 +2202,5 @@ export interface SessionMessage {
 export interface SessionAcceptance { session: InteractiveSession; message?: SessionMessage; acceptanceId?: string; duplicate: boolean }
 export interface SessionPage { items: InteractiveSession[]; nextCursor?: string }
 export interface SessionMessagePage { items: SessionMessage[]; nextCursor?: number }
+
+export type { GaggleEventEnvelope, GaggleEventReceipt, GaggleEventDelivery } from "./eventTypes";

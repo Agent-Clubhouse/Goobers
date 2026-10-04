@@ -3,6 +3,14 @@ package v1alpha1
 // GaggleEvents defines local consumer subscriptions. Publication authorization
 // and durable start admission are separate from these matching declarations.
 type GaggleEvents struct {
+	// Ingress binds authenticated external producers to this gaggle and exact sources.
+	// Omission disables external event acceptance.
+	// +optional
+	// +kubebuilder:validation:MaxItems=128
+	// +listType=map
+	// +listMapKey=name
+	Ingress []EventIngressBinding `json:"ingress,omitempty" yaml:"ingress,omitempty"`
+
 	// Publishers explicitly allow named workflows to publish exact event types.
 	// Omission disables workflow publication.
 	// +optional
@@ -109,6 +117,33 @@ type EventPublisher struct {
 	// +kubebuilder:validation:MaxLength=128
 	Workflow string `json:"workflow" yaml:"workflow"`
 	// AllowedTypes are literal CloudEvents types; wildcards are not interpreted.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=set
+	AllowedTypes []string `json:"allowedTypes" yaml:"allowedTypes"`
+}
+
+// EventIngressBinding grants one verified machine principal a bounded publication
+// namespace. It grants no human inspection, provider access or workflow identity.
+type EventIngressBinding struct {
+	// Name is selected by X-Goobers-Event-Binding on the shared API listener.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`
+	Name string `json:"name" yaml:"name"`
+	// Issuer is the exact configured API authenticator trust domain.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	Issuer string `json:"issuer" yaml:"issuer"`
+	// Subject is the exact cryptographically authenticated producer identity.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	Subject string `json:"subject" yaml:"subject"`
+	// Source is the exact CloudEvents source URI reference; callers cannot replace it.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=1024
+	Source string `json:"source" yaml:"source"`
+	// AllowedTypes are literal event types, with no wildcard or cross-gaggle matching.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=set

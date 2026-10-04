@@ -13,8 +13,9 @@ starts have durable queue custody. Bounded sweep cursors prevent held batches fr
 starving later eligible starts. Scoped GH/ADO GET reads and typed ADO list-plan
 sharing are installed.
 
-External authenticated producer ingress and queue inspection/cancellation/deadline
-policy remain implementation work. Engine/Temporal event-input transport and
+External CloudEvents ingress now uses explicit authenticated machine bindings on
+the existing API listener. Human receipt reads require explicit gaggle visibility.
+Queue inspection/cancellation/deadline policy remains implementation work. Engine/Temporal event-input transport and
 child/human-continuation event production remain explicitly unsupported until their
 transport and ancestry contracts are implemented. Unresolved producers and starts
 retain custody; neither age nor missing journal evidence proves termination. See
@@ -799,3 +800,35 @@ that proves publication and writer custody absent remains a queue-lifecycle task
 HTTP returns accepted/pending and the reserved continuation ID while queued;
 that run becomes navigable after journal publication. Generated-child epochs
 continue through their existing parent/result/cancellation queue custody.
+
+## Delivered external event ingress
+
+`spec.events.ingress` names explicit machine bindings by `name`, exact verified
+`issuer` and `subject`, exact CloudEvents `source`, and literal `allowedTypes`.
+The external principal also needs the instance `operate` role. This authority is
+independent of `interactiveAccess`; a producer does not need human viewer/operator
+grants. Internal pod, child, parent, worker and session principals cannot use this
+endpoint, even if configuration attempts to give them a binding.
+
+The existing listener accepts bounded structured JSON at
+`POST /api/v1/gaggles/{gaggle}/events`, with `X-Goobers-Event-Binding` selecting the
+configured name. The current applied producer policy and generation archive stay
+leased through receipt commit. The public profile is closed: optional
+`subject`, `time`, `dataschema`, `datacontenttype`, and JSON `data` are accepted;
+arbitrary top-level extensions are refused. No payload field grants source,
+actor, root, run, stage, gaggle or target-workflow authority.
+
+Successful acceptance returns 202, including no-match acceptance. A lost reply
+must be retried with the same source/ID and content; the retained receipt keeps
+its original routing pins. Each `(gaggle, binding)` has a 10/s, burst-50 limit;
+the daemon bounds active limiter entries to 4,096. The limiter is process-local,
+while shared durable receipt/start quotas remain database-enforced. A full ledger
+or unconfirmed commit returns an error with `Retry-After`, never a false accepted
+receipt. This is first-party authenticated CloudEvents intake; no provider HMAC
+verification or direct provider-webhook profile is advertised.
+
+`GET /api/v1/gaggles/{gaggle}/events/{receipt}` rechecks current explicit human
+gaggle visibility. It returns routing state, bounded delivery/group/acceptance
+links and confirmed consumer run links, excluding payload and raw machine
+identity. A producer grant alone does not grant this read. Missing human policy
+keeps receipt reads disabled without disabling configured producer acceptance.

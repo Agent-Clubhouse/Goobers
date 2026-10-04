@@ -373,6 +373,61 @@
           "description": "Gaggle-local subscriptions and explicit workflow publication permissions.",
           "additionalProperties": false,
           "properties": {
+            "ingress": {
+              "type": "array",
+              "description": "Explicit external producer identities, sources and event type ceilings.",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "issuer",
+                  "subject",
+                  "source",
+                  "allowedTypes"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+                    "description": "Named authenticated ingress binding."
+                  },
+                  "issuer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": "Exact authenticated trust domain; internal goobers issuers are forbidden."
+                  },
+                  "subject": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Exact authenticated producer subject."
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "description": "Exact CloudEvents source URI reference."
+                  },
+                  "allowedTypes": {
+                    "type": "array",
+                    "description": "Literal event types; wildcards are not interpreted.",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  }
+                }
+              }
+            },
             "publishers": {
               "type": "array",
               "description": "Explicit publication permissions for workflows in this gaggle.",

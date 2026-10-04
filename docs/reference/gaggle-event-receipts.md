@@ -1,16 +1,14 @@
 # Gaggle event receipts and durable routing
 
-Status: internal receipt/routing and local-runner host implementation for
-HAW-EVT-001/003/004/007 and the HAW-EVT-006 root budget. Public ingress, workflow
-publication and normalization of every start source remain implementation work.
-The daemon can drain accepted internal receipts into pinned consumer runs; these
-store APIs do not expose a public event endpoint.
+Status: delivered local receipt/routing, workflow publication, external authenticated
+ingress and pinned local-runner consumer execution. Detailed start adapters and
+remaining queue lifecycle work are tracked in the
+[design](../design/gaggle-events-and-durable-start-queues.md).
 
-The existing durable trigger database now accepts internal event receipts. Intake
-commits the authenticated producer binding, gaggle, bounded event envelope and
-matched routing snapshot together. Transport adapters must construct authority
-from authenticated configuration, scrub secrets before intake, and enforce ingress
-quotas and derive causal lineage. Payload fields never select a gaggle or producer.
+The shared trigger database commits the authenticated producer binding, gaggle,
+bounded event envelope and matched routing snapshot together. Payload fields never
+select a gaggle or producer. The existing hardened API listener now exposes
+explicit machine-bound intake and separately authorized human receipt reads.
 
 ## Envelope profile
 
@@ -83,8 +81,8 @@ or `constantKey`. Defaults are `window: 5s`, `maxWait: 30s`, `maxEvents: 100`, a
 consumer revision includes the effective defaults, filter and resolved source
 pins, so a changed generation cannot accidentally join an older group.
 
-Declarations currently validate and compile; production publication still requires
-the pending host integration described above.
+Declarations validate and compile from applied configuration. Both external intake
+and workflow publication match that retained catalog before accepting receipts.
 
 ## Custody and retries
 
@@ -217,3 +215,51 @@ start a fresh root. Consumer admission checks all represented allowances before
 charging any, so one exhausted root cannot partially spend another. Intake
 reserves indexed root membership and per-consumer charges within the shared byte
 ceiling. Retry recovers the same receipt and never charges roots again.
+
+## External producer setup and receipt reads
+
+Configure the machine identity already verified by the daemon's authentication
+provider. The producer needs the instance `operate` role and an exact binding:
+
+```yaml
+spec:
+  events:
+    ingress:
+      - name: builds
+        issuer: https://identity.example
+        subject: build-system
+        source: urn:example:builds
+        allowedTypes: [com.example.build.finished]
+```
+
+Send `POST /api/v1/gaggles/{gaggle}/events` with the authenticated bearer token,
+`X-Goobers-Event-Binding: builds`, and `Content-Type: application/cloudevents+json`
+(`application/json` is also accepted). Body example:
+
+```json
+{"specversion":"1.0","id":"build-42","source":"urn:example:builds","type":"com.example.build.finished","data":{"result":"passed"}}
+```
+
+The external profile accepts only the standard fields listed above, plus optional
+`subject`, `time`, `dataschema`, and `datacontenttype`; scalar extensions accepted
+by the internal parser are refused at this boundary. The raw body limit is 16 KiB.
+Each configured gaggle/binding shares a process-local 10/s, burst-50 limiter;
+the daemon caps limiter entries at 4,096. Queue capacity remains shared and durable.
+Data that the configured scrubber would alter is rejected before persistence.
+
+202 means durable receipt custody, including `accepted_unmatched`; it does not
+mean a consumer ran. The response gives `receiptId`, `acceptedAt`, `duplicate`,
+`state`, and `statusUrl`. Retry a lost reply with the same source/ID and exact
+normalized content. A conflicting identity returns 409. Rate/storage refusal
+returns 429/503 with `Retry-After`; an uncertain commit is never reported accepted.
+
+The returned GET status URL requires current explicit human gaggle viewer or
+operator membership, including for instance administrators. Producer authority
+alone does not grant receipt inspection. The response contains consumer delivery,
+group and acceptance links, with a run link only after dispatch is confirmed.
+Payloads and raw machine principal claims are excluded. No human policy is needed
+for separately configured machine publication.
+
+Internal scoped identities, anonymous loopback callers, caller-supplied ancestry,
+and producer source/type overrides are refused. Provider-specific signed webhooks
+and artifact references require separately qualified adapters.

@@ -2,6 +2,7 @@ package apicontract
 
 func openAPIInteractiveSchemas() map[string]any {
 	schemas := mergeSchemaProperties(mergeSchemaProperties(openAPIInteractiveRunSchemas(), openAPISessionSchemas()), openAPIWorkbenchSchemas())
+	schemas = mergeSchemaProperties(schemas, openAPIEventIngressSchemas())
 	schemas = mergeSchemaProperties(schemas, openAPIWorkbenchGraphSchemas())
 	schemas = mergeSchemaProperties(schemas, openAPIWorkbenchWriteSchemas())
 	for name, schema := range map[string]any{

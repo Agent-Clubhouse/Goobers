@@ -233,3 +233,9 @@ func eventIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, additio
 func (s *Store) Event(ctx context.Context, gaggle, binding, id string) (EventReceipt, error) {
 	return scanEvent(s.db.QueryRowContext(ctx, "SELECT "+eventColumns+" FROM event_receipts WHERE gaggle=? AND producer=? AND id=?", gaggle, binding, id))
 }
+
+// EventInGaggle is a host-only lookup after explicit current gaggle visibility.
+// It does not authorize a producer to inspect another producer's receipt.
+func (s *Store) EventInGaggle(ctx context.Context, gaggle, id string) (EventReceipt, error) {
+	return scanEvent(s.db.QueryRowContext(ctx, "SELECT "+eventColumns+" FROM event_receipts WHERE gaggle=? AND id=?", gaggle, id))
+}

@@ -58,6 +58,7 @@ func (u *upSession) configureInteractiveRuns(messages httpapi.OperatorMessageSer
 		monitor := &childmonitor.Service{Layout: u.l, Queue: u.durableTriggers.queue, Permissions: u.setup.InteractiveAccess, Scrubber: journal.Chain(u.setup.SharedRegistry, journal.NewPatternScrubber()), Observe: u.childPublicationObservation()}
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithChildWorkflowMonitor(monitor), httpapi.WithChildPublicationChecks(monitor))
 	}
+	u.configureEventIngress()
 	u.configureWorkbenchReads()
 	return u.configureInteractiveSessions()
 }

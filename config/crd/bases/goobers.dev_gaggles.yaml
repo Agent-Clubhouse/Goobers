@@ -281,6 +281,61 @@ spec:
                   Events configures subscriptions confined to this gaggle. Omission means
                   no event consumers; it does not affect existing workflow triggers.
                 properties:
+                  ingress:
+                    description: |-
+                      Ingress binds authenticated external producers to this gaggle and exact sources.
+                      Omission disables external event acceptance.
+                    items:
+                      description: |-
+                        EventIngressBinding grants one verified machine principal a bounded publication
+                        namespace. It grants no human inspection, provider access or workflow identity.
+                      properties:
+                        allowedTypes:
+                          description: AllowedTypes are literal event types, with
+                            no wildcard or cross-gaggle matching.
+                          items:
+                            type: string
+                          maxItems: 32
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        issuer:
+                          description: Issuer is the exact configured API authenticator
+                            trust domain.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is selected by X-Goobers-Event-Binding
+                            on the shared API listener.
+                          maxLength: 128
+                          minLength: 1
+                          pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
+                          type: string
+                        source:
+                          description: Source is the exact CloudEvents source URI
+                            reference; callers cannot replace it.
+                          maxLength: 1024
+                          minLength: 1
+                          type: string
+                        subject:
+                          description: Subject is the exact cryptographically authenticated
+                            producer identity.
+                          maxLength: 512
+                          minLength: 1
+                          type: string
+                      required:
+                      - allowedTypes
+                      - issuer
+                      - name
+                      - source
+                      - subject
+                      type: object
+                    maxItems: 128
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   publishers:
                     description: |-
                       Publishers explicitly allow named workflows to publish exact event types.

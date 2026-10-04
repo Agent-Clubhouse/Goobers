@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if eventIngressRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if sessionOperationRoute(route.ID) {
@@ -107,6 +107,9 @@ func openAPIParameters(route Route) []map[string]any {
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}},
 			map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
 		)
+	}
+	if route.ID == RouteGaggleEventPublish {
+		parameters = append(parameters, map[string]any{"name": EventBindingHeader, "in": "header", "required": true, "schema": sessionString(128)})
 	}
 	parameters = append(parameters, openAPIServiceParameters(route.ID)...)
 	parameters = append(parameters, sessionParameters(route.ID)...)
@@ -201,6 +204,9 @@ func routeRequiresIdempotency(id RouteID) bool {
 }
 
 func openAPIRequestBody(route Route) map[string]any {
+	if route.ID == RouteGaggleEventPublish {
+		return map[string]any{"required": true, "content": map[string]any{"application/cloudevents+json": map[string]any{"schema": schemaRef("GaggleEventEnvelope")}, "application/json": map[string]any{"schema": schemaRef("GaggleEventEnvelope")}}}
+	}
 	if sessionOperationRoute(route.ID) {
 		return sessionOperationBody(route.ID)
 	}
@@ -263,6 +269,9 @@ func openAPIRequestBody(route Route) map[string]any {
 }
 
 func openAPIResponses(route Route) map[string]any {
+	if eventIngressRoute(route.ID) {
+		return eventIngressResponses(route.ID)
+	}
 	if response := workbenchResponses(route.ID); response != nil {
 		return response
 	}

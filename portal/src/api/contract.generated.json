@@ -874,6 +874,28 @@
       "recoverySafe": false
     },
     {
+      "id": "gaggleEventPublish",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/events",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "gaggleEventReceipt",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/events/{receipt}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workbenchDocuments",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/documents",

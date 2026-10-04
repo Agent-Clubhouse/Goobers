@@ -18,6 +18,8 @@ import (
 )
 
 type wireFixtures struct {
+	GaggleEventEnvelope        GaggleEventEnvelope      `json:"gaggleEventEnvelope"`
+	GaggleEventReceipt         GaggleEventReceipt       `json:"gaggleEventReceipt"`
 	WorkbenchGraph             WorkbenchGraph           `json:"workbenchGraph"`
 	WorkbenchDocuments         WorkbenchDocumentPage    `json:"workbenchDocuments"`
 	WorkbenchSources           WorkbenchSourcePage      `json:"workbenchSources"`
@@ -87,6 +89,8 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "gaggleEventEnvelope", scriptType: "GaggleEventEnvelope"},
+	{name: "gaggleEventReceipt", scriptType: "GaggleEventReceipt"},
 	{name: "workbenchDocuments", scriptType: "WorkbenchDocumentPage"},
 	{name: "workbenchGraph", scriptType: "WorkbenchGraph"},
 	{name: "workbenchWriteCapabilities", scriptType: "BacklogWriteCapabilities"},
@@ -1107,6 +1111,7 @@ func childWorkflowWireFixture() ChildWorkflowResponse {
 }
 
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures = withEventIngressFixtures(fixtures)
 	fixtures = withSessionFixtures(fixtures)
 	fixtures = withWorkbenchFixtures(fixtures)
 	fixtures.WorkbenchGraph = workbenchGraphFixture()
