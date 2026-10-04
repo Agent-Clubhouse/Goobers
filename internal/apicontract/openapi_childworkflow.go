@@ -18,8 +18,8 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"sequence":  map[string]any{"type": "integer", "minimum": 1},
 		"state":     map[string]any{"type": "string", "enum": []string{"queued", "running", "awaiting_human", "completed", "failed", "cancelled"}},
 		"duplicate": map[string]any{"type": "boolean"}, "cancellationRequested": map[string]any{"type": "boolean"},
-		"acknowledged": map[string]any{"type": "boolean"},
-		"resultRef":    stringSchema(), "workspaceRef": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
+		"acknowledged": map[string]any{"type": "boolean"}, "disposition": schemaRef("ChildWorkflowResolutionResponse"),
+		"resultRef": stringSchema(), "workspaceRef": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
 	})
 	return map[string]any{
 		"ChildWorkflowSourceRequest": closedChildObject([]string{"source"}, map[string]any{
@@ -27,8 +27,8 @@ func openAPIChildWorkflowSchemas() map[string]any {
 				"x-goobers-max-bytes": MaxChildWorkflowSourceBytes, "description": "UTF-8 Workflow DSL; at most 1 MiB after JSON decoding. No policy or origin is accepted in the request."},
 		}),
 		"ChildWorkflowStatusRequest":      closedChildObject([]string{"invocationKey"}, map[string]any{"invocationKey": key}),
-		"ChildWorkflowResolveRequest":     closedChildObject([]string{"invocationKey", "action", "resultRef"}, map[string]any{"invocationKey": key, "action": action, "resultRef": digest}),
-		"ChildWorkflowResolutionResponse": closedChildObject([]string{"invocationKey", "action", "resultRef", "requestedAt", "applied"}, map[string]any{"invocationKey": key, "action": action, "resultRef": digest, "requestedAt": dateTimeSchema(), "applied": map[string]any{"type": "boolean"}, "appliedAt": dateTimeSchema()}),
+		"ChildWorkflowResolveRequest":     closedChildObject([]string{"invocationKey", "action", "resultRef"}, map[string]any{"invocationKey": key, "action": action, "resultRef": digest, "expectedRequestDigest": digest}),
+		"ChildWorkflowResolutionResponse": closedChildObject([]string{"invocationKey", "action", "resultRef", "requestedAt", "applied", "requestDigest", "planPublished"}, map[string]any{"invocationKey": key, "action": action, "resultRef": digest, "requestedAt": dateTimeSchema(), "applied": map[string]any{"type": "boolean"}, "appliedAt": dateTimeSchema(), "requestDigest": digest, "planPublished": map[string]any{"type": "boolean"}}),
 		"ChildWorkflowDiagnostic": closedChildObject([]string{"code", "message"}, map[string]any{
 			"code": stringSchema(), "stage": stringSchema(), "field": stringSchema(), "message": stringSchema(),
 		}),

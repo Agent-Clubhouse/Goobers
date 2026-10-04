@@ -31,11 +31,12 @@ type ChildWorkspaceCustody struct {
 // ChildHandoffCompletion is verified by the host before it enters the parent's
 // own bounded artifact. It grants no authority to read another run's journal.
 type ChildHandoffCompletion struct {
-	State        string   `json:"state"`
-	Summary      string   `json:"summary"`
-	ResultRef    string   `json:"resultRef"`
-	WorkspaceRef string   `json:"workspaceRef,omitempty"`
-	References   []string `json:"references,omitempty"`
+	State            string   `json:"state"`
+	Summary          string   `json:"summary"`
+	ResultRef        string   `json:"resultRef"`
+	WorkspaceRef     string   `json:"workspaceRef,omitempty"`
+	References       []string `json:"references,omitempty"`
+	DispositionIssue string   `json:"dispositionIssue,omitempty"`
 }
 
 // ChildHandoff owns queue authority and custody effects. Await observes a
@@ -47,6 +48,16 @@ type ChildHandoff interface {
 	Yield(context.Context, ChildHandoffRequest, ChildWorkspaceCustody) error
 	Wait(context.Context, ChildHandoffRequest) (ChildHandoffCompletion, error)
 }
+
+// ChildDispositionWaitError distinguishes an untouched failed preparation from
+// a published plan whose effects must be reconciled before an agent resumes.
+// Reason is bounded host-authored text, never raw Git or provider error output.
+type ChildDispositionWaitError struct {
+	Reason    string
+	Reconcile bool
+}
+
+func (e *ChildDispositionWaitError) Error() string { return e.Reason }
 
 // ChildParentSuspension reacquires the parent's existing concurrency permit.
 type ChildParentSuspension interface{ Resume(context.Context) error }

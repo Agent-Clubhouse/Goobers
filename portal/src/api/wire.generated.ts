@@ -156,7 +156,9 @@ export const goWireFixtures = {
     "action": "merge",
     "resultRef": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "requestedAt": "2026-10-04T12:00:00Z",
-    "applied": false
+    "applied": false,
+    "requestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "planPublished": false
   },
   "childWorkflowStatus": {
     "invocationKey": "inspect-1"

@@ -87,7 +87,7 @@ func (r *JournalAuthorityResolver) prepare(ctx context.Context, runID string, or
 	if err != nil {
 		return Authority{}, id, event, errors.Join(ErrAuthorityUnavailable, err)
 	}
-	validator, err := checkedPinnedStage(rd, id, event, pinned)
+	admission, err := checkedPinnedStage(rd, id, event, pinned)
 	if err != nil {
 		return Authority{}, id, event, errors.Join(ErrAuthorityUnavailable, err)
 	}
@@ -99,9 +99,9 @@ func (r *JournalAuthorityResolver) prepare(ctx context.Context, runID string, or
 	}
 	authority := Authority{
 		Origin: Origin{Gaggle: id.Gaggle, RunID: id.RunID, StageOccurrence: origin.StageOccurrence,
-			AttemptID: origin.AttemptID, ConfigDigest: validator.context.ConfigDigest, PolicyDigest: validator.PolicyDigest()},
+			AttemptID: origin.AttemptID, ConfigDigest: admission.ConfigDigest, PolicyDigest: AuthorityPolicyDigest(admission)},
 		Actor:     InvocationActor(id.RunID, origin.StageOccurrence),
-		Admission: validator.context, ConfigGeneration: id.ConfigGeneration,
+		Admission: admission, ConfigGeneration: id.ConfigGeneration,
 		ParentWorkflow: id.Workflow, ParentWorkflowDigest: id.WorkflowDigest, ParentGooberDigest: id.GooberDigest,
 	}
 	return authority, id, event, nil
@@ -114,25 +114,33 @@ func InvocationActor(runID, occurrence string) string {
 	return "child-workflow:" + runID + ":" + occurrence
 }
 
-func checkedPinnedStage(rd *journal.Reader, id journal.RunIdentity, event journal.Event, pinned PinnedStageAdmission) (*Validator, error) {
+func checkedPinnedStage(rd *journal.Reader, id journal.RunIdentity, event journal.Event, pinned PinnedStageAdmission) (AdmissionContext, error) {
 	if pinned.ConfigGeneration != id.ConfigGeneration || pinned.WorkflowDigest != id.WorkflowDigest || pinned.GooberDigest != id.GooberDigest {
-		return nil, ErrAuthorityUnavailable
+		return AdmissionContext{}, ErrAuthorityUnavailable
 	}
 	machine, err := runner.PinnedWorkflowMachine(rd, id)
 	if err != nil {
-		return nil, err
+		return AdmissionContext{}, err
 	}
 	task, found := machine.Task(event.Stage)
 	if !found || machine.Def.DSLVersion != "3.1" || machine.Def.Spec.Gaggle != id.Gaggle || !sameJSON(task, pinned.Admission.ParentTask) {
-		return nil, ErrAuthorityUnavailable
+		return AdmissionContext{}, ErrAuthorityUnavailable
 	}
 	if task.Type != apiv1.TaskAgentic || task.ChildWorkflows == nil || task.Goober == "" || event.Runner["goober"] != task.Goober {
-		return nil, ErrAuthorityUnavailable
+		return AdmissionContext{}, ErrAuthorityUnavailable
 	}
 	if !pinnedPermissions(id, task, pinned.Admission) {
-		return nil, ErrAuthorityUnavailable
+		return AdmissionContext{}, ErrAuthorityUnavailable
 	}
-	return NewValidator(pinned.Admission)
+	// Snapshot current authority independently of whether a new proposal can
+	// still run. Exact pinned stage checks above remain mandatory.
+	raw, err := json.Marshal(pinned.Admission)
+	if err != nil {
+		return AdmissionContext{}, err
+	}
+	var copy AdmissionContext
+	err = json.Unmarshal(raw, &copy)
+	return copy, err
 }
 
 func pinnedPermissions(id journal.RunIdentity, task apiv1.Task, admission AdmissionContext) bool {

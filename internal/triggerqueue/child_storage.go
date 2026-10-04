@@ -14,7 +14,7 @@ const (
 	childResultAllowance     = childSnapshotAllowance
 	childPlanAllowance       = MaxChildSnapshotReceiptBytes + 32*1024
 	childRequestAllowance    = 4 * 1024
-	childCompletionAllowance = childSnapshotAllowance + childResultAllowance + childPlanAllowance + childRequestAllowance
+	childCompletionAllowance = childSnapshotAllowance + childResultAllowance + childPlanAllowance + childRequestAllowance + childDispositionHistoryAllowance
 )
 
 const childStorageSchema = `

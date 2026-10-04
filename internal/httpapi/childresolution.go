@@ -19,7 +19,7 @@ func callChildResolution(request *http.Request, service ChildWorkflowService, gr
 	}
 	body, err := childResolutionBody(request)
 	if err != nil {
-		return nil, 0, invalidChildRequest("body must contain only invocationKey, action (merge, replace or discard), and the expected resultRef digest")
+		return nil, 0, invalidChildRequest("body must contain invocationKey, action, resultRef and optionally expectedRequestDigest")
 	}
 	result, err := resolver.ResolveChildWorkflow(request.Context(), grant, run, body)
 	return result, http.StatusAccepted, err
@@ -43,7 +43,7 @@ func childResolutionBody(request *http.Request) (apicontract.ChildWorkflowResolv
 			return apicontract.ChildWorkflowResolveRequest{}, err
 		}
 		name, ok := key.(string)
-		if !ok || (name != "invocationKey" && name != "action" && name != "resultRef") {
+		if !ok || (name != "invocationKey" && name != "action" && name != "resultRef" && name != "expectedRequestDigest") {
 			return apicontract.ChildWorkflowResolveRequest{}, errors.New("unknown field")
 		}
 		if _, ok := fields[name]; ok {
@@ -61,9 +61,13 @@ func childResolutionBody(request *http.Request) (apicontract.ChildWorkflowResolv
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return apicontract.ChildWorkflowResolveRequest{}, errors.New("one object required")
 	}
-	result := apicontract.ChildWorkflowResolveRequest{InvocationKey: fields["invocationKey"], Action: fields["action"], ResultRef: fields["resultRef"]}
-	if !validChildInvocationKey(result.InvocationKey) || !blobstore.ValidDigest(result.ResultRef) || (result.Action != "merge" && result.Action != "replace" && result.Action != "discard") {
+	result := apicontract.ChildWorkflowResolveRequest{InvocationKey: fields["invocationKey"], Action: fields["action"], ResultRef: fields["resultRef"], ExpectedRequestDigest: fields["expectedRequestDigest"]}
+	if !validChildResolution(result) {
 		return result, errors.New("invalid resolution")
 	}
 	return result, nil
+}
+
+func validChildResolution(result apicontract.ChildWorkflowResolveRequest) bool {
+	return (result.ExpectedRequestDigest == "" || blobstore.ValidDigest(result.ExpectedRequestDigest)) && validChildInvocationKey(result.InvocationKey) && blobstore.ValidDigest(result.ResultRef) && (result.Action == "merge" || result.Action == "replace" || result.Action == "discard")
 }

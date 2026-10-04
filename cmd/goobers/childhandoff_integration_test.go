@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -152,5 +153,95 @@ func TestIntegrationDaemonDispositionUsesRetainedCredentialPolicy(t *testing.T) 
 	current, err := f.queue.GetChild(t.Context(), f.child.Identity)
 	if err != nil || current.AcknowledgedAt.IsZero() {
 		t.Fatal(current, err)
+	}
+}
+
+func TestIntegrationDaemonMergeConflictCanBeRevisedToDiscard(t *testing.T) {
+	testdep.Require(t, "git")
+	f := newHandoffDaemonFixture(t)
+	parent := t.TempDir()
+	recoveryCLIGit(t, parent, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(parent, "source.txt"), []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	recoveryCLIGit(t, parent, "add", ".")
+	recoveryCLIGit(t, parent, "commit", "-m", "base")
+	f.host.repoCloneURL = func(apiv1.RepoRef) (string, error) { return parent, nil }
+	wait, err := f.host.Await(t.Context(), f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordDaemonHandoffWait(t, f, wait)
+	custody := runner.ChildWorkspaceCustody{Path: parent, RepoRef: f.host.project}
+	if err := f.host.Yield(t.Context(), wait, custody); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := childworkflow.WorkspaceCoordinator{Queue: f.queue}
+	fork, err := coordinator.RetainedFork(t.Context(), f.child, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPath := t.TempDir()
+	recoveryCLIGit(t, parent, "worktree", "add", "--detach", childPath, fork.Record.SnapshotSHA)
+	if err := os.WriteFile(filepath.Join(childPath, "source.txt"), []byte("child change\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := coordinator.CaptureResult(t.Context(), f.child, &childworkflow.YieldedWorkspace{Path: childPath, RepoURL: parent, RepositoryKey: fork.Record.RepositoryKey, Policy: fork.Policy}, childworkflow.TerminalResultInput{State: triggerqueue.ChildFailed, FinishedAt: time.Now(), Summary: "partial child result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.queue.SetChildState(t.Context(), f.child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	clearWait := func(request runner.ChildHandoffRequest) {
+		t.Helper()
+		if err := f.run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": runner.ChildContinuedKind, "requestId": request.RequestID}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clearWait(wait)
+	if err := os.WriteFile(filepath.Join(parent, "source.txt"), []byte("parent change\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	merge, err := f.queue.RequestChildDisposition(t.Context(), triggerqueue.ChildDispositionRequest{Identity: f.child.Identity, Action: "merge", ResultRef: result.ResultRef, Authority: f.grant}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := f.host.Await(t.Context(), f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordDaemonHandoffWait(t, f, request)
+	var blocked *runner.ChildDispositionWaitError
+	if err := f.host.Yield(t.Context(), request, custody); !errors.As(err, &blocked) || blocked.Reconcile {
+		t.Fatal("merge conflict did not permit safe decision revision", err)
+	}
+	after, err := f.queue.ChildDisposition(t.Context(), f.child.Identity)
+	if err != nil || len(after.Plan) != 0 {
+		t.Fatal("conflicting merge published a live application", after, err)
+	}
+	data, err := os.ReadFile(filepath.Join(parent, "source.txt"))
+	if err != nil || string(data) != "parent change\n" {
+		t.Fatal("conflicting preparation changed parent", string(data), err)
+	}
+	clearWait(request)
+	if _, err := f.queue.RequestChildDisposition(t.Context(), triggerqueue.ChildDispositionRequest{Identity: f.child.Identity, Action: "discard", ResultRef: result.ResultRef, Authority: f.grant, ExpectedRequestDigest: merge.RequestDigest()}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	discard, err := f.host.Await(t.Context(), f.env)
+	if err != nil || discard.RequestID == request.RequestID {
+		t.Fatal(discard, err)
+	}
+	recordDaemonHandoffWait(t, f, discard)
+	if err := f.host.Yield(t.Context(), discard, custody); err != nil {
+		t.Fatal(err)
+	}
+	child, err := f.queue.GetChild(t.Context(), f.child.Identity)
+	if err != nil || child.AcknowledgedAt.IsZero() {
+		t.Fatal("discard did not release custody", child, err)
+	}
+	data, err = os.ReadFile(filepath.Join(parent, "source.txt"))
+	if err != nil || string(data) != "parent change\n" {
+		t.Fatal("discard changed parent", string(data), err)
 	}
 }

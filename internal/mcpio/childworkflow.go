@@ -109,7 +109,7 @@ func (s *Server) callChildWorkflowTool(name string, raw json.RawMessage) (map[st
 		result = response
 	case "resolve_child_workflow":
 		var response childworkflowwire.ChildWorkflowResolutionResponse
-		err = s.tools.callChildWorkflow(ctx, childworkflowwire.ResolvePath, "", childworkflowwire.ChildWorkflowResolveRequest{InvocationKey: args["invocationKey"], Action: args["action"], ResultRef: args["resultRef"]}, &response)
+		err = s.tools.callChildWorkflow(ctx, childworkflowwire.ResolvePath, "", childworkflowwire.ChildWorkflowResolveRequest{InvocationKey: args["invocationKey"], Action: args["action"], ResultRef: args["resultRef"], ExpectedRequestDigest: args["expectedRequestDigest"]}, &response)
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +248,8 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 			return nil, errors.New("invalid child workflow arguments")
 		}
 		field, ok := key.(string)
-		if !ok || !childArgumentAllowed(field, required) {
+		allowed := childArgumentAllowed(field, required) || name == "resolve_child_workflow" && field == "expectedRequestDigest"
+		if !ok || !allowed {
 			return nil, errors.New("unknown child workflow argument")
 		}
 		if _, duplicate := values[field]; duplicate {
@@ -266,8 +267,10 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return nil, errors.New("one child workflow argument object required")
 	}
-	if len(values) != len(required) {
-		return nil, errors.New("missing child workflow argument")
+	for _, field := range required {
+		if values[field] == "" {
+			return nil, errors.New("missing child workflow argument")
+		}
 	}
 	if key, ok := values["invocationKey"]; ok && !validChildInvocationKey(key) {
 		return nil, errors.New("invocationKey must be at most 256 bytes without padding or control characters")
@@ -284,6 +287,9 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 }
 
 func validResolutionArguments(values map[string]string) error {
+	if expected := values["expectedRequestDigest"]; expected != "" && !blobstore.ValidDigest(expected) {
+		return errors.New("expectedRequestDigest must identify the exact prior choice")
+	}
 	action := values["action"]
 	if (action != "merge" && action != "replace" && action != "discard") || !blobstore.ValidDigest(values["resultRef"]) {
 		return errors.New("resolution requires merge, replace or discard and the exact terminal resultRef digest")

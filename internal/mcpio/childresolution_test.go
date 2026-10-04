@@ -19,12 +19,12 @@ func TestChildResolutionToolUsesOwnGrantAndExactResult(t *testing.T) {
 			t.Fatal("resolution changed trusted scope")
 		}
 		var body childworkflowwire.ChildWorkflowResolveRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.InvocationKey != "inspect" || body.Action != "replace" || body.ResultRef != digest {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.InvocationKey != "inspect" || body.Action != "replace" || body.ResultRef != digest || body.ExpectedRequestDigest != digest {
 			t.Fatal(body, err)
 		}
 		return childHTTPResponse(202, `{"invocationKey":"inspect","action":"replace","resultRef":"`+digest+`","applied":false}`), nil
 	})
-	args := `{"invocationKey":"inspect","action":"replace","resultRef":"` + digest + `"}`
+	args := `{"invocationKey":"inspect","action":"replace","resultRef":"` + digest + `","expectedRequestDigest":"` + digest + `"}`
 	result, out := childRPC(t, server, "resolve_child_workflow", json.RawMessage(args))
 	if result["isError"] == true || !strings.Contains(out, `applied`) || calls != 1 {
 		t.Fatal(out, calls)

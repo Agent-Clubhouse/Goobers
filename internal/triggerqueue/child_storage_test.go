@@ -56,13 +56,13 @@ func TestChildStorageAdmissionPreservesWorstCaseCompletionAcrossReopen(t *testin
 	if err := s.KeepChildResult(t.Context(), child, result); err != nil {
 		t.Fatal("reserved result could not finish", err)
 	}
-	if got := childReservedBytes(t, s, child.ChildID); got != childRequestAllowance+childPlanAllowance {
+	if got := childReservedBytes(t, s, child.ChildID); got != childRequestAllowance+childPlanAllowance+childDispositionHistoryAllowance {
 		t.Fatal("terminal result consumed wrong allowance", got)
 	}
 	if err := s.KeepChildResult(t.Context(), child, result); err != nil {
 		t.Fatal(err)
 	}
-	if got := childReservedBytes(t, s, child.ChildID); got != childRequestAllowance+childPlanAllowance {
+	if got := childReservedBytes(t, s, child.ChildID); got != childRequestAllowance+childPlanAllowance+childDispositionHistoryAllowance {
 		t.Fatal("retry double-consumed reservation", got)
 	}
 }
@@ -73,7 +73,7 @@ func TestChildScratchResultReleasesUnusedForkReservation(t *testing.T) {
 	if err := s.KeepChildResult(t.Context(), child, childResultValue("scratch result", "")); err != nil {
 		t.Fatal(err)
 	}
-	if got := childReservedBytes(t, s, child.ChildID); got != childRequestAllowance+childPlanAllowance {
+	if got := childReservedBytes(t, s, child.ChildID); got != childRequestAllowance+childPlanAllowance+childDispositionHistoryAllowance {
 		t.Fatal("unused fork reservation not released", got)
 	}
 }

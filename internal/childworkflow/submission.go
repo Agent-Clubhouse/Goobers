@@ -61,9 +61,10 @@ type SubmissionRequest struct {
 
 // Submission is durable custody, not proof that execution or a wait has begun.
 type Submission struct {
-	Child     triggerqueue.ChildRecord
-	Duplicate bool
-	Envelope  ChildStartEnvelope
+	Child       triggerqueue.ChildRecord
+	Duplicate   bool
+	Envelope    ChildStartEnvelope
+	Disposition *triggerqueue.ChildDisposition
 }
 
 // SubmissionService validates and accepts children; it never runs a workflow.
@@ -181,32 +182,29 @@ func (s *SubmissionService) Get(ctx context.Context, origin Origin, invocationKe
 	if err != nil {
 		return Submission{}, err
 	}
-	_, proposal, err := s.validated(ctx, origin, artifact.Source)
+	receipt, err := s.Queue.VerifiedChildStart(ctx, identity, authority.Actor)
 	if err != nil {
 		return Submission{}, err
 	}
-	expected, err := childStartEnvelope(authority, proposal, invocationKey)
+	retained, err := DecodeStartEnvelope(receipt.Payload)
 	if err != nil {
 		return Submission{}, err
+	}
+	if err := ValidateRetainedCustody(authority, retained, child, artifact); err != nil {
+		return Submission{}, err
+	}
+	disposition, dispositionErr := s.Queue.ChildDisposition(ctx, identity)
+	if dispositionErr != nil && !errors.Is(dispositionErr, triggerqueue.ErrChildDispositionPending) {
+		return Submission{}, dispositionErr
 	}
 	if err := s.recheck(ctx, authority); err != nil {
 		return Submission{}, err
 	}
-	receipt, err := s.Queue.Get(ctx, child.AcceptanceID, authority.Actor)
-	if err != nil {
-		return Submission{}, err
+	result := Submission{Child: child, Envelope: retained}
+	if dispositionErr == nil {
+		result.Disposition = &disposition
 	}
-	var retained ChildStartEnvelope
-	if err := json.Unmarshal(receipt.Payload, &retained); err != nil {
-		return Submission{}, ErrSubmissionInvalid
-	}
-	if retained != expected || child.ProposalDigest != expected.SourceDigest || artifact.Digest != expected.SourceDigest {
-		return Submission{}, ErrSubmissionInvalid
-	}
-	if err := s.recheck(ctx, authority); err != nil {
-		return Submission{}, err
-	}
-	return Submission{Child: child, Envelope: retained}, nil
+	return result, nil
 }
 
 func (s *SubmissionService) resolve(ctx context.Context, origin Origin) (Authority, error) {

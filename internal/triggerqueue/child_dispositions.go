@@ -34,23 +34,25 @@ var ErrChildDispositionPending = errors.New("triggerqueue: child disposition not
 // ChildDisposition is bounded, family-retained custody of one parent choice.
 // Plan is a trusted host's exact application intent, persisted before effects.
 type ChildDisposition struct {
-	Identity    ChildIdentity
-	Action      string
-	ResultRef   string
-	AttemptID   string
-	RequestedAt time.Time
-	Plan        []byte
-	PlanDigest  string
-	AppliedAt   time.Time
+	Identity       ChildIdentity
+	Action         string
+	ResultRef      string
+	AttemptID      string
+	RequestedAt    time.Time
+	Plan           []byte
+	PlanDigest     string
+	AppliedAt      time.Time
+	PreviousDigest string
 }
 
 // ChildDispositionRequest contains only the parent's choice and expected result.
 // Authority must already have been resolved from the signed current invocation.
 type ChildDispositionRequest struct {
-	Identity  ChildIdentity
-	Action    string
-	ResultRef string
-	Authority ChildAuthority
+	Identity              ChildIdentity
+	Action                string
+	ResultRef             string
+	Authority             ChildAuthority
+	ExpectedRequestDigest string
 }
 
 func validDispositionAction(action string) bool {
@@ -61,7 +63,7 @@ func validDispositionAction(action string) bool {
 // and changed terminal results. Identical requests are idempotent. A requested
 // disposition holds the occurrence slot until verified application is recorded.
 func (s *Store) RequestChildDisposition(ctx context.Context, request ChildDispositionRequest, now time.Time) (ChildDisposition, error) {
-	if !request.Identity.valid() || !validDispositionAction(request.Action) || !blobstore.ValidDigest(request.ResultRef) || request.Authority.ChildParent != request.Identity.ChildParent || request.Authority.StageOccurrence != request.Identity.StageOccurrence {
+	if (request.ExpectedRequestDigest != "" && !blobstore.ValidDigest(request.ExpectedRequestDigest)) || !request.Identity.valid() || !validDispositionAction(request.Action) || !blobstore.ValidDigest(request.ResultRef) || request.Authority.ChildParent != request.Identity.ChildParent || request.Authority.StageOccurrence != request.Identity.StageOccurrence {
 		return ChildDisposition{}, ErrTransition
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -84,15 +86,12 @@ func (s *Store) RequestChildDisposition(ctx context.Context, request ChildDispos
 	}
 	prior, err := readChildDisposition(ctx, tx, child)
 	if err == nil {
-		if prior.Action != request.Action || prior.ResultRef != request.ResultRef {
-			return ChildDisposition{}, ErrConflict
-		}
-		return prior, tx.Commit()
+		return s.reviseChildDisposition(ctx, tx, child, prior, request, now)
 	}
 	if !errors.Is(err, ErrChildDispositionPending) {
 		return ChildDisposition{}, err
 	}
-	if !child.AcknowledgedAt.IsZero() || now.Before(child.UpdatedAt) {
+	if request.ExpectedRequestDigest != "" || !child.AcknowledgedAt.IsZero() || now.Before(child.UpdatedAt) {
 		return ChildDisposition{}, ErrTransition
 	}
 	if err := consumeChildStorage(ctx, tx, child.ChildID, childRequestAllowance, 1024); err != nil {
@@ -123,7 +122,7 @@ func readChildDisposition(ctx context.Context, reader childProposalReader, child
 	}
 	var requested int64
 	var applied sql.NullInt64
-	err := reader.QueryRowContext(ctx, `SELECT action,result_ref,attempt_id,requested_ns,plan,plan_digest,applied_ns FROM child_dispositions WHERE child_id=? AND length(plan)<=131072`, child.ChildID).Scan(&result.Action, &result.ResultRef, &result.AttemptID, &requested, &result.Plan, &result.PlanDigest, &applied)
+	err := reader.QueryRowContext(ctx, `SELECT action,result_ref,attempt_id,requested_ns,plan,plan_digest,applied_ns,previous_digest FROM child_dispositions WHERE child_id=? AND length(plan)<=131072`, child.ChildID).Scan(&result.Action, &result.ResultRef, &result.AttemptID, &requested, &result.Plan, &result.PlanDigest, &applied, &result.PreviousDigest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChildDisposition{}, ErrConflict
 	}
@@ -143,12 +142,16 @@ func readChildDisposition(ctx context.Context, reader childProposalReader, child
 	return result, nil
 }
 
+// RequestDigest is the exact request revision required when replacing a choice.
+func (d ChildDisposition) RequestDigest() string { return dispositionRequestDigest(d) }
+
 func dispositionRequestDigest(d ChildDisposition) string {
 	data, _ := json.Marshal(struct {
 		Identity                     ChildIdentity
 		Action, ResultRef, AttemptID string
 		Requested                    int64
-	}{d.Identity, d.Action, d.ResultRef, d.AttemptID, d.RequestedAt.UnixNano()})
+		PreviousDigest               string `json:",omitempty"`
+	}{d.Identity, d.Action, d.ResultRef, d.AttemptID, d.RequestedAt.UnixNano(), d.PreviousDigest})
 	return "sha256:" + childDigest(data)
 }
 
@@ -208,7 +211,7 @@ func (s *Store) KeepChildDispositionPlan(ctx context.Context, expected ChildDisp
 }
 
 func sameDispositionRequest(a, b ChildDisposition) bool {
-	return a.Identity == b.Identity && a.Action == b.Action && a.ResultRef == b.ResultRef && a.AttemptID == b.AttemptID && a.RequestedAt.Equal(b.RequestedAt)
+	return a.Identity == b.Identity && a.Action == b.Action && a.ResultRef == b.ResultRef && a.AttemptID == b.AttemptID && a.RequestedAt.Equal(b.RequestedAt) && a.PreviousDigest == b.PreviousDigest
 }
 
 // CompleteChildDisposition records an already verified external effect and

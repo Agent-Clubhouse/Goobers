@@ -184,7 +184,15 @@ func TestPinnedChildLoaderRefusesMissingTamperedOrForeignCustody(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := loadPinnedChildStage(t.Context(), f.layout, f.cfg, f.applied, f.parent, "plan"); err == nil {
+			authority, err := loadPinnedChildStage(t.Context(), f.layout, f.cfg, f.applied, f.parent, "plan")
+			if mode == "removed-child-policy" || mode == "reduced-allowance" {
+				if err != nil || authority.Admission.ExecutionRefusal == "" {
+					t.Fatal("custody lost after launch policy narrowed", err)
+				}
+				if _, err := childworkflow.NewValidator(authority.Admission); err == nil {
+					t.Fatal("narrowed execution remained admitted")
+				}
+			} else if err == nil {
 				t.Fatal("unverified authority accepted")
 			}
 		})

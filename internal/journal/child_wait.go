@@ -19,21 +19,25 @@ const MaxChildWaitBytes = 64 << 10
 
 // ChildHandoffRequest binds an accepted child receipt to its actual stage origin.
 type ChildHandoffRequest struct {
-	Gaggle        string                    `json:"gaggle"`
-	ParentRunID   string                    `json:"parentRunId"`
-	RequestID     string                    `json:"requestId"`
-	Action        string                    `json:"action"`
-	ChildRunID    string                    `json:"childRunId"`
-	AcceptanceID  string                    `json:"acceptanceId"`
-	InvocationKey string                    `json:"invocationKey"`
-	SourceDigest  string                    `json:"sourceDigest"`
-	Origin        apiv1.ChildWorkflowOrigin `json:"origin"`
+	Gaggle            string                    `json:"gaggle"`
+	ParentRunID       string                    `json:"parentRunId"`
+	RequestID         string                    `json:"requestId"`
+	Action            string                    `json:"action"`
+	DispositionDigest string                    `json:"dispositionDigest,omitempty"`
+	ChildRunID        string                    `json:"childRunId"`
+	AcceptanceID      string                    `json:"acceptanceId"`
+	InvocationKey     string                    `json:"invocationKey"`
+	SourceDigest      string                    `json:"sourceDigest"`
+	Origin            apiv1.ChildWorkflowOrigin `json:"origin"`
 }
 
 // Validate binds the receipt to a trusted current stage occurrence.
 func (r ChildHandoffRequest) Validate(origin *apiv1.ChildWorkflowOrigin) error {
 	if origin == nil || r.Origin != *origin || r.Gaggle == "" || len(r.Gaggle) > 128 || !apiv1.ValidRunID(r.ParentRunID) || len(r.ParentRunID) > 256 || !blobstore.ValidDigest(r.RequestID) || !blobstore.ValidDigest(r.SourceDigest) || !apiv1.ValidRunID(r.ChildRunID) || len(r.ChildRunID) > 256 || r.AcceptanceID != "trigger-"+r.ChildRunID || r.InvocationKey == "" || len(r.InvocationKey) > 256 {
 		return fmt.Errorf("runner: child handoff receipt does not match the active invocation")
+	}
+	if r.DispositionDigest != "" && !blobstore.ValidDigest(r.DispositionDigest) {
+		return fmt.Errorf("runner: invalid child disposition revision")
 	}
 	switch r.Action {
 	case "wait", "merge", "replace", "discard":

@@ -1985,6 +1985,7 @@ export interface ChildWorkflowResolveRequest {
   invocationKey: string;
   action: "merge" | "replace" | "discard";
   resultRef: string;
+  expectedRequestDigest?: string;
 }
 
 export interface ChildWorkflowResolutionResponse {
@@ -1992,6 +1993,8 @@ export interface ChildWorkflowResolutionResponse {
   action: "merge" | "replace" | "discard";
   resultRef: string;
   requestedAt: string;
+  requestDigest: string;
+  planPublished: boolean;
   applied: boolean;
   appliedAt?: string;
 }
@@ -2032,6 +2035,7 @@ export interface ChildWorkflowResponse {
   cancellationRequested: boolean;
   resultRef?: string;
   workspaceRef?: string;
+  disposition?: ChildWorkflowResolutionResponse;
   acceptedAt: string;
   updatedAt: string;
 }

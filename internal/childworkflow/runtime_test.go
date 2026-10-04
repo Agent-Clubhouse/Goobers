@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
@@ -130,5 +131,54 @@ func TestRuntimeDefinitionsAreIndependentAndGaggleScoped(t *testing.T) {
 	}
 	if r.policies["web"] != before {
 		t.Fatal("other gaggle changed authority digest")
+	}
+}
+
+func TestRuntimeNewAttemptCanDiscardAfterChildExecutionRevoked(t *testing.T) {
+	r, f, env := runtimeFixture(t)
+	access, closeAccess, err := r.Acquire(t.Context(), env, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeAccess() }()
+	accepted, err := r.HTTPService().StartChildWorkflow(t.Context(), access.BearerToken, env.RunID, "child", []byte(validProposal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: env.Gaggle, ParentRunID: env.RunID}, StageOccurrence: env.ChildWorkflowOrigin.StageOccurrence, InvocationKey: "child"}
+	child, err := r.queue.GetChild(t.Context(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&WorkspaceCoordinator{Queue: r.queue}).CaptureResult(t.Context(), child, nil, TerminalResultInput{State: triggerqueue.ChildFailed, FinishedAt: time.Now(), Summary: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.queue.SetChildState(t.Context(), identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := closeAccess(); err != nil {
+		t.Fatal(err)
+	}
+	f.pinned.Admission.ExecutionRefusal = "current child opt-in removed"
+	clear(f.pinned.Admission.Goobers)
+	if _, _, err := r.Acquire(t.Context(), env, journal.NewRegistryScrubber()); err == nil {
+		t.Fatal("revoked attempt reminted")
+	}
+	replacement := f.start(t, 1, 2, true)
+	next, closeNext, err := r.Acquire(t.Context(), replacement, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatal("replacement lost owned custody authority", err)
+	}
+	defer func() { _ = closeNext() }()
+	status, err := r.HTTPService().ChildWorkflowStatus(t.Context(), next.BearerToken, env.RunID, "child")
+	if err != nil || status.RunID != accepted.RunID {
+		t.Fatal(status, err)
+	}
+	if _, err := r.HTTPService().StartChildWorkflow(t.Context(), next.BearerToken, env.RunID, "new-child", []byte(validProposal)); err == nil {
+		t.Fatal("cleanup grant admitted new execution")
+	}
+	if _, err := r.HTTPService().ResolveChildWorkflow(t.Context(), next.BearerToken, env.RunID, apicontract.ChildWorkflowResolveRequest{InvocationKey: "child", Action: "discard", ResultRef: result.ResultRef}); err != nil {
+		t.Fatal(err)
 	}
 }

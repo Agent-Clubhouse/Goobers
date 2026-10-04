@@ -22,6 +22,12 @@ type childDispositionIntent struct {
 // RequestDisposition accepts a parent's choice for its own terminal child.
 // This asks the runner to yield; it never edits a live harness workspace.
 func (s *SubmissionService) RequestDisposition(ctx context.Context, origin Origin, key, action, resultRef string) (triggerqueue.ChildDisposition, error) {
+	return s.RequestDispositionCAS(ctx, origin, key, action, resultRef, "")
+}
+
+// RequestDispositionCAS replaces an unplanned choice only at an explicitly
+// observed request revision. Published plans may only be resumed unchanged.
+func (s *SubmissionService) RequestDispositionCAS(ctx context.Context, origin Origin, key, action, resultRef, expected string) (triggerqueue.ChildDisposition, error) {
 	submission, err := s.Get(ctx, origin, key)
 	if err != nil {
 		return triggerqueue.ChildDisposition{}, err
@@ -29,11 +35,27 @@ func (s *SubmissionService) RequestDisposition(ctx context.Context, origin Origi
 	if action != "merge" && action != "replace" && action != "discard" {
 		return triggerqueue.ChildDisposition{}, ErrSubmissionInvalid
 	}
+	authority, err := s.resolve(ctx, origin)
+	if err != nil {
+		return triggerqueue.ChildDisposition{}, err
+	}
+	if err := CheckDispositionAuthority(authority, action); err != nil {
+		return triggerqueue.ChildDisposition{}, err
+	}
+	if action != "discard" {
+		source, err := s.Queue.ChildProposal(ctx, submission.Child.Identity)
+		if err != nil {
+			return triggerqueue.ChildDisposition{}, err
+		}
+		if _, err := ValidateRetainedStart(authority, submission.Envelope, source.Source); err != nil {
+			return triggerqueue.ChildDisposition{}, err
+		}
+	}
 	binding, err := s.boundAuthority(ctx, origin)
 	if err != nil {
 		return triggerqueue.ChildDisposition{}, err
 	}
-	return s.Queue.RequestChildDisposition(ctx, triggerqueue.ChildDispositionRequest{Identity: submission.Child.Identity, Action: action, ResultRef: resultRef, Authority: binding}, s.now())
+	return s.Queue.RequestChildDisposition(ctx, triggerqueue.ChildDispositionRequest{Identity: submission.Child.Identity, Action: action, ResultRef: resultRef, Authority: binding, ExpectedRequestDigest: expected}, s.now())
 }
 
 // ApplyDisposition runs only after the trusted runner has stopped and joined
@@ -133,7 +155,7 @@ func (c *WorkspaceCoordinator) planDisposition(ctx context.Context, child trigge
 	if err != nil {
 		return intent, err
 	}
-	prepared, err := recovery.PrepareChildDisposition(ctx, parent.Path, fork, current, result.Snapshot.Record, recovery.ChildDisposition(request.Action), "child-disposition-"+child.RunID, request.RequestedAt, triggerqueue.MaxChildSnapshotBytes)
+	prepared, err := recovery.PrepareChildDisposition(ctx, parent.Path, fork, current, result.Snapshot.Record, recovery.ChildDisposition(request.Action), "child-disposition-"+child.RunID+"-"+request.RequestDigest()[7:23], request.RequestedAt, triggerqueue.MaxChildSnapshotBytes)
 	if err != nil {
 		return intent, err
 	}
