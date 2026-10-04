@@ -46,7 +46,9 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		func() error { return c.Webhook.validateSecret(stores) },
 		c.validateTimezone,
 		c.Runner.validateDefaultStageTimeout,
+		c.Runner.validateRecoveryCustodyTimeout,
 		c.Runner.validateStageMemoryLimit,
+		c.Runner.validatePodTmpfsSize,
 		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
 		c.validateExternalTelemetry,
 		c.Telemetry.Retention.validate,
@@ -214,6 +216,11 @@ func (c RunnerConfig) validateDefaultStageTimeout() error {
 	return err
 }
 
+func (c RunnerConfig) validateRecoveryCustodyTimeout() error {
+	_, err := c.RecoveryCustodyTimeoutDuration()
+	return err
+}
+
 // validateStageMemoryLimit rejects a malformed runner.stageMemoryLimit at
 // LOAD, not at the first stage that would have been bounded by it. A quantity
 // typo is otherwise discovered only when a stage runs — and its effect is
@@ -221,6 +228,11 @@ func (c RunnerConfig) validateDefaultStageTimeout() error {
 // exactly like a bound that was never breached (#4070).
 func (c RunnerConfig) validateStageMemoryLimit() error {
 	_, err := c.ResolveStageMemoryBound()
+	return err
+}
+
+func (c RunnerConfig) validatePodTmpfsSize() error {
+	_, err := c.ResolvePodTmpfsSize()
 	return err
 }
 

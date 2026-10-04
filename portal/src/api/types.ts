@@ -401,7 +401,7 @@ export interface Health extends ContractVersion {
   /** Present on daemons that report the local self-execution policy. */
   selfExecution?: { policy: string; observed: boolean; placements: number; refusals: number };
   definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
-  startup?: { phase: string; target?: string; since: string };
+  startup?: StartupStatus;
   build?: BuildMetadata;
   readState?: ReadState;
   ready: boolean;
@@ -415,6 +415,51 @@ export interface Health extends ContractVersion {
    */
   update?: UpdateAvailability;
   telemetryExporterHealth?: TelemetryExporterHealthStatus;
+}
+
+export interface StartupStatus {
+  phase: string;
+  target?: string;
+  since: string;
+  elapsedSeconds?: number;
+  worktreeCount?: number;
+  recoveryRunCount?: number;
+  accumulationCount?: number;
+  budgetSeconds?: number;
+  budgetUsedPercent?: number;
+  budgetState?: string;
+  blockingCandidate?: RecoveryCandidateStatus;
+}
+
+export interface RecoveryCandidateStatus {
+  progress: RecoveryProgress;
+  runId?: string;
+  gaggle?: string;
+  workflow?: string;
+  disposition?: string;
+  phase?: string;
+  operation?: string;
+  startedAt?: string;
+  lastProgressAt?: string;
+  elapsedSeconds?: number;
+  progressAgeSeconds?: number;
+}
+
+export interface RecoveryProgress {
+  total: number;
+  examined: number;
+  resumed: number;
+  reattached: number;
+  terminal: number;
+  skipped: number;
+}
+
+export interface InstanceReadiness extends ContractVersion {
+  computerName?: string;
+  instanceRoot: string;
+  rootIdentity?: Instance["rootIdentity"];
+  ready: boolean;
+  recovery: StartupStatus;
 }
 
 export interface UpdateAvailability {
@@ -1893,6 +1938,7 @@ export interface DaemonClient {
     options?: RequestOptions,
   ): Promise<DaemonEventStream>;
   getHealth(options?: RequestOptions): Promise<Health>;
+  getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness>;
   getInstance(options?: RequestOptions): Promise<Instance>;
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig>;
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;

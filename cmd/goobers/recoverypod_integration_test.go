@@ -99,14 +99,14 @@ func testPodRecoveryRepositoryTransfer(t *testing.T, repo providers.RepositoryRe
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, staging)
 	}
-	if err := publishPodRecovery(t.Context(), source); err == nil {
+	if err := publishPodRecovery(t.Context(), source, nil); err == nil {
 		t.Fatal("failed upload acknowledged recovery")
 	}
 	if data, err := os.ReadFile(file); err != nil || string(data) != "unfinished pod implementation" {
 		t.Fatalf("failed upload changed source: %q %v", data, err)
 	}
 	allow.Store(true)
-	if err := publishPodRecovery(t.Context(), source); err != nil {
+	if err := publishPodRecovery(t.Context(), source, nil); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := recovery.ReadInventory(t.Context(), inventory, 128)

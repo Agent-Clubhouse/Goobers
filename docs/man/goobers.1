@@ -79,6 +79,9 @@ inspect workflows
 show a workflow as a text DAG
 .SS Advanced operator commands
 .TP
+\fBgoobers advisory-pr-reset\fR
+clear one private advisory disposition by explicit operator action
+.TP
 \fBgoobers agent-kit\fR
 install, inspect, or update the release-matched agent toolkit
 .TP
@@ -440,6 +443,12 @@ explicitly recover pinned repository workspaces
 tear down and re-materialize a pinned repository workspace
 .SS Workflow-stage and connector commands
 .TP
+\fBgoobers advisory-pr-publish\fR
+publish an advisory observation or private skip (a workflow stage)
+.TP
+\fBgoobers advisory-pr-select\fR
+select one open PR for a private advisory review (a workflow stage)
+.TP
 \fBgoobers apply-verdict\fR
 publish a managed or advisory merge-review verdict (a workflow stage)
 .TP
@@ -584,6 +593,9 @@ API-update a clean behind-base PR, else route to remediation (a workflow stage)
 \fBgoobers validate-plan\fR
 validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
 .SH SEE ALSO
+\fBgoobers-advisory-pr-publish\fR(1),
+\fBgoobers-advisory-pr-reset\fR(1),
+\fBgoobers-advisory-pr-select\fR(1),
 \fBgoobers-agent-kit\fR(1),
 \fBgoobers-agent-kit-check\fR(1),
 \fBgoobers-agent-kit-install\fR(1),

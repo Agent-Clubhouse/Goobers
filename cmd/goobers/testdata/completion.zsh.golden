@@ -331,6 +331,9 @@ _goobers_completion()
         mcp-io)
             flags+=(--config)
             ;;
+        advisory-pr-reset)
+            flags+=(--gaggle --owner --repo --review-type --pr)
+            ;;
     esac
     if [[ "${PREFIX}" == -* ]]; then
         compadd -a flags

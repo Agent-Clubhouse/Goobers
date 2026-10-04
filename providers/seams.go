@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
+
+	"github.com/goobers/goobers/internal/mutationreceipt"
 )
 
 // These seams let a provider report facts to higher layers (the run journal and
@@ -110,6 +112,8 @@ type ExternalRef struct {
 	Outcome           string                 `json:"outcome,omitempty"`       // success, failure, or contention for claim attempts
 	ErrorCode         string                 `json:"errorCode,omitempty"`     // stable classification; never raw provider error text
 	ProviderRunID     string                 `json:"providerRunId,omitempty"` // provider owner on claim contention or ledger mismatch
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // RateLimitEvent describes a single rate-limit backoff decision.

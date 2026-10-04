@@ -465,3 +465,8 @@ complete -c goobers -n '__fish_seen_subcommand_from remediation-checkpoint' -l e
 complete -c goobers -n '__fish_seen_subcommand_from remediation-checkpoint' -l escalation-outcome -r -d 'Recorded escalation outcome'
 complete -c goobers -n '__fish_seen_subcommand_from respond-to-findings' -l check -d 'Validate without publishing responses'
 complete -c goobers -n '__fish_seen_subcommand_from mcp-io' -l config -r -d 'MCP server configuration path'
+complete -c goobers -n '__fish_seen_subcommand_from advisory-pr-reset' -l gaggle -r -d 'Gaggle name'
+complete -c goobers -n '__fish_seen_subcommand_from advisory-pr-reset' -l owner -r -d 'GitHub owner'
+complete -c goobers -n '__fish_seen_subcommand_from advisory-pr-reset' -l repo -r -d 'GitHub repository'
+complete -c goobers -n '__fish_seen_subcommand_from advisory-pr-reset' -l review-type -r -d 'Advisory review type'
+complete -c goobers -n '__fish_seen_subcommand_from advisory-pr-reset' -l pr -r -d 'Pull request number'

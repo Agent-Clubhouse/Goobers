@@ -163,8 +163,27 @@ func harnessCLICommand() cliCommand {
 		withExamples("goobers harness auth copilot status", "goobers harness auth copilot login")
 }
 
+// advisoryPRCLICommands registers the private-disposition advisory PR review
+// commands (#6184).
+func advisoryPRCLICommands() []cliCommand {
+	return []cliCommand{
+		stageCommand("advisory-pr-select", apicontract.ActionWorkflowExecution, runAdvisoryPRSelect).
+			withSynopsis(synopsisByID["advisory-pr-select"]).
+			withHelp("select one open PR for a private advisory review (a workflow stage)", advisorySelectHelp).
+			withExamples("goobers advisory-pr-select"),
+		stageCommand("advisory-pr-publish", apicontract.ActionWorkflowExecution, runAdvisoryPRPublish).
+			withSynopsis(synopsisByID["advisory-pr-publish"]).
+			withHelp("publish an advisory observation or private skip (a workflow stage)", advisoryPublishHelp).
+			withExamples("goobers advisory-pr-publish"),
+		command("advisory-pr-reset", apicontract.ActionMaintenance, runAdvisoryPRReset).
+			withSynopsis(synopsisByID["advisory-pr-reset"]).
+			withHelp("clear one private advisory disposition by explicit operator action", advisoryResetHelp).
+			withExamples("goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance"),
+	}
+}
+
 func init() {
-	cliCommands = []cliCommand{
+	cliCommands = append([]cliCommand{
 		groupCommand("roots", runRoots,
 			subcommand("roots discover", "discover", apicontract.ActionReadOnlyNavigation, runRootsDiscover).
 				withSynopsis(synopsisByID["roots discover"]).
@@ -920,7 +939,7 @@ func init() {
 			apicontract.ActionReadOnlyNavigation,
 			runHelpCommand,
 		).withHelp("show command or concept help", helpHelp),
-	}
+	}, advisoryPRCLICommands()...)
 }
 
 func command(

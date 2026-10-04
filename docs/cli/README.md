@@ -36,6 +36,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-reset`](#goobers-advisory-pr-reset) | clear one private advisory disposition by explicit operator action |
 | [`goobers agent-kit`](#goobers-agent-kit) | install, inspect, or update the release-matched agent toolkit |
 | [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
@@ -163,6 +164,8 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-publish`](#goobers-advisory-pr-publish) | publish an advisory observation or private skip (a workflow stage) |
+| [`goobers advisory-pr-select`](#goobers-advisory-pr-select) | select one open PR for a private advisory review (a workflow stage) |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
@@ -211,6 +214,54 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate-plan`](#goobers-validate-plan) | validate a decomposition plan against its selector artifact and the live parent (a workflow stage) |
+
+## `goobers advisory-pr-publish`
+
+publish an advisory observation or private skip (a workflow stage)
+
+~~~text
+Usage: goobers advisory-pr-publish [path]
+
+Publish a strict advisory reviewer artifact or record a permanent private skip. Inputs: reviewType, reviewerStage, selectionStage.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-publish
+~~~
+
+## `goobers advisory-pr-reset`
+
+clear one private advisory disposition by explicit operator action
+
+~~~text
+Usage: goobers advisory-pr-reset --gaggle NAME --owner OWNER --repo REPO --review-type TYPE --pr NUMBER [path]
+
+Explicitly clear one private advisory disposition on the local instance.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance
+~~~
+
+## `goobers advisory-pr-select`
+
+select one open PR for a private advisory review (a workflow stage)
+
+~~~text
+Usage: goobers advisory-pr-select [path]
+
+Select one open PR for a private-disposition advisory review. Input: reviewType.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-select
+~~~
 
 ## `goobers agent-kit`
 
@@ -3040,9 +3091,11 @@ rather than a static value:
         title: prTitle
 
 Title precedence: an explicitly set non-empty title wins; otherwise the
-claimed item's title, recovered from the run journal (so it survives a
-resume or repass); otherwise the generic "Automated implementation". An
-empty value is not an override — every empty input falls back.
+claimed item's title, recovered from the run journal (or the journal
+plane in a stage pod, so it survives a resume, repass, or pod placement);
+otherwise the generic "Automated implementation" with a warning naming
+why no item title was available. An empty value is not an override — every
+empty input falls back.
 
 itemID explicitly identifies a selected backlog item when the workflow
 read it without claiming. If a claimed item also exists, the IDs must
@@ -3929,7 +3982,8 @@ drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
 retry use the same acceptance identity. --api-timeout bounds remote validation
-and acceptance (default 30s; must be positive). A timed-out submission has
+and acceptance (default 30s; must be positive), including any wait for a
+daemon that is still starting after a restart. A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal. For local file delegation,

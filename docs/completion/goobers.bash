@@ -302,6 +302,9 @@ _goobers_completion()
         mcp-io)
             flags+=" --config"
             ;;
+        advisory-pr-reset)
+            flags+=" --gaggle --owner --repo --review-type --pr"
+            ;;
     esac
     if [[ "${cur}" == -* ]]; then
         COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )

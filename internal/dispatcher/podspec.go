@@ -181,6 +181,10 @@ const (
 	// execution bound (which stops an orphan's container after the margin,
 	// rather than defining the stage's own timeout or deleting its Pod object).
 	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
+	// EnvRecoveryCustodyTimeout carries the post-stage recovery custody budget
+	// (Go duration string). dispatch-exec also clamps custody to the claim
+	// expiry, so this is an upper bound, not authority to retain work longer.
+	EnvRecoveryCustodyTimeout = "GOOBERS_RECOVERY_CUSTODY_TIMEOUT"
 	// EnvStageCapabilities carries the stage's declared credential capability
 	// NAMES as a JSON array. Names only: the pod resolves them against the
 	// credential plane itself, so no secret ever rides a pod spec — which is
@@ -342,7 +346,7 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
-	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
+	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvArtifactPublication,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
@@ -464,11 +468,23 @@ const (
 	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
 	// LinuxGoCachePath / WindowsGoCachePath is the durable module cache volume
 	// stage pods mount outside tmp:ephemeral so fresh pods reuse downloaded
-	// modules. GOCACHE remains under the attempt-private temp root.
+	// modules.
 	LinuxGoCachePath   = "/var/goobers/cache"
 	WindowsGoCachePath = `C:\var\goobers\cache`
 	goBuildCacheVolume = "go-build-cache"
 	goBuildCacheClaim  = "goobers-go-build-cache"
+	// LinuxGoBuildCachePath / WindowsGoBuildCachePath is where GOCACHE points
+	// in a stage pod: a disk-backed per-pod emptyDir, deliberately NOT the
+	// shared claim above and NOT /tmp. Images (the operator's goobers-ci
+	// overlay) set GOCACHE=/tmp/gocache, and under tmp:ephemeral /tmp is a
+	// size-limited tmpfs, so any Go build filled it and starved everything
+	// else that needs temp space (recovery custody's git dir). The shared claim
+	// is avoided because a build cache that outlives its pods grows without
+	// bound (the 10 GB history in internal/ephemeraltmp); a per-pod emptyDir is
+	// reclaimed with the pod, exactly as the tmpfs copy was.
+	LinuxGoBuildCachePath   = "/var/goobers/gocache"
+	WindowsGoBuildCachePath = `C:\var\goobers\gocache`
+	goCompileCacheVolume    = "go-compile-cache"
 )
 
 // Node scheduling contract.
@@ -1176,6 +1192,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		env = append(env, corev1.EnvVar{Name: EnvStageScript, Value: literalPodEnv(attempt.Script)})
 	}
 	env = append(env, corev1.EnvVar{Name: EnvStageTimeout, Value: attempt.stageTimeout().String()})
+	env = append(env, corev1.EnvVar{Name: EnvRecoveryCustodyTimeout, Value: cfg.recoveryCustodyTimeout().String()})
 	for _, key := range sortedKeys(attempt.Env) {
 		env = append(env, corev1.EnvVar{Name: key, Value: attempt.Env[key]})
 	}
@@ -1418,7 +1435,7 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// GOMODCACHE is stamped after this allowlist is generated when the
 	// durable cache volume is mounted. Keep it through env:default-deny's
 	// in-pod rebuild so restricted stage pods reuse the durable module cache.
-	names = append(names, "GOMODCACHE")
+	names = append(names, "GOMODCACHE", "GOCACHE")
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
@@ -1563,6 +1580,24 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 	container.Env = append(container.Env,
 		corev1.EnvVar{Name: "GOMODCACHE", Value: cachePath},
 	)
+
+	// GOCACHE moves off /tmp (see LinuxGoBuildCachePath) onto disk-backed
+	// pod-local storage, overriding any image-baked GOCACHE=/tmp/gocache.
+	buildCachePath := LinuxGoBuildCachePath
+	if windows {
+		buildCachePath = WindowsGoBuildCachePath
+	}
+	spec.Volumes = append(spec.Volumes, corev1.Volume{
+		Name:         goCompileCacheVolume,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name: goCompileCacheVolume, MountPath: buildCachePath,
+	})
+	container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
+		return env.Name == "GOCACHE"
+	})
+	container.Env = append(container.Env, corev1.EnvVar{Name: "GOCACHE", Value: buildCachePath})
 }
 
 // stampSecurity applies the restriction bindings by OS (decisions 006/007,

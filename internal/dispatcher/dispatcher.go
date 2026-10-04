@@ -41,10 +41,21 @@ const (
 	// container executing indefinitely. Kubernetes retains the stopped Pod
 	// object until an explicit deletion.
 	DefaultDeadlineMargin = 10 * time.Minute
+	// DefaultHeldPodRetention bounds how long the orphan sweep keeps a
+	// writable stage pod whose recovery custody was never confirmed after its
+	// owning workflow is terminal and its stage container has stopped (#6571).
+	// The hold keeps the only copy of unsurrendered work salvageable for a day;
+	// past it the pod is reaped so held pods cannot accumulate indefinitely.
+	DefaultHeldPodRetention = 24 * time.Hour
 	// DefaultStageTimeout backs a stage that declares no timeout, so every
 	// pod still carries a finite activeDeadlineSeconds (the execution bound is
 	// always-on, never conditional on declaration).
 	DefaultStageTimeout = time.Hour
+	// DefaultRecoveryCustodyTimeout bounds the pod-side recovery custody work
+	// that runs after a stage exits but before surrender. It must comfortably
+	// cover slow-container-FS git scans and archive publication while still
+	// staying finite; publishPodRecovery also clamps it to the claim expiry.
+	DefaultRecoveryCustodyTimeout = 10 * time.Minute
 	// DefaultSupervisionInterval paces the supervise loop's pod polls and
 	// liveness relays.
 	DefaultSupervisionInterval = 15 * time.Second
@@ -131,6 +142,9 @@ type Config struct {
 	// WriteAPIBase is the daemon write API base URL stage pods emit journal
 	// events to and resolve credentials from (GOOBERS_DAEMON_API).
 	WriteAPIBase string
+	// RecoveryCustodyTimeout is the resolved runner.recoveryCustodyTimeout
+	// stamped into every stage pod. Zero uses DefaultRecoveryCustodyTimeout.
+	RecoveryCustodyTimeout time.Duration
 	// EnvPassthrough is the instance's RunnerConfig.EnvPassthrough (#736): the
 	// operator-declared env var NAMES carried into a stage subprocess on top of
 	// procenv's built-in default-deny allowlist.
@@ -186,6 +200,8 @@ type Config struct {
 	TmpfsSizeLimit resource.Quantity
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.
 	DeadlineMargin time.Duration
+	// HeldPodRetention overrides DefaultHeldPodRetention; zero uses the default.
+	HeldPodRetention time.Duration
 	// LinuxScheduleToStart / WindowsScheduleToStart override the capacity
 	// wait bounds; zero uses the defaults.
 	LinuxScheduleToStart   time.Duration
@@ -225,6 +241,13 @@ func (c Config) tmpfsSizeLimit() resource.Quantity {
 		return DefaultTmpfsSizeLimit.DeepCopy()
 	}
 	return c.TmpfsSizeLimit
+}
+
+func (c Config) heldPodRetention() time.Duration {
+	if c.HeldPodRetention <= 0 {
+		return DefaultHeldPodRetention
+	}
+	return c.HeldPodRetention
 }
 
 func (c Config) deadlineMargin() time.Duration {
@@ -470,6 +493,13 @@ func (a Attempt) stageTimeout() time.Duration {
 		return DefaultStageTimeout
 	}
 	return a.Timeout
+}
+
+func (c Config) recoveryCustodyTimeout() time.Duration {
+	if c.RecoveryCustodyTimeout <= 0 {
+		return DefaultRecoveryCustodyTimeout
+	}
+	return c.RecoveryCustodyTimeout
 }
 
 // RunnerSpec is the dispatcher's view of one resolved runner: the inventory

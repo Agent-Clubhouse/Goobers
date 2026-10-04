@@ -92,3 +92,19 @@ func (c *RunnerConfig) ResolveStageMemoryBound() (StageMemoryBound, error) {
 		Source:                    "runner.stageMemoryLimit " + c.StageMemoryLimit,
 	}, nil
 }
+
+// ResolvePodTmpfsSize parses runner.podTmpfsSize. The zero Quantity means
+// unset (the dispatcher applies its default).
+func (c *RunnerConfig) ResolvePodTmpfsSize() (resource.Quantity, error) {
+	if c == nil || c.PodTmpfsSize == "" {
+		return resource.Quantity{}, nil
+	}
+	quantity, err := resource.ParseQuantity(c.PodTmpfsSize)
+	if err != nil {
+		return resource.Quantity{}, fmt.Errorf("runner.podTmpfsSize %q is not a Kubernetes quantity (e.g. \"1Gi\"): %w", c.PodTmpfsSize, err)
+	}
+	if quantity.Sign() <= 0 {
+		return resource.Quantity{}, fmt.Errorf("runner.podTmpfsSize %q must be positive", c.PodTmpfsSize)
+	}
+	return quantity, nil
+}

@@ -61,7 +61,7 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	if err := recoveryGit(ctx, repository, io.Discard, "cat-file", "-e", currentMain+"^{commit}"); err != nil {
 		return "", fmt.Errorf("current main commit is unavailable: %w", err)
 	}
-	directory, err := os.MkdirTemp("", "goobers-recovery-restore-*")
+	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-restore-*")
 	if err != nil {
 		return "", err
 	}

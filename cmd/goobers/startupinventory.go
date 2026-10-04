@@ -131,7 +131,12 @@ func resumeStartupRuns(
 			ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, guards,
 			setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog,
 			setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled,
-			wg, func(seen resumeOutcome) { progress.report(seen.Summary()) }, recoveryRunDirs,
+			wg, func(seen resumeOutcome) {
+				if tracker != nil {
+					tracker.observeRecoveryProgress(seen)
+				}
+				progress.report(seen.Summary())
+			}, recoveryRunDirs,
 		)
 		return resumeErr
 	})

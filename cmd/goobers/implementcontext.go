@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -60,6 +63,12 @@ type implementationContext struct {
 	SchemaVersion   string                        `json:"schemaVersion"`
 	VerdictTaxonomy reviewerVerdictTaxonomyDigest `json:"reviewerVerdictTaxonomy"`
 	HotFileMap      implementationHotFileMap      `json:"hotFileMap"`
+	// ConflictHistoryUnavailable is true when the daemon's journal plane
+	// refused the conflict-history read (budget exceeded, unavailable). The
+	// hot-file map then carries open-PR evidence only; an empty conflict
+	// history in that case means "unknown", not "nothing is contended".
+	ConflictHistoryUnavailable       bool   `json:"conflictHistoryUnavailable,omitempty"`
+	ConflictHistoryUnavailableReason string `json:"conflictHistoryUnavailableReason,omitempty"`
 	// PriorUnpushedWork, when present, is a previous run's committed-but-
 	// never-published diff for the SAME backlog item this run claimed
 	// (#3366): work an environmental fault stranded (an egress 403 at
@@ -114,7 +123,7 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "gather implementation hot-file map", err, implementationContextResultFile)
 	}
-	recentConflicts, err := recentImplementationConflicts(
+	recentConflicts, historyUnavailable, err := recentImplementationConflicts(
 		root,
 		providerGaggle(),
 		time.Now().UTC().Add(-implementationConflictHistoryWindow),
@@ -128,6 +137,14 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 		SchemaVersion:   "v1",
 		VerdictTaxonomy: shippedReviewerVerdictTaxonomy(),
 		HotFileMap:      buildImplementationHotFileMap(openTouches, recentConflicts, limit),
+	}
+	if historyUnavailable != "" {
+		// Advisory history the plane refused: say so in the artifact AND on
+		// stderr, because an empty history from a refused read is otherwise
+		// indistinguishable from "nothing is contended".
+		out.ConflictHistoryUnavailable = true
+		out.ConflictHistoryUnavailableReason = historyUnavailable
+		pf(stderr, "warning: implementation conflict history unavailable, continuing with an empty history: %s\n", historyUnavailable)
 	}
 	// #3366: offer a prior run's stranded (committed but never published)
 	// diff for the same claimed item, if one exists. Best-effort — discovery
@@ -236,13 +253,17 @@ type implementationConflictArtifact struct {
 // and file paths only — none of the prior runs' other journal content crosses
 // the boundary.
 //
-// Failure is fatal to the caller, deliberately: the hot-file map is what makes
-// the implementer avoid a known-contended file, and an empty map from a failed
-// read is indistinguishable from "nothing is contended".
-func recentImplementationConflicts(root, gaggle string, since time.Time) ([]implementationConflictTouch, error) {
+// The history is advisory context. When the plane REFUSES the read for
+// capacity or availability (a 5xx/429 such as request_budget_exceeded, or a
+// transport failure), the caller gets an empty history plus a non-empty
+// unavailable reason rather than an error, so a pod implementation run is not
+// failed over context it can do without. Contract errors (gaggle mismatch,
+// auth, bad request), selection/config errors and same-host journal read
+// errors stay fatal.
+func recentImplementationConflicts(root, gaggle string, since time.Time) (conflicts []implementationConflictTouch, unavailable string, err error) {
 	reader, err := stageCrossRunJournal(root, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	runID := os.Getenv(executor.RunIDEnvVar)
 	touches, err := reader.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{
@@ -251,13 +272,28 @@ func recentImplementationConflicts(root, gaggle string, since time.Time) ([]impl
 		Since:  since,
 	})
 	if err != nil {
-		return nil, err
+		if _, onPlane := reader.(*journalclient.HTTP); onPlane && planeReadDegradable(err) {
+			return nil, err.Error(), nil
+		}
+		return nil, "", err
 	}
-	conflicts := make([]implementationConflictTouch, 0, len(touches))
+	conflicts = make([]implementationConflictTouch, 0, len(touches))
 	for _, touch := range touches {
 		conflicts = append(conflicts, implementationConflictTouch{runID: touch.RunID, files: touch.Files})
 	}
-	return conflicts, nil
+	return conflicts, "", nil
+}
+
+// planeReadDegradable reports whether a journal-plane read failure is the
+// plane declining or being unable to answer (capacity, availability,
+// transport), as opposed to a contract error the caller must not paper over.
+func planeReadDegradable(err error) bool {
+	var planeErr *journalclient.Error
+	if errors.As(err, &planeErr) {
+		return planeErr.Status >= 500 || planeErr.Status == http.StatusTooManyRequests
+	}
+	var netErr net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr)
 }
 
 // --- prior unpushed work discovery (#3366) --------------------------------

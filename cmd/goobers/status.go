@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,10 +19,12 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/avexclusion"
 	"github.com/goobers/goobers/internal/clustercheck"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -1359,7 +1362,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), set, goobers)
 	if err != nil {
 		printValidationWarnings(stderr, report.CLIWarnings())
 		pf(stderr, "error: invalid workflow: %v\n", err)
@@ -1946,6 +1949,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
+			reportDaemonReadiness(l, now, stdout)
 			reportLiveDaemonJournalHealth(l, stdout)
 			reportLiveDaemonStorageHealth(l, stdout)
 			reportFleetEnrollment(l.Root, stdout)
@@ -1960,6 +1964,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
+		reportDaemonReadiness(l, now, stdout)
 		reportLiveDaemonJournalHealth(l, stdout)
 		reportLiveDaemonStorageHealth(l, stdout)
 		reportFleetEnrollment(l.Root, stdout)
@@ -1978,6 +1983,100 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 
 	pf(stdout, "daemon not running; live runs %d\n", liveRuns)
 	return 1
+}
+
+func reportDaemonReadiness(l instance.Layout, now time.Time, stdout io.Writer) {
+	status, err := readLocalInstanceReadiness(context.Background(), l)
+	if err != nil || status == nil || status.Ready {
+		return
+	}
+	recovery := status.Recovery
+	if recovery.Phase == "" {
+		return
+	}
+	pf(stdout, "Startup recovery: phase=%s", recovery.Phase)
+	if recovery.Target != "" {
+		pf(stdout, ", target=%s", recovery.Target)
+	}
+	pf(stdout, ", elapsed=%s", formatDaemonDuration(time.Duration(recovery.ElapsedSeconds*float64(time.Second))))
+	if recovery.BudgetSeconds > 0 {
+		pf(stdout, ", budget=%s", formatDaemonDuration(time.Duration(recovery.BudgetSeconds*float64(time.Second))))
+	}
+	if recovery.BudgetState != "" {
+		pf(stdout, ", budget-state=%s", recovery.BudgetState)
+	}
+	pf(stdout, "\n")
+	if recovery.BlockingCandidate == nil {
+		if recovery.Phase == "crash-resume" {
+			pf(stdout, "Crash recovery: waiting for resumeComplete after candidate classification\n")
+		}
+		return
+	}
+	reportDaemonRecoveryCandidate(stdout, now, recovery.BlockingCandidate)
+}
+
+func readLocalInstanceReadiness(ctx context.Context, l instance.Layout) (*httpapi.InstanceReadiness, error) {
+	endpoint, err := localDaemonAPIBase(l)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+apicontract.InstanceReadinessPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build daemon readiness request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("query daemon readiness: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("daemon readiness returned HTTP %d", response.StatusCode)
+	}
+	var status httpapi.InstanceReadiness
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&status); err != nil {
+		return nil, fmt.Errorf("decode daemon readiness: %w", err)
+	}
+	return &status, nil
+}
+
+func reportDaemonRecoveryCandidate(stdout io.Writer, now time.Time, candidate *httpapi.RecoveryCandidateStatus) {
+	progress := candidate.Progress
+	pf(stdout, "Crash recovery: examined=%d/%d resumed=%d reattached=%d terminal=%d skipped=%d",
+		progress.Examined, progress.Total, progress.Resumed, progress.Reattached, progress.Terminal, progress.Skipped)
+	if candidate.RunID != "" {
+		pf(stdout, "; blocking run=%s", candidate.RunID)
+	}
+	if candidate.Gaggle != "" || candidate.Workflow != "" {
+		pf(stdout, " workflow=%s/%s", candidate.Gaggle, candidate.Workflow)
+	}
+	if candidate.Disposition != "" {
+		pf(stdout, " disposition=%s", candidate.Disposition)
+	}
+	if candidate.Phase != "" {
+		pf(stdout, " phase=%s", candidate.Phase)
+	}
+	if candidate.Operation != "" {
+		pf(stdout, " operation=%q", candidate.Operation)
+	}
+	if !candidate.StartedAt.IsZero() {
+		pf(stdout, " elapsed=%s", formatDaemonDuration(now.Sub(candidate.StartedAt)))
+	}
+	if !candidate.LastProgressAt.IsZero() {
+		pf(stdout, " last-progress=%s ago", formatDaemonDuration(now.Sub(candidate.LastProgressAt)))
+	}
+	pf(stdout, "\n")
+}
+
+func formatDaemonDuration(duration time.Duration) string {
+	if duration < 0 {
+		duration = 0
+	}
+	return duration.Truncate(time.Second).String()
 }
 
 // reportPendingTriggerQueue surfaces #4323's operator-visibility acceptance

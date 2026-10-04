@@ -1197,6 +1197,15 @@ func TestTransientProvisionErrorIsRetryable(t *testing.T) {
 		t.Errorf("transient provision failure classified %q, want %q — it charges the infrastructure budget, not the run's",
 			appErr.Type(), FailureTypeInfrastructure)
 	}
+	occupancy := classifySeamError(fmt.Errorf("create worktree: %w", worktree.ErrBranchOccupied))
+	var occupancyErr *temporal.ApplicationError
+	if !errors.As(occupancy, &occupancyErr) {
+		t.Fatalf("classifySeamError returned %T for branch occupancy", occupancy)
+	}
+	if occupancyErr.Type() != FailureTypeInfrastructure {
+		t.Errorf("branch occupancy classified %q, want %q — gate preparation should consume its retry budget, not fail the run",
+			occupancyErr.Type(), FailureTypeInfrastructure)
+	}
 
 	// The negative: a provision failure that is NOT transient must stay a
 	// stage failure, so a genuinely broken workspace still fails fast instead
