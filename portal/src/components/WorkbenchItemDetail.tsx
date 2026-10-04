@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import { WorkbenchBlockerResolution } from "./WorkbenchBlockerResolution";
 import { WorkbenchItemEditor } from "./WorkbenchItemEditor";
-import type { BacklogItem, DaemonClient, NativeRelationship, RelationshipCoverageState, SourceView } from "../api/types";
+import type { BacklogItem, DaemonClient, Goober, NativeRelationship, RelationshipCoverageState, SourceView } from "../api/types";
 
 type ItemSelection = Pick<BacklogItem, "ref" | "locator">;
 
-export function WorkbenchItemDetail({ client, gaggle, selected, sources, unavailable }: { client: DaemonClient; gaggle: string; selected: BacklogItem; sources: SourceView[]; unavailable: () => void }) {
+export function WorkbenchItemDetail({ client, gaggle, selected, sources, unavailable, goobers = [] }: { client: DaemonClient; gaggle: string; selected: BacklogItem; sources: SourceView[]; unavailable: () => void; goobers?: Goober[] }) {
   const [item, setItem] = useState<BacklogItem>();
   const [editableItem, setEditableItem] = useState<BacklogItem>();
   const [revision, setRevision] = useState(0);
@@ -20,6 +21,7 @@ export function WorkbenchItemDetail({ client, gaggle, selected, sources, unavail
     return () => controller.abort();
     // The selection component is keyed by immutable identity; caller callback changes do not restart reads.
   }, [client, gaggle, selected, revision]);
+  const source = item && sources.find((entry) => entry.bindingId === item.ref.sourceBindingId);
   return <section className="workbench-detail" aria-label="Backlog item details">
     {!item ? <p role="status">Loading item details…</p> : <>
       <header><h3>{item.title}</h3><button type="button" onClick={() => { setItem(undefined); setRevision((value) => value + 1); }}>Refresh item</button></header>
@@ -36,6 +38,7 @@ export function WorkbenchItemDetail({ client, gaggle, selected, sources, unavail
       <ul className="workbench-relations">{item.relationships?.map((relation, index) => <Relationship key={index} relationship={relation} gaggle={gaggle} sources={sources} open={setRelated} />)}</ul>
       {related && <WorkbenchRelatedItem key={`${related.ref.sourceBindingId}:${related.ref.sourceId}`} client={client} gaggle={gaggle} selected={related} close={() => setRelated(undefined)} unavailable={unavailable} />}
     </>}
+    {item && source && <WorkbenchBlockerResolution client={client} item={item} source={source} goobers={goobers} />}
     {editableItem && <WorkbenchItemEditor client={client} item={editableItem} refreshed={(value) => { setItem(value); setEditableItem(value); }} />}
   </section>;
 }

@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
-import type { DaemonClient, WorkbenchSourcePage } from "../api/types";
+import type { DaemonClient, Goober, WorkbenchSourcePage } from "../api/types";
 import { WorkbenchBrowser } from "./WorkbenchBrowser";
 import { WorkbenchDocuments } from "./WorkbenchDocuments";
 import { WorkbenchGraph } from "./WorkbenchGraph";
 import "../workbench.css";
 
-export function WorkbenchPanel({ client, gaggle }: { client: DaemonClient; gaggle: string }) {
+export function WorkbenchPanel({ client, gaggle, goobers = [] }: { client: DaemonClient; gaggle: string; goobers?: Goober[] }) {
   // A new client or gaggle discards all source data before the next request.
-  return <WorkbenchSources key={gaggle} client={client} gaggle={gaggle} />;
+  return <WorkbenchSources key={gaggle} client={client} gaggle={gaggle} goobers={goobers} />;
 }
-function WorkbenchSources({ client, gaggle }: { client: DaemonClient; gaggle: string }) {
+function WorkbenchSources({ client, gaggle, goobers = [] }: { client: DaemonClient; gaggle: string; goobers?: Goober[] }) {
   const [loaded, setLoaded] = useState<{ client: DaemonClient; revision: number; page: WorkbenchSourcePage }>();
   const [revision, setRevision] = useState(0);
   const [binding, setBinding] = useState("");
@@ -34,7 +34,7 @@ function WorkbenchSources({ client, gaggle }: { client: DaemonClient; gaggle: st
       {source && <>
         <p className="workbench-source">{source.owner}{source.project ? ` / ${source.project}` : ""}{source.repository ? ` / ${source.repository}` : ""}{source.branch ? ` · ${source.branch}` : ""}</p>
         {(source.paths?.length ?? 0) > 0 && <p>Configured paths: {source.paths?.join(", ")}</p>}
-        {source.kind === "backlog" ? <WorkbenchBrowser key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} sources={page.items} refresh={() => setRevision((value) => value + 1)} /> : source.kind === "documents" || source.kind === "relationships" ? <WorkbenchDocuments key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} refresh={() => setRevision((value) => value + 1)} /> : <p>This source kind is not supported in this view.</p>}
+        {source.kind === "backlog" ? <WorkbenchBrowser key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} sources={page.items} goobers={goobers} refresh={() => setRevision((value) => value + 1)} /> : source.kind === "documents" || source.kind === "relationships" ? <WorkbenchDocuments key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} refresh={() => setRevision((value) => value + 1)} /> : <p>This source kind is not supported in this view.</p>}
       </>}
     </>}
   </section>;

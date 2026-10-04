@@ -196,7 +196,7 @@ function GaggleTopology({
         </section>
       )}
 
-      <WorkbenchPanel key={`workbench:${gaggle.name}`} client={client} gaggle={gaggle.name} />
+      <WorkbenchPanel key={`workbench:${gaggle.name}`} client={client} gaggle={gaggle.name} goobers={inventory.goobers} />
 
       <SharedSessionsPanel key={gaggle.name} client={client} gaggle={gaggle.name} goobers={inventory.goobers} />
 

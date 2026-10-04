@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { BacklogItem, BacklogPage, DaemonClient, SourceView } from "../api/types";
+import type { BacklogItem, BacklogPage, DaemonClient, Goober, SourceView } from "../api/types";
 import { WorkbenchItemDetail } from "./WorkbenchItemDetail";
 
 const windowSize = 50;
-export function WorkbenchBrowser({ client, gaggle, source, sources, refresh }: { client: DaemonClient; gaggle: string; source: SourceView; sources: SourceView[]; refresh: () => void }) {
+export function WorkbenchBrowser({ client, gaggle, source, sources, refresh, goobers = [] }: { client: DaemonClient; gaggle: string; source: SourceView; sources: SourceView[]; refresh: () => void; goobers?: Goober[] }) {
   const [cursor, setCursor] = useState<string>();
   const [loaded, setLoaded] = useState<{ cursor?: string; page: BacklogPage }>();
   const [selected, setSelected] = useState<BacklogItem>();
@@ -36,7 +36,7 @@ export function WorkbenchBrowser({ client, gaggle, source, sources, refresh }: {
         <nav aria-label="Backlog items"><ul>{page.items.map((item) => <li key={item.ref.sourceId}><button type="button" aria-pressed={selected?.ref.sourceId === item.ref.sourceId} onClick={() => setSelected(item)}><strong>{item.title}</strong><span>#{item.locator.id} · {item.type} · {item.state}{item.objective ? " · Objective" : ""}</span></button></li>)}</ul>{page.items.length === 0 && <p>No items in this window. This does not establish that the source is empty.</p>}
           <div className="workbench-actions">{cursor && <button type="button" onClick={() => navigate()}>First items</button>}{page.nextCursor && <button type="button" onClick={() => navigate(page.nextCursor)}>Next items</button>}</div>
         </nav>
-        {selected ? <WorkbenchItemDetail key={`${selected.ref.sourceBindingId}:${selected.ref.sourceId}`} client={client} gaggle={gaggle} selected={selected} sources={sources} unavailable={() => { setSelected(undefined); setLoaded(undefined); setError("Source access or identity changed. Refresh sources to reload the backlog."); }} /> : <p>Select an item to load its details and relationships.</p>}
+        {selected ? <WorkbenchItemDetail key={`${selected.ref.sourceBindingId}:${selected.ref.sourceId}`} client={client} gaggle={gaggle} selected={selected} sources={sources} goobers={goobers} unavailable={() => { setSelected(undefined); setLoaded(undefined); setError("Source access or identity changed. Refresh sources to reload the backlog."); }} /> : <p>Select an item to load its details and relationships.</p>}
       </div>
     </>}
   </>;
