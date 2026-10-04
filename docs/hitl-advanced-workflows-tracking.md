@@ -100,6 +100,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-child-host-publication` | `codex/haw-child-repository-custody` | Publish delegated immutable child branches and PRs through host-owned effects |
 
+| `codex/haw-event-publication` | `codex/haw-child-host-publication` | Publish typed workflow events through retained outbox and receipt custody |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -210,7 +212,19 @@ simulated. Transient sessions, backlog edits, PR repair, paused-stage fresh
 allowances, parallel restarts and sealed-child continuation remain acceptance work. Saved guidance alone is explicitly labeled
 as saved; it is not described as delivered or resumed.
 
-### Events — pinned local consumer execution implemented; publication pending
+### Events — pinned local consumers and typed publication implemented
+
+Typed DSL 3.1 `publish-event` stages now publish through the local host with an
+explicit `event:publish` capability and workflow/type publisher allowlist. The
+host binds journal occurrence, run/config identity and original causal roots;
+a bounded outbox retains the original envelope/plan before receipt admission.
+Retry after a lost reply reuses that occurrence and receipt. Matched consumers
+run through the existing durable router; no-match publication also completes.
+Actual runner/outbox/consumer race tests, current revocation and failed-reload
+checks pass. Producer settlement and outbox pruning are the next retention slice;
+completed intents currently remain conservatively pinned. Engine, remote,
+child/human-continuation producers and self-subscriptions are explicitly refused
+until their corresponding ancestry/transport contract exists.
 
 The agreed event stream still requires all workflow starts to enter durable queues,
 gaggle-local authenticated ingress/emit, configurable consumer debounce, causal
