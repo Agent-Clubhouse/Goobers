@@ -1504,6 +1504,8 @@ export const goWireFixtures = {
         "p50CostAIC": 125,
         "p95CostAIC": 250,
         "retryWasteAttempts": 1,
+        "retryWasteTokenSamples": 1,
+        "retryWasteCostSamples": 1,
         "retryWasteDurationMs": 100000,
         "retryWasteTokens": 12000,
         "retryWasteCostAIC": 75,
@@ -1527,6 +1529,8 @@ export const goWireFixtures = {
         "p50CostAIC": 125,
         "p95CostAIC": 250,
         "retryWasteAttempts": 1,
+        "retryWasteTokenSamples": 1,
+        "retryWasteCostSamples": 1,
         "retryWasteTokens": 12000,
         "retryWasteCostAIC": 75
       }

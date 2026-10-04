@@ -333,6 +333,36 @@ describe("Insight page", () => {
     expect(unmeasuredCost.tagName).toBe("DL");
   });
 
+  it("shows measured retry waste totals with partial coverage", async () => {
+    window.location.hash = "#/cost";
+    const fixtures = populatedDaemonFixtures();
+    const usage = fixtures.telemetryStats.usage.find((item) => item.scope === "instance");
+    if (!usage) throw new Error("Expected instance usage fixture.");
+    usage.retryWasteAttempts = 3;
+    usage.retryWasteTokenSamples = 2;
+    usage.retryWasteCostSamples = 1;
+
+    const { unmount } = render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const wasteCost = (await screen.findByText("Retry waste cost")).nextElementSibling;
+    expect(wasteCost).toHaveTextContent("75 AIC, 1/3 attempts measured");
+    unmount();
+
+    window.location.hash = "#/insight";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const wasteTokens = (await screen.findByText("Retry waste tokens")).nextElementSibling;
+    expect(wasteTokens).toHaveTextContent("12,000 tokens, 2/3 attempts measured");
+  });
+
+  it("keeps fully measured retry waste free of a coverage note", async () => {
+    window.location.hash = "#/cost";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const wasteCost = (await screen.findByText("Retry waste cost")).nextElementSibling;
+    expect(wasteCost).toHaveTextContent(/^75 AIC$/);
+  });
+
   it("shows provider-native attributed costs, normalized estimates, and coverage", async () => {
     window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
@@ -628,6 +658,8 @@ describe("Insight page", () => {
           p50CostAIC: 80,
           p95CostAIC: 250,
           retryWasteAttempts: 0,
+          retryWasteTokenSamples: 0,
+          retryWasteCostSamples: 0,
         },
         {
           scope: "gaggle",
@@ -640,6 +672,8 @@ describe("Insight page", () => {
           p50CostAIC: 10,
           p95CostAIC: 580,
           retryWasteAttempts: 0,
+          retryWasteTokenSamples: 0,
+          retryWasteCostSamples: 0,
         },
       ],
       models: [

@@ -203,13 +203,15 @@ type StageStats struct {
 	P95CostUSD  float64 `json:"p95CostUSD"`
 	HasCost     bool    `json:"-"`
 
-	RetryWasteAttempts    int     `json:"retryWasteAttempts"`
-	RetryWasteDurationMs  int64   `json:"retryWasteDurationMs"`
-	RetryWasteTokens      int64   `json:"retryWasteTokens"`
-	RetryWasteCostUSD     float64 `json:"retryWasteCostUSD"`
-	HasRetryWasteDuration bool    `json:"-"`
-	HasRetryWasteTokens   bool    `json:"-"`
-	HasRetryWasteCost     bool    `json:"-"`
+	RetryWasteAttempts     int     `json:"retryWasteAttempts"`
+	RetryWasteTokenSamples int     `json:"retryWasteTokenSamples"`
+	RetryWasteCostSamples  int     `json:"retryWasteCostSamples"`
+	RetryWasteDurationMs   int64   `json:"retryWasteDurationMs"`
+	RetryWasteTokens       int64   `json:"retryWasteTokens"`
+	RetryWasteCostUSD      float64 `json:"retryWasteCostUSD"`
+	HasRetryWasteDuration  bool    `json:"-"`
+	HasRetryWasteTokens    bool    `json:"-"`
+	HasRetryWasteCost      bool    `json:"-"`
 }
 
 // UsageStats is the AI usage aggregate for an instance, gaggle, workflow, or
@@ -240,11 +242,13 @@ type UsageStats struct {
 	P95CostUSD  float64 `json:"p95CostUSD"`
 	HasCost     bool    `json:"-"`
 
-	RetryWasteAttempts  int     `json:"retryWasteAttempts"`
-	RetryWasteTokens    int64   `json:"retryWasteTokens"`
-	RetryWasteCostUSD   float64 `json:"retryWasteCostUSD"`
-	HasRetryWasteTokens bool    `json:"-"`
-	HasRetryWasteCost   bool    `json:"-"`
+	RetryWasteAttempts     int     `json:"retryWasteAttempts"`
+	RetryWasteTokenSamples int     `json:"retryWasteTokenSamples"`
+	RetryWasteCostSamples  int     `json:"retryWasteCostSamples"`
+	RetryWasteTokens       int64   `json:"retryWasteTokens"`
+	RetryWasteCostUSD      float64 `json:"retryWasteCostUSD"`
+	HasRetryWasteTokens    bool    `json:"-"`
+	HasRetryWasteCost      bool    `json:"-"`
 }
 
 // ModelStats is total observed usage grouped by model. Each measure carries its
