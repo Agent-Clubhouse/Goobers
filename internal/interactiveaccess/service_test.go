@@ -87,7 +87,7 @@ func TestInteractivePermissionReasonsAndImmutablePolicy(t *testing.T) {
 		t.Fatalf("permissions=%+v", result)
 	}
 	for _, action := range result.Actions {
-		if action.Available {
+		if action.Available && action.Action != "run.intervene" {
 			t.Fatal("unimplemented operation advertised")
 		}
 		if action.Action == "backlog.edit" && (!action.Authorized || !action.CredentialConfigured || action.ReasonCode != "operation_not_implemented") {

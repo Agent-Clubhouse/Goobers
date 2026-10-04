@@ -18,6 +18,9 @@ import (
 )
 
 type wireFixtures struct {
+	InteractiveRun           InteractiveRunView                         `json:"interactiveRun"`
+	InteractiveRunCommand    InteractiveRunCommand                      `json:"interactiveRunCommand"`
+	InteractiveRunResult     InteractiveRunCommandResult                `json:"interactiveRunResult"`
 	InteractiveCapabilities  InteractiveCapabilities                    `json:"interactiveCapabilities"`
 	ChildWorkflowSource      ChildWorkflowSourceRequest                 `json:"childWorkflowSource"`
 	ChildWorkflowResolve     ChildWorkflowResolveRequest                `json:"childWorkflowResolve"`
@@ -65,6 +68,9 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "interactiveRun", scriptType: "InteractiveRunView"},
+	{name: "interactiveRunCommand", scriptType: "InteractiveRunCommand"},
+	{name: "interactiveRunResult", scriptType: "InteractiveRunCommandResult"},
 	{name: "interactiveCapabilities", scriptType: "InteractiveCapabilities"},
 	{name: "childWorkflowSource", scriptType: "ChildWorkflowSourceRequest"},
 	{name: "childWorkflowStatus", scriptType: "ChildWorkflowStatusRequest"},
@@ -1064,6 +1070,9 @@ func childWorkflowWireFixture() ChildWorkflowResponse {
 }
 
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures.InteractiveRun = InteractiveRunView{RunID: "0123456789abcdef0123456789abcdef", Gaggle: "web", Phase: "running", Actions: []InteractiveRunAction{{Kind: "approve", Stage: "review", SubjectSequence: 4, Decisions: []string{"pass"}, Available: true}}, Guidance: []apiv1.OperatorMessageRecord{}, RestartReason: "Stage restart is not available."}
+	fixtures.InteractiveRunCommand = InteractiveRunCommand{Kind: "approve", Stage: "review", ExpectedSubjectSequence: 4, Decision: "pass"}
+	fixtures.InteractiveRunResult = InteractiveRunCommandResult{Status: "applied", Accepted: true, RunID: fixtures.InteractiveRun.RunID, JournalSequence: 6, Phase: "complete"}
 	fixtures.InteractiveCapabilities = InteractiveCapabilities{Gaggle: "web", PolicyConfigured: true, Viewer: true, Operator: false, SourceWriteMode: "pull-request", Actions: []InteractiveActionPermission{{Action: "backlog.read", Authorized: true, CredentialConfigured: true, ReasonCode: "operation_not_implemented"}}}
 	fixtures.ChildWorkflowSource = ChildWorkflowSourceRequest{Source: "kind: Workflow\n"}
 	fixtures.ChildWorkflowStatus = ChildWorkflowStatusRequest{InvocationKey: "inspect-1"}

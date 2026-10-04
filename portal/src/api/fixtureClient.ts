@@ -111,6 +111,13 @@ interface FixtureRunCursor {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+  async getInteractiveRun(): Promise<import("./types").InteractiveRunView> {
+    throw new Error("Interactive operations are unavailable in this read-only snapshot.");
+  }
+  async commandInteractiveRun(): Promise<import("./types").InteractiveRunCommandResult> {
+    throw new Error("Interactive operations are unavailable in this read-only snapshot.");
+  }
+
   constructor(private readonly fixtures: DaemonFixtures) {
     assertSupportedContractVersion(fixtures.health);
     assertSupportedContractVersion(fixtures.instance);

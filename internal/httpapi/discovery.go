@@ -253,6 +253,8 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, string, string) {
 	var available bool
 	switch id {
+	case apicontract.RouteInteractiveRun, apicontract.RouteInteractiveRunCommand:
+		available = config.interactiveRuns != nil
 	case apicontract.RouteGaggleInteractiveCapabilities:
 		available = config.interactivePermissions != nil
 	case apicontract.RouteInstanceReadiness:

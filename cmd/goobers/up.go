@@ -1121,6 +1121,9 @@ func (u *upSession) configureAPI() int {
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
 	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
+	if err := u.configureInteractiveRuns(journalService); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize interactive run operations", err)
+	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	u.apiHandlerOpts = append(u.apiHandlerOpts,
 		httpapi.WithInterventions(u.interventions),

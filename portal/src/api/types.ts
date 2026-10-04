@@ -1888,6 +1888,8 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+  getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView>;
+  commandInteractiveRun(runId: string, key: string, command: InteractiveRunCommand, options?: RequestOptions): Promise<InteractiveRunCommandResult>;
   connectEvents(
     request?: EventStreamRequest,
     options?: RequestOptions,
@@ -2051,4 +2053,38 @@ export interface InteractiveActionPermission {
   credentialConfigured: boolean;
   available: boolean;
   reasonCode: "policy_missing" | "action_not_authorized" | "credential_not_configured" | "operation_not_implemented" | "";
+}
+
+/** Human-only surface; source of authority is the authenticated gaggle policy. */
+export interface InteractiveRunView {
+  runId: string;
+  gaggle: string;
+  phase: string;
+  actions: InteractiveRunAction[];
+  guidance: OperatorMessageRecord[];
+  restartReason: string;
+}
+export interface InteractiveRunAction {
+  kind: "approve" | "override" | "deny" | "guidance";
+  stage: string;
+  subjectSequence: number;
+  decisions: string[];
+  available: boolean;
+  reason: string;
+}
+export interface InteractiveRunCommand {
+  kind: InteractiveRunAction["kind"];
+  stage: string;
+  expectedSubjectSequence: number;
+  decision?: string;
+  rationale?: string;
+  guidance?: string;
+}
+export interface InteractiveRunCommandResult {
+  status: "applied" | "saved" | "pending" | "failed";
+  accepted: boolean;
+  runId: string;
+  journalSequence: number;
+  phase: string;
+  guidance?: OperatorMessageRecord;
 }

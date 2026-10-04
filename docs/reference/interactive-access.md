@@ -7,11 +7,12 @@ administrator has no implicit gaggle grant. Anonymous loopback requests cannot
 use the interactive permission route.
 
 The current implementation provides policy authorization, named credential
-selection and `GET /api/v1/gaggles/{gaggle}/interactive-capabilities`. It does not
-implement sessions, source editing or new intervention operations yet. The
-response separates `authorized`, `credentialConfigured` and `available`, and
-states a disabled reason for each action. A configured grant is not a claim that
-an operation is implemented.
+selection, `GET /api/v1/gaggles/{gaggle}/interactive-capabilities`, and a shared
+portal surface for local run gate decisions and saved guidance. Sessions, live
+agent steering, source editing and fresh-allowance stage restarts remain
+unavailable. The permission response separates `authorized`,
+`credentialConfigured` and `available`; `run.intervene` is implemented, with
+run-specific availability checked by the interactive run service.
 
 ## Human membership
 
@@ -36,7 +37,7 @@ interactiveAccess:
     operators:
       - issuer: https://identity.example
         subject: alice
-  actions: [backlog.read, backlog.edit, repository.read, source.proposeChange]
+  actions: [run.intervene, backlog.read, backlog.edit, repository.read, source.proposeChange]
   credentials:
     backlog: human-issues
     repositories:
@@ -94,3 +95,44 @@ operations use the new grants once the scheduler catalog is published; a failed
 catalog publication retains the previously applied policy. Credential selection
 is rechecked for every operation. Instance credential-source changes require
 restarting the daemon, like other instance configuration changes.
+
+## Shared run operations
+
+The run page shows a **Human operations** panel independently of ordinary
+monitoring. Its two human-only routes are:
+
+- `GET /api/v1/runs/{run}/interactive`: current actions and shared saved guidance.
+- `POST /api/v1/runs/{run}/interactive-commands`: `approve`, `override`, `deny`, or
+  `guidance`, with `Idempotency-Key`, a stage and `expectedSubjectSequence` from
+  the read. The body cannot supply an actor, gaggle or credential source.
+
+An operator needs the explicit gaggle `run.intervene` action and the instance
+`operate` role. Human-gate approver rules still apply. Approval and override use
+the existing pinned local runner continuation; denial records a reviewed
+escalation and leaves the run terminal. This does not create the new restart
+allowance epoch described in the design. Temporal/engine runs are explicitly
+unsupported on this new surface; their existing interfaces are unchanged.
+
+Decisions bind to an unresolved human gate pause or a terminal generation. A
+stale generation is refused before execution. The actor's issuer and subject,
+scoped idempotency key, action and rationale are retained in the journal. The
+response reports `applied` only after decision evidence exists, `failed` after a
+durable pre-application failure receipt, and `pending` when the request budget
+ends before the outcome is known. Retry an uncertain operation using the same
+key and payload. The portal preserves both and never automatically retries a
+mutation. A failure in subsequent resumed work remains that work's failure.
+
+Guidance is durably saved as an operator-message record with delivery mode
+`shared-guidance`, purpose `stage-restart-guidance` and target
+`stage:<name>@<observed-sequence>`. Authorized gaggle viewers share these records.
+A saved note has not been delivered to an agent and does not resume work. Future
+restart operations must explicitly select retained note IDs as context. The
+current surface accepts at most 64 KiB UTF-8 guidance or 4096 bytes of rationale,
+retains at most 100 shared notes per run, and refuses a retained journal larger
+than 32 MiB on this initial event-scan path. The journal remains the authoritative
+history; monitoring and existing journal interfaces stay available.
+
+Human content passes through the shared credential registry and pattern scrubber
+before fingerprinting and persistence. Provider identities are unnecessary for
+these journal/runner operations. Repository changes continue to require the
+configured source identity and a pull request.

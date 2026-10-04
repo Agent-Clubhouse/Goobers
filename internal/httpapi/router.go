@@ -619,6 +619,7 @@ type handlerConfig struct {
 	runJournal              RunJournalService
 	childWorkflows          ChildWorkflowService
 	interactivePermissions  InteractivePermissionService
+	interactiveRuns         InteractiveRunService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
@@ -1211,6 +1212,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
 	registerInteractiveRoutes(router, config.interactivePermissions)
+	registerInteractiveRunRoutes(router, config, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)

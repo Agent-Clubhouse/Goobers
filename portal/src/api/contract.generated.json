@@ -764,6 +764,28 @@
       "recoverySafe": false
     },
     {
+      "id": "interactiveRun",
+      "method": "GET",
+      "path": "/api/v1/runs/{run}/interactive",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "interactiveRunCommand",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/interactive-commands",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "gaggleInteractiveCapabilities",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/interactive-capabilities",

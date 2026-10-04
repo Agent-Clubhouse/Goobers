@@ -4,6 +4,8 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/interactiveaccess"
+	"github.com/goobers/goobers/internal/intervention"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func (u *upSession) configureInteractiveAccess() error {
@@ -23,4 +25,13 @@ func (r *configReloader) publishInteractiveDefinitions(definitions *instance.Con
 	// Lock ordering is interactive policy, child authority, then scheduler. An
 	// old-policy provider callback completes before the new catalog is visible.
 	return r.setup.InteractiveAccess.Apply(definitions.Gaggles, func() error { return r.publishChildDefinitions(definitions, publish) })
+}
+
+func (u *upSession) configureInteractiveRuns(messages httpapi.OperatorMessageService) error {
+	service, err := intervention.NewHumanService(u.interventions, u.setup.InteractiveAccess, messages, journal.Chain(u.setup.SharedRegistry, journal.NewPatternScrubber()))
+	if err != nil {
+		return err
+	}
+	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithInteractiveRuns(service))
+	return nil
 }

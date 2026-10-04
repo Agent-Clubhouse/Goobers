@@ -21,13 +21,16 @@ const maxInterventionBody = 1 << 20
 // InterventionRequest is the transport-neutral input shared by the CLI and
 // dashboard mutation adapters. RunID and Stage come from the route path.
 type InterventionRequest struct {
-	RunID               string `json:"-"`
-	Stage               string `json:"-"`
-	IdempotencyKey      string `json:"-"`
-	Actor               string `json:"actor,omitempty"`
-	Decision            string `json:"decision,omitempty"`
-	Rationale           string `json:"rationale,omitempty"`
-	InstructionAddendum string `json:"instructionAddendum,omitempty"`
+	// Trusted human surface fields are never decoded from legacy request bodies.
+	PrincipalRef            string `json:"-"`
+	ExpectedSubjectSequence uint64 `json:"-"`
+	RunID                   string `json:"-"`
+	Stage                   string `json:"-"`
+	IdempotencyKey          string `json:"-"`
+	Actor                   string `json:"actor,omitempty"`
+	Decision                string `json:"decision,omitempty"`
+	Rationale               string `json:"rationale,omitempty"`
+	InstructionAddendum     string `json:"instructionAddendum,omitempty"`
 }
 
 // InterventionResult reports the durable run position after an action.

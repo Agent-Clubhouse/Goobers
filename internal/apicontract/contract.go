@@ -264,6 +264,10 @@ const (
 	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
 
 	// GaggleInteractiveCapabilitiesPath reports explicitly configured human authority.
+	// InteractiveRunPath inspects the explicitly authorized human surface.
+	InteractiveRunPath = RunsPath + "/{run}/interactive"
+	// InteractiveRunCommandsPath accepts occurrence-bound human commands.
+	InteractiveRunCommandsPath        = RunsPath + "/{run}/interactive-commands"
 	GaggleInteractiveCapabilitiesPath = GagglesPath + "/{gaggle}/interactive-capabilities"
 
 	// ChildWorkflow paths are stage-grant-only operations scoped to one parent run.
@@ -384,6 +388,8 @@ const (
 	RouteChildWorkflowStart            RouteID = "childWorkflowStart"
 	RouteChildWorkflowStatus           RouteID = "childWorkflowStatus"
 	RouteChildWorkflowResolve          RouteID = "childWorkflowResolve"
+	RouteInteractiveRun                RouteID = "interactiveRun"
+	RouteInteractiveRunCommand         RouteID = "interactiveRunCommand"
 	RouteGaggleInteractiveCapabilities RouteID = "gaggleInteractiveCapabilities"
 )
 
@@ -636,6 +642,8 @@ var v1Routes = []Route{
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteInteractiveRun, Method: http.MethodGet, Path: InteractiveRunPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteInteractiveRunCommand, Method: http.MethodPost, Path: InteractiveRunCommandsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteGaggleInteractiveCapabilities, Method: http.MethodGet, Path: GaggleInteractiveCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteChildWorkflowValidate, Method: http.MethodPost, Path: ChildWorkflowValidatePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowStart, Method: http.MethodPost, Path: ChildWorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},

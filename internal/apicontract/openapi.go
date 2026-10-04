@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if route.ID == RouteGaggleInteractiveCapabilities {
+		if route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if childWorkflowRoute(route.ID) {
@@ -184,7 +184,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
-		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart:
+		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand:
 		return true
 	default:
 		return false
@@ -217,6 +217,8 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("TriggerRequest")
 	case RouteCancelRun:
 		schema = schemaRef("CancelRunRequest")
+	case RouteInteractiveRunCommand:
+		schema = schemaRef("InteractiveRunCommand")
 	case RouteOperatorMessageSubmit:
 		schema = schemaRef("OperatorMessageSubmitRequest")
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage:
@@ -266,6 +268,10 @@ func openAPIResponses(route Route) map[string]any {
 	}
 	successSchema := map[string]any{"type": "object", "additionalProperties": true}
 	switch route.ID {
+	case RouteInteractiveRun:
+		successSchema = schemaRef("InteractiveRunView")
+	case RouteInteractiveRunCommand:
+		successSchema = schemaRef("InteractiveRunCommandResult")
 	case RouteGaggleInteractiveCapabilities:
 		successSchema = schemaRef("InteractiveCapabilities")
 	case RouteChildWorkflowValidate:

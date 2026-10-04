@@ -83,6 +83,14 @@ HAW-HITL-001/002 slice. Session/persona and operation contracts remain subsequen
 work. See [interactive access](../reference/interactive-access.md) for the current
 permissions route, source formats and implementation boundaries.
 
+The first concrete portal slice now implements human-only local run inspection,
+occurrence-bound approval/override/denial and saved shared guidance through the
+existing runner and journal services. It is a partial HAW-HITL-005/010 delivery,
+not completion of the session ledger or HAW-HITL-007 restart epochs. Saved notes
+are not agent delivery; engine execution is unsupported on this surface until
+an equivalent authority and receipt path is tested. See the reference above for
+bounds, idempotency, pending outcomes and the actual routes.
+
 ```yaml
 spec:
   interactiveAccess:

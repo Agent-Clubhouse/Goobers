@@ -168,7 +168,11 @@ func (s *Service) permission(p httpapi.Principal, g *apiv1.Gaggle, action apiv1.
 		result.ReasonCode = "credential_not_configured"
 		return result
 	}
-	// This permission surface does not itself implement any effect or session.
+	if action == "run.intervene" {
+		result.Available = true
+		return result
+	}
+	// This permission surface does not itself implement any other effect or session.
 	// Concrete routes can advertise availability once they use this authority.
 	result.ReasonCode = "operation_not_implemented"
 	return result

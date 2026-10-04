@@ -211,6 +211,9 @@ func (s *Service) prepareIntervention(
 	if result, replayed, err := replayIntervention(resolved, replayAction, input); replayed || err != nil {
 		return resolved, &result, true, err
 	}
+	if err := checkHumanSubject(resolved, input); err != nil {
+		return resolved, &httpapi.InterventionResult{}, true, err
+	}
 	return resolved, nil, false, nil
 }
 
@@ -495,6 +498,13 @@ func (s *Service) denyEscalation(resolved resolvedInterventionRun, input httpapi
 		var events []journal.Event
 		if events, err = current.Events(); err == nil {
 			replayed, err = scanEscalationResolution(events, input.IdempotencyKey, fingerprint)
+			if err == nil && !replayed && input.ExpectedSubjectSequence != 0 {
+				resolved.events = events
+				resolved.phase, err = current.Phase()
+				if err == nil {
+					err = checkHumanSubject(resolved, input)
+				}
+			}
 		}
 	}
 	if err != nil {
@@ -522,8 +532,9 @@ func (s *Service) denyEscalation(resolved resolvedInterventionRun, input httpapi
 	appendErr := run.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation,
 		Runner: map[string]any{
-			"kind":           escalationResolutionMarker,
-			"resolution":     "deny",
+			"kind":       escalationResolutionMarker,
+			"resolution": "deny",
+			"stage":      input.Stage, "principalRef": input.PrincipalRef, "expectedSubjectSequence": input.ExpectedSubjectSequence,
 			"idempotencyKey": input.IdempotencyKey,
 			"fingerprint":    fingerprint,
 			"actor":          input.Actor,
@@ -766,8 +777,11 @@ func (s *Service) execute(
 			if s.wg != nil {
 				defer s.wg.Done()
 			}
-			if _, runErr := s.finishExecution(execution, lease, run); runErr != nil && s.errorLog != nil {
-				s.errorLog.Printf("%s run intervention failed after acceptance: %v", action, runErr)
+			if _, runErr := s.finishExecution(execution, lease, run); runErr != nil {
+				receiptErr := recordHumanFailure(resolved, action, input)
+				if s.errorLog != nil {
+					s.errorLog.Printf("%s run intervention failed after acceptance: %v", action, errors.Join(runErr, receiptErr))
+				}
 			}
 		}()
 		return runner.Result{}, nil
@@ -1080,16 +1094,19 @@ const interventionIdempotencyMarker = "intervention.idempotency"
 
 func interventionFingerprint(action string, input httpapi.InterventionRequest) (string, error) {
 	payload := struct {
-		Action              string `json:"action"`
-		RunID               string `json:"runId"`
-		Stage               string `json:"stage"`
-		Actor               string `json:"actor"`
-		Decision            string `json:"decision"`
-		Rationale           string `json:"rationale"`
-		InstructionAddendum string `json:"instructionAddendum"`
+		Action                  string `json:"action"`
+		RunID                   string `json:"runId"`
+		Stage                   string `json:"stage"`
+		Actor                   string `json:"actor"`
+		Decision                string `json:"decision"`
+		Rationale               string `json:"rationale"`
+		InstructionAddendum     string `json:"instructionAddendum"`
+		PrincipalRef            string `json:"principalRef,omitempty"`
+		ExpectedSubjectSequence uint64 `json:"expectedSubjectSequence,omitempty"`
 	}{
 		Action: action, RunID: input.RunID, Stage: input.Stage, Actor: input.Actor,
 		Decision: input.Decision, Rationale: input.Rationale, InstructionAddendum: input.InstructionAddendum,
+		PrincipalRef: input.PrincipalRef, ExpectedSubjectSequence: input.ExpectedSubjectSequence,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -1125,6 +1142,8 @@ func recordInterventionMarker(resolved resolvedInterventionRun, action string, i
 			"fingerprint":    fingerprint,
 			"action":         action,
 			"stage":          input.Stage,
+			"actor":          input.Actor, "principalRef": input.PrincipalRef, "rationale": input.Rationale, "decision": input.Decision,
+			"expectedSubjectSequence": input.ExpectedSubjectSequence,
 		},
 	}); err != nil {
 		return fmt.Errorf("journal intervention idempotency: %w", err)

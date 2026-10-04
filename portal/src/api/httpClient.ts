@@ -26,6 +26,7 @@ import type {
   ArtifactContent,
   AttemptList,
   DaemonClient,
+  InteractiveRunView, InteractiveRunCommand, InteractiveRunCommandResult,
   DaemonEventStream,
   DaemonUpdateEvent,
   EventList,
@@ -500,6 +501,17 @@ export class HttpDaemonClient implements DaemonClient {
     ).then(normalizeLegacyWorkItemCost);
   }
 
+  getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView> {
+    return this.getJSON(clientRoutes.interactiveRun, undefined, options, { run: runId });
+  }
+
+  commandInteractiveRun(runId: string, key: string, command: InteractiveRunCommand, options?: RequestOptions): Promise<InteractiveRunCommandResult> {
+    return this.withResponse(clientRoutes.interactiveRunCommand, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as InteractiveRunCommandResult; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { run: runId }, { body: JSON.stringify(command), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
+  }
+
   private async getJSON<T>(
     route: ApiRoute,
     query?: Record<string, QueryValue>,
@@ -625,6 +637,7 @@ export class HttpDaemonClient implements DaemonClient {
     accept: string,
     read: (response: Response) => Promise<T>,
     pathParameters?: PathParameters,
+    mutation?: { body: string; headers: Record<string, string> },
   ): Promise<T> {
     if (options?.signal?.aborted) {
       throw new RequestCancelledError();
@@ -646,7 +659,7 @@ export class HttpDaemonClient implements DaemonClient {
     let responseStatus: number | undefined;
 
     try {
-      return await this.requests.run(requestUrl, controller.signal, async () => {
+      const attempt = async () => {
         timer = globalThis.setTimeout(() => {
           abortKind = "timeout";
           controller.abort();
@@ -654,7 +667,8 @@ export class HttpDaemonClient implements DaemonClient {
         try {
           const next = await this.fetch(requestUrl, {
             method: route.method,
-            headers: { Accept: accept },
+            headers: { Accept: accept, ...mutation?.headers },
+            body: mutation?.body,
             signal: controller.signal,
           });
           responseStatus = next.status;
@@ -668,7 +682,9 @@ export class HttpDaemonClient implements DaemonClient {
             timer = undefined;
           }
         }
-      });
+      };
+      // Mutation retries belong to the operator and must retain the same key.
+      return await (mutation ? attempt() : this.requests.run(requestUrl, controller.signal, attempt));
     } catch (error) {
       if (abortKind === "cancelled" || options?.signal?.aborted) {
         throw new RequestCancelledError({ cause: error });
