@@ -99,7 +99,11 @@ type githubRefreshBackend struct {
 	cfg     RefreshConfig
 	target  target
 	baseURL string
-	client  HTTPClient
+	// basePath is the escaped path prefix of baseURL (for example /api/v3 on
+	// GitHub Enterprise Server). Recorded exchange paths stay relative to the
+	// API root, exactly as the request specs name them.
+	basePath string
+	client   HTTPClient
 }
 
 func (b *githubRefreshBackend) validate() error {
@@ -118,7 +122,8 @@ func (b *githubRefreshBackend) validate() error {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
-	if _, err := url.ParseRequestURI(baseURL); err != nil {
+	parsedBaseURL, err := url.ParseRequestURI(baseURL)
+	if err != nil {
 		return fmt.Errorf("parse GitHub base URL: %w", err)
 	}
 	client := cfg.Client
@@ -127,6 +132,7 @@ func (b *githubRefreshBackend) validate() error {
 	}
 	b.target = target
 	b.baseURL = baseURL
+	b.basePath = strings.TrimRight(parsedBaseURL.EscapedPath(), "/")
 	b.client = client
 	return nil
 }
@@ -176,7 +182,7 @@ func (b *githubRefreshBackend) decorateRequest(req *http.Request) {
 }
 
 func (b *githubRefreshBackend) normalizePath(path string) string {
-	return replaceRepository(path, b.cfg.Repository)
+	return replaceRepository(strings.TrimPrefix(path, b.basePath), b.cfg.Repository)
 }
 
 func (b *githubRefreshBackend) normalizeBody(body []byte) (json.RawMessage, error) {

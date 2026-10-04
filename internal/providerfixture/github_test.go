@@ -266,6 +266,51 @@ func TestRefreshMatchesExistingCanonicalFixtureBytes(t *testing.T) {
 	}
 }
 
+// TestRefreshRecordsPathsRelativeToBaseURLPrefix pins that a base URL with a
+// path prefix (GitHub Enterprise Server's /api/v3) does not leak into the
+// recorded exchange paths: they stay relative to the API root, as the request
+// specs name them.
+func TestRefreshRecordsPathsRelativeToBaseURLPrefix(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "test", "providers", "testdata", "github_contract.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := fixtureReplayClient(t, baseline)
+	prefixed := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+		if !strings.HasPrefix(req.URL.Path, "/api/v3/") {
+			return nil, fmt.Errorf("request %s did not use the base URL path prefix", req.URL.RequestURI())
+		}
+		stripped := req.Clone(req.Context())
+		stripped.URL.Path = strings.TrimPrefix(req.URL.Path, "/api/v3")
+		stripped.URL.RawPath = ""
+		return replay.Do(stripped)
+	})
+	refreshed, err := Refresh(context.Background(), RefreshConfig{
+		Repository: baseline.Repository,
+		Issue:      baseline.Issue,
+		Token:      "dedicated-token",
+		BaseURL:    "https://ghes.invalid/api/v3/",
+		Client:     prefixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := canonical(refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = append(after, '\n')
+	if !bytes.Equal(before, after) {
+		t.Fatalf("base URL path prefix changed recorded fixture bytes\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestCheckContractReplaysRecordedRequests(t *testing.T) {
 	t.Parallel()
 	if err := CheckContract(context.Background(), validFixture()); err != nil {
