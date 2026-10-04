@@ -82,6 +82,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-host-recovery` | `codex/haw-event-configuration` | Recover exact parent and child worker custody before resuming retained work |
 
+| `codex/haw-accepted-child-recovery` | `codex/haw-host-recovery` | Restore a committed child acceptance before dispatching parent continuation |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -119,6 +121,9 @@ wait marker, retain the managed checkout, suspend concurrency without refunding
 budget, wait, reacquire capacity and dispatch a fresh attempt in the same stage
 occurrence. Previous context, transcript and lifetime usage remain available.
 Recovery adopts the held checkout across a crash; watchdogs recognize child waits.
+The acceptance-before-wait crash window now restores the original attempt
+accounting and accepted child before any continuation worker. Terminal parent
+recovery still requires its existing authorized continuation.
 
 **The contained serial parent lane is connected; unsupported shapes remain refused.**
 The first supported parent consists of opted-in repository agents with explicit

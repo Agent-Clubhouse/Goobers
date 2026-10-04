@@ -210,7 +210,7 @@ func TestParentAuthorityHTTPJournalAndSurrenderStayInAttempt(t *testing.T) {
 		t.Fatal("journal adopted a shared artifact outside the attempt")
 	}
 
-	for _, kind := range []string{"isolated.parent.writer.started", "isolated.parent.writer.joined", "isolated.child.writer.started", "isolated.child.writer.joined", "isolated.pod.apply-planned"} {
+	for _, kind := range []string{"isolated.parent.writer.started", "isolated.parent.writer.joined", "isolated.child.writer.started", "isolated.child.writer.joined", "isolated.pod.apply-planned", "child.workflow.attempt-accounting"} {
 		control := livejournal.EmitRequest{RunID: run, Gaggle: f.contract.Identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "forged/" + kind, Time: time.Now(), Event: &journal.Event{Type: journal.EventRunnerAnnotation, Stage: stage, Attempt: 1, Runner: map[string]any{"kind": kind}}}}}
 		controlRaw, _ := json.Marshal(control)
 		if out := f.request(http.MethodPost, path, controlRaw); out.Code == 200 {

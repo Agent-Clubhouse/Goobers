@@ -122,3 +122,18 @@ The completion boundary checks both inline outputs and reviewer evidence against
 bounded attempt custody. It rejects claimed source-trust grades, inconsistent
 sizes and non-reviewer verdicts. Successful reviewers require a schema-valid
 verdict; failed reviewers may surrender their failure and workspace without one.
+
+## Acceptance before parent wait publication
+
+Before an opted-in attempt starts, the host records its policy-attempt count,
+infrastructure failures and cumulative usage. If child acceptance commits before
+parent wait publication, recovery observes that same accepted child and restores
+the wait with the original accounting, context, guidance and workspace. It does
+not consume another attempt or dispatch a continuation worker while the child is
+unsettled or capacity is unavailable. Missing legacy accounting is refused rather
+than reconstructed from guesses. Pods cannot supply this host accounting record.
+
+A terminal parent remains terminal during custody recovery. Its existing
+authorized continuation must reopen it before the pending child wait is restored;
+parent cancellation still prevents continuation. A terminal child result remains
+deliverable even when its original grant has expired or been revoked.
