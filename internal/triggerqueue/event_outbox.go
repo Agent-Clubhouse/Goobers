@@ -34,6 +34,9 @@ type EventPublication struct {
 	Acceptance       EventAcceptance
 	ReceiptID        string
 	CreatedAt        time.Time
+	SettledAt        time.Time
+	TerminalSequence uint64
+	TerminalPhase    string
 }
 
 // BeginEventPublication commits immutable intent before publication. Same-key
@@ -62,9 +65,15 @@ func (s *Store) BeginEventPublication(ctx context.Context, req EventPublication,
 		if parseErr != nil || prior.Digest != envelope.Digest || old.Acceptance.Producer != req.Acceptance.Producer || old.ConfigGeneration != req.ConfigGeneration || old.Occurrence != req.Occurrence {
 			return EventPublication{}, false, ErrConflict
 		}
+		if !old.SettledAt.IsZero() {
+			return old, true, ErrEventPublicationSettled
+		}
 		return old, true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return EventPublication{}, false, err
+	}
+	if err = refuseSettledPublication(ctx, tx, req); err != nil {
 		return EventPublication{}, false, err
 	}
 	var count int
@@ -77,7 +86,7 @@ func (s *Store) BeginEventPublication(ctx context.Context, req EventPublication,
 	if err = childByteCapacity(ctx, tx, len(raw)+4096); err != nil {
 		return EventPublication{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO event_outbox(id,gaggle,run_id,generation,occurrence,envelope_digest,request,created_ns) VALUES(?,?,?,?,?,?,?,?)`, req.ID, req.Acceptance.Producer.Gaggle, req.Acceptance.Producer.RunID, req.ConfigGeneration, req.Occurrence, envelope.Digest, raw, now.UnixNano())
+	_, err = tx.ExecContext(ctx, `INSERT INTO event_outbox(id,gaggle,run_id,generation,occurrence,envelope_digest,request,created_ns,source_group) VALUES(?,?,?,?,?,?,?,?,?)`, req.ID, req.Acceptance.Producer.Gaggle, req.Acceptance.Producer.RunID, req.ConfigGeneration, req.Occurrence, envelope.Digest, raw, now.UnixNano(), req.Acceptance.Producer.RootGroupID)
 	if err != nil {
 		return EventPublication{}, false, err
 	}
@@ -88,14 +97,15 @@ func (s *Store) BeginEventPublication(ctx context.Context, req EventPublication,
 	return req, false, nil
 }
 
-const eventOutboxColumns = "id,gaggle,run_id,generation,occurrence,envelope_digest,request,receipt_id,created_ns"
+const eventOutboxColumns = "id,gaggle,run_id,generation,occurrence,envelope_digest,request,receipt_id,created_ns,source_group,settled_ns,terminal_seq,terminal_phase"
 
 func scanEventPublication(row scanner) (EventPublication, error) {
 	var p EventPublication
-	var gaggle, run, digest string
+	var gaggle, run, digest, sourceGroup string
 	var raw []byte
 	var created int64
-	if err := row.Scan(&p.ID, &gaggle, &run, &p.ConfigGeneration, &p.Occurrence, &digest, &raw, &p.ReceiptID, &created); err != nil {
+	var settled, terminalSequence sql.NullInt64
+	if err := row.Scan(&p.ID, &gaggle, &run, &p.ConfigGeneration, &p.Occurrence, &digest, &raw, &p.ReceiptID, &created, &sourceGroup, &settled, &terminalSequence, &p.TerminalPhase); err != nil {
 		return p, err
 	}
 	if err := json.Unmarshal(raw, &p.Acceptance); err != nil {
@@ -105,10 +115,20 @@ func scanEventPublication(row scanner) (EventPublication, error) {
 	if err != nil {
 		return p, err
 	}
-	if env.ID != p.ID || env.Digest != digest || gaggle != p.Acceptance.Producer.Gaggle || run != p.Acceptance.Producer.RunID || run == "" || !validChildText(p.ConfigGeneration, 256, true) || !validChildText(p.Occurrence, 128, true) {
+	if sourceGroup != p.Acceptance.Producer.RootGroupID || env.ID != p.ID || env.Digest != digest || gaggle != p.Acceptance.Producer.Gaggle || run != p.Acceptance.Producer.RunID || run == "" || !validChildText(p.ConfigGeneration, 256, true) || !validChildText(p.Occurrence, 128, true) {
 		return p, errors.New("triggerqueue: invalid retained publication")
 	}
 	p.CreatedAt = time.Unix(0, created).UTC()
+	if !settled.Valid && (terminalSequence.Valid || p.TerminalPhase != "") {
+		return p, errors.New("triggerqueue: incomplete publication terminal fence")
+	}
+	if settled.Valid {
+		if !terminalSequence.Valid || terminalSequence.Int64 <= 0 || (p.TerminalPhase != "completed" && p.TerminalPhase != "aborted") {
+			return p, errors.New("triggerqueue: invalid publication terminal fence")
+		}
+		p.SettledAt = time.Unix(0, settled.Int64).UTC()
+		p.TerminalSequence = uint64(terminalSequence.Int64)
+	}
 	return p, nil
 }
 
@@ -151,7 +171,7 @@ func (s *Store) CompleteEventPublication(ctx context.Context, p EventPublication
 
 // EventPublicationPage inventories producer journal and generation custody,
 // including intents whose intake acknowledgement was lost. No partial scan may
-// authorize pruning. Outbox release requires a future terminal-producer fence.
+// authorize pruning. Release requires an exact terminal-producer fence.
 func (s *Store) EventPublicationPage(ctx context.Context, after string, limit int) ([]EventPublication, error) {
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: invalid publication page")

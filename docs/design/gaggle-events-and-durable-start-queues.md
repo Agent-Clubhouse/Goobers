@@ -422,8 +422,21 @@ consumer publication verifies the retained consumer journal and carries every
 original causal root forward. Current permission revocation refuses publication
 before new outbox custody.
 
-Completed outboxes currently retain producer journals, source and consumer
-configuration generations, and receipt deduplication. The 10,000-intent per-gaggle
-bound and shared store byte quota fail intake closed. A terminal-producer release
-fence is required before this conservative retention can support sustained
-production throughput; this slice does not claim that lifecycle complete.
+Producer outboxes retain journals, source and consumer configuration generations,
+receipt deduplication, and the original consumer group/input ancestry. The daemon
+releases this custody only after acquiring registry ownership and an exclusive
+journal recovery lock, then verifying the exact completed/aborted run.finished
+sequence. Seven days after that fence, it compacts the intent into a bounded
+identity/digest/receipt tombstone for thirty further days. Exact observations
+remain possible during that window; a tombstone cannot recreate or republish an
+event. Maintenance bounds both compaction and expiry and reserves progress for
+compaction while old tombstones expire.
+
+Failed, escalated and interrupted producers remain resumable and retain custody.
+Failed event consumers retain their original group and input receipts even when
+they fail before their first publication, preserving existing ResumeFromTerminal
+behavior. They need an eventual explicit irreversible disposition; elapsed time
+does not implicitly abandon them. Whole-root budget settlement remains a separate
+future proof that every producer and descendant has settled. The 10,000-active-
+intent per-gaggle bound, 100,000 tombstone bound and shared byte quota fail intake
+closed rather than evicting a live replay promise.

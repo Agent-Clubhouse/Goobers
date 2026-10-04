@@ -25,20 +25,21 @@ import (
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
-	childFamilies    *childFamilyLifecycle
-	queue            *triggerqueue.Store
-	dispatch         *daemonTriggerService
-	sweepMu          sync.Mutex
-	reconcileCursor  string
-	bootUncertain    map[string]bool
-	auditLog         *journal.InstanceLog
-	observe          func(context.Context, triggerqueue.Record) (bool, error)
-	children         childExecutionLauncher
-	observeChild     childStartObserver
-	childCursor      string
-	events           *eventexecution.Service
-	eventScopeCursor string
-	eventGroupCursor string
+	childFamilies          *childFamilyLifecycle
+	queue                  *triggerqueue.Store
+	dispatch               *daemonTriggerService
+	sweepMu                sync.Mutex
+	reconcileCursor        string
+	bootUncertain          map[string]bool
+	auditLog               *journal.InstanceLog
+	observe                func(context.Context, triggerqueue.Record) (bool, error)
+	children               childExecutionLauncher
+	observeChild           childStartObserver
+	childCursor            string
+	events                 *eventexecution.Service
+	eventPublicationCursor string
+	eventScopeCursor       string
+	eventGroupCursor       string
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a

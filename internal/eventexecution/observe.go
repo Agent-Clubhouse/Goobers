@@ -166,8 +166,6 @@ func (s *Service) terminalOutcome(ctx context.Context, rd *journal.Reader, id jo
 	switch phase {
 	case journal.PhaseCompleted:
 		outcome = "completed"
-	case journal.PhaseFailed:
-		outcome = "failed"
 	case journal.PhaseAborted:
 		outcome = "cancelled"
 	default:

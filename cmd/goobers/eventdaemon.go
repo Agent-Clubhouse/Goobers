@@ -91,10 +91,32 @@ func (s *durableTriggerService) sweepEvents(ctx context.Context) error {
 	if s.events == nil {
 		return nil
 	}
+	// Separate bounded budgets prevent sustained routing from starving terminal
+	// custody and retention. Every phase remains bounded within this daemon tick.
+	routeErr := boundedEventSweep(ctx, func(scope context.Context) error {
+		var err error
+		s.eventScopeCursor, err = s.events.RouteSweep(scope, s.eventScopeCursor)
+		return err
+	})
+	settleErr := boundedEventSweep(ctx, func(scope context.Context) error {
+		var err error
+		s.eventGroupCursor, err = s.events.SettleSweep(scope, s.eventGroupCursor)
+		return err
+	})
+	publicationErr := boundedEventSweep(ctx, func(scope context.Context) error {
+		var err error
+		s.eventPublicationCursor, err = s.events.SettlePublicationSweep(scope, s.eventPublicationCursor)
+		return err
+	})
+	pruneErr := boundedEventSweep(ctx, func(scope context.Context) error {
+		_, err := s.queue.PruneEventPublications(scope, s.dispatch.now(), 100)
+		return err
+	})
+	return errors.Join(routeErr, settleErr, publicationErr, pruneErr)
+}
+
+func boundedEventSweep(ctx context.Context, work func(context.Context) error) error {
 	sweep, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	var routeErr, settleErr error
-	s.eventScopeCursor, routeErr = s.events.RouteSweep(sweep, s.eventScopeCursor)
-	s.eventGroupCursor, settleErr = s.events.SettleSweep(sweep, s.eventGroupCursor)
-	return errors.Join(routeErr, settleErr)
+	return work(sweep)
 }

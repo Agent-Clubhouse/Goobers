@@ -51,6 +51,7 @@ func (s *Store) PruneEvents(ctx context.Context, now time.Time, limit int) (Even
 	// Recheck the scope quota for each bounded row; one batch must not exceed it.
 	ids, err := childPruneIDs(ctx, tx, `SELECT r.id FROM event_receipts r WHERE r.tombstoned_ns IS NULL AND r.finished_ns<=?
  AND NOT EXISTS(SELECT 1 FROM event_outbox o WHERE o.receipt_id=r.id OR (o.gaggle=r.gaggle AND o.id=r.event_id))
+ AND NOT EXISTS(SELECT 1 FROM event_outbox o JOIN event_deliveries d ON d.group_id=o.source_group WHERE d.receipt_id=r.id)
  AND NOT EXISTS(SELECT 1 FROM event_deliveries d JOIN event_groups g ON g.id=d.group_id WHERE d.receipt_id=r.id AND (g.settled_ns IS NULL OR g.settled_ns>?))
  AND (SELECT COUNT(*) FROM event_receipts e WHERE e.gaggle=r.gaggle AND e.tombstoned_ns IS NOT NULL)<?
  ORDER BY r.finished_ns,r.id LIMIT ?`, now.Add(-EventRetention).UnixNano(), now.Add(-EventRetention).UnixNano(), MaxEventTombstones, limit-result.Deleted-result.Expired)
@@ -83,7 +84,7 @@ func (s *Store) PruneEvents(ctx context.Context, now time.Time, limit int) (Even
 }
 
 func pruneEventGroups(ctx context.Context, tx *sql.Tx, now time.Time, limit int) (int, error) {
-	ids, err := childPruneIDs(ctx, tx, `SELECT g.id FROM event_groups g WHERE g.settled_ns<=? AND NOT EXISTS(SELECT 1 FROM event_deliveries d WHERE d.group_id=g.id) ORDER BY g.settled_ns,g.id LIMIT ?`, now.Add(-EventRetention).UnixNano(), limit)
+	ids, err := childPruneIDs(ctx, tx, `SELECT g.id FROM event_groups g WHERE g.settled_ns<=? AND NOT EXISTS(SELECT 1 FROM event_outbox o WHERE o.source_group=g.id) AND NOT EXISTS(SELECT 1 FROM event_deliveries d WHERE d.group_id=g.id) ORDER BY g.settled_ns,g.id LIMIT ?`, now.Add(-EventRetention).UnixNano(), limit)
 	if err != nil {
 		return 0, err
 	}
