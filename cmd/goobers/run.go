@@ -494,11 +494,16 @@ func validateStandaloneRunDuration(setup *schedulerSetup, identity localschedule
 
 func flagWasSet(args []string, name string) bool {
 	for _, arg := range args {
-		if arg == "--"+name || arg == "-"+name || strings.HasPrefix(arg, "--"+name+"=") || strings.HasPrefix(arg, "-"+name+"=") {
+		if matchesNamedFlag(arg, name) {
 			return true
 		}
 	}
 	return false
+}
+
+func matchesNamedFlag(arg, name string) bool {
+	return arg == "--"+name || arg == "-"+name ||
+		strings.HasPrefix(arg, "--"+name+"=") || strings.HasPrefix(arg, "-"+name+"=")
 }
 
 type targetedPullRequestReader interface {
@@ -761,63 +766,42 @@ func runFlagArgs(args []string) []string {
 	positionals := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if isNoAPIFlag(arg) {
+		if isNoAPIFlag(arg) || matchesAnyNamedFlag(arg, "no-wait", "force", "github-progress") {
 			flags = append(flags, arg)
 			continue
 		}
-		if arg == "--no-wait" || arg == "-no-wait" ||
-			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
+		if flag, consumesValue := matchesAnyValueFlag(arg, "gaggle", "pr", "api", "api-timeout", "request-id", "expected-source-revision"); flag {
 			flags = append(flags, arg)
-			continue
-		}
-		if arg == "--force" || arg == "-force" ||
-			strings.HasPrefix(arg, "--force=") || strings.HasPrefix(arg, "-force=") {
-			flags = append(flags, arg)
-			continue
-		}
-		if arg == "--github-progress" || arg == "-github-progress" ||
-			strings.HasPrefix(arg, "--github-progress=") || strings.HasPrefix(arg, "-github-progress=") {
-			flags = append(flags, arg)
-			continue
-		}
-		if arg == "--gaggle" || arg == "-gaggle" {
-			flags = append(flags, arg)
-			if i+1 < len(args) {
+			if consumesValue && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}
-			continue
-		}
-		if arg == "--pr" || arg == "-pr" ||
-			arg == "--api" || arg == "-api" ||
-			arg == "--api-timeout" || arg == "-api-timeout" ||
-			arg == "--request-id" || arg == "-request-id" ||
-			arg == "--expected-source-revision" || arg == "-expected-source-revision" {
-			flags = append(flags, arg)
-			if i+1 < len(args) {
-				i++
-				flags = append(flags, args[i])
-			}
-			continue
-		}
-		if strings.HasPrefix(arg, "--api=") || strings.HasPrefix(arg, "-api=") ||
-			strings.HasPrefix(arg, "--api-timeout=") || strings.HasPrefix(arg, "-api-timeout=") ||
-			strings.HasPrefix(arg, "--request-id=") || strings.HasPrefix(arg, "-request-id=") ||
-			strings.HasPrefix(arg, "--expected-source-revision=") || strings.HasPrefix(arg, "-expected-source-revision=") {
-			flags = append(flags, arg)
-			continue
-		}
-		if strings.HasPrefix(arg, "--gaggle=") || strings.HasPrefix(arg, "-gaggle=") {
-			flags = append(flags, arg)
-			continue
-		}
-		if strings.HasPrefix(arg, "--pr=") || strings.HasPrefix(arg, "-pr=") {
-			flags = append(flags, arg)
 			continue
 		}
 		positionals = append(positionals, arg)
 	}
 	return append(flags, positionals...)
+}
+
+func matchesAnyNamedFlag(arg string, names ...string) bool {
+	for _, name := range names {
+		if matchesNamedFlag(arg, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAnyValueFlag(arg string, names ...string) (matched, consumesValue bool) {
+	for _, name := range names {
+		if arg == "--"+name || arg == "-"+name {
+			return true, true
+		}
+		if strings.HasPrefix(arg, "--"+name+"=") || strings.HasPrefix(arg, "-"+name+"=") {
+			return true, false
+		}
+	}
+	return false, false
 }
 
 // runRunAbort marks a stuck non-terminal run as aborted by appending a
