@@ -75,7 +75,7 @@ func containedObservation(op livejournal.Op) bool {
 	case livejournal.OpAppend:
 		return op.Event != nil && op.Artifact == nil && op.Span == nil && op.Checkpoint == nil && containedEvent(*op.Event)
 	case livejournal.OpArtifact:
-		return op.Artifact != nil && op.Event == nil && op.Span == nil && op.Checkpoint == nil && (op.Artifact.Integrity == "" || op.Artifact.Integrity == apiv1.IntegrityDerived || op.Artifact.Integrity == apiv1.IntegrityUnapproved)
+		return op.Artifact != nil && op.Event == nil && op.Span == nil && op.Checkpoint == nil && containedArtifactIntegrity(op.Artifact)
 	case livejournal.OpSpan:
 		return op.Span != nil && op.Event == nil && op.Artifact == nil && op.Checkpoint == nil
 	case livejournal.OpTranscriptCheckpoint:
@@ -108,4 +108,12 @@ func containedEvent(e journal.Event) bool {
 		return false
 	}
 	return reflect.DeepEqual(e, expected)
+}
+
+func containedArtifactIntegrity(a *livejournal.ArtifactOp) bool {
+	integrity := a.Integrity
+	if integrity == "" && a.Ref != nil {
+		integrity = a.Ref.Integrity
+	}
+	return integrity == "" || integrity == apiv1.IntegrityDerived || integrity == apiv1.IntegrityUnapproved
 }

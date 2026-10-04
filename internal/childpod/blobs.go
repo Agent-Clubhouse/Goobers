@@ -21,10 +21,15 @@ func (s ScopedBlobs) Describe() string { return "bounded-child-custody" }
 
 // Get reads only the selected authenticated custody scope.
 func (s ScopedBlobs) Get(ctx context.Context, digest string) ([]byte, error) {
+	return s.GetBounded(ctx, digest, triggerqueue.MaxChildBlobBytes)
+}
+
+// GetBounded applies the caller limit before loading retained bytes.
+func (s ScopedBlobs) GetBounded(ctx context.Context, digest string, limit int64) ([]byte, error) {
 	if s.Queue == nil {
 		return nil, fmt.Errorf("child blob queue unavailable")
 	}
-	data, err := s.Queue.ChildBlob(ctx, s.Identity, digest)
+	data, err := s.Queue.ChildBlobBounded(ctx, s.Identity, digest, limit)
 	if errors.Is(err, triggerqueue.ErrChildBlobUnavailable) {
 		return nil, blobstore.ErrNotFound
 	}

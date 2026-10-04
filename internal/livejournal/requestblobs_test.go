@@ -10,7 +10,7 @@ import (
 
 func TestRequestBlobCustodyOverridesReadsWritesAndRetry(t *testing.T) {
 	base, owned := newBlobDir(t), newBlobDir(t)
-	w, runs := testWriter(t, WithSpanSource(base))
+	w, runs := testWriter(t, WithSpanSource(base), WithArtifactSource(base))
 	now := time.Now().UTC()
 	if _, err := w.Emit(t.Context(), openBatch("run-custody", now)); err != nil {
 		t.Fatal(err)
@@ -47,6 +47,19 @@ func TestRequestBlobCustodyOverridesReadsWritesAndRetry(t *testing.T) {
 	if _, err := w.fetchSpan(ctx, digest); err != nil {
 		t.Fatal(err)
 	}
+	ref, _ := journal.ArtifactRef(shared)
+	if _, err := w.fetchArtifact(ctx, &ArtifactOp{Name: "foreign", Ref: &ref}, "derived"); err == nil {
+		t.Fatal("artifact ref fell back to shared source")
+	}
+	ref, _ = journal.ArtifactRef(data)
+	if _, err := w.fetchArtifact(ctx, &ArtifactOp{Name: "owned", Ref: &ref}, "derived"); err != nil {
+		t.Fatal(err)
+	}
+	ref.Size--
+	if _, err := w.fetchArtifact(ctx, &ArtifactOp{Name: "oversized", Ref: &ref}, "derived"); err == nil {
+		t.Fatal("artifact caller limit ignored")
+	}
+
 	if _, err := w.fetchSpan(WithRequestBlobStore(context.Background(), nil), sharedDigest); err == nil {
 		t.Fatal("explicitly absent custody fell back")
 	}

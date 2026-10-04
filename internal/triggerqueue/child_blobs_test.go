@@ -38,6 +38,12 @@ func TestChildBlobCustodyIsScopedBoundedAndPruned(t *testing.T) {
 	if got, err := s.ChildBlob(t.Context(), child.Identity, digest); err != nil || !bytes.Equal(got, data) {
 		t.Fatal(err)
 	}
+	if got, err := s.ChildBlobBounded(t.Context(), child.Identity, digest, int64(len(data)-1)); err == nil || got != nil {
+		t.Fatal("caller byte limit ignored", err)
+	}
+	if got, err := s.ChildBlobBounded(t.Context(), child.Identity, digest, int64(len(data))); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("exact bounded read failed", err)
+	}
 	failChildTest(t, s, child, childTestTime, true)
 	if err := s.MarkChildParentSettled(t.Context(), child.Identity.ChildParent, childTestTime); err != nil {
 		t.Fatal(err)

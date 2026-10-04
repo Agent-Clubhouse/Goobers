@@ -28,3 +28,11 @@ func (w *Writer) requestArtifactSink(ctx context.Context) artifactSink {
 	}
 	return w.sink
 }
+
+func (w *Writer) requestArtifactSource(ctx context.Context) ArtifactSource {
+	if bound, ok := ctx.Value(requestBlobStoreKey{}).(requestBlobStore); ok {
+		source, _ := bound.store.(blobstore.BoundedReader)
+		return source
+	}
+	return w.artifacts
+}

@@ -84,11 +84,16 @@ func (s *Store) KeepChildBlob(ctx context.Context, id ChildIdentity, digest stri
 
 // ChildBlob verifies data under an exact owner; no global digest lookup exists.
 func (s *Store) ChildBlob(ctx context.Context, id ChildIdentity, digest string) ([]byte, error) {
-	if !id.valid() {
+	return s.ChildBlobBounded(ctx, id, digest, MaxChildBlobBytes)
+}
+
+// ChildBlobBounded enforces the consumer limit in SQL before allocating data.
+func (s *Store) ChildBlobBounded(ctx context.Context, id ChildIdentity, digest string, limit int64) ([]byte, error) {
+	if !id.valid() || limit <= 0 {
 		return nil, ErrChildBlobUnavailable
 	}
 	var data []byte
-	err := s.db.QueryRowContext(ctx, `SELECT b.data FROM child_blobs b JOIN child_lineages c ON b.child_id=c.child_id WHERE c.gaggle=? AND c.parent_run=? AND c.occurrence=? AND c.invocation_key=? AND c.tombstoned_ns IS NULL AND b.digest=? AND length(b.data)<=?`, append(childArgs(id), digest, MaxChildBlobBytes)...).Scan(&data)
+	err := s.db.QueryRowContext(ctx, `SELECT b.data FROM child_blobs b JOIN child_lineages c ON b.child_id=c.child_id WHERE c.gaggle=? AND c.parent_run=? AND c.occurrence=? AND c.invocation_key=? AND c.tombstoned_ns IS NULL AND b.digest=? AND length(b.data)<=?`, append(childArgs(id), digest, min(limit, MaxChildBlobBytes))...).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrChildBlobUnavailable
 	}
