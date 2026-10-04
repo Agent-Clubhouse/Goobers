@@ -34,7 +34,7 @@ func (p *childStagePod) workspace(ctx context.Context, reader *journal.Reader, e
 	if err != nil {
 		return nil, err
 	}
-	fork, err := (&childworkflow.WorkspaceCoordinator{Queue: p.service.childQueue}).RetainedFork(ctx, p.start.Child, url)
+	fork, err := (&childworkflow.WorkspaceCoordinator{Queue: p.service.childQueue}).ExecutionFork(ctx, p.start.Child, p.identity.RunID, url)
 	if err != nil {
 		return nil, err
 	}

@@ -101,7 +101,7 @@ func (f childPodFactory) executor(rec runner.ArtifactRecorder, goober string) (*
 	if err != nil {
 		return nil, err
 	}
-	if id.RunID != f.start.Child.RunID || id.Gaggle != f.start.Envelope.Gaggle || !reflect.DeepEqual(id.Child, &f.start.Lineage) || id.WorkflowDigest != f.start.Envelope.WorkflowDigest || id.ConfigGeneration != f.start.Envelope.ConfigGeneration || id.GooberDigest != f.runtime.gooberDigest {
+	if id.RunID != f.start.runID() || id.Gaggle != f.start.Envelope.Gaggle || !reflect.DeepEqual(id.Child, &f.start.Lineage) || id.WorkflowDigest != f.start.Envelope.WorkflowDigest || id.ConfigGeneration != f.start.Envelope.ConfigGeneration || id.GooberDigest != f.runtime.gooberDigest {
 		return nil, errors.New("child pod factory journal differs from accepted source")
 	}
 	return &childStagePod{childPodFactory: f, journal: jr, identity: id, goober: goober}, nil
@@ -150,7 +150,7 @@ func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelop
 		return dispatcher.SurrenderedResult{}, err
 	}
 	blobs := &childInvocationBlobs{ScopedBlobs: childpod.ScopedBlobs{Queue: p.service.childQueue, Identity: p.start.Child.Identity}, recorder: p.journal}
-	if err = copyContainedPodContext(ctx, reader, p.identity.RunID, blobs, env.ContextPointers); err != nil {
+	if err = p.copyContext(ctx, reader, blobs, env.ContextPointers); err != nil {
 		return dispatcher.SurrenderedResult{}, err
 	}
 	if request.Attempt.Agentic {

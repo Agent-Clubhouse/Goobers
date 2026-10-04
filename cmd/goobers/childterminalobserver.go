@@ -141,7 +141,7 @@ func (l *queuedChildLauncher) terminalWorkspace(ctx context.Context, coordinator
 	if err != nil {
 		return nil, err
 	}
-	fork, err := coordinator.RetainedFork(ctx, ref.Child, url)
+	fork, err := coordinator.ExecutionFork(ctx, ref.Child, id.RunID, url)
 	if err != nil {
 		return nil, err
 	}

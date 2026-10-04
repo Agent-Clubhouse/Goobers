@@ -31,9 +31,12 @@ func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, i
 		return childExecutionRef{}, err
 	}
 	if id.Child.ExecutionEpoch > 0 {
-		ref.Lineage, err = retainedChildEpochLineage(ctx, queue, id, ref)
+		ref, err = childEpochReference(ctx, queue, ref, id.RunID)
 		if err != nil {
 			return childExecutionRef{}, err
+		}
+		if ref.Execution.SourceRunID != id.ContinuedFromRunID || ref.Execution.SourceTerminalSeq != id.SourceTerminalSeq || ref.Execution.Actor != id.Operator || ref.Execution.Stage != id.RequestedTarget {
+			return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 		}
 	} else if ref.Child.RunID != id.RunID {
 		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
@@ -51,17 +54,32 @@ func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, i
 	}
 	return ref, nil
 }
-func retainedChildEpochLineage(ctx context.Context, queue *triggerqueue.Store, id journal.RunIdentity, ref childExecutionRef) (journal.ChildLineage, error) {
-	epoch, err := queue.ChildExecution(ctx, ref.Child.Identity, id.RunID)
+func childEpochReference(ctx context.Context, queue *triggerqueue.Store, ref childExecutionRef, runID string) (childExecutionRef, error) {
+	epoch, err := queue.ChildExecution(ctx, ref.Child.Identity, runID)
 	if err != nil {
-		return journal.ChildLineage{}, err
+		return childExecutionRef{}, err
 	}
-	if epoch.Epoch != id.Child.ExecutionEpoch || epoch.SourceRunID != id.ContinuedFromRunID || epoch.SourceTerminalSeq != id.SourceTerminalSeq || epoch.Actor != id.Operator || epoch.Stage != id.RequestedTarget {
-		return journal.ChildLineage{}, childworkflow.ErrAuthorityUnavailable
+	if epoch.Epoch < 1 {
+		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 	}
-	lineage := ref.Lineage
-	lineage.ExecutionEpoch = epoch.Epoch
-	lineage.PriorResultRef = epoch.SourceResultRef
-	lineage.RestartDigest = epoch.RequestDigest
-	return lineage, nil
+	ref.Execution = &epoch
+	ref.Lineage.ExecutionEpoch = epoch.Epoch
+	ref.Lineage.PriorResultRef = epoch.SourceResultRef
+	ref.Lineage.RestartDigest = epoch.RequestDigest
+	return ref, nil
+}
+
+func (ref childExecutionRef) runID() string {
+	if ref.Execution != nil {
+		return ref.Execution.RunID
+	}
+	return ref.Child.RunID
+}
+
+func (ref childExecutionRef) executionIdentity(gooberDigest string) journal.RunIdentity {
+	id := journal.RunIdentity{RunID: ref.runID(), Gaggle: ref.Envelope.Gaggle, Workflow: ref.Envelope.Workflow, WorkflowDigest: ref.Envelope.WorkflowDigest, GooberDigest: gooberDigest, ConfigGeneration: ref.Envelope.ConfigGeneration, Child: &ref.Lineage}
+	if ref.Execution != nil {
+		id.ContinuedFromRunID, id.SourceTerminalSeq, id.Operator, id.RequestedTarget = ref.Execution.SourceRunID, ref.Execution.SourceTerminalSeq, ref.Execution.Actor, ref.Execution.Stage
+	}
+	return id
 }

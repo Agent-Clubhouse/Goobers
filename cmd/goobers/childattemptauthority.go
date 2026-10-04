@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/childpod"
@@ -33,10 +34,6 @@ func (s *daemonCredentialService) childAttempt(ctx context.Context) (childAttemp
 	if err != nil || !scoped {
 		return childAttemptCustody{}, errors.Join(childworkflow.ErrAuthorityUnavailable, err)
 	}
-	child, err := s.childQueue.GetChild(ctx, identity)
-	if err != nil {
-		return childAttemptCustody{}, err
-	}
 	blobs := childpod.ChildAttemptBlobs{Store: childpod.ScopedBlobs{Queue: s.childQueue, Identity: identity}, ContractDigest: p.GeneratedChildContractDigest}
 	raw, err := blobs.Get(ctx, p.GeneratedChildContractDigest)
 	if err != nil {
@@ -46,7 +43,7 @@ func (s *daemonCredentialService) childAttempt(ctx context.Context) (childAttemp
 	if err != nil {
 		return childAttemptCustody{}, err
 	}
-	dir, err := s.layout.FindRunDir(child.RunID)
+	dir, err := s.layout.FindRunDir(strings.TrimPrefix(p.Subject, "run:"))
 	if err != nil {
 		return childAttemptCustody{}, err
 	}

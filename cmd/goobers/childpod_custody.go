@@ -101,7 +101,7 @@ func (s *daemonCredentialService) pendingChildPodScopes(ctx context.Context, rea
 	if id.Child == nil || s.childQueue == nil {
 		return nil, nil, invoke.ErrWorkspaceNotQuiescent
 	}
-	child, err := s.childQueue.ChildForRun(ctx, id.RunID)
+	child, err := s.childQueue.ChildForExecutionRun(ctx, id.RunID)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -21,6 +21,16 @@ type StageRestartExecutionFactories struct {
 	AdditionalRepos    []apiv1.RepoRef
 }
 
+// ForChildStageRestartExecution retains the already-bound isolated factories
+// while installing the human authority lifetime. It never accepts native
+// replacement factories or changes the admitted child's capability ceiling.
+func (r *Runner) ForChildStageRestartExecution(id journal.RunIdentity, begin func(context.Context, journal.RunIdentity, SecretRegistrar) (context.Context, func(), error)) (*Runner, error) {
+	if r == nil || id.Child == nil {
+		return nil, errors.New("runner: contained human child driver unavailable")
+	}
+	return r.ForStageRestartExecution(id, StageRestartExecutionFactories{NewAgentic: r.cfg.NewAgentic, NewDeterministic: r.cfg.NewDeterministic, Context: begin, RepositoryIdentity: r.cfg.ResolveRepositoryIdentity, GateCapabilities: r.cfg.GateGooberCapabilities})
+}
+
 // ForStageRestartExecution creates a driver which can only resume the exact
 // human epoch. It cannot start ordinary automation or invoke automation hooks.
 func (r *Runner) ForStageRestartExecution(id journal.RunIdentity, f StageRestartExecutionFactories) (*Runner, error) {

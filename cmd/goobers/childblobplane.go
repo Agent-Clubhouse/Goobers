@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"io/fs"
-	"reflect"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -35,7 +34,7 @@ func (s *daemonCredentialService) childBlobScope(ctx context.Context) (triggerqu
 	if !ok || !apiv1.ValidRunID(runID) || s.childQueue == nil {
 		return triggerqueue.ChildIdentity{}, false, errors.New("blob custody run identity unavailable")
 	}
-	child, err := s.childQueue.ChildForRun(ctx, runID)
+	child, err := s.childQueue.ChildForExecutionRun(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if principal.GeneratedChild {
 			return triggerqueue.ChildIdentity{}, true, errors.New("signed child blob lineage unavailable")
@@ -64,28 +63,17 @@ func (s *daemonCredentialService) childBlobScope(ctx context.Context) (triggerqu
 	if !principal.GeneratedChild {
 		return triggerqueue.ChildIdentity{}, true, errors.New("child blob custody requires a signed child principal")
 	}
-	if err := s.verifyChildBlobOwner(ctx, child); err != nil {
+	if err := s.verifyChildBlobOwner(ctx, child, runID); err != nil {
 		return triggerqueue.ChildIdentity{}, true, err
 	}
 	return child.Identity, true, nil
 }
 
-func (s *daemonCredentialService) verifyChildBlobOwner(ctx context.Context, child triggerqueue.ChildRecord) error {
+func (s *daemonCredentialService) verifyChildBlobOwner(ctx context.Context, child triggerqueue.ChildRecord, runID string) error {
 	if child.State.Terminal() || !child.AcknowledgedAt.IsZero() || !child.TombstonedAt.IsZero() {
 		return errors.New("child blob custody is closed")
 	}
-	receipt, err := s.childQueue.ChildStart(ctx, child.Identity)
-	if err != nil {
-		return err
-	}
-	if receipt.State != triggerqueue.Dispatching && receipt.State != triggerqueue.Dispatched {
-		return errors.New("child blob custody has no claimed execution")
-	}
-	ref, err := (&durableTriggerService{queue: s.childQueue}).childReference(ctx, receipt)
-	if err != nil {
-		return err
-	}
-	dir, err := s.layout.FindRunDir(child.RunID)
+	dir, err := s.layout.FindRunDir(runID)
 	if err != nil {
 		return err
 	}
@@ -97,7 +85,8 @@ func (s *daemonCredentialService) verifyChildBlobOwner(ctx context.Context, chil
 	if err != nil {
 		return err
 	}
-	if id.RunID != child.RunID || id.Gaggle != child.Identity.Gaggle || !reflect.DeepEqual(id.Child, &ref.Lineage) || id.ConfigGeneration != ref.Envelope.ConfigGeneration || id.WorkflowDigest != ref.Envelope.WorkflowDigest {
+	ref, err := retainedChildExecutionRef(ctx, s.childQueue, id, false)
+	if err != nil || id.RunID != runID || ref.Child.Identity != child.Identity {
 		return errors.New("child blob custody differs from journal provenance")
 	}
 	// Cancellation prevents new execution/credentials, but the existing pod

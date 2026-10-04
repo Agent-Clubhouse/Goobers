@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 )
 
@@ -36,7 +35,14 @@ func (s *daemonCredentialService) isolatedChildBuilder(build childRuntimeBuilder
 		if build == nil || s.childExecutors == nil {
 			return preparedChildRuntime{}, &childStartDeferred{Reason: "isolated child stage backend unavailable"}
 		}
-		return isolatedChildRuntime(build, s.childExecutors)(ctx, start)
+		runtime, err := isolatedChildRuntime(build, s.childExecutors)(ctx, start)
+		if err == nil && start.Execution != nil {
+			runtime.runner, err = runtime.runner.ForChildStageRestartExecution(start.executionIdentity(runtime.gooberDigest), s.beginChildRestartRuntime)
+			if err != nil && runtime.release != nil {
+				runtime.release()
+			}
+		}
+		return runtime, err
 	}
 }
 
@@ -62,8 +68,7 @@ func bindChildRuntime(ctx context.Context, start childExecutionStart, runtime pr
 	if err != nil {
 		return preparedChildRuntime{}, err
 	}
-	id := journal.RunIdentity{RunID: start.Child.RunID, Gaggle: start.Envelope.Gaggle, Workflow: start.Envelope.Workflow,
-		WorkflowDigest: start.Envelope.WorkflowDigest, GooberDigest: runtime.gooberDigest, ConfigGeneration: start.Envelope.ConfigGeneration, Child: &start.Lineage}
+	id := start.executionIdentity(runtime.gooberDigest)
 	runtime.runner, err = runtime.runner.ForChildExecution(id, executors)
 	if err != nil {
 		return preparedChildRuntime{}, err

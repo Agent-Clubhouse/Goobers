@@ -46,6 +46,9 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 	if err := guardParentContributionPrune(candidate); err != nil {
 		return err
 	}
+	if err := protectChildJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
 	if err := protectEventJournal(ctx, queue, candidate); err != nil {
 		return err
 	}

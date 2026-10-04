@@ -29,9 +29,10 @@ type childExecutionLauncher interface {
 }
 
 type childExecutionRef struct {
-	Child    triggerqueue.ChildRecord
-	Envelope childworkflow.ChildStartEnvelope
-	Lineage  journal.ChildLineage
+	Child     triggerqueue.ChildRecord
+	Envelope  childworkflow.ChildStartEnvelope
+	Lineage   journal.ChildLineage
+	Execution *triggerqueue.ChildExecution
 }
 
 type childExecutionStart struct {

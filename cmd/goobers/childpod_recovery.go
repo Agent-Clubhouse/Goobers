@@ -90,7 +90,7 @@ func (s *daemonCredentialService) recoverChildPod(ctx context.Context, reader *j
 func (s *daemonCredentialService) childRecoveryRequest(ctx context.Context, reader *journal.Reader, scope childPodScope) (childpod.Request, childpod.ScopedBlobs, error) {
 	c := scope.Contract
 	request := childpod.Request{Identity: c.Identity, Attempt: scope.Retained.Input.Attempt, Eligible: scope.Retained.Input.Eligible, Ceiling: c.Ceiling, StartedAt: c.StartedAt}
-	child, err := s.childQueue.ChildForRun(ctx, c.Identity.RunID)
+	child, err := s.childQueue.ChildForExecutionRun(ctx, c.Identity.RunID)
 	if err != nil {
 		return request, childpod.ScopedBlobs{}, err
 	}
@@ -109,7 +109,7 @@ func (s *daemonCredentialService) childRecoveryRequest(ctx context.Context, read
 	if err != nil {
 		return request, blobs, err
 	}
-	fork, err := (&childworkflow.WorkspaceCoordinator{Queue: s.childQueue}).RetainedFork(ctx, child, url)
+	fork, err := (&childworkflow.WorkspaceCoordinator{Queue: s.childQueue}).ExecutionFork(ctx, child, c.Identity.RunID, url)
 	if err != nil {
 		return request, blobs, err
 	}
