@@ -78,25 +78,25 @@ repository/backlog as required by the workbench design, never in a private sessi
 
 ## 4. Interactive access and execution policy
 
-The following is a proposed API vocabulary, to be finalized with schema admission tests;
-it is not a claim that this YAML is supported by the current parser:
+The policy and named credential vocabulary below is implemented by the first
+HAW-HITL-001/002 slice. Session/persona and operation contracts remain subsequent
+work. See [interactive access](../reference/interactive-access.md) for the current
+permissions route, source formats and implementation boundaries.
 
 ```yaml
 spec:
   interactiveAccess:
     credentials:
-      backlog: {credentialRef: team-backlog-operator}
-      code: {credentialRef: team-code-author}
-    targets:
-      backlog: [primary]
-      repositories: [project, design-docs]
-    actions: [session.create, session.message, backlog.edit, backlog.resolve,
+      backlog: team-backlog-operator
+      repositories:
+        - repository: {provider: github, owner: acme, name: web}
+          credentialRef: team-code-author
+    actions: [backlog.read, backlog.edit, backlog.resolve, repository.read,
               run.intervene, run.restartStage, pr.repair, source.proposeChange]
     humans:
-      viewers: [{issuer: corp, group: product-readers}]
-      operators: [{issuer: corp, group: product-operators}]
+      viewers: [{issuer: https://identity.example, group: product-readers}]
+      operators: [{issuer: https://identity.example, group: product-operators}]
     sourceWrites: {mode: pull-request}
-    assistant: {goober: factory-assistant, instructions: interactive-instructions.md}
 ```
 
 References resolve server-owned credential bindings backed by the existing instance
@@ -368,7 +368,8 @@ documents at-least-once step producers, reinforcing the need to reconcile extern
 and supervised execution. These are product/source precedents, not dependencies or a claim
 that Goobers has been live-tested against those products.
 
-Review defaults requiring final alignment: exact credential-reference naming and integration
-with the existing secret-reference registry, plus initial session admission capacities.
+The implemented source selector uses named `instance.interactiveCredentials`, backed by
+existing token/auth sources. Initial session admission capacities and persona configuration
+remain to be finalized.
 These choices do not reopen explicit per-gaggle grants, PR-only repository changes,
 cascading child cancellation, shared sessions, source ownership or human attribution.

@@ -18,6 +18,7 @@ import (
 )
 
 type wireFixtures struct {
+	InteractiveCapabilities  InteractiveCapabilities                    `json:"interactiveCapabilities"`
 	ChildWorkflowSource      ChildWorkflowSourceRequest                 `json:"childWorkflowSource"`
 	ChildWorkflowResolve     ChildWorkflowResolveRequest                `json:"childWorkflowResolve"`
 	ChildWorkflowResolution  ChildWorkflowResolutionResponse            `json:"childWorkflowResolution"`
@@ -64,6 +65,7 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "interactiveCapabilities", scriptType: "InteractiveCapabilities"},
 	{name: "childWorkflowSource", scriptType: "ChildWorkflowSourceRequest"},
 	{name: "childWorkflowStatus", scriptType: "ChildWorkflowStatusRequest"},
 	{name: "childWorkflowResolve", scriptType: "ChildWorkflowResolveRequest"},
@@ -1062,6 +1064,7 @@ func childWorkflowWireFixture() ChildWorkflowResponse {
 }
 
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures.InteractiveCapabilities = InteractiveCapabilities{Gaggle: "web", PolicyConfigured: true, Viewer: true, Operator: false, SourceWriteMode: "pull-request", Actions: []InteractiveActionPermission{{Action: "backlog.read", Authorized: true, CredentialConfigured: true, ReasonCode: "operation_not_implemented"}}}
 	fixtures.ChildWorkflowSource = ChildWorkflowSourceRequest{Source: "kind: Workflow\n"}
 	fixtures.ChildWorkflowStatus = ChildWorkflowStatusRequest{InvocationKey: "inspect-1"}
 	fixtures.ChildWorkflowValidation = ChildWorkflowValidationResponse{Valid: false, Advisory: true, Diagnostics: []ChildWorkflowDiagnostic{{Code: "schema", Field: "dslVersion", Message: "explicit DSL 3.1 is required"}}}

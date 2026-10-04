@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/interactiveaccess"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -118,7 +119,8 @@ type schedulerSetup struct {
 	// CredentialPlane is the daemon credential service (#3511); set by up.go
 	// after API wiring so config reload can swap its config-derived snapshot
 	// alongside the intervention definitions. Nil outside the `up` daemon.
-	CredentialPlane *daemonCredentialService
+	CredentialPlane   *daemonCredentialService
+	InteractiveAccess *interactiveaccess.Service
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that

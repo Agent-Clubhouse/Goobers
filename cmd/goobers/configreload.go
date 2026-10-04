@@ -336,7 +336,7 @@ func (r *configReloader) poll(now time.Time) error {
 	publish := func() error {
 		return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest)
 	}
-	if err := r.publishChildDefinitions(definitions.Set, publish); err != nil {
+	if err := r.publishInteractiveDefinitions(definitions.Set, publish); err != nil {
 		r.observedDigest = r.appliedDigest
 		return err
 	}

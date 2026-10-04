@@ -11,6 +11,10 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // this worker's RBAC access to it before polling or dispatching any work
 // (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
 type GaggleSpec struct {
+	// InteractiveAccess explicitly grants human operations and selects their
+	// provider credentials. Omission preserves existing monitoring only.
+	// +optional
+	InteractiveAccess *InteractiveAccessPolicy `json:"interactiveAccess,omitempty" yaml:"interactiveAccess,omitempty"`
 	// Cost overrides instance-wide external cost publication. An omitted or
 	// null enabled value inherits the instance default; local accounting remains active.
 	// +optional

@@ -93,6 +93,9 @@ type Principal struct {
 	// Roles are the instance-scoped roles granted to this principal by
 	// configuration. Empty means authenticated but authorized for nothing.
 	Roles []Role
+	// Groups contains stable group identifiers from a configured claim in a
+	// cryptographically verified identity token. Request bodies never set it.
+	Groups []string
 	// Scopes narrow a POD principal to a subset of the pod-reachable planes
 	// (podauth.KnownScopes). Empty means the unscoped pod token, which reaches
 	// every pod plane — the posture GOOBERS_POD_TOKEN has always had, and the
@@ -615,6 +618,7 @@ type handlerConfig struct {
 	journal                 JournalService
 	runJournal              RunJournalService
 	childWorkflows          ChildWorkflowService
+	interactivePermissions  InteractivePermissionService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
@@ -1206,6 +1210,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	})
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
+	registerInteractiveRoutes(router, config.interactivePermissions)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)

@@ -263,6 +263,9 @@ const (
 	// fields are data only and cannot carry execution authority.
 	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
 
+	// GaggleInteractiveCapabilitiesPath reports explicitly configured human authority.
+	GaggleInteractiveCapabilitiesPath = GagglesPath + "/{gaggle}/interactive-capabilities"
+
 	// ChildWorkflow paths are stage-grant-only operations scoped to one parent run.
 	ChildWorkflowValidatePath = childworkflowwire.ValidatePath
 	ChildWorkflowStartPath    = childworkflowwire.StartPath
@@ -370,17 +373,18 @@ const (
 	RouteGaggleStatePut RouteID = "gaggleStatePut"
 
 	// The cross-run journal plane (decision 005 R1, finding 002 C4).
-	RouteJournalRunPhase             RouteID = "journalRunPhase"
-	RouteJournalConflictTouches      RouteID = "journalConflictTouches"
-	RouteJournalUnpushedWork         RouteID = "journalUnpushedWork"
-	RouteJournalEscalationCandidates RouteID = "journalEscalationCandidates"
-	RouteJournalMergeAuthority       RouteID = "journalMergeAuthority"
-	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
-	RouteOperatorMessageSubmit       RouteID = "operatorMessageSubmit"
-	RouteChildWorkflowValidate       RouteID = "childWorkflowValidate"
-	RouteChildWorkflowStart          RouteID = "childWorkflowStart"
-	RouteChildWorkflowStatus         RouteID = "childWorkflowStatus"
-	RouteChildWorkflowResolve        RouteID = "childWorkflowResolve"
+	RouteJournalRunPhase               RouteID = "journalRunPhase"
+	RouteJournalConflictTouches        RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork           RouteID = "journalUnpushedWork"
+	RouteJournalEscalationCandidates   RouteID = "journalEscalationCandidates"
+	RouteJournalMergeAuthority         RouteID = "journalMergeAuthority"
+	RouteJournalBranchOwnership        RouteID = "journalBranchOwnership"
+	RouteOperatorMessageSubmit         RouteID = "operatorMessageSubmit"
+	RouteChildWorkflowValidate         RouteID = "childWorkflowValidate"
+	RouteChildWorkflowStart            RouteID = "childWorkflowStart"
+	RouteChildWorkflowStatus           RouteID = "childWorkflowStatus"
+	RouteChildWorkflowResolve          RouteID = "childWorkflowResolve"
+	RouteGaggleInteractiveCapabilities RouteID = "gaggleInteractiveCapabilities"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -632,6 +636,7 @@ var v1Routes = []Route{
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteGaggleInteractiveCapabilities, Method: http.MethodGet, Path: GaggleInteractiveCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteChildWorkflowValidate, Method: http.MethodPost, Path: ChildWorkflowValidatePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowStart, Method: http.MethodPost, Path: ChildWorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowStatus, Method: http.MethodPost, Path: ChildWorkflowStatusPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},

@@ -764,6 +764,17 @@
       "recoverySafe": false
     },
     {
+      "id": "gaggleInteractiveCapabilities",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/interactive-capabilities",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "childWorkflowValidate",
       "method": "POST",
       "path": "/api/v1/runs/{run}/child-workflows/validate",

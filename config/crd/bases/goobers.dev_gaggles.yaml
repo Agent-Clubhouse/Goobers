@@ -276,6 +276,196 @@ spec:
                   finish normally.
                 nullable: true
                 type: boolean
+              interactiveAccess:
+                description: |-
+                  InteractiveAccess explicitly grants human operations and selects their
+                  provider credentials. Omission preserves existing monitoring only.
+                properties:
+                  actions:
+                    description: |-
+                      Actions is the closed operation allowlist. Empty permits policy inspection
+                      only; it does not enable a provider-backed read.
+                    items:
+                      description: |-
+                        InteractiveAction is an explicitly permitted human operation. Configuration
+                        grants authority; a route must separately implement the operation before
+                        advertising it as available.
+                      enum:
+                      - session.create
+                      - session.message
+                      - backlog.read
+                      - backlog.edit
+                      - backlog.resolve
+                      - repository.read
+                      - run.intervene
+                      - run.restartStage
+                      - pr.repair
+                      - source.proposeChange
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: set
+                  credentials:
+                    description: |-
+                      Credentials selects named instance interactiveCredentials entries. There
+                      is no inheritance from automation, connectionRef, or another target.
+                    properties:
+                      backlog:
+                        description: |-
+                          Backlog names the instance interactive credential for this gaggle's
+                          configured backlog. Missing means provider-backed backlog access is off.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                      repositories:
+                        description: |-
+                          Repositories explicitly enables configured project/additional repositories.
+                          Every qualified identity must already belong to this gaggle.
+                        items:
+                          description: |-
+                            InteractiveRepositoryCredential selects a named credential for one exact
+                            gaggle repository. It never accepts an arbitrary client-submitted URL.
+                          properties:
+                            credentialRef:
+                              description: CredentialRef names one instance interactiveCredentials
+                                entry.
+                              maxLength: 128
+                              minLength: 1
+                              type: string
+                            repository:
+                              description: Repository is a qualified configured project
+                                or additional repository.
+                              properties:
+                                name:
+                                  description: Name is the repository name.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                owner:
+                                  description: Owner is the GitHub owner or Azure
+                                    DevOps organization.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                project:
+                                  description: Project is required for Azure DevOps
+                                    and forbidden for GitHub.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                provider:
+                                  description: Provider is GitHub or Azure DevOps.
+                                  enum:
+                                  - github
+                                  - ado
+                                  type: string
+                              required:
+                              - name
+                              - owner
+                              - provider
+                              type: object
+                              x-kubernetes-validations:
+                              - message: project is required for ADO and forbidden
+                                  for GitHub
+                                rule: 'self.provider == ''ado'' ? has(self.project)
+                                  : !has(self.project)'
+                          required:
+                          - credentialRef
+                          - repository
+                          type: object
+                        maxItems: 32
+                        type: array
+                    type: object
+                  humans:
+                    description: Humans grants viewers/operators by verified issuer
+                      and subject or group.
+                    properties:
+                      operators:
+                        description: Operators may perform explicitly allowed actions
+                          and inspect this gaggle.
+                        items:
+                          description: |-
+                            InteractiveHumanGrant matches the authenticated issuer plus exactly one
+                            stable subject or verified group. Names and request bodies are not identity.
+                          properties:
+                            group:
+                              description: Group exactly matches a group from the
+                                configured verified token claim.
+                              maxLength: 512
+                              minLength: 1
+                              type: string
+                            issuer:
+                              description: Issuer exactly matches the authenticated
+                                trust domain (OIDC issuer URL).
+                              maxLength: 2048
+                              minLength: 1
+                              type: string
+                            subject:
+                              description: Subject exactly matches the authenticated
+                                stable subject claim.
+                              maxLength: 512
+                              minLength: 1
+                              type: string
+                          required:
+                          - issuer
+                          type: object
+                          x-kubernetes-validations:
+                          - message: exactly one subject or group is required
+                            rule: has(self.subject) != has(self.group)
+                        maxItems: 128
+                        type: array
+                      viewers:
+                        description: Viewers may inspect explicitly enabled interactive
+                          read surfaces.
+                        items:
+                          description: |-
+                            InteractiveHumanGrant matches the authenticated issuer plus exactly one
+                            stable subject or verified group. Names and request bodies are not identity.
+                          properties:
+                            group:
+                              description: Group exactly matches a group from the
+                                configured verified token claim.
+                              maxLength: 512
+                              minLength: 1
+                              type: string
+                            issuer:
+                              description: Issuer exactly matches the authenticated
+                                trust domain (OIDC issuer URL).
+                              maxLength: 2048
+                              minLength: 1
+                              type: string
+                            subject:
+                              description: Subject exactly matches the authenticated
+                                stable subject claim.
+                              maxLength: 512
+                              minLength: 1
+                              type: string
+                          required:
+                          - issuer
+                          type: object
+                          x-kubernetes-validations:
+                          - message: exactly one subject or group is required
+                            rule: has(self.subject) != has(self.group)
+                        maxItems: 128
+                        type: array
+                    type: object
+                  sourceWrites:
+                    description: SourceWrites always uses pull requests. Omission
+                      enforces the same rule.
+                    properties:
+                      mode:
+                        default: pull-request
+                        description: Mode requires a pull request; direct repository
+                          publication is unsupported.
+                        enum:
+                        - pull-request
+                        type: string
+                    required:
+                    - mode
+                    type: object
+                required:
+                - humans
+                type: object
               isolation:
                 description: Isolation declares the per-gaggle boundary (namespace
                   + workload identity).

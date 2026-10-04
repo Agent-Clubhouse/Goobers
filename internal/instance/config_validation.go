@@ -54,6 +54,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.Retention.validate,
 		func() error { return c.UpdateCheckSettings().Validate() },
 		func() error { return c.validateRepos(stores) },
+		func() error { return c.validateInteractiveCredentials(stores) },
 		c.validateGitHubCLIIdentityRefs,
 		func() error { return c.validateDaemonIdentity(stores) },
 		func() error { return c.validateCredentials(stores) },

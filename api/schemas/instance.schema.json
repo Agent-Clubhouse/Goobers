@@ -58,6 +58,90 @@
       "minLength": 1,
       "description": "Provider identity work items are assigned to when Goobers parks them for human attention. Empty leaves parked items unassigned, so nobody is notified."
     },
+    "interactiveCredentials": {
+      "type": "array",
+      "description": "Explicit named credential sources for human operations; no implicit automation access.",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "description": "Explicit human-operation credential source, never an automation default. ADO project-only backlog credentials omit repository.",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Unique name selected by a gaggle interactive binding.",
+            "maxLength": 128
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Credential provider.",
+            "enum": [
+              "github",
+              "ado"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "description": "GitHub owner or Azure DevOps organization.",
+            "maxLength": 256
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required Azure DevOps project; forbidden for GitHub.",
+            "maxLength": 256
+          },
+          "repository": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required for GitHub and code access; optional for ADO project backlog.",
+            "maxLength": 256
+          },
+          "token": {
+            "$ref": "#/$defs/tokenRef",
+            "description": "Indirect secret source; never an inline value."
+          },
+          "auth": {
+            "$ref": "#/$defs/repo/properties/auth",
+            "description": "Existing GitHub App or Azure DevOps identity mechanism."
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "owner"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "provider": {
+                  "const": "github"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "repository"
+              ],
+              "not": {
+                "required": [
+                  "project"
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "project"
+              ]
+            }
+          }
+        ]
+      }
+    },
     "credentials": {
       "description": "Per-capability and per-MCP credential sources. A capability entry overrides the repo-token default for that one capability (e.g. a separate review identity, since an author cannot approve its own pull request); an MCP entry is reachable only through a goober's explicit MCP server reference. Agentic stages fall back to the current user's stored harness sign-in when no agent:model entry is configured, which is why a headless service account needs one.",
       "type": "array",
@@ -1680,6 +1764,7 @@
               "properties": {
                 "issuer": { "type": "string", "format": "uri", "description": "Issuer URL exactly as tokens state it in `iss`. Discovery uses <issuer>/.well-known/openid-configuration." },
                 "audience": { "type": "string", "minLength": 1, "description": "The `aud` claim value tokens must carry." },
+                "groupsClaim": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Verified group-membership claim for gaggle grants. Omitted uses groups; independent of instance role mapping." },
                 "rolesClaim": { "type": "string", "minLength": 1, "description": "Claim carrying role or group values. Empty defaults to `roles`." },
                 "roles": {
                   "description": "Maps claim values onto instance roles. DENY BY DEFAULT: an authenticated principal whose claim values match nothing gets no role at all. Roles nest — admin implies operate, operate implies view.",

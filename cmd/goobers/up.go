@@ -1020,6 +1020,9 @@ func (u *upSession) configureAPI() int {
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
 	u.apiHandlerOpts = daemonReadHandlerOptions(u.l.Root, u.setup)
+	if err := u.configureInteractiveAccess(); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize interactive access", err)
+	}
 	configReader, err := newConfigAuthoringReader(u.ctx, u.l, u.setup.Config)
 	if err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize configuration source reader", err)
@@ -1191,9 +1194,10 @@ func (u *upSession) activateAPI() int {
 	}
 	if auth := u.setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
-			Issuer:     auth.OIDC.Issuer,
-			Audience:   auth.OIDC.Audience,
-			RolesClaim: auth.OIDC.RolesClaimName(),
+			Issuer:      auth.OIDC.Issuer,
+			Audience:    auth.OIDC.Audience,
+			RolesClaim:  auth.OIDC.RolesClaimName(),
+			GroupsClaim: auth.OIDC.GroupsClaim,
 			Roles: oidcauth.RoleMapping{
 				View:    auth.OIDC.Roles.View,
 				Operate: auth.OIDC.Roles.Operate,

@@ -70,6 +70,7 @@ export const apiRoutes = {
   "journalMergeAuthority": { method: "POST", path: "/api/v1/journal/merge-authority", actionClass: "workflow-execution" },
   "journalBranchOwnership": { method: "POST", path: "/api/v1/journal/branch-ownership", actionClass: "workflow-execution" },
   "operatorMessageSubmit": { method: "POST", path: "/api/v1/runs/{run}/operator-messages", actionClass: "workflow-execution" },
+  "gaggleInteractiveCapabilities": { method: "GET", path: "/api/v1/gaggles/{gaggle}/interactive-capabilities", actionClass: "read-only-navigation" },
   "childWorkflowValidate": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/validate", actionClass: "workflow-execution" },
   "childWorkflowStart": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/start", actionClass: "workflow-execution" },
   "childWorkflowStatus": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/status", actionClass: "workflow-execution" },

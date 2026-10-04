@@ -2033,3 +2033,22 @@ export interface ChildWorkflowResponse {
   acceptedAt: string;
   updatedAt: string;
 }
+
+
+/** Current authenticated authority, separate from implemented operations. */
+export interface InteractiveCapabilities {
+  gaggle: string;
+  policyConfigured: boolean;
+  viewer: boolean;
+  operator: boolean;
+  sourceWriteMode: "pull-request";
+  actions: InteractiveActionPermission[];
+}
+
+export interface InteractiveActionPermission {
+  action: "session.create" | "session.message" | "backlog.read" | "backlog.edit" | "backlog.resolve" | "repository.read" | "run.intervene" | "run.restartStage" | "pr.repair" | "source.proposeChange";
+  authorized: boolean;
+  credentialConfigured: boolean;
+  available: boolean;
+  reasonCode: "policy_missing" | "action_not_authorized" | "credential_not_configured" | "operation_not_implemented" | "";
+}

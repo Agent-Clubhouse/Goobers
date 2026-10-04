@@ -16,6 +16,272 @@
       "additionalProperties": false,
       "required": ["project", "backlog", "isolation"],
       "properties": {
+        "interactiveAccess": {
+          "type": "object",
+          "description": "Explicit per-gaggle human operations policy. Omission enables no new provider reads, sessions or writes; existing monitoring is unchanged.",
+          "additionalProperties": false,
+          "properties": {
+            "humans": {
+              "type": "object",
+              "description": "Instance roles are necessary and explicit gaggle grants are also required, including for administrators.",
+              "additionalProperties": false,
+              "properties": {
+                "viewers": {
+                  "type": "array",
+                  "description": "Human viewers of this gaggle.",
+                  "maxItems": 128,
+                  "items": {
+                    "type": "object",
+                    "description": "Matches an authenticated issuer plus one stable subject or verified group.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "issuer": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact authenticated trust domain, normally the OIDC issuer URL.",
+                        "maxLength": 2048
+                      },
+                      "subject": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact stable authenticated subject; display names are not identifiers.",
+                        "maxLength": 512
+                      },
+                      "group": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact verified group identifier from the configured OIDC groups claim.",
+                        "maxLength": 512
+                      }
+                    },
+                    "required": [
+                      "issuer"
+                    ],
+                    "oneOf": [
+                      {
+                        "required": [
+                          "subject"
+                        ],
+                        "not": {
+                          "required": [
+                            "group"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "group"
+                        ],
+                        "not": {
+                          "required": [
+                            "subject"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "operators": {
+                  "type": "array",
+                  "description": "Human operators; also granted gaggle visibility.",
+                  "maxItems": 128,
+                  "items": {
+                    "type": "object",
+                    "description": "Matches an authenticated issuer plus one stable subject or verified group.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "issuer": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact authenticated trust domain, normally the OIDC issuer URL.",
+                        "maxLength": 2048
+                      },
+                      "subject": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact stable authenticated subject; display names are not identifiers.",
+                        "maxLength": 512
+                      },
+                      "group": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact verified group identifier from the configured OIDC groups claim.",
+                        "maxLength": 512
+                      }
+                    },
+                    "required": [
+                      "issuer"
+                    ],
+                    "oneOf": [
+                      {
+                        "required": [
+                          "subject"
+                        ],
+                        "not": {
+                          "required": [
+                            "group"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "group"
+                        ],
+                        "not": {
+                          "required": [
+                            "subject"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "actions": {
+              "type": "array",
+              "description": "Closed operation allowlist; implementation support is checked separately.",
+              "maxItems": 10,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Allowed human operation.",
+                "enum": [
+                  "session.create",
+                  "session.message",
+                  "backlog.read",
+                  "backlog.edit",
+                  "backlog.resolve",
+                  "repository.read",
+                  "run.intervene",
+                  "run.restartStage",
+                  "pr.repair",
+                  "source.proposeChange"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "credentials": {
+              "type": "object",
+              "description": "Explicit named sources from instance.interactiveCredentials, with no automation or cross-target fallback.",
+              "additionalProperties": false,
+              "properties": {
+                "backlog": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Named credential bound to the configured singleton backlog.",
+                  "maxLength": 128
+                },
+                "repositories": {
+                  "type": "array",
+                  "description": "Explicit credentials for configured project/additional repositories.",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "object",
+                    "description": "One exact repository binding.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "repository": {
+                        "type": "object",
+                        "description": "Qualified identity of an already configured gaggle code repository.",
+                        "additionalProperties": false,
+                        "properties": {
+                          "provider": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Supported code provider.",
+                            "enum": [
+                              "github",
+                              "ado"
+                            ]
+                          },
+                          "owner": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "GitHub owner or Azure DevOps organization.",
+                            "maxLength": 256
+                          },
+                          "project": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Azure DevOps project; forbidden for GitHub.",
+                            "maxLength": 256
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Exact repository name.",
+                            "maxLength": 256
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "owner",
+                          "name"
+                        ],
+                        "allOf": [
+                          {
+                            "if": {
+                              "properties": {
+                                "provider": {
+                                  "const": "ado"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "project"
+                              ]
+                            },
+                            "else": {
+                              "not": {
+                                "required": [
+                                  "project"
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "credentialRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Named instance interactive credential.",
+                        "maxLength": 128
+                      }
+                    },
+                    "required": [
+                      "repository",
+                      "credentialRef"
+                    ]
+                  }
+                }
+              }
+            },
+            "sourceWrites": {
+              "type": "object",
+              "description": "Repository edits always require pull requests. Omission enforces the same rule.",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Only pull-request publication is supported.",
+                  "enum": [
+                    "pull-request"
+                  ],
+                  "default": "pull-request"
+                }
+              },
+              "required": [
+                "mode"
+              ]
+            }
+          },
+          "required": [
+            "humans"
+          ]
+        },
         "displayName": { "type": "string", "description": "Human-facing gaggle name shown in the portal." },
         "cost": {
           "type": "object",

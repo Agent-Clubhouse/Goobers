@@ -32,6 +32,9 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
+		if route.ID == RouteGaggleInteractiveCapabilities {
+			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
+		}
 		if childWorkflowRoute(route.ID) {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 			operation["x-goobers-stage-grant"] = "goobers-child"
@@ -263,6 +266,8 @@ func openAPIResponses(route Route) map[string]any {
 	}
 	successSchema := map[string]any{"type": "object", "additionalProperties": true}
 	switch route.ID {
+	case RouteGaggleInteractiveCapabilities:
+		successSchema = schemaRef("InteractiveCapabilities")
 	case RouteChildWorkflowValidate:
 		successSchema = schemaRef("ChildWorkflowValidationResponse")
 	case RouteChildWorkflowStart, RouteChildWorkflowStatus:
@@ -381,7 +386,7 @@ func mergeSchemaProperties(left, right map[string]any) map[string]any {
 func openAPISchemas(authenticated bool) map[string]any {
 	return mergeSchemaProperties(
 		mergeSchemaProperties(openAPIDiscoverySchemas(), openAPIRemoteReadSchemas()),
-		mergeSchemaProperties(openAPIOperationSchemas(authenticated), openAPIChildWorkflowSchemas()),
+		mergeSchemaProperties(openAPIOperationSchemas(authenticated), mergeSchemaProperties(openAPIChildWorkflowSchemas(), openAPIInteractiveSchemas())),
 	)
 }
 
