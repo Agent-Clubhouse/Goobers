@@ -137,6 +137,19 @@ tables and linked lists share the same table shell, header, and typography.
 Keep layout-specific CSS on the page, but keep font sizes, colors, and control
 treatment in the primitives and `tokens.css`.
 
+The first content block below a page heading or toolbar uses
+`--space-page-content` (1rem by default). Override this shared token for themed
+spacing rather than adding page-specific margins. Later sections retain their
+own grouping space. Fields inside `ControlGroup` have no outer padding or margin,
+so their labels and controls align without per-page offsets.
+
+At 820px and below (and on short landscape screens), navigation uses a 56px
+top bar with the current area and a menu containing every destination. The
+desktop sidebar remains unchanged; there is no intermediate navigation grid or
+bottom navigation bar. The menu keeps native dialog focus and history behavior,
+and its scrolling content is inside the rounded sheet so scrollbars cannot
+square off its corners.
+
 The type scale is page title, section title, 14px UI text, 12px dense table and
 secondary text, and 11px uppercase labels, expressed as rem-based tokens.
 Primary actions use `--accent` and `--on-accent`; links use `--accent-ink`.

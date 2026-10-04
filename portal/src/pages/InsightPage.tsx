@@ -651,13 +651,13 @@ export function UsageAnalytics({
           {cost && metric("Total cost", formatMeasuredAIC(usage.costAIC))}
           {totalRuns !== undefined && metric("Total runs", totalRuns.toLocaleString())}
           {metric(
-            "P50 / stage attempt",
+            cost ? "P50" : "P50 / stage attempt",
             formatUsage(cost ? usage.p50CostAIC : usage.p50Tokens),
             cost ? undefined : tokenHref,
             `View P50 token usage runs behind ${label}`,
           )}
           {metric(
-            "P95 / stage attempt",
+            cost ? "P95" : "P95 / stage attempt",
             formatUsage(cost ? usage.p95CostAIC : usage.p95Tokens),
             cost ? undefined : tokenHref,
             `View P95 token usage runs behind ${label}`,
@@ -1530,7 +1530,7 @@ export function InstanceCostRollup({
             <span>Total AIC</span>
             <span>P50 AIC</span>
             <span>P95 AIC</span>
-            <span>Measured attempts</span>
+            <span>Attempts</span>
           </div>
           {rankedGaggles.map((entry) => (
             <GaggleSpendRow entry={entry} filters={data.filters} key={entry.gaggle} />
@@ -1588,15 +1588,11 @@ function GaggleSpendRow({
       <span data-label="Total AIC">{formatMeasuredAIC(usage?.costAIC)}</span>
       <span data-label="P50 AIC">{formatMeasuredAIC(usage?.p50CostAIC)}</span>
       <span data-label="P95 AIC">{formatMeasuredAIC(usage?.p95CostAIC)}</span>
-      <span data-label="Measured attempts">
-        {formatMeasuredAttemptCount(usage?.costSamples ?? 0)}
+      <span data-label="Attempts">
+        {(usage?.costSamples ?? 0).toLocaleString()}
       </span>
     </a>
   );
-}
-
-function formatMeasuredAttemptCount(value: number): string {
-  return `${value.toLocaleString()} measured ${value === 1 ? "attempt" : "attempts"}`;
 }
 
 function formatAICAmounts(
@@ -1652,6 +1648,10 @@ function StageDistributions({
       </div>
     </>
   );
+}
+
+function formatMeasuredAttemptCount(value: number): string {
+  return `${value.toLocaleString()} measured ${value === 1 ? "attempt" : "attempts"}`;
 }
 
 function StageDistributionRow({

@@ -37,6 +37,7 @@
   --font-ui: 0.875rem;
   --font-meta: 0.75rem;
   --font-label: 0.6875rem;
+  --space-page-content: 1rem;
   --table-primary-size: var(--font-ui);
   --table-header-size: var(--font-label);
   --table-body-size: var(--font-meta);

@@ -18,11 +18,21 @@ import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
 import type { Theme } from "../theme";
 import { useUpdateNotice } from "../updateNotice";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 import { SupportFooter } from "./SupportFooter";
 
 const compactShellQuery =
-  "(max-width: 600px), (max-width: 900px) and (max-height: 500px) and (orientation: landscape)";
+  "(max-width: 820px), (max-width: 900px) and (max-height: 500px) and (orientation: landscape)";
+
+const areaLabels: Record<PrimaryArea, string> = {
+  overview: "Overview",
+  workflows: "Workflows",
+  goobers: "Goobers",
+  runs: "Runs",
+  "work-items": "Work Items",
+  insight: "Insight",
+  cost: "Cost",
+};
 
 interface HeaderIdentity {
   build?: BuildMetadata;
@@ -111,7 +121,6 @@ export function PortalShell({
   const build = headerData?.build;
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
   const mobileStatus = mobileConnectionStatus(freshness);
-  const secondaryArea = ["goobers", "work-items", "insight", "cost"].includes(activeArea);
 
   useEffect(() => {
     const dialog = mobileMenu.current;
@@ -181,6 +190,21 @@ export function PortalShell({
 
   const header = (
     <header className={headerHost ? "topbar topbar-hosted" : "topbar"}>
+      {compactShell && !headerHost?.providesMobileNavigation && (
+        <nav aria-label="Mobile primary" className="mobile-primary-nav">
+          <button
+            aria-expanded={mobileMenuOpen}
+            aria-haspopup="dialog"
+            aria-label="Open navigation menu"
+            className="mobile-nav-item mobile-nav-item-active"
+            onClick={openMobileMenu}
+            type="button"
+          >
+            <Icon name="menu" />
+            <span>{areaLabels[activeArea]}</span>
+          </button>
+        </nav>
+      )}
       <div className="topbar-primary">
         <button
           aria-label="Go to overview"
@@ -304,18 +328,6 @@ export function PortalShell({
       </a>
       {headerHost ? createPortal(header, headerHost.target) : header}
       <aside className="sidebar">
-        <button
-          aria-controls="portal-secondary-navigation"
-          aria-expanded={mobileMenuOpen}
-          aria-label="Show gaggles, status, and support links"
-          className="mobile-navigation-button"
-          onClick={() => setMobileMenuOpen((open) => !open)}
-          type="button"
-        >
-          <Icon name="menu" />
-          <span>{mobileMenuOpen ? "Close" : "More"}</span>
-        </button>
-
         <nav className="primary-nav" aria-label="Primary">
           <button
             aria-current={activeArea === "overview" ? "page" : undefined}
@@ -389,10 +401,7 @@ export function PortalShell({
           </button>
         </nav>
 
-        <div
-          className={`sidebar-secondary${mobileMenuOpen ? " sidebar-secondary-open" : ""}`}
-          id="portal-secondary-navigation"
-        >
+        <div className="sidebar-secondary" id="portal-secondary-navigation">
           <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
           <SupportFooter />
         </div>
@@ -413,59 +422,6 @@ export function PortalShell({
         </main>
       </div>
 
-      {compactShell && !headerHost?.providesMobileNavigation && (
-        <nav aria-label="Mobile primary" className="mobile-primary-nav">
-          <button
-            aria-current={activeArea === "overview" ? "page" : undefined}
-            className={
-              activeArea === "overview"
-                ? "mobile-nav-item mobile-nav-item-active"
-                : "mobile-nav-item"
-            }
-            onClick={() => navigate({ page: "overview" })}
-            type="button"
-          >
-            <Icon name="overview" />
-            <span>Overview</span>
-          </button>
-          <button
-            aria-current={activeArea === "runs" ? "page" : undefined}
-            className={
-              activeArea === "runs" ? "mobile-nav-item mobile-nav-item-active" : "mobile-nav-item"
-            }
-            onClick={() => navigate({ page: "runs", filters: scopedFilters })}
-            type="button"
-          >
-            <Icon name="run" />
-            <span>Runs</span>
-          </button>
-          <button
-            aria-current={activeArea === "workflows" ? "page" : undefined}
-            className={
-              activeArea === "workflows"
-                ? "mobile-nav-item mobile-nav-item-active"
-                : "mobile-nav-item"
-            }
-            onClick={() => navigate({ page: "workflows" })}
-            type="button"
-          >
-            <Icon name="workflow" />
-            <span>Workflows</span>
-          </button>
-          <button
-            aria-current={secondaryArea ? "page" : undefined}
-            aria-expanded={mobileMenuOpen}
-            aria-haspopup="dialog"
-            className={secondaryArea ? "mobile-nav-item mobile-nav-item-active" : "mobile-nav-item"}
-            onClick={openMobileMenu}
-            type="button"
-          >
-            <Icon name="menu" />
-            <span>More</span>
-          </button>
-        </nav>
-      )}
-
       {compactShell && (
         <dialog
           aria-labelledby="portal-mobile-menu-title"
@@ -481,6 +437,7 @@ export function PortalShell({
           ref={mobileMenu}
         >
           <div className="mobile-menu-content">
+            <div className="mobile-menu-scroll">
             <div className="mobile-menu-heading">
               <div>
                 <span className="mobile-menu-brand">
@@ -500,6 +457,24 @@ export function PortalShell({
             </div>
 
             <nav aria-label="More destinations" className="mobile-secondary-nav">
+              <MobileDestination
+                active={activeArea === "overview"}
+                icon="overview"
+                label="Overview"
+                onClick={() => navigateFromMobileMenu({ page: "overview" })}
+              />
+              <MobileDestination
+                active={activeArea === "workflows"}
+                icon="workflow"
+                label="Workflows"
+                onClick={() => navigateFromMobileMenu({ page: "workflows" })}
+              />
+              <MobileDestination
+                active={activeArea === "runs"}
+                icon="run"
+                label="Runs"
+                onClick={() => navigateFromMobileMenu({ page: "runs", filters: scopedFilters })}
+              />
               <MobileDestination
                 active={activeArea === "goobers"}
                 icon="goober"
@@ -553,10 +528,6 @@ export function PortalShell({
                   <dd>{instanceIdentity?.instanceRoot ?? "Unavailable"}</dd>
                 </div>
               </dl>
-              <button className="mobile-menu-action" onClick={toggleTheme} type="button">
-                <Icon name={theme === "light" ? "moon" : "sun"} />
-                Use {theme === "light" ? "dark" : "light"} theme
-              </button>
             </div>
 
             <GaggleNav
@@ -565,6 +536,7 @@ export function PortalShell({
               navigate={navigateFromMobileMenu}
             />
             <SupportFooter />
+            </div>
           </div>
         </dialog>
       )}
@@ -618,7 +590,7 @@ function MobileDestination({
   onClick,
 }: {
   active: boolean;
-  icon: "cost" | "goober" | "insight" | "work-item";
+  icon: IconName;
   label: string;
   onClick: () => void;
 }) {

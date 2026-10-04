@@ -59,17 +59,11 @@ export function ErrorsPage({
     <>
       <PageHeading
         title="Matching errors"
-        className=""
         description={
           <>
             Failure events matching <span className="mono">{code}</span> and{" "}
             <span className="mono">{errorClass}</span>
             {scopeWindowLabel(filters)}.
-          </>
-        }
-        beforeTitle={
-          <>
-            <p className="page-kicker">Telemetry</p>
           </>
         }
       />
@@ -118,7 +112,6 @@ export function ErrorsPage({
 }
 
 function ErrorGroupCard({ group }: { group: ErrorGroup }) {
-  const [expanded, setExpanded] = useState(false);
   const item = group.latest;
   const code = item.code || "uncoded";
   const location = errorLocation(item);
@@ -156,30 +149,16 @@ function ErrorGroupCard({ group }: { group: ErrorGroup }) {
       ) : (
         <div className="telemetry-error-latest telemetry-error-row-instance">{latestContent}</div>
       )}
-      {group.items.length > 1 && (
-        <>
-          <button
-            aria-expanded={expanded}
-            className="telemetry-error-expand"
-            onClick={() => setExpanded((current) => !current)}
-            type="button"
-          >
-            {expanded ? "Hide" : "Show"} {group.items.length} individual occurrences
-          </button>
-          {expanded && (
-            <ol
-              aria-label={`Individual occurrences for ${code}`}
-              className="telemetry-error-occurrences"
-            >
-              {group.items.map((occurrence, index) => (
-                <li key={`${occurrence.runId}:${occurrence.occurredAt}:${index}`}>
-                  <ErrorOccurrence item={occurrence} />
-                </li>
-              ))}
-            </ol>
-          )}
-        </>
-      )}
+      <ol
+        aria-label={`Individual occurrences for ${code}`}
+        className="telemetry-error-occurrences"
+      >
+        {group.items.map((occurrence, index) => (
+          <li key={`${occurrence.runId}:${occurrence.occurredAt}:${index}`}>
+            <ErrorOccurrence item={occurrence} />
+          </li>
+        ))}
+      </ol>
     </article>
   );
 }

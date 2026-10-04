@@ -679,6 +679,8 @@ describe("Insight page", () => {
       name: /View instance cost for gaggle core: total 400 AIC, 8 measured attempts, P50 80 AIC, P95 250 AIC/,
     });
     expect(coreLink).toBeInTheDocument();
+    expect(screen.getByText("Attempts", { exact: true })).toBeInTheDocument();
+    expect(within(coreLink).getByText("8", { exact: true })).toBeInTheDocument();
     const toolsLink = screen.getByRole("link", {
       name: /View instance cost for gaggle tools: total 600 AIC, 3 measured attempts, P50 10 AIC, P95 580 AIC/,
     });
@@ -817,7 +819,7 @@ describe("Insight page", () => {
     await user.click(await drillThrough);
 
     expect(await screen.findByText("Scheduler journal append failed.")).toBeInTheDocument();
-    expect(screen.getByText("Instance scheduler")).toBeInTheDocument();
+    expect(screen.getAllByText("Instance scheduler")).toHaveLength(2);
     expect(screen.queryByRole("link", { name: /Open run .*scheduler.storage/ })).not.toBeInTheDocument();
   });
 

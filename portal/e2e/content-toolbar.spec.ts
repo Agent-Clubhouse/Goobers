@@ -13,6 +13,52 @@ const mobileViewports = [
   { width: 844, height: 390 },
 ];
 
+for (const width of [1440, 390]) {
+  test(`shares heading and toolbar content spacing at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    for (const [route, title, selector] of [
+      ["workflows", "Workflows", ".workflow-gaggle-group"],
+      ["goobers", "Goobers", ".goober-groups"],
+      ["runs", "Runs", ".content-section .data-table"],
+      ["work-items", "Work Items", ".work-items-table"],
+    ]) {
+      await page.goto(`/#/${route}`);
+      const heading = page.getByRole("heading", { name: title, exact: true, level: 1 });
+      const content = page.locator(selector).first();
+      await expect(heading).toBeVisible();
+      await expect(content).toBeVisible();
+      for (const gap of [16, 24]) {
+        await page.evaluate((value) => {
+          document.documentElement.style.setProperty("--space-page-content", `${value}px`);
+        }, gap);
+        await expect.poll(async () => {
+          const header = await heading.locator("xpath=ancestor::header").boundingBox();
+          const box = await content.boundingBox();
+          if (!header || !box) throw new Error("Expected visible page heading and content.");
+          return Math.abs(box.y - header.y - header.height - gap);
+        }).toBeLessThanOrEqual(1);
+      }
+      await page.evaluate(() => document.documentElement.style.removeProperty("--space-page-content"));
+    }
+  });
+}
+
+test("aligns scope and time-window fields in the shared control group", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  for (const route of ["insight", "cost"]) {
+    await page.goto(`/#/${route}`);
+    const scope = page.getByRole("button", { name: "Scope", exact: true });
+    const time = page.getByRole("combobox", { name: "Time window" });
+    await expect(scope).toBeVisible();
+    await expect(time).toBeVisible();
+    const scopeBox = await scope.boundingBox();
+    const timeBox = await time.boundingBox();
+    if (!scopeBox || !timeBox) throw new Error("Expected visible scope and time controls.");
+    expect(Math.abs(scopeBox.y - timeBox.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(scopeBox.height - timeBox.height)).toBeLessThanOrEqual(1);
+  }
+});
+
 for (const viewport of mobileViewports) {
   test(`keeps content controls compact at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
@@ -125,7 +171,8 @@ test("applies, edits, and clears advanced Runs sheet filters", async ({ page }) 
 test("consumes filter sheet history before applying filters", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/overview");
-  await page.getByRole("button", { name: "Runs", exact: true }).click();
+  await page.getByRole("button", { name: "Open navigation menu" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Runs", exact: true }).click();
   await expect(page).toHaveURL(/#\/runs$/);
 
   await page.getByRole("button", { name: "Filters", exact: true }).click();

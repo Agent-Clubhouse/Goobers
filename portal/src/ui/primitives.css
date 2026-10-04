@@ -4,6 +4,16 @@
   gap: 16px;
 }
 
+.ui-page-heading,
+.page-toolbar {
+  margin-bottom: var(--space-page-content);
+}
+
+.ui-page-heading + :is(.content-section, .goober-groups, .workflow-gaggle-group),
+.page-toolbar + .content-section {
+  margin-top: 0;
+}
+
 .ui-page-heading-full {
   max-width: none;
 }
@@ -180,6 +190,11 @@
 
 .ui-control-group {
   flex-wrap: wrap;
+}
+
+.ui-control-group > .ui-filter-field {
+  margin: 0;
+  padding: 0;
 }
 
 .ui-table-shell {
