@@ -23,12 +23,17 @@ describe("overview page", () => {
     const freshness = await screen.findByText("Data freshness");
     const metrics = freshness.closest("dl");
     expect(metrics).not.toBeNull();
-    expect(Array.from(metrics!.querySelectorAll("dt")).map((label) => label.textContent))
-      .toEqual(["Gaggles", "Active runs", "Data freshness"]);
+    expect(Array.from(metrics!.querySelectorAll("dt")).map((label) => label.textContent)).toEqual([
+      "Gaggles",
+      "Active runs",
+      "Data freshness",
+    ]);
     expect(freshness.closest("details")).toBeNull();
     expect(freshness.parentElement).toHaveTextContent("17s ago");
-    expect(freshness.parentElement!.querySelector("time"))
-      .toHaveAttribute("dateTime", "2026-09-10T00:00:00Z");
+    expect(freshness.parentElement!.querySelector("time")).toHaveAttribute(
+      "dateTime",
+      "2026-09-10T00:00:00Z",
+    );
     const callsBeforeRefresh = refresh.mock.calls.length;
     await userEvent.click(screen.getByRole("button", { name: "Refresh instance status" }));
     expect(refresh.mock.calls.length).toBeGreaterThan(callsBeforeRefresh);
@@ -50,7 +55,9 @@ describe("overview page", () => {
     expect(tooltip).toHaveTextContent("0123456789abcdef0123456789abcdef");
     expect(tooltip).toHaveTextContent(fixtures.instance.instanceRoot);
     expect(tooltip).toHaveTextContent("MDB5");
-    expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent("migrated to replacement");
+    expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent(
+      "migrated to replacement",
+    );
   });
 
   it("shows the authoritative daemon binary version from health metadata", async () => {
@@ -72,7 +79,9 @@ describe("overview page", () => {
   it("renders fixture-driven attention, active, and recent run groups", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
+    ).toBeInTheDocument();
     expect(
       within(screen.getByRole("region", { name: "Active runs" })).getByRole("link", {
         name: "Open run 01JZ441DAEMONAPI",
@@ -86,7 +95,9 @@ describe("overview page", () => {
     const active = within(screen.getByRole("region", { name: "Active runs" }));
     expect(active.getByText("#3088 Operator status progress")).toBeInTheDocument();
     expect(active.getByText("core / implementation")).toBeInTheDocument();
-    expect(active.getByText("review · recent heartbeat 30s ago · claim active/verified")).toBeInTheDocument();
+    expect(
+      active.getByText("review · recent heartbeat 30s ago · claim active/verified"),
+    ).toBeInTheDocument();
     expect(active.getByText("review · PR via open-pr · finish review")).toBeInTheDocument();
     expect(
       active.getByText(
@@ -107,11 +118,15 @@ describe("overview page", () => {
       (time) => time.getAttribute("datetime") === finishedAt,
     );
     const timestamp = new Date(finishedAt);
-    const visibleTime = new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
+    const visibleTime = new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     }).format(timestamp);
-    const preciseTime = new Intl.DateTimeFormat(undefined, {
+    const preciseTime = new Intl.DateTimeFormat("en-US", {
       dateStyle: "full",
       timeStyle: "long",
     }).format(timestamp);
@@ -141,17 +156,17 @@ describe("overview page", () => {
 
     expect(await screen.findByText("#4449 Repeated implementation failure")).toBeInTheDocument();
     expect(screen.getByText(/2 runs ·/)).toBeInTheDocument();
-    expect(
-      screen.queryByText("implementation · 01JZ402DASHBOARD"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("implementation · 01JZ402DASHBOARD")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Show runs" }));
-    expect(
-      screen.getByRole("link", { name: /01JZ402DASHBOARD/ }),
-    ).toHaveAttribute("href", "#/run/01JZ402DASHBOARD");
-    expect(
-      screen.getByRole("link", { name: /01JZ400FAILED/ }),
-    ).toHaveAttribute("href", "#/run/01JZ400FAILED");
+    expect(screen.getByRole("link", { name: /01JZ402DASHBOARD/ })).toHaveAttribute(
+      "href",
+      "#/run/01JZ402DASHBOARD",
+    );
+    expect(screen.getByRole("link", { name: /01JZ400FAILED/ })).toHaveAttribute(
+      "href",
+      "#/run/01JZ400FAILED",
+    );
 
     const groupSelection = screen.getByRole("checkbox", {
       name: "Select all 2 runs in #4449 Repeated implementation failure",
@@ -162,10 +177,14 @@ describe("overview page", () => {
     expect(screen.queryByRole("button", { name: /Dismiss \d+ selected/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Dismiss run 01JZ402DASHBOARD" }));
-    expect(await screen.findByRole("heading", { name: "Overview - One run needs attention." })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", {
-      name: "Dismiss all runs in #4449 Repeated implementation failure",
-    }));
+    expect(
+      await screen.findByRole("heading", { name: "Overview - One run needs attention." }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Dismiss all runs in #4449 Repeated implementation failure",
+      }),
+    );
     expect(
       await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
@@ -191,13 +210,17 @@ describe("overview page", () => {
     expect(
       await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", {
-      name: "Select all visible attention runs",
-    })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "Select all visible attention runs",
+      }),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Show dismissed (2)" }));
     await user.click(screen.getByRole("button", { name: "Restore all" }));
-    expect(await screen.findByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
+    ).toBeInTheDocument();
   });
 
   it("renders instance identity while an empty inventory is still loading", async () => {
@@ -214,22 +237,22 @@ describe("overview page", () => {
 
     render(<App client={client} />);
 
-    expect(
-      await screen.findByRole("status", { name: "Loading overview" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "Loading overview" })).toBeInTheDocument();
     const heading = screen.getByRole("heading", { level: 1 });
     expect(heading).toHaveTextContent(/^Overview - \.\.\.$/);
     expect(screen.getByText(/Loading inventory and run activity/)).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No gaggles configured" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
 
     act(() => releaseInventory());
-    expect(
-      await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
-    ).toBe(heading);
+    expect(await screen.findByRole("heading", { name: "Overview - No runs need attention." })).toBe(
+      heading,
+    );
     expect(
       await screen.findByRole("heading", { name: "No gaggles configured" }),
     ).toBeInTheDocument();
@@ -252,7 +275,9 @@ describe("overview page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /inventory could not be read just now/i,
     );
-    expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No gaggles configured" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
 
     failInventory = false;
@@ -452,7 +477,9 @@ describe("overview recovery inventory capacity (#5343)", () => {
     expect(row).toHaveTextContent(
       "Durable handoffs, worktree cleanup and unrelated runs fail when it is full.",
     );
-    expect(within(row).getByRole("link", { name: "Recovery capacity and operator actions" })).toHaveAttribute(
+    expect(
+      within(row).getByRole("link", { name: "Recovery capacity and operator actions" }),
+    ).toHaveAttribute(
       "href",
       expect.stringContaining("retained-implementation.md#inventory-capacity"),
     );

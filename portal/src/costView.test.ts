@@ -2,12 +2,32 @@ import { describe, expect, it } from "vitest";
 import type { TelemetryCostResult } from "./api/types";
 import {
   deriveExternalCostRows,
+  externalCostGaggles,
   filterExternalCostRows,
   sortExternalCostRows,
   type ExternalCostRow,
 } from "./costView";
 
 describe("external cost view model", () => {
+  it("lists distinct recorded gaggles and sorts work items by gaggle", () => {
+    const rows = externalCostRows();
+    rows[0].runs = [
+      { ...costRun("run-1"), gaggle: "zeta" },
+      { ...costRun("run-2"), gaggle: "alpha" },
+      { ...costRun("run-3"), gaggle: "alpha" },
+      costRun("run-4"),
+    ];
+    rows[1].runs = [{ ...costRun("run-5"), gaggle: "beta" }];
+
+    expect(externalCostGaggles(rows[0])).toEqual(["alpha", "zeta"]);
+    expect(externalCostGaggles(rows[2])).toEqual([]);
+    expect(filterExternalCostRows(rows, "zeta", "all")).toEqual([rows[0]]);
+    expect(sortExternalCostRows(rows.slice(0, 2), "gaggle", "asc"))
+      .toEqual([rows[0], rows[1]]);
+    expect(sortExternalCostRows(rows.slice(0, 2), "gaggle", "desc"))
+      .toEqual([rows[1], rows[0]]);
+  });
+
   it("selects AIC from native or normalized totals and labels partial coverage", () => {
     const result: TelemetryCostResult = {
       scope: "summary",
@@ -141,7 +161,7 @@ function externalCostRows(): ExternalCostRow[] {
       externalKind: "issue",
       externalId: "41",
       provider: "github",
-      aic: "42 AIC estimated",
+      aic: "42 AIC",
       aicValue: 42,
       coverage: "Lower bound",
       coverageRatio: 0.5,

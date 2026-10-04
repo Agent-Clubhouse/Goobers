@@ -102,12 +102,13 @@ describe("WorkItemsPage", () => {
     await screen.findByText("acme/app#42");
     expect(screen.getByRole("heading", { name: "Work Items", level: 1 })).toBeInTheDocument();
     expect(screen.queryByText("External activity")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Done", { selector: ".status-badge" })).toHaveLength(2);
+    expect(screen.getByText("Merged", { selector: ".work-item-identity .sr-only" })).toBeInTheDocument();
     const row = screen.getByRole("button", { name: /Open PR #42 in acme\/app/i });
     expect(row.querySelector(".data-table-primary")).toHaveAttribute("title", "acme/app#42");
     expect(row).toHaveTextContent(/Last action:\s*Comment/);
     expect(row).toHaveClass("work-item-row-done");
-    expect(row.querySelector(".work-item-status")).toHaveTextContent("Done");
+    expect(row).toHaveAttribute("data-status", "done");
+    expect(row.querySelector(".work-item-identity .sr-only")).toHaveTextContent("Merged");
     expect(row.querySelector(".work-item-mobile-context")).toHaveTextContent(
       "core / merge-review",
     );
@@ -134,8 +135,7 @@ describe("WorkItemsPage", () => {
     await screen.findByRole("button", { name: /Open PR #42 in acme\/app/i });
     expect(screen.queryByRole("button", { name: /Open issue #77 in acme\/service/i }))
       .not.toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Filter work items by gaggle" }))
-      .toHaveValue("core");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · core");
     expect(screen.getByRole("searchbox", { name: "Search work items" }))
       .toHaveValue("app#42");
   });
@@ -179,8 +179,11 @@ describe("WorkItemsPage", () => {
       .not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /Open issue #77 in acme\/service/i }))
       .toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Status: In progress filter" }))
-      .toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Filter work items by status" })).toHaveValue("in-progress");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter work items by status" }), "");
+    expect(navigate).toHaveBeenLastCalledWith({
+      page: "work-items", kind: undefined, gaggle: undefined, outcome: undefined, query: undefined,
+    });
   });
 
   it("reports an invalid outcome route filter instead of discarding it", async () => {
@@ -216,12 +219,12 @@ describe("WorkItemsPage", () => {
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "issues" }));
 
-    const gaggle = within(dialog).getByRole("combobox", {
-      name: "Draft work item gaggle filter",
-    });
-    expect(gaggle).toHaveValue("");
-    expect(within(gaggle).queryByRole("option", { name: "core" })).not.toBeInTheDocument();
-    expect(within(gaggle).getByRole("option", { name: "tools" })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Draft scope" }));
+    const choices = within(dialog).getByRole("dialog", { name: "Select scope" });
+    expect(within(choices).queryByRole("button", { name: "Gaggle · core" })).not.toBeInTheDocument();
+    expect(within(choices).getByRole("button", { name: "Gaggle · tools" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(dialog).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Apply filters" }));
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
@@ -229,7 +232,8 @@ describe("WorkItemsPage", () => {
     );
     expect(navigate).not.toHaveBeenCalled();
 
-    await user.selectOptions(gaggle, "tools");
+    await user.click(within(dialog).getByRole("button", { name: "Draft scope" }));
+    await user.click(within(dialog).getByRole("button", { name: "Gaggle · tools" }));
     await user.selectOptions(
       within(dialog).getByRole("combobox", { name: "Draft work item status filter" }),
       "in-progress",
@@ -292,8 +296,7 @@ describe("WorkItemsPage", () => {
     expect(await screen.findByRole("button", {
       name: /Open PR #boundary in acme\/app/i,
     })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Filter work items by gaggle" }))
-      .toHaveValue("boundary-gaggle");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · boundary-gaggle");
     expect(screen.queryByText('Invalid gaggle filter "boundary-gaggle"'))
       .not.toBeInTheDocument();
   });
@@ -403,7 +406,10 @@ describe("WorkItemsPage", () => {
       .toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open work item #7 in contoso/beta" }))
       .toBeInTheDocument();
-    expect(screen.getAllByText("ado · work item")).toHaveLength(2);
+    for (const repository of ["contoso/alpha", "contoso/beta"]) {
+      const row = screen.getByRole("button", { name: `Open work item #7 in ${repository}` });
+      expect(within(row).getByText("ado · work item", { selector: ".work-item-identity .data-table-meta" })).toBeInTheDocument();
+    }
 
     const unknown = screen.getAllByRole("button", { name: "work item #7 has no recorded repository" });
     expect(unknown).toHaveLength(2);
