@@ -13,6 +13,7 @@ const checkedErrorEnvelope: ApiErrorEnvelope = checkedFixtures.errorEnvelope;
 describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
+      "workbenchSources", "workbenchItems", "workbenchItem",
       "sessionCreate", "sessionInput", "sessionClose", "session", "sessions", "sessionMessages", "sessionAccepted",
       "childPublicationCheck",
       "childPublicationResult",
@@ -62,6 +63,9 @@ describe("Go daemon wire contract", () => {
       "eventInvalidation",
       "errorEnvelope",
     ]);
+    expect(checkedFixtures.workbenchSources.items[0]).toHaveProperty("bindingId");
+    expect(checkedFixtures.workbenchItem.ref).toHaveProperty("sourceId");
+    expect(checkedFixtures.workbenchItems).toHaveProperty("sourceTargetDigest");
     expect(checkedFixtures.childWorkflowValidation).toMatchObject({ valid: false, advisory: true });
     expect(checkedFixtures.childWorkflow).toMatchObject({ state: "queued", invocationKey: "inspect-1", cancellationRequested: false });
     expect(checkedFixtures.childWorkflow).not.toHaveProperty("source");

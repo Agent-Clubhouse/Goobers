@@ -1,3 +1,5 @@
+import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
+export type * from "./workbenchTypes";
 import type { ConfigAuthoringErrorCode } from "./contract.generated";
 
 export const API_VERSION = "v1";
@@ -1888,6 +1890,9 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+  listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage>;
+  getWorkbenchItems(gaggle: string, source: string, request?: BacklogPageRequest, options?: RequestOptions): Promise<BacklogPage>;
+  getWorkbenchItem(gaggle: string, source: string, request: BacklogItemRequest, options?: RequestOptions): Promise<BacklogItem>;
   getInteractiveCapabilities(gaggle: string, options?: RequestOptions): Promise<InteractiveCapabilities>;
   listSessions(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<SessionPage>;
   getSession(gaggle: string, session: string, options?: RequestOptions): Promise<InteractiveSession>;

@@ -1,3 +1,4 @@
+import { WorkbenchPanel } from "../components/WorkbenchPanel";
 import { SharedSessionsPanel } from "../components/SharedSessionsPanel";
 import { RunTiming } from "../components/RunTiming";
 import type {
@@ -194,6 +195,8 @@ function GaggleTopology({
           </div>
         </section>
       )}
+
+      <WorkbenchPanel key={`workbench:${gaggle.name}`} client={client} gaggle={gaggle.name} />
 
       <SharedSessionsPanel key={gaggle.name} client={client} gaggle={gaggle.name} goobers={inventory.goobers} />
 

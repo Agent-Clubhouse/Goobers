@@ -1,3 +1,4 @@
+import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
 import {
   DaemonApiError,
   DaemonAuthError,
@@ -500,6 +501,18 @@ export class HttpDaemonClient implements DaemonClient {
       options,
       { provider, kind, id: externalId },
     ).then(normalizeLegacyWorkItemCost);
+  }
+
+  listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage> {
+    return this.getJSON(clientRoutes.workbenchSources, undefined, options, { gaggle });
+  }
+
+  getWorkbenchItems(gaggle: string, source: string, request?: BacklogPageRequest, options?: RequestOptions): Promise<BacklogPage> {
+    return this.getJSON(clientRoutes.workbenchItems, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle, source });
+  }
+
+  getWorkbenchItem(gaggle: string, source: string, request: BacklogItemRequest, options?: RequestOptions): Promise<BacklogItem> {
+    return this.getJSON(clientRoutes.workbenchItem, { expectedSourceId: request.expectedSourceId }, options, { gaggle, source, item: request.id });
   }
 
   getInteractiveCapabilities(gaggle: string, options?: RequestOptions): Promise<InteractiveCapabilities> {
