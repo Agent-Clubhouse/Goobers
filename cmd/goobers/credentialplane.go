@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/interactiveaccess"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
@@ -103,6 +104,7 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 // daemonCredentialService is the credential plane over the daemon's own
 // credential wiring. It implements httpapi.CredentialService.
 type daemonCredentialService struct {
+	interactive *interactiveaccess.Service
 	// Installed before serving. Current child authority lease spans materialization.
 	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
 	childExecutors   childExecutorProvider
@@ -222,6 +224,11 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, err
 	}
 	defer pinned.release()
+	ctx, closeHuman, err := s.beginInteractiveChildCredentials(ctx, pinned)
+	if err != nil {
+		return stageResolution{}, err
+	}
+	defer closeHuman()
 	ctx, childLease, err := s.applyContainedCredentialCeiling(ctx, pinned, request)
 	if err != nil {
 		return stageResolution{}, err
@@ -381,6 +388,9 @@ func gateRequestedCapabilities(profile stageProfile, request httpapi.CredentialR
 // this returns.
 func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinned pinnedStage, requested []string) (stageResolution, error) {
 	requested = credentials.FilterChildCredentialKeys(ctx, requested)
+	if pinned.identity.Child != nil && pinned.identity.Child.ExecutionEpoch > 0 {
+		return s.mintInteractiveChildCredentials(ctx, pinned, requested)
+	}
 	connectorCredential, err := s.stageConnectorCredential(ctx, pinned.profile, requested)
 	if err != nil {
 		return stageResolution{}, err

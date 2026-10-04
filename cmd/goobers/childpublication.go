@@ -52,6 +52,11 @@ func childPublicationCapability(task apiv1.Task, action string) (string, error) 
 }
 
 func (p *childStagePod) publish(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, action string) (apiv1.ResultEnvelope, error) {
+	ctx, closeHuman, err := p.beginPublicationCredentialContext(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	defer closeHuman()
 	// The only local programs are host-owned Git object/transport operations:
 	// private config, no checkout hooks or authored command, synchronous wait.
 	if ack := invoke.RegisterWorkspaceWriter(ctx); ack != nil {

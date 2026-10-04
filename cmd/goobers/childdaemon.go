@@ -19,6 +19,7 @@ func (s *daemonCredentialService) installQueuedChildren(setup *schedulerSetup, t
 		return errors.New("daemon: child execution coordination is incomplete")
 	}
 	s.installParentRecovery(setup.RunnerRegistry)
+	s.interactive = setup.InteractiveAccess
 	launcher := &queuedChildLauncher{layout: s.layout, config: s.config, queue: triggers.queue, authority: s.children,
 		dispatch: triggers.dispatch, runners: setup.RunnerRegistry, wg: wg}
 	launcher.build = s.isolatedChildBuilder(setup.ChildRuntime)

@@ -50,7 +50,7 @@ func (r interactiveCredentialResolver) Resolve(ctx context.Context, key string) 
 			return "", errors.New("interactive model API key resolution failed")
 		}
 		spec := r.execution.goobers[r.goober]
-		if (spec.Harness == apiv1.HarnessClaudeCode && !strings.HasPrefix(value, "sk-ant-api")) || (spec.Harness == apiv1.HarnessCodex && (!strings.HasPrefix(value, "sk-") || strings.HasPrefix(value, "sk-ant-"))) {
+		if !validInteractiveModelAPIKey(spec.Harness, value) {
 			return "", errors.New("interactive restart requires a model API key, not an ambient or forge credential")
 		}
 		r.registrar.Register([]byte(value))
@@ -74,6 +74,17 @@ func (r interactiveCredentialResolver) Resolve(ctx context.Context, key string) 
 	}
 	r.registrar.Register([]byte(value.Value))
 	return value.Value, nil
+}
+
+func validInteractiveModelAPIKey(kind apiv1.Harness, value string) bool {
+	switch kind {
+	case apiv1.HarnessClaudeCode:
+		return strings.HasPrefix(value, "sk-ant-api")
+	case apiv1.HarnessCodex:
+		return strings.HasPrefix(value, "sk-") && !strings.HasPrefix(value, "sk-ant-")
+	default:
+		return false
+	}
 }
 
 func interactiveRepository(repo apiv1.RepoRef) apiv1.InteractiveRepositoryIdentity {

@@ -12,3 +12,11 @@ explicitly separates historical custody from current effect authority so an old
 signed execution cannot acquire fresh credentials after human restart. Runtime
 restart activation remains deferred until the common admission/contained runner
 and interactive credential paths compose. No growth baseline is repinned.
+
+The same review adds the command adapter selecting existing interactive policy
+leases and explicitly configured model API keys for child epochs. It branches
+before automation injector construction, preserves signed model-only pod ceilings,
+and selects the human repository binding for host publication. Journal, queue,
+policy, credential resolution and worker lifecycle remain in existing packages;
+the command owns only their composition and provider capability mapping. Lease
+ordering follows the existing interactive-policy then child-authority ordering.
