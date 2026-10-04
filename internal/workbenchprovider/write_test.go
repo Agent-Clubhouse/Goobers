@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -292,5 +293,44 @@ func TestNativeEditReadbackMismatchIsNotConfirmed(t *testing.T) {
 	receipt, err := writer.Patch(context.Background(), editRequest(apiv1.ProviderGitHub, "title"))
 	if err == nil || receipt.Outcome != "unknown" || !receipt.ProviderAcknowledged || receipt.ObservedMatches || f.patches != 1 {
 		t.Fatalf("acknowledgment falsely implied convergence: %+v %v", receipt, err)
+	}
+}
+
+func TestPureEditMetadataMatchesWriterWithoutProviderReads(t *testing.T) {
+	for _, kind := range []apiv1.Provider{apiv1.ProviderGitHub, apiv1.ProviderADO} {
+		t.Run(string(kind), func(t *testing.T) {
+			writer, fixture := newEditFixture(t, kind)
+			scope, bound := source(kind)
+			bound.Spec.Writes = &apiv1.WorkbenchWrites{Fields: []apiv1.WorkbenchField{"title", "description", "state", "labels", "assignees"}}
+			value := "New title"
+			request := workbench.BacklogPatchRequest{ID: "7", SourceID: "101", ExpectedRevision: "2026-10-01T01:00:01Z", Field: "title", Value: &value}
+			if kind == apiv1.ProviderADO {
+				request.ID = "101"
+				request.ExpectedRevision = "1"
+			}
+			expected, err := writer.OperationDigest(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := BacklogOperationDigest(scope, bound, request)
+			if err != nil || actual != expected {
+				t.Fatalf("pure digest differs: %s %s %v", expected, actual, err)
+			}
+			bound.Spec.Objectives = &apiv1.WorkbenchObjectiveSelector{IDs: []string{"999"}, Types: []string{"Feature"}}
+			classified, err := BacklogOperationDigest(scope, bound, request)
+			if err != nil || classified != expected {
+				t.Fatal("classification edit invalidated replay", err)
+			}
+			if !reflect.DeepEqual(writer.Capabilities(), BacklogCapabilities(bound)) {
+				t.Fatal("pure capabilities differ")
+			}
+			bound.Spec.Writes = nil
+			if _, err := BacklogOperationDigest(scope, bound, request); !errors.Is(err, ErrUnsupportedEdit) {
+				t.Fatal("missing allowlist accepted", err)
+			}
+			if fixture.reads != 0 || fixture.patches != 0 {
+				t.Fatal("pure metadata contacted provider")
+			}
+		})
 	}
 }

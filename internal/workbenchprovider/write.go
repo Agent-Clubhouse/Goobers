@@ -31,9 +31,10 @@ var ErrUnverifiedEdit = errors.New("workbenchprovider: native edit outcome requi
 // BacklogWriter combines a bounded reader with a separately supplied native
 // editor. The caller must hold current human authority across the whole call.
 type BacklogWriter struct {
-	reader *BacklogReader
-	client NativeWriter
-	fields []apiv1.WorkbenchField
+	reader               *BacklogReader
+	client               NativeWriter
+	fields               []apiv1.WorkbenchField
+	mutationTargetDigest string
 }
 
 // NewBacklogWriter copies the source write allowlist. No policy or credential
@@ -43,7 +44,11 @@ func NewBacklogWriter(scope workbench.Scope, source workbench.BoundSource, clien
 	if err != nil {
 		return nil, err
 	}
-	writer := &BacklogWriter{reader: reader, client: client}
+	target, err := workbench.BacklogMutationTargetDigest(scope, source)
+	if err != nil {
+		return nil, err
+	}
+	writer := &BacklogWriter{reader: reader, client: client, mutationTargetDigest: target}
 	if source.Spec.Writes != nil {
 		writer.fields = append([]apiv1.WorkbenchField(nil), source.Spec.Writes.Fields...)
 	}
@@ -53,34 +58,69 @@ func NewBacklogWriter(scope workbench.Scope, source workbench.BoundSource, clien
 // Capabilities reports the configured intersection with this concrete adapter.
 // Native relationship changes have no enabled capability in this field slice.
 func (w *BacklogWriter) Capabilities() workbench.BacklogWriteCapabilities {
+	return backlogCapabilities(w.reader.repository.Provider, w.fields)
+}
+
+// BacklogCapabilities reports configured native edit support without resolving
+// a credential or contacting a provider. It grants no permission to mutate.
+func BacklogCapabilities(source workbench.BoundSource) workbench.BacklogWriteCapabilities {
+	var fields []apiv1.WorkbenchField
+	if source.Spec.Writes != nil {
+		fields = source.Spec.Writes.Fields
+	}
+	return backlogCapabilities(providers.ProviderKind(source.BacklogIdentity.Provider), fields)
+}
+func backlogCapabilities(provider providers.ProviderKind, fields []apiv1.WorkbenchField) workbench.BacklogWriteCapabilities {
 	result := workbench.BacklogWriteCapabilities{Fields: []apiv1.WorkbenchField{}, Relationships: []apiv1.WorkbenchRelationship{}, RevisionSemantics: "timestamp-preflight", MaxAssignees: 10}
-	if w.reader.repository.Provider == providers.ProviderADO {
+	if provider == providers.ProviderADO {
 		result.RevisionSemantics = "atomic-revision-test"
 		result.MaxAssignees = 1
+	} else if provider != providers.ProviderGitHub {
+		return result
 	}
 	for _, field := range []apiv1.WorkbenchField{"title", "description", "state", "labels", "assignees"} {
-		if slices.Contains(w.fields, field) {
+		if slices.Contains(fields, field) {
 			result.Fields = append(result.Fields, field)
 		}
 	}
 	return result
 }
 
+// BacklogOperationDigest validates exact command identity without minting auth
+// or doing provider revision preflight. The host may compare durable replay
+// receipts after current policy checks; only Patch performs remote effects.
+func BacklogOperationDigest(scope workbench.Scope, source workbench.BoundSource, request workbench.BacklogPatchRequest) (string, error) {
+	if scope.Validate() != nil || !scope.Bindings[source.Spec.Name] || source.Spec.Kind != "backlog" || source.Backlog.BaseURL != "" || !validBacklogTarget(source, source.BacklogIdentity) {
+		return "", ErrInvalidSource
+	}
+	target, err := workbench.BacklogMutationTargetDigest(scope, source)
+	if err != nil {
+		return "", err
+	}
+	id := source.BacklogIdentity
+	repo := providers.RepositoryRef{Provider: providers.ProviderKind(id.Provider), Owner: id.Owner, Project: id.Project, Name: id.Name}
+	native := nativePatchRequest(repo, request)
+	return mutationOperationDigest(target, repo.Provider, BacklogCapabilities(source), native, request)
+}
+
 // OperationDigest computes the exact bounded source/target/request digest before
 // any provider call, for the host's durable command acceptance and replay guard.
 // This digest is not a provider idempotency key and is never sent remotely.
 func (w *BacklogWriter) OperationDigest(request workbench.BacklogPatchRequest) (string, error) {
-	if !slices.Contains(w.Capabilities().Fields, request.Field) {
+	return mutationOperationDigest(w.mutationTargetDigest, w.reader.repository.Provider, w.Capabilities(), w.nativeRequest(request), request)
+}
+func mutationOperationDigest(target string, provider providers.ProviderKind, capabilities workbench.BacklogWriteCapabilities, native providers.NativeWorkItemPatch, request workbench.BacklogPatchRequest) (string, error) {
+	if !slices.Contains(capabilities.Fields, request.Field) {
 		return "", ErrUnsupportedEdit
 	}
-	if err := providers.ValidateNativeWorkItemPatch(w.nativeRequest(request), w.reader.repository.Provider); err != nil {
+	if err := providers.ValidateNativeWorkItemPatch(native, provider); err != nil {
 		return "", err
 	}
 	raw, _ := json.Marshal(struct {
 		Version int
 		Target  string
 		Request workbench.BacklogPatchRequest
-	}{1, w.reader.targetDigest, request})
+	}{2, target, request})
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:]), nil
 }
@@ -129,7 +169,10 @@ func (w *BacklogWriter) Patch(ctx context.Context, request workbench.BacklogPatc
 }
 
 func (w *BacklogWriter) nativeRequest(request workbench.BacklogPatchRequest) providers.NativeWorkItemPatch {
-	return providers.NativeWorkItemPatch{Repository: w.reader.repository, ID: request.ID, StableID: request.SourceID, ExpectedRevision: request.ExpectedRevision, Field: string(request.Field), Value: request.Value, Values: append([]string(nil), request.Values...)}
+	return nativePatchRequest(w.reader.repository, request)
+}
+func nativePatchRequest(repository providers.RepositoryRef, request workbench.BacklogPatchRequest) providers.NativeWorkItemPatch {
+	return providers.NativeWorkItemPatch{Repository: repository, ID: request.ID, StableID: request.SourceID, ExpectedRevision: request.ExpectedRevision, Field: string(request.Field), Value: request.Value, Values: append([]string(nil), request.Values...)}
 }
 
 func patchMatches(request workbench.BacklogPatchRequest, item workbench.BacklogItem) bool {

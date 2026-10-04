@@ -47,13 +47,7 @@ func NewRepositoryReader(scope workbench.Scope, source workbench.BoundSource, cl
 	for key, value := range scope.Bindings {
 		r.scope.Bindings[key] = value
 	}
-	raw, _ := json.Marshal(struct {
-		Gaggle, Binding, Kind, Branch string
-		Target                        apiv1.InteractiveRepositoryIdentity
-		Paths                         []string
-	}{scope.GaggleID, r.binding, r.kind, r.branch, target, r.paths})
-	digest := sha256.Sum256(raw)
-	r.targetDigest = hex.EncodeToString(digest[:])
+	r.targetDigest, _ = workbench.SourceTargetDigest(scope, source)
 	return r, nil
 }
 

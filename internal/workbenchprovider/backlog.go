@@ -5,9 +5,6 @@ package workbenchprovider
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -67,13 +64,7 @@ func NewBacklogReader(scope workbench.Scope, source workbench.BoundSource, clien
 		r.objectives.Types = append([]string(nil), source.Spec.Objectives.Types...)
 		r.objectives.Labels = append([]string(nil), source.Spec.Objectives.Labels...)
 	}
-	encoded, _ := json.Marshal(struct {
-		Gaggle, Binding string
-		Target          apiv1.InteractiveRepositoryIdentity
-		Objectives      apiv1.WorkbenchObjectiveSelector
-	}{r.gaggle, r.binding, target, r.objectives})
-	digest := sha256.Sum256(encoded)
-	r.targetDigest = hex.EncodeToString(digest[:])
+	r.targetDigest, _ = workbench.SourceTargetDigest(scope, source)
 	return r, nil
 }
 
