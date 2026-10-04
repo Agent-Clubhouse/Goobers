@@ -9,7 +9,6 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readprobe"
-	"github.com/goobers/goobers/internal/runner"
 )
 
 // WorkflowIdentity unambiguously identifies a workflow within its gaggle.
@@ -205,6 +204,6 @@ func reconciledRunState(ctx context.Context, rd *journal.Reader, id journal.RunI
 	if err != nil {
 		return run, err
 	}
-	run.suspended = runner.ParkedOnChild(events)
+	run.suspended = journal.ParkedOnChild(events)
 	return run, ctx.Err()
 }

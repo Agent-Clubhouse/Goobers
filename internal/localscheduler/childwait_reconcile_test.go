@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 )
 
 func parkedParentJournal(t *testing.T, root string, parent WorkflowEntry, request ChildAdmissionRequest, forged bool) {
@@ -23,8 +22,8 @@ func parkedParentJournal(t *testing.T, root string, parent WorkflowEntry, reques
 	if forged {
 		origin.StageOccurrence = "foreign"
 	}
-	receipt := runner.ChildHandoffRequest{Gaggle: parent.Gaggle, ParentRunID: request.ParentRunID, RequestID: journal.Digest([]byte("wait")), Action: "wait", ChildRunID: request.RunID, AcceptanceID: "trigger-" + request.RunID, InvocationKey: "child", SourceDigest: journal.Digest([]byte("source")), Origin: *origin}
-	if err = run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": runner.ChildWaitKind, "childWait": map[string]any{"version": 1, "parentRunId": request.ParentRunID, "request": receipt}}}); err != nil {
+	receipt := journal.ChildHandoffRequest{Gaggle: parent.Gaggle, ParentRunID: request.ParentRunID, RequestID: journal.Digest([]byte("wait")), Action: "wait", ChildRunID: request.RunID, AcceptanceID: "trigger-" + request.RunID, InvocationKey: "child", SourceDigest: journal.Digest([]byte("source")), Origin: *origin}
+	if err = run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": journal.ChildWaitKind, "childWait": map[string]any{"version": 1, "parentRunId": request.ParentRunID, "request": receipt}}}); err != nil {
 		t.Fatal(err)
 	}
 }
