@@ -75,6 +75,7 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-interactive-execution` | `codex/haw-contained-pod-tokens` | Execute and recover human restarts with interactive credentials |
 | `codex/haw-parent-authority` | `codex/haw-interactive-execution` | Bind contained parent authority and execution custody |
 | `codex/haw-contained-launcher` | `codex/haw-parent-authority` | Install contained child factories and recover parent secret delivery |
+| `codex/haw-contained-recovery` | `codex/haw-contained-launcher` | Contained serial parent routing, exact child attempt authority, and durable replacement refusal |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
@@ -114,13 +115,18 @@ budget, wait, reacquire capacity and dispatch a fresh attempt in the same stage
 occurrence. Previous context, transcript and lifetime usage remain available.
 Recovery adopts the held checkout across a crash; watchdogs recognize child waits.
 
-**General child opt-in execution remains refused.** Remaining delivery gates:
+**The contained serial parent lane is connected; unsupported shapes remain refused.**
+The first supported parent consists of opted-in repository agents with explicit
+Linux image placement and a configured worker transport. Actual runner-to-worker
+composition passes with real Git workspaces and a simulated worker. This is not
+a live Kubernetes or model qualification. Remaining delivery gates:
 
-- Complete contained parent admission and crash reconciliation. The child factory
-  now builds retained kits and dispatches isolated Linux worker pods through the
-  existing Temporal transport. Signed parent contracts, scoped HTTP planes and
-  returned-workspace import are implemented. General opt-in remains gated while
-  exact child attempt isolation and parent recovery are connected. See
+- Complete exact worker crash reconciliation. Parent and child factories now
+  use retained kits, exact signed physical-attempt credentials and scoped HTTP
+  planes through the existing Temporal transport. Parent writer start/join
+  evidence and its original fork snapshot preserve a managed checkout after an
+  uncertain dispatch; retry, Resume and Rerun refuse a replacement until custody
+  is recovered. Late teardown and verified worker reconciliation are next. See
   [contained attempt contract](reference/contained-workflow-attempts.md).
 - Verify explicit PR publication delegation against the actual credential surface,
   including ambient credentials and model credentials that also authorize GitHub.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
@@ -24,32 +25,20 @@ func (p containedJournalPlane) Emit(ctx context.Context, req livejournal.EmitReq
 	if principal.Subject != "run:"+req.RunID {
 		return livejournal.EmitResponse{}, parentAuthorityRefusal()
 	}
-	if principal.WorkflowParent {
-		a, err := p.service.parentAttempt(ctx)
-		if err != nil {
-			return livejournal.EmitResponse{}, err
-		}
-		if err = a.active(ctx); err != nil {
-			return livejournal.EmitResponse{}, err
-		}
-		req, err = parentJournalRequest(a, req)
-		if err != nil {
-			return livejournal.EmitResponse{}, err
-		}
-		ctx = livejournal.WithRequestBlobStore(ctx, a.blobs)
-	} else {
-		id, scoped, err := p.service.childBlobScope(ctx)
-		if err != nil {
-			return livejournal.EmitResponse{}, err
-		}
-		if !scoped {
-			return livejournal.EmitResponse{}, parentAuthorityRefusal()
-		}
-		if req.Gaggle != id.Gaggle {
-			return livejournal.EmitResponse{}, parentAuthorityRefusal()
-		}
-		ctx = livejournal.WithRequestBlobStore(ctx, childpod.ScopedBlobs{Queue: p.service.childQueue, Identity: id})
+
+	a, err := p.service.containedAttempt(ctx)
+	if err != nil {
+		return livejournal.EmitResponse{}, err
 	}
+	if err = a.active(ctx); err != nil {
+		return livejournal.EmitResponse{}, err
+	}
+	req, err = containedJournalRequest(a.contract, a.digest, req)
+	if err != nil {
+		return livejournal.EmitResponse{}, err
+	}
+	ctx = livejournal.WithRequestBlobStore(ctx, a.blobs)
+
 	return p.JournalService.Emit(ctx, req)
 }
 
@@ -144,4 +133,36 @@ func containedJournalOp(contract childpod.Contract, op livejournal.Op) error {
 		return errors.New("parent journal operation key is invalid")
 	}
 	return nil
+}
+
+// Both roles share transport validation, while their selectors separately prove
+// parent-run custody or accepted child lineage from the signed contract.
+type containedAttemptCustody struct {
+	contract childpod.Contract
+	digest   string
+	blobs    interface {
+		blobstore.Store
+		blobstore.BoundedReader
+	}
+	active func(context.Context) error
+	review bool
+}
+
+func (s *daemonCredentialService) containedAttempt(ctx context.Context) (containedAttemptCustody, error) {
+	p, ok := httpapi.PrincipalFromContext(ctx)
+	if !ok {
+		return containedAttemptCustody{}, parentAuthorityRefusal()
+	}
+	if p.WorkflowParent {
+		a, err := s.parentAttempt(ctx)
+		if err != nil {
+			return containedAttemptCustody{}, err
+		}
+		return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, active: a.active}, nil
+	}
+	a, err := s.childAttempt(ctx)
+	if err != nil {
+		return containedAttemptCustody{}, err
+	}
+	return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, active: a.active, review: a.review}, nil
 }

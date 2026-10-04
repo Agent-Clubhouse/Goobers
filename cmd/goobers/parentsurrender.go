@@ -24,10 +24,10 @@ type containedSurrenderPlane struct {
 
 func (p containedSurrenderPlane) Put(ctx context.Context, run, stage string, attempt int, data []byte) error {
 	principal, ok := httpapi.PrincipalFromContext(ctx)
-	if !ok || !principal.WorkflowParent {
+	if !ok || (!principal.WorkflowParent && !principal.GeneratedChild) {
 		return p.SurrenderDir.Put(ctx, run, stage, attempt, data)
 	}
-	a, err := p.service.parentAttempt(ctx)
+	a, err := p.service.containedAttempt(ctx)
 	if err != nil {
 		return err
 	}
@@ -37,14 +37,10 @@ func (p containedSurrenderPlane) Put(ctx context.Context, run, stage string, att
 	if err = a.active(ctx); err != nil {
 		return err
 	}
-	if err = validateParentSurrender(ctx, a, data); err != nil {
+	if err = validateContainedSurrender(ctx, a.contract, a.digest, a.blobs, a.review, data); err != nil {
 		return err
 	}
 	return p.SurrenderDir.Put(ctx, run, stage, attempt, data)
-}
-
-func validateParentSurrender(ctx context.Context, a parentAttemptCustody, data []byte) error {
-	return validateContainedSurrender(ctx, a.contract, a.digest, a.blobs, false, data)
 }
 
 func validateContainedSurrender(ctx context.Context, contract childpod.Contract, digest string, blobs blobstore.BoundedReader, review bool, data []byte) error {

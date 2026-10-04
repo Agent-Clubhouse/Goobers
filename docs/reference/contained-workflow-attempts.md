@@ -1,9 +1,10 @@
 # Contained workflow attempts
 
 Generated child workflow execution and a parent task that can delegate require
-an isolated worker pod. These contracts are implementation building blocks;
-general child execution remains unavailable until production launcher admission
-and the supported workflow shapes are verified together.
+an isolated worker pod. The first connected parent lane supports serial opted-in repository agents with
+explicit Linux image placement and configured worker transport. Unsupported
+workflow shapes are refused. Recovery of an uncertain physical worker remains
+in progress; such an attempt is retained and blocks replacement execution.
 
 ## Parent task authority
 
@@ -79,3 +80,25 @@ Live Kubernetes, Temporal and model execution are not claimed by those tests.
 Parallel parent stages, PR publication delegation, portal child visibility and
 shared human intervention on sealed child results remain delivery work. Recursion
 is deferred as agreed.
+
+## Generated child attempts and retained parent work
+
+Generated child credentials also name an exact execution-contract digest in a
+separate signature domain. The daemon checks accepted lineage, the pinned task
+or reviewer, logical attempt, physical stage-start sequence and timestamp. Each
+contract has durable read memberships for its kit/context and own uploads inside
+the existing bounded child store. A sibling stage cannot read those uploads,
+resolve another stage's credentials, emit observations for it or surrender its
+result. These memberships survive a database reopen and share the existing
+per-child row/byte bounds and retention.
+
+Parent worker launch now holds the original managed checkout and records the
+host fork beside its exact contract. Only host-authored writer-start/join records
+can release that custody. Retry, Resume and Rerun inspect it before replacement
+journal effects. An uncertain worker preserves the checkout; a terminal run
+record alone does not prove that worker stopped or returned its edits.
+
+The completion boundary checks both inline outputs and reviewer evidence against
+bounded attempt custody. It rejects claimed source-trust grades, inconsistent
+sizes and non-reviewer verdicts. Successful reviewers require a schema-valid
+verdict; failed reviewers may surrender their failure and workspace without one.
