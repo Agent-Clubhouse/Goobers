@@ -241,10 +241,23 @@ describe("operational overview", () => {
       liveness: "finished",
       trajectory: "failed",
       claim: { leaseStatus: "released", providerMarker: "verified" },
-      latestError: { code: "harness.crash", message: "result envelope missing" },
+      latestError: {
+        code: "provider.rate_limit",
+        message: "A retry is scheduled after the provider quota resets.",
+      },
       review: { verdict: "needs-changes", rationale: "A prior review did not pass." },
-      potentialBlockers: ["Harness exited before producing a result envelope."],
+      potentialBlockers: [],
     };
+    fixtures.telemetryErrors.items = fixtures.telemetryErrors.items.map((error) =>
+      error.runId === failed.id
+        ? {
+            ...error,
+            code: "provider.rate_limit",
+            errorClass: "retryable-infrastructure",
+            message: "A retry is scheduled after the provider quota resets.",
+          }
+        : error,
+    );
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
