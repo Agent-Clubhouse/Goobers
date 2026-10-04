@@ -137,7 +137,7 @@ func (l *queuedChildLauncher) terminalWorkspace(ctx context.Context, coordinator
 	if id.WorkspaceRepository == nil {
 		return nil, childworkflow.ErrAuthorityUnavailable
 	}
-	url, err := repoCloneURL(*id.WorkspaceRepository)
+	url, err := childRepoCloneURL(*id.WorkspaceRepository)
 	if err != nil {
 		return nil, err
 	}

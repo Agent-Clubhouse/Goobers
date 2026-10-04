@@ -30,7 +30,7 @@ func (p *childStagePod) workspace(ctx context.Context, reader *journal.Reader, e
 	if admission == nil {
 		return nil, errors.New("child workspace admission missing")
 	}
-	url, err := repoCloneURL(p.runtime.repoRef)
+	url, err := childRepoCloneURL(p.runtime.repoRef)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +38,7 @@ func (p *childStagePod) workspace(ctx context.Context, reader *journal.Reader, e
 	if err != nil {
 		return nil, err
 	}
-	if fork.Record.SnapshotSHA != admission.ForkSHA || fork.Record.RepositoryKey != admission.RepositoryDigest {
+	if fork.Record.SnapshotSHA != admission.ForkSHA || fork.Record.RepositoryKey != childRepoKey(p.runtime.repoRef) || admission.RepositoryDigest != worktree.RepositoryDigest(url) {
 		return nil, errors.New("child workspace fork differs from retained custody")
 	}
 	owned, err := p.runtime.worktrees.AdoptChildFromSnapshot(ctx, worktree.ChildOptions{RepoURL: url, RunID: admission.WorkspaceID, OwnerRunID: p.identity.RunID, Gaggle: p.identity.Gaggle, SnapshotSHA: admission.ForkSHA})
@@ -150,4 +150,11 @@ func containedOutputIntegrity(grade apiv1.Integrity) apiv1.Integrity {
 		return grade
 	}
 	return apiv1.IntegrityDerived
+}
+
+func childRepoCloneURL(ref apiv1.RepoRef) (string, error) {
+	if repoCloneURL != nil {
+		return repoCloneURL(ref)
+	}
+	return runner.DefaultRepoCloneURL(ref)
 }

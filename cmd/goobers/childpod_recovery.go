@@ -105,7 +105,7 @@ func (s *daemonCredentialService) childRecoveryRequest(ctx context.Context, read
 	if admission == nil || c.Identity.WorkspaceRepository == nil {
 		return request, blobs, errors.New("child recovery workspace admission missing")
 	}
-	url, err := repoCloneURL(*c.Identity.WorkspaceRepository)
+	url, err := childRepoCloneURL(*c.Identity.WorkspaceRepository)
 	if err != nil {
 		return request, blobs, err
 	}
@@ -113,7 +113,7 @@ func (s *daemonCredentialService) childRecoveryRequest(ctx context.Context, read
 	if err != nil {
 		return request, blobs, err
 	}
-	if fork.Record.SnapshotSHA != admission.ForkSHA || fork.Record.RepositoryKey != admission.RepositoryDigest {
+	if fork.Record.SnapshotSHA != admission.ForkSHA || fork.Record.RepositoryKey != childRepoKey(*c.Identity.WorkspaceRepository) || admission.RepositoryDigest != worktree.RepositoryDigest(url) {
 		return request, blobs, errors.New("child recovery fork differs from retained admission")
 	}
 	// Custody restoration uses immutable archive placement, never current tool

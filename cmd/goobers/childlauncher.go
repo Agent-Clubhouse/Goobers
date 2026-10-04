@@ -149,7 +149,7 @@ func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childE
 	if !required {
 		return nil, nil
 	}
-	url, err := repoCloneURL(runtime.repoRef)
+	url, err := childRepoCloneURL(runtime.repoRef)
 	if err != nil {
 		return nil, err
 	}
