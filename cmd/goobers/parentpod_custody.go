@@ -11,14 +11,13 @@ import (
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/recovery"
 )
 
 const parentPodWriterStarted = "isolated.parent.writer.started"
 const parentPodWriterJoined = "isolated.parent.writer.joined"
 
 func (b *parentInvocationBlobs) record(kind string) error {
-	return b.recorder.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: b.contract.Stage, Attempt: b.contract.Attempt, Runner: map[string]any{"kind": kind, "contractDigest": b.contractDigest}})
+	return b.recorder.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: b.contract.Stage, Attempt: b.contract.Attempt, Runner: map[string]any{"kind": kind, "contractDigest": b.contractDigest, "retainedAttempt": b.retainedRef}})
 }
 
 // Only the host can write these annotations. Pod journal ingress uses a strict
@@ -129,22 +128,22 @@ func readParentPodContract(store childpod.ParentBlobs, events []journal.Event, e
 	return contract, invoke.ErrWorkspaceNotQuiescent
 }
 
-// The original host snapshot is required to reconcile a stopped worker after
-// crash. The portable contract intentionally carries no source ancestry/index.
-func (b *parentInvocationBlobs) keepHostFork() error {
-	if b.hostFork == nil {
-		return errors.New("contained parent host snapshot missing")
-	}
-	data, err := json.Marshal(struct {
-		ContractDigest string                 `json:"contractDigest"`
-		Fork           recovery.ChildSnapshot `json:"fork"`
-	}{b.contractDigest, *b.hostFork})
+// KeepAttempt reserves bounded private blob custody before publishing the exact
+// host journal ref. It is never seeded into a pod's readable attempt index.
+func (b *parentInvocationBlobs) KeepAttempt(ctx context.Context, retained childpod.RetainedAttempt) error {
+	data, err := json.Marshal(retained)
 	if err != nil {
 		return err
 	}
-	if len(data) > 64<<10 {
-		return errors.New("contained parent host snapshot exceeds bound")
+	if len(data) > childpod.MaxRetainedAttemptBytes {
+		return errors.New("retained parent attempt exceeds bound")
 	}
-	_, err = b.recorder.RecordArtifact(fmt.Sprintf("parent-pod-host/%s-%d.json", b.contract.Stage, b.contract.PodAttempt), data)
+	if err = b.Put(ctx, journal.Digest(data), data); err != nil {
+		return err
+	}
+	b.retainedRef, err = childpod.RecordRetainedAttempt(b.recorder, retained)
+	if err == nil {
+		b.retained = retained
+	}
 	return err
 }

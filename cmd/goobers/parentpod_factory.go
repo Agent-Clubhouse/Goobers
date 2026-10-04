@@ -24,6 +24,9 @@ func (s *daemonCredentialService) installParentPodFactories(client childpod.Temp
 	if client == nil || s.config == nil || s.config.API.PodTokenKeyFile == "" || surrenders == nil {
 		return
 	}
+	s.parentRecovery = func(ctx context.Context, id journal.RunIdentity) error {
+		return (&parentStagePod{service: s, identity: id, client: client, surrenders: surrenders}).reconcile(ctx)
+	}
 	s.parentExecutors = func(rec runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Goober, error) {
 		jr, id, err := parentJournal(rec)
 		if err != nil {
@@ -61,7 +64,7 @@ func (p *parentStagePod) Invoke(ctx context.Context, env apiv1.InvocationEnvelop
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	blobs := &parentInvocationBlobs{ParentBlobs: childpod.ParentBlobs{RunDir: p.journal.Dir(), Identity: p.identity}, recorder: p.journal, hostFork: &request.Workspace.Fork}
+	blobs := &parentInvocationBlobs{ParentBlobs: childpod.ParentBlobs{RunDir: p.journal.Dir(), Identity: p.identity}, recorder: p.journal}
 	if err = copyContainedPodContext(ctx, reader, p.identity.RunID, blobs, env.ContextPointers); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -70,7 +73,7 @@ func (p *parentStagePod) Invoke(ctx context.Context, env apiv1.InvocationEnvelop
 		return apiv1.ResultEnvelope{}, err
 	}
 	transport := childpod.TemporalDispatch{Client: p.client, WorkflowQueue: p.service.config.EffectiveEngineConfig().TaskQueue, DispatchQueue: pin.Queue, Admit: p.admission(env)}
-	executor := childpod.Executor{Dispatcher: transport, Surrenders: p.surrenders, Blobs: blobs, Recorder: p.journal}
+	executor := childpod.Executor{Dispatcher: transport, Surrenders: p.surrenders, Blobs: blobs, Recorder: p.journal, KeepAttempt: blobs.KeepAttempt}
 	executionCtx, podProof := invoke.WithWorkspaceQuiescence(ctx)
 	out, report, callErr := executor.Execute(executionCtx, request)
 	outputCustodyErr = podProof.Verify()
@@ -117,7 +120,8 @@ type parentInvocationBlobs struct {
 	contractDigest string
 	recorder       *journal.Run
 	contract       childpod.Contract
-	hostFork       *recovery.ChildSnapshot
+	retainedRef    journal.Ref
+	retained       childpod.RetainedAttempt
 }
 
 func (b *parentInvocationBlobs) BindContract(ctx context.Context, digest string) error {
@@ -133,8 +137,8 @@ func (b *parentInvocationBlobs) BindContract(ctx context.Context, digest string)
 		return err
 	}
 	b.contractDigest = digest
-	if err = b.keepHostFork(); err != nil {
-		return err
+	if b.retainedRef.Digest == "" || b.retained.Input.Attempt.ChildExecutionDigest != digest {
+		return errors.New("contained parent retained dispatch receipt missing")
 	}
 	return b.record(parentPodWriterStarted)
 }

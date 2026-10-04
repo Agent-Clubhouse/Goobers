@@ -7,9 +7,11 @@ import (
 
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/recovery"
 )
 
 func TestParentPodCustodyRequiresExactHostJoinedReceipt(t *testing.T) {
@@ -28,13 +30,17 @@ func TestParentPodCustodyRequiresExactHostJoinedReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	contract := childpod.Contract{Version: 1, Identity: id, ParentOrigin: env.ChildWorkflowOrigin, Stage: "plan", Attempt: 1, PodAttempt: int(started.Seq), StartedAt: started.Time, Ceiling: credentials.NewChildCeiling(false, nil, nil)}
-	blobs := &parentInvocationBlobs{ParentBlobs: childpod.ParentBlobs{RunDir: run.Dir(), Identity: id}, recorder: run, hostFork: &recovery.ChildSnapshot{}}
+	blobs := &parentInvocationBlobs{ParentBlobs: childpod.ParentBlobs{RunDir: run.Dir(), Identity: id}, recorder: run}
 	data, err := json.Marshal(contract)
 	if err != nil {
 		t.Fatal(err)
 	}
 	digest := journal.Digest(data)
 	if err = blobs.Put(t.Context(), digest, data); err != nil {
+		t.Fatal(err)
+	}
+	retained := childpod.RetainedAttempt{Version: 1, Input: engine.ChildDispatchInput{Attempt: dispatcher.Attempt{RunID: id.RunID, Gaggle: id.Gaggle, Stage: "plan", Number: 1, PodAttempt: int(started.Seq), Workspace: "scratch", ChildExecutionDigest: digest}, Eligible: []dispatcher.RunnerSpec{{Name: "linux", OS: "linux", HostKind: instance.RunnerHostImage}}, Queue: "queue"}}
+	if err = blobs.KeepAttempt(t.Context(), retained); err != nil {
 		t.Fatal(err)
 	}
 	if err = blobs.BindContract(t.Context(), digest); err != nil {

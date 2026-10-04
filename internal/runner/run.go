@@ -3326,6 +3326,7 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 type taskFrame struct {
 	artifactVisit       uint64
 	heldChildWorkspace  *stageWorkspace
+	containedRecovery   *containedParentRecovery
 	childWaitResume     *childWaitRecord
 	childWaitAttempt    int
 	childWaitClass      journal.AttemptClass
@@ -3355,16 +3356,15 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	if r.localTaskDenied(tf) {
 		return r.refuseSelfTask(tf)
 	}
-	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
+	if err := r.prepareRecoveredTaskContext(ctx, &tf, branch); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err
+	}
 	if tf.workspaceRevision != nil {
 		tf.in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
 	}
 	jr, in, t := tf.jr, tf.in, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
-	if err := admitTaskIntegrity(tf); err != nil {
-		return apiv1.ResultEnvelope{}, nil, err
-	}
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -3421,6 +3421,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 
 	var lastErr error
 	cumulativeUsage := newStageUsageTotals()
+	restoreContainedParentUsage(tf, cumulativeUsage, &instructionAddendum)
 	if tf.childWaitResume != nil {
 		instructionAddendum = tf.childWaitResume.InstructionAddendum
 		if err := r.restoreChildWait(ctx, &tf, cumulativeUsage); err != nil {

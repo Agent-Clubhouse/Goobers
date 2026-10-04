@@ -47,6 +47,9 @@ func (r *Runner) holdContainedParentWorkspace(ctx context.Context, tf taskFrame,
 		return nil, err
 	}
 	workspace.retainedChild = nil
+	if tf.heldChildWorkspace == workspace {
+		workspace.retainedChild = preserve
+	}
 	return func() error {
 		if workspace.retainedChild != nil {
 			return nil

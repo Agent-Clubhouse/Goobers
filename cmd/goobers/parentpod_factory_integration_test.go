@@ -10,12 +10,15 @@ import (
 	"strings"
 	"testing"
 
+	"go.temporal.io/sdk/client"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -192,12 +195,28 @@ func TestIntegrationParentFactoryCancellationReturnsDirtyTreeAndTranscript(t *te
 }
 
 func TestIntegrationParentRunnerStartUsesContainedFactory(t *testing.T) {
-	testParentRunnerStart(t, false)
+	testParentRunnerStart(t, false, false)
 }
 func TestIntegrationParentRunnerUncertainPodKeepsOriginalWorkspace(t *testing.T) {
-	testParentRunnerStart(t, true)
+	testParentRunnerStart(t, true, false)
 }
-func testParentRunnerStart(t *testing.T, uncertain bool) {
+func TestIntegrationParentReconcilesExactWorkerAndReusesHeldWorkspace(t *testing.T) {
+	testParentRunnerStart(t, true, true)
+}
+
+type recoverableParentWorker struct {
+	factoryWorkerClient
+	recovered engine.ChildDispatchResult
+}
+
+func (c *recoverableParentWorker) GetWorkflow(context.Context, string, string) client.WorkflowRun {
+	return factoryWorkerRun{result: c.recovered}
+}
+func (c *recoverableParentWorker) SignalWorkflow(context.Context, string, string, string, interface{}) error {
+	return nil
+}
+
+func testParentRunnerStart(t *testing.T, uncertain, recoverWorker bool) {
 	testdep.Require(t, "git")
 	f := containedParentFixture(t)
 	_, machine, err := childStageCatalog(f.cfg, f.applied, childworkflow.ParentSelection{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow, Stage: "plan"}, childworkflow.BackendRunner)
@@ -211,7 +230,11 @@ func testParentRunnerStart(t *testing.T, uncertain bool) {
 	}
 	recoveryCLIGit(t, repo, "add", ".")
 	recoveryCLIGit(t, repo, "commit", "-m", "base")
-	manager, err := worktree.NewManager(t.TempDir())
+	scopedLayout, err := instance.EffectiveWorkcopiesLayout(f.layout.ForGaggle(f.parent.Gaggle), f.cfg, &f.applied.Gaggles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := worktree.NewManager(scopedLayout.WorkcopiesDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +253,7 @@ func testParentRunnerStart(t *testing.T, uncertain bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker := &factoryWorkerClient{}
+	worker := &recoverableParentWorker{}
 	worker.execute = func(ctx context.Context, in engine.ChildDispatchInput) (engine.ChildDispatchResult, error) {
 		a := in.Attempt
 		dir, err := f.layout.FindRunDir(a.RunID)
@@ -257,19 +280,59 @@ func testParentRunnerStart(t *testing.T, uncertain bool) {
 		if !a.WorkflowParent || contract.ParentOrigin == nil || a.Envelope.Workspace != "" {
 			t.Fatal("actual runner escaped contained parent route")
 		}
-		if uncertain {
-			return engine.ChildDispatchResult{Report: dispatcher.Report{ChildCreateAttempted: true}}, nil
+		if recoverWorker {
+			pod := t.TempDir()
+			if err = childpod.Materialize(ctx, pod, *contract.Workspace); err != nil {
+				t.Fatal(err)
+			}
+			if worker.starts > 1 {
+				data, err := os.ReadFile(filepath.Join(pod, "source.txt"))
+				if err != nil || string(data) != "recovered edits\n" {
+					t.Fatal("recovered tree was reset", string(data), err)
+				}
+				found := false
+				for _, pointer := range a.Envelope.ContextPointers {
+					found = found || pointer.Name == "recovered-parent-transcript"
+				}
+				if !found {
+					t.Fatal("recovery transcript not given to continuation")
+				}
+			}
+			if err = os.WriteFile(filepath.Join(pod, "source.txt"), []byte("recovered edits\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			carrier, _, err := childpod.CaptureCarrier(ctx, pod, contract.Workspace.Snapshot.Record.RepositoryKey, id.RunID, contract.StartedAt, contract.Workspace.Snapshot.Policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contract.Workspace = &carrier
 		}
 		data, _ = json.Marshal(childpod.Output{Version: 1, ContractDigest: a.ChildExecutionDigest, Workspace: contract.Workspace})
 		digest := journal.Digest(data)
 		if err = scoped.Put(ctx, digest, data); err != nil {
 			t.Fatal(err)
 		}
-		data, _ = json.Marshal(dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, ChildWorkspaceDigest: digest})
+		result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+		if recoverWorker {
+			transcript := []byte("interrupted parent context")
+			ref, err := journal.ArtifactRef(transcript)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = scoped.Put(ctx, ref.Digest, transcript); err != nil {
+				t.Fatal(err)
+			}
+			result.Transcript = &apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}
+		}
+		data, _ = json.Marshal(dispatcher.SurrenderedResult{Result: result, ChildWorkspaceDigest: digest})
 		if err = plane.Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			t.Fatal(err)
 		}
-		return engine.ChildDispatchResult{Report: dispatcher.Report{ChildCreateAttempted: true, ChildPodUID: "exact-parent", WorkspaceWritersStopped: true, SurrenderConfirmed: true}}, nil
+		worker.recovered = engine.ChildDispatchResult{BindingDigest: in.BindingDigest(), Report: dispatcher.Report{ChildCreateAttempted: true, ChildPodUID: "exact-parent", WorkspaceWritersStopped: true, SurrenderConfirmed: true}}
+		if uncertain && worker.starts == 1 {
+			return engine.ChildDispatchResult{Report: dispatcher.Report{ChildCreateAttempted: true}}, nil
+		}
+		return worker.recovered, nil
 	}
 	service.installChildPodFactories(worker, plane)
 	project := f.applied.Gaggles[0].Spec.Project
@@ -288,6 +351,52 @@ func testParentRunnerStart(t *testing.T, uncertain bool) {
 			t.Fatal("unknown pod allowed another writer", result, err, worker.starts, base.calls)
 		}
 		assertParentWorkspaceRetained(t, f, manager, repo)
+		if !recoverWorker {
+			return
+		}
+		previous := repoCloneURL
+		repoCloneURL = clone
+		t.Cleanup(func() { repoCloneURL = previous })
+		dir, err := f.layout.FindRunDir(strings.Repeat("d", 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader, err := journal.OpenReadOnly(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := reader.Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		registry := newDaemonRunnerRegistry()
+		service.installParentRecovery(registry)
+		registry.setGenerationResolver(func(context.Context, journal.RunIdentity) (executionGenerationRuntime, error) {
+			return executionGenerationRuntime{runner: driver, machine: machine}, nil
+		})
+		if _, err = registry.executionGeneration(t.Context(), id); err != nil {
+			t.Fatal("exact parent recovery failed", err)
+		}
+		if worker.starts != 1 {
+			t.Fatal("recovery launched another pod")
+		}
+		if err = verifyParentPodCustody(reader); err != nil {
+			t.Fatal(err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var terminal uint64
+		for _, event := range events {
+			if event.Type == journal.EventRunFinished {
+				terminal = event.Seq
+			}
+		}
+		resumed, err := driver.ResumeFromTerminal(t.Context(), runner.ResumeFromTerminalInput{RunID: id.RunID, Machine: machine, GooberDigest: id.GooberDigest, RepoRef: project, Target: "plan", Actor: "operator", Action: "retry", Rationale: "continue recovered work", ExpectedTerminalSeq: terminal})
+		if err != nil || resumed.Phase != journal.PhaseCompleted || worker.starts != 2 {
+			t.Fatal("recovered parent did not continue", resumed, err, worker.starts)
+		}
 		return
 	}
 	if err != nil || result.Phase != journal.PhaseCompleted || worker.starts != 1 || base.calls != 0 {
