@@ -37,6 +37,9 @@ func bindChildContinuationWorkspace(id *RunIdentity, req ContinuationRequest) er
 // prepareContinuationIdentity copies only the admitted identity/context. It
 // never edits the source, inherits ambient context or changes accepted pins.
 func prepareContinuationIdentity(id RunIdentity, req ContinuationRequest, recordedBranch, recordedSHA string) (RunIdentity, error) {
+	if id.Session != nil {
+		return RunIdentity{}, fmt.Errorf("journal: session continuation requires a new accepted turn")
+	}
 	var err error
 	id.Child, err = childContinuationLineage(id, req.ChildContinuation)
 	if err != nil {

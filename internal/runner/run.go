@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/sessioning"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
 	"github.com/goobers/goobers/internal/workflow"
@@ -445,7 +447,8 @@ type Config struct {
 	StageRestartContext func(context.Context, journal.RunIdentity, SecretRegistrar) (context.Context, func(), error)
 	stageRestartOnly    string
 
-	childExecution *journal.RunIdentity
+	childExecution   *journal.RunIdentity
+	sessionExecution *journal.RunIdentity
 	// ChildWorkflowAdmission is a host-only backend admission check. Nil keeps
 	// child-enabled workflows unavailable. It must validate every stage before
 	// any journal or workspace effects, including on resume and human restart.
@@ -934,6 +937,8 @@ type StartInput struct {
 	Gaggle string
 	// Child is immutable generated-run provenance, verified before journal creation.
 	Child *journal.ChildLineage
+	// SessionInputs carries only host-prepared accepted conversation context.
+	SessionInputs *sessioning.ExecutionInputs
 	// EventInputs is a host-prepared immutable consumer input set, never DSL data.
 	EventInputs *eventing.ExecutionInputs
 	// ChildCredentials is host-derived delegation, pinned with the accepted source.
@@ -1059,6 +1064,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
+	if err := r.validateSessionStart(in); err != nil {
+		return Result{}, err
+	}
 	if err := r.admitChildWorkflows(in.Machine); err != nil {
 		return Result{}, err
 	}
@@ -1126,6 +1134,13 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	sessionLineage, err := prepareSessionInputs(&in, inputs, inputIntegrity, scrubber)
+	if err != nil {
+		return Result{}, err
+	}
+	if r.cfg.sessionExecution != nil && !reflect.DeepEqual(sessionLineage, r.cfg.sessionExecution.Session) {
+		return Result{}, errors.New("runner: session input identity mismatch")
+	}
 	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
 		InstanceID:          in.instanceID,
@@ -1138,6 +1153,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Gaggle:              in.Gaggle,
 		Child:               in.Child,
 		Event:               eventLineage,
+		Session:             sessionLineage,
 		RunControls:         &pinnedControls,
 		Trigger:             in.Trigger,
 		WorkspaceBranch:     in.WorkspaceBranch,

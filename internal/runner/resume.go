@@ -148,6 +148,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		in.HumanDecision = &decision
 	}
 
+	if err := r.refuseSessionResume(in.RunID); err != nil {
+		return Result{}, err
+	}
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	if err := r.refuseChildWorkflowResume(in.Machine, dir); err != nil {
 		return Result{}, err
@@ -178,7 +181,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 // appended. The event records the human actor, prior terminal phase, target,
 // and verified workflow pin so a crash after the action can recover it exactly.
 func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalInput) (Result, error) {
-	if r.cfg.stageRestartOnly != "" {
+	if r.cfg.stageRestartOnly != "" || r.cfg.sessionExecution != nil {
 		return Result{}, errors.New("runner: human epoch requires a new authorized restart")
 	}
 	if !apiv1.ValidRunID(in.RunID) {
@@ -209,6 +212,9 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	in.Decision = strings.TrimSpace(in.Decision)
 	in.Rationale = strings.TrimSpace(in.Rationale)
 
+	if err := r.refuseSessionMutation(in.RunID); err != nil {
+		return Result{}, err
+	}
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	if err := r.verifyChildWorkflowCustody(dir); err != nil {
 		return Result{}, err

@@ -42,7 +42,7 @@ type rerunContext struct {
 // The workflow definition remains pinned and unchanged; the operator, addendum,
 // target, and attempt are recorded before the invocation starts.
 func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, error) {
-	if r.cfg.stageRestartOnly != "" {
+	if r.cfg.stageRestartOnly != "" || r.cfg.sessionExecution != nil {
 		return Result{}, errors.New("runner: human epoch requires a new authorized restart")
 	}
 	if in.RunID == "" {
@@ -74,6 +74,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		return Result{}, err
 	}
 
+	if err := r.refuseSessionMutation(in.RunID); err != nil {
+		return Result{}, err
+	}
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	if err := r.verifyChildWorkflowCustody(dir); err != nil {
 		return Result{}, err

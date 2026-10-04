@@ -78,6 +78,13 @@ func (s *Store) BeginSessionTurn(ctx context.Context, acceptance string, now tim
 	if t.Session.State == sessioning.CancelRequested || t.Session.State == sessioning.Closed {
 		return t, ErrSessionClosed
 	}
+	var pinned string
+	if err = tx.QueryRowContext(ctx, `SELECT input_digest FROM interactive_turns WHERE id=?`, t.ID).Scan(&pinned); err != nil {
+		return t, err
+	}
+	if pinned == "" {
+		return t, ErrTransition
+	}
 	var ahead, active int
 	err = tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM interactive_turns WHERE session_id=? AND state!='settled' AND sequence<?),(SELECT COUNT(*) FROM interactive_turns WHERE gaggle=? AND state IN ('dispatching','running'))`, t.Session.ID, t.Message.Sequence, t.Session.Gaggle).Scan(&ahead, &active)
 	if err != nil {

@@ -69,7 +69,7 @@ func tombstoneSessionTurns(ctx context.Context, tx *sql.Tx, now time.Time, limit
 		if _, err = tx.ExecContext(ctx, `DELETE FROM triggers WHERE id=(SELECT acceptance_id FROM interactive_turns WHERE id=?)`, id); err != nil {
 			return 0, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE interactive_turns SET authority='{}',tombstoned_ns=? WHERE id=?`, now.UnixNano(), id); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE interactive_turns SET authority='{}',inputs='',tombstoned_ns=? WHERE id=?`, now.UnixNano(), id); err != nil {
 			return 0, err
 		}
 	}

@@ -34,7 +34,7 @@ func (r *Runner) ForChildStageRestartExecution(id journal.RunIdentity, begin fun
 // ForStageRestartExecution creates a driver which can only resume the exact
 // human epoch. It cannot start ordinary automation or invoke automation hooks.
 func (r *Runner) ForStageRestartExecution(id journal.RunIdentity, f StageRestartExecutionFactories) (*Runner, error) {
-	if r == nil || id.RunID == "" || f.Context == nil || f.NewAgentic == nil || f.NewDeterministic == nil {
+	if r == nil || id.RunID == "" || id.Session != nil || f.Context == nil || f.NewAgentic == nil || f.NewDeterministic == nil {
 		return nil, errors.New("runner: human restart execution factories unavailable")
 	}
 	if id.Child != nil && (id.Child.ExecutionEpoch == 0 || id.ValidateChildLineage() != nil || r.cfg.childExecution == nil || r.cfg.childExecution.RunID != id.RunID || !reflect.DeepEqual(r.cfg.childExecution.Child, id.Child)) {

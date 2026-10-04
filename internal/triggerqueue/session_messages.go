@@ -47,7 +47,7 @@ func (s *Store) SubmitSessionMessage(ctx context.Context, c SessionCommand, id, 
 	if err != nil {
 		return sessioning.Acceptance{}, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO interactive_turns(id,session_id,gaggle,message_id,acceptance_id,sequence,authority,state,created_ns,reserved_bytes) VALUES(?,?,?,?,?,?,?,'queued',?,?)`, turn, id, c.Gaggle, message, acceptance, session.NextSequence, authority, now.UnixNano(), sessionResponseAllowance)
+	_, err = tx.ExecContext(ctx, `INSERT INTO interactive_turns(id,session_id,gaggle,message_id,acceptance_id,sequence,authority,state,created_ns,reserved_bytes) VALUES(?,?,?,?,?,?,?,'queued',?,?)`, turn, id, c.Gaggle, message, acceptance, session.NextSequence, authority, now.UnixNano(), sessionResponseAllowance+sessionInputAllowance)
 	if err != nil {
 		return sessioning.Acceptance{}, err
 	}
@@ -83,7 +83,7 @@ func sessionMessageCapacity(ctx context.Context, tx *sql.Tx, gaggle, id string, 
 	if err := triggerSlotCapacity(ctx, tx, 1); err != nil {
 		return err
 	}
-	return childByteCapacity(ctx, tx, size+sessionResponseAllowance+16*1024)
+	return childByteCapacity(ctx, tx, size+sessionResponseAllowance+sessionInputAllowance+16*1024)
 }
 
 // Session returns one already-authorized gaggle's retained summary.

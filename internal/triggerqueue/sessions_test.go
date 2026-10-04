@@ -77,6 +77,9 @@ func TestSessionAtomicOrderingAcrossStoresAndReopen(t *testing.T) {
 	if _, err := s.BeginSessionTurn(t.Context(), second.AcceptanceID, childTestTime); !errors.Is(err, ErrTransition) {
 		t.Fatal("out of order dispatch", err)
 	}
+	if _, err := s.SessionInputs(t.Context(), first.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
 	turn, err := other.BeginSessionTurn(t.Context(), first.AcceptanceID, childTestTime)
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +103,9 @@ func TestSessionAtomicOrderingAcrossStoresAndReopen(t *testing.T) {
 	}
 	completion.Text = "different"
 	if err = s.CompleteSessionTurn(t.Context(), first.AcceptanceID, completion, childTestTime); !errors.Is(err, ErrConflict) {
+		t.Fatal(err)
+	}
+	if _, err = s.SessionInputs(t.Context(), second.AcceptanceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.BeginSessionTurn(t.Context(), second.AcceptanceID, childTestTime); err != nil {
@@ -129,6 +135,9 @@ func TestSessionCloseKeepsUncertainCustodyAndCancelsQueued(t *testing.T) {
 	session := createSessionTest(t, s, "create")
 	first := submitSessionTest(t, s, session.ID, "first")
 	second := submitSessionTest(t, s, session.ID, "second")
+	if _, err := s.SessionInputs(t.Context(), first.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.BeginSessionTurn(t.Context(), first.AcceptanceID, childTestTime); err != nil {
 		t.Fatal(err)
 	}

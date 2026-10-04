@@ -46,5 +46,8 @@ func (id RunIdentity) validateExecutionLineage() error {
 	if err := id.ValidateChildLineage(); err != nil {
 		return err
 	}
-	return id.ValidateEventLineage()
+	if err := id.ValidateEventLineage(); err != nil {
+		return err
+	}
+	return id.ValidateSessionLineage()
 }

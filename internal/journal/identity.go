@@ -113,6 +113,8 @@ type RunIdentity struct {
 	Child *ChildLineage `json:"child,omitempty"`
 	// Event identifies the original queued consumer execution, not a human continuation.
 	Event *EventLineage `json:"event,omitempty"`
+	// Session is immutable shared-conversation turn provenance.
+	Session *SessionLineage `json:"session,omitempty"`
 	// Driver names the component walking this run's stages. Empty — the only
 	// value any run.yaml written before this field existed can carry — means
 	// the daemon's in-process runner, so every existing journal keeps both

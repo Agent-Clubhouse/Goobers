@@ -85,6 +85,61 @@
         "restartDigest": {"description": "Exact durable queue restart request digest; conveys no independent authority.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
       }
     },
+    "session": {
+      "description": "Immutable accepted shared-session turn provenance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gaggle",
+        "sessionId",
+        "turnId",
+        "messageId",
+        "acceptanceId",
+        "envelopeDigest",
+        "inputDigest"
+      ],
+      "properties": {
+        "gaggle": {
+          "description": "Owning gaggle.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sessionId": {
+          "description": "Shared conversation identity.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "turnId": {
+          "description": "Accepted logical conversational turn.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "messageId": {
+          "description": "Originating attributed human message.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "acceptanceId": {
+          "description": "Exact durable start queue receipt.",
+          "type": "string",
+          "pattern": "^trigger-[0-9a-f]{32}$"
+        },
+        "envelopeDigest": {
+          "description": "Digest of accepted session start envelope.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "inputDigest": {
+          "description": "Digest of immutable bounded conversation input.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
     "event": {
       "description": "Immutable accepted event consumer identity; payloads confer no execution authority.",
       "type": "object",
