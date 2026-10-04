@@ -245,10 +245,11 @@ accepted messages retain exact human attribution, durable ordering and a queued
 turn; the UI distinguishes queue acceptance, verified run links and confirmed
 closure. Current gaggle permissions gate creation and messaging. Unknown command
 outcomes retry the same key and content; access failures clear the visible
-conversation. Session runtime installation remains outstanding and availability
-stays false until that adapter is connected. See [shared sessions](reference/shared-sessions.md).
-Backlog edits, PR repair, paused-stage fresh allowances, parallel restarts and
-sealed-child continuation remain acceptance work. Saved guidance alone is
+conversation. The native daemon runtime is now installed with pinned model profiles, live human
+leases and writer join evidence. Source operations remain separately gated. See [shared sessions](reference/shared-sessions.md).
+Backlog edits and PR repair remain acceptance work. The installed human restart
+adapters cover affected-stage fresh allowances, queued capacity and sealed-child
+continuation; live worker qualification remains outstanding. Saved guidance alone is
 explicitly labeled as saved; it is not described as delivered or resumed.
 
 ### Events — pinned local consumers and typed publication implemented
@@ -361,3 +362,14 @@ coordinator, restores all unsettled session custody before admission, and retain
 journals/configuration while writers remain uncertain. Actual HTTP-to-Runner
 adapter tests cover accepted turns, publication refusal and unknown writers.
 Source read/write tools and live model/worker qualification remain follow-up.
+
+
+### Durable demand-sized schedule delivery
+
+Due schedule observations now persist a pinned demand obligation and advance the
+cursor before polling. The first count is sealed once; bounded worker starts then
+transfer transactionally through shared queued/live capacity without recounting
+or rebinding after a restart. Capacity release wakes the remaining obligation.
+Existing priority, quota and transient fallback behavior is preserved. Unresolved
+obligations retain source generations; disabling a source does not silently delete
+them. Standalone/manual/detached and direct-engine admission remain follow-up.
