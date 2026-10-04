@@ -9,9 +9,13 @@ import (
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
-// SourceTrigger retains the host's schedule/signal provenance with a queued start.
+// SourceTrigger retains the host's schedule/signal/worker provenance with a queued start.
 // ScheduledFrom/At reproduce the captured due indexes against the pinned definition.
 type SourceTrigger struct {
+	WorkerKind    string    `json:"workerKind,omitempty"`
+	ObservedAt    time.Time `json:"observedAt,omitempty"`
+	ObservedCount int       `json:"observedCount,omitempty"`
+	WorkerOrdinal int       `json:"workerOrdinal,omitempty"`
 	Signal        string    `json:"signal,omitempty"`
 	Ref           string    `json:"ref,omitempty"`
 	Webhook       bool      `json:"webhook,omitempty"`

@@ -1137,6 +1137,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.evaluateRefillOpportunities(allCandidates, now)
 	s.paceQuotaResumedCandidates(allCandidates)
 	s.recordQueueSaturation(ctx, allCandidates, now)
+	s.queueCountWorkers(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 || candidate.refillRemaining > 0 {
@@ -2522,8 +2523,11 @@ func (e *TriggerRejectedError) Transient() bool {
 	// exactly the sense above — the pod's memory frees as runs finish and the
 	// kernel reclaims, so a refused trigger is refused for capacity that is
 	// about to exist (#3960).
-	return e.Reason == ReasonMaxParallel || e.Reason == ReasonInstanceMaxParallel ||
-		strings.HasPrefix(e.Reason, ReasonMemoryPressure)
+	// Refill records its backoff context in the reason but retains the same
+	// capacity semantics when a durable start is waiting for admission.
+	reason := strings.TrimPrefix(e.Reason, refillBlockedReasonPrefix)
+	return reason == ReasonMaxParallel || reason == ReasonInstanceMaxParallel ||
+		strings.HasPrefix(reason, ReasonMemoryPressure)
 }
 
 // RecordTriggerRefusal journals a trigger rejected by an admission layer

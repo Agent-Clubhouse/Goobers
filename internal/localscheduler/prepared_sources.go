@@ -12,8 +12,14 @@ import (
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
-// Validate checks the closed schedule/signal variants retained by the host.
+// Validate checks the closed schedule/signal/worker variants retained by the host.
 func (source SourceTrigger) Validate() error {
+	if source.WorkerKind != "" {
+		return source.validateWorker()
+	}
+	if !source.ObservedAt.IsZero() || source.ObservedCount != 0 || source.WorkerOrdinal != 0 {
+		return errors.New("localscheduler: worker evidence requires a worker source")
+	}
 	if source.Signal != "" {
 		if len(source.Signal) > 256 || len(source.Ref) > 512 || source.Ref == "" || !source.ScheduledFrom.IsZero() || !source.ScheduledAt.IsZero() {
 			return errors.New("localscheduler: invalid queued signal")
@@ -35,6 +41,9 @@ func (source SourceTrigger) Validate() error {
 
 // Trigger returns the exact journal provenance expected from an accepted start.
 func (source SourceTrigger) Trigger(workflow string) journal.Trigger {
+	if source.WorkerKind != "" {
+		return journal.Trigger{Kind: journal.TriggerItem, Ref: workflow}
+	}
 	if source.Signal != "" {
 		return journal.Trigger{Kind: journal.TriggerSignal, Ref: source.Ref}
 	}
@@ -57,6 +66,9 @@ func (s *Scheduler) dispatchPreparedSource(executionCtx context.Context, entry W
 	s.mu.Lock()
 	current := s.workflows[entryIdentity(entry)]
 	s.mu.Unlock()
+	if source.WorkerKind != "" {
+		return s.dispatchPreparedWorker(executionCtx, entry, current, runID, source, now)
+	}
 	var indexes []int
 	reason := "signal"
 	if source.Signal != "" {

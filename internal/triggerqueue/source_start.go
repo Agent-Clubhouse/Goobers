@@ -32,6 +32,7 @@ type SourceAdvance struct {
 // SourceBatch identifies the authenticated delivery independently of recipients.
 // A duplicate keeps the first accepted recipient set, even after configuration changes.
 type SourceBatch struct {
+	PendingLimit            *WorkflowPendingLimit
 	Key, Actor, Fingerprint string
 	Starts                  []SourceStart
 	Advance                 *SourceAdvance
@@ -168,6 +169,9 @@ func validateSourceBatch(b SourceBatch, now time.Time) error {
 	return nil
 }
 func prepareSourceBatch(ctx context.Context, tx *sql.Tx, b SourceBatch, now time.Time) error {
+	if err := checkWorkerOccupancy(ctx, tx, b); err != nil {
+		return err
+	}
 	// Source receipts have the same documented replay horizon as ordinary keys.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM source_start_receipts WHERE accepted_ns<? AND NOT EXISTS (SELECT 1 FROM json_each(acceptance_ids) ids JOIN triggers t ON t.id=ids.value WHERE t.finished_ns IS NULL)`, now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return err

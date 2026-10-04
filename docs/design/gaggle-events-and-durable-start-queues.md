@@ -489,8 +489,8 @@ The remaining source adapters are explicit follow-up work:
 | Standalone `goobers run` / detached one-shot worker | Owns the instance lock and calls the scheduler directly; must enqueue and drain one pinned intent before execution. |
 | Direct `engine-start` | Starts Temporal directly under its existing explicit bypass semantics; needs a reviewed queue-backed compatibility path. |
 | Plain scheduled starts | Delivered below: pinned coalesced worker start and cursor committed together. Demand-sized scheduled polls remain a follow-up. |
-| Backlog polling | Count-based worker starts still dispatch directly; needs durable bounded observation/ordinal and queued-worker accounting while keeping in-workflow claims. Item-addressed sources separately use eligibility episodes. |
-| Desired-concurrency refill | Direct worker dispatch; needs durable missing-capacity observations, queued-worker accounting, and existing current-demand/claim semantics. |
+| Backlog polling | Delivered below: bounded count observations become queued worker ordinals, preserving in-workflow item selection and claims. Item-addressed sources separately use eligibility episodes. |
+| Desired-concurrency refill | Delivered below: live and queued occupancy bounds missing-capacity worker starts; normal admission and in-workflow claims remain. |
 | Direct webhook/signal delivery | Delivered below: authenticated delivery/caller keys freeze the pinned recipient set before acknowledgement. |
 | One-off / future portal starts | Must call the shared ordinary start admission service when implemented. |
 | Events and generated children | Already use typed pinned starts in the same ledger. |
@@ -539,8 +539,50 @@ reserved run IDs, current eligibility and archived execution path as manual star
 Acceptance tests exercise actual webhook handlers, exact archive compilation,
 scheduler admission, Runner journals, and CLI key replay. Store tests cover
 transaction rollback, queue-full cursor preservation, legacy transfer uncertainty,
-and no-match/recipient freezing. The remaining demand-sized schedule, count/refill,
-standalone manual, and direct engine adapters keep HAW-EVT-002 in progress.
+and no-match/recipient freezing. The remaining demand-sized schedule, standalone
+manual, and direct engine adapters keep HAW-EVT-002 in progress.
+
+
+### Delivered count-based backlog and refill workers
+
+When the daemon installs the shared source queue, a successful backlog count or
+refill observation captures up to 32 worker starts per source, with exact applied
+configuration/workflow/Goober pins, observation time, eligible count, and worker
+ordinal. These are worker occurrences. No provider item ID or claim is invented;
+the workflow still scans, selects, and claims work using its existing stages.
+Provider polling cadence, quotas, authentication backoff, and existing refill
+selection remain in place. A stale count may result in the workflow finding no
+work, as it could before this change.
+
+Before acceptance, live scheduler owners and queued starts reduce available
+workflow capacity. Refill also respects desired concurrency. Pending ordinary,
+event, and generated-child starts share this accounting, with children charged
+to their configured parent workflow bucket. An exact live run ID is excluded
+from queued occupancy only when it is already counted by scheduler admission.
+Unqualified legacy starts conservatively occupy matching workflow names until
+resolved. The queue transaction checks occupancy again, so a concurrent manual
+acceptance cannot give two automatic observations the same missing slots.
+Scheduler admission and the live-owner snapshot are coordinated while accepting
+the bounded batch. Shared queue slot and byte limits remain unchanged.
+
+After restart, pending starts continue to occupy those slots. Exact observation
+replay keeps the first accepted starts and pins; changed counts under the same
+observation key refuse. Archive or queue failures never fall back to direct
+execution. Dispatch requires both the captured and current backlog/refill source
+to remain configured and uses normal current capacity/provider/budget admission.
+Capacity-held refill starts remain queued under the same reserved run identity.
+Failed provider polls do not create an item or bypass execution-time claims.
+
+Tests cover independent SQLite writers, atomic occupancy refusal, queued manual
+and child/event budget owners, exact live-owner exclusion, repeated polling and
+scheduler reconstruction, removed sources, archive failure, refill capacity
+retry, and actual pinned runner execution before queue reconciliation.
+
+Demand-sized scheduled polls still have a separate legacy outstanding-fire
+marker and cursor handoff. They require a durable pre-poll obligation before
+normalization; this slice reserves their planned capacity but does not claim to
+have migrated them. Standalone manual/detached and direct engine starts remain
+explicit follow-up adapters. HAW-EVT-002 remains in progress.
 
 
 ### Delivered scoped read-cache foundation (HAW-EVT-008)
