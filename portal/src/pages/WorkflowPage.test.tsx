@@ -347,7 +347,7 @@ describe("workflow detail page", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+    expect(screen.getByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
   });

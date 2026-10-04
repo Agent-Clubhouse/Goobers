@@ -402,7 +402,7 @@ describe("runs history page", () => {
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
 
-    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+    expect(await screen.findByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
 

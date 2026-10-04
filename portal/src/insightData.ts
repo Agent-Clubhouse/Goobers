@@ -127,18 +127,14 @@ export function useInsightStats(
 }
 
 const TREND_BUCKET_COUNTS: Record<Exclude<InsightWindow, "all">, number> = {
-  "24h": 8,
+  "24h": 1,
   "7d": 7,
-  "30d": 10,
+  "30d": 30,
 };
 
 /**
- * Splits the current window into evenly-sized buckets, oldest first.
- *
- * Bucket counts are fixed per window rather than one-bucket-per-hour/day,
- * because each bucket costs a network round trip (there is no bucketed
- * telemetry endpoint) — 8/7/10 buckets keeps 24h/7d/30d all readable as a
- * sparkline without firing dozens of requests.
+ * Splits the rolling window into 24-hour buckets, oldest first.
+ * The bucketed telemetry endpoint loads all days in one request.
  */
 export function insightTrendBuckets(
   window: InsightWindow,
@@ -202,12 +198,13 @@ export function useInsightCostTrend(
     isCurrent: (data) => data.window === window,
     errorMessage: "Unable to read the cost trend.",
     load: async (signal) => {
-      const bucketRanges = insightTrendBuckets(window);
+      const now = new Date();
+      const bucketRanges = insightTrendBuckets(window, now);
       if (bucketRanges.length === 0) {
         return { buckets: [], window };
       }
-      const previousRange = insightPreviousWindowFilters(window);
-      const currentRange = insightWindowFilters(window);
+      const previousRange = insightPreviousWindowFilters(window, now);
+      const currentRange = insightWindowFilters(window, now);
       const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
       const trendUntil = bucketRanges.at(-1)?.until;
       const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
