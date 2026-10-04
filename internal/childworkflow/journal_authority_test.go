@@ -352,3 +352,21 @@ func TestJournalAuthorityParallelJoinEndsBranchAuthority(t *testing.T) {
 	authority, err := f.resolver.PrepareStage(t.Context(), envelope)
 	requireNoAuthority(t, authority, err)
 }
+
+func TestJournalAuthorityAllowsNarrowerDelegatableCapabilities(t *testing.T) {
+	f := newAuthorityFixture(t)
+	envelope := f.start(t, 0, 1, false)
+	// The agent may retain its own model permission while delegation is limited
+	// to reading the repo. The grant must never widen a reduced native envelope.
+	f.pinned.Admission.GrantedCapabilities = []string{"repo:read"}
+	if _, err := f.resolver.PrepareStage(t.Context(), envelope); err != nil {
+		t.Fatalf("child subset refused the enclosing parent grant: %v", err)
+	}
+	envelope.Capabilities = []string{"repo:read"}
+	if _, err := f.resolver.PrepareStage(t.Context(), envelope); err != nil {
+		t.Fatalf("valid native narrowing refused: %v", err)
+	}
+	envelope.Capabilities = []string{"agent:model"}
+	authority, err := f.resolver.PrepareStage(t.Context(), envelope)
+	requireNoAuthority(t, authority, err)
+}

@@ -158,14 +158,26 @@ func matchesEnvelope(env apiv1.InvocationEnvelope, id journal.RunIdentity, event
 	return env.TaskID == id.RunID+":"+event.Stage && env.Attempt == int32(event.Attempt) &&
 		env.WorkflowID == id.Workflow && env.InstanceID == id.InstanceID && env.Gaggle == id.Gaggle &&
 		env.ConfigGeneration == id.ConfigGeneration && env.GooberDigest == id.GooberDigest &&
-		env.Goober == admission.ParentTask.Goober && sameCapabilities(env.Capabilities, admission.GrantedCapabilities)
+		env.Goober == admission.ParentTask.Goober && envelopeCapabilities(env.Capabilities, admission)
 }
 
-func sameCapabilities(left, right []string) bool {
-	a, b := slices.Clone(left), slices.Clone(right)
-	slices.Sort(a)
-	slices.Sort(b)
-	return slices.Equal(a, b) && len(slices.Compact(a)) == len(left)
+func envelopeCapabilities(grants []string, admission AdmissionContext) bool {
+	unique := slices.Clone(grants)
+	slices.Sort(unique)
+	if len(slices.Compact(unique)) != len(grants) {
+		return false
+	}
+	for _, grant := range grants {
+		if !slices.Contains(admission.ParentTask.Capabilities, grant) {
+			return false
+		}
+	}
+	for _, grant := range admission.GrantedCapabilities {
+		if !slices.Contains(grants, grant) {
+			return false
+		}
+	}
+	return true
 }
 
 func sameJSON(left, right any) bool {

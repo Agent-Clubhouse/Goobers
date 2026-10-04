@@ -25,9 +25,12 @@ type pinnedChildFixture struct {
 	retainedPath string
 }
 
-func newPinnedChildFixture(t *testing.T) pinnedChildFixture {
+func newPinnedChildFixture(t *testing.T, editConfig ...func(string)) pinnedChildFixture {
 	t.Helper()
 	root, sourcePath, _ := childValidationFixture(t)
+	for _, edit := range editConfig {
+		edit(root)
+	}
 	layout := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -37,9 +40,9 @@ func newPinnedChildFixture(t *testing.T) pinnedChildFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("config load: %v; findings: %+v", err, report)
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
