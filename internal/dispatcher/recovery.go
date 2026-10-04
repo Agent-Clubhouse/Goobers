@@ -19,6 +19,9 @@ type recoveryGate interface {
 // Both ordinary disposal and restart sweeping use the rendered pod's workspace
 // contract. A retained pod is never reused for a new attempt.
 func (d *Dispatcher) disposePod(ctx context.Context, pod *corev1.Pod, attempt Attempt) error {
+	if attempt.ChildExecutionDigest != "" {
+		return d.disposeChildPod(ctx, pod, attempt)
+	}
 	if podHasWritableWorkspace(pod) {
 		gate, ok := d.gate.(recoveryGate)
 		if !ok {

@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -29,6 +30,20 @@ func NewKubernetesPodAPI(client kubernetes.Interface) PodAPI {
 // CreatePod creates the pod in its manifest's namespace.
 func (k *kubePodAPI) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	_, err := k.client.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	return err
+}
+
+// CreatePodWithIdentity returns the atomic API creation receipt for child pods.
+func (k *kubePodAPI) CreatePodWithIdentity(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	return k.client.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+}
+
+// DeletePodWithIdentity never deletes a replacement that reused the same name.
+func (k *kubePodAPI) DeletePodWithIdentity(ctx context.Context, namespace, name string, uid types.UID) error {
+	err := k.client.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
 	return err
 }
 

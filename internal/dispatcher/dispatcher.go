@@ -287,6 +287,9 @@ func (c Config) linuxScheduleToStart() time.Duration {
 // Attempt is one stage attempt to dispatch: the identity, requirement, and
 // budget facts the pod spec is a pure function of.
 type Attempt struct {
+	// ChildExecutionDigest binds an isolated generated-child execution contract.
+	// Only the trusted child adapter sets it; ordinary dispatch is unchanged.
+	ChildExecutionDigest string
 	// InstanceID belongs to the originating run, not to the dispatch worker.
 	InstanceID string
 	// RunID, Gaggle, Workflow, and Stage identify the attempt; Number is the
@@ -740,6 +743,14 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
+	// ChildPodUID is the API-created object identity, never a name-derived ID.
+	ChildPodUID string
+	// ChildCreateAttempted distinguishes a preflight refusal from an uncertain
+	// API creation outcome that still requires writer reconciliation.
+	ChildCreateAttempted bool
+	// WorkspaceWritersStopped requires the exact isolated pod's only writable
+	// container to have terminated. Delete acceptance or absence is insufficient.
+	WorkspaceWritersStopped bool
 	// Runner is the resolved runner name.
 	Runner string
 	// Build and Worker are the worker versioning identity this dispatcher is
@@ -825,7 +836,7 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 // without a verified recovery acknowledgment are preserved. Every retry still
 // receives a fresh pod, never a reused one (D1).
 func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []RunnerSpec) (Report, error) {
-	selected, err := SelectRunner(attempt, eligible)
+	selected, err := selectChildAwareRunner(attempt, eligible)
 	if err != nil {
 		return Report{}, err
 	}
@@ -856,19 +867,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		// carries no verdict" after the stage ran.
 		return Report{}, fmt.Errorf("dispatcher: stage %s of run %s is marked review but not agentic; only a goober invocation can produce a verdict", attempt.Stage, attempt.RunID)
 	}
-	if attempt.Agentic {
-		if d.cfg.KitWriter == nil {
-			return Report{}, fmt.Errorf("dispatcher: agentic stage %s of run %s requires a kit writer; none is configured", attempt.Stage, attempt.RunID)
-		}
-		digest, kerr := d.cfg.KitWriter.WriteKit(ctx, attempt)
-		if kerr != nil {
-			return Report{}, fmt.Errorf("dispatcher: publish agentic kit for run %s stage %s attempt %d: %w", attempt.RunID, attempt.Stage, attempt.Number, kerr)
-		}
-		if digest == "" {
-			return Report{}, fmt.Errorf("dispatcher: agentic kit writer returned no digest for run %s stage %s", attempt.RunID, attempt.Stage)
-		}
-		attempt.KitDigest = digest
+	if err := d.prepareAttemptKit(ctx, &attempt); err != nil {
+		return Report{}, err
 	}
+
 	if d.cfg.TokenMinter != nil && attempt.PodToken == "" {
 		token, terr := d.cfg.TokenMinter.Mint(attempt.RunID, 0)
 		if terr != nil {
@@ -897,7 +899,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
 
-	if err := d.pods.CreatePod(ctx, pod); err != nil {
+	if err := d.createAttemptPod(ctx, pod, attempt, &report); err != nil {
 		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
 	report.Pod = pod.Name
@@ -1054,6 +1056,9 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 	if err != nil {
 		return nil, err
 	}
+	if attempt.ChildExecutionDigest != "" {
+		return hardenChildPod(pod, attempt)
+	}
 	if !d.goModCacheClaimPresent(ctx, pod.Namespace) {
 		useEphemeralGoModCache(pod)
 	}
@@ -1064,6 +1069,9 @@ func (d *Dispatcher) renderHost(ctx context.Context, attempt Attempt, runner Run
 	cfg, err := d.configWithServiceAliases(ctx, runner)
 	if err != nil {
 		return nil, err
+	}
+	if attempt.ChildExecutionDigest != "" {
+		cfg.EnvPassthrough = nil
 	}
 	switch runner.HostKind {
 	case instance.RunnerHostImage:
@@ -1101,6 +1109,9 @@ func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, 
 		pod, err := d.pods.GetPod(ctx, namespace, name)
 		if err != nil {
 			return "", fmt.Errorf("dispatcher: supervise pod %s/%s: %w", namespace, name, err)
+		}
+		if err := observeChildWriters(attempt, pod, report); err != nil {
+			return "", err
 		}
 		// Short stages can pass from Pending to terminal between polls. Read
 		// assignment before every phase/sidecar exit, without inventing a
