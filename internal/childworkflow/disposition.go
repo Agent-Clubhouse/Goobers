@@ -131,7 +131,10 @@ func decodeDispositionIntent(child triggerqueue.ChildRecord, request triggerqueu
 
 func (c *WorkspaceCoordinator) planDisposition(ctx context.Context, child triggerqueue.ChildRecord, request triggerqueue.ChildDisposition, result TerminalResult, parent *YieldedWorkspace) (childDispositionIntent, error) {
 	intent := childDispositionIntent{Version: 1, Identity: child.Identity, Action: request.Action, ResultRef: result.ResultRef}
-	if result.Snapshot == nil {
+	// Discard settles already verified custody. It needs neither a writable
+	// parent checkout nor an import/capture of its current files. Existing
+	// published plans remain immutable and are handled by ApplyDisposition.
+	if request.Action == "discard" || result.Snapshot == nil {
 		return intent, nil
 	}
 	if parent == nil || parent.Path == "" {
