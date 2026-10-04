@@ -18,6 +18,15 @@ func acceptExistingCleanArchive(ctx context.Context, archivePath string, incomin
 	if len(candidates) == 0 {
 		return Record{}, "", false, nil
 	}
+	// The import below pins incoming.Ref only so the snapshot can be inspected,
+	// and the deferred delete removes that pin again. A pin that already exists
+	// belongs to an earlier or concurrent publication of this same snapshot (a
+	// retry after a lost acknowledgement, say); deleting it would strip the host
+	// retention ref from custody this intake never created. Leave that case to
+	// the ordinary path, which is idempotent for an identical record.
+	if exists, err := recoveryRefExists(ctx, request.Repository, incoming.Ref); err != nil || exists {
+		return Record{}, "", false, err
+	}
 	if err := ImportSnapshotBundle(ctx, request.Repository, archivePath, incoming, request.MaxArchiveBytes); err != nil {
 		return Record{}, "", false, err
 	}
@@ -73,6 +82,16 @@ func cleanSnapshotParent(ctx context.Context, repository, snapshot string) (stri
 		return "", false, err
 	}
 	return fields[1], strings.TrimSpace(snapshotTree.String()) == strings.TrimSpace(parentTree.String()), nil
+}
+
+func recoveryRefExists(ctx context.Context, repository, ref string) (bool, error) {
+	// for-each-ref also matches refs below ref; that errs toward "exists",
+	// which only declines the reuse optimization.
+	var refs boundedRefOutput
+	if err := recoveryGit(ctx, repository, &refs, "for-each-ref", "--count=1", "--format=x", ref); err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(refs.String()) != "", nil
 }
 
 func deleteRecoveryRef(ctx context.Context, repository, ref, old string) error {
