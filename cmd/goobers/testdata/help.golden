@@ -2609,7 +2609,8 @@ drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
 retry use the same acceptance identity. --api-timeout bounds remote validation
-and acceptance (default 30s; must be positive). A timed-out submission has
+and acceptance (default 30s; must be positive), including any wait for a
+daemon that is still starting after a restart. A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal. For local file delegation,
