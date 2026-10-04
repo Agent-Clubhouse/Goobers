@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
@@ -83,6 +84,7 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.Runner.EnvPassthrough = []string{"OPERATOR_DECLARED_VAR"}
+	cfg.Runner.RecoveryCustodyTimeout = "22m"
 	// A non-self runner dispatches through the engine connection, so the
 	// inventory below is only declarable alongside an engine: block.
 	cfg.Engine = &instance.EngineConfig{
@@ -128,6 +130,9 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	if !slices.Contains(built.EnvPassthrough, "OPERATOR_DECLARED_VAR") {
 		t.Fatalf("dispatcher.Config.EnvPassthrough = %v, want the instance's runner.envPassthrough — "+
 			"without it the operator's env:default-deny hatch is dead on the pod substrate (#3725/#736)", built.EnvPassthrough)
+	}
+	if built.RecoveryCustodyTimeout != 22*time.Minute {
+		t.Fatalf("dispatcher.Config.RecoveryCustodyTimeout = %s, want runner.recoveryCustodyTimeout 22m", built.RecoveryCustodyTimeout)
 	}
 
 	// Far side of the same wiring: the Config this worker built must actually

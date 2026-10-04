@@ -138,6 +138,10 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if err != nil {
 		return stageDispatch{}, err
 	}
+	recoveryCustodyTimeout, err := cfg.Runner.RecoveryCustodyTimeoutDuration()
+	if err != nil {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
+	}
 
 	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
@@ -195,14 +199,15 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		// The kit writer uses the same key and the worker's pinned config
 		// snapshots. A test constructor without seams still refuses agentic
 		// dispatch explicitly instead of creating a pod that would find no kit.
-		KitWriter:        agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
-		GaggleNamespaces: gaggleNamespaces,
-		InstanceID:       instanceID,
-		Owner:            owner,
-		EmbeddedCommit:   build.Commit,
-		EmbeddedVersion:  build.Version,
-		BlobEndpoint:     blobEndpoint,
-		WriteAPIBase:     daemonAPI,
+		KitWriter:              agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
+		GaggleNamespaces:       gaggleNamespaces,
+		InstanceID:             instanceID,
+		Owner:                  owner,
+		EmbeddedCommit:         build.Commit,
+		EmbeddedVersion:        build.Version,
+		BlobEndpoint:           blobEndpoint,
+		WriteAPIBase:           daemonAPI,
+		RecoveryCustodyTimeout: recoveryCustodyTimeout,
 		// The same operator-declared passthrough list the local executor gets
 		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
 		// runner class enforcing env:default-deny keeps the vars an operator
