@@ -455,6 +455,9 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("worker principal may only read config digest or report config divergence")
 		}
+		if containedPod(principal) {
+			return authorizeContainedPod(request, principal)
+		}
 		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
 			return nil
 		}

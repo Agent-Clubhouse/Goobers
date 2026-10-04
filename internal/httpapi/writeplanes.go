@@ -477,6 +477,10 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 		if !ok {
 			return
 		}
+		if err := validateContainedClaimList(request, input); err != nil {
+			writeError(w, http.StatusForbidden, "contained_pod_scope", err.Error())
+			return
+		}
 		input.PodScoped = podScoped
 		response, err := claims.List(request.Context(), input)
 		if err != nil {
