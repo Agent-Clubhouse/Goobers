@@ -19,12 +19,14 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
+	ordinary               *startintent.Service
 	childFamilies          *childFamilyLifecycle
 	queue                  *triggerqueue.Store
 	dispatch               *daemonTriggerService
@@ -102,6 +104,9 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if strings.TrimSpace(request.Workflow) == "" || (request.SourceRun != "" && request.Gaggle == "") {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "trigger must name its workflow and priority gaggle", nil)
 	}
+	if response, handled, err := s.acceptOrdinary(ctx, request); handled {
+		return response, err
+	}
 	payload, err := json.Marshal(acceptedTriggerPayload{Request: request, PodScoped: request.PodScoped, PodRunID: request.PodRunID})
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
@@ -128,11 +133,11 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 	if err != nil {
 		return httpapi.TriggerStatusResponse{}, err
 	}
-	var payload acceptedTriggerPayload
-	if err := json.Unmarshal(record.Payload, &payload); err != nil {
+	podScoped, podRunID, err := acceptedTriggerScope(record.Payload)
+	if err != nil {
 		return httpapi.TriggerStatusResponse{}, err
 	}
-	if payload.PodScoped != request.PodScoped || (request.PodScoped && payload.PodRunID != request.PodRunID) {
+	if podScoped != request.PodScoped || (request.PodScoped && podRunID != request.PodRunID) {
 		return httpapi.TriggerStatusResponse{}, missing
 	}
 	return httpapi.TriggerStatusResponse{AcceptanceID: record.ID, State: string(record.State), RunID: record.RunID, Reason: record.Reason, AcceptedAt: record.AcceptedAt}, nil
@@ -185,6 +190,9 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// Generated children require their own pinned-definition launcher. Never
 	// treat a generated workflow's display name as a catalog trigger, even if
 	// an envelope also contains an ordinary request. Retain durable custody.
+	if header.Kind == startintent.Kind {
+		return s.drainOrdinary(ctx, record)
+	}
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.drainChild(ctx, record)
 	}
@@ -253,4 +261,20 @@ func (s *durableTriggerService) auditDispatch(record triggerqueue.Record, reques
 			"requestId": record.Key, "force": request.Force, "sourceRun": request.SourceRun,
 		},
 	})
+}
+
+func acceptedTriggerScope(raw []byte) (bool, string, error) {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return false, "", err
+	}
+	if header.Kind == startintent.Kind {
+		e, err := startintent.Parse(raw)
+		return e.Request.PodScoped, e.Request.PodRunID, err
+	}
+	var payload acceptedTriggerPayload
+	err := json.Unmarshal(raw, &payload)
+	return payload.PodScoped, payload.PodRunID, err
 }

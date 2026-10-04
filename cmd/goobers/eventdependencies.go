@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/eventexecution"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -34,6 +35,13 @@ func retainEventGenerationPins(ctx context.Context, layout instance.Layout, pins
 	dependencies, err := eventexecution.RetainedDependencies(ctx, queue)
 	if err != nil {
 		return fmt.Errorf("retained event generation custody: %w", err)
+	}
+	ordinary, err := startintent.RetainedGenerations(ctx, queue)
+	if err != nil {
+		return fmt.Errorf("retained ordinary generation custody: %w", err)
+	}
+	for generation := range ordinary {
+		pins[generation] = true
 	}
 	for generation := range dependencies.Generations {
 		pins[generation] = true

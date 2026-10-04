@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/eventexecution"
 	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/startintent"
 )
 
 type eventRuntimeBuilder func(context.Context, eventing.StartEnvelope) (preparedEventRuntime, error)
@@ -38,25 +37,15 @@ func eventRuntimeBuilderFor(layout instance.Layout, retainer *configgeneration.R
 }
 
 func buildEventRuntime(layout instance.Layout, build generationDefinitionBuilder, start eventing.StartEnvelope) (preparedEventRuntime, error) {
-	set, report, err := loadConfigDirectory(layout.ConfigDir())
-	if err != nil {
-		return preparedEventRuntime{}, fmt.Errorf("load event generation: %w", err)
-	}
-	definitions, err := build(layout, set, report)
+	definitions, err := loadPinnedStartDefinitions(layout, build)
 	if err != nil {
 		return preparedEventRuntime{}, err
 	}
-	key := localscheduler.WorkflowIdentity{Gaggle: start.Gaggle, Workflow: start.Workflow}
-	runtime := preparedEventRuntime{executionGenerationRuntime: executionGenerationRuntime{runner: definitions.Runners[key.Gaggle], machine: definitions.Machines[key], gooberDigest: definitions.GooberDigests[key], repoRef: definitions.RepoRefs[key]}}
-	if runtime.runner == nil || runtime.machine == nil || runtime.machine.Digest() != start.WorkflowDigest || runtime.gooberDigest != start.GooberDigest {
-		return preparedEventRuntime{}, errors.New("event runtime differs from accepted workflow or Goober pins")
+	entry, execution, err := pinnedStartDefinition(definitions, startintent.Target{Gaggle: start.Gaggle, Workflow: start.Workflow, ConfigGeneration: start.ConfigGeneration, WorkflowDigest: start.WorkflowDigest, GooberDigest: start.GooberDigest})
+	if err != nil {
+		return preparedEventRuntime{}, err
 	}
-	for _, entry := range definitions.Entries {
-		if entry.Gaggle == key.Gaggle && entry.Workflow == key.Workflow {
-			runtime.Entry = entry
-			break
-		}
-	}
+	runtime := preparedEventRuntime{Prepared: eventexecution.Prepared{Entry: entry}, executionGenerationRuntime: execution}
 	if runtime.Entry.Workflow == "" || featureDriver(runtime.Entry.Starter) != "runner.local" {
 		return preparedEventRuntime{}, errors.New("pinned event execution requires the local runner; engine consumer input transport is unavailable")
 	}

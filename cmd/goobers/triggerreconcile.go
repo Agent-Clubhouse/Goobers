@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -41,6 +42,16 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 		if err != nil {
 			return false, err
 		}
+		var header struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(record.Payload, &header); err != nil {
+			return false, err
+		}
+		if header.Kind == startintent.Kind {
+			err := startintent.VerifyIdentity(identity, record)
+			return err == nil, err
+		}
 		var payload acceptedTriggerPayload
 		if err := json.Unmarshal(record.Payload, &payload); err != nil {
 			return false, err
@@ -53,7 +64,7 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 }
 
 func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
-	if s.observe == nil && s.observeChild == nil && s.events == nil {
+	if s.observe == nil && s.observeChild == nil && s.events == nil && s.ordinary == nil {
 		return nil
 	}
 	records, err := s.queue.Uncertain(ctx, s.reconcileCursor, 100)
@@ -99,6 +110,17 @@ func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, rec
 		Kind string `json:"kind"`
 	}
 	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return err
+	}
+	if header.Kind == startintent.Kind {
+		if s.ordinary == nil {
+			return nil
+		}
+		err := s.ordinary.Reconcile(ctx, record, s.bootUncertain[record.ID])
+		if err == nil || errors.Is(err, triggerqueue.ErrTransition) {
+			delete(s.bootUncertain, record.ID)
+			return nil
+		}
 		return err
 	}
 	if header.Kind == childworkflow.ChildStartKind {

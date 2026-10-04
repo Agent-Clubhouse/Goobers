@@ -12,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -69,12 +70,24 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 	if err != nil {
 		return err
 	}
-	var payload acceptedTriggerPayload
-	if err := json.Unmarshal(record.Payload, &payload); err != nil {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err = json.Unmarshal(record.Payload, &header); err != nil {
 		return err
 	}
-	if identity.RunID != candidate.RunID || identity.Workflow != payload.Request.Workflow || (payload.Request.Gaggle != "" && identity.Gaggle != payload.Request.Gaggle) {
-		return fmt.Errorf("trigger custody for run %s has mismatched journal identity", candidate.RunID)
+	if header.Kind == startintent.Kind {
+		if err = startintent.VerifyIdentity(identity, record); err != nil {
+			return err
+		}
+	} else {
+		var payload acceptedTriggerPayload
+		if err = json.Unmarshal(record.Payload, &payload); err != nil {
+			return err
+		}
+		if identity.RunID != candidate.RunID || identity.Workflow != payload.Request.Workflow || (payload.Request.Gaggle != "" && identity.Gaggle != payload.Request.Gaggle) {
+			return fmt.Errorf("trigger custody for run %s has mismatched journal identity", candidate.RunID)
+		}
 	}
 	err = queue.Finish(ctx, record.ID, triggerqueue.Dispatched, candidate.RunID, "", now)
 	if errors.Is(err, triggerqueue.ErrTransition) {

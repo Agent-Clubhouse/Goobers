@@ -93,7 +93,7 @@ func eventHostConfigured(t *testing.T, configure func(*eventHostFixture, string)
 	f.service = acceptedService(t, filepath.Join(f.layout.SchedulerDir(), "accepted-triggers.db"), newDaemonTriggerService())
 	f.service.dispatch.now = func() time.Time { return f.now }
 	f.service.dispatch.AttachScheduler(f.sched)
-	f.setup = &schedulerSetup{RunnerRegistry: registry, EventRuntime: defs.EventRuntime, EventCatalog: defs.EventCatalog, Generations: retainer, SharedRegistry: journal.NewRegistryScrubber()}
+	f.setup = &schedulerSetup{OrdinaryRuntime: defs.OrdinaryRuntime, Entries: defs.Entries, EngineRuntime: defs.EngineRuntime, RunnerRegistry: registry, EventRuntime: defs.EventRuntime, EventCatalog: defs.EventCatalog, Generations: retainer, SharedRegistry: journal.NewRegistryScrubber()}
 	if err = f.setup.installQueuedEvents(f.layout, f.service); err != nil {
 		t.Fatal(err)
 	}

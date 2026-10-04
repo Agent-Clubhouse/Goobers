@@ -440,3 +440,50 @@ does not implicitly abandon them. Whole-root budget settlement remains a separat
 future proof that every producer and descendant has settled. The 10,000-active-
 intent per-gaggle bound, 100,000 tombstone bound and shared byte quota fail intake
 closed rather than evicting a live replay promise.
+
+## Delivered ordinary start normalization: daemon manual ingress
+
+New ordinary daemon HTTP requests and same-root file-delegated manual, targeted
+PR, and priority requests now enter the existing `accepted-triggers.db` before
+scheduler admission. Their typed `goobers.workflow-start/v1` envelopes retain the
+original request, authenticated HTTP actor (or explicit local-file service actor),
+resolved gaggle, exact applied configuration generation, workflow digest, and
+Goober digest. Caller bodies cannot provide these execution pins. Exact retries
+reuse original pins across successful or rejected configuration reloads.
+
+The archive is leased before acceptance commits, pending and uncertain receipts
+protect it from pruning, and execution holds a lease through its actual starter
+lifetime. Dispatch reconstructs the archived normal local/engine starter and
+rechecks current workflow eligibility, exact repository target, capacity and
+cadence budgets. Targeted PRs retain their current subscription and provider
+validation; manual force still cannot bypass concurrency. Ordinary engine starts
+retain the existing durable-journal-before-execution contract; this does not
+qualify event input transport on Temporal.
+
+File delegation is now an ingress/response protocol, with the shared ledger
+owning accepted custody. A persisted transfer marker protects the uncertain
+acceptance window from false withdrawal acknowledgments. Lost replies and daemon
+restart reuse the same key and reserved run ID. Existing file validation,
+per-identity bounds, queued acknowledgments and final run responses remain;
+`--no-wait` acknowledges durable file acceptance before provider validation;
+final dispatch/status still reports a refused PR. Accepted file deadlines are
+retained in the intent and provider validation has
+its own bounded attempt context. Already uncertain legacy dispatch files keep
+their original fail-closed recovery rule. Existing legacy HTTP receipts remain
+readable and exact retries do not silently recapture them.
+
+The remaining source adapters are explicit follow-up work:
+
+| Existing source | Current path and remaining normalization |
+| --- | --- |
+| Standalone `goobers run` / detached one-shot worker | Owns the instance lock and calls the scheduler directly; must enqueue and drain one pinned intent before execution. |
+| Direct `engine-start` | Starts Temporal directly under its existing explicit bypass semantics; needs a reviewed queue-backed compatibility path. |
+| Scheduled polls / demand-sized schedule starts | Scheduler dispatches directly; needs atomic schedule-revision/nominal-fire capture and durable cursor. |
+| Backlog polling | Starts worker workflows from eligible counts; needs bounded durable observation/ordinal occurrences while preserving in-workflow item discovery and claims. Item-addressed sources use qualified eligibility episodes. |
+| Desired-concurrency refill | Direct scheduler dispatch; needs bounded durable worker-start occurrences and current eligibility rules, without inventing item identity. |
+| Direct webhook/signal delivery | Still invokes scheduler delivery; needs durable source identity and ingress authority. |
+| One-off / future portal starts | Must call the shared ordinary start admission service when implemented. |
+| Events and generated children | Already use typed pinned starts in the same ledger. |
+
+This slice is not the final all-source queue rollout. No separate queue is
+introduced, and existing runs are not re-enqueued as new workflow starts.

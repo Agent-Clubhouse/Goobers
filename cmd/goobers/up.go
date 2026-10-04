@@ -357,12 +357,7 @@ func daemonTriggerSweep(
 	options triggerSweepOptions,
 ) func() error {
 	return func() error {
-		var sweepErr error
-		if options == (triggerSweepOptions{}) {
-			sweepErr = sweepPendingTriggers(ctx, l.SchedulerDir(), log, sched, time.Now)
-		} else {
-			sweepErr = sweepPendingTriggersWithOptions(ctx, l.SchedulerDir(), log, sched, time.Now, options)
-		}
+		sweepErr := sweepPendingTriggersWithAdmission(ctx, l.SchedulerDir(), log, sched, time.Now, options, durableTriggers.delegatedAdmission())
 		err := errors.Join(durableTriggers.Drain(ctx), sweepErr)
 		return recordTriggerSweepProgress(heartbeat, err, time.Now())
 	}
@@ -1063,11 +1058,8 @@ func (u *upSession) configureAPI() int {
 	}
 	defer func() { _ = u.durableTriggers.queue.Close() }()
 	attachChildGenerationPins(u.setup.Generations, u.durableTriggers.queue)
-	if err := u.setup.installQueuedEvents(u.l, u.durableTriggers); err != nil {
-		return reportDaemonStartupError(u.stderr, "initialize queued event execution", err)
-	}
-	if err := u.setup.installEventPublication(u.l, u.durableTriggers); err != nil {
-		return reportDaemonStartupError(u.stderr, "initialize workflow event publication", err)
+	if err := u.setup.installDurableWorkflowServices(u.l, u.durableTriggers); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize durable workflow services", err)
 	}
 	defer u.setup.unregisterEventPublication()
 	defer func() { _ = u.cancelPlane.receipts.Close() }()

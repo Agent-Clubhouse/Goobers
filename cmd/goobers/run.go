@@ -104,8 +104,8 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"unknown acceptance; retry the printed request ID with the same options.\n" +
 	"The command returns once the daemon accepts the trigger because\n" +
 	"a remote client cannot watch the run's journal. For local file delegation,\n" +
-	"--no-wait returns after dispatch, or after workflow/PR validation succeeds\n" +
-	"and the live daemon durably accepts a capacity-queued request.\n"
+	"--no-wait returns after the live daemon durably accepts the request.\n" +
+	"Current capacity and targeted PR validation are checked before dispatch.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "continue" {
@@ -113,7 +113,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	noWait := fs.Bool("no-wait", false, "return after dispatch, or durable acceptance when using the daemon API")
+	noWait := fs.Bool("no-wait", false, "return after dispatch, or durable acceptance when using the live daemon")
 	force := fs.Bool("force", false, "bypass hourly and daily cadence budgets for this manual run")
 	githubProgress := fs.Bool("github-progress", false, "publish live progress to one GitHub Check Run (requires checks: write)")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
