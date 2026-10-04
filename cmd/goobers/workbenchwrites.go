@@ -16,6 +16,10 @@ func (u *upSession) installWorkbenchWrites(read *workbenchservice.Service) {
 	}
 	writer := &workbenchservice.WriterService{ReadService: read, Queue: u.durableTriggers.queue}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithWorkbenchWrites(writer))
+	if u.setup.SessionBacklogWriter == nil && u.credentialPlane != nil && u.credentialPlane.grants != nil {
+		u.setup.SessionBacklogWriter = workbenchSessionWriter(writer)
+	}
+
 }
 
 // Terminal editing receipts share the daemon's existing bounded maintenance pass.

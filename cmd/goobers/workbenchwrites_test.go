@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/sessioning"
+	"github.com/goobers/goobers/internal/sessionops"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workbench"
 	"github.com/goobers/goobers/internal/workbenchservice"
@@ -31,7 +32,7 @@ func TestWorkbenchHostInstallsSingleAttemptEditorAndRetention(t *testing.T) {
 			setup, pin := interactiveExecutionFixture(t)
 			g := setup.Definitions.Gaggles[0].DeepCopy()
 			g.Spec.Workbench = &apiv1.GaggleWorkbench{SchemaVersion: "sources/v1", Sources: []apiv1.WorkbenchSource{{Name: "issues", Kind: "backlog", Writes: &apiv1.WorkbenchWrites{Fields: []apiv1.WorkbenchField{"title"}}}}}
-			g.Spec.InteractiveAccess.Actions = append(g.Spec.InteractiveAccess.Actions, "backlog.edit")
+			g.Spec.InteractiveAccess.Actions = append(g.Spec.InteractiveAccess.Actions, "backlog.edit", "session.message")
 			if err := setup.InteractiveAccess.Apply([]apiv1.Gaggle{*g}, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -69,6 +70,7 @@ func TestWorkbenchHostInstallsSingleAttemptEditorAndRetention(t *testing.T) {
 			queue := acceptedService(t, filepath.Join(pin.layout.SchedulerDir(), "accepted-triggers.db"), dispatch)
 			u := &upSession{}
 			u.setup, u.l, u.durableTriggers = setup, pin.layout, queue
+			u.credentialPlane = &daemonCredentialService{grants: &stageGrantIssuer{endpoint: "https://daemon.invalid"}}
 			u.installWorkbenchReads(&workbenchservice.Service{Permissions: setup.InteractiveAccess, Backlog: factory.Backlog})
 			p := httpapi.Principal{Issuer: "issuer", Subject: "human", Roles: []httpapi.Role{httpapi.RoleOperate}}
 			capabilities, err := setup.InteractiveAccess.InteractiveCapabilities(t.Context(), p, g.Name)
@@ -84,6 +86,28 @@ func TestWorkbenchHostInstallsSingleAttemptEditorAndRetention(t *testing.T) {
 			if !available {
 				t.Fatal("installed writer not advertised")
 			}
+			if setup.SessionBacklogWriter == nil {
+				t.Fatal("session writer was not installed")
+			}
+			lease, err := setup.InteractiveAccess.BeginSessionExecution(t.Context(), p, g.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := sessionops.SourceContext{Identity: pin.parent, Actor: sessioning.Actor{Issuer: p.Issuer, Subject: p.Subject}, Lease: lease, RetainedGaggle: *g}
+			writer, err := setup.SessionBacklogWriter(t.Context(), source)
+			if err != nil || writer == nil {
+				t.Fatal("host writer did not bind", err)
+			}
+			permitted, err := writer.Capabilities(t.Context(), "issues")
+			if err != nil || len(permitted.Fields) != 1 || permitted.Fields[0] != "title" {
+				t.Fatal("session write fields differ", permitted, err)
+			}
+			source.Actor.Subject = "different-human"
+			if _, err = setup.SessionBacklogWriter(t.Context(), source); err == nil {
+				t.Fatal("session writer borrowed another actor")
+			}
+			lease.Close()
+
 			options := append(u.apiHandlerOpts, httpapi.WithAuthenticator(interactiveTestAuthenticator{principal: &p}))
 			handler, err := httpapi.NewHandler(&readservice.Local{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), options...)
 			if err != nil {

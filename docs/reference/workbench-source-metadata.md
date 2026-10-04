@@ -301,3 +301,20 @@ Confirmed/not-applied evidence becomes a compact tombstone after 30 days, retain
 for another 30 days. Accepted, attempting and unknown custody does not expire.
 Governed repository metadata PRs and native relationship writes are separate
 capabilities; this field editor does not claim those operations.
+
+## Shared session native edits
+
+When the host installs native editing, a shared agent turn can use the private
+`get_backlog_edit_capabilities`, `edit_backlog_item` and
+`get_backlog_edit_receipt` tools. Each call checks the actual human, retained
+source configuration and live turn lease. The model supplies a request ID; the
+host namespaces it to the real session/turn and uses the same durable command
+store as manual editing. It never supplies provider credentials to the model.
+
+Calls serialize within the existing bounded tool budget. Actual command IDs,
+operation digests and result artifacts are retained in the run journal, including
+uncertain effects when policy revocation races completion. Revocation blocks
+returning results to the caller, while the host finishes bounded receipt custody.
+Missing editing permission leaves conversation and permitted reads available.
+The backlog editor also drops the previous connection/item state before rendering
+a changed scope, preserving unresolved keys only for the same source item.
