@@ -16,6 +16,215 @@
       "additionalProperties": false,
       "required": ["project", "backlog", "isolation"],
       "properties": {
+        "events": {
+          "type": "object",
+          "description": "Gaggle-local consumer subscriptions. These declarations do not grant publication authority.",
+          "additionalProperties": false,
+          "properties": {
+            "subscriptions": {
+              "type": "array",
+              "description": "Consumers whose matching configuration is pinned at event acceptance.",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "description": "A consumer targeting an existing workflow within the same gaggle.",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Consumer identity unique in this gaggle.",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+                  },
+                  "workflow": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Name of an existing workflow in this gaggle."
+                  },
+                  "filter": {
+                    "type": "object",
+                    "description": "Require every all condition and at least one any condition when any is supplied.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "all": {
+                        "type": "array",
+                        "description": "Conditions that must all match.",
+                        "minItems": 1,
+                        "maxItems": 15,
+                        "items": {
+                          "type": "object",
+                          "description": "A literal comparison on one CloudEvents envelope attribute.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "attribute": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128,
+                              "description": "Envelope attribute to compare.",
+                              "enum": [
+                                "id",
+                                "source",
+                                "type",
+                                "subject"
+                              ]
+                            },
+                            "equals": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "Literal case-sensitive equality value."
+                            },
+                            "not": {
+                              "type": "boolean",
+                              "description": "Negate equality, including a missing optional attribute."
+                            }
+                          },
+                          "required": [
+                            "attribute",
+                            "equals"
+                          ]
+                        }
+                      },
+                      "any": {
+                        "type": "array",
+                        "description": "Alternatives of which at least one must match.",
+                        "minItems": 1,
+                        "maxItems": 15,
+                        "items": {
+                          "type": "object",
+                          "description": "A literal comparison on one CloudEvents envelope attribute.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "attribute": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128,
+                              "description": "Envelope attribute to compare.",
+                              "enum": [
+                                "id",
+                                "source",
+                                "type",
+                                "subject"
+                              ]
+                            },
+                            "equals": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "Literal case-sensitive equality value."
+                            },
+                            "not": {
+                              "type": "boolean",
+                              "description": "Negate equality, including a missing optional attribute."
+                            }
+                          },
+                          "required": [
+                            "attribute",
+                            "equals"
+                          ]
+                        }
+                      }
+                    },
+                    "anyOf": [
+                      {
+                        "required": [
+                          "all"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "any"
+                        ]
+                      }
+                    ]
+                  },
+                  "debounce": {
+                    "type": "object",
+                    "description": "Optional bounded grouping. Exactly one key source must be declared.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "keyAttribute": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Envelope attribute used for grouping; an absent value fails this delivery.",
+                        "enum": [
+                          "id",
+                          "source",
+                          "type",
+                          "subject"
+                        ]
+                      },
+                      "constantKey": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Explicit constant key used for all matching events."
+                      },
+                      "window": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 32,
+                        "description": "Trailing quiet period from 100ms to 5m; default 5s."
+                      },
+                      "maxWait": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 32,
+                        "description": "Maximum group age, at least window and at most 1h; default 30s."
+                      },
+                      "maxEvents": {
+                        "type": "integer",
+                        "description": "Close the group at this count; default 100.",
+                        "minimum": 1,
+                        "maximum": 1000
+                      },
+                      "inputMode": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Payload selection; defaults to all while retaining every membership.",
+                        "enum": [
+                          "all",
+                          "latest"
+                        ]
+                      }
+                    },
+                    "oneOf": [
+                      {
+                        "required": [
+                          "keyAttribute"
+                        ],
+                        "not": {
+                          "required": [
+                            "constantKey"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "constantKey"
+                        ],
+                        "not": {
+                          "required": [
+                            "keyAttribute"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "workflow",
+                  "filter"
+                ]
+              }
+            }
+          }
+        },
         "interactiveAccess": {
           "type": "object",
           "description": "Explicit per-gaggle human operations policy. Omission enables no new provider reads, sessions or writes; existing monitoring is unchanged.",

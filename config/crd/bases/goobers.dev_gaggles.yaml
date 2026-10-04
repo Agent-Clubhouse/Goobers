@@ -276,6 +276,164 @@ spec:
                   finish normally.
                 nullable: true
                 type: boolean
+              events:
+                description: |-
+                  Events configures subscriptions confined to this gaggle. Omission means
+                  no event consumers; it does not affect existing workflow triggers.
+                properties:
+                  subscriptions:
+                    description: Subscriptions names workflows in this gaggle only.
+                    items:
+                      description: EventSubscription retains an exact workflow generation
+                        at event acceptance.
+                      properties:
+                        debounce:
+                          description: Debounce is disabled when omitted.
+                          properties:
+                            constantKey:
+                              description: ConstantKey explicitly groups every match
+                                under one configured key.
+                              maxLength: 256
+                              minLength: 1
+                              type: string
+                            inputMode:
+                              description: |-
+                                InputMode selects all payloads or the latest, preserving all memberships.
+                                Defaults to all.
+                              enum:
+                              - all
+                              - latest
+                              type: string
+                            keyAttribute:
+                              description: KeyAttribute chooses an envelope field
+                                as the group key.
+                              enum:
+                              - id
+                              - source
+                              - type
+                              - subject
+                              type: string
+                            maxEvents:
+                              description: MaxEvents closes the group at this count;
+                                default 100.
+                              format: int32
+                              maximum: 1000
+                              minimum: 1
+                              type: integer
+                            maxWait:
+                              description: |-
+                                MaxWait is the absolute group lifetime, at least Window and at most 1h;
+                                default 30s. A longer Window requires an explicit compatible MaxWait.
+                              maxLength: 32
+                              type: string
+                            window:
+                              description: Window is the trailing quiet period, from
+                                100ms through 5m; default 5s.
+                              maxLength: 32
+                              type: string
+                          type: object
+                          x-kubernetes-validations:
+                          - message: exactly one keyAttribute or constantKey is required
+                            rule: has(self.keyAttribute) != has(self.constantKey)
+                        filter:
+                          description: |-
+                            Filter requires every All condition and at least one Any condition when
+                            Any is supplied. At least one list must be nonempty.
+                          properties:
+                            all:
+                              description: All contains conditions which must all
+                                match.
+                              items:
+                                description: EventAttributeMatch compares one CloudEvents
+                                  envelope attribute literally.
+                                properties:
+                                  attribute:
+                                    description: Attribute is an envelope field; extensions
+                                      and data are not selectors.
+                                    enum:
+                                    - id
+                                    - source
+                                    - type
+                                    - subject
+                                    type: string
+                                  equals:
+                                    description: Equals is a literal case-sensitive
+                                      match, not a regular expression.
+                                    maxLength: 1024
+                                    minLength: 1
+                                    type: string
+                                  not:
+                                    description: Not negates equality, including when
+                                      an optional attribute is absent.
+                                    type: boolean
+                                required:
+                                - attribute
+                                - equals
+                                type: object
+                              maxItems: 15
+                              minItems: 1
+                              type: array
+                            any:
+                              description: Any contains alternatives, at least one
+                                of which must match.
+                              items:
+                                description: EventAttributeMatch compares one CloudEvents
+                                  envelope attribute literally.
+                                properties:
+                                  attribute:
+                                    description: Attribute is an envelope field; extensions
+                                      and data are not selectors.
+                                    enum:
+                                    - id
+                                    - source
+                                    - type
+                                    - subject
+                                    type: string
+                                  equals:
+                                    description: Equals is a literal case-sensitive
+                                      match, not a regular expression.
+                                    maxLength: 1024
+                                    minLength: 1
+                                    type: string
+                                  not:
+                                    description: Not negates equality, including when
+                                      an optional attribute is absent.
+                                    type: boolean
+                                required:
+                                - attribute
+                                - equals
+                                type: object
+                              maxItems: 15
+                              minItems: 1
+                              type: array
+                          type: object
+                          x-kubernetes-validations:
+                          - message: at least one all or any condition is required
+                            rule: (has(self.all) && size(self.all) > 0) || (has(self.any)
+                              && size(self.any) > 0)
+                        name:
+                          description: Name identifies this consumer within its gaggle.
+                          maxLength: 128
+                          minLength: 1
+                          pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
+                          type: string
+                        workflow:
+                          description: Workflow names an existing workflow in this
+                            same gaggle.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - filter
+                      - name
+                      - workflow
+                      type: object
+                    maxItems: 128
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
               interactiveAccess:
                 description: |-
                   InteractiveAccess explicitly grants human operations and selects their

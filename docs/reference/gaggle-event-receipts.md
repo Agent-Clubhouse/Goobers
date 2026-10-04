@@ -39,6 +39,52 @@ records a failed delivery without failing unrelated consumers. Configured filter
 are bounded by depth and node count; compiled catalogs copy definitions so later
 caller edits cannot change accepted matching behavior.
 
+### Gaggle declarations
+
+The gaggle schema accepts subscriptions under `spec.events`. Configuration
+validation requires every target workflow to exist in the same gaggle. At
+acceptance, the trusted loader resolves its retained workflow, Goober and
+configuration digests; declarations cannot override these pins.
+
+```yaml
+spec:
+  events:
+    subscriptions:
+      - name: review-updated-pr
+        workflow: review-pr
+        filter:
+          all:
+            - attribute: source
+              equals: urn:example:pull-requests
+          any:
+            - attribute: type
+              equals: com.example.pr.updated
+            - attribute: type
+              equals: com.example.pr.ready
+        debounce:
+          keyAttribute: subject
+          window: 5s
+          maxWait: 30s
+          maxEvents: 100
+          inputMode: latest
+```
+
+The first declaration profile requires every `all` condition plus at least one
+`any` condition when that list is supplied. Either list can be omitted; together
+they must contain a condition. Each list allows up to 15 conditions, with literal
+`attribute`/`equals` comparisons and optional `not: true`. A negated equality also
+matches when an optional attribute is absent. Arbitrarily nested declarations and
+payload predicates are outside this first profile.
+
+Omitted debounce is disabled. When present, declare exactly one `keyAttribute`
+or `constantKey`. Defaults are `window: 5s`, `maxWait: 30s`, `maxEvents: 100`, and
+`inputMode: all`; an explicitly longer window needs a compatible maxWait. A
+consumer revision includes the effective defaults, filter and resolved source
+pins, so a changed generation cannot accidentally join an older group.
+
+Declarations currently validate and compile; production publication still requires
+the pending host integration described above.
+
 ## Custody and retries
 
 Identity is `(gaggle, producer binding, source, id)`. A matching payload and actor
