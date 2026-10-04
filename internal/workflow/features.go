@@ -118,6 +118,7 @@ func AllFeatures() []Feature {
 	for _, feature := range v31ArtifactFeatures() {
 		merge(feature)
 	}
+	features = append(features, childWorkflowFeatures()...)
 	features = append(features, binaryLayerFeatures()...)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
@@ -547,7 +548,7 @@ func checkV30WorkflowFeatureSupport(def Definition, allowPreview bool) []Feature
 	return diagnosticsFromV30(v30.CheckWorkflowFeatureSupport(def, allowPreview))
 }
 
-// --- DSL 3.1 glue: DSL 3.0 semantics plus named artifact contracts. ------
+// --- DSL 3.1 glue: artifacts and child-workflow policy over DSL 3.0. ------
 
 func newV31FeatureRegistry(features []Feature) (FeatureRegistry, error) {
 	return featureRegistry(features), nil
@@ -577,6 +578,7 @@ func featuresForV31Workflow(def Definition) ([]Feature, error) {
 	if err != nil {
 		return nil, err
 	}
+	features = append(features, usedChildWorkflowFeatures(def)...)
 	used := map[FeatureID]struct{}{}
 	add := func(ids ...FeatureID) {
 		for _, id := range ids {
