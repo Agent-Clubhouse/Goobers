@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -2564,6 +2565,30 @@ func TestStatusDaemonRejectsRunListingFlags(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--daemon cannot be combined") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestReportDaemonRecoveryCandidateNamesBlockingOperation(t *testing.T) {
+	now := time.Date(2026, 10, 2, 17, 0, 0, 0, time.UTC)
+	var out strings.Builder
+	reportDaemonRecoveryCandidate(&out, now, &httpapi.RecoveryCandidateStatus{
+		Progress: httpapi.RecoveryProgress{Total: 6, Examined: 6, Resumed: 5, Terminal: 0, Skipped: 0},
+		RunID:    "c423d482", Gaggle: "goobers", Workflow: "implement",
+		Disposition: "resolving-generation", Operation: "resolve execution generation",
+		StartedAt: now.Add(-2 * time.Minute), LastProgressAt: now.Add(-15 * time.Second),
+	})
+	text := out.String()
+	for _, want := range []string{
+		"examined=6/6",
+		"blocking run=c423d482",
+		"workflow=goobers/implement",
+		"disposition=resolving-generation",
+		"operation=\"resolve execution generation\"",
+		"last-progress=15s ago",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("status text = %q, want %q", text, want)
+		}
 	}
 }
 

@@ -34,6 +34,7 @@ func (s *daemonInstanceReadinessService) InstanceReadiness(context.Context) (htt
 		elapsed = time.Since(since)
 	}
 	budget := s.tracker.budgetSnapshot(time.Now())
+	candidate := httpRecoveryCandidate(s.tracker.recoverySnapshot(), time.Now(), true)
 	return httpapi.InstanceReadiness{
 		APIVersion:    readservice.APIVersion,
 		SchemaVersion: readservice.SchemaVersion,
@@ -51,6 +52,100 @@ func (s *daemonInstanceReadinessService) InstanceReadiness(context.Context) (htt
 			BudgetSeconds:     budget.Budget.Seconds(),
 			BudgetUsedPercent: budget.UsedPercent,
 			BudgetState:       budget.State,
+			BlockingCandidate: candidate,
 		},
 	}, nil
+}
+
+func httpRecoveryCandidate(candidate *startupRecoveryCandidate, now time.Time, includeIdentity bool) *httpapi.RecoveryCandidateStatus {
+	if candidate == nil {
+		return nil
+	}
+	status := &httpapi.RecoveryCandidateStatus{
+		Progress: httpapi.RecoveryProgress{
+			Total:      candidate.Total,
+			Examined:   candidate.Examined,
+			Resumed:    candidate.Resumed,
+			Reattached: candidate.Reattached,
+			Terminal:   candidate.Terminal,
+			Skipped:    candidate.Skipped,
+		},
+		Disposition:    candidate.Disposition,
+		Phase:          candidate.Phase,
+		Operation:      candidate.Operation,
+		StartedAt:      candidate.StartedAt,
+		LastProgressAt: candidate.LastProgressAt,
+	}
+	if includeIdentity {
+		status.RunID = candidate.RunID
+		status.Gaggle = candidate.Gaggle
+		status.Workflow = candidate.Workflow
+	}
+	if !candidate.StartedAt.IsZero() {
+		status.ElapsedSeconds = now.Sub(candidate.StartedAt).Seconds()
+	}
+	if !candidate.LastProgressAt.IsZero() {
+		status.ProgressAgeSecs = now.Sub(candidate.LastProgressAt).Seconds()
+	}
+	return status
+}
+
+func readserviceRecoveryCandidate(candidate *startupRecoveryCandidate, now time.Time) *readservice.StartupRecoveryCandidate {
+	if candidate == nil {
+		return nil
+	}
+	status := &readservice.StartupRecoveryCandidate{
+		Progress: readservice.StartupRecoveryProgress{
+			Total:      candidate.Total,
+			Examined:   candidate.Examined,
+			Resumed:    candidate.Resumed,
+			Reattached: candidate.Reattached,
+			Terminal:   candidate.Terminal,
+			Skipped:    candidate.Skipped,
+		},
+		RunID:          candidate.RunID,
+		Gaggle:         candidate.Gaggle,
+		Workflow:       candidate.Workflow,
+		Disposition:    candidate.Disposition,
+		Phase:          candidate.Phase,
+		Operation:      candidate.Operation,
+		StartedAt:      candidate.StartedAt,
+		LastProgressAt: candidate.LastProgressAt,
+	}
+	if !candidate.StartedAt.IsZero() {
+		status.ElapsedSeconds = now.Sub(candidate.StartedAt).Seconds()
+	}
+	if !candidate.LastProgressAt.IsZero() {
+		status.ProgressAgeSecs = now.Sub(candidate.LastProgressAt).Seconds()
+	}
+	return status
+}
+
+func readserviceStartupStatus(tracker *startupPhaseTracker, ready bool) *readservice.StartupStatus {
+	if ready || tracker == nil {
+		return nil
+	}
+	phase, target, since := tracker.snapshot()
+	if phase == "" {
+		return nil
+	}
+	now := time.Now()
+	budget := tracker.budgetSnapshot(now)
+	elapsed := time.Duration(0)
+	if !since.IsZero() {
+		elapsed = now.Sub(since)
+	}
+	return &readservice.StartupStatus{
+		Phase:             phase,
+		Target:            target,
+		Since:             since,
+		ElapsedSeconds:    elapsed.Seconds(),
+		WorktreeCount:     budget.Accumulation.Worktrees,
+		RecoveryRunCount:  budget.Accumulation.RecoveryRuns,
+		AccumulationCount: budget.Accumulation.total(),
+		BudgetSeconds:     budget.Budget.Seconds(),
+		BudgetUsedPercent: budget.UsedPercent,
+		BudgetState:       budget.State,
+		BlockingCandidate: readserviceRecoveryCandidate(tracker.recoverySnapshot(), now),
+	}
 }

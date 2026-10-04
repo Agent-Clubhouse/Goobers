@@ -4,6 +4,7 @@ import type {
   DaemonClient,
   MaintenanceStatus,
   RecoveryInventoryStatus,
+  StartupStatus,
   RunSummary,
 } from "../api/types";
 import { useAttentionCollapsed } from "../attentionCollapse";
@@ -669,6 +670,8 @@ function InstanceSummaryPanel({
         </dl>
       </div>
 
+      {overview.health.startup && <StartupRecoverySummary startup={overview.health.startup} />}
+
       <details
         className="overview-diagnostics"
         onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
@@ -730,6 +733,63 @@ function InstanceSummaryPanel({
       </details>
     </section>
   );
+}
+
+function StartupRecoverySummary({ startup }: { startup: StartupStatus }) {
+  const candidate = startup.blockingCandidate;
+  const progress = candidate?.progress;
+  return (
+    <div aria-label="Startup recovery progress" className="instance-summary-row" role="status">
+      <div className="instance-summary-kind">
+        <span aria-hidden="true" className="instance-summary-icon instance-summary-icon-warning">
+          <Icon name="clock" size={24} />
+        </span>
+        <span className="instance-summary-copy">
+          <strong>Startup recovery</strong>
+          <span>
+            API plane is available; scheduler readiness is waiting on {startup.phase}
+            {startup.target ? ` (${startup.target})` : ""}.
+          </span>
+        </span>
+      </div>
+      <div className="instance-summary-result">
+        <strong>
+          {progress
+            ? `${progress.examined}/${progress.total} candidates examined`
+            : "Recovery in progress"}
+        </strong>
+        <span>
+          Elapsed {formatSeconds(startup.elapsedSeconds)} · Budget{" "}
+          {formatSeconds(startup.budgetSeconds)}
+          {startup.budgetState ? ` · ${startup.budgetState}` : ""}
+        </span>
+        {candidate ? (
+          <span>
+            Blocking{" "}
+            {candidate.runId ? `run ${candidate.runId}` : "candidate"}
+            {candidate.gaggle || candidate.workflow
+              ? ` (${candidate.gaggle ?? "-"}/${candidate.workflow ?? "-"})`
+              : ""}
+            {candidate.disposition ? ` · ${candidate.disposition}` : ""}
+            {candidate.phase ? ` · ${candidate.phase}` : ""}
+            {candidate.operation ? ` · ${candidate.operation}` : ""}
+          </span>
+        ) : startup.phase === "crash-resume" ? (
+          <span>Waiting for the resumeComplete gate after candidate classification.</span>
+        ) : null}
+        {candidate?.lastProgressAt && (
+          <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(candidate.lastProgressAt)))} ago</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatSeconds(seconds: number | undefined): string {
+  if (!Number.isFinite(seconds)) {
+    return "unavailable";
+  }
+  return formatDuration(Math.max(0, Math.round((seconds ?? 0) * 1000)));
 }
 
 /**

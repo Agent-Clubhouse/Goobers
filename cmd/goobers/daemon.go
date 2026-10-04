@@ -1538,20 +1538,28 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 	defer func() { outcome.report(progress) }()
 	for _, dir := range candidates {
 		outcome.Examined++
+		runName := filepath.Base(dir)
+		outcome.markBlockingCandidate(runName, "open run journal")
 		outcome.report(progress)
 		runsDir := filepath.Dir(dir)
-		runName := filepath.Base(dir)
 		rd, err := journal.OpenRead(dir)
 		if err != nil {
 			if errors.Is(err, journal.ErrNotRunDirectory) {
+				outcome.updateBlockingCandidate("skipped", "skip non-run directory")
+				outcome.report(progress)
 				continue
 			}
 			return outcome, fmt.Errorf("open run journal %q: %w", runName, err)
 		}
+		outcome.updateBlockingCandidate("examining", "read run identity")
+		outcome.report(progress)
 		id, err := rd.Identity()
 		if err != nil {
+			outcome.updateBlockingCandidate("skipped", "skip run without identity")
+			outcome.report(progress)
 			continue
 		}
+		outcome.identifyBlockingCandidate(id)
 		rn := fallback
 		runLayout := l
 		if filepath.Clean(runsDir) != filepath.Clean(l.RunsDir()) {
@@ -1565,7 +1573,10 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		// what decides whether this run is actually terminal — trusting
 		// the checkpoint directly here risks spinning up a resume
 		// goroutine for a run that already finished.
+		outcome.updateBlockingCandidate("examining", "read run phase")
+		outcome.report(progress)
 		if phase, err := rd.Phase(); err == nil {
+			outcome.setBlockingPhase(phase)
 			switch phase {
 			case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
 				// #5199: a terminal run has nothing to RESUME, and its
@@ -1580,6 +1591,8 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				outcome.Terminal = append(outcome.Terminal, terminalFinalization{
 					layout: runLayout, runsDir: runsDir, runner: rn, identity: id, phase: phase,
 				})
+				outcome.updateBlockingCandidate("terminal", "release terminal concurrency slot")
+				outcome.report(progress)
 				release(id.RunID, id.Workflow)
 				continue // terminal: nothing to resume
 			}
@@ -1595,6 +1608,8 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		// here is not to drive the run but to stop pretending it can.
 		if id.EngineDriven() {
 			outcome.Reattached = append(outcome.Reattached, id.RunID)
+			outcome.updateBlockingCandidate("reattached", "journal engine re-attachment")
+			outcome.report(progress)
 			if log != nil {
 				if err := log.Append(journal.Event{
 					Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
@@ -1628,6 +1643,8 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		gooberDigest := gooberDigests[identity]
 		repoRef := repoRefs[identity]
 		if id.ConfigGeneration != "" {
+			outcome.updateBlockingCandidate("resolving-generation", "resolve execution generation")
+			outcome.report(progress)
 			pinned, err := runnerRegistry.executionGeneration(ctx, id)
 			if err != nil {
 				return outcome, fmt.Errorf("resolve run %q execution generation: %w", id.RunID, err)
@@ -1637,14 +1654,20 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		}
 		if rn == nil || !ok {
 			outcome.Warned = append(outcome.Warned, id.RunID)
+			outcome.updateBlockingCandidate("skipped", "journal unresolvable workflow")
+			outcome.report(progress)
 			warnUnresolvableResume(log, id, rn == nil)
 			continue
 		}
 		// Never reinterpret a historical run under the current workflow
 		// merely because the name still matches.
+		outcome.updateBlockingCandidate("dispatching", "select workflow definition")
+		outcome.report(progress)
 		machine, machineSource := interruptedRunMachine(id, machine)
 
 		outcome.Resumed = append(outcome.Resumed, id.RunID)
+		outcome.updateBlockingCandidate("dispatching", "journal resume annotation")
+		outcome.report(progress)
 		if log != nil {
 			if err := log.Append(journal.Event{
 				Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
@@ -1660,6 +1683,8 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			}
 		}
 		wg.Add(1)
+		outcome.updateBlockingCandidate("resumed", "dispatch resume goroutine")
+		outcome.report(progress)
 		untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
 		go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 			defer wg.Done()
@@ -1697,6 +1722,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			}
 		}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
 	}
+	outcome.Blocking = nil
 	return outcome, nil
 }
 
