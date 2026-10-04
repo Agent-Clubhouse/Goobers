@@ -61,11 +61,8 @@ func ParseStageRestartPlan(raw []byte) (StageRestartPlan, error) {
 
 func validateRetainedRestartPlan(plan StageRestartPlan) error {
 	req, source := plan.Continuation, plan.Source
-	if req.VerifySourceBranch != nil || req.ChildContinuation != nil || req.ChildWorkspace != nil || !apiv1.ValidRunID(req.RunID) || req.RunID == source.RunID || req.SourceRunID != source.RunID || req.ExpectedTerminalSeq == 0 || req.Target == "" || req.Operator == "" {
-		return errors.New("runner: retained restart plan has unbound identity or runtime admission")
-	}
-	if source.Child != nil && source.ValidateChildLineage() != nil {
-		return errors.New("runner: retained restart source has invalid child lineage")
+	if err := validateRetainedRestartIdentity(plan); err != nil {
+		return err
 	}
 	raw, ok := req.Inputs[StageRestartInputName]
 	if !ok || req.InputIntegrity[StageRestartInputName] != apiv1.IntegrityTrusted || req.InputSource[StageRestartInputName] != req.Operator {
@@ -77,6 +74,17 @@ func validateRetainedRestartPlan(plan StageRestartPlan) error {
 	}
 	if m.Version != 1 || m.EpochID != req.RunID || m.SourceRunID != source.RunID || m.SourceTerminalSeq != req.ExpectedTerminalSeq || m.WorkflowDigest != source.WorkflowDigest || m.Stage != req.Target || m.Actor != req.Operator || m.GuidanceDigest != plan.GuidanceDigest || m.GuidanceDigest != journal.Digest([]byte(m.Guidance)) {
 		return errors.New("runner: retained restart manifest differs from its plan")
+	}
+	return nil
+}
+
+func validateRetainedRestartIdentity(plan StageRestartPlan) error {
+	req, source := plan.Continuation, plan.Source
+	if req.VerifySourceBranch != nil || req.ChildContinuation != nil || req.ChildWorkspace != nil || !apiv1.ValidRunID(req.RunID) || req.RunID == source.RunID || req.SourceRunID != source.RunID || req.ExpectedTerminalSeq == 0 || req.Target == "" || req.Operator == "" {
+		return errors.New("runner: retained restart plan has unbound identity or runtime admission")
+	}
+	if source.Child != nil && source.ValidateChildLineage() != nil {
+		return errors.New("runner: retained restart source has invalid child lineage")
 	}
 	return nil
 }
