@@ -24,6 +24,13 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-child-validation-cli` | child workspace | HAW-CHD-002 author surface | Real `workflow validate-child` command, trusted configured parent selection, diagnostics and read-only command tests |
 | `codex/haw-child-attempt-custody` | child validation CLI | HAW-CHD-003 revocation | Durable current-attempt binding, transactional acceptance fence, bounded retention; race tests and lint pass |
 | `codex/haw-child-submission` | child attempt custody | HAW-CHD-002/003 service | Live trusted authority, repeated validation, atomic exact-source custody and status; integrated race tests pass |
+| `codex/haw-child-http` | child submission | HAW-CHD-003 transport | Closed bounded request bodies, exact signed-origin routes and unavailable-service refusal; focused HTTP tests pass |
+| `codex/haw-child-origin` | child HTTP | HAW-CHD-003 attempt identity | Atomic stage-start sequence binds occurrence and attempt across retry/recovery; journal and runner tests pass |
+| `codex/haw-child-service-adapter` | child origin | HAW-CHD-003 service adapter | Real signed credential, router and SQLite submission path; in-process HTTP race tests pass |
+| `codex/haw-child-run-identity` | child service adapter | HAW-CHD-003 execution identity | Closed journal lineage contract, stable child run identity and resume propagation; journal/runner tests pass |
+| `codex/haw-child-mcp` | child run identity | HAW-CHD-002/003 agent tools | Conditional validate/start/status tools with safe file reads and private runtime credentials; MCP/harness tests and lint pass |
+| `codex/haw-child-stage-grants` | child MCP | HAW-CHD-003 credential lifetime | Launcher grant acquisition, durable ownership/revocation and harness cleanup; focused race tests and lint pass |
+| `codex/haw-child-dispatch` | child stage grants | HAW-CHD-003 execution custody | Typed dispatch, retained-source recompilation and journal reconciliation; queue recovery tests pass; launcher installation remains pending |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
@@ -59,8 +66,8 @@ Task, and CRD additions are retained, with their behavior checked directly.
 Proposal validation now checks exact source and canonical digests, the pinned
 gaggle/catalog/policy, existing Goober and capability subsets, one plain manual
 trigger, no generated-child recursion, normal compilation, provider requirements,
-and executable placement. It is advisory until the durable submission path repeats
-those checks. An author-facing CLI and its real command-path tests are in progress.
+and executable placement. The durable submission path repeats those checks.
+The author-facing CLI and its real command-path tests are implemented.
 
 Stage authority uses a separate signed credential bound to gaggle, parent run,
 stage occurrence, current attempt, and config/policy digests. It has no general
@@ -68,8 +75,10 @@ pod or human permissions and cannot fall back to human authentication. Enabling
 its verifier is explicit. The service must still check current attempt/policy
 authority before every operation; signatures alone do not admit execution.
 Its 24-hour credential lifetime does not set a child-wait deadline: the launcher
-must renew/rebind active work after a longer durable wait. No launcher or child
-route is enabled by this foundation alone.
+must renew/rebind active work after a longer durable wait. Harness acquisition now
+binds the grant and revokes it on session exit, including failure. Expired active
+attempts can renew; revoked attempts cannot. Older cleanup cannot revoke a newer
+attempt. Daemon service wiring is still pending.
 
 Focused authorization tests cover cross-key and cross-token-domain use,
 tampering, expiry, wrong parent, missing origin claims, and every existing API
@@ -96,11 +105,20 @@ the exact base commit, preserves child edits on retries, and prepares verified
 merge/replace/discard trees. It does **not** yet apply those trees to the live
 parent; durable application intent, exclusive custody and recovery remain required.
 
-Next: connect journal-backed occurrence identities, stage grant issuance, the
-authenticated tool/API surface, generated-run dispatch and recovery, workspace
-custody/application, wait-aware timeouts and capacity, and family cancellation.
-Execution remains refused until those boundaries work together. The HTTP,
-launcher and journal-origin slices are being developed separately.
+The HTTP adapter and scoped MCP tools now connect agent-authored source to signed,
+bounded submission/status operations. Requests cannot supply another run, stage,
+endpoint, credential or policy. MCP runtime credentials are private and omitted
+from prompts and command arguments. Run identities preserve the accepted parent
+occurrence and source/envelope pins. The dispatcher distinguishes known refusal
+from uncertain handoff and reconciles durable journal evidence after reopening
+the queue. Cancellation delivery alone does not imply terminal cancellation.
+
+Next: install the journal-backed authority and pinned-generation loaders, daemon
+services and child launcher; complete workspace custody/application, durable
+waits, wait-aware timeouts/capacity, family cancellation and portal intervention.
+Execution remains refused until those boundaries work together. Repository child
+adoption and dynamic admission are in progress; parallel child workspace isolation
+and branch-aware parent capacity remain required acceptance work.
 
 ### Other streams — designs prepared, implementation pending
 

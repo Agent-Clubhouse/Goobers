@@ -132,6 +132,11 @@ func generationResolverFor(layout instance.Layout, retainer *configgeneration.Re
 		return nil
 	}
 	return func(ctx context.Context, identity journal.RunIdentity) (executionGenerationRuntime, error) {
+		// Generated runs require retained source plus parent-generation custody;
+		// their display names must never select a mutable catalog definition.
+		if identity.Child != nil {
+			return executionGenerationRuntime{}, errors.New("generated child recovery requires retained proposal resolver")
+		}
 		directory, lease, err := retainer.Store.Acquire(ctx, identity.ConfigGeneration)
 		if err != nil {
 			return executionGenerationRuntime{}, err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -51,7 +52,7 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 }
 
 func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
-	if s.observe == nil {
+	if s.observe == nil && s.observeChild == nil {
 		return nil
 	}
 	records, err := s.queue.Uncertain(ctx, s.reconcileCursor, 100)
@@ -65,11 +66,7 @@ func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
 	var failures error
 	for _, record := range records {
 		s.reconcileCursor = record.ID
-		observed, err := s.observe(ctx, record)
-		if err == nil {
-			err = s.reconcileObservation(ctx, record, observed)
-		}
-		failures = errors.Join(failures, err)
+		failures = errors.Join(failures, s.reconcileAcceptedRecord(ctx, record))
 	}
 	return failures
 }
@@ -93,4 +90,28 @@ func (s *durableTriggerService) reconcileObservation(ctx context.Context, record
 		return nil
 	}
 	return err
+}
+
+// Route by the durable discriminant before consulting an ordinary observer.
+func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, record triggerqueue.Record) error {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return err
+	}
+	if header.Kind == childworkflow.ChildStartKind {
+		return s.reconcileChildReceipt(ctx, record)
+	}
+	if header.Kind != "" {
+		return errors.New("unsupported accepted trigger envelope kind")
+	}
+	if s.observe == nil {
+		return nil
+	}
+	observed, err := s.observe(ctx, record)
+	if err != nil {
+		return err
+	}
+	return s.reconcileObservation(ctx, record, observed)
 }

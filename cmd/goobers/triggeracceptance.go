@@ -30,6 +30,9 @@ type durableTriggerService struct {
 	bootUncertain   map[string]bool
 	auditLog        *journal.InstanceLog
 	observe         func(context.Context, triggerqueue.Record) (bool, error)
+	children        childExecutionLauncher
+	observeChild    childStartObserver
+	childCursor     string
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a
@@ -58,6 +61,7 @@ func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTrigg
 		return nil, nil, nil, err
 	}
 	triggers.observe = acceptedTriggerObserver(layout)
+	triggers.observeChild = acceptedChildObserver(layout)
 	triggers.auditLog = auditLog
 	return triggers, state, cancels, nil
 }
@@ -137,10 +141,10 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	pruneCtx, cancelPrune := context.WithTimeout(ctx, 250*time.Millisecond)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
 	cancelPrune()
-	if s.dispatch.triggerer() == nil {
+	if s.dispatch.triggerer() == nil && s.children == nil {
 		return pruneErr
 	}
-	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx))
+	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
 	records, err := s.queue.Pending(ctx, 100)
 	if err != nil {
 		return errors.Join(reconcileErr, err)
@@ -167,10 +171,13 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// treat a generated workflow's display name as a catalog trigger, even if
 	// an envelope also contains an ordinary request. Retain durable custody.
 	if header.Kind == childworkflow.ChildStartKind {
-		return nil
+		return s.drainChild(ctx, record)
 	}
 	if header.Kind != "" {
 		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)
+	}
+	if s.dispatch.triggerer() == nil {
+		return nil
 	}
 	var payload acceptedTriggerPayload
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
