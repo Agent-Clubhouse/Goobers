@@ -303,6 +303,12 @@ refuse late results from the original run. Queued epoch cancellation retains its
 own result. The final common human admission adapter and publication from later
 child epochs remain explicit follow-up work.
 
+Shared provider reads now have an explicit gaggle/binding/generation partition,
+full request-representation isolation, bounded body capture, and an ADO GET
+transport adapter. Stage GitHub reads use the scoped cache. Daemon counter/open-PR
+callers and ADO WIQL/batch hydration remain pending under HAW-EVT-008; no claim of
+complete shared polling is made.
+
 ### Backlog — design prepared, implementation pending
 
 The backlog workbench still requires browse/edit surfaces and consistent explicit

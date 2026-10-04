@@ -541,3 +541,29 @@ scheduler admission, Runner journals, and CLI key replay. Store tests cover
 transaction rollback, queue-full cursor preservation, legacy transfer uncertainty,
 and no-match/recipient freezing. The remaining demand-sized schedule, count/refill,
 standalone manual, and direct engine adapters keep HAW-EVT-002 in progress.
+
+
+### Delivered scoped read-cache foundation (HAW-EVT-008)
+
+The shared provider GET cache now accepts an explicit gaggle, source/credential
+binding, and configuration or interactive-policy generation. It hashes the
+complete scope, endpoint, credential and representation headers. Missing scope
+bypasses caching; equal credentials alone cannot share bodies across gaggles.
+Stage GitHub reads and snapshot invalidation use their gaggle and pinned
+configuration generation. Legacy stage launches without a generation have an
+explicit automation-only partition and still require a gaggle. Callers must
+authorize each read before invoking the cache; cache custody grants no access.
+
+The reusable client supports GitHub and ADO GETs, preserves configured transports,
+coalesces list reads within a bounded evaluation snapshot, and retains GitHub
+Link or ADO continuation headers. Bodies larger than 16 MiB stay streaming and
+uncached. Explicit fresh/conditional/range requests, no-store responses and
+unscoped reads bypass shared replay. Existing strong-validator revalidation and
+bounded SQLite retention remain. Snapshot invalidation affects only its scope.
+
+Concurrent fake-transport tests verify one ADO list request for eight consumers,
+credential/gaggle/generation/representation separation, pagination, large-body
+streaming, and production stage scope/invalidation wiring. These tests require no
+provider service or socket listener. Daemon counter/open-PR callers still need the
+scoped adapter; ADO WIQL read-plan coordination and batch hydration remain follow-up
+work. This slice does not claim every provider read is centralized.
