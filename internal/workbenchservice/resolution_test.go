@@ -143,7 +143,7 @@ func resolutionFixture(t *testing.T, kind apiv1.Provider) (*SessionResolver, *re
 	}
 	return resolver, f, learned
 }
-func resolutionTurn(t *testing.T, queue *triggerqueue.Store, gaggle string, actor sessioning.Actor) journal.RunIdentity {
+func resolutionTurn(t *testing.T, queue *triggerqueue.Store, gaggle string, actor sessioning.Actor, selected ...*sessioning.PRRepairTarget) journal.RunIdentity {
 	t.Helper()
 	now := time.Now().UTC()
 	digest := sessioning.Digest([]byte("pinned profile"))
@@ -154,7 +154,11 @@ func resolutionTurn(t *testing.T, queue *triggerqueue.Store, gaggle string, acto
 	if err != nil {
 		t.Fatal(err)
 	}
-	accepted, err := queue.SubmitSessionMessage(t.Context(), command("instruction"), created.Session.ID, "The requested design decision is yes. Resolve this blocker if the current evidence supports it.", []byte(`{"verified":true}`), now)
+	var selection *sessioning.PRRepairTarget
+	if len(selected) > 0 {
+		selection = selected[0]
+	}
+	accepted, err := queue.SubmitSessionInput(t.Context(), command("instruction"), created.Session.ID, sessioning.MessageRequest{Text: "The requested design decision is yes. Resolve this blocker if the current evidence supports it.", RepairTarget: selection}, []byte(`{"verified":true}`), now)
 	if err != nil {
 		t.Fatal(err)
 	}

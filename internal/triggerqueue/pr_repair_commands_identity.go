@@ -43,19 +43,31 @@ func PRRepairDigests(scope WorkbenchCommandScope, selection sessioning.PRRepairT
 	if _, err := repairNative("repair-"+strings.Repeat("0", 32), request, target); err != nil {
 		return "", "", err
 	}
+	targetDigest, err := PRRepairTargetDigest(scope, selection)
+	if err != nil {
+		return "", "", err
+	}
+	raw, _ := json.Marshal(struct {
+		Kind, TargetDigest string
+		Selection          sessioning.PRRepairTarget
+		Request            sessioning.PRRepairRequest
+	}{"pr-repair-operation/v1", targetDigest, selection, request})
+	return targetDigest, childDigest(raw), nil
+}
+
+// PRRepairTargetDigest authorizes retained receipts against the current exact
+// human-selected physical source without inspecting a naturally changed PR head.
+func PRRepairTargetDigest(scope WorkbenchCommandScope, selection sessioning.PRRepairTarget) (string, error) {
+	if !validWorkbenchScope(scope) || selection.SourceBindingID != scope.SourceBindingID || sessioning.ValidatePRRepairTarget(&selection) != nil {
+		return "", ErrTransition
+	}
 	physical := selection
 	physical.ExpectedHeadSHA = ""
 	raw, _ := json.Marshal(struct {
 		Kind, Gaggle string
 		Target       sessioning.PRRepairTarget
 	}{"pr-repair-target/v1", scope.Gaggle, physical})
-	targetDigest := childDigest(raw)
-	raw, _ = json.Marshal(struct {
-		Kind, TargetDigest string
-		Selection          sessioning.PRRepairTarget
-		Request            sessioning.PRRepairRequest
-	}{"pr-repair-operation/v1", targetDigest, selection, request})
-	return targetDigest, childDigest(raw), nil
+	return childDigest(raw), nil
 }
 func repairRepository(selection sessioning.PRRepairTarget) providers.RepositoryRef {
 	r := selection.Repository
