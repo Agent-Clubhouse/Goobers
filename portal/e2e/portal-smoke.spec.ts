@@ -746,13 +746,13 @@ test("does not mark unrelated history after a canceled detail-link click", async
   await page.goBack();
   await expect(page).toHaveURL(/#\/overview$/);
   await page.goForward();
-  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
 });
 
 test("keeps instance details usable on desktop and at 200 percent zoom", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/#/instance/retention");
-  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
   await page.evaluate(() => {
     document.documentElement.style.zoom = "2";
   });
