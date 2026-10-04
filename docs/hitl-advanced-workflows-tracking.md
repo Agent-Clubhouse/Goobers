@@ -45,6 +45,15 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-interactive-policy` | `codex/haw-child-lifecycle` | HAW-HITL-001/002 | Per-gaggle authorization, verified groups, exact credential scope, reload fencing, daemon route and portal contract tests |
 | `codex/haw-child-parent-continuation` | `codex/haw-interactive-policy` | HAW-CHD-005 | Serial runner wait/continuation and Git workspace recovery tests; adapter installation pending |
 
+| `codex/haw-child-storage-reservations` | `codex/haw-stack-review-status` | HAW-CHD-003/005 | Maximum-size completion survives intake saturation; reserved capacity is shared |
+| `codex/haw-child-startup-suspension` | `codex/haw-child-storage-reservations` | HAW-CHD-005 | Validated waiting parents restore without a runnable permit |
+| `codex/haw-child-recovery-deferral` | `codex/haw-child-startup-suspension` | HAW-CHD-005 | Refused generated recovery remains visible without blocking ordinary daemon startup |
+| `codex/haw-interactive-interventions` | `codex/haw-child-recovery-deferral` | HAW-HITL-002/003 | Actual human API/daemon/portal decisions and saved shared guidance; focused race and portal tests pass |
+| `codex/haw-event-receipts` | `codex/haw-interactive-interventions` | HAW-EVT-001/007 foundation | Scoped receipts, immutable route snapshots, no-match success, reservations and production pruning; race/steady-state tests pass |
+| `codex/haw-child-handoff-adapter` | `codex/haw-event-receipts` | HAW-CHD-004/005 | Real daemon handoff, credential path exclusion, retained policy, wait deadline accounting and capacity block tests |
+| `codex/haw-child-shared-wait-projection` | `codex/haw-child-handoff-adapter` | HAW-CHD-005 | Journal-owned bounded projection removes scheduler/runner integration import cycle |
+| `codex/haw-child-process-evidence` | `codex/haw-child-shared-wait-projection` | HAW-CHD-004/005 | Actual generated task/reviewer/shell writer scopes retain join evidence; native process containment is still insufficient |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -85,8 +94,14 @@ Recovery adopts the held checkout across a crash; watchdogs recognize child wait
 
 **General child opt-in execution remains refused.** Remaining delivery gates:
 
-- Finish production daemon handoff/launcher installation and boot reconciliation.
-- Verify explicit PR publication delegation against the actual credential surface.
+- Finish production launcher installation with a supported isolated execution backend.
+  The daemon handoff and startup reconciliation now exist. Process-tree census
+  alone cannot prove that a reparented process stopped; exact pod containment and
+  terminal evidence are being implemented before enabling child writes.
+- Verify explicit PR publication delegation against the actual credential surface,
+  including ambient credentials and model credentials that also authorize GitHub.
+- Allow safe disposal after execution policy narrows and changing a conflicted
+  merge request before application effects begin; preserve immutable applied plans.
 - Support a child from each concurrent parent stage without releasing a live
   sibling's capacity; remove temporary serial/repository-only restrictions after
   tests cover branch workspaces, scratch work and join behavior.
@@ -100,7 +115,7 @@ Recovery adopts the held checkout across a crash; watchdogs recognize child wait
 - Keep recursion deferred as agreed; one unresolved child per stage occurrence,
   including distinct parallel occurrences, remains the required v1 scope.
 
-### HITL — authorization and credential slice implemented
+### HITL — authorized run decisions and shared guidance implemented
 
 Optional gaggle interactive policy defines explicit viewer/operator grants for
 verified issuer/subject or group identities. Instance role checks still apply;
@@ -113,17 +128,29 @@ Repository edits require PR publication policy.
 The actual capabilities route distinguishes configured permission from implemented
 operation availability. Current policy fences bounded authorization/provider effect
 callbacks against reload. New actions are not advertised as usable until their
-handlers exist. Shared portal approval/escalation/guidance actions are in progress;
-fresh affected-stage allowances, settled-run continuation, transient sessions,
-backlog edits and PR repair remain acceptance work. Saved guidance alone must not
-be described as delivered or resumed.
+handlers exist. The shared portal now exposes sequence-bound approval, override
+and denial decisions plus saved shared guidance, attributed to the authenticated
+human. Real daemon-to-runner and portal-client tests cover those actions.
+Fresh affected-stage allowances and executable settled-run continuations are in
+progress. Transient sessions, backlog edits, PR repair and continuation of sealed
+child results remain acceptance work. Saved guidance alone is explicitly labeled
+as saved; it is not described as delivered or resumed.
 
-### Events and backlog — designs prepared, implementation pending
+### Events — receipt foundation implemented; routing remains pending
 
 The agreed event stream still requires all workflow starts to enter durable queues,
 gaggle-local authenticated ingress/emit, configurable consumer debounce, causal
 history and centralized bounded GH/ADO polling/reads. Existing child receipts are
 one input to that broader queue work, not its completion.
+
+Internal event receipt custody now uses bounded CloudEvents JSON, explicit gaggle
+and authenticated producer binding, immutable routing snapshots, no-match success,
+shared byte reservations and daemon retention. Restart retries, conflicting
+payloads/actors, concurrent duplicates, scope isolation, corrupt custody and steady
+state cleanup are covered. No public event endpoint or consumer routing is enabled
+by that foundation. See [receipt limits](reference/gaggle-event-receipts.md).
+
+### Backlog — design prepared, implementation pending
 
 The backlog workbench still requires browse/edit surfaces and consistent explicit
 relations to items, PRs, dependencies and source-owned Markdown objectives in any
@@ -134,7 +161,8 @@ tracking. See the respective designs for the complete stable task list.
 ### Validation and review preparation
 
 Integrated fast validation (formatting, no-phone-home, vet and all command builds)
-passes through the child continuation and interactive policy stack. Targeted Go
+passes through the earlier child continuation and interactive policy stack. Later
+integrated child wait/process/daemon and event receipt race checks also pass. Targeted Go
 race suites, Git recovery/application tests, Go API contracts, TypeScript typecheck
 and portal contract tests pass for the implemented slices. Full CI is not claimed:
 package-audit DNS and existing socket-listener tests are restricted in this session.
