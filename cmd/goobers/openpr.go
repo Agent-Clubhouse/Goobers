@@ -159,9 +159,11 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"        # \"plan.prTitle\" would name an earlier stage explicitly.\n" +
 	"        title: prTitle\n\n" +
 	"Title precedence: an explicitly set non-empty title wins; otherwise the\n" +
-	"claimed item's title, recovered from the run journal (so it survives a\n" +
-	"resume or repass); otherwise the generic \"Automated implementation\". An\n" +
-	"empty value is not an override — every empty input falls back.\n\n" +
+	"claimed item's title, recovered from the run journal (or the journal\n" +
+	"plane in a stage pod, so it survives a resume, repass, or pod placement);\n" +
+	"otherwise the generic \"Automated implementation\" with a warning naming\n" +
+	"why no item title was available. An empty value is not an override — every\n" +
+	"empty input falls back.\n\n" +
 	"itemID explicitly identifies a selected backlog item when the workflow\n" +
 	"read it without claiming. If a claimed item also exists, the IDs must\n" +
 	"match. On ADO, native work-item linking separately uses the\n" +
@@ -185,44 +187,66 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"these inputs. That is the fallback working, not a missing feature.\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
-func openPRIssue(root, runID string) (id, title string, ok bool, err error) {
-	id, title, ok = claimedIssueFromJournal(root, runID)
+func openPRIssueWithFallbackReason(root, runID string) (id, title string, ok bool, fallbackReason string, err error) {
+	id, title, ok, fallbackReason = claimedIssueFromJournal(root, runID)
 	explicitID := strings.TrimSpace(providerInput("itemID", ""))
 	explicitTitle := strings.TrimSpace(providerInput("itemTitle", ""))
 	if explicitID == "" {
 		if explicitTitle != "" && !ok {
-			return "", "", false, fmt.Errorf("open-pr input itemTitle requires itemID when the run has no claimed item")
+			return "", "", false, "", fmt.Errorf("open-pr input itemTitle requires itemID when the run has no claimed item")
 		}
 		if explicitTitle != "" {
 			title = explicitTitle
+			fallbackReason = ""
 		}
-		return id, title, ok, nil
+		return id, title, ok, fallbackReason, nil
 	}
 	if ok && id != explicitID {
-		return "", "", false, fmt.Errorf("open-pr input itemID %q conflicts with claimed item %q", explicitID, id)
+		return "", "", false, "", fmt.Errorf("open-pr input itemID %q conflicts with claimed item %q", explicitID, id)
 	}
 	id, ok = explicitID, true
 	if explicitTitle != "" {
 		title = explicitTitle
+		fallbackReason = ""
+	} else if title == "" {
+		if fallbackReason != "" {
+			fallbackReason = fmt.Sprintf("open-pr input itemID %q did not include itemTitle, and %s", explicitID, fallbackReason)
+		} else {
+			fallbackReason = fmt.Sprintf("open-pr input itemID %q did not include itemTitle", explicitID)
+		}
 	}
-	return id, title, ok, nil
+	return id, title, ok, fallbackReason, nil
 }
 
 // openPRTitle resolves the pull request title. In topology (b) a bare "#<n>"
 // in it (the issue title is the default) is rewritten to the backlog issue's
 // URL, because the title becomes the Azure DevOps squash-commit title, where
-// "#<n>" names ADO work item n; see crossProviderIssueText.
-func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issueID, issueTitle string, haveIssue bool, err error) {
-	issueID, issueTitle, haveIssue, err = openPRIssue(root, runID)
+// "#<n>" names ADO work item n; see crossProviderIssueText. When it falls
+// back to the generic title it warns on stderr naming why (#6566).
+func openPRTitle(root, runID string, repo providers.RepositoryRef, stderr io.Writer) (title, issueID, issueTitle string, haveIssue bool, err error) {
+	issueID, issueTitle, haveIssue, genericReason, err := openPRIssueWithFallbackReason(root, runID)
 	if err != nil {
 		return "", "", "", false, err
 	}
 	title = providerInput("title", "")
-	if title == "" && haveIssue {
+	if title != "" {
+		genericReason = ""
+	}
+	if title == "" && haveIssue && issueTitle != "" {
 		title = issueTitle
 	}
 	if title == "" {
 		title = "Automated implementation"
+		if genericReason == "" {
+			if haveIssue {
+				genericReason = "the selected backlog item has no title"
+			} else {
+				genericReason = "no claimed backlog item was found"
+			}
+		}
+	}
+	if genericReason != "" {
+		pf(stderr, "warning: using generic pull request title %q: %s\n", title, genericReason)
 	}
 	if haveIssue && issueID != "" {
 		title = crossProviderIssueText(title, issueID, prIssueReference(root, repo, issueID))
@@ -272,7 +296,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// both sides. Recovered from the run journal (resume-safe), so this holds on
 	// a repass too. Falls back to the generic title/body when the run claimed no
 	// issue (other workflows) or an explicit title/body input is set.
-	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID, repo)
+	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID, repo, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
