@@ -179,15 +179,15 @@ stateDiagram-v2
     completed --> result_available
     failed --> result_available
     cancelled --> result_available
-    result_available --> resolved: merge / replace / discard / acknowledge
+    result_available --> resolved: merge / replace / discard
 ```
 
 The parent's stage becomes `waiting_child` after acceptance. A durable occurrence
 record points to child, start intent, last observed state, and continuation cursor.
 A child terminal result is persisted before waking the parent. Delivering the same
 result twice is harmless; advancing the parent continuation is a compare-and-swap
-against that result identity. The one-child slot remains occupied until the
-result is acknowledged, so a live response lost after child completion cannot
+against that result identity. The one-child slot remains occupied until a workspace
+disposition is confirmed (use discard for a result with no changes), so a live response lost after child completion cannot
 accidentally create a second workstream with unresolved changes.
 
 The existing journal may record failed/escalated execution before a live operator
@@ -205,8 +205,11 @@ finite limits. Active execution budgets stop while waiting; elapsed wait is stil
 reported. Existing configured overall wall-clock deadlines remain explicit and
 visible instead of being silently disabled.
 
-A waiting parent releases its active execution permit while retaining run identity,
-logical run accounting, budgets, and workspace lease. If the process/pod stays
+A waiting stage occurrence releases its active execution permit while retaining
+run identity, logical run accounting, budgets, and workspace lease. Track runnable
+owners across parallel branches: one waiting branch must not release an entire
+run permit while a sibling still executes. Existing run-level `ReleaseRun` alone
+is insufficient; resume reacquires capacity before returning control to the agent. If the process/pod stays
 alive, resource accounting still includes its memory/pod occupancy and child
 admission must reserve a viable execution slot. Reject configurations that cannot
 schedule a child behind a waiting parent; never bypass quota to break the deadlock.
@@ -288,10 +291,12 @@ An operator-authorized recovery epoch records additional allowance explicitly.
 
 Reuse queue bounds and journal/artifact retention. Retain terminal lineage for
 30 days by default, active lineages until settled, and idempotency tombstones for
-7 days after the retained result expires. The root family remains pinned while
-any member is active. Default 10,000 lineages per gaggle with a 5% maintenance
-reserve; new submissions fail with actionable capacity details when unsettled
-work consumes the usable limit. No active wait is dropped to satisfy retention.
+30 days after the retained result expires. The root family remains pinned while
+any member is active. Default 10,000 lineages per gaggle; the shared queue database uses the event
+design's 20% byte maintenance reserve rather than a second reserve. Ordinary
+start receipts remain pinned as long as retained child lineage needs them, even
+when ordinary queue retention would otherwise expire them. New submissions fail
+with actionable capacity details when unsettled work consumes the usable limit. No active wait is dropped to satisfy retention.
 The production maintenance loop prunes in batches of at most 100 and reports
 blocked retention. Snapshot/artifact bytes count toward the existing store quota;
 capacity admission happens before claiming durable acceptance.
