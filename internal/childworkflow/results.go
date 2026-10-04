@@ -48,7 +48,7 @@ type terminalResultReceipt struct {
 }
 
 func validTerminalInput(input TerminalResultInput, child triggerqueue.ChildRecord) bool {
-	if !input.State.Terminal() || input.FinishedAt.IsZero() || input.FinishedAt.Before(child.AcceptedAt) || len(input.Summary) > 8192 || !utf8.ValidString(input.Summary) || strings.ContainsRune(input.Summary, 0) || len(input.References) > 16 {
+	if (!input.State.Terminal() && input.State != triggerqueue.ChildAwaitingHuman) || input.FinishedAt.IsZero() || input.FinishedAt.Before(child.AcceptedAt) || len(input.Summary) > 8192 || !utf8.ValidString(input.Summary) || strings.ContainsRune(input.Summary, 0) || len(input.References) > 16 {
 		return false
 	}
 	for _, ref := range input.References {
@@ -80,7 +80,7 @@ func (c *WorkspaceCoordinator) CaptureResult(ctx context.Context, child triggerq
 	if !errors.Is(err, triggerqueue.ErrChildResultPending) {
 		return TerminalResult{}, err
 	}
-	receipt := terminalResultReceipt{Version: 1, Identity: child.Identity, AcceptanceID: child.AcceptanceID, SourceDigest: child.ProposalDigest, RunID: child.RunID, Input: input}
+	receipt := terminalResultReceipt{Version: 1, Identity: child.Identity, AcceptanceID: child.AcceptanceID, SourceDigest: child.ProposalDigest, RunID: child.ActiveRunID(), Input: input}
 	var carrier bytes.Buffer
 	if workspace != nil {
 		snapshot, err := c.captureResultWorkspace(ctx, child, *workspace, input.FinishedAt, &carrier)
@@ -119,7 +119,7 @@ func (c *WorkspaceCoordinator) captureResultWorkspace(ctx context.Context, child
 	if workspace.RepositoryKey != fork.Snapshot.Record.RepositoryKey || !sameSnapshotPolicy(workspace.Policy, fork.Snapshot.Policy) {
 		return recovery.ChildSnapshot{}, ErrAuthorityUnavailable
 	}
-	snapshot, err := recovery.CaptureChildResult(ctx, workspace.Path, child.RunID, fork.Snapshot, finished, finished.Add(triggerqueue.ChildRetention))
+	snapshot, err := recovery.CaptureChildResult(ctx, workspace.Path, child.ActiveRunID(), fork.Snapshot, finished, finished.Add(triggerqueue.ChildRetention))
 	if err != nil {
 		return recovery.ChildSnapshot{}, err
 	}
@@ -146,20 +146,49 @@ func (c *WorkspaceCoordinator) ReadResult(ctx context.Context, child triggerqueu
 	if current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || current.RunID != child.RunID {
 		return TerminalResult{}, ErrAuthorityUnavailable
 	}
-	stored, err := c.Queue.ChildResult(ctx, child.Identity)
+	if current.ActiveRunID() != child.ActiveRunID() || current.ExecutionEpoch != child.ExecutionEpoch {
+		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
+	}
+	return c.ReadExecutionResult(ctx, child, child.ActiveRunID(), repoURL)
+}
+
+// ReadExecutionResult selects immutable source custody without making that
+// execution current or eligible for parent disposition. Restart admission uses
+// this receipt to fork the next epoch; observation of a late prior result cannot
+// change the active pointer.
+func (c *WorkspaceCoordinator) ReadExecutionResult(ctx context.Context, child triggerqueue.ChildRecord, runID, repoURL string) (TerminalResult, error) {
+	if c == nil || c.Queue == nil {
+		return TerminalResult{}, ErrAuthorityUnavailable
+	}
+	current, err := c.Queue.GetChild(ctx, child.Identity)
 	if err != nil {
 		return TerminalResult{}, err
 	}
+	if current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || current.RunID != child.RunID {
+		return TerminalResult{}, ErrAuthorityUnavailable
+	}
+	execution, err := c.Queue.ChildExecution(ctx, child.Identity, runID)
+	if err != nil {
+		return TerminalResult{}, err
+	}
+	stored, err := c.Queue.ChildExecutionResult(ctx, child.Identity, runID)
+	if err != nil {
+		return TerminalResult{}, err
+	}
+	return c.decodeExecutionResult(ctx, child, execution, repoURL, stored)
+}
+
+func (c *WorkspaceCoordinator) decodeExecutionResult(ctx context.Context, child triggerqueue.ChildRecord, execution triggerqueue.ChildExecution, repoURL string, stored triggerqueue.ChildResult) (TerminalResult, error) {
 	var receipt terminalResultReceipt
 	if err := json.Unmarshal(stored.Receipt, &receipt); err != nil {
 		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
 	}
 	canonical, err := json.Marshal(receipt)
-	if err != nil || !bytes.Equal(canonical, stored.Receipt) || receipt.Version != 1 || receipt.Identity != child.Identity || receipt.AcceptanceID != child.AcceptanceID || receipt.SourceDigest != child.ProposalDigest || receipt.RunID != child.RunID || !validTerminalInput(receipt.Input, child) {
+	if err != nil || !bytes.Equal(canonical, stored.Receipt) || receipt.Version != 1 || receipt.Identity != child.Identity || receipt.AcceptanceID != child.AcceptanceID || receipt.SourceDigest != child.ProposalDigest || receipt.RunID != execution.RunID || !validTerminalInput(receipt.Input, child) {
 		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
 	}
 	result := TerminalResult{Input: receipt.Input, ResultRef: stored.ReceiptDigest, Snapshot: receipt.Snapshot}
-	if current.State.Terminal() && (current.State != receipt.Input.State || current.ResultRef != result.ResultRef) {
+	if execution.State.Terminal() && (execution.State != receipt.Input.State || execution.ResultRef != result.ResultRef) {
 		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
 	}
 	if receipt.Snapshot == nil {
@@ -189,7 +218,7 @@ func (c *WorkspaceCoordinator) verifyResultSnapshot(ctx context.Context, child t
 	}
 	snapshot := receipt.Snapshot
 	record := snapshot.Record
-	if record.RunID != child.RunID || !record.CreatedAt.Equal(receipt.Input.FinishedAt) || record.BaseSHA != fork.Snapshot.Record.SnapshotSHA || record.BaseRef != record.BaseSHA || record.RepositoryKey != fork.Snapshot.Record.RepositoryKey || record.ArchiveDigest != stored.BundleDigest || record.ArchiveBytes != int64(len(stored.Bundle)) || !reflect.DeepEqual(snapshot.Policy, fork.Snapshot.Policy) {
+	if record.RunID != receipt.RunID || !record.CreatedAt.Equal(receipt.Input.FinishedAt) || record.BaseSHA != fork.Snapshot.Record.SnapshotSHA || record.BaseRef != record.BaseSHA || record.RepositoryKey != fork.Snapshot.Record.RepositoryKey || record.ArchiveDigest != stored.BundleDigest || record.ArchiveBytes != int64(len(stored.Bundle)) || !reflect.DeepEqual(snapshot.Policy, fork.Snapshot.Policy) {
 		return triggerqueue.ErrChildResultUnavailable
 	}
 	return record.Validate()

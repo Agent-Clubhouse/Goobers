@@ -112,7 +112,7 @@ func (c *WorkspaceCoordinator) Prepare(ctx context.Context, child triggerqueue.C
 	if err != nil {
 		return nil, err
 	}
-	if current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || current.CancellationRequested || !current.TombstonedAt.IsZero() {
+	if current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || current.RunID != child.RunID || current.ExecutionEpoch != 0 || child.ExecutionEpoch != 0 || current.CancellationRequested || !current.TombstonedAt.IsZero() {
 		return nil, ErrAuthorityUnavailable
 	}
 	retained, err := c.Queue.ChildSnapshot(ctx, child.Identity)
@@ -123,6 +123,12 @@ func (c *WorkspaceCoordinator) Prepare(ctx context.Context, child triggerqueue.C
 	if err != nil {
 		return nil, err
 	}
+	return c.prepareExecutionFork(ctx, child, repoURL, receipt.Snapshot, retained.Bundle)
+}
+
+// prepareExecutionFork creates a distinct owned fork from verified durable
+// bytes. A retry adopts the same directory without resetting prior progress.
+func (c *WorkspaceCoordinator) prepareExecutionFork(ctx context.Context, child triggerqueue.ChildRecord, repoURL string, snapshot recovery.ChildSnapshot, bundle []byte) (admitted *runner.ChildWorkspaceAdmission, prepareErr error) {
 	var mirror string
 	// The database carrier owns recovery custody. The import pin is temporary;
 	// the child branch protects the fork after creation. Always clean the exact
@@ -134,13 +140,13 @@ func (c *WorkspaceCoordinator) Prepare(ctx context.Context, child triggerqueue.C
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), childWorkspaceCleanupTimeout)
 		defer cancel()
 		_, err := c.Worktrees.WithExistingMirror(cleanup, repoURL, func(repository string) error {
-			return recovery.DeleteSnapshotRef(cleanup, repository, receipt.Snapshot.Record)
+			return recovery.DeleteSnapshotRef(cleanup, repository, snapshot.Record)
 		})
 		prepareErr = errors.Join(prepareErr, err)
 	}()
 	found, err := c.Worktrees.WithExistingMirror(ctx, repoURL, func(repository string) error {
 		mirror = repository
-		return importChildCarrier(ctx, repository, receipt.Snapshot, retained.Bundle)
+		return importChildCarrier(ctx, repository, snapshot, bundle)
 	})
 	if err != nil {
 		return nil, err
@@ -148,8 +154,8 @@ func (c *WorkspaceCoordinator) Prepare(ctx context.Context, child triggerqueue.C
 	if !found {
 		return nil, fmt.Errorf("child workspace base mirror is unavailable")
 	}
-	admission := &runner.ChildWorkspaceAdmission{WorkspaceID: child.RunID + "-child", ForkSHA: receipt.Snapshot.Record.SnapshotSHA, RepositoryDigest: receipt.RepositoryDigest}
-	_, err = c.Worktrees.CreateChildFromSnapshot(ctx, worktree.ChildOptions{RepoURL: repoURL, RunID: admission.WorkspaceID, OwnerRunID: child.RunID, Gaggle: child.Identity.Gaggle, SnapshotSHA: admission.ForkSHA})
+	admission := &runner.ChildWorkspaceAdmission{WorkspaceID: child.ActiveRunID() + "-child", ForkSHA: snapshot.Record.SnapshotSHA, RepositoryDigest: worktree.RepositoryDigest(repoURL)}
+	_, err = c.Worktrees.CreateChildFromSnapshot(ctx, worktree.ChildOptions{RepoURL: repoURL, RunID: admission.WorkspaceID, OwnerRunID: child.ActiveRunID(), Gaggle: child.Identity.Gaggle, SnapshotSHA: admission.ForkSHA})
 	if err != nil {
 		return nil, err
 	}
