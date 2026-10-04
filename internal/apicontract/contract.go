@@ -14,13 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract/basewire"
 	"github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 )
 
 // Versioned V1 route paths.
 const (
 	// V1Prefix is the versioned root for daemon API routes.
-	V1Prefix = "/api/v1"
+	V1Prefix = basewire.V1Prefix
 
 	// DiscoveryPath is the version-independent bootstrap endpoint a remote
 	// client uses before it knows which API versions this daemon supports.
@@ -53,7 +54,7 @@ const (
 	RunEventsPath                = V1Prefix + "/runs/{run}/events"
 	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
 	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
-	RunRecoveryPath              = V1Prefix + "/runs/{run}/recovery"
+	RunRecoveryPath              = basewire.RunRecoveryPath
 	RunTranscriptPath            = V1Prefix + "/runs/{run}/transcripts/{seq}"
 	TelemetryCostsPath           = V1Prefix + "/telemetry/costs"
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"

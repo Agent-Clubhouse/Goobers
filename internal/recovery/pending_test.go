@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/apicontract/basewire"
 )
 
 func TestHTTPArchiveSourceRequiresRecognizedPendingProtocol(t *testing.T) {
@@ -33,7 +33,7 @@ func TestHTTPArchiveSourceRequiresRecognizedPendingProtocol(t *testing.T) {
 				if mode == "oversized" {
 					message = strings.Repeat("x", 8192)
 				}
-				_ = json.NewEncoder(w).Encode(apicontract.ErrorEnvelope{Error: apicontract.APIError{Code: code, Message: message}})
+				_ = json.NewEncoder(w).Encode(basewire.ErrorEnvelope{Error: basewire.APIError{Code: code, Message: message}})
 			}))
 			defer server.Close()
 			source := HTTPArchiveSource{BaseURL: server.URL, Token: "token", RunID: "receiving-run"}
