@@ -133,3 +133,22 @@ bound interactive credentials and provider support. Repository changes require a
 policy-governed PR. Denial on a native owner never falls back to a manifest. Changing
 `relationshipManifest` selects the location for eligible new edges; it does not
 move existing relationships.
+
+
+## Native backlog projections
+
+The native read adapter returns one caller-driven window of at most 100 candidates
+with an opaque source/target cursor. GitHub issue database IDs are stable references;
+issue numbers and URLs are locators. ADO work-item IDs are stable and revisions
+remain a distinct field. Objective classification uses configured native IDs,
+types or labels. Assignees and source tags retain their native values.
+
+Pages report omissions, remaining candidates and relationship coverage explicitly.
+GitHub milestone identity is available inline; its parent/blocker relations are
+currently not loaded. ADO inline parent/dependency targets remain unresolved until
+their membership in this source is verified. A page ending is not proof of a full
+consistent scan or deletion. Each operation has a 15-second limit, a 2-MiB raw
+reply bound, a 256-KiB item bound and a 1-MiB projected page bound.
+
+The provider adapter itself has no credentials, cache, polling loop or write path.
+Public browse routes and interactive execution wiring are separate delivery slices.
