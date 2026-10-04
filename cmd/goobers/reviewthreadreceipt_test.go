@@ -396,3 +396,32 @@ func TestReviewThreadReceiptSecondPassAtTheSamePublishedHead(t *testing.T) {
 		}
 	})
 }
+
+// TestReviewThreadCompareOptionsNameVerifiedResolutions: a thread whose
+// resolution this attempt verified is reported as reopened if a later listing
+// in the same attempt reads it unresolved, instead of only surfacing at the
+// final verification read.
+func TestReviewThreadCompareOptionsNameVerifiedResolutions(t *testing.T) {
+	p := &reviewThreadPublication{
+		publishedHead: revisionPublishedSHA,
+		responses: []reviewThreadDisposition{
+			{ThreadID: "T1", Disposition: "addressed"},
+			{ThreadID: "T2", Disposition: "addressed"},
+		},
+		receipt: apiv1.ReviewThreadPublication{Threads: []apiv1.ReviewThreadReceipt{
+			{ThreadID: "T1", ResolutionState: apiv1.ReviewThreadMutationVerified},
+			{ThreadID: "T2", ResolutionState: apiv1.ReviewThreadMutationPending},
+		}},
+	}
+	opts := p.compareOptions()
+	if !opts.mayResolve["T1"] || !opts.mayResolve["T2"] {
+		t.Fatalf("mayResolve = %v, want both addressed threads", opts.mayResolve)
+	}
+	if !opts.resolvedByRun["T1"] || opts.resolvedByRun["T2"] {
+		t.Fatalf("resolvedByRun = %v, want only the verified resolution", opts.resolvedByRun)
+	}
+	prior := apiv1.PRFeedbackThread{ThreadID: "T1"}
+	if reason, stale := threadStateChange(prior, prior, opts); !stale || reason.Code != staleReasonThreadState {
+		t.Fatalf("reopen after a verified resolution = (%+v, %v), want changed_thread_state", reason, stale)
+	}
+}

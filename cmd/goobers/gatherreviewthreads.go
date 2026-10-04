@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -60,6 +61,14 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	evidence, err := readFeedbackEvidence(ctx, src, repo, brief.SelectedNumber)
+	if errors.Is(err, errFeedbackTorn) {
+		// The head moved while the feedback was read. evidence.pr is the
+		// re-read head: off the selected head, the run ends as a stale
+		// selection like any other moved head; otherwise the torn read fails.
+		if code, stop := guardGatheredRevision(root, runID, repo, brief.SelectedNumber, evidence.pr, stdout, stderr); stop {
+			return code
+		}
+	}
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("gather feedback on PR #%s", brief.SelectedNumber), err, remediationBriefResultFile)
 	}

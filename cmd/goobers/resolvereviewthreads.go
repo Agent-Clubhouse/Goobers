@@ -194,7 +194,15 @@ func (p *reviewThreadPublication) compareOptions() feedbackCompareOptions {
 			mayResolve[response.ThreadID] = true
 		}
 	}
-	return feedbackCompareOptions{expectedHead: p.publishedHead, mayResolve: mayResolve}
+	// A resolution this run verified that reads unresolved again was
+	// reopened by someone else: stale input, never a silent re-resolve.
+	resolvedByRun := map[string]bool{}
+	for _, entry := range p.receipt.Threads {
+		if entry.ResolutionState == apiv1.ReviewThreadMutationVerified {
+			resolvedByRun[entry.ThreadID] = true
+		}
+	}
+	return feedbackCompareOptions{expectedHead: p.publishedHead, mayResolve: mayResolve, resolvedByRun: resolvedByRun}
 }
 
 // checkBeforePublication re-reads the head and, when the run recorded a

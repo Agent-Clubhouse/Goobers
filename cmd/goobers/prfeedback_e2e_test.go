@@ -84,6 +84,10 @@ func (f *githubFeedbackFake) serve(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/pulls/77/reviews":
 			writeFakeJSON(w, []any{})
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/issues/77/comments":
+			if f.takeFault("push-during-read") != "" {
+				// A push lands between the feedback reads and the head re-read.
+				f.head = revisionMovedSHA
+			}
 			writeFakeJSON(w, f.general)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/pulls/77/comments":
 			comments := []map[string]any{{"id": 101, "body": f.rootBody, "path": "a.go", "user": map[string]any{"login": "reviewer"}}}
@@ -379,6 +383,29 @@ func TestGatherReviewThreadsRefusesMovedHeadAcrossProviders(t *testing.T) {
 				t.Fatal("stale selection kept the claim")
 			}
 		})
+	}
+}
+
+// TestGatherReviewThreadsEndsATornReadAsStaleSelection: a push that lands
+// while gather-review-threads reads the feedback is a torn read. The re-read
+// head is off the selected head, so the run ends as a stale selection like
+// any other moved head instead of failing the stage.
+func TestGatherReviewThreadsEndsATornReadAsStaleSelection(t *testing.T) {
+	w := newFeedbackWorld(t, providers.ProviderGitHub)
+	newRevisionRun(t, w.root, w.runID).selectHead("77", revisionSelectedSHA)
+	w.arm("push-during-read")
+	resultFile := filepath.Join(t.TempDir(), remediationBriefResultFile)
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	code, stdout, stderr := runArgs(t, "gather-review-threads", w.root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readJSONResult(t, resultFile)
+	if result["noWork"] != true || result["outcome"] != prClaimOutcomeStaleSelection {
+		t.Fatalf("result = %v, want a stale-selection no-work instead of a brief", result)
+	}
+	if prClaimHeld(t, w.root) {
+		t.Fatal("stale selection kept the claim")
 	}
 }
 
