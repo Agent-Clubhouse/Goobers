@@ -136,7 +136,30 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-intervention-view-scope` | `codex/haw-pending-start-fairness` | Keep human intervention actions scoped to the current run and queued restart |
 | `codex/haw-session-backlog-edits` | `codex/haw-intervention-view-scope` | Enable audited backlog edits from shared agent sessions |
 | `codex/haw-queued-human-restarts` | `codex/haw-session-backlog-edits` | Queue human restart epochs before execution capacity admission |
-| `codex/haw-delivery-checkpoints` | `codex/haw-queued-human-restarts` | Reconcile delivery checkpoints and feature catalog snapshots |
+| `codex/haw-delivery-checkpoints` | `codex/haw-queued-human-restarts` | Reconcile delivery checkpoints and child-workflow feature snapshots |
+| `codex/haw-repository-proposal-adapters` | `codex/haw-delivery-checkpoints` | Preview source metadata and add exact one-attempt repository proposal adapters |
+| `codex/haw-relationship-suggestions` | `codex/haw-repository-proposal-adapters` | Define bounded relationship suggestions with source evidence and host provenance |
+| `codex/haw-external-event-ingress` | `codex/haw-relationship-suggestions` | Accept explicitly bound external events with durable receipts and current gaggle visibility |
+| `codex/haw-needs-human-custody` | `codex/haw-external-event-ingress` | Retain exact needs-human evidence before one narrow marker effect |
+| `codex/haw-session-blocker-resolution` | `codex/haw-needs-human-custody` | Resolve source blockers using actual session authority and retained evidence |
+| `codex/haw-queue-waiting-reasons` | `codex/haw-session-blocker-resolution` | Explain queued restarts and bound each admission sweep |
+| `codex/haw-repository-proposal-custody` | `codex/haw-queue-waiting-reasons` | Retain repository proposal phases under shared command capacity and cleanup |
+| `codex/haw-session-resolution-tools` | `codex/haw-repository-proposal-custody` | Install typed session blocker resolution tools |
+| `codex/haw-blocker-portal` | `codex/haw-session-resolution-tools` | Resolve backlog blockers through shared portal sessions |
+| `codex/haw-start-control-custody` | `codex/haw-blocker-portal` | Retain scoped queue deadlines and cancellation custody |
+| `codex/haw-typed-start-settlement` | `codex/haw-start-control-custody` | Settle typed queued turns and child starts safely |
+| `codex/haw-repository-proposal-service` | `codex/haw-typed-start-settlement` | Install governed repository metadata proposal API |
+| `codex/haw-repository-proposal-editor` | `codex/haw-repository-proposal-service` | Review source metadata edits and draft PR receipts in the portal |
+| `codex/haw-pr-repair-providers` | `codex/haw-repository-proposal-editor` | Add exact-head GitHub and ADO PR repair providers |
+| `codex/haw-objective-identities-and-aliases` | `codex/haw-pr-repair-providers` | Propose source-owned objective identities and manifest aliases |
+| `codex/haw-session-repair-selection` | `codex/haw-objective-identities-and-aliases` | Bind explicit human PR selection to shared session turns |
+| `codex/haw-queue-controls` | `codex/haw-session-repair-selection` | Operate gaggle-local start queues with current human authority |
+| `codex/haw-session-queue-cancellation` | `codex/haw-queue-controls` | Cancel a running shared turn without closing its conversation |
+| `codex/haw-suggestion-ingestion` | `codex/haw-session-queue-cancellation` | Bind relationship suggestions to exact retained workflow artifacts |
+| `codex/haw-pr-repair-custody` | `codex/haw-suggestion-ingestion` | Retain PR repair commands and their actual session dependencies |
+| `codex/haw-suggestion-review-custody` | `codex/haw-pr-repair-custody` | Retain human relationship-review decisions and source dependencies |
+| `codex/haw-cancelled-restart-retry` | `codex/haw-suggestion-review-custody` | Allow a fresh restart after proven unattempted cancellation |
+| `codex/haw-pr-repair-service` | `codex/haw-cancelled-restart-retry` | Bind PR repair to the selected human session and durable command |
 
 ## Implementation status and next acceptance boundaries
 
@@ -289,7 +312,9 @@ verified evidence, then retains the assessment and one-attempt marker-removal re
 The backlog portal now opens this assessment in a new or existing shared session,
 retains separate creation/message retry keys, and shows actual agent responses.
 Current access and exact source identity fence every browser scope change. PR repair
-remains follow-up delivery. The installed human restart
+now has native expected-head adapters, immutable human PR selection, durable command
+custody and a service bound to the actual session turn. Installed agent tools and
+host exclusion of concurrent automation remain the next delivery boundary. The installed human restart
 adapters cover affected-stage fresh allowances, queued capacity and sealed-child
 continuation; live worker qualification remains outstanding. Saved guidance alone is
 explicitly labeled as saved; it is not described as delivered or resumed.
@@ -315,8 +340,11 @@ until their corresponding ancestry/transport contract exists.
 Durable admission is installed for manual, scheduled, demand-sized, signal,
 standalone/detached, direct-engine, child, shared-session and human restart starts.
 Consumer debounce, workflow event emission and explicit authenticated external
-CloudEvents ingress are installed. Queue inspection/cancellation/deadline policy
-and broader transport parity remain distinct completion/qualification work.
+CloudEvents ingress are installed. Queue inventory, cancellation requests and
+pending-start deadline policy are installed in the daemon API and portal. Cancellation
+before execution settles typed custody; attempted local ordinary/event/human starts
+and shared session turns require actual terminal and writer-join evidence. Attempted
+child and direct-engine cancellation remain distinct adapter boundaries.
 
 Internal event receipt custody now uses bounded CloudEvents JSON, explicit gaggle
 and authenticated producer binding, immutable routing snapshots, no-match success,
@@ -334,7 +362,7 @@ starts without duplication; only verified terminal journals settle groups.
 Dependency inventories protect source journals and archived configuration before
 routing is installed. Explicit machine ingress uses the existing listener and durable receipt commit;
 human receipt visibility requires current gaggle authority. Queue lifecycle
-controls and engine consumer event-input transport remain pending. Trusted consumer ancestry now carries
+controls are installed; engine consumer event-input transport remains pending. Trusted consumer ancestry now carries
 up to 32 original roots across another event generation, survives source-history
 pruning, and charges every root atomically. A new consumer RunID cannot reset those
 limits. Child and human-continuation ancestry still require verified adapters.
@@ -398,9 +426,12 @@ explicit draft-PR submission, same-key recovery, separate provider observation a
 explicit continuation, plus retained command lookup after a browser reload.
 
 The versioned, bounded relationship-suggestion artifact now binds actual producer
-provenance, deduplicates source evidence and holds provisional item references
-until their exact creation receipt exists. Its review storage/portal/command
-installation remains outstanding; suggestions do not become graph edges.
+provenance and deduplicates source evidence. On-demand ingestion verifies the actual
+producer journal, stage occurrence and content-addressed artifact. Durable accept/reject
+review custody pins that provenance and links an acceptance to the ordinary metadata
+proposal command. Installed review service/API/portal remain the next boundary;
+suggestions do not become graph edges by themselves. Provisional and unsupported
+native hierarchy targets are visible evidence but cannot yet be accepted.
 
 Objective identity assignment and manifest alias editing now use that same
 reviewed PR flow, gated by explicit source metadata permissions. Existing
@@ -449,8 +480,10 @@ adapter tests cover accepted turns, publication refusal and unknown writers.
 Native backlog read, field-edit and needs-human resolution tools now use the same
 installed human-authorized services as browser operations. Availability requires
 the configured source policy and installed session runtime. Source read/view requests
-also include policy-lock contention in their request deadline. PR repair tools and
-live model/worker qualification remain follow-up.
+also include policy-lock contention in their request deadline. PR repair service
+custody is implemented; installed tools and live model/worker qualification remain
+follow-up. A queued cancellation of one running turn signals only that turn and
+keeps later shared-session messages ordered and eligible.
 
 
 ### Durable demand-sized schedule delivery
@@ -479,3 +512,14 @@ silently authorize another launch. The composed HTTP acceptance test drives the
 queued receipt through the actual dedicated human Runner.Resume and verifies
 fresh stage allowance, selected scrubbed guidance, pinned identity and recovery.
 Uncertain no-journal repair still requires explicit writer-ownership proof.
+
+
+### Cancelled restart retry and retained replay
+
+A fresh human request can reserve a new restart epoch after the prior request was
+provably cancelled or expired before execution. It repeats current authorization
+and source/guidance checks. Replaying the original request returns its original
+terminal receipt. Bounded replay tombstones preserve the original key while its
+source remains actionable; retirement requires verified journal absence plus
+exclusive maintenance and runner custody. Interrupted or uncertain starts remain
+retained and cannot authorize a fresh duplicate execution.
