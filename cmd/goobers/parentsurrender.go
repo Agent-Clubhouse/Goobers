@@ -34,7 +34,7 @@ func (p containedSurrenderPlane) Put(ctx context.Context, run, stage string, att
 	if run != a.contract.Identity.RunID || stage != a.contract.Stage || attempt != a.contract.PodAttempt {
 		return parentAuthorityRefusal()
 	}
-	if err = a.active(ctx); err != nil {
+	if err = a.custody(ctx); err != nil {
 		return err
 	}
 	if err = validateContainedSurrender(ctx, a.contract, a.digest, a.blobs, a.review, data); err != nil {

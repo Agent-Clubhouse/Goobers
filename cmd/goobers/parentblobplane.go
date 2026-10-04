@@ -23,7 +23,7 @@ func (p parentBlobPlane) store(ctx context.Context) (blobstore.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = a.active(ctx); err != nil {
+	if err = a.custody(ctx); err != nil {
 		return nil, err
 	}
 	return a.blobs, nil

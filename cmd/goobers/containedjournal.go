@@ -30,7 +30,7 @@ func (p containedJournalPlane) Emit(ctx context.Context, req livejournal.EmitReq
 	if err != nil {
 		return livejournal.EmitResponse{}, err
 	}
-	if err = a.active(ctx); err != nil {
+	if err = a.custody(ctx); err != nil {
 		return livejournal.EmitResponse{}, err
 	}
 	req, err = containedJournalRequest(a.contract, a.digest, req)
@@ -144,8 +144,8 @@ type containedAttemptCustody struct {
 		blobstore.Store
 		blobstore.BoundedReader
 	}
-	active func(context.Context) error
-	review bool
+	custody func(context.Context) error
+	review  bool
 }
 
 func (s *daemonCredentialService) containedAttempt(ctx context.Context) (containedAttemptCustody, error) {
@@ -158,11 +158,11 @@ func (s *daemonCredentialService) containedAttempt(ctx context.Context) (contain
 		if err != nil {
 			return containedAttemptCustody{}, err
 		}
-		return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, active: a.active}, nil
+		return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, custody: a.custody}, nil
 	}
 	a, err := s.childAttempt(ctx)
 	if err != nil {
 		return containedAttemptCustody{}, err
 	}
-	return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, active: a.active, review: a.review}, nil
+	return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, custody: a.active, review: a.review}, nil
 }

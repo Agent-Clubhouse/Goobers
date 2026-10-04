@@ -72,6 +72,27 @@ func (a parentAttemptCustody) active(ctx context.Context) error {
 	return nil
 }
 
+// A worker may finish bounded output delivery after its logical stage has
+// stopped. Only its original unjoined host scope retains that custody; it does
+// not regain credentials or permission to start a child.
+func (a parentAttemptCustody) custody(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	activeErr := a.active(ctx)
+	if activeErr == nil {
+		return nil
+	}
+	pending, err := parentPodCustodyPending(a.reader, a.digest)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return nil
+	}
+	return activeErr
+}
+
 func (a parentAttemptCustody) envelope(ctx context.Context) (apiv1.InvocationEnvelope, error) {
 	if err := a.active(ctx); err != nil {
 		return apiv1.InvocationEnvelope{}, err
