@@ -1544,6 +1544,14 @@ func providerResultIntegrity(data []byte) (apiv1.Integrity, error) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		return "", fmt.Errorf("decode JSON: %w", err)
 	}
+	// An empty top-level array is a provider's "nothing to claim" result
+	// (e.g. forward curation with no claimable backlog item, #6199). It
+	// carries no provider-sourced item, so there is nothing to label and no
+	// attacker-controllable content: the artifact is the provider's own
+	// derived output. Any other unlabeled shape still fails closed.
+	if list, ok := result.([]interface{}); ok && len(list) == 0 {
+		return apiv1.IntegrityDerived, nil
+	}
 	var grades []apiv1.Integrity
 	var walk func(interface{}) error
 	walk = func(value interface{}) error {
