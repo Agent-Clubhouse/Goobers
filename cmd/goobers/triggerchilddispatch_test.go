@@ -103,7 +103,11 @@ type childDrainFixture struct {
 	path       string
 }
 
-func newChildDrainFixture(t *testing.T) childDrainFixture {
+func newChildDrainFixture(t *testing.T, customSource ...string) childDrainFixture {
+	source := dispatchChildSource
+	if len(customSource) > 0 {
+		source = customSource[0]
+	}
 	t.Helper()
 	layout := instance.NewLayout(t.TempDir())
 	path := filepath.Join(layout.Root, "accepted.db")
@@ -120,11 +124,11 @@ func newChildDrainFixture(t *testing.T) childDrainFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := validator.Validate([]byte(dispatchChildSource))
+	proposal, err := validator.Validate([]byte(source))
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority := childworkflow.Authority{Origin: childworkflow.Origin{GrantID: "grant", Gaggle: "web", RunID: strings.Repeat("a", 32), StageOccurrence: "plan/branch0/visit1", AttemptID: "attempt-1", ConfigDigest: input.ConfigDigest, PolicyDigest: proposal.PolicyDigest}, Actor: "run:parent", Admission: input, ConfigGeneration: journal.Digest([]byte("archive")), ParentWorkflow: "parent", ParentWorkflowDigest: journal.Digest([]byte("parent")), ParentGooberDigest: journal.Digest([]byte("goobers"))}
+	authority := childworkflow.Authority{Origin: childworkflow.Origin{GrantID: "grant", Gaggle: "web", RunID: strings.Repeat("a", 32), StageOccurrence: "plan/branch0/visit1", AttemptID: "attempt-1", ConfigDigest: input.ConfigDigest, PolicyDigest: proposal.PolicyDigest}, Actor: childworkflow.InvocationActor(strings.Repeat("a", 32), "plan/branch0/visit1"), Admission: input, ConfigGeneration: journal.Digest([]byte("archive")), ParentWorkflow: "parent", ParentWorkflowDigest: journal.Digest([]byte("parent")), ParentGooberDigest: journal.Digest([]byte("goobers"))}
 	launcher := &journalChildLauncher{authority: authority, layout: layout}
 	s.children = launcher
 	submissionService := &childworkflow.SubmissionService{Queue: s.queue, Authority: childworkflow.AuthorityResolverFunc(func(context.Context, childworkflow.Origin) (childworkflow.Authority, error) { return authority, nil })}
@@ -132,7 +136,7 @@ func newChildDrainFixture(t *testing.T) childDrainFixture {
 	if err = s.queue.BindChildAuthority(t.Context(), authority.Origin.Binding(now.Add(time.Hour)), "", now); err != nil {
 		t.Fatal(err)
 	}
-	submission, err := submissionService.Submit(t.Context(), authority.Origin, childworkflow.SubmissionRequest{InvocationKey: "first-child", Source: []byte(dispatchChildSource)})
+	submission, err := submissionService.Submit(t.Context(), authority.Origin, childworkflow.SubmissionRequest{InvocationKey: "first-child", Source: []byte(source)})
 	if err != nil {
 		t.Fatal(err)
 	}

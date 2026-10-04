@@ -912,6 +912,11 @@ type StartInput struct {
 	// ChildWorkspace selects a launcher-provisioned managed fork. It is
 	// trusted admission metadata, never a workflow input or arbitrary path.
 	ChildWorkspace *ChildWorkspaceAdmission
+	// OnJournalPublished is a host-only admission barrier, never persisted or
+	// accepted from workflow inputs. It runs after immutable identity and inputs
+	// are durable, before stage execution. Failure preserves the journal for
+	// recovery while refusing execution; callers must treat the start as observed.
+	OnJournalPublished func() error
 	// Trigger is what started the run (manual/schedule/signal/item).
 	Trigger journal.Trigger
 	// RepoRef is the target repository every stage worktree branches from.
@@ -1107,6 +1112,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 
 	defer func() { _ = jr.Close() }()
+	if in.OnJournalPublished != nil {
+		if err := in.OnJournalPublished(); err != nil {
+			return Result{}, fmt.Errorf("runner: journal admission barrier: %w", err)
+		}
+	}
 	if len(in.StarterSelection) > 0 {
 		if err := jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, RunID: in.RunID, Gaggle: in.Gaggle, Workflow: in.Machine.Def.Name, Runner: in.StarterSelection}); err != nil {
 			return Result{}, fmt.Errorf("runner: record starter selection: %w", err)

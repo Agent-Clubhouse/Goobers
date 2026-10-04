@@ -42,6 +42,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
+	ChildRuntime childRuntimeBuilder
 	observation  *schedulerObservation
 	runtime      *schedulerRuntime
 	Generations  *configgeneration.Retainer
@@ -179,6 +180,7 @@ func logTelemetryOTLPUnavailable(log *journal.InstanceLog, cause error) {
 }
 
 type schedulerDefinitions struct {
+	ChildRuntime       childRuntimeBuilder
 	GenerationResolver executionGenerationResolver
 	Set                *instance.ConfigSet
 	Validation         *validate.Report
@@ -355,6 +357,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	return &schedulerSetup{
 		observation:              observation,
 		runtime:                  runtime,
+		ChildRuntime:             definitions.ChildRuntime,
 		Generations:              runtime.generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
@@ -849,16 +852,18 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
-	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
+	buildGeneration := func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
 		pinnedInput := input
 		pinnedInput.Layout = pinned
 		pinnedInput.Definitions = pinnedSet
 		pinnedInput.Validation = pinnedReport
 		pinnedInput.StartupProgress = nil
 		return buildSchedulerDefinitions(pinnedInput)
-	})
+	}
+	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), buildGeneration)
 	return &schedulerDefinitions{
 		GenerationResolver: resolveGeneration,
+		ChildRuntime:       childRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), input.Config, buildGeneration),
 		Set:                input.Definitions,
 		Validation:         input.Validation,
 		HarnessPreflight:   harnessInfo,

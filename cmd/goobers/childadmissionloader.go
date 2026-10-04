@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -61,6 +62,9 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 	current, _, err := childStageCatalog(cfg, currentSet, selected, backend)
 	if err != nil {
 		return childworkflow.Authority{}, err
+	}
+	if !reflect.DeepEqual(current.Gaggle.Spec.Project, pinned.Gaggle.Spec.Project) || !reflect.DeepEqual(current.Gaggle.Spec.AdditionalRepos, pinned.Gaggle.Spec.AdditionalRepos) {
+		return childworkflow.Authority{}, errors.New("current child repository scope differs from pinned parent")
 	}
 	if current.ParentTask.ChildWorkflows.EffectiveMaxChildren() < pinned.ParentTask.ChildWorkflows.EffectiveMaxChildren() {
 		return childworkflow.Authority{}, errors.New("current child allowance is below the pinned occurrence ceiling")
