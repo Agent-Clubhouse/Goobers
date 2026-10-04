@@ -24,8 +24,11 @@ export function QueueEligibilityPanel({ client, gaggle, workflow }: { client: Da
   const value = query.state.status === "ready" || query.state.status === "stale" ? query.state.data : undefined;
   const report = value?.report;
   return (
-    <section aria-label="PR queue eligibility" className="inspector-section">
-      <h2>PR queue eligibility</h2>
+    <section aria-label="PR queue eligibility" className="content-section queue-eligibility-panel">
+      <div className="section-heading">
+        <h2>PR queue eligibility</h2>
+        <button className="text-button" type="button" onClick={query.retry}>Refresh queue observation</button>
+      </div>
       <p>Historical selection evidence—not permission to claim or merge.</p>
       {query.state.status === "loading" && <p role="status">Loading queue observation…</p>}
       {query.state.status === "error" && <p role="alert">Queue observation unavailable: {query.state.error.message}</p>}
@@ -54,9 +57,8 @@ export function QueueEligibilityPanel({ client, gaggle, workflow }: { client: Da
             <td><p>{item.nextStep}</p><p>{item.claim.nextStep}</p></td>
           </tr>)}</tbody>
         </table>}
-        {visible < report.items.length && <button type="button" onClick={() => setVisible((count) => count + PAGE_SIZE)}>Show more PRs</button>}
+        {visible < report.items.length && <button className="text-button" type="button" onClick={() => setVisible((count) => count + PAGE_SIZE)}>Show more PRs</button>}
       </>}
-      <button type="button" onClick={query.retry}>Refresh queue observation</button>
     </section>
   );
 }

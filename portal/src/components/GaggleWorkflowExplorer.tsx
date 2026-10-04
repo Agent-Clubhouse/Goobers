@@ -11,7 +11,6 @@ import { routeHash } from "../routing";
 import { validateWorkflowDetail } from "../workflowDetailData";
 import { ScopePivot } from "./ScopePivot";
 import { SectionQueryStatus } from "./SectionQueryStatus";
-import { GraphFrame } from "../ui/GraphFrame";
 import { StatusBadge } from "../ui/StatusBadge";
 import { formatTriggers } from "../pages/WorkflowsPage";
 import { WorkflowTopologyGraph } from "./WorkflowTopologyGraph";
@@ -49,44 +48,35 @@ export function GaggleWorkflowExplorer({
     setSelectedWorkflowName(workflows[0]?.identity.name ?? "");
   }, [selectedWorkflowName, workflows]);
 
-  if (!selectedWorkflow) {
-    return (
-      <GraphFrame
-        className="gaggle-topology-panel"
-        eyebrow="Definitions"
-        title="Workflow topology"
-      >
-        <p className="inline-empty">No workflows are provisioned for this gaggle.</p>
-      </GraphFrame>
-    );
-  }
-
   return (
-    <GraphFrame
-      action={
+    <section className="content-section">
+      <div className="section-heading">
+        <h2>Workflows</h2>
         <span className="graph-legend">
           {workflows.length} {workflows.length === 1 ? "workflow" : "workflows"}
         </span>
-      }
-      className="gaggle-topology-panel"
-      eyebrow="Definitions"
-      title="Workflow topology"
-    >
-      <div className="gaggle-workflow-explorer">
-        <WorkflowPicker
-          gaggleDisplayName={gaggleDisplayName}
-          onSelect={setSelectedWorkflowName}
-          runs={runs}
-          selectedWorkflowName={selectedWorkflow.identity.name}
-          workflows={workflows}
-        />
-        <SelectedWorkflow
-          client={client}
-          gaggleDisplayName={gaggleDisplayName}
-          summary={selectedWorkflow}
-        />
       </div>
-    </GraphFrame>
+      <div className="graph-panel gaggle-topology-panel">
+        {selectedWorkflow ? (
+          <div className="gaggle-workflow-explorer">
+            <WorkflowPicker
+              gaggleDisplayName={gaggleDisplayName}
+              onSelect={setSelectedWorkflowName}
+              runs={runs}
+              selectedWorkflowName={selectedWorkflow.identity.name}
+              workflows={workflows}
+            />
+            <SelectedWorkflow
+              client={client}
+              gaggleDisplayName={gaggleDisplayName}
+              summary={selectedWorkflow}
+            />
+          </div>
+        ) : (
+          <p className="inline-empty">No workflows are provisioned for this gaggle.</p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -208,7 +198,6 @@ function SelectedWorkflow({
     >
       <header>
         <div>
-          <p className="section-kicker">Workflow preview</p>
           <h3>{summary.displayName}</h3>
           <code className="gaggle-workflow-identity">
             {summary.identity.gaggle} / {summary.identity.name}

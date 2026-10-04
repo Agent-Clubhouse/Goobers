@@ -5041,6 +5041,138 @@ code,
   padding: 7px 10px;
 }
 
+.gaggle-detail-heading {
+  max-width: none;
+}
+
+.workflow-detail-heading {
+  max-width: none;
+}
+
+.workflow-detail-heading h1 {
+  overflow-wrap: anywhere;
+}
+
+.workflow-detail-controls {
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.workflow-detail-controls .workflow-detail-summary {
+  background: transparent;
+  border: 0;
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 0;
+}
+
+.workflow-detail-page .workflow-detail-summary dl {
+  gap: 16px 24px;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+}
+
+.workflow-detail-page .workflow-detail-summary dl > div {
+  align-content: start;
+  min-width: 0;
+  padding: 0;
+}
+
+.workflow-detail-page .workflow-detail-summary dl > div + div {
+  border: 0;
+}
+
+.workflow-detail-page .workflow-detail-summary dt {
+  font-size: 10px;
+}
+
+.workflow-detail-page .workflow-detail-summary dd {
+  font-size: 14px;
+}
+
+.workflow-detail-page .workflow-detail-summary .workflow-definition-pin {
+  max-width: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-detail-page > .graph-layout,
+.workflow-detail-page > .content-section {
+  margin-top: 24px;
+}
+
+.content-section.queue-eligibility-panel {
+  font-size: 14px;
+  line-height: 1.6;
+  margin-top: 24px;
+}
+
+.queue-eligibility-panel p {
+  margin: 8px 0;
+}
+
+.queue-eligibility-panel > p:first-of-type {
+  color: var(--muted);
+}
+
+.queue-eligibility-panel .section-heading {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.gaggle-detail-heading h1 {
+  overflow-wrap: anywhere;
+}
+
+.gaggle-detail-controls {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.gaggle-detail-controls .detail-meta {
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  margin-left: auto;
+}
+
+.gaggle-detail-controls .detail-meta dd {
+  font-size: 14px;
+}
+
+.gaggle-detail-page > .content-section {
+  margin-top: 24px;
+}
+
+.gaggle-connections-section {
+  margin-top: 24px;
+}
+
+.gaggle-connections-section > .disclosure-section {
+  margin-top: 0;
+}
+
+.gaggle-connections-section .disclosure-section-content {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.gaggle-detail-page > .disclosure-section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.gaggle-detail-page .disclosure-section-content > .inline-empty {
+  border: 0;
+  margin: 0;
+  padding: 8px 0;
+}
+
 .gaggle-goober-list {
   display: grid;
   gap: 6px;

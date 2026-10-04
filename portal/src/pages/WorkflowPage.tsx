@@ -124,7 +124,7 @@ function WorkflowDetailWorkspace({
     workflow.stages.find((stage) => stage.name === selectedStageId) ?? workflow.stages[0];
 
   return (
-    <>
+    <div className="workflow-detail-page">
       <nav aria-label="Breadcrumb" className="breadcrumbs">
         <button onClick={() => navigate({ page: "workflows" })} type="button">
           Workflows
@@ -139,19 +139,20 @@ function WorkflowDetailWorkspace({
         <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>
-      <header className="detail-heading">
+      <header className="page-heading workflow-detail-heading">
         <div>
-          <span className="definition-label">Workflow definition</span>
-          <div className="detail-heading-line">
-            <h1>{workflow.displayName}</h1>
-            <ScopePivot
-              label={`${workflow.identity.gaggle} / ${workflow.displayName}`}
-              scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
-            />
-          </div>
+          <h1>{workflow.displayName}</h1>
           <p>{workflow.purpose}</p>
         </div>
-        <dl className="detail-meta workflow-detail-meta">
+      </header>
+
+      <div className="insight-controls workflow-detail-controls">
+        <ScopePivot
+          label={`${workflow.identity.gaggle} / ${workflow.displayName}`}
+          scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
+        />
+        <section aria-label="Workflow configuration summary" className="workflow-config-summary workflow-detail-summary">
+          <dl>
           <div>
             <dt>Trigger</dt>
             <dd>{formatTriggers(workflow)}</dd>
@@ -175,7 +176,7 @@ function WorkflowDetailWorkspace({
           </div>
           <div>
             <dt>Definition</dt>
-            <dd className="mono workflow-definition-pin">
+            <dd className="mono workflow-definition-pin" title={`v${workflow.definition.version} · ${workflow.definition.digest}`}>
               v{workflow.definition.version} · {workflow.definition.digest}
             </dd>
           </div>
@@ -183,16 +184,15 @@ function WorkflowDetailWorkspace({
             <dt>Backprop</dt>
             <dd>{workflow.backprop?.enabled ? `Enabled (${workflow.backprop.version})` : "Disabled"}</dd>
           </div>
-        </dl>
-      </header>
-
-      <section aria-label="Workflow configuration summary" className="workflow-config-summary">
-        <dl>
           <div>
             <dt>Owners</dt>
             <dd>
               {workflow.owners.length > 0
-                ? workflow.owners.map((owner) => `${owner.gaggle}/${owner.name}`).join(", ")
+                ? workflow.owners.map((owner) => (
+                    <div key={`${owner.gaggle}/${owner.name}`}>
+                      {owner.gaggle}/{owner.name}
+                    </div>
+                  ))
                 : "None declared"}
             </dd>
           </div>
@@ -204,14 +204,16 @@ function WorkflowDetailWorkspace({
             <dt>Readiness</dt>
             <dd>{formatReadiness(workflow.readiness)}</dd>
           </div>
-        </dl>
-      </section>
+          </dl>
+        </section>
+      </div>
 
       <ConfigurationWarnings context="workflow" {...configurationWarnings} />
 
       <section className="graph-layout">
         <GraphFrame
           action={<span className="graph-legend">Select a stage to inspect its definition</span>}
+          eyebrow=""
         >
           <WorkflowTopologyGraph
             graph={workflow.graph}
@@ -224,7 +226,7 @@ function WorkflowDetailWorkspace({
       </section>
 
       <RecentRuns runs={runs} workflow={workflow} />
-    </>
+    </div>
   );
 }
 
@@ -355,7 +357,6 @@ function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: Workflow
     <section className="content-section">
       <div className="section-heading">
         <div>
-          <p className="section-kicker">History</p>
           <h2>Recent runs</h2>
         </div>
         <span className="section-count">{runs.length}</span>
