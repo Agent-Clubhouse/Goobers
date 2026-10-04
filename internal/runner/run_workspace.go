@@ -209,18 +209,6 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	if err := selectedWorkspaceUnsupported(in, mode); err != nil {
 		return nil, err
 	}
-	if mode == apiv1.WorkspaceScratch && in.pinnedWorkspace != nil {
-		in.pinnedStage.Lock()
-		if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
-			in.pinnedStage.Unlock()
-			return nil, err
-		}
-		if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, workspaceBranch); err != nil {
-			in.pinnedStage.Unlock()
-			return nil, err
-		}
-		return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, release: in.pinnedStage.Unlock}, nil
-	}
 	switch mode {
 	case apiv1.WorkspaceScratch:
 		if syncBase {
