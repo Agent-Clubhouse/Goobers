@@ -136,6 +136,18 @@ describe("SharedSessionsPanel", () => {
     await waitFor(() => expect(screen.queryByLabelText("Message to agent")).not.toBeInTheDocument());
     expect(close).toHaveBeenCalledWith("team", session.id, expect.any(String), { reason: "Scope complete" });
   });
+  it("keeps post-turn PR receipt inspection available when new repairs are unavailable", async () => {
+    const client = setup();
+    vi.mocked(client.getSession).mockResolvedValue({ ...session, state: "closed" });
+    vi.mocked(client.getInteractiveCapabilities).mockResolvedValue({ ...access, actions: [...access.actions, ...(["pr.repair", "repository.read"] as const).map((action) => ({ action, authorized: true, credentialConfigured: true, available: false, reasonCode: "operation_not_implemented" }))] });
+    await select();
+    expect(screen.getByText("Check a retained PR repair", { selector: "summary" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Message to agent")).not.toBeInTheDocument();
+    vi.mocked(client.getInteractiveCapabilities).mockResolvedValue(access);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh conversation" }));
+    await screen.findByText(human.text);
+    expect(screen.queryByText("Check a retained PR repair", { selector: "summary" })).not.toBeInTheDocument();
+  });
   it("clears a conversation after access revocation and keeps configured read-only sessions visible", async () => {
     const client = setup(); await select();
     vi.mocked(client.getInteractiveCapabilities).mockResolvedValue({ ...access, policyConfigured: false, actions: [] });

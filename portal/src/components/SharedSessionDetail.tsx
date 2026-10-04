@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DaemonClient, InteractiveCapabilities, InteractiveSession, SessionMessagePage, SessionMessageRequest, SessionPRRepairInspection } from "../api/types";
 import { SessionPRPicker } from "./SessionPRPicker";
+import { PRRepairReceiptLookup } from "./PRRepairReceiptLookup";
 import { sessionAction, sessionState, useSessionCommand } from "./sessionCommand";
 
 export function SharedSessionDetail({ client, gaggle, id, parentRevision, pendingChanged }: { client: DaemonClient; gaggle: string; id: string; parentRevision: number; pendingChanged: (value: boolean) => void }) {
@@ -35,6 +36,7 @@ export function SharedSessionDetail({ client, gaggle, id, parentRevision, pendin
   const canMessage = active && sessionAction(capabilities, "session.message");
   const canRepair = capabilities?.actions.some((entry) => entry.action === "pr.repair" && entry.available) && capabilities.actions.some((entry) => entry.action === "repository.read" && entry.available);
   useEffect(() => { if (capabilities && !canRepair) setRepairChoice(undefined); }, [capabilities, canRepair]);
+  const canInspectRepair = ["pr.repair", "repository.read"].every((action) => capabilities?.actions.some((entry) => entry.action === action && entry.authorized && entry.credentialConfigured));
   const commandPending = message.busy || close.busy;
   return <section className="session-detail" aria-label="Session conversation">
     <header><h3>{session?.title ?? "Session conversation"}</h3><button type="button" disabled={busy || commandPending} onClick={refresh}>Refresh conversation</button></header>
@@ -59,6 +61,7 @@ export function SharedSessionDetail({ client, gaggle, id, parentRevision, pendin
         <button type="submit" disabled={commandPending || close.uncertain || message.scopeChanged || (!message.uncertain && !text.trim())}>{message.busy ? "Submitting…" : message.uncertain ? "Retry same message" : repair && canRepair ? "Send message with PR" : "Send message"}</button>
       </form>}
       {active && !canMessage && <p>Messages are read-only with your current permissions and configuration.</p>}
+      {canInspectRepair && <PRRepairReceiptLookup key={id} client={client} gaggle={gaggle} />}
       {canMessage && <details><summary>Close session</summary><p>Stop accepting new messages and request cancellation of any active turn.</p><form onSubmit={(e) => { e.preventDefault(); void close.submit({ reason }); }}><label>Reason<input maxLength={4096} value={reason} disabled={commandPending || close.uncertain || message.uncertain} onChange={(e) => setReason(e.target.value)} /></label><button type="submit" disabled={commandPending || message.uncertain || close.scopeChanged}>{close.busy ? "Requesting close…" : close.uncertain ? "Retry same close request" : "Close session"}</button></form></details>}
     </>}
     {(notice || message.notice || close.notice) && <p role="status">{message.notice || close.notice || notice}</p>}
