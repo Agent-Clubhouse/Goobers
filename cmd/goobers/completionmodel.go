@@ -711,6 +711,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"pr-claim": {
 		{name: "release", desc: "Release the remediation claim"},
+		{name: "verify-feedback", desc: "Also compare live PR feedback with the recorded snapshot"},
+		{name: "classify-feedback-repass", desc: "Report whether a stale-feedback repass changed nothing"},
 	},
 	"remediation-checkpoint": {
 		{name: "budget", takesArg: true, desc: "Per-PR repass-cycle budget before escalating"},
