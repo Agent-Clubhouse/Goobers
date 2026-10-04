@@ -55,6 +55,9 @@ type ChildIdentity struct {
 // containing verified proposal/snapshot references, not inline proposal bytes.
 // MaxChildren is the validated, pinned occurrence ceiling (1..32).
 type ChildAcceptance struct {
+	// Authority, when supplied by the authenticated service, is checked in
+	// the same transaction as custody, including duplicate reads.
+	Authority   *ChildAuthority
 	Identity    ChildIdentity
 	Actor       string
 	Payload     []byte
@@ -246,6 +249,14 @@ func (s *Store) AcceptChild(ctx context.Context, req ChildAcceptance, now time.T
 	}
 	defer func() { _ = tx.Rollback() }()
 	identity := req.Identity
+	if req.Authority != nil {
+		if req.Authority.ChildParent != identity.ChildParent || req.Authority.StageOccurrence != identity.StageOccurrence {
+			return ChildRecord{}, false, ErrChildAuthorityChanged
+		}
+		if err := checkChildAuthority(ctx, tx, *req.Authority, now); err != nil {
+			return ChildRecord{}, false, err
+		}
+	}
 	var actorDigest, payloadDigest string
 	err = tx.QueryRowContext(ctx, `SELECT actor_digest,payload_digest FROM child_lineages c`+childWhere, childArgs(identity)...).Scan(&actorDigest, &payloadDigest)
 	if err == nil {
@@ -305,15 +316,8 @@ func reserveChildOccurrence(ctx context.Context, tx *sql.Tx, identity ChildIdent
 	if err := ensureChildParent(ctx, tx, identity.ChildParent, now); err != nil {
 		return 0, err
 	}
-	var cancelled, settled sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT cancelled_ns,settled_ns FROM child_parents WHERE gaggle=? AND parent_run=?`, identity.Gaggle, identity.ParentRunID).Scan(&cancelled, &settled); err != nil {
+	if err := childParentOpen(ctx, tx, identity.ChildParent); err != nil {
 		return 0, err
-	}
-	if cancelled.Valid {
-		return 0, ErrParentCancelled
-	}
-	if settled.Valid {
-		return 0, ErrParentSettled
 	}
 	var unresolved int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM child_lineages WHERE gaggle=? AND parent_run=? AND occurrence=? AND acknowledged_ns IS NULL`, identity.Gaggle, identity.ParentRunID, identity.StageOccurrence).Scan(&unresolved); err != nil {

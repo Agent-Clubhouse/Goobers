@@ -15,10 +15,11 @@ type ChildPruneResult struct {
 	Deleted            int
 	OccurrencesDeleted int
 	ParentsDeleted     int
+	AuthoritiesDeleted int
 }
 
 func (r ChildPruneResult) total() int {
-	return r.Tombstoned + r.Deleted + r.OccurrencesDeleted + r.ParentsDeleted
+	return r.Tombstoned + r.Deleted + r.OccurrencesDeleted + r.ParentsDeleted + r.AuthoritiesDeleted
 }
 
 // PruneChildren is bounded daemon maintenance across the internal store, not a
@@ -46,6 +47,9 @@ func (s *Store) PruneChildren(ctx context.Context, now time.Time, limit int) (Ch
 		return fail(err)
 	}
 	if result.OccurrencesDeleted, err = pruneChildOccurrences(ctx, tx, now, limit-result.total()); err != nil {
+		return fail(err)
+	}
+	if result.AuthoritiesDeleted, err = pruneChildAuthorities(ctx, tx, now, limit-result.total()); err != nil {
 		return fail(err)
 	}
 	if result.ParentsDeleted, err = pruneChildParents(ctx, tx, now, limit-result.total()); err != nil {
@@ -160,6 +164,7 @@ func pruneChildParents(ctx context.Context, tx *sql.Tx, now time.Time, limit int
 	rows, err := tx.QueryContext(ctx, `SELECT p.gaggle,p.parent_run FROM child_parents p
  WHERE p.settled_ns<=? AND NOT EXISTS(SELECT 1 FROM child_lineages c WHERE c.gaggle=p.gaggle AND c.parent_run=p.parent_run)
  AND NOT EXISTS(SELECT 1 FROM child_occurrences o WHERE o.gaggle=p.gaggle AND o.parent_run=p.parent_run)
+ AND NOT EXISTS(SELECT 1 FROM child_authorities a WHERE a.gaggle=p.gaggle AND a.parent_run=p.parent_run)
  ORDER BY p.gaggle,p.parent_run LIMIT ?`, cutoff, limit)
 	if err != nil {
 		return 0, err
