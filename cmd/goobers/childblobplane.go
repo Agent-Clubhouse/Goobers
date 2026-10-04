@@ -34,6 +34,9 @@ func (s *daemonCredentialService) childBlobScope(ctx context.Context) (triggerqu
 	}
 	child, err := s.childQueue.ChildForRun(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
+		if principal.GeneratedChild {
+			return triggerqueue.ChildIdentity{}, true, errors.New("signed child blob lineage unavailable")
+		}
 		// A retained journal still identifies a child after queue expiry. Missing
 		// ordinary journals are legitimate for engine-driven remote runs.
 		dir, findErr := s.layout.FindRunDir(runID)
@@ -54,6 +57,9 @@ func (s *daemonCredentialService) childBlobScope(ctx context.Context) (triggerqu
 	}
 	if err != nil {
 		return triggerqueue.ChildIdentity{}, true, err
+	}
+	if !principal.GeneratedChild {
+		return triggerqueue.ChildIdentity{}, true, errors.New("child blob custody requires a signed child principal")
 	}
 	if err := s.verifyChildBlobOwner(ctx, child); err != nil {
 		return triggerqueue.ChildIdentity{}, true, err

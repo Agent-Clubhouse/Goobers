@@ -83,6 +83,9 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
+	// GeneratedChild is a signed pod-custody claim, never inferred from mutable
+	// journal presence or accepted from a request body.
+	GeneratedChild bool
 	// ChildWorkflow is populated only by the stage-grant authenticator.
 	ChildWorkflow *ChildWorkflowPrincipal
 	Subject       string

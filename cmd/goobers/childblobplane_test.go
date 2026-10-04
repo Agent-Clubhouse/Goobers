@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,12 +31,15 @@ func TestChildBlobHTTPUsesAuthenticatedLineageAndNeverSharedFallback(t *testing.
 	if err = base.Put(t.Context(), foreignDigest, foreign); err != nil {
 		t.Fatal(err)
 	}
-	registry := podauth.NewRegistry()
+	registry, err := podauth.NewSignedKey([]byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	auth, err := podauth.NewAuthenticator(registry, httpapi.DenyAllAuthenticator{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := registry.Mint(id.RunID, time.Hour)
+	token, err := registry.MintChildPod(id.RunID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +57,16 @@ func TestChildBlobHTTPUsesAuthenticatedLineageAndNeverSharedFallback(t *testing.
 	if out := request(http.MethodGet, foreignDigest, nil); out.Code != http.StatusNotFound {
 		t.Fatalf("shared fallback: %d %s", out.Code, out.Body)
 	}
+	unknownToken, err := registry.MintChildPod(strings.Repeat("b", 32), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childToken := token
+	token = unknownToken
+	if out := request(http.MethodGet, foreignDigest, nil); out.Code == http.StatusOK {
+		t.Fatal("signed child without any custody reached shared blobs")
+	}
+	token = childToken
 	owned := []byte("bounded child output")
 	digest := journal.Digest(owned)
 	if out := request(http.MethodPut, digest, owned); out.Code != http.StatusNoContent {
