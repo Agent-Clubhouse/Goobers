@@ -34,13 +34,17 @@ type ExecutionLease struct {
 // BeginExecution rechecks a durable human identity before asynchronous work.
 // It must be called outside WithAuthorization/WithRestartSources callbacks.
 func (s *Service) BeginExecution(ctx context.Context, p httpapi.Principal, gaggle string) (*ExecutionLease, error) {
+	return s.beginExecution(ctx, p, gaggle, "run.restartStage")
+}
+
+func (s *Service) beginExecution(ctx context.Context, p httpapi.Principal, gaggle string, action apiv1.InteractiveAction) (*ExecutionLease, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	g := s.gaggles[gaggle]
-	if err := authorize(p, g, "run.restartStage"); err != nil {
+	if err := authorize(p, g, action); err != nil {
 		return nil, err
 	}
 	p.Roles = append([]httpapi.Role(nil), p.Roles...)

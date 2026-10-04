@@ -33,6 +33,7 @@ type Service struct {
 	executions            map[*ExecutionLease]struct{}
 	executionDrainTimeout time.Duration
 	stageRestartAvailable atomic.Bool
+	sessionsAvailable     atomic.Bool
 	mu                    sync.RWMutex
 	gaggles               map[string]*apiv1.Gaggle
 	sources               map[string]instance.InteractiveCredential
@@ -177,7 +178,7 @@ func (s *Service) permission(p httpapi.Principal, g *apiv1.Gaggle, action apiv1.
 		result.ReasonCode = "credential_not_configured"
 		return result
 	}
-	if action == "run.intervene" || (action == "run.restartStage" && s.stageRestartAvailable.Load()) {
+	if action == "run.intervene" || (action == "run.restartStage" && s.stageRestartAvailable.Load()) || ((action == "session.create" || action == "session.message") && s.sessionsAvailable.Load()) {
 		result.Available = true
 		return result
 	}

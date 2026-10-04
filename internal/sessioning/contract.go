@@ -7,15 +7,18 @@ import "time"
 
 // Bounds apply before durable acceptance and independently of browser lifetime.
 const (
-	StartKind          = "interactive-session-turn"
-	MaxTextBytes       = 64 << 10
-	MaxTitleBytes      = 256
-	MaxOpenSessions    = 32
-	MaxExecutingTurns  = 4
-	MaxQueuedTurns     = 64
-	MaxRetainedRecords = 10000
-	MaxPageSize        = 200
-	Retention          = 30 * 24 * time.Hour
+	StartKind           = "interactive-session-turn"
+	MaxTextBytes        = 64 << 10
+	MaxTitleBytes       = 256
+	MaxOpenSessions     = 32
+	MaxExecutingTurns   = 4
+	MaxQueuedTurns      = 64
+	MaxRetainedRecords  = 10000
+	MaxPageSize         = 200
+	MaxMessagePageBytes = 1 << 20
+	MaxContextBytes     = 256 << 10
+	MaxContextMessages  = 32
+	Retention           = 30 * 24 * time.Hour
 )
 
 // Actor preserves both parts of the verified human identity without combining
@@ -55,6 +58,7 @@ type CloseRequest struct {
 // settled turn so an idle conversation is never mistaken for a successful run.
 type SessionState string
 
+// Session states track durable admission and execution ownership.
 const (
 	Idle            SessionState = "idle"
 	Queued          SessionState = "queued"
@@ -101,11 +105,13 @@ type Acceptance struct {
 	Duplicate    bool     `json:"duplicate"`
 }
 
-// Pages use opaque session IDs or numeric append-only message cursors.
+// SessionPage uses stable opaque session IDs as pagination cursors.
 type SessionPage struct {
 	Items      []Session `json:"items"`
 	NextCursor string    `json:"nextCursor,omitempty"`
 }
+
+// MessagePage uses append-only numeric message sequences as cursors.
 type MessagePage struct {
 	Items      []Message `json:"items"`
 	NextCursor uint64    `json:"nextCursor,omitempty"`
@@ -114,11 +120,12 @@ type MessagePage struct {
 // StartEnvelope is host-created queue provenance. Message bodies and human
 // authorization snapshots remain in the bounded session ledger.
 type StartEnvelope struct {
-	Kind          string `json:"kind"`
-	Gaggle        string `json:"gaggle"`
-	SessionID     string `json:"sessionId"`
-	TurnID        string `json:"turnId"`
-	MessageID     string `json:"messageId"`
-	MessageDigest string `json:"messageDigest"`
+	Kind            string `json:"kind"`
+	Gaggle          string `json:"gaggle"`
+	SessionID       string `json:"sessionId"`
+	TurnID          string `json:"turnId"`
+	MessageID       string `json:"messageId"`
+	MessageDigest   string `json:"messageDigest"`
+	AuthorityDigest string `json:"authorityDigest"`
 	Profile
 }
