@@ -468,7 +468,7 @@ function WorkItemDetailView({
             <strong>{item.actions.length}</strong>
           </span>
           <span>
-            <small>Attributed AIC to date</small>
+            <small>Attributed cost to date</small>
             <strong>{formatWorkItemCost(item.cost)}</strong>
             {item.cost?.lowerBound && <em>Lower bound; some usage is unmeasured</em>}
           </span>

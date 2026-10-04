@@ -1241,6 +1241,7 @@ test("renderWorkItemList renders rows, metadata, overflow, and explicit empty st
 test("renderWorkItemDetail renders cost coverage, related links, action filtering, and truncation", () => {
     const html = renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "comment");
     assert.match(html, /acme\/app#42/);
+    assert.match(html, /Attributed cost to date/);
     assert.match(html, /1\.25 AIC/);
     assert.match(html, /Lower bound; some usage is unmeasured/);
     assert.match(html, /1\/2 runs/);

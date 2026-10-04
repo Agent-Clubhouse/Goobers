@@ -335,6 +335,7 @@ describe("WorkItemsPage", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "acme/app#42" })).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: "Work Items" }));
     expect(navigate).toHaveBeenCalledWith({ page: "work-items", kind: "pr" });
+    expect(screen.getByText("Attributed cost to date")).toBeInTheDocument();
     expect(screen.getByText("1.25 AIC")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open pull request" })).toHaveAttribute(
       "href",

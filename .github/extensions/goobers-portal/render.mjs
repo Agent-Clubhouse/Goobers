@@ -1413,7 +1413,7 @@ export function renderWorkItemDetail(item, actionType = "all") {
         '<div class="work-item-heading-links">' + headingLink + relatedLinks + "</div></div>" +
         '<div class="cards work-item-summary-cards"><div class="card"><div class="label">Confirmed actions</div>' +
         '<div class="value">' + escapeAssociationHtml(actions.length) + "</div></div>" +
-        '<div class="card"><div class="label">Attributed AIC to date</div><div class="value">' +
+        '<div class="card"><div class="label">Attributed cost to date</div><div class="value">' +
         escapeAssociationHtml(formatWorkItemCost(item.cost)) + "</div>" + coverage + lowerBound + "</div></div>" +
         '<div class="filters-bar work-item-action-filters"><label>Action type ' +
         '<select id="work-item-action-type" aria-label="Filter actions by type">' + options +
