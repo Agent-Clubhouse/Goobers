@@ -538,7 +538,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	if err := validateStoredCopilotAuthBoundaries(input.Config, input.Definitions, goobers); err != nil {
 		return nil, err
 	}
-	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), input.Definitions, goobers)
 	if err != nil {
 		return nil, err
 	}
@@ -609,6 +609,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		rn, manager, hooks, err := buildRuntimeRunner(runtimeRunnerInput{
 			Layout:                       scoped,
 			Config:                       input.Config,
+			Definitions:                  input.Definitions,
 			Goobers:                      resolvedGoobers,
 			InstructionsByGoober:         instructions,
 			Telemetry:                    input.Telemetry,
@@ -1061,13 +1062,14 @@ func buildRetainedLegacyRunner(input retainedLegacyRunnerInput) (*runner.Runner,
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
-	instructions, err := loadGooberInstructions(input.Layout.ConfigDir(), input.Goobers)
+	instructions, err := loadGooberInstructions(input.Layout.ConfigDir(), input.Definitions, input.Goobers)
 	if err != nil {
 		return nil, nil, err
 	}
 	rn, manager, _, err := buildRuntimeRunner(runtimeRunnerInput{
 		Layout:               input.Layout,
 		Config:               input.Config,
+		Definitions:          input.Definitions,
 		Goobers:              input.Goobers,
 		InstructionsByGoober: instructions,
 		Telemetry:            input.Telemetry,
@@ -1128,6 +1130,7 @@ func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Man
 		ConfigGeneration:     generation,
 		Layout:               input.Layout,
 		Config:               input.Config,
+		Definitions:          input.Definitions,
 		Goobers:              input.Goobers,
 		InstructionsByGoober: input.InstructionsByGoober,
 		Telemetry:            input.Telemetry,
@@ -1881,6 +1884,7 @@ type retainedLegacyRunnerInput struct {
 type runtimeRunnerInput struct {
 	Layout                       instance.Layout
 	Config                       *instance.Config
+	Definitions                  *instance.ConfigSet
 	Goobers                      map[string]apiv1.GooberSpec
 	InstructionsByGoober         map[string]string
 	Telemetry                    *telemetry.Client
