@@ -22,6 +22,7 @@ type ChildStartEnvelope struct {
 	StageOccurrence      string  `json:"stageOccurrence"`
 	InvocationKey        string  `json:"invocationKey"`
 	ConfigGeneration     string  `json:"configGeneration"`
+	ParentWorkflow       string  `json:"parentWorkflow"`
 	ParentWorkflowDigest string  `json:"parentWorkflowDigest"`
 	ParentGooberDigest   string  `json:"parentGooberDigest"`
 	Workflow             string  `json:"workflow"`
@@ -48,7 +49,7 @@ func childStartEnvelope(a Authority, p *Proposal, invocationKey string) (ChildSt
 	return ChildStartEnvelope{
 		Kind: ChildStartKind, Version: 1, Gaggle: a.Origin.Gaggle, ParentRunID: a.Origin.RunID,
 		ParentStage: a.Admission.ParentTask.Name, StageOccurrence: a.Origin.StageOccurrence, InvocationKey: invocationKey,
-		ConfigGeneration: a.ConfigGeneration, ParentWorkflowDigest: a.ParentWorkflowDigest, ParentGooberDigest: a.ParentGooberDigest,
+		ConfigGeneration: a.ConfigGeneration, ParentWorkflow: a.ParentWorkflow, ParentWorkflowDigest: a.ParentWorkflowDigest, ParentGooberDigest: a.ParentGooberDigest,
 		Workflow: p.Workflow.Name, SourceDigest: p.SourceDigest, CanonicalDigest: p.CanonicalDigest,
 		ConfigDigest: p.ConfigDigest, PolicyDigest: p.PolicyDigest, WorkflowDigest: p.Machine.Digest(), PlacementsDigest: digest(plans),
 		Backend: a.Admission.Backend, MaxChildren: int(a.Admission.ParentTask.ChildWorkflows.EffectiveMaxChildren()),

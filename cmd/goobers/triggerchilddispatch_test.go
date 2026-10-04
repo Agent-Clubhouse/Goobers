@@ -124,7 +124,7 @@ func newChildDrainFixture(t *testing.T) childDrainFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority := childworkflow.Authority{Origin: childworkflow.Origin{GrantID: "grant", Gaggle: "web", RunID: strings.Repeat("a", 32), StageOccurrence: "plan/branch0/visit1", AttemptID: "attempt-1", ConfigDigest: input.ConfigDigest, PolicyDigest: proposal.PolicyDigest}, Actor: "run:parent", Admission: input, ConfigGeneration: journal.Digest([]byte("archive")), ParentWorkflowDigest: journal.Digest([]byte("parent")), ParentGooberDigest: journal.Digest([]byte("goobers"))}
+	authority := childworkflow.Authority{Origin: childworkflow.Origin{GrantID: "grant", Gaggle: "web", RunID: strings.Repeat("a", 32), StageOccurrence: "plan/branch0/visit1", AttemptID: "attempt-1", ConfigDigest: input.ConfigDigest, PolicyDigest: proposal.PolicyDigest}, Actor: "run:parent", Admission: input, ConfigGeneration: journal.Digest([]byte("archive")), ParentWorkflow: "parent", ParentWorkflowDigest: journal.Digest([]byte("parent")), ParentGooberDigest: journal.Digest([]byte("goobers"))}
 	launcher := &journalChildLauncher{authority: authority, layout: layout}
 	s.children = launcher
 	submissionService := &childworkflow.SubmissionService{Queue: s.queue, Authority: childworkflow.AuthorityResolverFunc(func(context.Context, childworkflow.Origin) (childworkflow.Authority, error) { return authority, nil })}

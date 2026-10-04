@@ -20,7 +20,7 @@ func DecodeStartEnvelope(payload []byte) (ChildStartEnvelope, error) {
 	if err := d.Decode(new(any)); err != io.EOF {
 		return e, ErrSubmissionInvalid
 	}
-	if e.Kind != ChildStartKind || e.Version != 1 || !submissionText(e.Gaggle, 128) || !submissionText(e.ParentRunID, 256) || !submissionText(e.ParentStage, 256) || !submissionText(e.StageOccurrence, 256) || !submissionText(e.InvocationKey, 256) || !submissionText(e.Workflow, 256) {
+	if e.Kind != ChildStartKind || e.Version != 1 || !submissionText(e.Gaggle, 128) || !submissionText(e.ParentRunID, 256) || !submissionText(e.ParentStage, 256) || !submissionText(e.StageOccurrence, 256) || !submissionText(e.InvocationKey, 256) || !submissionText(e.Workflow, 256) || !submissionText(e.ParentWorkflow, 256) {
 		return e, ErrSubmissionInvalid
 	}
 	if e.MaxChildren < 1 || e.MaxChildren > 32 || (e.Backend != BackendRunner && e.Backend != BackendEngine) {

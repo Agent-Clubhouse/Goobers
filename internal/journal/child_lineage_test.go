@@ -13,7 +13,7 @@ import (
 )
 
 func testChildLineage(id RunIdentity) *ChildLineage {
-	return &ChildLineage{Gaggle: id.Gaggle, ParentRunID: strings.Repeat("b", 32), StageOccurrence: "stage/0/visit/1", InvocationKey: "first-child", AcceptanceID: "trigger-" + id.RunID, SourceDigest: Digest([]byte("source")), EnvelopeDigest: Digest([]byte("envelope"))}
+	return &ChildLineage{Gaggle: id.Gaggle, ParentRunID: strings.Repeat("b", 32), ParentWorkflow: "parent", StageOccurrence: "stage/0/visit/1", InvocationKey: "first-child", AcceptanceID: "trigger-" + id.RunID, SourceDigest: Digest([]byte("source")), EnvelopeDigest: Digest([]byte("envelope"))}
 }
 
 func childTestIdentity() RunIdentity {

@@ -99,7 +99,7 @@ func (s *GrantIssuer) previousGrant(ctx context.Context, origin Origin) (string,
 }
 
 func samePreparedAuthority(a, b Authority) bool {
-	return a.Origin == b.Origin && a.Actor == b.Actor && a.ConfigGeneration == b.ConfigGeneration &&
+	return a.Origin == b.Origin && a.Actor == b.Actor && a.ConfigGeneration == b.ConfigGeneration && a.ParentWorkflow == b.ParentWorkflow &&
 		a.ParentWorkflowDigest == b.ParentWorkflowDigest && a.ParentGooberDigest == b.ParentGooberDigest
 }
 

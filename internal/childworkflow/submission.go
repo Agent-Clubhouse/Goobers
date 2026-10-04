@@ -27,6 +27,7 @@ type Authority struct {
 	Actor                string
 	Admission            AdmissionContext
 	ConfigGeneration     string
+	ParentWorkflow       string
 	ParentWorkflowDigest string
 	ParentGooberDigest   string
 }
@@ -223,6 +224,9 @@ func (s *SubmissionService) resolve(ctx context.Context, origin Origin) (Authori
 		if !blobstore.ValidDigest(value) {
 			return Authority{}, ErrAuthorityUnavailable
 		}
+	}
+	if !submissionText(authority.ParentWorkflow, 256) {
+		return Authority{}, ErrAuthorityUnavailable
 	}
 	if _, err := s.boundAuthority(ctx, origin); err != nil {
 		return Authority{}, err

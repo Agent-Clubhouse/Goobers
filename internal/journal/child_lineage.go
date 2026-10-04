@@ -16,6 +16,7 @@ import (
 type ChildLineage struct {
 	Gaggle          string `json:"gaggle"`
 	ParentRunID     string `json:"parentRunId"`
+	ParentWorkflow  string `json:"parentWorkflow"`
 	StageOccurrence string `json:"stageOccurrence"`
 	InvocationKey   string `json:"invocationKey"`
 	AcceptanceID    string `json:"acceptanceId"`
@@ -33,7 +34,7 @@ func (id RunIdentity) ValidateChildLineage() error {
 		return nil
 	}
 	valid := c.Gaggle == id.Gaggle && childIdentityText(c.Gaggle, 128) &&
-		apiv1.ValidRunID(c.ParentRunID) && c.ParentRunID != id.RunID &&
+		childIdentityText(c.ParentWorkflow, 256) && apiv1.ValidRunID(c.ParentRunID) && c.ParentRunID != id.RunID &&
 		apiv1.ValidRunID(id.RunID) && c.AcceptanceID == "trigger-"+id.RunID &&
 		childIdentityText(c.StageOccurrence, 256) && childIdentityText(c.InvocationKey, 256) &&
 		id.ContinuedFromRunID == ""
