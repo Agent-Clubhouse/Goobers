@@ -177,6 +177,9 @@ func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity
 	}
 	r.mu.RLock()
 	resolve := r.resolveGeneration
+	if identity.Child != nil {
+		resolve = r.resolveChildGeneration
+	}
 	r.mu.RUnlock()
 	if resolve == nil {
 		return executionGenerationRuntime{}, errors.New("no resolver for pinned execution generation")

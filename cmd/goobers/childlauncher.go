@@ -28,6 +28,7 @@ type childPinnedAuthority interface {
 // coordinator; absence never invents a terminal result or acknowledges a slot.
 type queuedChildLauncher struct {
 	layout    instance.Layout
+	config    *instance.Config
 	queue     *triggerqueue.Store
 	authority childPinnedAuthority
 	build     childRuntimeBuilder
@@ -166,6 +167,7 @@ func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionS
 	launchCtx, cancel := context.WithCancel(l.dispatch.lifecycleContext(ctx))
 	barrierCtx, barrierCancel := context.WithTimeout(ctx, childJournalHandoffTimeout)
 	defer barrierCancel()
+	untrack := l.runners.Track(start.Child.RunID, start.Envelope.Workflow, runtime.runner)
 	launched := false
 	err := l.queue.WithChildLaunch(barrierCtx, start.Child.Identity, func() error {
 		launched = true
@@ -181,7 +183,6 @@ func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionS
 			if releaseRuntime != nil {
 				defer releaseRuntime()
 			}
-			untrack := l.runners.Track(start.Child.RunID, start.Envelope.Workflow, runtime.runner)
 			defer untrack()
 			_, runErr := runtime.runner.Start(launchCtx, runner.StartInput{RunID: start.Child.RunID, Machine: runtime.machine, GooberDigest: runtime.gooberDigest,
 				Gaggle: start.Envelope.Gaggle, Child: &start.Lineage, ChildWorkspace: workspace, RepoRef: runtime.repoRef, RunControls: runtime.controls,
@@ -204,10 +205,14 @@ func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionS
 		cancel()
 	}
 	if !launched {
+		untrack()
 		cancel()
 		releaseCapacity()
 		if releaseRuntime != nil {
 			releaseRuntime()
+		}
+		if errors.Is(err, triggerqueue.ErrParentCancelled) || errors.Is(err, triggerqueue.ErrParentSettled) {
+			return &childStartDeferred{Reason: err.Error()}
 		}
 	}
 	return err
@@ -232,13 +237,17 @@ func (l *queuedChildLauncher) Result(ctx context.Context, ref childExecutionRef)
 	if l.result == nil {
 		return childExecutionResult{}, nil
 	}
-	if observed, err := acceptedChildObserver(l.layout)(ctx, ref); err != nil || !observed {
+	observed, err := acceptedChildObserver(l.layout)(ctx, ref)
+	if err != nil {
 		return childExecutionResult{}, err
 	}
-	for _, run := range l.runners.ActiveRuns() {
-		if run.RunID == ref.Child.RunID {
-			return childExecutionResult{}, nil
-		}
+	release, available := l.runners.acquireChildCustody(ref.Child.RunID)
+	if !available {
+		return childExecutionResult{}, nil
+	}
+	defer release()
+	if !observed {
+		return l.rejectedResult(ctx, ref)
 	}
 	dir, err := l.layout.FindRunDir(ref.Child.RunID)
 	if err != nil {

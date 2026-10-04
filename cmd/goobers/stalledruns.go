@@ -124,12 +124,14 @@ func cleanDaemonDowntime(events []journal.Event) []daemonDowntime {
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	resolveGeneration executionGenerationResolver
-	mu                sync.RWMutex
-	current           map[string]*runner.Runner
-	owners            map[string]trackedRun
-	nextGeneration    uint64
-	hardStopping      bool
+	childCustody           map[string]chan struct{}
+	resolveGeneration      executionGenerationResolver
+	resolveChildGeneration executionGenerationResolver
+	mu                     sync.RWMutex
+	current                map[string]*runner.Runner
+	owners                 map[string]trackedRun
+	nextGeneration         uint64
+	hardStopping           bool
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {
@@ -171,7 +173,9 @@ func (r *daemonRunnerRegistry) trackRunLease(runID, workflow string, owner *runn
 	if r == nil || owner == nil {
 		return func() {}, false
 	}
-	r.mu.Lock()
+	if !r.lockRunTracking(runID, requireCompatible) {
+		return func() {}, false
+	}
 	if r.owners == nil {
 		r.owners = make(map[string]trackedRun)
 	}

@@ -23,6 +23,7 @@ import (
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
+	childFamilies   *childFamilyLifecycle
 	queue           *triggerqueue.Store
 	dispatch        *daemonTriggerService
 	sweepMu         sync.Mutex
@@ -63,6 +64,8 @@ func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTrigg
 	triggers.observe = acceptedTriggerObserver(layout)
 	triggers.observeChild = acceptedChildObserver(layout)
 	triggers.auditLog = auditLog
+	triggers.childFamilies = &childFamilyLifecycle{layout: layout, queue: triggers.queue, runners: runners}
+	cancels.fenceChildren = triggers.childFamilies.Fence
 	return triggers, state, cancels, nil
 }
 
@@ -141,6 +144,9 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	pruneCtx, cancelPrune := context.WithTimeout(ctx, 250*time.Millisecond)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
 	cancelPrune()
+	if s.childFamilies != nil {
+		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
+	}
 	if s.dispatch.triggerer() == nil && s.children == nil {
 		return pruneErr
 	}

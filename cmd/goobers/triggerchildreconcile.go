@@ -51,6 +51,13 @@ func (s *durableTriggerService) reconcileChildReceipt(ctx context.Context, recor
 	if err != nil {
 		return err
 	}
+	if !observed && s.bootUncertain[record.ID] {
+		if err = s.queue.RequeueChild(ctx, ref.Child.Identity, "no execution observed after restart", s.dispatch.now()); err != nil {
+			return err
+		}
+		delete(s.bootUncertain, record.ID)
+		return nil
+	}
 	if err = s.reconcileObservation(ctx, record, observed); err != nil {
 		return err
 	}

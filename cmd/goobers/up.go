@@ -1059,6 +1059,7 @@ func (u *upSession) configureAPI() int {
 		return 1
 	}
 	defer func() { _ = u.durableTriggers.queue.Close() }()
+	attachChildGenerationPins(u.setup.Generations, u.durableTriggers.queue)
 	defer func() { _ = u.cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
@@ -1693,7 +1694,7 @@ func (u *upSession) recoverRuns() int {
 	// sweeps that share the delegation ticker.
 	u.cancelSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "cancel_sweep_failed")
 	u.cancelSweep = func() error {
-		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now)
+		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now, u.cancelPlane.fenceChildren)
 	}
 	u.cancelSweepErrors.report(runStartupPhase(u.stdout, u.tracker, "cancel-request-reconcile", "", u.cancelSweep))
 

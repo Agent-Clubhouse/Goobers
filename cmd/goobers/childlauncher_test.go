@@ -215,7 +215,7 @@ func TestChildLauncherCancellationBetweenPreparationAndPublicationFencesEffects(
 		}
 		return build(ctx, start)
 	}
-	if err := f.service.Drain(t.Context()); !errors.Is(err, triggerqueue.ErrParentCancelled) {
+	if err := f.service.Drain(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if f.executor.calls.Load() != 0 || f.releases.Load() != 1 {
