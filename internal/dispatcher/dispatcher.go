@@ -871,12 +871,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		return Report{}, err
 	}
 
-	if d.cfg.TokenMinter != nil && attempt.PodToken == "" {
-		token, terr := d.cfg.TokenMinter.Mint(attempt.RunID, 0)
-		if terr != nil {
-			return Report{}, fmt.Errorf("dispatcher: mint pod token for run %s stage %s attempt %d: %w", attempt.RunID, attempt.Stage, attempt.Number, terr)
-		}
-		attempt.PodToken = token
+	if err := d.mintAttemptToken(&attempt); err != nil {
+		return Report{}, err
 	}
 	if err := d.mintPlaneTokens(&attempt); err != nil {
 		return Report{}, err
@@ -905,11 +901,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
 
-	phase, superviseErr := d.supervise(ctx, attempt, pod.Namespace, pod.Name, &report)
+	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, &report)
 	report.Phase = phase
+	settlementCtx, cancelSettlement := childSettlementContext(ctx, attempt)
+	defer cancelSettlement()
 
 	if superviseErr == nil {
-		confirmed, gateErr := d.gate.Confirmed(ctx, attempt)
+		confirmed, gateErr := d.gate.Confirmed(settlementCtx, attempt)
 		report.SurrenderConfirmed = confirmed && gateErr == nil
 		if gateErr != nil {
 			superviseErr = fmt.Errorf("dispatcher: confirm surrender for run %s stage %s attempt %d: %w",

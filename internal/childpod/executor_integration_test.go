@@ -5,6 +5,7 @@ package childpod
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,14 @@ func podTestGit(t *testing.T, dir string, args ...string) string {
 }
 
 func TestIntegrationExecutorImportsVerifiedTreeAndPreservesFork(t *testing.T) {
+	testExecutorTreeReturn(t, false)
+}
+
+func TestIntegrationExecutorCancellationImportsSurrenderedTree(t *testing.T) {
+	testExecutorTreeReturn(t, true)
+}
+
+func testExecutorTreeReturn(t *testing.T, canceled bool) {
 	testdep.Require(t, "git")
 	r := requestFixture()
 	host := t.TempDir()
@@ -61,6 +70,8 @@ func TestIntegrationExecutorImportsVerifiedTreeAndPreservesFork(t *testing.T) {
 	}
 	recorder := &recordFake{}
 	executor := Executor{Blobs: blobs, Surrenders: plane, Recorder: recorder}
+	callCtx, cancelCall := context.WithCancel(t.Context())
+	defer cancelCall()
 	executor.Dispatcher = dispatchFunc(func(ctx context.Context, a dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
 		data, err := blobs.Get(ctx, a.ChildExecutionDigest)
 		if err != nil {
@@ -90,14 +101,24 @@ func TestIntegrationExecutorImportsVerifiedTreeAndPreservesFork(t *testing.T) {
 		if err = plane.Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			t.Fatal(err)
 		}
-		return dispatcher.Report{ChildCreateAttempted: true, ChildPodUID: "exact", WorkspaceWritersStopped: true, SurrenderConfirmed: true}, nil
+		var dispatchErr error
+		if canceled {
+			cancelCall()
+			dispatchErr = context.Canceled
+		}
+		return dispatcher.Report{ChildCreateAttempted: true, ChildPodUID: "exact", WorkspaceWritersStopped: true, SurrenderConfirmed: true}, dispatchErr
 	})
-	ctx, err := credentials.WithChildCeiling(t.Context(), r.Ceiling)
+	ctx, err := credentials.WithChildCeiling(callCtx, r.Ceiling)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, proof := invoke.WithWorkspaceQuiescence(ctx)
-	if _, _, err = executor.Execute(ctx, r); err != nil {
+	out, report, err := executor.Execute(ctx, r)
+	if canceled {
+		if !errors.Is(err, context.Canceled) || out.Result.Status != apiv1.ResultSuccess || !report.SurrenderConfirmed {
+			t.Fatal(out, report, err)
+		}
+	} else if err != nil {
 		t.Fatal(err)
 	}
 	if err = proof.Verify(); err != nil {

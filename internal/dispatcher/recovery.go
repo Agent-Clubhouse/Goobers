@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -19,6 +20,14 @@ type recoveryGate interface {
 // Both ordinary disposal and restart sweeping use the rendered pod's workspace
 // contract. A retained pod is never reused for a new attempt.
 func (d *Dispatcher) disposePod(ctx context.Context, pod *corev1.Pod, attempt Attempt) error {
+	// Orphan sweeps reconstruct the isolated marker from the retained pod;
+	// otherwise a restart could use ordinary deletion and strand its finalizer.
+	if attempt.ChildExecutionDigest == "" {
+		attempt.ChildExecutionDigest = isolatedDigestFromPod(pod)
+	}
+	if slices.Contains(pod.Finalizers, childCustodyFinalizer) && !childContractDigest.MatchString(attempt.ChildExecutionDigest) {
+		return ErrChildIsolation
+	}
 	if attempt.ChildExecutionDigest != "" {
 		return d.disposeChildPod(ctx, pod, attempt)
 	}
@@ -53,4 +62,18 @@ func podHasWritableWorkspace(pod *corev1.Pod) bool {
 		return false
 	}
 	return false
+}
+
+func isolatedDigestFromPod(pod *corev1.Pod) string {
+	for _, container := range pod.Spec.Containers {
+		if container.Name != StageContainerName {
+			continue
+		}
+		for _, variable := range container.Env {
+			if variable.Name == EnvChildExecutionDigest {
+				return variable.Value
+			}
+		}
+	}
+	return ""
 }

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -22,11 +23,16 @@ var ErrChildIsolation = errors.New("dispatcher: isolated child pod custody is un
 
 var childContractDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
+const childCustodyFinalizer = "goobers.dev/isolated-workspace-custody"
+const childTerminationGrace = 120
+const childStopTimeout = 150 * time.Second
+
 // childPodAPI keeps creation identity and conditional deletion atomic at the
 // Kubernetes API. A name-only API cannot safely acknowledge child writers.
 type childPodAPI interface {
 	CreatePodWithIdentity(context.Context, *corev1.Pod) (*corev1.Pod, error)
 	DeletePodWithIdentity(context.Context, string, string, types.UID) error
+	FinalizePodWithIdentity(context.Context, string, string, types.UID) error
 }
 
 func validateChildRunner(attempt Attempt, runner RunnerSpec) error {
@@ -44,6 +50,8 @@ func hardenChildPod(pod *corev1.Pod, attempt Attempt) (*corev1.Pod, error) {
 		return nil, ErrChildIsolation
 	}
 	spec := &pod.Spec
+	pod.Finalizers = []string{childCustodyFinalizer}
+	spec.TerminationGracePeriodSeconds = ptr.To[int64](childTerminationGrace)
 	container := &spec.Containers[0]
 	spec.HostPID, spec.HostIPC, spec.HostNetwork = false, false, false
 	spec.ShareProcessNamespace = ptr.To(false)
@@ -69,7 +77,7 @@ func hardenChildPod(pod *corev1.Pod, attempt Attempt) (*corev1.Pod, error) {
 }
 
 func validateChildPod(pod *corev1.Pod, attempt Attempt) error {
-	if pod == nil || !childNamespaceIsolated(pod.Spec) {
+	if pod == nil || !childNamespaceIsolated(pod.Spec) || !slices.Contains(pod.Finalizers, childCustodyFinalizer) {
 		return ErrChildIsolation
 	}
 	c := pod.Spec.Containers[0]
@@ -178,7 +186,30 @@ func (d *Dispatcher) disposeChildPod(ctx context.Context, created *corev1.Pod, a
 	if err != nil || !confirmed {
 		return ErrRecoveryUnconfirmed
 	}
-	return api.DeletePodWithIdentity(ctx, created.Namespace, created.Name, created.UID)
+	if err := api.DeletePodWithIdentity(ctx, created.Namespace, created.Name, created.UID); err != nil {
+		return err
+	}
+	return api.FinalizePodWithIdentity(ctx, created.Namespace, created.Name, created.UID)
+}
+
+// A graceful delete signals PID1 while the finalizer preserves the API object
+// until the worker observes exact termination and durable surrender. Absence
+// alone never acknowledges writers. No force deletion is used.
+func (d *Dispatcher) superviseAttempt(ctx context.Context, attempt Attempt, pod *corev1.Pod, report *Report) (corev1.PodPhase, error) {
+	phase, err := d.supervise(ctx, attempt, pod.Namespace, pod.Name, report)
+	if attempt.ChildExecutionDigest == "" || ctx.Err() == nil || report.WorkspaceWritersStopped {
+		return phase, err
+	}
+	api, ok := d.pods.(childPodAPI)
+	if !ok || pod.UID == "" {
+		return phase, errors.Join(err, ErrChildIsolation)
+	}
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), childStopTimeout)
+	defer cancel()
+	if stopErr := api.DeletePodWithIdentity(cleanup, pod.Namespace, pod.Name, pod.UID); stopErr != nil {
+		return phase, errors.Join(err, stopErr)
+	}
+	return d.supervise(cleanup, attempt, pod.Namespace, pod.Name, report)
 }
 
 func selectChildAwareRunner(attempt Attempt, eligible []RunnerSpec) (RunnerSpec, error) {
@@ -210,5 +241,42 @@ func (d *Dispatcher) prepareAttemptKit(ctx context.Context, attempt *Attempt) er
 		return fmt.Errorf("dispatcher: agentic kit writer returned no digest for run %s stage %s", attempt.RunID, attempt.Stage)
 	}
 	attempt.KitDigest = digest
+	return nil
+}
+
+func childSettlementContext(ctx context.Context, attempt Attempt) (context.Context, context.CancelFunc) {
+	if attempt.ChildExecutionDigest == "" {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), DefaultDisposalTimeout)
+}
+
+// A distinct signed token domain identifies generated custody at the daemon,
+// even if lineage is missing. It must never fall through to shared blob storage.
+type childTokenMinter interface {
+	MintChildPod(string, time.Duration) (string, error)
+}
+
+func (d *Dispatcher) mintAttemptToken(attempt *Attempt) error {
+	var token string
+	var err error
+	if attempt.ChildExecutionDigest != "" {
+		minter, ok := d.cfg.TokenMinter.(childTokenMinter)
+		if !ok || attempt.PodToken != "" {
+			return fmt.Errorf("%w: generated custody requires a freshly signed child token", ErrChildIsolation)
+		}
+		token, err = minter.MintChildPod(attempt.RunID, 0)
+		if err == nil && token == "" {
+			return ErrChildIsolation
+		}
+	} else if d.cfg.TokenMinter != nil && attempt.PodToken == "" {
+		token, err = d.cfg.TokenMinter.Mint(attempt.RunID, 0)
+	} else {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("dispatcher: mint pod token for run %s stage %s attempt %d: %w", attempt.RunID, attempt.Stage, attempt.Number, err)
+	}
+	attempt.PodToken = token
 	return nil
 }

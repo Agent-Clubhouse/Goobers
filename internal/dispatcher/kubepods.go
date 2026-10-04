@@ -2,7 +2,9 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -14,7 +16,8 @@ import (
 )
 
 // kubePodAPI is the client-go-backed PodAPI — exactly the §4 verb set (pods
-// create/delete/get/list; apps/deployments GET only, the DI-9 template read;
+// create/delete/get/list and custody-finalizer patch; apps/deployments GET only,
+// the DI-9 template read;
 // persistentvolumeclaims GET only, the #5595 module cache claim check),
 // nothing wider, so the dispatcher RBAC stays the narrow Role the design
 // renders.
@@ -44,6 +47,36 @@ func (k *kubePodAPI) DeletePodWithIdentity(ctx context.Context, namespace, name 
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
+	return err
+}
+
+// FinalizePodWithIdentity releases only our custody finalizer after the caller
+// verified termination and surrender. UID and resourceVersion tests prevent
+// replacement/deletion races, and every unrelated finalizer remains intact.
+func (k *kubePodAPI) FinalizePodWithIdentity(ctx context.Context, namespace, name string, uid types.UID) error {
+	pod, err := k.GetPod(ctx, namespace, name)
+	if apierrors.IsNotFound(err) {
+		return nil // caller already holds exact-object terminal evidence
+	}
+	if err != nil {
+		return err
+	}
+	if pod.UID != uid || pod.ResourceVersion == "" {
+		return ErrChildIsolation
+	}
+	finalizers := slices.DeleteFunc(slices.Clone(pod.Finalizers), func(value string) bool { return value == childCustodyFinalizer })
+	if len(finalizers) == len(pod.Finalizers) {
+		return nil
+	}
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/metadata/uid", "value": string(uid)},
+		{"op": "test", "path": "/metadata/resourceVersion", "value": pod.ResourceVersion},
+		{"op": "replace", "path": "/metadata/finalizers", "value": finalizers},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = k.client.CoreV1().Pods(namespace).Patch(ctx, name, types.JSONPatchType, patch, metav1.PatchOptions{})
 	return err
 }
 

@@ -3,8 +3,10 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -16,6 +18,8 @@ type childPodFake struct {
 	changeUID     bool
 	missingStatus bool
 	deletedUID    types.UID
+	finalizedUID  types.UID
+	holdUntilStop bool
 }
 
 func (f *childPodFake) CreatePodWithIdentity(ctx context.Context, p *corev1.Pod) (*corev1.Pod, error) {
@@ -28,12 +32,19 @@ func (f *childPodFake) CreatePodWithIdentity(ctx context.Context, p *corev1.Pod)
 }
 func (f *childPodFake) DeletePodWithIdentity(ctx context.Context, ns, name string, uid types.UID) error {
 	f.deletedUID = uid
+	return nil // graceful stop retains the finalized object for proof
+}
+func (f *childPodFake) FinalizePodWithIdentity(ctx context.Context, ns, name string, uid types.UID) error {
+	f.finalizedUID = uid
 	return f.DeletePod(ctx, ns, name)
 }
 func (f *childPodFake) GetPod(ctx context.Context, ns, name string) (*corev1.Pod, error) {
 	p, err := f.fakePodAPI.GetPod(ctx, ns, name)
 	if err != nil {
 		return nil, err
+	}
+	if f.holdUntilStop && f.deletedUID == "" {
+		p.Status.Phase = corev1.PodRunning
 	}
 	if f.changeUID {
 		p.UID = "replacement-uid"
@@ -53,6 +64,7 @@ func TestChildDispatchRequiresExactUIDAndObservedAllWriters(t *testing.T) {
 				api = &pods.fakePodAPI
 			}
 			cfg := testConfig()
+			cfg.TokenMinter = childMinter{}
 			cfg.EnvPassthrough = []string{"FAKE_INHERITED_SECRET"}
 			t.Setenv("FAKE_INHERITED_SECRET", "must not enter pod")
 			d, err := New(cfg, api, nil, confirmGate{confirmed: true}, nil)
@@ -64,6 +76,7 @@ func TestChildDispatchRequiresExactUIDAndObservedAllWriters(t *testing.T) {
 			d.sleep = clock.Sleep
 			a := testAttempt()
 			a.ChildExecutionDigest = "sha256:" + strings.Repeat("a", 64)
+			a.PodToken = ""
 			report, err := d.Dispatch(t.Context(), a, []RunnerSpec{linuxRunner()})
 			if scenario == "joined" {
 				if err != nil || !report.WorkspaceWritersStopped || report.ChildPodUID != "created-uid" || pods.deletedUID != "created-uid" {
@@ -109,5 +122,99 @@ func TestChildPodRejectsContainmentChanges(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// The fake separates graceful stop from finalizer release, so termination
+// cannot disappear before the dispatcher verifies it.
+func TestChildCancellationWaitsForSurrenderBeforeFinalizing(t *testing.T) {
+	for _, confirmed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("surrender-%t", confirmed), func(t *testing.T) {
+			pods := &childPodFake{holdUntilStop: true}
+			cfg := testConfig()
+			cfg.TokenMinter = childMinter{}
+			d, err := New(cfg, pods, nil, confirmGate{confirmed: confirmed}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			clock := &fakeClock{}
+			d.now = clock.Now
+			d.sleep = func(ctx context.Context, duration time.Duration) error {
+				if pods.deletedUID == "" {
+					cancel()
+					return ctx.Err()
+				}
+				return clock.Sleep(ctx, duration)
+			}
+			a := testAttempt()
+			a.PodToken = ""
+			a.ChildExecutionDigest = "sha256:" + strings.Repeat("a", 64)
+			report, err := d.Dispatch(ctx, a, []RunnerSpec{linuxRunner()})
+			if !report.WorkspaceWritersStopped || pods.deletedUID != "created-uid" {
+				t.Fatal("graceful stop lost exact pod proof", report, err)
+			}
+			if confirmed {
+				if err != nil || !report.SurrenderConfirmed || pods.finalizedUID != "created-uid" {
+					t.Fatal(report, err)
+				}
+			} else if !errors.Is(err, ErrSurrenderUnconfirmed) || pods.finalizedUID != "" {
+				t.Fatal("released custody without surrender", report, err)
+			}
+		})
+	}
+}
+
+type childMinter struct{}
+
+func (childMinter) Mint(string, time.Duration) (string, error)         { return "ordinary", nil }
+func (childMinter) MintChildPod(string, time.Duration) (string, error) { return "generated", nil }
+
+func TestChildTokenCannotUseOrdinaryOrCallerBearer(t *testing.T) {
+	for _, scenario := range []string{"signed", "ordinary-only", "caller"} {
+		t.Run(scenario, func(t *testing.T) {
+			a := testAttempt()
+			a.ChildExecutionDigest = "sha256:" + strings.Repeat("a", 64)
+			a.PodToken = ""
+			d := &Dispatcher{cfg: Config{TokenMinter: childMinter{}}}
+			if scenario == "ordinary-only" {
+				d.cfg.TokenMinter = &mintOnce{}
+			}
+			if scenario == "caller" {
+				a.PodToken = "caller"
+			}
+			err := d.mintAttemptToken(&a)
+			if scenario == "signed" {
+				if err != nil || a.PodToken != "generated" {
+					t.Fatal(a.PodToken, err)
+				}
+			} else if !errors.Is(err, ErrChildIsolation) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestOrphanDisposalRetainsPhysicalIdentityAndIsolation(t *testing.T) {
+	a := testAttempt()
+	a.ChildExecutionDigest = "sha256:" + strings.Repeat("a", 64)
+	a.PodAttempt = 17
+	p, err := RenderPod(testConfig(), a, linuxRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = hardenChildPod(p, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := orphanDisposalAttempt(p, PodAttempt{RunID: a.RunID, Stage: a.Stage, Attempt: a.Number})
+	if got.IdentityAttempt() != 17 || got.ChildExecutionDigest != a.ChildExecutionDigest {
+		t.Fatal(got)
+	}
+	p.Labels[LabelPodAttempt] = "invalid"
+	got = orphanDisposalAttempt(p, PodAttempt{RunID: a.RunID, Stage: a.Stage, Attempt: a.Number})
+	if childContractDigest.MatchString(got.ChildExecutionDigest) {
+		t.Fatal("malformed physical attempt fell back to logical ordinal")
 	}
 }

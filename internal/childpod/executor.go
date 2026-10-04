@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/credentials"
@@ -57,26 +59,31 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 			ack(dispatcher.ErrChildIsolation)
 		}
 	}()
-	report, err = e.Dispatcher.Dispatch(ctx, request.Attempt, request.Eligible)
+	report, dispatchErr := e.Dispatcher.Dispatch(ctx, request.Attempt, request.Eligible)
 	if report.Local || !report.ChildCreateAttempted || report.ChildPodUID == "" || !report.WorkspaceWritersStopped {
-		return out, report, errors.Join(err, dispatcher.ErrChildIsolation)
-	}
-	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) {
-		return out, report, err
+		return out, report, errors.Join(dispatchErr, dispatcher.ErrChildIsolation)
 	}
 	if !report.SurrenderConfirmed {
-		return out, report, dispatcher.ErrSurrenderUnconfirmed
+		return out, report, errors.Join(dispatchErr, dispatcher.ErrSurrenderUnconfirmed)
 	}
-	out, err = e.receive(ctx, request, contract, digest, expected)
+	// The exact pod has stopped and surrendered. Cancellation must not drop
+	// this last tree: parent handoff deliberately cancels the invocation.
+	// The original dispatch outcome is returned after bounded custody import.
+	custodyCtx, cancelCustody := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+	defer cancelCustody()
+	out, err = e.receive(custodyCtx, request, contract, digest, expected)
 	if err != nil {
 		return out, report, err
 	}
 
-	_, err = e.keep(ctx, request, "pod-proof", struct {
+	_, err = e.keep(custodyCtx, request, "pod-proof", struct {
 		UID     string `json:"uid"`
 		Stopped bool   `json:"writersStopped"`
 	}{report.ChildPodUID, true})
-	return out, report, err
+	if errors.Is(dispatchErr, dispatcher.ErrStageFailed) {
+		dispatchErr = nil // the validated surrendered result carries stage failure
+	}
+	return out, report, errors.Join(err, dispatchErr)
 }
 
 func (e *Executor) validate(ctx context.Context, r Request) error {
@@ -132,7 +139,7 @@ func (e *Executor) keep(ctx context.Context, r Request, kind string, value any) 
 		return "", fmt.Errorf("isolated child custody exceeds byte budget")
 	}
 	digest := journal.Digest(data)
-	name := fmt.Sprintf("child-pods/%s-%d-%s.json", r.Attempt.Stage, r.Attempt.PodAttempt, kind)
+	name := fmt.Sprintf("child-pods/%s-%d-%d-%s.json", r.Attempt.Stage, r.Attempt.Number, r.Attempt.PodAttempt, kind)
 	if err = e.Blobs.Put(ctx, digest, data); err != nil {
 		return "", err
 	}
@@ -147,7 +154,8 @@ func (e *Executor) keep(ctx context.Context, r Request, kind string, value any) 
 }
 
 func (e *Executor) applyReturn(ctx context.Context, r Request, expected recovery.ChildSnapshot, c Carrier) error {
-	op := fmt.Sprintf("child-pod-%s-%d", r.Identity.RunID, r.Attempt.PodAttempt)
+	identity, _ := json.Marshal([]any{r.Identity.RunID, r.Attempt.Stage, r.Attempt.Number, r.Attempt.PodAttempt})
+	op := "child-pod-" + strings.TrimPrefix(journal.Digest(identity), "sha256:")
 	plan, err := prepareReturn(ctx, r.Workspace.Path, expected, c, op, r.StartedAt)
 	if err != nil {
 		return err
