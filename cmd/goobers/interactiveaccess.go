@@ -32,6 +32,10 @@ func (u *upSession) configureInteractiveRuns(messages httpapi.OperatorMessageSer
 	if err != nil {
 		return err
 	}
+	if u.setup.InteractiveRestartExecution != nil {
+		service.AttachStageRestarts(&interactiveStageRestart{layout: u.l, setup: u.setup, service: u.interventions})
+		u.setup.InteractiveAccess.SetStageRestartAvailable(true)
+	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithInteractiveRuns(service))
 	return nil
 }

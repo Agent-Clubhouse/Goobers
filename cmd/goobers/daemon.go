@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/interactiveaccess"
+	"github.com/goobers/goobers/internal/intervention"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -121,6 +122,8 @@ type schedulerSetup struct {
 	// alongside the intervention definitions. Nil outside the `up` daemon.
 	CredentialPlane   *daemonCredentialService
 	InteractiveAccess *interactiveaccess.Service
+	// Installed only when the dedicated human execution builder is available.
+	InteractiveRestartExecution func(context.Context, runner.StageRestartPlan) (intervention.Execution, error)
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that

@@ -67,7 +67,9 @@ func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *ru
 }
 
 func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup, errorLog *log.Logger) *intervention.Service {
-	return intervention.New(interventionServiceConfig(layout, setup.Interventions, setup.RunnerRegistry, setup.InstanceLog, wg, errorLog))
+	cfg := interventionServiceConfig(layout, setup.Interventions, setup.RunnerRegistry, setup.InstanceLog, wg, errorLog)
+	cfg.StageRestartExecution = setup.InteractiveRestartExecution
+	return intervention.New(cfg)
 }
 
 // interventionServiceConfig binds the intervention service to the daemon's

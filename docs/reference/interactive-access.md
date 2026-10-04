@@ -174,3 +174,28 @@ and settled generated-child continuations require additional runtime support.
 They are unavailable in this adapter. In particular, a child's sealed terminal
 result cannot be replaced without an accepted parent-observation and workspace
 mapping. Existing paused gate decisions and saved guidance remain available.
+
+### Admission and source custody
+
+The restart admission adapter keeps the original authenticated issuer, subject,
+roles and group claims in a bounded trusted input. These are separate fields;
+the display actor string is never parsed into an identity. Exact retries retain
+that snapshot while checking current gaggle authorization. No provider secret
+or bearer token is stored with it. A receipt replay does not resolve credentials
+again or contact the forge.
+
+New execution checks the applied workflow and gaggle, the archived source
+repository and backlog locations, current open claims, and the exact published
+branch head. Code and backlog use independently selected interactive credentials,
+including mixed providers. ADO branch lookup matches the full ref name; a prefix
+match is insufficient. The provider checks and bounded acceptance share one
+policy lease, with a 30-second admission deadline. Subsequent execution must
+independently enforce the current interactive identity.
+
+The initial admission path refuses held workspaces, retained recovery snapshots,
+unattributed recovery state, shared claims without an explicit lease transfer,
+and PR claims whose repository cannot be identified unambiguously. It preserves
+that work for explicit restoration or adoption. It also refuses a source branch
+that moved after the recorded commit. These checks do not reset a workspace or
+publish a provider mutation. The adapter remains uninstalled until the dedicated
+interactive execution builder is available.

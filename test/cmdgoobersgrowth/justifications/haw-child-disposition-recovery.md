@@ -15,5 +15,5 @@ wait handling, and wire parsing remain in their internal packages. These daemon
 changes compose the applied catalog, pinned generation, existing workspace
 coordinator, and live runner ownership; they do not resolve or persist secrets.
 
-The root stack owner will re-pin the aggregate command baseline with the exact
-final counts after concurrent daemon composition changes are integrated.
+This declaration covers the command composition growth in this PR. The checked
+baseline remains unchanged; the per-PR gate verifies the exact base-to-head diff.

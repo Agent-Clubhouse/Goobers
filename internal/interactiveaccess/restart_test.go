@@ -98,3 +98,19 @@ func TestRestartPermissionDoesNotImplySourceReadPermission(t *testing.T) {
 		t.Fatalf("scratch: %v %v", called, err)
 	}
 }
+
+func TestRestartReceiptAdmissionDoesNotRequireCredentialResolution(t *testing.T) {
+	g := testGaggle()
+	g.Spec.InteractiveAccess.Actions = []apiv1.InteractiveAction{"run.restartStage"}
+	service, _ := testService(t, g, testSources())
+	called := false
+	if err := service.WithRestartAdmission(t.Context(), testPrincipal(), "web", func(context.Context, RestartSourceLoader) error { called = true; return nil }); err != nil || !called {
+		t.Fatalf("receipt admission: %t %v", called, err)
+	}
+	if err := service.WithRestartAdmission(t.Context(), testPrincipal(), "web", func(ctx context.Context, load RestartSourceLoader) error {
+		_, err := load(ctx, RestartSourceRequest{Backlog: true})
+		return err
+	}); !errors.Is(err, ErrDenied) {
+		t.Fatalf("lazy resolution bypassed source permission: %v", err)
+	}
+}
