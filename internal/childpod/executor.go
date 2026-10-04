@@ -33,6 +33,8 @@ type Executor struct {
 	Recorder   runner.ArtifactRecorder
 	// KeepAttempt persists exact host custody before a writer-started marker or dispatch.
 	KeepAttempt func(context.Context, RetainedAttempt) error
+	// RecoveryReader supplies host-only application intent for exact replay.
+	RecoveryReader *journal.Reader
 }
 
 // Execute runs one accepted generated stage. Callers hold the managed child's
@@ -89,7 +91,7 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 	// The original dispatch outcome is returned after bounded custody import.
 	custodyCtx, cancelCustody := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 	defer cancelCustody()
-	out, err = e.receive(custodyCtx, request, contract, digest, expected)
+	out, err = e.receive(custodyCtx, request, contract, digest, expected, nil)
 	if err != nil {
 		return out, report, err
 	}
@@ -167,42 +169,53 @@ func makeContract(ctx context.Context, r Request) (Contract, *recovery.ChildSnap
 }
 
 func (e *Executor) keep(ctx context.Context, r Request, kind string, value any) (string, error) {
+	ref, err := e.keepRef(ctx, r, kind, value)
+	return ref.Digest, err
+}
+
+func (e *Executor) keepRef(ctx context.Context, r Request, kind string, value any) (journal.Ref, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return "", err
+		return journal.Ref{}, err
 	}
 	if len(data) > MaxContractBytes {
-		return "", fmt.Errorf("isolated child custody exceeds byte budget")
+		return journal.Ref{}, fmt.Errorf("isolated child custody exceeds byte budget")
 	}
 	digest := journal.Digest(data)
 	name := fmt.Sprintf("child-pods/%s-%d-%d-%s.json", r.Attempt.Stage, r.Attempt.Number, r.Attempt.PodAttempt, kind)
 	if err = e.Blobs.Put(ctx, digest, data); err != nil {
-		return "", err
+		return journal.Ref{}, err
 	}
 	ref, err := e.Recorder.RecordArtifact(name, data)
 	if err != nil {
-		return "", err
+		return journal.Ref{}, err
 	}
 	if ref.Digest != digest {
-		return "", fmt.Errorf("child custody bytes changed at journal boundary")
+		return journal.Ref{}, fmt.Errorf("child custody bytes changed at journal boundary")
 	}
-	return digest, nil
+	return ref, nil
 }
 
-func (e *Executor) applyReturn(ctx context.Context, r Request, expected recovery.ChildSnapshot, c Carrier) error {
+func (e *Executor) applyReturn(ctx context.Context, r Request, expected recovery.ChildSnapshot, c Carrier, retained *recovery.ChildApplyPlan) error {
+	if retained != nil {
+		if err := verifyRetainedPlan(*retained, expected, c); err != nil {
+			return err
+		}
+		return recovery.ApplyChildApplication(ctx, r.Workspace.Path, *retained)
+	}
 	identity, _ := json.Marshal([]any{r.Identity.RunID, r.Attempt.Stage, r.Attempt.Number, r.Attempt.PodAttempt})
 	op := "child-pod-" + strings.TrimPrefix(journal.Digest(identity), "sha256:")
 	plan, err := prepareReturn(ctx, r.Workspace.Path, expected, c, op, r.StartedAt)
 	if err != nil {
 		return err
 	}
-	if _, err = e.keep(ctx, r, "apply-plan", plan); err != nil {
+	if err = e.retainPlan(ctx, r, plan); err != nil {
 		return err
 	}
 	return recovery.ApplyChildApplication(ctx, r.Workspace.Path, plan)
 }
 
-func (e *Executor) receive(ctx context.Context, request Request, contract Contract, digest string, expected *recovery.ChildSnapshot) (out dispatcher.SurrenderedResult, err error) {
+func (e *Executor) receive(ctx context.Context, request Request, contract Contract, digest string, expected *recovery.ChildSnapshot, plan *recovery.ChildApplyPlan) (out dispatcher.SurrenderedResult, err error) {
 	data, err := e.Surrenders.Get(ctx, request.Identity.RunID, request.Attempt.Stage, request.Attempt.PodAttempt)
 	if err != nil {
 		return out, err
@@ -225,7 +238,7 @@ func (e *Executor) receive(ctx context.Context, request Request, contract Contra
 		return out, fmt.Errorf("read-only child invocation changed workspace")
 	}
 	if returned.Workspace != nil {
-		if err = e.applyReturn(ctx, request, *expected, *returned.Workspace); err != nil {
+		if err = e.applyReturn(ctx, request, *expected, *returned.Workspace, plan); err != nil {
 			return out, err
 		}
 	}

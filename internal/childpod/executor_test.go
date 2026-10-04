@@ -23,7 +23,15 @@ func (f dispatchFunc) Dispatch(ctx context.Context, a dispatcher.Attempt, r []di
 	return f(ctx, a, r)
 }
 
-type recordFake struct{ data map[string][]byte }
+type recordFake struct {
+	data   map[string][]byte
+	events []journal.Event
+}
+
+func (r *recordFake) Append(event journal.Event) error {
+	r.events = append(r.events, event)
+	return nil
+}
 
 func (r *recordFake) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	if r.data == nil {
