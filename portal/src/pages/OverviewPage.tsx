@@ -19,7 +19,10 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { ScopePivot } from "../components/ScopePivot";
 import {
+  attentionSeverity,
+  attentionSeverityRank,
   incompleteRunPhasesMessage,
+  type AttentionSeverity,
   type OperationalOverview,
   useOperationalOverview,
 } from "../operationalData";
@@ -100,6 +103,7 @@ function Overview({
   standalone: boolean;
 }) {
   const groups = overview.groups;
+  const overviewRuns = [...groups.active, ...groups.attention, ...groups.recent];
   const inventoryLoaded =
     !overview.loadingSections?.inventory && !overview.sectionErrors?.inventory;
   const emptyInstance = inventoryLoaded && overview.gaggleCount === 0;
@@ -136,6 +140,23 @@ function Overview({
     () => groupAttentionRuns(activeAttention, overview, failureReasons),
     [activeAttention, failureReasons, overview],
   );
+  const attentionSections = [
+    {
+      key: "action-required",
+      label: "Action required",
+      groups: attentionGroups.filter((group) => group.severity !== "warning"),
+    },
+    {
+      key: "fyi",
+      label: "FYI failures",
+      groups: attentionGroups.filter((group) => group.severity === "warning"),
+    },
+  ]
+    .filter((section) => section.groups.length > 0)
+    .map((section) => ({
+      ...section,
+      runCount: section.groups.reduce((count, group) => count + group.runs.length, 0),
+    }));
   const activeAttentionIds = new Set(activeAttention.map((run) => run.id));
   const visibleSelectedRunIds = [...selectedRunIds].filter((runId) =>
     activeAttentionIds.has(runId),
@@ -320,6 +341,12 @@ function Overview({
             {incompleteRunPhasesMessage(groups.incomplete)}
           </p>
         )}
+        {groups.attentionCandidatesTruncated && (
+          <p className="inline-empty" role="alert">
+            The attention candidate window was truncated; additional actionable runs may exist.
+            Inspect the Runs page for the full list.
+          </p>
+        )}
       </div>
 
       <InstanceSummaryPanel
@@ -399,106 +426,141 @@ function Overview({
               <p className="inline-empty">Nothing needs attention right now.</p>
             ) : (
               <div className="attention-list">
-                {attentionGroups.map((group) => {
-                  const selectedCount = group.runs.filter((run) =>
-                    selectedRunIds.has(run.id),
-                  ).length;
-                  const expanded = expandedAttentionGroups.has(group.key);
-                  return (
-                    <div className="attention-group" key={group.key}>
-                      <div className="attention-row attention-group-summary">
-                        <SelectionCheckbox
-                          ariaLabel={`Select all ${group.runs.length} runs in ${group.label}`}
-                          checked={selectedCount === group.runs.length}
-                          indeterminate={selectedCount > 0 && selectedCount < group.runs.length}
-                          onChange={() => {
-                            const shouldSelect = selectedCount !== group.runs.length;
-                            setSelectedRunIds((current) => {
-                              const next = new Set(current);
-                              for (const run of group.runs) {
-                                if (shouldSelect) {
-                                  next.add(run.id);
-                                } else {
-                                  next.delete(run.id);
-                                }
-                              }
-                              return next;
-                            });
-                          }}
-                        />
-                        <span className="attention-icon">
-                          <Icon name="alert" />
-                        </span>
-                        <span className="attention-copy">
-                          <strong title={group.label}>{group.label}</strong>
-                          <span title={group.diagnosis}>
-                            {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} ·{" "}
-                            {group.diagnosis}
-                          </span>
-                        </span>
-                        <span className="attention-meta">
-                          <span title={group.context}>{group.context}</span>
-                          <Timestamp value={group.latest.lastActivityAt} prefix="Latest " />
-                        </span>
-                        <button
-                          aria-controls={`attention-group-${group.domId}`}
-                          aria-expanded={expanded}
-                          className="attention-expand"
-                          onClick={() => toggleGroupExpanded(group.key)}
-                          type="button"
+                {attentionSections.map((section) => (
+                  <div
+                    className={`attention-severity-section attention-severity-section-${section.key}`}
+                    key={section.key}
+                  >
+                    <div className="attention-severity-heading">
+                      <strong>{section.label}</strong>
+                      <span>
+                        {section.runCount} {section.runCount === 1 ? "run" : "runs"}
+                      </span>
+                    </div>
+                    {section.groups.map((group) => {
+                      const selectedCount = group.runs.filter((run) =>
+                        selectedRunIds.has(run.id),
+                      ).length;
+                      const expanded = expandedAttentionGroups.has(group.key);
+                      return (
+                        <div
+                          className={`attention-group attention-group-${group.severity}`}
+                          key={group.key}
                         >
-                          {expanded ? "Hide runs" : "Show runs"}
-                        </button>
-                        <button
-                          aria-label={`Dismiss all runs in ${group.label}`}
-                          className="attention-dismiss"
-                          onClick={() => dismissRuns(group.runs.map((run) => run.id))}
-                          type="button"
-                        >
-                          Dismiss group
-                        </button>
-                      </div>
-                      <div
-                        className="attention-group-runs"
-                        hidden={!expanded}
-                        id={`attention-group-${group.domId}`}
-                      >
-                        {group.runs.map((run) => (
-                          <div className="attention-run-row" key={run.id}>
-                            <input
-                              aria-label={`Select run ${run.id} for bulk actions`}
-                              checked={selectedRunIds.has(run.id)}
-                              className="attention-select"
-                              onChange={() => toggleSelected(run.id)}
-                              type="checkbox"
+                          <div className="attention-row attention-group-summary">
+                            <SelectionCheckbox
+                              ariaLabel={`Select all ${group.runs.length} runs in ${group.label}`}
+                              checked={selectedCount === group.runs.length}
+                              indeterminate={selectedCount > 0 && selectedCount < group.runs.length}
+                              onChange={() => {
+                                const shouldSelect = selectedCount !== group.runs.length;
+                                setSelectedRunIds((current) => {
+                                  const next = new Set(current);
+                                  for (const run of group.runs) {
+                                    if (shouldSelect) {
+                                      next.add(run.id);
+                                    } else {
+                                      next.delete(run.id);
+                                    }
+                                  }
+                                  return next;
+                                });
+                              }}
                             />
-                            <a
-                              className="attention-run-link"
-                              href={routeHash({ page: "run", id: run.id })}
-                              title={run.id}
-                            >
-                              <strong>{run.id}</strong>
-                              <span>{attentionDiagnosis(run, failureReasons)}</span>
-                            </a>
-                            <ScopePivot
-                              label={workflowIdentity(run)}
-                              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                            />
-                            <Timestamp value={run.lastActivityAt} />
+                            <span className="attention-icon">
+                              <Icon name="alert" />
+                            </span>
+                            <span className="attention-copy">
+                              <strong title={group.label}>{group.label}</strong>
+                              <span
+                                className={`attention-severity-badge attention-severity-${group.severity}`}
+                              >
+                                {attentionSeverityLabel(group.severity)}
+                              </span>
+                              <span title={group.diagnosis}>
+                                {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} ·{" "}
+                                {group.diagnosis}
+                              </span>
+                            </span>
+                            <span className="attention-meta">
+                              <span title={group.context}>{group.context}</span>
+                              <Timestamp value={group.latest.lastActivityAt} prefix="Latest " />
+                            </span>
                             <button
-                              aria-label={`Dismiss run ${run.id}`}
-                              className="attention-dismiss"
-                              onClick={() => dismissRuns([run.id])}
+                              aria-controls={`attention-group-${group.domId}`}
+                              aria-expanded={expanded}
+                              className="attention-expand"
+                              onClick={() => toggleGroupExpanded(group.key)}
                               type="button"
                             >
-                              Dismiss
+                              {expanded ? "Hide runs" : "Show runs"}
+                            </button>
+                            <button
+                              aria-label={`Dismiss all runs in ${group.label}`}
+                              className="attention-dismiss"
+                              onClick={() => dismissRuns(group.runs.map((run) => run.id))}
+                              type="button"
+                            >
+                              Dismiss group
                             </button>
                           </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
+                          <div
+                            className="attention-group-runs"
+                            hidden={!expanded}
+                            id={`attention-group-${group.domId}`}
+                          >
+                            {group.runs.map((run) => {
+                              const severity = attentionSeverity(
+                                run,
+                                overviewRuns,
+                                failureReasons.get(run.id),
+                              );
+                              return (
+                                <div className="attention-run-row" key={run.id}>
+                                  <input
+                                    aria-label={`Select run ${run.id} for bulk actions`}
+                                    checked={selectedRunIds.has(run.id)}
+                                    className="attention-select"
+                                    onChange={() => toggleSelected(run.id)}
+                                    type="checkbox"
+                                  />
+                                  <a
+                                    className="attention-run-link"
+                                    href={routeHash({ page: "run", id: run.id })}
+                                    title={run.id}
+                                  >
+                                    <strong>{run.id}</strong>
+                                    <span
+                                      className={`attention-severity-badge attention-severity-${severity}`}
+                                    >
+                                      {attentionSeverityLabel(severity)}
+                                    </span>
+                                    <span>
+                                      {attentionDiagnosis(run, failureReasons, severity)}
+                                    </span>
+                                  </a>
+                                  <ScopePivot
+                                    label={workflowIdentity(run)}
+                                    scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                                  />
+                                  <Timestamp value={run.lastActivityAt} />
+                                  <button
+                                    aria-label={`Dismiss run ${run.id}`}
+                                    className="attention-dismiss"
+                                    onClick={() => dismissRuns([run.id])}
+                                    type="button"
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
             )}
             {showDismissed && dismissedAttention.length > 0 && (
@@ -1179,6 +1241,8 @@ interface AttentionGroup {
   label: string;
   context: string;
   diagnosis: string;
+  severity: AttentionSeverity;
+  severitySource: RunSummary;
   latest: RunSummary;
   runs: RunSummary[];
 }
@@ -1189,15 +1253,40 @@ function groupAttentionRuns(
   failureReasons: FailureReasons,
 ): AttentionGroup[] {
   const grouped = new Map<string, AttentionGroup>();
+  const availableRuns = [
+    ...overview.groups.active,
+    ...overview.groups.attention,
+    ...overview.groups.recent,
+  ];
   for (const run of runs) {
     const issue = run.operator?.issue;
-    const category = attentionCategory(run, failureReasons);
+    const severity = attentionSeverity(run, availableRuns, failureReasons.get(run.id));
+    const category = attentionCategory(run, failureReasons, severity);
     const key = issue
       ? `issue:${issue.number}`
       : `workflow:${run.gaggle}/${run.workflow}/${category}`;
     const existing = grouped.get(key);
     if (existing) {
       existing.runs.push(run);
+      if (Date.parse(run.lastActivityAt) > Date.parse(existing.latest.lastActivityAt)) {
+        existing.latest = run;
+      }
+      const severityRank = attentionSeverityRank(severity);
+      const existingSeverityRank = attentionSeverityRank(existing.severity);
+      if (
+        severityRank < existingSeverityRank ||
+        (severityRank === existingSeverityRank &&
+          Date.parse(run.lastActivityAt) >
+            Date.parse(existing.severitySource.lastActivityAt))
+      ) {
+        existing.label = issue
+          ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
+          : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`;
+        existing.context = workflowIdentity(run);
+        existing.diagnosis = attentionDiagnosis(run, failureReasons, severity);
+        existing.severity = severity;
+        existing.severitySource = run;
+      }
       continue;
     }
     grouped.set(key, {
@@ -1205,22 +1294,35 @@ function groupAttentionRuns(
       domId: key.replace(/[^a-zA-Z0-9_-]/g, "-"),
       label: issue
         ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
-        : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons)}`,
+        : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`,
       context: workflowIdentity(run),
-      diagnosis: attentionDiagnosis(run, failureReasons),
+      diagnosis: attentionDiagnosis(run, failureReasons, severity),
+      severity,
+      severitySource: run,
       latest: run,
       runs: [run],
     });
   }
 
-  return [...grouped.values()];
+  return [...grouped.values()].sort(
+    (left, right) =>
+      attentionSeverityRank(left.severity) - attentionSeverityRank(right.severity) ||
+      Date.parse(right.latest.lastActivityAt) - Date.parse(left.latest.lastActivityAt),
+  );
 }
 
 function workflowIdentity(run: Pick<RunSummary, "gaggle" | "workflow">): string {
   return `${run.gaggle} / ${run.workflow}`;
 }
 
-function attentionCategory(run: RunSummary, failureReasons: FailureReasons): string {
+function attentionCategory(
+  run: RunSummary,
+  failureReasons: FailureReasons,
+  severity: AttentionSeverity,
+): string {
+  if (severity === "stalled") {
+    return "stalled";
+  }
   if (run.phase === "escalated") {
     return `escalated:${run.terminalReason ?? "review"}`;
   }
@@ -1228,7 +1330,14 @@ function attentionCategory(run: RunSummary, failureReasons: FailureReasons): str
   return `failed:${reason?.code ?? run.operator?.latestError?.code ?? run.terminalReason ?? "unknown"}`;
 }
 
-function attentionCategoryLabel(run: RunSummary, failureReasons: FailureReasons): string {
+function attentionCategoryLabel(
+  run: RunSummary,
+  failureReasons: FailureReasons,
+  severity: AttentionSeverity,
+): string {
+  if (severity === "stalled") {
+    return "No recent progress";
+  }
   if (run.phase === "escalated") {
     return "Escalated for review";
   }
@@ -1236,7 +1345,14 @@ function attentionCategoryLabel(run: RunSummary, failureReasons: FailureReasons)
   return reason?.code ?? run.operator?.latestError?.code ?? "Failed";
 }
 
-function attentionDiagnosis(run: RunSummary, failureReasons: FailureReasons): string {
+function attentionDiagnosis(
+  run: RunSummary,
+  failureReasons: FailureReasons,
+  severity: AttentionSeverity,
+): string {
+  if (severity === "stalled") {
+    return "No progress beyond the runner liveness threshold.";
+  }
   if (run.phase === "escalated") {
     return run.terminalReason ?? "Escalated and needs human review.";
   }
@@ -1245,6 +1361,10 @@ function attentionDiagnosis(run: RunSummary, failureReasons: FailureReasons): st
     return `${reason.code || "failed"}${reason.message ? ` · ${reason.message}` : ""}`;
   }
   return run.terminalReason ?? "Failed and needs investigation.";
+}
+
+function attentionSeverityLabel(severity: AttentionSeverity): string {
+  return severity === "blocked" ? "Blocked" : severity === "stalled" ? "Stalled" : "Warning";
 }
 
 function SelectionCheckbox({

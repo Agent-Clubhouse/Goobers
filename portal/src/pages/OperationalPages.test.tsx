@@ -229,6 +229,76 @@ describe("operational overview", () => {
     expect(screen.getByText("Escalated and needs human review.")).toBeInTheDocument();
   });
 
+  it("separates action-required attention from muted FYI failures with visible severity", async () => {
+    const user = userEvent.setup();
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failed) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    failed.operator = {
+      issue: { number: "6487", title: "Realistic failed run" },
+      liveness: "finished",
+      trajectory: "failed",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      latestError: { code: "harness.crash", message: "result envelope missing" },
+      review: { verdict: "needs-changes", rationale: "A prior review did not pass." },
+      potentialBlockers: ["Harness exited before producing a result envelope."],
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+
+    const actionRequired = within(attentionSection).getByText("Action required").closest("div");
+    const fyiFailures = within(attentionSection).getByText("FYI failures").closest("div");
+    if (!actionRequired || !fyiFailures?.parentElement) {
+      throw new Error("Attention severity sections were not rendered.");
+    }
+    expect(
+      actionRequired.compareDocumentPosition(fyiFailures) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(within(attentionSection).getAllByText("Blocked")[0]).toBeVisible();
+    expect(within(attentionSection).getAllByText("Warning")[0]).toBeVisible();
+    expect(within(fyiFailures.parentElement).getByText("#6487 Realistic failed run")).toBeVisible();
+    expect(fyiFailures.parentElement).toHaveClass("attention-severity-section-fyi");
+
+    await expandAttentionRuns(user, attentionSection);
+    for (const badge of within(attentionSection).getAllByText(/^(Blocked|Warning)$/)) {
+      expect(badge).toBeVisible();
+    }
+  });
+
+  it("marks stale attention runs as stalled and orders them after blocked runs", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!running) {
+      throw new Error("Populated fixtures must include a running run.");
+    }
+    running.stale = true;
+    running.operator = undefined;
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+
+    expect(within(attentionSection).getAllByText("Stalled")[0]).toBeVisible();
+    const blocked = attentionSection.querySelector(".attention-group-blocked");
+    const stalled = attentionSection.querySelector(".attention-group-stalled");
+    if (!blocked || !stalled) {
+      throw new Error("Blocked and stalled attention groups were not rendered.");
+    }
+    expect(blocked.compareDocumentPosition(stalled) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
     const client = new FixtureDaemonClient(largeJournalFixtures({ completed: 60 }));
     const listRuns = vi.spyOn(client, "listRuns");

@@ -19,6 +19,7 @@ import type {
   RequestOptions,
   RunPhase,
   RunSummary,
+  TelemetryError,
   UpdateModel,
   WorkflowRunActivity,
   WorkflowSummary,
@@ -30,6 +31,7 @@ import {
   type SessionDataCache,
 } from "./dataCache";
 import { useLiveData, type LiveFreshness } from "./liveData";
+import { loadFailureReasons } from "./overviewFailures";
 
 const PAGE_LIMIT = 100;
 const HEALTH_REFRESH_INTERVAL_MS = 60_000;
@@ -115,6 +117,89 @@ export interface OperationalRunGroups {
   attention: RunSummary[];
   recent: RunSummary[];
   incomplete?: IncompleteRunPhases;
+  attentionCandidatesTruncated?: boolean;
+}
+
+export type AttentionSeverity = "blocked" | "stalled" | "warning";
+
+export function attentionSeverity(
+  run: RunSummary,
+  runs: readonly RunSummary[] = [],
+  failureReason?: Pick<TelemetryError, "code" | "errorClass" | "message">,
+): AttentionSeverity {
+  if (
+    run.phase === "escalated" ||
+    run.operator?.issue?.labels?.some((label) =>
+      ["goobers:needs-human", "goobers:needs-remediation", "goobers:blocked-on-sibling"].includes(
+        label.toLowerCase(),
+      ),
+    )
+  ) {
+    return "blocked";
+  }
+  const liveness = run.operator?.liveness.toLowerCase() ?? "";
+  const trajectory = run.operator?.trajectory.toLowerCase() ?? "";
+  if (
+    run.stale ||
+    ["stale", "lost", "unresponsive"].some((value) => liveness.includes(value)) ||
+    ["stalled", "wedged"].some((value) => trajectory.includes(value))
+  ) {
+    return "stalled";
+  }
+  if (run.phase === "failed") {
+    const recovered = runs.some(
+      (candidate) =>
+        candidate.id !== run.id &&
+        (candidate.phase === "running" || candidate.phase === "completed") &&
+        Date.parse(candidate.startedAt) > Date.parse(run.startedAt) &&
+        sameWorkItem(run, candidate),
+    );
+    const reason = [
+      failureReason?.code,
+      failureReason?.errorClass,
+      failureReason?.message,
+      run.operator?.latestError?.code,
+      run.operator?.latestError?.message,
+      run.operator?.nextTransition,
+      run.terminalReason,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    const explicitlyNonRetryable = /\b(?:non[._ -]?retryable|not[._ -]+retryable)\b/.test(
+      reason,
+    );
+    if (
+      recovered ||
+      (!explicitlyNonRetryable &&
+        /\b(self[._ -]?heal\w*|retryable|will retry|retry scheduled|retry pending)\b/.test(reason))
+    ) {
+      return "warning";
+    }
+    return "blocked";
+  }
+  return "warning";
+}
+
+function sameWorkItem(left: RunSummary, right: RunSummary): boolean {
+  if (left.gaggle !== right.gaggle) {
+    return false;
+  }
+  const leftIssue = left.operator?.issue?.number;
+  const rightIssue = right.operator?.issue?.number;
+  if (leftIssue && rightIssue) {
+    return leftIssue === rightIssue;
+  }
+  return (
+    left.trigger.kind === "item" &&
+    right.trigger.kind === "item" &&
+    Boolean(left.trigger.ref) &&
+    left.trigger.ref === right.trigger.ref
+  );
+}
+
+export function attentionSeverityRank(severity: AttentionSeverity): number {
+  return severity === "blocked" ? 0 : severity === "stalled" ? 1 : 2;
 }
 
 /** One-line, actionable description of a partially unreadable run list (#3658). */
@@ -1615,12 +1700,15 @@ async function loadOverviewRunGroups(
   // queries backing separate groups, and losing "active runs" because the
   // "completed" page was slow discards exactly the data an operator is looking
   // at during an incident (#1709).
-  const settled = await Promise.allSettled([
-    byPhase("running", ACTIVE_RUN_LIMIT),
-    byRecentActivity("escalated", ATTENTION_RUN_LIMIT),
-    byRecentActivity("failed", ATTENTION_RUN_LIMIT),
-    byPhase("completed", RECENT_OUTCOME_LIMIT),
-    byPhase("aborted", RECENT_OUTCOME_LIMIT),
+  const [settled, failureReasonsResult] = await Promise.all([
+    Promise.allSettled([
+      byPhase("running", ACTIVE_RUN_LIMIT),
+      byRecentActivity("escalated", ATTENTION_RUN_LIMIT),
+      byRecentActivity("failed", PAGE_LIMIT),
+      byPhase("completed", RECENT_OUTCOME_LIMIT),
+      byPhase("aborted", RECENT_OUTCOME_LIMIT),
+    ]),
+    settlePromise(loadFailureReasons(client, signal)),
   ]);
   const [, escalatedResult, failedResult] = settled;
   // Every phase failing means the run list as a whole is unreadable, which the
@@ -1653,11 +1741,24 @@ async function loadOverviewRunGroups(
   const [running, escalated, failed, completed, aborted] = settled.map((result, index) =>
     resolvePhaseRuns(result, OVERVIEW_RUN_PHASES[index], previousRuns),
   );
+  const availableRuns = [...running, ...escalated, ...failed, ...completed, ...aborted];
+  const failureReasons = settledValue(failureReasonsResult) ?? new Map();
+  const severity = (run: RunSummary) =>
+    attentionSeverity(run, availableRuns, failureReasons.get(run.id));
+  const stalled = running.filter((run) => severity(run) !== "warning");
+  const attention = sortRunsByActivity([...stalled, ...escalated, ...failed]).sort(
+    (left, right) =>
+      attentionSeverityRank(severity(left)) - attentionSeverityRank(severity(right)),
+  );
+  const attentionCandidatesTruncated = settled.slice(0, 3).some(
+    (result) => result.status === "fulfilled" && Boolean(result.value.nextCursor),
+  );
   const incomplete = incompletePhases(settled, OVERVIEW_RUN_PHASES);
   return {
-    active: sortRuns(running),
-    attention: sortRunsByActivity([...escalated, ...failed]).slice(0, ATTENTION_RUN_LIMIT),
+    active: sortRuns(running.filter((run) => severity(run) === "warning")),
+    attention: attention.slice(0, ATTENTION_RUN_LIMIT),
     recent: sortRuns([...completed, ...aborted]).slice(0, RECENT_OUTCOME_LIMIT),
     ...(incomplete ? { incomplete } : {}),
+    ...(attentionCandidatesTruncated ? { attentionCandidatesTruncated: true } : {}),
   };
 }

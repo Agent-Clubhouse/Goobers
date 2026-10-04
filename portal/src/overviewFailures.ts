@@ -13,6 +13,25 @@ export type FailureReasons = Map<string, TelemetryError>;
 
 const EMPTY_REASONS: FailureReasons = new Map();
 
+export async function loadFailureReasons(
+  client: DaemonClient,
+  signal?: AbortSignal,
+): Promise<FailureReasons> {
+  const page = await client.listTelemetryErrors(
+    { limit: FAILURE_REASON_SCAN_LIMIT },
+    { signal },
+  );
+  const reasons: FailureReasons = new Map();
+  for (const item of page.items) {
+    // Items arrive newest-first, so older errors for the same run do not
+    // overwrite the failure that operators currently need to understand.
+    if (item.runId && !reasons.has(item.runId)) {
+      reasons.set(item.runId, item);
+    }
+  }
+  return reasons;
+}
+
 // useFailureReasons enriches the Overview attention list with the coded "why"
 // (e.g. harness.crash — "Harness exited before producing a result envelope") so a
 // failed run reads its reason on the home page instead of "Run failed and needs
@@ -40,27 +59,17 @@ export function useFailureReasons(
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
     request.current = controller;
-    return client
-      .listTelemetryErrors({ limit: FAILURE_REASON_SCAN_LIMIT }, { signal: controller.signal })
-      .then(
-        (page) => {
-          if (controller.signal.aborted) {
-            return true;
-          }
-          const map: FailureReasons = new Map();
-          for (const item of page.items) {
-            // Items arrive newest-first; the first occurrence per run is the one
-            // that failed it, so later (older) attempts do not overwrite it.
-            if (item.runId && !map.has(item.runId)) {
-              map.set(item.runId, item);
-            }
-          }
-          cache.set(cacheKey, map, dependencies, cacheRevision);
-          setReasons(map);
+    return loadFailureReasons(client, controller.signal).then(
+      (map) => {
+        if (controller.signal.aborted) {
           return true;
-        },
-        () => false,
-      );
+        }
+        cache.set(cacheKey, map, dependencies, cacheRevision);
+        setReasons(map);
+        return true;
+      },
+      () => false,
+    );
   }, [cache, cacheKey, client]);
 
   useEffect(() => {
