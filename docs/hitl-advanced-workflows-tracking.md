@@ -94,6 +94,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-parallel-parent-custody` | `codex/haw-event-causal-roots` | Bind parent contracts and recovered writers to owned branch journals |
 
+| `codex/haw-discard-settlement` | `codex/haw-parallel-parent-custody` | Settle verified child discard without mutable parent filesystem access |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -149,8 +151,9 @@ a live Kubernetes or model qualification. Remaining delivery gates:
   [contained attempt contract](reference/contained-workflow-attempts.md).
 - Verify explicit PR publication delegation against the actual credential surface,
   including ambient credentials and model credentials that also authorize GitHub.
-- Allow safe disposal after execution policy narrows and changing a conflicted
-  merge request before application effects begin; preserve immutable applied plans.
+- Owned discard now survives narrower workspace policy without importing or
+  recapturing parent files. An unplanned conflict can use a revision-bound changed
+  choice; already published plans remain immutable and require reconciliation.
 - Branch-aware wait projection, execution clocks and the aggregate capacity
   coordinator now pass real scheduler race tests. Finish per-branch lane scheduling,
   contained factories and writable fork/join behavior before removing the temporary

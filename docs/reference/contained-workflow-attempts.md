@@ -176,3 +176,14 @@ cannot release a sibling's writer. Whole-run recovery still requires all pending
 scopes to join, processing distinct held workspaces in physical-attempt order and
 refusing ambiguous shared-workspace recovery receipts. This does not enable the
 unfinished parallel execution lane.
+
+## Discard after workspace permission changes
+
+A new discard plan only acknowledges the exact verified terminal result. It does
+not import the child's carrier, capture the parent's current files or require a
+writable checkout path. This allows an authorized current parent occurrence to
+discard after workspace mutation permission or exclusion policy narrows. The
+retained result and repository binding must still verify, and stale grants remain
+refused. Existing published application plans are immutable and still follow
+their recorded recovery path before the occurrence can be released. Discard does
+not retract a child PR.
