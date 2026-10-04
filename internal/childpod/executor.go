@@ -60,12 +60,13 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 		}
 	}
 	request.Attempt.ChildExecutionDigest = digest
+	custodyImported := false
 	ack := invoke.RegisterWorkspaceWriter(ctx)
 	defer func() {
 		if ack == nil {
 			return
 		}
-		if !report.ChildCreateAttempted || report.WorkspaceWritersStopped {
+		if !report.ChildCreateAttempted || (report.WorkspaceWritersStopped && custodyImported) {
 			ack(nil)
 		} else {
 			ack(dispatcher.ErrChildIsolation)
@@ -92,6 +93,7 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 		UID     string `json:"uid"`
 		Stopped bool   `json:"writersStopped"`
 	}{report.ChildPodUID, true})
+	custodyImported = err == nil
 	if errors.Is(dispatchErr, dispatcher.ErrStageFailed) {
 		dispatchErr = nil // the validated surrendered result carries stage failure
 	}

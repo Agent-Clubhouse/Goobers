@@ -130,3 +130,29 @@ func TestContractParentAndChildRolesAreExclusive(t *testing.T) {
 		t.Fatal("unpinned parent accepted")
 	}
 }
+
+func TestExecutorStoppedPodWithoutImportedCustodyCannotYield(t *testing.T) {
+	r := requestFixture()
+	blobs, err := blobstore.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane, err := dispatcher.NewSurrenderDir(filepath.Join(t.TempDir(), "surrender"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := Executor{Blobs: blobs, Surrenders: plane, Recorder: &recordFake{}, Dispatcher: dispatchFunc(func(context.Context, dispatcher.Attempt, []dispatcher.RunnerSpec) (dispatcher.Report, error) {
+		return dispatcher.Report{ChildCreateAttempted: true, ChildPodUID: "exact", WorkspaceWritersStopped: true, SurrenderConfirmed: true}, context.Canceled
+	})}
+	ctx, err := credentials.WithChildCeiling(t.Context(), r.Ceiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, proof := invoke.WithWorkspaceQuiescence(ctx)
+	if _, _, err = executor.Execute(ctx, r); err == nil {
+		t.Fatal("missing output accepted")
+	}
+	if proof.Verify() == nil {
+		t.Fatal("stopped pod acknowledged without imported custody")
+	}
+}

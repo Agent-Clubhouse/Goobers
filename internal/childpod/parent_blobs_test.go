@@ -181,3 +181,34 @@ func TestParentAttemptScopeCannotReadSiblingOrGrantHashOnlyAccess(t *testing.T) 
 		t.Fatal("later attempt read earlier transcript without declared context", err)
 	}
 }
+
+func TestParentBoundedReadsKeepAttemptScope(t *testing.T) {
+	s := parentStore(t)
+	data := []byte("bounded custody")
+	digest := journal.Digest(data)
+	contract := Contract{Version: 1, Identity: s.Identity, ParentOrigin: &apiv1.ChildWorkflowOrigin{StageOccurrence: "occurrence", AttemptID: "attempt"}, Stage: "stage", Attempt: 1, PodAttempt: 1, StartedAt: s.Identity.StartedAt, Ceiling: requestFixture().Ceiling}
+	contractData, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractDigest := journal.Digest(contractData)
+	if err = s.Put(t.Context(), contractDigest, contractData); err != nil {
+		t.Fatal(err)
+	}
+	attempt := ParentAttemptBlobs{Store: s, ContractDigest: contractDigest}
+	if err := attempt.Put(t.Context(), digest, data); err != nil {
+		t.Fatal(err)
+	}
+	for _, store := range []blobstore.BoundedReader{s, attempt} {
+		if got, err := store.GetBounded(t.Context(), digest, int64(len(data)-1)); got != nil || !errors.Is(err, blobstore.ErrTooLarge) {
+			t.Fatal(got, err)
+		}
+		if got, err := store.GetBounded(t.Context(), digest, int64(len(data))); err != nil || string(got) != string(data) {
+			t.Fatal(got, err)
+		}
+	}
+	attempt.ContractDigest = journal.Digest([]byte("sibling"))
+	if _, err := attempt.GetBounded(t.Context(), digest, 100); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatal(err)
+	}
+}

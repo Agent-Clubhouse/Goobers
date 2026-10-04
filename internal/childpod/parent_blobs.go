@@ -77,6 +77,11 @@ func (s ParentBlobs) directory(ctx context.Context, create bool) (string, error)
 
 // Get reads verified bytes only while the pinned parent journal exists.
 func (s ParentBlobs) Get(ctx context.Context, digest string) ([]byte, error) {
+	return s.GetBounded(ctx, digest, MaxContractBytes)
+}
+
+// GetBounded verifies custody and rejects oversized content before allocation.
+func (s ParentBlobs) GetBounded(ctx context.Context, digest string, limit int64) ([]byte, error) {
 	if !blobstore.ValidDigest(digest) {
 		return nil, blobstore.ErrNotFound
 	}
@@ -89,10 +94,18 @@ func (s ParentBlobs) Get(ctx context.Context, digest string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	return readParentBlob(ctx, root, digest)
+	return readParentBlobBounded(ctx, root, digest, limit)
 }
 
 func readParentBlob(ctx context.Context, root *os.Root, digest string) ([]byte, error) {
+	return readParentBlobBounded(ctx, root, digest, MaxContractBytes)
+}
+
+func readParentBlobBounded(ctx context.Context, root *os.Root, digest string, limit int64) ([]byte, error) {
+	if limit < 0 {
+		return nil, blobstore.ErrTooLarge
+	}
+	limit = min(limit, MaxContractBytes)
 	f, err := safeopen.OpenRegularInRoot(root, strings.TrimPrefix(digest, "sha256:"))
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, safeopen.ErrNotRegular) {
 		return nil, blobstore.ErrNotFound
@@ -105,14 +118,14 @@ func readParentBlob(ctx context.Context, root *os.Root, digest string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	if info.Size() > MaxContractBytes {
+	if info.Size() > limit {
 		return nil, blobstore.ErrTooLarge
 	}
-	data, err := io.ReadAll(io.LimitReader(f, MaxContractBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > MaxContractBytes {
+	if int64(len(data)) > limit {
 		return nil, blobstore.ErrTooLarge
 	}
 	if journal.Digest(data) != digest {
@@ -232,6 +245,11 @@ func (s ParentAttemptBlobs) Describe() string { return "bounded-parent-attempt-c
 
 // Get requires this exact contract to own the requested digest.
 func (s ParentAttemptBlobs) Get(ctx context.Context, digest string) ([]byte, error) {
+	return s.GetBounded(ctx, digest, MaxContractBytes)
+}
+
+// GetBounded preserves exact attempt ownership and bounds allocation.
+func (s ParentAttemptBlobs) GetBounded(ctx context.Context, digest string, limit int64) ([]byte, error) {
 	if !blobstore.ValidDigest(s.ContractDigest) || !blobstore.ValidDigest(digest) {
 		return nil, blobstore.ErrNotFound
 	}
@@ -254,7 +272,7 @@ func (s ParentAttemptBlobs) Get(ctx context.Context, digest string) ([]byte, err
 	if err = marker.Close(); err != nil {
 		return nil, err
 	}
-	return readParentBlob(ctx, root, digest)
+	return readParentBlobBounded(ctx, root, digest, limit)
 }
 
 // Put grants attempt ownership only after storing verified supplied bytes.
