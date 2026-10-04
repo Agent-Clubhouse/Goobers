@@ -154,6 +154,14 @@ Linux image placement and a configured worker transport. Actual runner-to-worker
 composition passes with real Git workspaces and a simulated worker. This is not
 a live Kubernetes or model qualification. Remaining delivery gates:
 
+Serial stage handoff now preserves tracked edits and new files in the held
+checkout. Successful completion archives the verified final contribution before
+retiring that checkout, and the artifact remains materializable after cleanup.
+Failed, escalated and aborted runs retain their contribution; family settlement
+and journal pruning refuse missing archives or unresolved held workspaces.
+Real Git runner, retirement and retention race tests pass. The parallel gate
+remains until isolated branch forks and fan-in are implemented.
+
 - Exercise exact recovery against a live worker deployment. Parent and child host
   recovery now rejoin the retained worker, import its verified output and preserve
   the original checkout before allowing continuation. Child resume ownership is

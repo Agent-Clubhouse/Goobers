@@ -229,7 +229,7 @@ func TestIntegrationChildWaitRecoversBeforeAndAfterContinuedMarker(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer recovered.Close()
+			defer func() { _ = recovered.Close() }()
 			reader, _ = journal.OpenRead(dir)
 			events, _ = reader.Events()
 			resumed, ok := recoverChildTaskContext(events, frame.t.Name)
