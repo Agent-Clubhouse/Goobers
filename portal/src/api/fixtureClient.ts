@@ -111,6 +111,7 @@ interface FixtureRunCursor {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+  async getWorkbenchGraph(): Promise<import("./types").WorkbenchGraph> { throw new Error("Relationship browsing requires a connected daemon."); }
   async listWorkbenchSources(): Promise<import("./types").WorkbenchSourcePage> { return { items: [], generation: "fixture" }; }
   async getWorkbenchDocuments(): Promise<import("./types").WorkbenchDocumentPage> { throw new Error("Document browsing requires a connected daemon."); }
   async getWorkbenchItems(): Promise<import("./types").BacklogPage> { throw new Error("Source browsing requires a connected daemon."); }

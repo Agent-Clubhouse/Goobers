@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/interactiveaccess"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workbench"
+	"github.com/goobers/goobers/internal/workbenchgraph"
 	"github.com/goobers/goobers/internal/workbenchprovider"
 	"github.com/goobers/goobers/internal/workbenchservice"
 	"github.com/goobers/goobers/providers"
@@ -90,6 +91,13 @@ func TestWorkbenchHostInstallsExactRepositoryDocumentAuthority(t *testing.T) {
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &page) != nil || page.Coverage != "complete" || len(page.Files) != 1 || page.Files[0].Status != "available" || reader.reads != 1 {
 		t.Fatalf("document read failed: %d %s", response.Code, response.Body)
 	}
+	graphPath := "/api/v1/gaggles/example/workbench/graph"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, graphPath, nil))
+	var graph workbenchgraph.Graph
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &graph) != nil || graph.Generation == "" || len(graph.Sources) != 1 || graph.Sources[0].Status != "complete" || reader.reads != 2 {
+		t.Fatalf("installed graph lost document authority: %d %s", response.Code, response.Body)
+	}
 	changed := g.DeepCopy()
 	changed.Spec.InteractiveAccess.Actions = []apiv1.InteractiveAction{"backlog.read"}
 	if err = setup.InteractiveAccess.Apply([]apiv1.Gaggle{*changed}, nil); err != nil {
@@ -97,7 +105,12 @@ func TestWorkbenchHostInstallsExactRepositoryDocumentAuthority(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-	if response.Code != 403 || reader.reads != 1 {
+	if response.Code != 403 || reader.reads != 2 {
 		t.Fatal("revoked repository read reached source", response.Code)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, graphPath, nil))
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &graph) != nil || len(graph.Sources) != 1 || graph.Sources[0].Status != "not-read" || len(graph.Documents) != 0 || reader.reads != 2 {
+		t.Fatalf("graph leaked revoked source: %d %s", response.Code, response.Body)
 	}
 }

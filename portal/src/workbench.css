@@ -22,3 +22,19 @@
 @media (max-width: 760px) { .workbench-layout { grid-template-columns: 1fr; } }
 
 .workbench-document-text { font: inherit; overflow-wrap: anywhere; }
+
+.workbench-map { margin: 1rem 0 1.5rem; padding: 1rem 0; border-block: 1px solid var(--border-color, #9ca3af55); }
+.workbench-map-filter { display: flex !important; flex-direction: row !important; align-items: center; margin: .8rem 0; }
+.workbench-map-items { display: flex; gap: .5rem; flex-wrap: wrap; padding: 0; list-style: none; }
+.workbench-map-items button[aria-pressed="true"] { outline: 2px solid currentColor; }
+.workbench-map-diagram { overflow: auto; margin-top: 1rem; }
+.workbench-map-diagram svg { display: block; min-width: 40rem; width: 100%; max-height: 38rem; }
+.workbench-map-diagram line { stroke: currentColor; stroke-width: 1.2; opacity: .55; }
+.workbench-map-diagram rect { fill: var(--surface, #fbfaf7); stroke: currentColor; stroke-width: 1; }
+.workbench-map-diagram rect.selected { stroke-width: 3; }
+.workbench-map-diagram text { fill: currentColor; font-size: 14px; pointer-events: none; }
+.workbench-map-diagram g[role="button"] { cursor: pointer; }
+.workbench-map-diagram g[role="button"]:focus rect { stroke-width: 3; }
+.workbench-map-diagram p, .workbench-map-relations small { font-size: .8rem; }
+.workbench-map-relations li { margin: .8rem 0; }
+.workbench-map-relations small { display: block; margin-top: .25rem; }

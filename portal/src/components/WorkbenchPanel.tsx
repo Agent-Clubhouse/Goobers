@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { DaemonClient, WorkbenchSourcePage } from "../api/types";
 import { WorkbenchBrowser } from "./WorkbenchBrowser";
 import { WorkbenchDocuments } from "./WorkbenchDocuments";
+import { WorkbenchGraph } from "./WorkbenchGraph";
 import "../workbench.css";
 
 export function WorkbenchPanel({ client, gaggle }: { client: DaemonClient; gaggle: string }) {
@@ -28,6 +29,7 @@ function WorkbenchSources({ client, gaggle }: { client: DaemonClient; gaggle: st
     {!page && !error && <p role="status">Loading planning sources…</p>}
     {error && <p role="status">{error}</p>}
     {page && <>
+      {page.items.length > 0 && <WorkbenchGraph key={`${page.generation}:${revision}`} client={client} gaggle={gaggle} generation={page.generation} sources={page.items} />}
       {page.items.length === 0 ? <p>No planning sources are configured for this gaggle.</p> : <label>Planning source<select value={source?.bindingId ?? ""} onChange={(event) => setBinding(event.target.value)}><option value="">Select a source</option>{page.items.map((item) => <option key={item.bindingId} value={item.bindingId}>{item.bindingId} · {item.provider} · {item.kind}</option>)}</select></label>}
       {source && <>
         <p className="workbench-source">{source.owner}{source.project ? ` / ${source.project}` : ""}{source.repository ? ` / ${source.repository}` : ""}{source.branch ? ` · ${source.branch}` : ""}</p>

@@ -3,6 +3,13 @@ import { HttpDaemonClient } from "./httpClient";
 import { goWireFixtures } from "./wire.generated";
 
 describe("workbench source transport", () => {
+  it("loads the server-selected graph without supplying source data or cursors", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(goWireFixtures.workbenchGraph));
+    const client = new HttpDaemonClient({ fetch: fetcher });
+    expect(await client.getWorkbenchGraph("team space")).toEqual(goWireFixtures.workbenchGraph);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v1/gaggles/team%20space/workbench/graph", expect.objectContaining({ method: "GET" }));
+    expect(fetcher.mock.calls[0][1]?.body).toBeUndefined();
+  });
   it("reads only the selected document source with an opaque bounded continuation", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(goWireFixtures.workbenchDocuments));
     const client = new HttpDaemonClient({ fetch: fetcher });

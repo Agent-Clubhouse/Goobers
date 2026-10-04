@@ -328,13 +328,16 @@ browsing now show source-owned items, objective classification, associated nativ
 items and relationship coverage. Exact-credential repository readers return bounded
 commit-pinned Markdown objectives and relationship manifests. Repository read
 routes and portal file browsing now expose source provenance, explicit objective
-relationships and aliases. Aggregate graph and write service installation are the
-next slices.
+relationships and aliases. Write service installation is the
+next slice.
 
 The pure graph foundation now composes trusted source pages with verified target
 and commit pins, explicit authored/native edges, unresolved targets and visible
 ownership/identity conflicts. It retains no planning database and computes no
-progress. Aggregate server reads and graph visualization still need installation.
+progress. The authorized aggregate route and portal relationship map are now installed.
+Reads are bounded to one window per configured source; conflicts, omitted reads and
+unresolved links remain explicit. This does not claim a complete backlog graph or
+progress tracking.
 Durable native edit command custody is also implemented; authorized write service
 and portal controls remain the next editing slices.
 

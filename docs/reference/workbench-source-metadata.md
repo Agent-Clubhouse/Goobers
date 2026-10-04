@@ -258,8 +258,20 @@ non-snapshot consistency even after pagination ends. The graph reports source
 coverage and omissions without inferring deletion, movement or progress.
 
 Inputs are bounded to 512 pages and 32 MiB, with at most 10,000 nodes and 50,000
-edges. Document bodies are excluded from graph output. The aggregate authorized
-service, graph API and visualization are separate installation slices.
+edges. Document bodies are excluded from graph output. The installed
+`GET /api/v1/gaggles/{gaggle}/workbench/graph` endpoint reads the server-selected
+source set under current human authority and a seven-second aggregate budget.
+It observes at most 25 native items or eight literal repository files per source,
+reserves source read budgets before fetching, and reports skipped sources explicitly.
+Its response carries the current source generation; inconsistent repository commits
+are rejected. Clients cannot submit a graph or choose arbitrary source targets.
+
+The portal's **Load relationships** action shows coverage, objective/item selection,
+incoming/outgoing directions and source ownership. Conflicting or unread links
+remain visible in the list without becoming verified connections in the diagram.
+Navigation is local to the loaded window and does not recursively fetch linked
+content. Refresh clears old content before reading; source generation mismatches
+require refreshing source configuration. No progress calculation is inferred.
 
 Native edit identity uses the physical source target and exact patch. Objective
 classification and unrelated configuration changes do not change that identity,

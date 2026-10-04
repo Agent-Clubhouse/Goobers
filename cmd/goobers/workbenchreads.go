@@ -17,7 +17,7 @@ func (u *upSession) configureWorkbenchReads() {
 }
 
 func (u *upSession) installWorkbenchReads(service *workbenchservice.Service) {
-	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithWorkbenchReads(service))
+	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithWorkbenchReads(service), httpapi.WithWorkbenchGraph(service))
 	u.setup.InteractiveAccess.SetBacklogReadAvailable(service.Backlog != nil)
 	if service.Repository != nil {
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithWorkbenchDocuments(service))

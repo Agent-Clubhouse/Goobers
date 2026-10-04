@@ -1,3 +1,4 @@
+import type { WorkbenchGraph } from "./workbenchGraphTypes";
 import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
 import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
 import {
@@ -502,6 +503,10 @@ export class HttpDaemonClient implements DaemonClient {
       options,
       { provider, kind, id: externalId },
     ).then(normalizeLegacyWorkItemCost);
+  }
+
+  getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph> {
+    return this.getJSON(clientRoutes.workbenchGraph, undefined, options, { gaggle });
   }
 
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage> {
