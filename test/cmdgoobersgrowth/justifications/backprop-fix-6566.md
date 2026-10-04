@@ -1,6 +1,6 @@
 # backprop/fix-6566: open-pr recovers the claimed item in stage pods
 
-Growth: +28 non-test lines and +0 files in `cmd/goobers`, in `openpr.go` and
+Growth: +24 non-test lines and +0 files in `cmd/goobers`, in `openpr.go` and
 `claimeditem.go`.
 
 ## Why the growth belongs in the command package
