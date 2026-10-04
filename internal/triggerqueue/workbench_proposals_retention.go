@@ -28,7 +28,7 @@ func (s *Store) PruneWorkbenchProposals(ctx context.Context, now time.Time, limi
 		}
 	}
 	count := len(ids)
-	ids, err = childPruneIDs(ctx, tx, `SELECT id FROM workbench_proposals WHERE state IN ('confirmed','observed','not-applied') AND completed_ns<=? AND tombstoned_ns IS NULL ORDER BY id LIMIT ?`, cutoff, limit-count)
+	ids, err = childPruneIDs(ctx, tx, `SELECT id FROM workbench_proposals WHERE state IN ('confirmed','observed','not-applied') AND completed_ns<=? AND tombstoned_ns IS NULL AND NOT EXISTS(SELECT 1 FROM workbench_suggestions s WHERE s.proposal_id=workbench_proposals.id AND s.tombstoned_ns IS NULL) ORDER BY id LIMIT ?`, cutoff, limit-count)
 	if err != nil {
 		return 0, err
 	}

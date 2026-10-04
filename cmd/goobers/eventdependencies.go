@@ -44,6 +44,9 @@ func retainEventGenerationPins(ctx context.Context, layout instance.Layout, pins
 	for generation := range restarts.Generations {
 		pins[generation] = true
 	}
+	if err := retainSuggestionGenerationPins(ctx, queue, pins); err != nil {
+		return err
+	}
 	dependencies, err := eventexecution.RetainedDependencies(ctx, queue)
 	if err != nil {
 		return fmt.Errorf("retained event generation custody: %w", err)

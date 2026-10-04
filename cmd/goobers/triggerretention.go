@@ -52,6 +52,9 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 	if err := protectSessionJournal(ctx, queue, candidate); err != nil {
 		return err
 	}
+	if err := protectSuggestionJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
 	if err := protectEventJournal(ctx, queue, candidate); err != nil {
 		return err
 	}

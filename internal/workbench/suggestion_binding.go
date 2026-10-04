@@ -26,6 +26,12 @@ type BoundSuggestion struct {
 	Origin   SuggestionOrigin       `json:"origin"`
 }
 
+// MatchesSuggestionKey checks normalized evidence integrity only. It grants no
+// source visibility and does not replace current ParseSuggestions validation.
+func MatchesSuggestionKey(bound BoundSuggestion) bool {
+	return bound.Key == suggestionKey(bound.Proposal, bound.Origin)
+}
+
 // BindSuggestions verifies artifact bytes against host provenance and collapses
 // repeated candidates in artifact order. The host must authorize the actual
 // producer and configured source namespace before projecting these results.
