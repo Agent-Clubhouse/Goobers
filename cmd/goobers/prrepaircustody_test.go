@@ -206,6 +206,7 @@ func TestPRRepairHostRefusesUnsettledOrUnqualifiedCustody(t *testing.T) {
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
 			}
+			u.setup.PRRepairCustody = newPRRepairCatalog(u.setup, true)
 			called := false
 			c := prRepairCustodian{layout: u.l, setup: u.setup, runID: source.Identity.RunID}
 			if err := c.scope(ctx, *input.Target, func(context.Context) error { called = true; return nil }); err == nil || called {

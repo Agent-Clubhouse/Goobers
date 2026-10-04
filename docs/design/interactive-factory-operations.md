@@ -306,6 +306,9 @@ Provider acknowledgement and a later exact commit observation remain distinct re
 facts. The shared command ledger, current execution lease and private session tools
 now connect to local daemon custody. The host holds `claims.lock`, an admission barrier
 and sorted repository-manager locks through the bounded provider effect and receipt.
+Topology and manager membership come from one independently published immutable
+custody snapshot. Workflow-only reload waits for active repairs; changed-policy reload
+cancels and joins affected sessions before taking the custody publication lock.
 A matching PR-locator claim (including expired or ambiguous claims), active automation,
 retained branch occupancy or an unknown historical worktree root blocks repair.
 Inventory is capped at 4,096 journals/claims and 64 roots; incomplete inventory refuses.

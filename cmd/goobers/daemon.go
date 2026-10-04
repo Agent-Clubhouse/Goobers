@@ -50,6 +50,7 @@ type schedulerSetup struct {
 	SessionBacklogWriter   sessionops.WriterFactory
 	SessionBacklogResolver sessionops.ResolverFactory
 	SessionPRRepair        sessionops.RepairFactory
+	PRRepairCustody        *prRepairCatalog
 	SessionGeneration      string
 	SessionRuntime         *daemonSessionRuntime
 	OrdinaryRuntime        ordinaryRuntimeBuilder

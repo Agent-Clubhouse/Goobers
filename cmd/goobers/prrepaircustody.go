@@ -28,7 +28,12 @@ func (c prRepairCustodian) scope(ctx context.Context, target providers.RepairPul
 	if use == nil || c.setup == nil || c.setup.RunnerRegistry == nil {
 		return errors.New("PR repair host custody unavailable")
 	}
-	clone, err := c.target(target.Repository)
+	return c.setup.PRRepairCustody.use(ctx, func(snapshot prRepairSnapshot) error {
+		return c.withSnapshot(ctx, snapshot, target, use)
+	})
+}
+func (c prRepairCustodian) withSnapshot(ctx context.Context, snapshot prRepairSnapshot, target providers.RepairPullRequest, use func(context.Context) error) error {
+	clone, err := snapshot.target(target.Repository)
 	if err != nil {
 		return err
 	}
@@ -58,7 +63,7 @@ func (c prRepairCustodian) scope(ctx context.Context, target providers.RepairPul
 	if err = c.runs(ctx, target.Repository, owners); err != nil {
 		return err
 	}
-	managers, err := c.managers()
+	managers, err := c.managers(snapshot)
 	if err != nil {
 		return err
 	}
@@ -71,17 +76,17 @@ func (c prRepairCustodian) scope(ctx context.Context, target providers.RepairPul
 	}
 	return visit(0)
 }
-func (c prRepairCustodian) target(repo providers.RepositoryRef) (string, error) {
-	if !prRepairTopologyAvailable(c.setup) {
+func (s prRepairSnapshot) target(repo providers.RepositoryRef) (string, error) {
+	if !s.enabled {
 		return "", errors.New("PR repair requires local non-shared runner custody")
 	}
-	var selected *instance.RepoRef
-	for _, candidate := range c.setup.Config.Repos {
-		ref := providers.RepositoryRef{Provider: providers.ProviderKind(candidate.Provider), Owner: candidate.Owner, Project: candidate.Project, Name: candidate.Name}
+	var selected *prRepairRepository
+	for _, candidate := range s.repositories {
+		ref := candidate.identity
 		if !resolutionSameRepository(ref, repo) {
 			continue
 		}
-		if selected != nil || candidate.Pinned() || candidate.BaseURL != "" {
+		if selected != nil || candidate.unsupported {
 			return "", errors.New("PR repair repository custody is ambiguous or pinned")
 		}
 		copy := candidate
@@ -90,9 +95,9 @@ func (c prRepairCustodian) target(repo providers.RepositoryRef) (string, error) 
 	if selected == nil {
 		return "", errors.New("PR repair exact repository is not configured")
 	}
-	return childRepoCloneURL(apiv1.RepoRef{Provider: apiv1.Provider(selected.Provider), Owner: selected.Owner, Project: selected.Project, Name: selected.Name})
+	return childRepoCloneURL(apiv1.RepoRef{Provider: apiv1.Provider(selected.identity.Provider), Owner: selected.identity.Owner, Project: selected.identity.Project, Name: selected.identity.Name})
 }
-func (c prRepairCustodian) managers() ([]*worktree.Manager, error) {
+func (c prRepairCustodian) managers(snapshot prRepairSnapshot) ([]*worktree.Manager, error) {
 	known := map[string]*worktree.Manager{}
 	add := func(manager *worktree.Manager) error {
 		if manager == nil {
@@ -108,12 +113,7 @@ func (c prRepairCustodian) managers() ([]*worktree.Manager, error) {
 		known[root] = manager
 		return nil
 	}
-	for _, manager := range c.setup.WorktreesByGaggle {
-		if err := add(manager); err != nil {
-			return nil, err
-		}
-	}
-	for _, manager := range []*worktree.Manager{c.setup.Worktrees, c.setup.LegacyWorktrees} {
+	for _, manager := range snapshot.managers {
 		if err := add(manager); err != nil {
 			return nil, err
 		}
