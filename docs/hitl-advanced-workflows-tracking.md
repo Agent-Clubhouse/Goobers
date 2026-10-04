@@ -19,6 +19,11 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-child-admission` | backlog design | HAW-CHD-001 | Policy/schema/compiler checks and explicit runtime refusals; focused tests and `make verify-fast` pass |
 | `codex/haw-child-proposals` | child admission | HAW-CHD-002 foundation | Strict proposal parsing, pinned policy checks, normal compilation and runner placement; validator race tests pass |
 | `codex/haw-child-authority` | child proposals | HAW-CHD-003 authority foundation | Separate signed stage credentials and exact route confinement; focused auth race tests and package lint pass |
+| `codex/haw-child-lineage` | child authority | HAW-CHD-003 custody | Atomic lineage/start receipt/cancellation fence, slot and count limits, production retention; queue race tests pass |
+| `codex/haw-child-workspace` | child lineage | HAW-CHD-004 mechanics | Filtered snapshots, isolated forks and merge/replace/discard preparation; Git integration tests pass |
+| `codex/haw-child-validation-cli` | child workspace | HAW-CHD-002 author surface | Real `workflow validate-child` command, trusted configured parent selection, diagnostics and read-only command tests |
+| `codex/haw-child-attempt-custody` | child validation CLI | HAW-CHD-003 revocation | Durable current-attempt binding, transactional acceptance fence, bounded retention; race tests and lint pass |
+| `codex/haw-child-submission` | child attempt custody | HAW-CHD-002/003 service | Live trusted authority, repeated validation, atomic exact-source custody and status; integrated race tests pass |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
@@ -73,10 +78,29 @@ the sandbox refuses those listeners, so those complete suites have not passed.
 Package lint found and fixed three initial policy formatting/comment issues;
 the affected policy, engine, podauth and httpapi packages now report zero issues.
 
-Next: integrate same-transaction lineage/start/cancellation custody
-(HAW-CHD-003), and workspace fork/reconciliation
-(HAW-CHD-004). Helper tests alone do not complete those items: the agent-facing
-production service and recovery path must exercise them before enabling children.
+The submission service now requires a durable current-attempt binding as well as
+the trusted runtime resolver. Supersession and revocation cannot race acceptance.
+Exact source bytes are committed in the queue database with lineage/start custody;
+retries verify retained bytes and cannot repair missing or tampered accepted
+evidence. Its production pruner bounds maintenance and preserves unresolved work.
+The ordinary trigger dispatcher recognizes child envelopes and leaves them queued
+while child launch support is absent, preventing accidental named-catalog dispatch.
+
+The authoring command validates proposals against a selected configured parent
+without creating runs or writing proposal state. Its report explicitly identifies
+current-config advisory validation. Runtime submission instead requires the
+parent's immutable execution archive and current authority.
+
+Workspace support captures filtered working state, carries a bounded delta from
+the exact base commit, preserves child edits on retries, and prepares verified
+merge/replace/discard trees. It does **not** yet apply those trees to the live
+parent; durable application intent, exclusive custody and recovery remain required.
+
+Next: connect journal-backed occurrence identities, stage grant issuance, the
+authenticated tool/API surface, generated-run dispatch and recovery, workspace
+custody/application, wait-aware timeouts and capacity, and family cancellation.
+Execution remains refused until those boundaries work together. The HTTP,
+launcher and journal-origin slices are being developed separately.
 
 ### Other streams — designs prepared, implementation pending
 

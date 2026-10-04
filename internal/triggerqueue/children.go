@@ -62,6 +62,7 @@ type ChildAcceptance struct {
 	Actor       string
 	Payload     []byte
 	MaxChildren int
+	Proposal    *ChildProposal
 }
 
 // ChildState describes observed child custody, independently of queue claims.
@@ -90,6 +91,7 @@ type ChildRecord struct {
 	ChildID               string
 	AcceptanceID          string
 	StartKey              string
+	ProposalDigest        string
 	RunID                 string
 	State                 ChildState
 	ResultRef             string
@@ -195,7 +197,7 @@ func childStartKey(i ChildIdentity) string {
 	return "haw-child:v1:" + childDigest(b)
 }
 
-const childColumns = `c.gaggle,c.parent_run,c.occurrence,c.invocation_key,c.sequence,c.child_id,c.acceptance_id,c.start_key,c.state,c.result_ref,c.workspace_ref,c.accepted_ns,c.updated_ns,c.terminal_ns,c.acknowledged_ns,c.tombstoned_ns,p.cancelled_ns IS NOT NULL`
+const childColumns = `c.gaggle,c.parent_run,c.occurrence,c.invocation_key,c.sequence,c.child_id,c.acceptance_id,c.start_key,c.state,c.result_ref,c.workspace_ref,c.accepted_ns,c.updated_ns,c.terminal_ns,c.acknowledged_ns,c.tombstoned_ns,p.cancelled_ns IS NOT NULL,c.proposal_digest`
 const childFrom = ` FROM child_lineages c JOIN child_parents p USING(gaggle,parent_run)`
 const childWhere = ` WHERE c.gaggle=? AND c.parent_run=? AND c.occurrence=? AND c.invocation_key=?`
 
@@ -209,7 +211,7 @@ func scanChild(row scanner) (ChildRecord, error) {
 	var terminal, ack, tombstone sql.NullInt64
 	err := row.Scan(&c.Identity.Gaggle, &c.Identity.ParentRunID, &c.Identity.StageOccurrence, &c.Identity.InvocationKey,
 		&c.Sequence, &c.ChildID, &c.AcceptanceID, &c.StartKey, &c.State, &c.ResultRef, &c.WorkspaceRef,
-		&accepted, &updated, &terminal, &ack, &tombstone, &c.CancellationRequested)
+		&accepted, &updated, &terminal, &ack, &tombstone, &c.CancellationRequested, &c.ProposalDigest)
 	if err != nil {
 		return ChildRecord{}, err
 	}
@@ -264,12 +266,15 @@ func (s *Store) AcceptChild(ctx context.Context, req ChildAcceptance, now time.T
 			return ChildRecord{}, false, ErrConflict
 		}
 		c, readErr := scanChild(tx.QueryRowContext(ctx, "SELECT "+childColumns+childFrom+childWhere, childArgs(identity)...))
+		if readErr == nil {
+			readErr = verifyChildProposalRetry(ctx, tx, c, req.Proposal)
+		}
 		return c, true, readErr
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ChildRecord{}, false, err
 	}
-	if err = childIntakeCapacity(ctx, tx, identity.Gaggle); err != nil {
+	if err = childIntakeCapacity(ctx, tx, identity.Gaggle, req.proposalBytes()); err != nil {
 		return ChildRecord{}, false, err
 	}
 	sequence, err := reserveChildOccurrence(ctx, tx, identity, req.MaxChildren, now)
@@ -284,12 +289,16 @@ func (s *Store) AcceptChild(ctx context.Context, req ChildAcceptance, now time.T
 	if existing != 0 {
 		return ChildRecord{}, false, ErrConflict
 	}
+	proposalDigest, err := keepChildProposal(ctx, tx, identity.Gaggle, req.Proposal)
+	if err != nil {
+		return ChildRecord{}, false, err
+	}
 	runID := fmt.Sprintf("%x", randomID())
 	acceptanceID := "trigger-" + runID
 	if _, err = tx.ExecContext(ctx, `INSERT INTO triggers(id,key,actor,payload,state,accepted_ns) VALUES(?,?,?,?,?,?)`, acceptanceID, startKey, req.Actor, req.Payload, Accepted, now.UnixNano()); err != nil {
 		return ChildRecord{}, false, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO child_lineages(gaggle,parent_run,occurrence,invocation_key,sequence,child_id,acceptance_id,start_key,actor_digest,payload_digest,state,accepted_ns,updated_ns) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, identity.Gaggle, identity.ParentRunID, identity.StageOccurrence, identity.InvocationKey, sequence, "child-"+runID, acceptanceID, startKey, childDigest([]byte(req.Actor)), childDigest(req.Payload), ChildQueued, now.UnixNano(), now.UnixNano()); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO child_lineages(gaggle,parent_run,occurrence,invocation_key,sequence,child_id,acceptance_id,start_key,actor_digest,payload_digest,state,accepted_ns,updated_ns,proposal_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, identity.Gaggle, identity.ParentRunID, identity.StageOccurrence, identity.InvocationKey, sequence, "child-"+runID, acceptanceID, startKey, childDigest([]byte(req.Actor)), childDigest(req.Payload), ChildQueued, now.UnixNano(), now.UnixNano(), proposalDigest); err != nil {
 		return ChildRecord{}, false, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE child_occurrences SET accepted_count=accepted_count+1 WHERE gaggle=? AND parent_run=? AND occurrence=?`, identity.Gaggle, identity.ParentRunID, identity.StageOccurrence); err != nil {
@@ -309,7 +318,7 @@ func (req ChildAcceptance) validate(now time.Time) error {
 	if !req.Identity.valid() || !validChildText(req.Actor, 1024, true) || len(req.Payload) == 0 || len(req.Payload) > MaxPayloadBytes || req.MaxChildren < 1 || req.MaxChildren > MaxChildrenPerOccurrence || now.IsZero() {
 		return errors.New("triggerqueue: invalid child acceptance")
 	}
-	return nil
+	return req.Proposal.validate()
 }
 
 func reserveChildOccurrence(ctx context.Context, tx *sql.Tx, identity ChildIdentity, maxChildren int, now time.Time) (int, error) {
@@ -341,7 +350,7 @@ func reserveChildOccurrence(ctx context.Context, tx *sql.Tx, identity ChildIdent
 	return count + 1, nil
 }
 
-func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string) error {
+func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposalBytes int) error {
 	var starts, lineages, tombstones int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM triggers`).Scan(&starts); err != nil {
 		return err
@@ -364,7 +373,7 @@ func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string) error {
 	}
 	// The existing database has a 256 MiB hard ceiling. Preserve 20% for
 	// transitions, cancellation and maintenance; do not add a second reserve.
-	if (pages-freePages)*pageSize+MaxPayloadBytes+32*1024 > childStoreByteCeiling*4/5 {
+	if (pages-freePages)*pageSize+int64(proposalBytes)+MaxPayloadBytes+32*1024 > childStoreByteCeiling*4/5 {
 		return ErrFull
 	}
 	return nil

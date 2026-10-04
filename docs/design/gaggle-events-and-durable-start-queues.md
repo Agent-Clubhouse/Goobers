@@ -116,6 +116,7 @@ Membership changes and group closure are transactional; a closed group is immuta
 Group closure atomically creates one start intent and binds it to the group.
 Run admission reserves one stable run ID before an executor is asked to start it.
 Child acceptance atomically checks the parent cancellation fence, reserves the occurrence's unresolved-child slot and count, and creates lineage plus the ordinary start receipt in this same store.
+It also checks the current stage-grant binding and retains the exact bounded proposal source in the same transaction. Proposal BLOBs are gaggle-scoped, content-addressed, and retained through their last full lineage owner; they share the existing byte reserve.
 Parent cancellation commits that fence before acknowledgement, then a recoverable cancellation outbox drives queued/live child cancellation; a separate cancel-receipt database is not an atomic acceptance fence.
 Journal publication is recoverable from store transitions; an unavailable journal sink cannot erase accepted custody.
 Read-model/SSE projection is asynchronous and rebuildable from retained control records; it is not the acceptance boundary.

@@ -234,6 +234,20 @@ acceptance share the queue transaction; the existing separate cancellation
 receipt database alone cannot make check-then-submit atomic. A durable cancellation
 outbox then invokes ordinary run control and records confirmation.
 
+Exact proposal source is retained as a content-addressed BLOB in that same queue
+database, keyed by `(gaggle, sourceDigest)`. Acceptance commits its ownership
+with the lineage and start receipt. The small start envelope contains digests
+and pinned generation references, not inline source. Shared source is removed
+when its final full lineage owner is tombstoned; missing or tampered accepted
+source is a custody failure, never silently repaired from a retry.
+
+The trusted stage launcher also binds the current signed grant to its occurrence
+in this database. Acceptance checks the exact grant, attempt, config and policy
+binding inside its transaction. Replacement and revocation use compare-and-swap;
+an old attempt cannot race the live-authority check to start another child. A
+current-policy change revokes affected grants before publishing changed runtime
+authority. This binding contains no provider credentials.
+
 - Daemon restart before dispatch: accepted child remains queued exactly once.
 - Lost parent pod/session: child continues. A replacement attempt restores prior
   context and the pending/result reference, without regenerating/replaying child
@@ -304,6 +318,12 @@ with actionable capacity details when unsettled work consumes the usable limit. 
 The production maintenance loop prunes in batches of at most 100 and reports
 blocked retention. Snapshot/artifact bytes count toward the existing store quota;
 capacity admission happens before claiming durable acceptance.
+Occurrence authority rows have a separate 10,000-row per-gaggle ceiling within
+the same database byte budget. Revoked rows prevent stale launcher callbacks
+from renewing an old attempt. They are pruned after parent settlement plus
+30 days, with unresolved family members preserving custody, under the same
+100-work-unit maintenance batch. Credential expiry alone does not end a parent
+wait or delete child custody.
 
 Record proposal validation/admission, authority/grant digest, queued/running/wait
 transitions, parent/child IDs, occurrence/attempt/sequence, author, usage, wait

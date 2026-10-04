@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -156,6 +157,21 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 }
 
 func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueue.Record) error {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)
+	}
+	// Generated children require their own pinned-definition launcher. Never
+	// treat a generated workflow's display name as a catalog trigger, even if
+	// an envelope also contains an ordinary request. Retain durable custody.
+	if header.Kind == childworkflow.ChildStartKind {
+		return nil
+	}
+	if header.Kind != "" {
+		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)
+	}
 	var payload acceptedTriggerPayload
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)

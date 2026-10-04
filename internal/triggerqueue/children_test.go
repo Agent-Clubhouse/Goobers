@@ -102,10 +102,11 @@ func TestChildAcceptanceRollbackDoesNotConsumeSlotOrReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := childRequest("parent", "stage", "call")
+	req.Proposal = &ChildProposal{Digest: "sha256:" + childDigest([]byte("proposal")), Source: []byte("proposal")}
 	if _, _, err := s.AcceptChild(t.Context(), req, childTestTime); err == nil {
 		t.Fatal("expected injected failure")
 	}
-	for _, table := range []string{"triggers", "child_lineages", "child_occurrences", "child_parents"} {
+	for _, table := range []string{"triggers", "child_lineages", "child_occurrences", "child_parents", "child_proposals"} {
 		if n := childTableCount(t, s, table); n != 0 {
 			t.Fatalf("%s orphaned %d rows", table, n)
 		}

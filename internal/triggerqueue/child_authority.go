@@ -149,7 +149,7 @@ func childAuthorityCapacity(ctx context.Context, tx *sql.Tx, gaggle string) erro
 	if count >= MaxChildAuthorities {
 		return ErrFull
 	}
-	return childIntakeCapacity(ctx, tx, gaggle)
+	return childIntakeCapacity(ctx, tx, gaggle, 0)
 }
 
 // RevokeChildAuthority closes one attempt without changing its occurrence or
