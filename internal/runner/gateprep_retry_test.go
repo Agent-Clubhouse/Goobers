@@ -42,7 +42,7 @@ func TestGatePreparationRetriesBranchOccupancyWithinGateBudget(t *testing.T) {
 		Gates: []apiv1.Gate{{
 			Name:      "review",
 			Evaluator: apiv1.EvaluatorAgentic,
-			Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 1}},
+			Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Retry: &apiv1.RetryPolicy{MaxAttempts: 2}},
 			Branches:  map[string]string{"pass": workflow.TerminalComplete, "needs-changes": "review", "fail": workflow.TargetAbort},
 		}},
 	}
@@ -74,6 +74,11 @@ func TestGatePreparationRetriesBranchOccupancyWithinGateBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The gate declares no backoffSeconds, like the shipped review gates: the
+	// preparation retry must still wait (the floor) rather than re-hit the
+	// occupant immediately. Shortened from GatePreparationRetryFloor so the
+	// test releases the occupant inside the wait without sleeping a minute.
+	runner.gatePrepRetryFloor = 3 * time.Second
 
 	done := make(chan gatePreparationStartResult, 1)
 	go func() {

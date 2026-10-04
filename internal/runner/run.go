@@ -834,6 +834,7 @@ type Runner struct {
 	newHeartbeatTicker   func(time.Duration) heartbeatTicker
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
+	gatePrepRetryFloor   time.Duration
 	active               activeRunSet
 	pinnedMu             sync.Mutex
 	pinnedRuns           map[string]*worktree.PinnedLease
@@ -879,6 +880,7 @@ func New(cfg Config) (*Runner, error) {
 		},
 		stalledCancelGrace:   StalledCancellationGrace,
 		stalledTerminalGrace: StalledTerminalizationGrace,
+		gatePrepRetryFloor:   GatePreparationRetryFloor,
 		pinnedRuns:           make(map[string]*worktree.PinnedLease),
 		attributeRun:         creditgraph.WriteRunRecord,
 	}, nil
