@@ -384,3 +384,16 @@ session resolver, host learned-record lock and portal entry point follow next.
 It neither approves a gate nor restarts a run or publishes a PR. Settled receipt
 retention follows the same 30-day detail plus 30-day tombstone policy; unresolved
 custody never expires automatically.
+
+The reusable live-session resolver is now implemented. It checks the actual queued
+turn against journal session lineage, retained source configuration and the held
+human execution lease. Inspection and resolution share the scheduler's existing
+claims lock and an exact learned-record digest. The agent supplies the assessment;
+the host verifies current permissions, source revision, complete known blockers,
+and real message/comment/command evidence. It does not remove learned records or
+infer that general workflow eligibility has been granted.
+
+Confirmed replay reads its receipt without minting another provider credential or
+re-reading the obsolete pre-edit revision. A cancellation during the effect joins
+a bounded receipt save before releasing authority and claim custody. Session
+tools and the portal entry point remain the next installation slice.
