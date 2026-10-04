@@ -37,6 +37,7 @@ type queuedChildLauncher struct {
 	wg        *sync.WaitGroup
 	result    func(context.Context, childExecutionRef, *journal.Reader) (childExecutionResult, error)
 	reconcile func(context.Context, *journal.Reader) error
+	restart   func(context.Context, childExecutionRef) error
 }
 
 func (l *queuedChildLauncher) Prepare(ctx context.Context, e childworkflow.ChildStartEnvelope) (childworkflow.Authority, error) {
@@ -227,11 +228,11 @@ func (l *queuedChildLauncher) Cancel(ctx context.Context, ref childExecutionRef)
 	if observed, err := acceptedChildObserver(l.layout)(ctx, ref); err != nil || !observed {
 		return err
 	}
-	owner, ok := l.runners.Resolve(ref.Child.RunID, ref.Envelope.Gaggle, nil)
+	owner, ok := l.runners.Resolve(ref.runID(), ref.Envelope.Gaggle, nil)
 	if !ok {
 		return nil
 	} // restart recovery, not delivery, owns an absent runner
-	_, _, err := owner.CancelRun(ref.Child.RunID, time.Now())
+	_, _, err := owner.CancelRun(ref.runID(), time.Now())
 	return err
 }
 
@@ -243,7 +244,10 @@ func (l *queuedChildLauncher) Result(ctx context.Context, ref childExecutionRef)
 	if err != nil {
 		return childExecutionResult{}, err
 	}
-	release, available := l.runners.acquireChildCustody(ref.Child.RunID)
+	if !observed && ref.Execution != nil {
+		return l.pendingRestartResult(ctx, ref)
+	}
+	release, available := l.runners.acquireChildCustody(ref.runID())
 	if !available {
 		return childExecutionResult{}, nil
 	}
@@ -251,7 +255,7 @@ func (l *queuedChildLauncher) Result(ctx context.Context, ref childExecutionRef)
 	if !observed {
 		return l.rejectedResult(ctx, ref)
 	}
-	dir, err := l.layout.FindRunDir(ref.Child.RunID)
+	dir, err := l.layout.FindRunDir(ref.runID())
 	if err != nil {
 		return childExecutionResult{}, err
 	}
@@ -268,6 +272,15 @@ func (l *queuedChildLauncher) Result(ctx context.Context, ref childExecutionRef)
 			return childExecutionResult{}, err
 		}
 		if journal.PhaseFromEvents(events) == journal.PhaseRunning && !journal.ParkedAtGate(events) {
+			if ref.Execution != nil {
+				// Exact worker custody is joined; common restart admission must acquire
+				// human policy before child authority, and owns its own runner reservation.
+				if scheduler := l.dispatch.sched.Load(); scheduler != nil {
+					scheduler.ReleaseReconciled(ref.runID(), ref.Envelope.Workflow)
+				}
+				release()
+				return l.pendingRestartResult(ctx, ref)
+			}
 			return childExecutionResult{}, l.resumeOwnedChild(ctx, ref)
 		}
 	}

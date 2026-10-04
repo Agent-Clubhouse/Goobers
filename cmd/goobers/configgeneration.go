@@ -181,10 +181,10 @@ func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity
 	r.mu.RLock()
 	resolve := r.resolveGeneration
 	reconcile := r.reconcileContained
-	if runner.IsStageRestart(identity) {
-		resolve = r.resolveInteractiveGeneration
-	} else if identity.Child != nil {
+	if identity.Child != nil {
 		resolve = r.resolveChildGeneration
+	} else if runner.IsStageRestart(identity) {
+		resolve = r.resolveInteractiveGeneration
 	} else if identity.Event != nil {
 		resolve = r.resolveEventGeneration
 	}

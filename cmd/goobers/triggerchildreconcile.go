@@ -17,7 +17,7 @@ type childStartObserver func(context.Context, childExecutionRef) (bool, error)
 // ambiguous, pruned or mismatched journals never authorize dispatch replay.
 func acceptedChildObserver(layout instance.Layout) childStartObserver {
 	return func(ctx context.Context, ref childExecutionRef) (bool, error) {
-		dir, err := acceptedTriggerJournalDir(ctx, layout, ref.Child.RunID)
+		dir, err := acceptedTriggerJournalDir(ctx, layout, ref.runID())
 		if err != nil {
 			return false, err
 		}
@@ -33,8 +33,11 @@ func acceptedChildObserver(layout instance.Layout) childStartObserver {
 			return false, err
 		}
 		e := ref.Envelope
-		if id.Child == nil || *id.Child != ref.Lineage || id.RunID != ref.Child.RunID || id.Gaggle != e.Gaggle || id.Workflow != e.Workflow || id.WorkflowDigest != e.WorkflowDigest || id.ConfigGeneration != e.ConfigGeneration {
+		if id.Child == nil || *id.Child != ref.Lineage || id.RunID != ref.runID() || id.Gaggle != e.Gaggle || id.Workflow != e.Workflow || id.WorkflowDigest != e.WorkflowDigest || id.ConfigGeneration != e.ConfigGeneration {
 			return false, fmt.Errorf("accepted child %s has a mismatched run identity", ref.Child.AcceptanceID)
+		}
+		if ref.Execution != nil && (id.ContinuedFromRunID != ref.Execution.SourceRunID || id.SourceTerminalSeq != ref.Execution.SourceTerminalSeq || id.Operator != ref.Execution.Actor || id.RequestedTarget != ref.Execution.Stage) {
+			return false, errors.New("child execution epoch differs from admitted restart")
 		}
 		return true, nil
 	}
@@ -63,16 +66,17 @@ func (s *durableTriggerService) reconcileChildReceipt(ctx context.Context, recor
 		return err
 	}
 	if observed {
-		return s.recordChildRunning(ctx, ref.Child)
+		return s.recordChildRunning(ctx, ref)
 	}
 	return nil
 }
 
-func (s *durableTriggerService) recordChildRunning(ctx context.Context, child triggerqueue.ChildRecord) error {
-	if child.State != triggerqueue.ChildQueued {
+func (s *durableTriggerService) recordChildRunning(ctx context.Context, ref childExecutionRef) error {
+	child := ref.Child
+	if child.State != triggerqueue.ChildQueued || ref.runID() != child.ActiveRunID() {
 		return nil
 	}
-	return s.queue.SetChildState(ctx, child.Identity, triggerqueue.ChildStateUpdate{Expected: child.State, State: triggerqueue.ChildRunning}, s.dispatch.now())
+	return s.queue.SetChildState(ctx, child.Identity, triggerqueue.ChildStateUpdate{Expected: child.State, State: triggerqueue.ChildRunning, ExecutionRunID: ref.runID()}, s.dispatch.now())
 }
 
 // Unknown worker observations share one pass budget. The cursor is advanced
@@ -116,6 +120,12 @@ func (s *durableTriggerService) reconcileChildExecution(ctx context.Context, chi
 	if err != nil {
 		return err
 	}
+	if child.ExecutionEpoch > 0 {
+		ref, err = childEpochReference(ctx, s.queue, ref, child.ActiveRunID())
+		if err != nil {
+			return err
+		}
+	}
 	var cancelErr error
 	if ref.Child.CancellationRequested {
 		cancelErr = s.children.Cancel(ctx, ref)
@@ -132,7 +142,7 @@ func (s *durableTriggerService) observeChildExecution(ctx context.Context, recor
 	if err != nil {
 		return err
 	}
-	if !observed && record.State != triggerqueue.Rejected {
+	if !observed && record.State != triggerqueue.Rejected && ref.Execution == nil {
 		return nil
 	}
 	if observed {
@@ -144,7 +154,7 @@ func (s *durableTriggerService) observeChildExecution(ctx context.Context, recor
 				return err
 			}
 		}
-		if err = s.recordChildRunning(ctx, ref.Child); err != nil {
+		if err = s.recordChildRunning(ctx, ref); err != nil {
 			return err
 		}
 		if ref.Child.State == triggerqueue.ChildQueued {
@@ -170,5 +180,5 @@ func (s *durableTriggerService) recordChildResult(ctx context.Context, ref child
 	if result.State == ref.Child.State && !result.State.Terminal() {
 		return nil
 	}
-	return s.queue.SetChildState(ctx, ref.Child.Identity, triggerqueue.ChildStateUpdate{Expected: ref.Child.State, State: result.State, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, s.dispatch.now())
+	return s.queue.SetChildState(ctx, ref.Child.Identity, triggerqueue.ChildStateUpdate{Expected: ref.Child.State, State: result.State, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef, ExecutionRunID: ref.runID()}, s.dispatch.now())
 }
