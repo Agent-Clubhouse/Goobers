@@ -41,6 +41,7 @@ func TestWorkbenchHostChecksRetainedRepairAfterSessionClosure(t *testing.T) {
 	if _, err = q.CloseSession(t.Context(), closeCommand, input.Origin.SessionID, "done", now); err != nil {
 		t.Fatal(err)
 	}
+	u.durableTriggers.dispatch = newDaemonTriggerService()
 	u.configureWorkbenchReads()
 	principal := httpapi.Principal{Issuer: source.Actor.Issuer, Subject: source.Actor.Subject, Roles: []httpapi.Role{httpapi.RoleOperate}}
 	request := func(method, suffix string) sessioning.PRRepairCommandView {

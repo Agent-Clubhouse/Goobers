@@ -139,7 +139,7 @@ describe("SharedSessionsPanel", () => {
   it("keeps post-turn PR receipt inspection available when new repairs are unavailable", async () => {
     const client = setup();
     vi.mocked(client.getSession).mockResolvedValue({ ...session, state: "closed" });
-    vi.mocked(client.getInteractiveCapabilities).mockResolvedValue({ ...access, actions: [...access.actions, ...(["pr.repair", "repository.read"] as const).map((action) => ({ action, authorized: true, credentialConfigured: true, available: false, reasonCode: "operation_not_implemented" }))] });
+    vi.mocked(client.getInteractiveCapabilities).mockResolvedValue({ ...access, actions: [...access.actions, ...(["pr.repair", "repository.read"] as const).map((action) => ({ action, authorized: true, credentialConfigured: true, available: false, reasonCode: "operation_not_implemented" as const }))] });
     await select();
     expect(screen.getByText("Check a retained PR repair", { selector: "summary" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Message to agent")).not.toBeInTheDocument();
