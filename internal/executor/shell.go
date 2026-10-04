@@ -979,61 +979,28 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	var timedOut, canceled bool
-	var waitErr error
-	select {
-	case waitErr = <-waitDone:
-	case <-runCtx.Done():
-		// runCtx.Done() fires both when its own timeout elapses and when the
-		// caller's ctx is canceled out from under it — distinguishing the two
-		// via context.Cause matters even though only the timeout path is
-		// reachable today (internal/runner's dispatch always uses
-		// context.WithoutCancel): a future hard-shutdown path that DOES
-		// cancel ctx must not be mislabeled as a retryable timeout (#122).
-		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
-			timedOut = true
-		} else {
-			canceled = true
-		}
-		// On a TIMEOUT, first SIGQUIT the whole process group so every Go
-		// process in it dumps its full goroutine trace to the captured
-		// stdout/stderr before dying — a stage that blew its timeout is exactly
-		// the case worth diagnosing, and SIGKILL alone leaves no trace of WHY
-		// it hung (the long-standing "killed at 10m, cmd/goobers never finished,
-		// no dump" record). The final SIGKILL sweep always runs: the direct
-		// child exiting after SIGQUIT does not prove that signal-ignoring
-		// descendants exited too. A deliberate cancel (not a timeout) goes
-		// straight to SIGKILL — nothing to diagnose there.
-		waited := false
-		if timedOut {
+	waitOutcome := proc.WaitOrKill(runCtx, tree, waitDone, proc.WaitOptions{
+		KillWait: groupKillWaitDelay,
+		BeforeKill: func(timedOut bool) (bool, error) {
+			if !timedOut {
+				return false, nil
+			}
 			// SIGQUIT the whole tree so every Go process in it dumps its full
 			// goroutine trace and exits before the force-kill below. A platform
 			// that can't signal tree members (windows Job Objects) reports the
 			// request unsupported, and we fall straight through to Kill.
 			if supported, _ := tree.RequestDump(); supported {
 				select {
-				case waitErr = <-waitDone:
-					waited = true // goroutine traces are now in the captured output
+				case err := <-waitDone:
+					return true, err
 				case <-time.After(timeoutDumpGrace):
 				}
 			}
-		}
-		// Kill the whole tree, not just the direct child, so a runaway
-		// subprocess tree can't outlive the stage.
-		_ = tree.Kill()
-		if !waited {
-			select {
-			case waitErr = <-waitDone:
-			case <-time.After(groupKillWaitDelay):
-				// A descendant escaped the process group (e.g. via setsid) and
-				// is still holding a stdout/stderr pipe open, so cmd.Wait()
-				// never returns (#119) — give up waiting rather than hang the
-				// stage (and graceful drain) forever. waitErr stays nil here,
-				// but it's only read below in the non-timeout/non-canceled path,
-				// so this bound never masks a real exit code.
-			}
-		}
-	}
+			return false, nil
+		},
+	})
+	waitErr := waitOutcome.Err
+	timedOut, canceled := waitOutcome.TimedOut, waitOutcome.Canceled
 
 	if diagStop != nil {
 		// Signal the watchdog to stop and wait for it to fully exit before
