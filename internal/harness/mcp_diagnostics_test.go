@@ -112,6 +112,22 @@ func TestMCPDiagnosticsProbeHasNoModelTurnAndCleansWorkspace(t *testing.T) {
 	}
 }
 
+func TestMCPDiagnosticsProbeUsesOwnSetupBudget(t *testing.T) {
+	session := &readinessSession{status: "connected"}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, SelfBin: "/trusted/goobers", mcpSessionFactory: func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
+		return session, nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := adapter.ProbeMCPReadiness(ctx, RunRequest{})
+	if len(got) != 1 || got[0].Category != "ready" || session.modelCalls != 0 {
+		t.Fatalf("got=%+v modelCalls=%d", got, session.modelCalls)
+	}
+	if session.probeCalls != 1 {
+		t.Fatal("safe read was not executed exactly once")
+	}
+}
+
 func TestMCPDiagnosticsRefusesBuiltinImpersonationAndLaunchers(t *testing.T) {
 	adapter := &CopilotAdapter{Command: []string{"copilot"}, SelfBin: "/trusted/goobers", mcpSessionFactory: func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
 		t.Fatal("must not open a session")

@@ -32,7 +32,7 @@ func (c *CopilotAdapter) ProbeMCPReadiness(ctx context.Context, req RunRequest) 
 	if !c.supportsMCPDiagnostics() {
 		return reports
 	}
-	ctx, cancel := context.WithTimeout(ctx, MCPDiagnosticTimeout)
+	setupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), MCPDiagnosticTimeout)
 	defer cancel()
 	workspace, err := os.MkdirTemp("", "goobers-mcp-readiness-")
 	if err != nil {
@@ -64,7 +64,7 @@ func (c *CopilotAdapter) ProbeMCPReadiness(ctx context.Context, req RunRequest) 
 		return failedMCPDiagnostics(reports, "transport_failure")
 	}
 	defer cleanup()
-	env, err = prepareCopilotMCP(ctx, req, env)
+	env, err = prepareCopilotMCP(setupCtx, req, env)
 	if err != nil {
 		return failedMCPDiagnostics(reports, "authentication_failure")
 	}
@@ -75,10 +75,20 @@ func (c *CopilotAdapter) ProbeMCPReadiness(ctx context.Context, req RunRequest) 
 	runner := &copilotControlledRunner{base: c.runner(), request: req, promptIndex: 1, mcpConfig: config, factory: c.mcpSessionFactory, diagnosticsOnly: true}
 	defer runner.close()
 	process := ProcessRequest{Command: []string{c.Command[0], "-p=", "--session-id", id, "--log-dir", filepath.Join(workspace, "logs")}, Dir: workspace, Env: env, Timeout: MCPDiagnosticTimeout}
-	if err := runner.open(ctx, process); err != nil {
+	if err := runner.open(setupCtx, process); err != nil {
 		return failedMCPDiagnostics(reports, "transport_failure")
 	}
-	return inspectMCPDiagnostics(ctx, runner.session, reports, eligible, c.RequiredMCPSettleTimeout)
+	probeCtx := setupCtx
+	if ctx.Err() == nil {
+		var cancelProbe context.CancelFunc
+		probeCtx, cancelProbe = context.WithCancel(setupCtx)
+		stop := context.AfterFunc(ctx, cancelProbe)
+		defer func() {
+			stop()
+			cancelProbe()
+		}()
+	}
+	return inspectMCPDiagnostics(probeCtx, runner.session, reports, eligible, c.RequiredMCPSettleTimeout)
 }
 
 func (c *CopilotAdapter) supportsMCPDiagnostics() bool {
