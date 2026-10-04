@@ -71,7 +71,7 @@ sets to 200,000. Incomplete scans do not prove deletion or a document move.
 
 These parsers and proposal builders do not grant authorization, execute Markdown,
 follow links, contact providers, mutate repositories or maintain planning state.
-Provider ingestion and browse/edit routes follow in separate slices.
+The installed read and native-field command services apply current authorization before provider access. Repository proposals additionally require the custody and publication service described below.
 
 
 ## Explicit gaggle sources
@@ -231,7 +231,7 @@ Commit, blob and content digest identify the observed bytes.
 Continuation cursors bind source, target and branch commit. If the branch moves,
 the caller restarts its read. Exhausting a page is not deletion evidence or proof
 of a coherent multi-page scan. Repository credentials and conditional caching use
-the same current interactive policy boundary as native backlog reads. Repository
+the same current interactive policy boundary as native backlog reads.
 The daemon installs `GET /api/v1/gaggles/{gaggle}/workbench/sources/{source}/documents`.
 Workbench HTTP reads use the existing eight-second bounded request budget, which
 narrows the provider's maximum and completes before the portal's client timeout.
@@ -318,3 +318,24 @@ returning results to the caller, while the host finishes bounded receipt custody
 Missing editing permission leaves conversation and permitted reads available.
 The backlog editor also drops the previous connection/item state before rendering
 a changed scope, preserving unresolved keys only for the same source item.
+
+
+## Governed repository proposal adapters
+
+A pure preview now supports title/body changes and exact `references` or
+`contributes-to` additions/removals in an existing configured file. It binds the
+current commit, blob and content digest, preserves objective identity and unrelated
+metadata, and enforces source field/relationship allowlists. Native relationships
+cannot fall back to a manifest. Creating or moving objective files remains separate.
+
+Source-bound adapters verify the current base revision and execute explicit,
+one-attempt publication phases. GitHub creates a tree, commit, absent branch and
+draft PR. ADO creates an absent branch, pushes against its pinned head and creates
+a draft PR. Each operation verifies its exact repository, file, branch and command
+marker; observation is separate from provider acknowledgement. An unknown response
+cannot be converted to an acknowledged mutation just because matching state exists.
+
+These adapters are not yet an installed portal publication path. Durable proposal
+custody, current-policy checks at each phase, review/submission controls and receipt
+inspection follow in the next slice. The current portal continues to offer source
+reads and native field commands while that installation is completed.

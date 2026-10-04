@@ -381,6 +381,10 @@ portal editor. Each command is attempted at most once; lost responses remain
 unknown and can be inspected without resending the write. Settled receipts are
 pruned by bounded daemon maintenance; unresolved custody never expires by age.
 
+Bounded metadata previews and source-bound GitHub/ADO draft-PR phase adapters are
+implemented locally. Their durable custody/service and portal submission path are
+still being installed; provider adapters alone do not publish a portal edit.
+
 Remaining workbench delivery includes governed repository metadata PRs, supported
 native relationship edits and creation/curation relationship suggestions. Sources
 may reside in any configured gaggle repository. Repository mutations use policy-governed PRs;
