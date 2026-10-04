@@ -179,9 +179,12 @@ remains until isolated branch forks and fan-in are implemented.
   recapturing parent files. An unplanned conflict can use a revision-bound changed
   choice; already published plans remain immutable and require reconciliation.
 - Branch-aware wait projection, execution clocks and the aggregate capacity
-  coordinator now pass real scheduler race tests. Finish per-branch lane scheduling,
-  contained factories and writable fork/join behavior before removing the temporary
-  serial parent restriction. Queued siblings must retain the whole-run slot.
+  coordinator now pass real scheduler race tests. Per-branch scheduling releases
+  the branch lane during a child wait, keeps queued siblings runnable, and
+  reacquires capacity before continuation. Recovery preserves the occurrence and
+  retry allowance; a simulated 24-hour wait is excluded from the branch timeout.
+  Contained factories and writable fork/join behavior remain necessary before
+  removing the temporary serial parent restriction.
 - Complete child workspace family holds through crash reaping and terminal
   disposition; active or unresolved families must survive unbounded waits.
 - Check enclosing run/stage deadlines, revocation, human escalation and continuation
