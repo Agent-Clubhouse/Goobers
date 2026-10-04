@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/eventexecution"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -42,6 +43,13 @@ func retainEventGenerationPins(ctx context.Context, layout instance.Layout, pins
 	ordinary, err := startintent.RetainedGenerations(ctx, queue)
 	if err != nil {
 		return fmt.Errorf("retained ordinary generation custody: %w", err)
+	}
+	direct, err := enginestartintent.RetainedGenerations(ctx, queue)
+	if err != nil {
+		return err
+	}
+	for generation := range direct {
+		pins[generation] = true
 	}
 	for generation := range ordinary {
 		pins[generation] = true

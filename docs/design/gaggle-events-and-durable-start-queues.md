@@ -487,7 +487,7 @@ The remaining source adapters are explicit follow-up work:
 | Existing source | Current path and remaining normalization |
 | --- | --- |
 | Standalone `goobers run` / detached one-shot worker | Delivered below: owns the instance lock, queues one pinned intent, and attempts only its own receipt. |
-| Direct `engine-start` | Starts Temporal directly under its existing explicit bypass semantics; needs a reviewed queue-backed compatibility path. |
+| Direct `engine-start` | Delivered below: typed shared-ledger custody preserves exact Temporal target and existing scheduler-bypass semantics. |
 | Scheduled starts | Delivered below: pinned coalesced worker start/cursor and retained demand-sized obligations. |
 | Backlog polling | Delivered below: bounded count observations become queued worker ordinals, preserving in-workflow item selection and claims. Item-addressed sources separately use eligibility episodes. |
 | Desired-concurrency refill | Delivered below: live and queued occupancy bounds missing-capacity worker starts; normal admission and in-workflow claims remain. |
@@ -539,7 +539,7 @@ reserved run IDs, current eligibility and archived execution path as manual star
 Acceptance tests exercise actual webhook handlers, exact archive compilation,
 scheduler admission, Runner journals, and CLI key replay. Store tests cover
 transaction rollback, queue-full cursor preservation, legacy transfer uncertainty,
-and no-match/recipient freezing. The direct engine adapter keeps HAW-EVT-002 in progress.
+and no-match/recipient freezing. The direct engine compatibility adapter is described below.
 Demand-sized schedule custody is described below.
 
 
@@ -609,7 +609,7 @@ do not launch under another workflow or lose pins through an age-based timeout.
 Tests cover count preservation across database reopen and configuration change,
 no-work/fallback decisions, concurrent ordinal transfers, rollback, queue-full
 cursor preservation, failed pin capture, and actual archived Runner execution.
-The direct engine adapter remains follow-up work; HAW-EVT-002 remains in progress.
+The direct engine compatibility adapter is described below.
 
 ### Delivered standalone manual and detached starts
 
@@ -632,6 +632,50 @@ uncertain publication is reconciled against the matching durable run journal
 while holding the instance lock. Tests cover real CLI and detached-worker replay,
 an unrelated pending receipt, archived execution after capacity release, queue
 failure, current provider validation and original run/terminal output.
+
+### Delivered direct engine compatibility custody
+
+Explicit `engine-start --direct` (also the existing daemon-down default) now
+accepts a typed receipt and canonical compiled `RunInput` into the same SQLite
+ledger before calling Temporal. The input attachment is bounded to 1 MiB and
+counts against the shared database byte ceiling; the receipt consumes the common
+slot limit. Input and receipt are committed together, with cascading cleanup of
+confirmed receipts after the existing seven-day replay horizon. Uncertain effects
+never expire to make room for new work.
+
+The direct path preserves its dedupe-derived run ID, frontend, namespace, task
+queue, live-journal option, and explicit scheduler-bypass behavior. It does not
+consume a scheduler slot or acquire ordinary terminal hooks. Full input bytes
+pin definition, configuration generation, placement and policy. Credential
+selector hashes preserve TLS/codec binding without storing materialized secrets;
+relative file selectors retain their original base directory. Dispatch resolves
+only currently matching configured selectors. Changed options refuse rather than
+retargeting an accepted receipt.
+
+The attempted marker is durable before the provider call. New starts stamp the
+canonical input digest in Temporal memo. Reconciliation reads one bounded first
+history event with the configured payload codec and verifies the actual input,
+workflow type and task queue, plus the digest memo when present. This also allows
+an exact legacy history without the new memo to prove its original input. A
+missing, deleted, mismatched or undecodable history after an attempted call never
+authorizes a resend. The receipt remains uncertain; explicit operator disposition
+of permanently unavailable evidence is future work. A dial/configuration refusal
+before the attempted marker leaves the receipt accepted for retry.
+
+The daemon uses a separate bounded cursor so an unavailable direct target cannot
+take over ordinary pending batches. Direct receipts cannot enter the ordinary
+name-based launcher or count as scheduler worker demand. Their retained generation
+pins join pruning inventories; confirmed external histories keep the pre-existing
+external-generation ownership marker. Automatic expiry of those external markers
+remains outside this adapter.
+
+Tests cover actual CLI capture, exact output/dedupe replay after source changes,
+daemon recovery of lost replies using the sealed codec, credential-selector
+revocation, missing/mismatched history, concurrent admission, atomic input custody,
+migration, and retention. A composed delegated `engine-start` test also proves its
+file request becomes a pinned ordinary receipt before acknowledgement and executes
+that archive after authored-source changes. Delegated backend selection remains
+the daemon's existing scheduler decision, including its local-runner fallback.
 
 
 ### Delivered scoped read-cache foundation (HAW-EVT-008)

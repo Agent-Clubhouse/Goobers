@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -112,6 +113,9 @@ func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, rec
 	}
 	if err := json.Unmarshal(record.Payload, &header); err != nil {
 		return err
+	}
+	if header.Kind == enginestartintent.Kind {
+		return s.drainDirectEngine(ctx, record)
 	}
 	if header.Kind == startintent.Kind {
 		if s.ordinary == nil {

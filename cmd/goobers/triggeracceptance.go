@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/eventexecution"
 	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -28,6 +29,8 @@ import (
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
+	directEngine           *enginestartintent.Service
+	directEngineCursor     string
 	ordinary               *startintent.Service
 	sessions               *interactivesession.Service
 	sessionCursor          string
@@ -166,7 +169,7 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	if s.childFamilies != nil {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}
-	pruneErr = errors.Join(pruneErr, s.sweepEvents(ctx), s.sweepSessions(ctx))
+	pruneErr = errors.Join(pruneErr, s.sweepEvents(ctx), s.sweepSessions(ctx), s.sweepDirectEngine(ctx))
 	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil && s.sessions == nil {
 		return pruneErr
 	}
@@ -194,6 +197,9 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// Generated children require their own pinned-definition launcher. Never
 	// treat a generated workflow's display name as a catalog trigger, even if
 	// an envelope also contains an ordinary request. Retain durable custody.
+	if header.Kind == enginestartintent.Kind {
+		return s.drainDirectEngine(ctx, record)
+	}
 	if header.Kind == startintent.Kind {
 		return s.drainOrdinary(ctx, record)
 	}

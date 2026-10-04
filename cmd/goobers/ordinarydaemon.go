@@ -109,6 +109,7 @@ func (s *durableTriggerService) drainOrdinary(ctx context.Context, record trigge
 }
 
 func (s *schedulerSetup) installDurableWorkflowServices(layout instance.Layout, triggers *durableTriggerService) error {
+	triggers.directEngine = directEngineService(layout, triggers.queue, s.Config)
 	if err := s.installOrdinaryStarts(layout, triggers); err != nil {
 		return err
 	}
