@@ -152,3 +152,20 @@ reply bound, a 256-KiB item bound and a 1-MiB projected page bound.
 
 The provider adapter itself has no credentials, cache, polling loop or write path.
 Public browse routes and interactive execution wiring are separate delivery slices.
+
+
+## Native field edit adapter
+
+A native edit command changes one source-allowlisted field: title, description,
+state, labels, or assignees. It supplies the stable source ID, current locator and
+expected revision. ADO uses an atomic revision test; GitHub's timestamp check is a
+preflight check and cannot eliminate concurrent source edits. Labels and assignees
+replace the full visible set; generic edits preserve service control labels.
+
+The adapter issues a single native mutation without automatic retry, then makes
+one readback. Receipts separately report provider acknowledgement and whether the
+observed value matches. Matching state after a lost response remains uncertain;
+it does not prove this command authored that state. The host must persist command
+custody before calling the adapter. Manual editing routes and UI remain disabled
+until that host custody and authorization path is installed. Relationships and
+repository PR proposals use separate contracts.
