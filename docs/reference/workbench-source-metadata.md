@@ -397,3 +397,20 @@ Confirmed replay reads its receipt without minting another provider credential o
 re-reading the obsolete pre-edit revision. A cancellation during the effect joins
 a bounded receipt save before releasing authority and claim custody. Session
 tools and the portal entry point remain the next installation slice.
+
+## Repository proposal phase receipts
+
+The shared queue now retains repository proposal intent, exact before/after bytes,
+validated plan and immutable phase receipts before provider publication. Each
+phase is claimed once. An uncertain phase retains its original result; a later
+exact observation is separate evidence and can only permit a subsequent explicit
+submission to continue. An uncertain ADO branch creation cannot advance merely
+because a matching base ref appears. A final observed PR is recorded as observed,
+distinct from a provider-acknowledged PR.
+
+Native field commands, marker resolutions and repository proposals share one
+1,000-command gaggle limit and the database byte budget. The installed maintenance
+pass allocates cleanup across all three kinds within its existing row/time bound.
+Uncertain and partially visible proposal effects stay pinned; settled results use
+the existing detail/tombstone retention policy. Custody alone does not install the
+repository submission API or portal controls; those remain the next slice.

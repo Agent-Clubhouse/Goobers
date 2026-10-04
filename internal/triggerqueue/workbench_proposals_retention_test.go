@@ -172,7 +172,7 @@ func TestWorkbenchMaintenanceGivesEveryKindShareUnderNativeBacklog(t *testing.T)
 func TestWorkbenchProposalCannotSpendNeedsHumanByteReservation(t *testing.T) {
 	s := openTestStore(t, filepath.Join(t.TempDir(), "queue.db"))
 	resolution := acceptNeedsHuman(t, s, "reserved-resolution")
-	if _, err := s.db.Exec(`UPDATE needs_human_commands SET reserved_bytes=? WHERE id=?`, s.maxBytes, resolution.ID); err != nil {
+	if _, err := s.db.Exec(`UPDATE needs_human_commands SET reserved_bytes=? WHERE id=?`, childStoreByteCeiling, resolution.ID); err != nil {
 		t.Fatal(err)
 	}
 	input, _ := proposalFixture(t, providers.ProviderGitHub, "denied")
