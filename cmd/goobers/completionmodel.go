@@ -79,6 +79,13 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"advisory-pr-reset": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle name"},
+		{name: "owner", takesArg: true, desc: "GitHub owner"},
+		{name: "repo", takesArg: true, desc: "GitHub repository"},
+		{name: "review-type", takesArg: true, desc: "Advisory review type"},
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+	},
 	"temporal codec-server": {
 		{name: "listen", takesArg: true, desc: "TLS listener address"},
 		{name: "tls-cert", takesArg: true, desc: "TLS certificate PEM file"},

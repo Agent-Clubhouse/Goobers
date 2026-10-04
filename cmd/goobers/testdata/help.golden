@@ -119,6 +119,7 @@ Core commands:
   workflow show     Show a workflow as a text DAG.
 
 Advanced operator commands:
+  advisory-pr-reset clear one private advisory disposition by explicit operator action
   agent-kit         install, inspect, or update the release-matched agent toolkit
   apply             reconcile a live daemon's workflow definitions now
   approve           approve a paused or escalated gate
@@ -178,6 +179,8 @@ Advanced operator commands:
   workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
+  advisory-pr-publish publish an advisory observation or private skip (a workflow stage)
+  advisory-pr-select select one open PR for a private advisory review (a workflow stage)
   apply-verdict     publish a managed or advisory merge-review verdict (a workflow stage)
   backlog-assignment assign eligible backlog items from a configured roster (a workflow stage)
   backlog-dedupe    surface ranked duplicate candidates for curator judgment (a workflow stage)
@@ -237,6 +240,8 @@ their run context from GOOBERS_* environment variables and retain their
 existing standalone invocation behavior.
 
 Usage:
+  advisory-pr-publish publish an advisory observation or private skip (a workflow stage)
+  advisory-pr-select select one open PR for a private advisory review (a workflow stage)
   apply-verdict     publish a managed or advisory merge-review verdict (a workflow stage)
   backlog-assignment assign eligible backlog items from a configured roster (a workflow stage)
   backlog-dedupe    surface ranked duplicate candidates for curator judgment (a workflow stage)
@@ -287,6 +292,21 @@ Usage:
   validate-plan     validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
 
 See `goobers --help` for core operator commands.
+
+### advisory-pr-publish
+Usage: goobers advisory-pr-publish [path]
+
+Publish a strict advisory reviewer artifact or record a permanent private skip. Inputs: reviewType, reviewerStage, selectionStage.
+
+### advisory-pr-reset
+Usage: goobers advisory-pr-reset --gaggle NAME --owner OWNER --repo REPO --review-type TYPE --pr NUMBER [path]
+
+Explicitly clear one private advisory disposition on the local instance.
+
+### advisory-pr-select
+Usage: goobers advisory-pr-select [path]
+
+Select one open PR for a private-disposition advisory review. Input: reviewType.
 
 ### agent-kit
 Usage: goobers agent-kit <subcommand> [flags] [path]
