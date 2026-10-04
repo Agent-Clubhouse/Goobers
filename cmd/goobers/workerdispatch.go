@@ -186,7 +186,12 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		return stageDispatch{}, fmt.Errorf("stage dispatch: gaggle namespace preflight: %w", preflightErr)
 	}
 	build := version.Get()
+	tmpfsSize, err := cfg.Runner.ResolvePodTmpfsSize()
+	if err != nil {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
+	}
 	d, err := newStageDispatcher(dispatcher.Config{
+		TmpfsSizeLimit: tmpfsSize,
 		// Validation guarantees a non-nil signer before it enters the interface.
 		TokenMinter: signed,
 		// The kit writer uses the same key and the worker's pinned config
