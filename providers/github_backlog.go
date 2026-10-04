@@ -141,11 +141,7 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	// Callers that need a bounded raw scan opt into the PageInfo/Cursor path
 	// above.
 	var items []WorkItem
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var issues []githubIssue
-		if err := json.Unmarshal(page, &issues); err != nil {
-			return fmt.Errorf("decode issues page: %w", err)
-		}
+	if err := walkPagedJSON(ctx, p, endpoint, "decode issues page", func(issues []githubIssue) error {
 		for _, issue := range issues {
 			if issue.PullRequest != nil {
 				continue
@@ -527,12 +523,8 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 	}
 
 	var existing []string
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageLabels []githubLabel
-		if err := json.Unmarshal(page, &pageLabels); err != nil {
-			return fmt.Errorf("decode labels page: %w", err)
-		}
-		for _, label := range pageLabels {
+	if err := walkPagedJSON(ctx, p, endpoint, "decode labels page", func(labels []githubLabel) error {
+		for _, label := range labels {
 			existing = append(existing, label.Name)
 		}
 		return nil
