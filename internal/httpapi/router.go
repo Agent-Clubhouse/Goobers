@@ -614,6 +614,7 @@ type handlerConfig struct {
 	cancels                 CancelService
 	journal                 JournalService
 	runJournal              RunJournalService
+	childWorkflows          ChildWorkflowService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store

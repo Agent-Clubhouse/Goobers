@@ -348,6 +348,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerCancelRoute(router, config.cancels, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
 	registerCredentialRefreshRoute(router, config.credentials, errorLog)
+	registerChildWorkflowRoutes(router, config.childWorkflows, errorLog)
 }
 
 func registerClaimRoute(

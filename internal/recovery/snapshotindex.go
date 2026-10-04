@@ -12,10 +12,6 @@ const maxSnapshotIndexBytes = 32 << 20
 // Export logical entries, not raw index bytes: sparse/split index extensions
 // can reference shared files belonging to the source Git directory. Importing
 // entries preserves staged content without borrowing or rewriting that index.
-func snapshotIndex(ctx context.Context, repository string, environment []string) error {
-	return snapshotIndexWithPolicy(ctx, repository, environment, nil)
-}
-
 func snapshotIndexWithPolicy(ctx context.Context, repository string, environment []string, policy *SnapshotPolicy) error {
 	var entries bytes.Buffer
 	writer := &archiveBudgetWriter{destination: &entries, remaining: maxSnapshotIndexBytes}
@@ -33,10 +29,6 @@ func snapshotIndexWithPolicy(ctx context.Context, repository string, environment
 		return fmt.Errorf("import recovery source index: %w", err)
 	}
 	return snapshotSkipFlagsWithPolicy(ctx, repository, environment, policy)
-}
-
-func snapshotSkipFlags(ctx context.Context, repository string, environment []string) error {
-	return snapshotSkipFlagsWithPolicy(ctx, repository, environment, nil)
 }
 
 func snapshotSkipFlagsWithPolicy(ctx context.Context, repository string, environment []string, policy *SnapshotPolicy) error {

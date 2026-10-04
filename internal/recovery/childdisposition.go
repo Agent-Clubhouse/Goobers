@@ -13,6 +13,7 @@ import (
 // Preparation never modifies the live parent checkout or its real index.
 type ChildDisposition string
 
+// Child workspace disposition actions are explicit parent choices.
 const (
 	ChildMerge   ChildDisposition = "merge"
 	ChildReplace ChildDisposition = "replace"
