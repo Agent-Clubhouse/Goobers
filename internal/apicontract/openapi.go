@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if route.ID == RouteWorkbenchGraph || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if sessionOperationRoute(route.ID) {
@@ -261,6 +261,9 @@ func openAPIRequestBody(route Route) map[string]any {
 }
 
 func openAPIResponses(route Route) map[string]any {
+	if route.ID == RouteWorkbenchGraph {
+		return map[string]any{"200": jsonResponse("Current server-authorized graph; coverage and conflicts remain explicit", schemaRef("WorkbenchGraph")), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
+	}
 	if sessionOperationRoute(route.ID) {
 		return sessionOperationResponses(route.ID)
 	}

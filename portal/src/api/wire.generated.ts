@@ -2,6 +2,7 @@
 
 import type {
   WorkbenchDocumentPage,
+  WorkbenchGraph,
   WorkbenchSourcePage,
   BacklogPage,
   BacklogItem,
@@ -63,6 +64,7 @@ import type {
 
 export interface GoWireFixtures {
   workbenchDocuments: WorkbenchDocumentPage;
+  workbenchGraph: WorkbenchGraph;
   workbenchSources: WorkbenchSourcePage;
   workbenchItems: BacklogPage;
   workbenchItem: BacklogItem;
@@ -123,6 +125,118 @@ export interface GoWireFixtures {
 }
 
 export const goWireFixtures = {
+  "workbenchGraph": {
+    "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "gaggleId": "web",
+    "nodes": [
+      {
+        "key": "f04c1f27b09ec0e4cdd82790f0b2d31a616386345f3bc8cae55b8eb9621404ea",
+        "observations": [
+          {
+            "contentDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "ref": {
+              "gaggleId": "web",
+              "sourceBindingId": "backlog",
+              "kind": "work-item",
+              "sourceId": "987654"
+            },
+            "title": "Explicit native objective",
+            "type": "Issue",
+            "state": "open",
+            "revision": "2026-10-04T12:00:00Z",
+            "locator": {
+              "id": "42"
+            },
+            "objective": true
+          }
+        ],
+        "conflict": false
+      }
+    ],
+    "edges": [
+      {
+        "key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "edgeId": "edge-00000000-0000-0000-0000-000000000001",
+        "kind": "contributes-to",
+        "from": {
+          "ref": {
+            "gaggleId": "web",
+            "sourceBindingId": "backlog",
+            "kind": "work-item",
+            "sourceId": "987654"
+          },
+          "resolved": true
+        },
+        "to": {
+          "ref": {
+            "gaggleId": "web",
+            "sourceBindingId": "strategy",
+            "kind": "objective-document",
+            "sourceId": "obj-00000000-0000-0000-0000-000000000001"
+          },
+          "resolved": false
+        },
+        "origin": "authored",
+        "owner": {
+          "kind": "manifest",
+          "sourceBindingId": "links",
+          "path": "links.yaml"
+        },
+        "conflict": false
+      }
+    ],
+    "documents": [
+      {
+        "sourceBindingId": "strategy",
+        "path": "objective.md",
+        "status": "available",
+        "provenance": {
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "blobId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "contentDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "ref": {
+          "gaggleId": "web",
+          "sourceBindingId": "strategy",
+          "kind": "objective-document",
+          "sourceId": "obj-00000000-0000-0000-0000-000000000001"
+        }
+      }
+    ],
+    "aliases": [
+      {
+        "name": "delivery",
+        "target": {
+          "ref": {
+            "gaggleId": "web",
+            "sourceBindingId": "strategy",
+            "kind": "objective-document",
+            "sourceId": "obj-00000000-0000-0000-0000-000000000001"
+          },
+          "resolved": false
+        },
+        "owner": {
+          "kind": "manifest",
+          "sourceBindingId": "links",
+          "path": "links.yaml"
+        }
+      }
+    ],
+    "sources": [
+      {
+        "sourceBindingId": "backlog",
+        "kind": "backlog",
+        "status": "partial",
+        "consistency": "native-non-snapshot",
+        "sourceTargetDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "reasons": [
+          "native-non-snapshot"
+        ]
+      }
+    ],
+    "conflicts": [],
+    "partial": true
+  },
   "workbenchDocuments": {
     "sourceBindingId": "strategy",
     "repository": {

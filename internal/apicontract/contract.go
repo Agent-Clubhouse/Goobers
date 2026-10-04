@@ -667,6 +667,7 @@ var v1Routes = []Route{
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionBacklogRead, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionBacklogList, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/list_backlog_items", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchGraph, Method: http.MethodGet, Path: WorkbenchGraphPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchSources, Method: http.MethodGet, Path: WorkbenchSourcesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchDocuments, Method: http.MethodGet, Path: WorkbenchDocumentsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchItems, Method: http.MethodGet, Path: WorkbenchItemsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

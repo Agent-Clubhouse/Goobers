@@ -18,6 +18,7 @@ import (
 )
 
 type wireFixtures struct {
+	WorkbenchGraph     WorkbenchGraph        `json:"workbenchGraph"`
 	WorkbenchDocuments WorkbenchDocumentPage `json:"workbenchDocuments"`
 	WorkbenchSources   WorkbenchSourcePage   `json:"workbenchSources"`
 	WorkbenchItems     BacklogPage           `json:"workbenchItems"`
@@ -84,6 +85,7 @@ var wireFixtureTypes = []struct {
 	scriptType string
 }{
 	{name: "workbenchDocuments", scriptType: "WorkbenchDocumentPage"},
+	{name: "workbenchGraph", scriptType: "WorkbenchGraph"},
 	{name: "workbenchSources", scriptType: "WorkbenchSourcePage"},
 	{name: "workbenchItems", scriptType: "BacklogPage"},
 	{name: "workbenchItem", scriptType: "BacklogItem"},
@@ -1101,6 +1103,7 @@ func childWorkflowWireFixture() ChildWorkflowResponse {
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
 	fixtures = withSessionFixtures(fixtures)
 	fixtures = withWorkbenchFixtures(fixtures)
+	fixtures.WorkbenchGraph = workbenchGraphFixture()
 	fixtures.ChildPublicationCheck = ChildPublicationCheckRequest{Action: "pr", ExpectedIntentDigest: "sha256:" + strings.Repeat("a", 64)}
 	fixtures.ChildPublicationResult = ChildPublicationCheckResult{RunID: "child-run", RequestID: "human-one", Publication: ChildPublicationSummary{SourceRunID: "original-child", ExecutionEpoch: 0, Action: "pr", IntentDigest: fixtures.ChildPublicationCheck.ExpectedIntentDigest, State: "effect_pending", Head: "goobers/children/child-run", Base: "main", Commit: strings.Repeat("a", 40), NeedsHuman: true, Observation: "not_observed", CreatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}
 	fixtures.ChildWorkflowPage = ChildWorkflowPage{RunID: "parent-run", Gaggle: "web", Children: []ChildWorkflowSummary{{ChildID: "child-one", InvocationKey: "inspect", Sequence: 1, State: "queued", AcceptedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}}

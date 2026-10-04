@@ -642,6 +642,7 @@ type handlerConfig struct {
 	interactiveSessions     InteractiveSessionService
 	sessionOperations       SessionOperationService
 	workbenchReads          WorkbenchReadService
+	workbenchGraph          WorkbenchGraphService
 	workbenchDocuments      WorkbenchDocumentService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
@@ -1240,6 +1241,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerChildPublicationCheckRoute(router, config, errorLog)
 	registerSessionRoutes(router, config, errorLog)
 	registerWorkbenchRoutes(router, config, errorLog)
+	registerWorkbenchGraphRoute(router, config, errorLog)
 	router.Handle(apicontract.RouteWorkbenchDocuments, workbenchDocumentsHandler(config.workbenchDocuments, errorLog))
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)

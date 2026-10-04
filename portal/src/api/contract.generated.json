@@ -786,6 +786,17 @@
       "recoverySafe": false
     },
     {
+      "id": "workbenchGraph",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/graph",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workbenchSources",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workbench/sources",

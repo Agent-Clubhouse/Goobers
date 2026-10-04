@@ -172,7 +172,7 @@ func (p *projection) manifestFile(source workbench.BoundSource, file workbench.D
 			return ErrInvalidSnapshot
 		}
 		target := alias.Target
-		p.graph.Aliases = append(p.graph.Aliases, Alias{Name: alias.Name, Target: Endpoint{Ref: &target}, Owner: owner})
+		p.graph.Aliases = append(p.graph.Aliases, Alias{Name: alias.Name, Target: Endpoint{Ref: &target}, Owner: graphOwner(owner)})
 	}
 	return p.authoredEdges(file.Manifest.Edges, owner)
 }
@@ -185,7 +185,7 @@ func (p *projection) authoredEdges(edges []workbench.Edge, owner workbench.Owner
 			return ErrInvalidSnapshot
 		}
 		from, to := edge.From, edge.To
-		value := Edge{EdgeID: edge.EdgeID, Kind: edge.Kind, From: Endpoint{Ref: &from}, To: Endpoint{Ref: &to}, Rationale: edge.Rationale, Origin: "authored", Owner: owner}
+		value := Edge{EdgeID: edge.EdgeID, Kind: edge.Kind, From: Endpoint{Ref: &from}, To: Endpoint{Ref: &to}, Rationale: edge.Rationale, Origin: "authored", Owner: graphOwner(owner)}
 		if err := p.edge(value); err != nil {
 			return err
 		}

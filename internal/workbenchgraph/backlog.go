@@ -111,7 +111,7 @@ func (p *projection) nativeEdge(observed nativeObservation) (Edge, error) {
 		return Edge{}, err
 	}
 	current := observed.item
-	edge := Edge{Kind: relation.Kind, From: Endpoint{Ref: &current}, To: target, Origin: "native", Owner: workbench.Owner{Kind: "native", SourceBindingID: current.SourceBindingID, Field: field, Object: current}}
+	edge := Edge{Kind: relation.Kind, From: Endpoint{Ref: &current}, To: target, Origin: "native", Owner: graphOwner(workbench.Owner{Kind: "native", SourceBindingID: current.SourceBindingID, Field: field, Object: current})}
 	if relation.Incoming {
 		edge.From, edge.To = edge.To, edge.From
 	}

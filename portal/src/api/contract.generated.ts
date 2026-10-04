@@ -72,6 +72,7 @@ export const apiRoutes = {
   "operatorMessageSubmit": { method: "POST", path: "/api/v1/runs/{run}/operator-messages", actionClass: "workflow-execution" },
   "sessionBacklogRead": { method: "POST", path: "/api/v1/runs/{run}/session-operations/get_backlog_item", actionClass: "workflow-execution" },
   "sessionBacklogList": { method: "POST", path: "/api/v1/runs/{run}/session-operations/list_backlog_items", actionClass: "workflow-execution" },
+  "workbenchGraph": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/graph", actionClass: "read-only-navigation" },
   "workbenchSources": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/sources", actionClass: "read-only-navigation" },
   "workbenchDocuments": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/documents", actionClass: "read-only-navigation" },
   "workbenchItems": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/items", actionClass: "read-only-navigation" },

@@ -88,15 +88,15 @@ type Endpoint struct {
 
 // Edge retains explicit native or authored relationship direction and ownership.
 type Edge struct {
-	Key       string          `json:"key"` // Projection identity only, never a new source-owned ID.
-	EdgeID    string          `json:"edgeId,omitempty"`
-	Kind      string          `json:"kind"`
-	From      Endpoint        `json:"from"`
-	To        Endpoint        `json:"to"`
-	Rationale string          `json:"rationale,omitempty"`
-	Origin    string          `json:"origin"` // native or authored
-	Owner     workbench.Owner `json:"owner"`
-	Conflict  bool            `json:"conflict"`
+	Key       string   `json:"key"` // Projection identity only, never a new source-owned ID.
+	EdgeID    string   `json:"edgeId,omitempty"`
+	Kind      string   `json:"kind"`
+	From      Endpoint `json:"from"`
+	To        Endpoint `json:"to"`
+	Rationale string   `json:"rationale,omitempty"`
+	Origin    string   `json:"origin"` // native or authored
+	Owner     Owner    `json:"owner"`
+	Conflict  bool     `json:"conflict"`
 }
 
 // Document preserves ordinary reference material and omitted configured files
@@ -111,9 +111,9 @@ type Document struct {
 
 // Alias is an alternate source-owned name, never a second planning object.
 type Alias struct {
-	Name   string          `json:"name"`
-	Target Endpoint        `json:"target"`
-	Owner  workbench.Owner `json:"owner"`
+	Name   string   `json:"name"`
+	Target Endpoint `json:"target"`
+	Owner  Owner    `json:"owner"`
 }
 
 // Coverage explains what a supplied source read can and cannot establish.
@@ -131,4 +131,23 @@ type Coverage struct {
 type Conflict struct {
 	Kind string   `json:"kind"`
 	Keys []string `json:"keys"`
+}
+
+// Owner is the public source location of a relationship. Object is present only
+// for native field ownership, so an empty reference cannot imply another node.
+type Owner struct {
+	Kind            string             `json:"kind"`
+	SourceBindingID string             `json:"sourceBindingId"`
+	Path            string             `json:"path,omitempty"`
+	Field           string             `json:"field,omitempty"`
+	Object          *workbench.NodeRef `json:"object,omitempty"`
+}
+
+func graphOwner(source workbench.Owner) Owner {
+	owner := Owner{Kind: source.Kind, SourceBindingID: source.SourceBindingID, Path: source.Path, Field: source.Field}
+	if source.Object != (workbench.NodeRef{}) {
+		object := source.Object
+		owner.Object = &object
+	}
+	return owner
 }
