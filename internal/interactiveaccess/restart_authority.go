@@ -153,8 +153,14 @@ func LoadRestartAuthority(reader *journal.Reader, id journal.RunIdentity) (Resta
 	if err != nil {
 		return RestartAuthority{}, err
 	}
-	if id.Child != nil || id.EngineDriven() || a.EpochID != id.RunID || a.SourceRunID != id.ContinuedFromRunID || a.SourceTerminalSeq != id.SourceTerminalSeq || a.Gaggle != id.Gaggle || a.Stage != id.RequestedTarget || a.WorkflowDigest != id.WorkflowDigest || a.GooberDigest != id.GooberDigest || id.Operator != a.Issuer+":"+a.Subject || found.Source != id.Operator {
+	if !restartChildAuthorityAllowed(id) || id.EngineDriven() || a.EpochID != id.RunID || a.SourceRunID != id.ContinuedFromRunID || a.SourceTerminalSeq != id.SourceTerminalSeq || a.Gaggle != id.Gaggle || a.Stage != id.RequestedTarget || a.WorkflowDigest != id.WorkflowDigest || a.GooberDigest != id.GooberDigest || id.Operator != a.Issuer+":"+a.Subject || found.Source != id.Operator {
 		return RestartAuthority{}, errors.New("restart authority does not match retained execution")
 	}
 	return a, nil
+}
+
+// The same human authority format can bind an admitted generated-child epoch.
+// Queue/current-policy checks remain mandatory at admission and materialization.
+func restartChildAuthorityAllowed(id journal.RunIdentity) bool {
+	return id.Child == nil || (id.Child.ExecutionEpoch > 0 && id.ValidateChildLineage() == nil)
 }
