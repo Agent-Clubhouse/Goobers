@@ -218,3 +218,24 @@ func TestOrphanDisposalRetainsPhysicalIdentityAndIsolation(t *testing.T) {
 		t.Fatal("malformed physical attempt fell back to logical ordinal")
 	}
 }
+
+func (childMinter) MintWorkflowParentPod(run, digest string, _ time.Duration) (string, error) {
+	return "parent:" + run + ":" + digest, nil
+}
+func TestParentTokenBindsExactContractAndRequiresIsolation(t *testing.T) {
+	a := testAttempt()
+	a.WorkflowParent = true
+	a.PodToken = ""
+	a.ChildExecutionDigest = "sha256:" + strings.Repeat("a", 64)
+	d := &Dispatcher{cfg: Config{TokenMinter: childMinter{}}}
+	if err := d.mintAttemptToken(&a); err != nil {
+		t.Fatal(err)
+	}
+	if a.PodToken != "parent:"+a.RunID+":"+a.ChildExecutionDigest {
+		t.Fatal("parent token lost contract binding")
+	}
+	a.ChildExecutionDigest = ""
+	if err := validateChildRunner(a, linuxRunner()); !errors.Is(err, ErrChildIsolation) {
+		t.Fatal("parent role ran without contract", err)
+	}
+}

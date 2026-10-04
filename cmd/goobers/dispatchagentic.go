@@ -176,7 +176,12 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 
 	result, err := exec.Invoke(ctx, kit.Envelope)
 	if err != nil {
-		return fail("agentic_invocation_failed", err)
+		failed := fail("agentic_invocation_failed", err)
+		if isolatedChildWorkspace(ctx) {
+			failed.Result.Transcript = result.Transcript
+			failed.Result.Artifacts = result.Artifacts
+		}
+		return failed
 	}
 	return stageOutcome{Result: result}
 }
@@ -489,7 +494,11 @@ type podExecutorWiring struct {
 // this function rather than a hand-assembled replica — so the agreement is
 // exercised by the same code production runs.
 func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
-	return agenticExecutorInput{
+	var childAccess harness.ChildWorkflowAccessProvider
+	if w.Kit.Envelope.ChildWorkflowOrigin != nil {
+		childAccess = parentPodAccess(w.Registry)
+	}
+	return agenticExecutorInput{ChildWorkflows: childAccess,
 		GooberName:       w.Kit.Envelope.Goober,
 		Goobers:          w.Kit.Goobers,
 		Instructions:     w.Kit.Instructions,

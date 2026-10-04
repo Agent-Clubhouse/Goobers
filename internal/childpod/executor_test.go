@@ -110,3 +110,23 @@ func TestContractRejectsPublicationAndSubstitution(t *testing.T) {
 		t.Fatal("synthetic history publication accepted")
 	}
 }
+
+func TestContractParentAndChildRolesAreExclusive(t *testing.T) {
+	r := requestFixture()
+	c, _, err := makeContract(t.Context(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ParentOrigin = &apiv1.ChildWorkflowOrigin{StageOccurrence: "first", AttemptID: "current"}
+	if err = c.Validate(); err == nil {
+		t.Fatal("recursive parent/child contract accepted")
+	}
+	c.Identity.Child = nil
+	if err = c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.Identity.ConfigGeneration = ""
+	if err = c.Validate(); err == nil {
+		t.Fatal("unpinned parent accepted")
+	}
+}
