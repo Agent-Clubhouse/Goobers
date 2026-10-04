@@ -20,6 +20,7 @@ type Effects struct {
 	Patch             bool
 	EmptySuccess      bool
 	Changes           bool
+	Pushes            bool
 	CodeSubject       bool
 	SelectsPR         bool
 	Rebinds           bool
@@ -86,7 +87,7 @@ func goobersCommandEffects(command string, args []string) Effects {
 		effects = selectionEffects(command, args)
 	case "push-branch", "push-remediated", "rebase-pr":
 		if len(args) == 0 {
-			effects = Effects{Known: true, Changes: true, CodeSubject: true}
+			effects = Effects{Known: true, Changes: true, Pushes: true, CodeSubject: true}
 		}
 	case "pr-claim":
 		if len(args) == 0 || slices.Equal(args, []string{"--release"}) {
