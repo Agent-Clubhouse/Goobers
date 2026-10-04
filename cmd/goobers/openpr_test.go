@@ -728,3 +728,17 @@ func TestOpenPRMissingRunIDFailsClosed(t *testing.T) {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
 	}
 }
+
+func TestOpenPRTitleWarnsWhenFallingBackToGenericTitle(t *testing.T) {
+	var stderr strings.Builder
+	title, _, _, haveIssue, err := openPRTitle(filepath.Join(t.TempDir(), "missing-root"), "run-no-claim", providers.RepositoryRef{}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if haveIssue || title != "Automated implementation" {
+		t.Fatalf("openPRTitle = (%q, %t), want generic title without issue", title, haveIssue)
+	}
+	if got := stderr.String(); !strings.Contains(got, `warning: using generic pull request title "Automated implementation"`) || !strings.Contains(got, "run journal") {
+		t.Fatalf("stderr = %q, want generic-title warning naming the journal failure", got)
+	}
+}

@@ -239,11 +239,12 @@ func openPRIssueWithFallbackReason(root, runID string) (id, title string, ok boo
 // openPRTitle resolves the pull request title. In topology (b) a bare "#<n>"
 // in it (the issue title is the default) is rewritten to the backlog issue's
 // URL, because the title becomes the Azure DevOps squash-commit title, where
-// "#<n>" names ADO work item n; see crossProviderIssueText.
-func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issueID, issueTitle string, haveIssue bool, genericReason string, err error) {
-	issueID, issueTitle, haveIssue, genericReason, err = openPRIssueWithFallbackReason(root, runID)
+// "#<n>" names ADO work item n; see crossProviderIssueText. When it falls
+// back to the generic title it warns on stderr naming why (#6566).
+func openPRTitle(root, runID string, repo providers.RepositoryRef, stderr io.Writer) (title, issueID, issueTitle string, haveIssue bool, err error) {
+	issueID, issueTitle, haveIssue, genericReason, err := openPRIssueWithFallbackReason(root, runID)
 	if err != nil {
-		return "", "", "", false, "", err
+		return "", "", "", false, err
 	}
 	title = providerInput("title", "")
 	if title != "" {
@@ -262,10 +263,13 @@ func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issue
 			}
 		}
 	}
+	if genericReason != "" {
+		pf(stderr, "warning: using generic pull request title %q: %s\n", title, genericReason)
+	}
 	if haveIssue && issueID != "" {
 		title = crossProviderIssueText(title, issueID, prIssueReference(root, repo, issueID))
 	}
-	return title, issueID, issueTitle, haveIssue, genericReason, nil
+	return title, issueID, issueTitle, haveIssue, nil
 }
 
 // openPRTarget is where open-pr opens its PR: the gaggle's routed repository
@@ -375,13 +379,10 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// both sides. Recovered from the run journal (resume-safe), so this holds on
 	// a repass too. Falls back to the generic title/body when the run claimed no
 	// issue (other workflows) or an explicit title/body input is set.
-	title, issueID, issueTitle, haveIssue, genericTitleReason, err := openPRTitle(root, runID, repo)
+	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID, repo, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
-	}
-	if genericTitleReason != "" {
-		pf(stderr, "warning: using generic pull request title %q: %s\n", title, genericTitleReason)
 	}
 	body := providerInput("body", "")
 	structuredBody := false
