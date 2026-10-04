@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -94,7 +95,10 @@ type OrphanReap struct {
 	Reason    string
 }
 
-const orphanReapReasonOwningWorkflowTerminal = "owning workflow terminal"
+const (
+	orphanReapReasonOwningWorkflowTerminal = "owning workflow terminal"
+	orphanReapReasonHoldExpired            = "owning workflow terminal; recovery custody unconfirmed and the hold expired"
+)
 
 // SweepOrphans is the restart reconcile half of orphan cleanup (dispatcher
 // §5, constraint (a)): cross-namespace ownerReferences are NOT used (k8s GC
@@ -128,10 +132,16 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 }
 
 // SweepOrphansWithReport is SweepOrphans with per-pod disposal reasons for
-// operator logs. A terminal owning workflow is the positive safety proof: no
-// workflow remains that can consume an unsurrendered workspace, so the retained
-// pod object is bounded to that run's lifetime instead of requiring durable
-// recovery custody forever.
+// operator logs.
+//
+// A terminal owning workflow proves no execution will resume from the pod,
+// but not that its work is safe: a writable pod that exited before its
+// supervisor published recovery custody may hold the only copy of the
+// attempt's unsurrendered work. Such a pod is HELD (left in place and named
+// in the aggregated error with the time it will be reaped) until its stage
+// container has been stopped for Config.HeldPodRetention, then reaped (#6571).
+// A pod whose custody is confirmed, or that has no writable workspace, is
+// disposed as soon as its workflow is terminal.
 func (d *Dispatcher) SweepOrphansWithReport(ctx context.Context, runs RunStates) ([]OrphanReap, error) {
 	if runs == nil {
 		return nil, errors.New("dispatcher: orphan sweep requires a RunStates resolver")
@@ -171,18 +181,60 @@ func (d *Dispatcher) SweepOrphansWithReport(ctx context.Context, runs RunStates)
 			// loop, and `reaped` reflects every pod actually removed. Periodic
 			// reconciliation or a replacement worker retries it within the same
 			// durable instance scope.
-			if err := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); err != nil {
-				errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
+			reason, err := d.reapTerminalPod(ctx, pod, attempt)
+			if err != nil {
+				errs = append(errs, err)
 				continue
 			}
-			reaped = append(reaped, OrphanReap{
-				Pod:       pod.Name,
-				Namespace: pod.Namespace,
-				Reason:    orphanReapReasonOwningWorkflowTerminal,
-			})
+			reaped = append(reaped, OrphanReap{Pod: pod.Name, Namespace: pod.Namespace, Reason: reason})
 		}
 	}
 	return reaped, errors.Join(errs...)
+}
+
+// reapTerminalPod disposes one pod whose owning workflow is terminal through
+// the recovery-custody gate, and past that gate only once the hold on an
+// unconfirmed writable pod has expired. It returns the disposal reason.
+func (d *Dispatcher) reapTerminalPod(ctx context.Context, pod *corev1.Pod, attempt PodAttempt) (string, error) {
+	err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt})
+	if err == nil {
+		return orphanReapReasonOwningWorkflowTerminal, nil
+	}
+	if !errors.Is(err, ErrRecoveryUnconfirmed) {
+		return "", fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	}
+	stopped, ok := stageStoppedAt(pod)
+	if !ok {
+		return "", fmt.Errorf("dispatcher: holding stage pod %s/%s while its stage container has not stopped: %w",
+			pod.Namespace, pod.Name, err)
+	}
+	expires := stopped.Add(d.cfg.heldPodRetention())
+	if d.now().Before(expires) {
+		return "", fmt.Errorf("dispatcher: holding stage pod %s/%s until %s: %w",
+			pod.Namespace, pod.Name, expires.UTC().Format(time.RFC3339), err)
+	}
+	if err := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); err != nil {
+		return "", fmt.Errorf("dispatcher: delete expired held stage pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	}
+	return fmt.Sprintf("%s (stopped %s)", orphanReapReasonHoldExpired, stopped.UTC().Format(time.RFC3339)), nil
+}
+
+// stageStoppedAt reports when a pod's stage container stopped: its terminated
+// state's finish time, or, for a pod Kubernetes already settled without one,
+// its creation time. ok is false while the stage container may still run.
+func stageStoppedAt(pod *corev1.Pod) (time.Time, bool) {
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name == StageContainerName && status.State.Terminated != nil &&
+			!status.State.Terminated.FinishedAt.IsZero() {
+			return status.State.Terminated.FinishedAt.Time, true
+		}
+	}
+	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+		if !pod.CreationTimestamp.IsZero() {
+			return pod.CreationTimestamp.Time, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // distinctNamespaces returns the sorted, deduplicated namespace values a
