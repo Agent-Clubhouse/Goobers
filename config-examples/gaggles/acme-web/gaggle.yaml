@@ -50,7 +50,8 @@ spec:
     - node@20
   # Optional health policy. Omission uses the same conservative defaults:
   # observe all known conditions, notify at warning+, and permit only the
-  # built-in idempotent orphaned-claim repair.
+  # built-in idempotent orphaned-claim repair. The policy is validated today;
+  # the daemon health controller that evaluates it lands with #4425.
   health:
     evaluationInterval: 5m
     thresholds:
