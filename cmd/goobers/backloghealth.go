@@ -112,10 +112,8 @@ func resolveBacklogHealthScanOptions(stderr io.Writer) (backlogHealthScanOptions
 		maxPages:   defaultTransitionScanMaxPages,
 		quotaFloor: defaultTransitionScanQuotaFloor,
 	}
-	pages, err := parseProviderIntInput(
-		"transitionScanMaxPages",
-		strconv.Itoa(defaultTransitionScanMaxPages),
-		false,
+	pages, err := parseIntInput(
+		providerInput("transitionScanMaxPages", strconv.Itoa(defaultTransitionScanMaxPages)),
 		func(value int) bool { return value >= 1 },
 		func(raw string, _ error) string {
 			return fmt.Sprintf("input transitionScanMaxPages must be an integer of at least 1, got %q", raw)
@@ -126,10 +124,8 @@ func resolveBacklogHealthScanOptions(stderr io.Writer) (backlogHealthScanOptions
 		return opts, false
 	}
 	opts.maxPages = pages
-	floor, err := parseProviderFloatInput(
-		"transitionScanQuotaFloor",
-		strconv.FormatFloat(defaultTransitionScanQuotaFloor, 'f', -1, 64),
-		false,
+	floor, err := parseFloatInput(
+		providerInput("transitionScanQuotaFloor", strconv.FormatFloat(defaultTransitionScanQuotaFloor, 'f', -1, 64)),
 		func(value float64) bool { return !(value < 0 || value >= 1) },
 		func(raw string, _ error) string {
 			return fmt.Sprintf("input transitionScanQuotaFloor must be a fraction in [0,1), got %q", raw)
@@ -673,10 +669,8 @@ func applyImplementationFeedback(
 	scan backlogHealthScan,
 	stdout, stderr io.Writer,
 ) int {
-	threshold, err := parseProviderIntInput(
-		"implementationFailureThreshold",
-		strconv.Itoa(defaultImplementationFailureThreshold),
-		false,
+	threshold, err := parseIntInput(
+		providerInput("implementationFailureThreshold", strconv.Itoa(defaultImplementationFailureThreshold)),
 		func(value int) bool { return value >= 2 },
 		func(_ string, _ error) string {
 			return "implementationFailureThreshold must be an integer of at least 2"

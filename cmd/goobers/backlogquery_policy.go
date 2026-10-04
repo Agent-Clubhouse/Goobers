@@ -15,10 +15,8 @@ type backlogQueryPolicies struct {
 
 func readBacklogQueryPolicies(mode backlogQueryMode) (backlogQueryPolicies, error) {
 	p := backlogQueryPolicies{maxItems: 1}
-	maxItems, err := parseProviderIntInput(
-		"maxItems",
-		"1",
-		false,
+	maxItems, err := parseIntInput(
+		providerInput("maxItems", "1"),
 		func(value int) bool { return value >= 1 },
 		func(raw string, _ error) string {
 			return fmt.Sprintf("invalid maxItems %q (want a positive integer)", raw)

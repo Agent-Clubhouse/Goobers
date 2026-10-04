@@ -55,10 +55,8 @@ func runCancelPendingCIWithProvider(
 		pf(stderr, "error: pullNumber and headSha are required\n")
 		return 1
 	}
-	maxRuns, err := parseProviderIntInput(
-		"maxRuns",
-		"25",
-		false,
+	maxRuns, err := parseIntInput(
+		providerInput("maxRuns", "25"),
 		func(value int) bool { return value >= 1 && value <= 100 },
 		func(_ string, _ error) string {
 			return "maxRuns must be an integer between 1 and 100"

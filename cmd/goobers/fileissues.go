@@ -444,10 +444,8 @@ func fileIssuesPolicy() (nomination.Policy, error) {
 	if policy.PartitionLabel == "" {
 		return nomination.Policy{}, errors.New("partitionLabel input is required (the instance's claim partition label, e.g. the label backlog-query's requireLabels demands)")
 	}
-	maxPerRun, err := parseProviderIntInput(
-		"maxPerRun",
-		"3",
-		false,
+	maxPerRun, err := parseIntInput(
+		providerInput("maxPerRun", "3"),
 		func(value int) bool { return value > 0 },
 		func(raw string, _ error) string {
 			return fmt.Sprintf("maxPerRun input must be a positive integer, got %q", raw)
@@ -457,10 +455,8 @@ func fileIssuesPolicy() (nomination.Policy, error) {
 		return nomination.Policy{}, err
 	}
 	policy.MaxPerRun = maxPerRun
-	days, err := parseProviderIntInput(
-		"dedupeWindowDays",
-		"21",
-		false,
+	days, err := parseIntInput(
+		providerInput("dedupeWindowDays", "21"),
 		func(value int) bool { return value >= 0 },
 		func(raw string, _ error) string {
 			return fmt.Sprintf("dedupeWindowDays input must be a non-negative integer, got %q", raw)

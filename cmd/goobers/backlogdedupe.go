@@ -98,10 +98,8 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	maxCandidates, err := parseProviderIntInput(
-		"maxCandidates",
-		strconv.Itoa(defaultDedupeCandidates),
-		false,
+	maxCandidates, err := parseIntInput(
+		providerInput("maxCandidates", strconv.Itoa(defaultDedupeCandidates)),
 		func(value int) bool { return value >= 1 && value <= maxDedupeCandidates },
 		func(raw string, _ error) string {
 			return fmt.Sprintf("invalid maxCandidates %q (want an integer between 1 and %d)", raw, maxDedupeCandidates)

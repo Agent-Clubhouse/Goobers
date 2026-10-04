@@ -57,10 +57,8 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 	if rawMax == "" {
 		return backlogResweepPolicy{}, false, nil
 	}
-	resweepMax, err := parseProviderIntInput(
-		"resweepMaxItems",
-		"",
-		true,
+	resweepMax, err := parseIntInput(
+		rawMax,
 		func(value int) bool { return value >= 1 && value <= maxItems },
 		func(raw string, _ error) string {
 			return fmt.Sprintf("invalid resweepMaxItems %q (want an integer from 1 through maxItems=%d)", raw, maxItems)

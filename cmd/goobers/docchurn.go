@@ -141,10 +141,8 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 	// node can tune them without a bespoke command line.
 	floor := *since
 	if v := providerInput("sinceFloor", ""); v != "" {
-		d, err := parseProviderDurationInput(
-			"sinceFloor",
-			"",
-			false,
+		d, err := parseDurationInput(
+			v,
 			func(value time.Duration) bool { return value > 0 },
 			func(raw string, _ error) string {
 				return fmt.Sprintf("input sinceFloor must be a positive duration, got %q", raw)
@@ -158,10 +156,8 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 	}
 	multiplier := *bufferMultiplier
 	if v := providerInput("bufferMultiplier", ""); v != "" {
-		m, err := parseProviderFloatInput(
-			"bufferMultiplier",
-			"",
-			false,
+		m, err := parseFloatInput(
+			v,
 			func(value float64) bool { return !(value < 1) },
 			func(raw string, _ error) string {
 				return fmt.Sprintf("input bufferMultiplier must be a number >= 1, got %q", raw)
