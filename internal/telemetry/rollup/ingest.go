@@ -1596,7 +1596,7 @@ func matchingTraversalForSpan(ctx context.Context, tx *sql.Tx, runID, stage stri
 		query += ` AND branch = ?`
 		args = append(args, branch)
 	}
-	query += ` ORDER BY traversal`
+	query += ` ORDER BY started_at, traversal`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, false, fmt.Errorf("rollup: query traversal for span %s: %w", span.SpanID, err)
@@ -1617,10 +1617,12 @@ func matchingTraversalForSpan(ctx context.Context, tx *sql.Tx, runID, stage stri
 		if startedAt.Before(span.StartTime) || startedAt.After(span.EndTime) {
 			continue
 		}
-		if traversal != 0 {
-			return 0, false, fmt.Errorf("rollup: span %s matches multiple traversals for stage attempt %s/%d", span.SpanID, stage, attempt)
+		if traversal == 0 {
+			// A repass can restart its dispatch-local attempt number while an
+			// earlier span is still open. The first matching start is the
+			// traversal that opened the span; later starts belong to repasses.
+			traversal = candidate
 		}
-		traversal = candidate
 	}
 	if err := rows.Err(); err != nil {
 		return 0, false, fmt.Errorf("rollup: iterate traversals for span %s: %w", span.SpanID, err)
