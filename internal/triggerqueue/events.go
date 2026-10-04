@@ -37,16 +37,7 @@ const (
 // EventProducer is derived from authenticated ingress/run ownership. Data and
 // CloudEvents extensions cannot supply these values. Actor survives credential
 // rotation; changing the actor cannot take over an existing producer identity.
-type EventProducer struct {
-	Gaggle      string `json:"gaggle"`
-	Binding     string `json:"binding"`
-	Actor       string `json:"actor"`
-	RunID       string `json:"runId,omitempty"`
-	Stage       string `json:"stage,omitempty"`
-	RootID      string `json:"rootId,omitempty"`
-	CausationID string `json:"causationId,omitempty"`
-	Depth       int    `json:"depth"`
-}
+type EventProducer = eventing.Producer
 
 // EventAcceptance pins one validated envelope and matched routing revision.
 // The runtime service, not an ingress body, constructs Producer and Plan.
@@ -204,20 +195,7 @@ func validateEventAcceptance(req EventAcceptance, now time.Time) (eventing.Envel
 	return envelope, authority, plan, nil
 }
 
-func validEventProducer(p EventProducer) bool {
-	if !validChildText(p.Gaggle, 128, true) || !validChildText(p.Binding, 256, true) || !validChildText(p.Actor, 1024, true) || p.Depth < 0 || p.Depth > 8 {
-		return false
-	}
-	for _, value := range []string{p.RunID, p.Stage, p.RootID, p.CausationID} {
-		if value != "" && !validChildText(value, 256, false) {
-			return false
-		}
-	}
-	if (p.RunID == "") != (p.Stage == "") || (p.CausationID == "") != (p.Depth == 0) || ((p.Depth > 0 || p.RunID != "") && p.RootID == "") {
-		return false
-	}
-	return true
-}
+func validEventProducer(p EventProducer) bool { return p.Valid() }
 
 func eventRoutingReservation(consumers int) int {
 	if consumers == 0 {

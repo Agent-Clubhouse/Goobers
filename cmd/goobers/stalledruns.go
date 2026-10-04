@@ -128,6 +128,7 @@ type daemonRunnerRegistry struct {
 	reconcileContained           func(context.Context, journal.RunIdentity) error
 	resolveGeneration            executionGenerationResolver
 	resolveChildGeneration       executionGenerationResolver
+	resolveEventGeneration       executionGenerationResolver
 	resolveInteractiveGeneration executionGenerationResolver
 	mu                           sync.RWMutex
 	current                      map[string]*runner.Runner

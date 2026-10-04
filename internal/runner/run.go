@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -927,6 +928,8 @@ type StartInput struct {
 	Gaggle string
 	// Child is immutable generated-run provenance, verified before journal creation.
 	Child *journal.ChildLineage
+	// EventInputs is a host-prepared immutable consumer input set, never DSL data.
+	EventInputs *eventing.ExecutionInputs
 	// ChildCredentials is host-derived delegation, pinned with the accepted source.
 	ChildCredentials *credentials.ChildCeiling
 	// ChildWorkspace selects a launcher-provisioned managed fork. It is
@@ -1113,6 +1116,10 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	// itself authors (e.g. an executor_error message), not only the
 	// artifacts an executor scrubs and commits itself.
 	registrar, scrubber := journal.DefaultScrubber()
+	eventLineage, err := prepareEventInputs(&in, inputs, inputIntegrity, scrubber)
+	if err != nil {
+		return Result{}, err
+	}
 	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
 		InstanceID:          in.instanceID,
@@ -1124,6 +1131,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		ConfigGeneration:    in.configGeneration,
 		Gaggle:              in.Gaggle,
 		Child:               in.Child,
+		Event:               eventLineage,
 		RunControls:         &pinnedControls,
 		Trigger:             in.Trigger,
 		WorkspaceBranch:     in.WorkspaceBranch,

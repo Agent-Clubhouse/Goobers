@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/eventexecution"
+	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -23,17 +25,20 @@ import (
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
-	childFamilies   *childFamilyLifecycle
-	queue           *triggerqueue.Store
-	dispatch        *daemonTriggerService
-	sweepMu         sync.Mutex
-	reconcileCursor string
-	bootUncertain   map[string]bool
-	auditLog        *journal.InstanceLog
-	observe         func(context.Context, triggerqueue.Record) (bool, error)
-	children        childExecutionLauncher
-	observeChild    childStartObserver
-	childCursor     string
+	childFamilies    *childFamilyLifecycle
+	queue            *triggerqueue.Store
+	dispatch         *daemonTriggerService
+	sweepMu          sync.Mutex
+	reconcileCursor  string
+	bootUncertain    map[string]bool
+	auditLog         *journal.InstanceLog
+	observe          func(context.Context, triggerqueue.Record) (bool, error)
+	children         childExecutionLauncher
+	observeChild     childStartObserver
+	childCursor      string
+	events           *eventexecution.Service
+	eventScopeCursor string
+	eventGroupCursor string
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a
@@ -151,7 +156,8 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	if s.childFamilies != nil {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}
-	if s.dispatch.triggerer() == nil && s.children == nil {
+	pruneErr = errors.Join(pruneErr, s.sweepEvents(ctx))
+	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil {
 		return pruneErr
 	}
 	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
@@ -163,9 +169,7 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.drainOne(ctx, record); err != nil {
-			return errors.Join(reconcileErr, err)
-		}
+		reconcileErr = errors.Join(reconcileErr, s.drainOne(ctx, record))
 	}
 	return reconcileErr
 }
@@ -182,6 +186,12 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// an envelope also contains an ordinary request. Retain durable custody.
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.drainChild(ctx, record)
+	}
+	if header.Kind == eventing.StartKind {
+		if s.events == nil {
+			return nil
+		}
+		return s.events.Dispatch(ctx, s.dispatch.lifecycleContext(ctx), record)
 	}
 	if header.Kind != "" {
 		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)

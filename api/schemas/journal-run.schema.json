@@ -82,6 +82,21 @@
         }
       }
     },
+    "event": {
+      "description": "Immutable accepted event consumer identity; payloads confer no execution authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggle", "groupId", "consumer", "revision", "acceptanceId", "envelopeDigest", "manifestDigest"],
+      "properties": {
+        "gaggle": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Owning gaggle, equal to the run gaggle." },
+        "groupId": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Durable group containing the selected original events." },
+        "consumer": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Pinned subscription identity." },
+        "revision": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Immutable consumer definition revision." },
+        "acceptanceId": { "type": "string", "pattern": "^trigger-[0-9a-f]{32}$", "description": "Queue receipt reserving this run identity." },
+        "envelopeDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the exact admitted event-start envelope." },
+        "manifestDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the immutable membership and producer provenance manifest." }
+      }
+    },
     "continuedFromRunId": {
       "description": "The terminal source run this continuation was created from.",
       "type": "string",
@@ -94,11 +109,12 @@
     },
     "operator": { "type": "string", "minLength": 1, "description": "Operator who requested the continuation." },
     "requestedTarget": { "type": "string", "minLength": 1, "description": "Workflow state selected for the continuation." },
+    "workspaceRepository": { "$ref": "gaggle.schema.json#/$defs/repoRef", "description": "Exact repository containing the retained workspace branch." },
     "workspaceBranch": { "type": "string", "minLength": 1, "description": "Existing repository branch reused by this run." },
     "workspaceBranchSha": { "type": "string", "minLength": 1, "description": "Commit pinned for the reused branch." },
     "contextPointers": {
       "type": "array",
-      "description": "Explicit continuation inputs; no ambient source context is copied.",
+      "description": "Explicit host-prepared or continuation inputs; no ambient source context is copied.",
       "items": {
         "type": "object",
         "description": "One explicitly selected source context pointer made available to the continuation.",

@@ -185,6 +185,8 @@ func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity
 		resolve = r.resolveInteractiveGeneration
 	} else if identity.Child != nil {
 		resolve = r.resolveChildGeneration
+	} else if identity.Event != nil {
+		resolve = r.resolveEventGeneration
 	}
 	r.mu.RUnlock()
 	if resolve == nil {

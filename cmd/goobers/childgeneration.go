@@ -111,7 +111,7 @@ func resolveInterruptedRuntime(ctx context.Context, id journal.RunIdentity, in i
 	if id.ConfigGeneration != "" || runner.IsStageRestart(id) {
 		pinned, err := in.registry.executionGeneration(ctx, id)
 		if err != nil {
-			if !deferChildGenerationRecovery(ctx, in.log, id) && !deferInteractiveGenerationRecovery(ctx, in.log, id) {
+			if !deferChildGenerationRecovery(ctx, in.log, id) && !deferInteractiveGenerationRecovery(ctx, in.log, id) && !deferEventGenerationRecovery(ctx, in.log, id) {
 				return executionGenerationRuntime{}, false, fmt.Errorf("resolve run %q execution generation: %w", id.RunID, err)
 			}
 			in.release(id.RunID, id.Workflow)

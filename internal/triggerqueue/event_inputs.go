@@ -3,6 +3,7 @@ package triggerqueue
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ type EventMember struct {
 	ReceiptID, Digest string
 	Sequence          int64
 	Selected          bool
+	Producer          EventProducer
 }
 
 // EventDelivery preserves each consumer's success or permanent refusal.
@@ -55,7 +57,7 @@ func (s *Store) EventMembers(ctx context.Context, gaggle, groupID string, after 
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT d.receipt_id,r.digest,d.receipt_seq FROM event_deliveries d JOIN event_receipts r ON r.id=d.receipt_id
+	rows, err := s.db.QueryContext(ctx, `SELECT d.receipt_id,r.digest,d.receipt_seq,r.authority FROM event_deliveries d JOIN event_receipts r ON r.id=d.receipt_id
  WHERE d.gaggle=? AND d.group_id=? AND d.receipt_seq>? ORDER BY d.receipt_seq,d.receipt_id LIMIT ?`, gaggle, groupID, after, limit)
 	if err != nil {
 		return nil, err
@@ -64,8 +66,12 @@ func (s *Store) EventMembers(ctx context.Context, gaggle, groupID string, after 
 	var result []EventMember
 	for rows.Next() {
 		var member EventMember
-		if err := rows.Scan(&member.ReceiptID, &member.Digest, &member.Sequence); err != nil {
+		var authority []byte
+		if err := rows.Scan(&member.ReceiptID, &member.Digest, &member.Sequence, &authority); err != nil {
 			return nil, err
+		}
+		if err := json.Unmarshal(authority, &member.Producer); err != nil || !validEventProducer(member.Producer) {
+			return nil, errors.New("triggerqueue: invalid event member authority")
 		}
 		member.Selected = group.InputMode == "all" || member.ReceiptID == group.SelectedReceipt
 		result = append(result, member)

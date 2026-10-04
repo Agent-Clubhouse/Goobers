@@ -45,6 +45,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
 	ChildRuntime childRuntimeBuilder
+	EventRuntime eventRuntimeBuilder
 	observation  *schedulerObservation
 	runtime      *schedulerRuntime
 	Generations  *configgeneration.Retainer
@@ -187,6 +188,7 @@ func logTelemetryOTLPUnavailable(log *journal.InstanceLog, cause error) {
 
 type schedulerDefinitions struct {
 	ChildRuntime       childRuntimeBuilder
+	EventRuntime       eventRuntimeBuilder
 	GenerationResolver executionGenerationResolver
 	Set                *instance.ConfigSet
 	Validation         *validate.Report
@@ -364,6 +366,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		observation:              observation,
 		runtime:                  runtime,
 		ChildRuntime:             definitions.ChildRuntime,
+		EventRuntime:             definitions.EventRuntime,
 		Generations:              runtime.generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
@@ -864,6 +867,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	return &schedulerDefinitions{
 		GenerationResolver: resolveGeneration,
 		ChildRuntime:       childRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), input.Config, buildGeneration),
+		EventRuntime:       eventRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), buildGeneration),
 		Set:                input.Definitions,
 		Validation:         input.Validation,
 		HarnessPreflight:   harnessInfo,
@@ -1459,6 +1463,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		Trigger:              req.Trigger,
 		RepoRef:              req.RepoRef,
 		Item:                 req.Item,
+		EventInputs:          req.EventInputs,
 		RunControls:          s.runControls,
 		RequiredCapabilities: s.requiredCaps,
 	})

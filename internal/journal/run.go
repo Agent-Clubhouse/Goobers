@@ -258,7 +258,7 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	if !apiv1.ValidRunID(id.RunID) {
 		return nil, fmt.Errorf("journal: invalid run id %q", id.RunID)
 	}
-	if err := id.ValidateChildLineage(); err != nil {
+	if err := id.validateExecutionLineage(); err != nil {
 		return nil, err
 	}
 	cfg := newConfig(opts...)
@@ -522,6 +522,7 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 		}
 	}
 	id.RunID = req.RunID
+	id.Event = nil
 	id.ContinuedFromRunID = req.SourceRunID
 	id.SourceTerminalSeq = req.ExpectedTerminalSeq
 	id.Operator = strings.TrimSpace(req.Operator)

@@ -1,9 +1,10 @@
 # Gaggle event receipts and durable routing
 
-Status: internal store implementation for HAW-EVT-001/003/007 and the HAW-EVT-006
-root budget. Public ingress, workflow publication, host routing sweeps, pinned
-consumer execution and normalization of every start source remain implementation
-work. These store APIs do not enable an event endpoint or execute a consumer.
+Status: internal receipt/routing and local-runner host implementation for
+HAW-EVT-001/003/004/007 and the HAW-EVT-006 root budget. Public ingress, workflow
+publication and normalization of every start source remain implementation work.
+The daemon can drain accepted internal receipts into pinned consumer runs; these
+store APIs do not expose a public event endpoint.
 
 The existing durable trigger database now accepts internal event receipts. Intake
 commits the authenticated producer binding, gaggle, bounded event envelope and
@@ -120,8 +121,8 @@ all suppressed memberships inspectable. Queue payloads contain bounded group
 references, not an inline payload array. `EventMembers` pages at most 100 references;
 `EventInput` requires same-gaggle group membership. `VerifiedEventStart` verifies
 that queued bytes still equal the immutable group and its exact pins. The typed
-`goobers.event-start/v1` request requires a dedicated host launcher; the existing
-generic dispatcher refuses it rather than executing a current-catalog alias.
+`goobers.event-start/v1` request is routed by the daemon to the pinned event launcher, never to a
+current-catalog workflow alias.
 
 The transactional root budget permits 100 starts per event chain; a coalesced
 group charges each represented root once. Workflow producers must retain their
@@ -160,3 +161,45 @@ guard and generation-pruning inventory now include both dependency sources,
 including before daemon composition. Intake must hold the accepted generation's
 lease through receipt commit. Without consumer settlement, accepted inputs and
 starts remain retained.
+
+## Host execution and recovery
+
+The daemon routes one oldest pending receipt per selected gaggle, closes due
+groups, and pages settlements with rotating cursors. Routing/settlement work has a
+one-second sweep context. An error in one accepted start does not stop dispatching
+other starts in the same bounded batch. This is not yet a full fair eligibility
+queue; blocked entries and future cancellation/deadline behavior remain follow-up.
+
+The launcher acquires the accepted configuration archive and compiles it through
+the ordinary daemon builder. Workflow and Goober content pins must match exactly.
+The currently configured same-gaggle workflow must remain enabled and eligible,
+with the same repository target. Normal scheduler concurrency, provider limits,
+hour/day budgets, run tracking and shutdown joins apply. Mutable pending source
+edits cannot replace accepted definitions. The archive lease spans execution.
+Unsupported engine/Temporal consumers remain accepted with an explicit launch
+error until their event-input transport is implemented; they are never run using
+an alternate backend or a current-name fallback.
+
+Before claiming a start, the host verifies original group membership and canonical
+payload digests, and refuses bytes that require intake scrubbing. The run records
+trusted `event-consumer-manifest` provenance plus selected `event-NNNN.json`
+payload snapshots at `unapproved` integrity. A signed producer does not raise
+payload integrity. `latest` retains every producer and original membership in the
+manifest. Inputs and matching context pointers are immutable journal snapshots.
+
+The reserved queue RunID survives retry and crash. A returned scheduler admission
+is still `dispatching`; only the exact journal identity, input manifest and receipt
+membership acknowledge dispatch. Live-process absence cannot authorize retry.
+Startup-owned uncertain custody with strong journal absence can retry the same
+RunID. Recovery recompiles the same retained generation and checks current
+eligibility; missing or mismatched evidence defers that event run. Terminal
+settlement requires a joined owner, terminal phase and matching `run.finished`
+evidence. Human-paused, escalated and interrupted runs retain their inputs.
+Human continuations retain copied inputs and source ancestry but receive their own
+execution identity, clearing the original event-start receipt reference.
+
+Publication is not installed in this slice. Its future adapter must retain all
+represented causal roots when debounce merges different chains, with a bounded
+trusted root set or reference. Until that exists, mixed-root consumer publication
+must refuse before acceptance. Choosing one root or assigning the consumer RunID
+as a fresh root would bypass the transactional 100-start limit.

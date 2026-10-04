@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -52,7 +53,7 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 }
 
 func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
-	if s.observe == nil && s.observeChild == nil {
+	if s.observe == nil && s.observeChild == nil && s.events == nil {
 		return nil
 	}
 	records, err := s.queue.Uncertain(ctx, s.reconcileCursor, 100)
@@ -102,6 +103,17 @@ func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, rec
 	}
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.reconcileChildReceipt(ctx, record)
+	}
+	if header.Kind == eventing.StartKind {
+		if s.events == nil {
+			return nil
+		}
+		err := s.events.Reconcile(ctx, record, s.bootUncertain[record.ID])
+		if err == nil || errors.Is(err, triggerqueue.ErrTransition) {
+			delete(s.bootUncertain, record.ID)
+			return nil
+		}
+		return err
 	}
 	if header.Kind != "" {
 		return errors.New("unsupported accepted trigger envelope kind")

@@ -5,15 +5,17 @@ Program: [HITL and advanced workflows](hitl-advanced-workflows-program.md)
 Baseline: `04198152b63d228a9714ae2f92a7dca079ba5213` (2026-10-03)
 Task prefix: `HAW-EVT`; task identifiers are stable planning identifiers, not GitHub issues.
 
-Implementation checkpoint: the internal JSON envelope, immutable gaggle/binding
-receipt, bounded subscription matcher, pinned matched-route snapshot, shared storage reservations, transactional
-route/group/start custody, bounded `all`/`latest` debounce and production receipt
-retention sweep are implemented in the local stack. See
-[receipt profile and limits](../reference/gaggle-event-receipts.md). This foundation
-does not yet enable public ingress, workflow publication, the host routing sweep,
-pinned consumer execution, dependency-pin integration with host pruning, or
-normalization of all workflow start sources. Workflow root budgets remain retained
-until a host can prove all producers and descendants settled.
+Implementation checkpoint: the local stack implements bounded receipts, pinned
+route snapshots, configured same-gaggle subscriptions, shared storage reservations,
+transactional routing/debounce,
+host routing sweeps, exact archived local-runner consumer starts and reconciliation.
+Both event dependency inventories protect journals and configuration archives
+before routing is installed. See [receipt profile and limits](../reference/gaggle-event-receipts.md).
+Public ingress, workflow publication, normalization of all start sources, queue
+fairness/deadlines and engine/Temporal event input transport remain implementation
+work. Workflow root budgets stay retained until a host proves all producers and
+descendants settled. Mixed-root consumers must refuse publication until trusted
+bounded root-set propagation exists; a new consumer RunID cannot reset allowances.
 
 ## 1. Intent and confirmed boundaries
 
