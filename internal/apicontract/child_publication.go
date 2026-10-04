@@ -5,6 +5,8 @@ import "time"
 // ChildPublicationSummary exposes verified desired/observed publication status.
 // It never includes credentials, filesystem locations or authored PR text.
 type ChildPublicationSummary struct {
+	SourceRunID       string     `json:"sourceRunId"`
+	ExecutionEpoch    int        `json:"executionEpoch"`
 	CheckedAt         *time.Time `json:"checkedAt,omitempty"`
 	Observation       string     `json:"observation"`
 	Action            string     `json:"action"`

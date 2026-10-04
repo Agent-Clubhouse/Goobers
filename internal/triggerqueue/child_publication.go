@@ -35,6 +35,11 @@ WHEN OLD.tombstoned_ns IS NULL AND NEW.tombstoned_ns IS NOT NULL
 BEGIN DELETE FROM child_publications WHERE child_id=OLD.child_id; END;
 `
 
+const childPublicationExecutionSchema = `
+ALTER TABLE child_publications ADD COLUMN execution_run TEXT NOT NULL DEFAULT '';
+UPDATE child_publications SET execution_run=(SELECT substr(acceptance_id,9) FROM child_lineages c WHERE c.child_id=child_publications.child_id);
+`
+
 // ErrChildPublicationPending means no publication was admitted for this action.
 var ErrChildPublicationPending = errors.New("triggerqueue: child publication intent missing")
 
@@ -43,15 +48,16 @@ var ErrChildPublicationUnavailable = errors.New("triggerqueue: child publication
 
 // ChildPublication separates the immutable desired action from its observed receipt.
 type ChildPublication struct {
-	Identity      ChildIdentity
-	Action        string
-	Intent        []byte
-	Digest        string
-	State         string
-	Receipt       []byte
-	ReceiptDigest string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ExecutionRunID string
+	Identity       ChildIdentity
+	Action         string
+	Intent         []byte
+	Digest         string
+	State          string
+	Receipt        []byte
+	ReceiptDigest  string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func validPublicationAction(action string) bool { return action == "branch" || action == "pr" }
@@ -60,6 +66,19 @@ func validPublicationAction(action string) bool { return action == "branch" || a
 // It reserves receipt capacity before any provider effect; lineage pruning owns
 // both rows, so retries cannot grow an independent unbounded publication log.
 func (s *Store) PrepareChildPublication(ctx context.Context, id ChildIdentity, action string, intent []byte) (ChildPublication, error) {
+	return s.prepareChildPublication(ctx, id, "", action, intent)
+}
+
+// PrepareChildExecutionPublication fences a new intent against the exact active
+// execution. Existing immutable intent and receipts remain readable independently.
+func (s *Store) PrepareChildExecutionPublication(ctx context.Context, id ChildIdentity, runID, action string, intent []byte) (ChildPublication, error) {
+	if !validChildText(runID, 256, true) {
+		return ChildPublication{}, ErrTransition
+	}
+	return s.prepareChildPublication(ctx, id, runID, action, intent)
+}
+
+func (s *Store) prepareChildPublication(ctx context.Context, id ChildIdentity, runID, action string, intent []byte) (ChildPublication, error) {
 	if !id.valid() || !validPublicationAction(action) || len(intent) == 0 || len(intent) > MaxChildPublicationIntentBytes || !json.Valid(intent) {
 		return ChildPublication{}, ErrChildPublicationUnavailable
 	}
@@ -72,9 +91,12 @@ func (s *Store) PrepareChildPublication(ctx context.Context, id ChildIdentity, a
 	if err != nil {
 		return ChildPublication{}, err
 	}
+	if runID == "" {
+		runID = child.RunID
+	}
 	current, err := readChildPublication(ctx, tx, child, action)
 	if err == nil {
-		if !bytes.Equal(current.Intent, intent) {
+		if current.ExecutionRunID != runID || !bytes.Equal(current.Intent, intent) {
 			return ChildPublication{}, ErrConflict
 		}
 		return current, tx.Commit()
@@ -82,7 +104,7 @@ func (s *Store) PrepareChildPublication(ctx context.Context, id ChildIdentity, a
 	if !errors.Is(err, ErrChildPublicationPending) {
 		return ChildPublication{}, err
 	}
-	if err = publicationParentOpen(ctx, tx, child); err != nil {
+	if err = publicationExecutionOpen(ctx, tx, child, runID); err != nil {
 		return ChildPublication{}, err
 	}
 	if err = childByteCapacity(ctx, tx, len(intent)+MaxChildPublicationReceiptBytes+4096); err != nil {
@@ -92,8 +114,8 @@ func (s *Store) PrepareChildPublication(ctx context.Context, id ChildIdentity, a
 		return ChildPublication{}, err
 	}
 	now := time.Now().UTC()
-	current = ChildPublication{CreatedAt: now, UpdatedAt: now, Identity: id, Action: action, Intent: bytes.Clone(intent), Digest: "sha256:" + childDigest(intent), State: "prepared", Receipt: []byte{}}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO child_publications(child_id,action,intent,digest,state,receipt,created_ns,updated_ns) VALUES(?,?,?,?,?,?,?,?)`, child.ChildID, action, intent, current.Digest, current.State, current.Receipt, now.UnixNano(), now.UnixNano()); err != nil {
+	current = ChildPublication{ExecutionRunID: runID, CreatedAt: now, UpdatedAt: now, Identity: id, Action: action, Intent: bytes.Clone(intent), Digest: "sha256:" + childDigest(intent), State: "prepared", Receipt: []byte{}}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO child_publications(child_id,action,intent,digest,state,receipt,created_ns,updated_ns,execution_run) VALUES(?,?,?,?,?,?,?,?,?)`, child.ChildID, action, intent, current.Digest, current.State, current.Receipt, now.UnixNano(), now.UnixNano(), runID); err != nil {
 		return ChildPublication{}, err
 	}
 	return current, tx.Commit()
@@ -119,6 +141,21 @@ func publicationParentOpen(ctx context.Context, tx *sql.Tx, child ChildRecord) e
 	return nil
 }
 
+// Empty runID preserves the original API's epoch-zero authority. It must never
+// silently select a newer execution after a caller has retained old custody.
+func publicationExecutionOpen(ctx context.Context, tx *sql.Tx, child ChildRecord, runID string) error {
+	if runID == "" {
+		runID = child.RunID
+	}
+	if child.ActiveRunID() != runID {
+		return ErrTransition
+	}
+	if err := validateCurrentChildExecution(ctx, tx, child); err != nil {
+		return err
+	}
+	return publicationParentOpen(ctx, tx, child)
+}
+
 func readChildPublication(ctx context.Context, reader childProposalReader, child ChildRecord, action string) (ChildPublication, error) {
 	out := ChildPublication{Identity: child.Identity, Action: action}
 	var selector string
@@ -126,7 +163,7 @@ func readChildPublication(ctx context.Context, reader childProposalReader, child
 		return out, err
 	}
 	var created, updated int64
-	err := reader.QueryRowContext(ctx, `SELECT intent,digest,state,receipt,receipt_digest,created_ns,updated_ns FROM child_publications WHERE child_id=? AND action=? AND length(intent)<=? AND length(receipt)<=?`, child.ChildID, action, MaxChildPublicationIntentBytes, MaxChildPublicationReceiptBytes).Scan(&out.Intent, &out.Digest, &out.State, &out.Receipt, &out.ReceiptDigest, &created, &updated)
+	err := reader.QueryRowContext(ctx, `SELECT intent,digest,state,receipt,receipt_digest,created_ns,updated_ns,execution_run FROM child_publications WHERE child_id=? AND action=? AND length(intent)<=? AND length(receipt)<=?`, child.ChildID, action, MaxChildPublicationIntentBytes, MaxChildPublicationReceiptBytes).Scan(&out.Intent, &out.Digest, &out.State, &out.Receipt, &out.ReceiptDigest, &created, &updated, &out.ExecutionRunID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if selector != "" {
 			return out, ErrChildPublicationUnavailable
@@ -136,7 +173,7 @@ func readChildPublication(ctx context.Context, reader childProposalReader, child
 	if err != nil {
 		return out, err
 	}
-	if created <= 0 || updated < created {
+	if created <= 0 || updated < created || !validChildText(out.ExecutionRunID, 256, true) {
 		return out, ErrChildPublicationUnavailable
 	}
 	out.CreatedAt, out.UpdatedAt = time.Unix(0, created).UTC(), time.Unix(0, updated).UTC()
@@ -163,7 +200,17 @@ func (s *Store) ChildPublication(ctx context.Context, id ChildIdentity, action s
 // The observed state is compared atomically; only one prepared caller can admit
 // the first effect. A safe pending retry must explicitly reload pending custody.
 func (s *Store) BeginChildPublicationEffect(ctx context.Context, expected ChildPublication) error {
-	return s.changeChildPublication(ctx, expected, nil)
+	return s.changeChildPublication(ctx, expected, "", nil)
+}
+
+// BeginChildExecutionPublicationEffect repeats the exact execution fence in
+// the same transaction as prepared-to-pending admission. A stale execution may
+// still confirm an already observed effect, but cannot begin another effect.
+func (s *Store) BeginChildExecutionPublicationEffect(ctx context.Context, expected ChildPublication, runID string) error {
+	if !validChildText(runID, 256, true) {
+		return ErrTransition
+	}
+	return s.changeChildPublication(ctx, expected, runID, nil)
 }
 
 // ConfirmChildPublication stores observed effect evidence after the network
@@ -172,10 +219,10 @@ func (s *Store) ConfirmChildPublication(ctx context.Context, expected ChildPubli
 	if len(receipt) == 0 || len(receipt) > MaxChildPublicationReceiptBytes || !json.Valid(receipt) {
 		return ErrChildPublicationUnavailable
 	}
-	return s.changeChildPublication(ctx, expected, receipt)
+	return s.changeChildPublication(ctx, expected, "", receipt)
 }
 
-func (s *Store) changeChildPublication(ctx context.Context, expected ChildPublication, receipt []byte) error {
+func (s *Store) changeChildPublication(ctx context.Context, expected ChildPublication, runID string, receipt []byte) error {
 	if !expected.Identity.valid() || !validPublicationAction(expected.Action) {
 		return ErrChildPublicationUnavailable
 	}
@@ -192,13 +239,19 @@ func (s *Store) changeChildPublication(ctx context.Context, expected ChildPublic
 	if err != nil {
 		return err
 	}
-	if current.Digest != expected.Digest || !bytes.Equal(current.Intent, expected.Intent) {
+	if current.Digest != expected.Digest || current.ExecutionRunID != expected.ExecutionRunID || !bytes.Equal(current.Intent, expected.Intent) {
 		return ErrConflict
 	}
 	pendingDelta := 0
 	state := "effect_pending"
 	if receipt == nil {
-		if err = publicationParentOpen(ctx, tx, child); err != nil {
+		if runID == "" {
+			runID = child.RunID
+		}
+		if runID != current.ExecutionRunID {
+			return ErrTransition
+		}
+		if err = publicationExecutionOpen(ctx, tx, child, runID); err != nil {
 			return err
 		}
 		if (current.State != "prepared" && current.State != "effect_pending") || current.State != expected.State {

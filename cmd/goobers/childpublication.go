@@ -100,7 +100,7 @@ func (p *childStagePod) publish(ctx context.Context, env apiv1.InvocationEnvelop
 	}
 	ctx, cancel := context.WithTimeout(ctx, childpublication.EffectTimeout)
 	defer cancel()
-	target, err := p.publicationTarget(authority, request.Attempt.Stage, request.Workspace.Path, request.Workspace.Fork)
+	target, err := p.publicationTarget(ctx, authority, request.Attempt.Stage, request.Workspace.Path, request.Workspace.Fork)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}

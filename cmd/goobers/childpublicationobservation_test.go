@@ -46,7 +46,7 @@ func TestChildPublicationObservationDaemonCustodyAndCurrentPolicy(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := childpublication.ObservationTarget{Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, ChildRunID: id.RunID}
+	target := childpublication.ObservationTarget{Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, ChildRunID: id.RunID, SourceRunID: id.RunID}
 	called := 0
 	use := func(_ context.Context, observer childpublication.EffectObserver, held *journal.Run, events []journal.Event) error {
 		called++
@@ -74,6 +74,11 @@ func TestChildPublicationObservationDaemonCustodyAndCurrentPolicy(t *testing.T) 
 	release()
 	if err = observe(t.Context(), p, id, target, use); err != nil || called != 1 {
 		t.Fatal("stopped run refused", err)
+	}
+	wrongTarget := target
+	wrongTarget.SourceRunID = strings.Repeat("b", 32)
+	if err = observe(t.Context(), p, id, wrongTarget, use); err == nil || called != 1 {
+		t.Fatal("publication borrowed another execution journal", err)
 	}
 	changed := id
 	changed.Workflow = "different"

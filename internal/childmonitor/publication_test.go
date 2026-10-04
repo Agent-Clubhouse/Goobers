@@ -42,6 +42,15 @@ func (*checkObserver) FindPullRequestByBranch(context.Context, providers.Reposit
 }
 
 func TestHumanPublicationCheckReplaysAuditAndKeepsCancelledResultImmutable(t *testing.T) {
+	for _, humanEpoch := range []bool{false, true} {
+		name := "original"
+		if humanEpoch {
+			name = "human epoch"
+		}
+		t.Run(name, func(t *testing.T) { testHumanPublicationCheck(t, humanEpoch) })
+	}
+}
+func testHumanPublicationCheck(t *testing.T, humanEpoch bool) {
 	t.Setenv("OBSERVATION_TOKEN", "human-only-token")
 	layout := instance.NewLayout(t.TempDir())
 	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
@@ -66,16 +75,26 @@ func TestHumanPublicationCheckReplaysAuditAndKeepsCancelledResultImmutable(t *te
 	if err = run.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if humanEpoch {
+		child, id = restartMonitorPublication(t, queue, layout, child, id)
+	}
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
-	raw, _ := json.Marshal(childpublication.BranchIntent{Version: 1, RunID: child.RunID, Lineage: *id.Child, Stage: "push", Repository: repo, Base: "main", Head: "goobers/children/" + child.RunID, Commit: strings.Repeat("b", 40)})
-	intent, err := queue.PrepareChildPublication(t.Context(), child.Identity, "branch", raw)
+	raw, _ := json.Marshal(childpublication.BranchIntent{Version: 1, RunID: id.RunID, Lineage: *id.Child, Stage: "push", Repository: repo, Base: "main", Head: "goobers/children/" + id.RunID, Commit: strings.Repeat("b", 40)})
+	intent, err := queue.PrepareChildExecutionPublication(t.Context(), child.Identity, id.RunID, "branch", raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = queue.BeginChildPublicationEffect(t.Context(), intent); err != nil {
+	if err = queue.BeginChildExecutionPublicationEffect(t.Context(), intent, id.RunID); err != nil {
 		t.Fatal(err)
 	}
-	settleMonitorChild(t, queue, child)
+	sealed := triggerqueue.ChildResult{Receipt: []byte("immutable result " + id.RunID)}
+	sealed.ReceiptDigest = journal.Digest(sealed.Receipt)
+	if err = queue.KeepChildResult(t.Context(), child, sealed); err != nil {
+		t.Fatal(err)
+	}
+	if err = queue.SetChildState(t.Context(), child.Identity, triggerqueue.ChildStateUpdate{ExecutionRunID: id.RunID, Expected: child.State, State: triggerqueue.ChildFailed, ResultRef: sealed.ReceiptDigest}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if err = queue.FenceChildParent(t.Context(), child.Identity.ChildParent, "human", time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +135,7 @@ func TestHumanPublicationCheckReplaysAuditAndKeepsCancelledResultImmutable(t *te
 		}
 	}
 	service.Observe = func(ctx context.Context, p httpapi.Principal, id journal.RunIdentity, target childpublication.ObservationTarget, use func(context.Context, childpublication.EffectObserver, *journal.Run, []journal.Event) error) error {
-		if target.Repository != repo || target.ChildRunID != child.RunID {
+		if target.Repository != repo || target.ChildRunID != child.RunID || target.SourceRunID != id.RunID {
 			t.Fatal("changed observation target")
 		}
 		return policy.WithRunObservationCredential(ctx, p, id.Gaggle, interactiveaccess.Target{Kind: "repository", Repository: repository}, func(ctx context.Context, credential interactiveaccess.Credential) error {
@@ -135,24 +154,24 @@ func TestHumanPublicationCheckReplaysAuditAndKeepsCancelledResultImmutable(t *te
 			return use(ctx, observer, writer, report.Events)
 		})
 	}
-	page, err := service.ListChildWorkflows(t.Context(), p, child.RunID, "")
+	page, err := service.ListChildWorkflows(t.Context(), p, id.RunID, "")
 	if err != nil || len(page.Publications) != 1 || !page.PublicationCheckAvailable || !page.Publications[0].NeedsHuman {
 		t.Fatal(page, err)
 	}
 	command := apicontract.ChildPublicationCheckRequest{Action: "branch", ExpectedIntentDigest: intent.Digest}
-	if _, err = service.CheckChildPublication(t.Context(), p, child.RunID, "one", command); err == nil {
+	if _, err = service.CheckChildPublication(t.Context(), p, id.RunID, "one", command); err == nil {
 		t.Fatal("failed provider observation reported success")
 	}
 	observer.fail = false
-	result, err := service.CheckChildPublication(t.Context(), p, child.RunID, "one", command)
-	if err != nil || result.Publication.State != "confirmed" {
+	result, err := service.CheckChildPublication(t.Context(), p, id.RunID, "one", command)
+	if err != nil || result.Publication.State != "confirmed" || result.RunID != id.RunID || result.Publication.SourceRunID != id.RunID || result.Publication.ExecutionEpoch != id.Child.ExecutionEpoch {
 		t.Fatal(result, err)
 	}
-	replay, err := service.CheckChildPublication(t.Context(), p, child.RunID, "one", command)
+	replay, err := service.CheckChildPublication(t.Context(), p, id.RunID, "one", command)
 	if err != nil || !reflect.DeepEqual(result, replay) || observer.reads != 2 {
 		t.Fatal("same-key check was not replayed", replay, err, observer.reads)
 	}
-	dir, err := layout.FindRunDir(child.RunID)
+	dir, err := layout.FindRunDir(id.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,14 +194,14 @@ func TestHumanPublicationCheckReplaysAuditAndKeepsCancelledResultImmutable(t *te
 	if err = os.WriteFile(filepath.Join(dir, ref.Path), []byte("tampered observation"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.CheckChildPublication(t.Context(), p, child.RunID, "one", command); err == nil || observer.reads != 2 {
+	if _, err = service.CheckChildPublication(t.Context(), p, id.RunID, "one", command); err == nil || observer.reads != 2 {
 		t.Fatal("tampered recorded observation was replayed or reread provider", err)
 	}
 	gaggle.Spec.InteractiveAccess.Actions = []apiv1.InteractiveAction{"repository.read"}
 	if err = policy.Apply([]apiv1.Gaggle{gaggle}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.CheckChildPublication(t.Context(), p, child.RunID, "one", command); err == nil || observer.reads != 2 {
+	if _, err = service.CheckChildPublication(t.Context(), p, id.RunID, "one", command); err == nil || observer.reads != 2 {
 		t.Fatal("replay bypassed current policy", err)
 	}
 }

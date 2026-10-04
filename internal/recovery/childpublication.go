@@ -19,6 +19,9 @@ func CaptureChildPublication(ctx context.Context, repository, runID string, fork
 	if err := fork.validate(); err != nil {
 		return ChildSnapshot{}, "", err
 	}
+	if err := recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", fork.Record.SnapshotSHA, "HEAD"); err != nil {
+		return ChildSnapshot{}, "", fmt.Errorf("child publication no longer descends from admitted fork: %w", err)
+	}
 	snapshot, err := CaptureChildSnapshot(ctx, repository, fork.Record.RepositoryKey, runID, identityTime, fork.Record.RetainUntil, fork.Policy)
 	if err != nil {
 		return ChildSnapshot{}, "", err

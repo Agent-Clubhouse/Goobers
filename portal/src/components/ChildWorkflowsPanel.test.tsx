@@ -11,7 +11,7 @@ const page: ChildWorkflowPage = { runId: "parent", gaggle: "own", children: [chi
 describe("ChildWorkflowsPanel", () => {
   it("shows restart history and checks publication against its original execution", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
-    const publication = { action: "branch" as const, intentDigest: "sha256:" + "a".repeat(64), state: "effect_pending" as const, head: "goobers/children/original", base: "main", commit: "b".repeat(40), needsHuman: true, createdAt: child.acceptedAt, updatedAt: child.updatedAt, observation: "pending" };
+    const publication = { sourceRunId: "original", executionEpoch: 0, action: "branch" as const, intentDigest: "sha256:" + "a".repeat(64), state: "effect_pending" as const, head: "goobers/children/original", base: "main", commit: "b".repeat(40), needsHuman: true, createdAt: child.acceptedAt, updatedAt: child.updatedAt, observation: "pending" };
     vi.spyOn(client, "getChildWorkflows").mockResolvedValue({ ...page, runId: "current", children: [], publicationRunId: "original", publicationCheckAvailable: true, publications: [publication], executionHistory: [
       { epoch: 0, runId: "original", runAvailable: true, current: false, state: "failed", acceptedAt: child.acceptedAt, updatedAt: child.updatedAt },
       { epoch: 1, runId: "current", runAvailable: true, current: true, state: "running", actor: "issuer:alice", stage: "repair", acceptedAt: child.acceptedAt, updatedAt: child.updatedAt },

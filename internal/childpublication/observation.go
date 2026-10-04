@@ -29,6 +29,8 @@ func (a Action) Valid() bool { return a == ActionBranch || a == ActionPR }
 // title/body, full intent, workspace paths or retained source are exposed.
 // CheckedAt/Observation describe this check; the command ledger owns its audit.
 type Status struct {
+	SourceRunID       string
+	ExecutionEpoch    int
 	Action            Action
 	IntentDigest      string
 	State             string
@@ -48,14 +50,16 @@ type Status struct {
 // bridge uses its exact repository to construct a currently permitted read-only
 // observer; it must not accept a repository or provider credential from a body.
 type ObservationTarget struct {
-	Repository   providers.RepositoryRef
-	Action       Action
-	IntentDigest string
-	Head         string
-	Base         string
-	Commit       string
-	ChildRunID   string
-	ParentRunID  string
+	SourceRunID    string
+	ExecutionEpoch int
+	Repository     providers.RepositoryRef
+	Action         Action
+	IntentDigest   string
+	Head           string
+	Base           string
+	Commit         string
+	ChildRunID     string
+	ParentRunID    string
 }
 
 // EffectObserver contains no mutation method. A terminated/cancelled child may
@@ -134,7 +138,7 @@ func inspectPublicationTarget(ctx context.Context, q *triggerqueue.Store, id tri
 	if err = json.Unmarshal(branch.Intent, &source); err != nil {
 		return ObservationTarget{}, triggerqueue.ErrChildPublicationUnavailable
 	}
-	if !matchesPublicationChild(source, child) {
+	if source.RunID != branch.ExecutionRunID || record.ExecutionRunID != branch.ExecutionRunID || !matchesPublicationChild(source, child) || !matchesPublicationExecution(ctx, q, source, child) {
 		return ObservationTarget{}, triggerqueue.ErrChildPublicationUnavailable
 	}
 	if action == ActionPR {
@@ -142,23 +146,36 @@ func inspectPublicationTarget(ctx context.Context, q *triggerqueue.Store, id tri
 		if err = json.Unmarshal(record.Intent, &pr); err != nil {
 			return ObservationTarget{}, triggerqueue.ErrChildPublicationUnavailable
 		}
-		if branch.State != "confirmed" || pr.Version != 1 || pr.BranchDigest != branch.Digest || pr.Request.Repository != source.Repository || pr.Request.Head != source.Head || pr.Request.Base != source.Base || pr.Request.RunID != child.RunID {
+		if branch.State != "confirmed" || pr.Version != 1 || pr.BranchDigest != branch.Digest || pr.Request.Repository != source.Repository || pr.Request.Head != source.Head || pr.Request.Base != source.Base || pr.Request.RunID != source.RunID {
 			return ObservationTarget{}, triggerqueue.ErrChildPublicationUnavailable
 		}
 	}
-	return ObservationTarget{Repository: source.Repository, Action: action, IntentDigest: record.Digest, Head: source.Head, Base: source.Base, Commit: source.Commit, ChildRunID: child.RunID, ParentRunID: child.Identity.ParentRunID}, nil
+	return ObservationTarget{Repository: source.Repository, Action: action, IntentDigest: record.Digest, Head: source.Head, Base: source.Base, Commit: source.Commit, ChildRunID: child.RunID, SourceRunID: source.RunID, ExecutionEpoch: source.Lineage.ExecutionEpoch, ParentRunID: child.Identity.ParentRunID}, nil
 }
 
 func matchesPublicationChild(source BranchIntent, c triggerqueue.ChildRecord) bool {
 	lineage := source.Lineage
 	owner := lineage.Gaggle == c.Identity.Gaggle && lineage.ParentRunID == c.Identity.ParentRunID && lineage.StageOccurrence == c.Identity.StageOccurrence && lineage.InvocationKey == c.Identity.InvocationKey && lineage.AcceptanceID == c.AcceptanceID
 	pins := blobstore.ValidDigest(lineage.SourceDigest) && blobstore.ValidDigest(lineage.EnvelopeDigest) && (c.ProposalDigest == "" || c.ProposalDigest == lineage.SourceDigest)
-	target := source.Repository.Owner != "" && source.Repository.Name != "" && source.Base != "" && source.Base != source.Head && strings.HasSuffix(source.Head, "/children/"+c.RunID) && commitID.MatchString(source.Commit)
-	return source.Version == 1 && source.RunID == c.RunID && owner && pins && target
+	target := source.Repository.Owner != "" && source.Repository.Name != "" && source.Base != "" && source.Base != source.Head && strings.HasSuffix(source.Head, "/children/"+source.RunID) && commitID.MatchString(source.Commit)
+	return source.Version == 1 && owner && pins && target
+}
+
+// Observation selects the immutable emitting epoch, which may no longer be
+// active. This metadata check authorizes no new execution or provider effect.
+func matchesPublicationExecution(ctx context.Context, q *triggerqueue.Store, source BranchIntent, child triggerqueue.ChildRecord) bool {
+	e, err := q.ChildExecutionMetadata(ctx, child.Identity, source.RunID)
+	if err != nil || e.Epoch != source.Lineage.ExecutionEpoch {
+		return false
+	}
+	if e.Epoch == 0 {
+		return source.RunID == child.RunID && source.Lineage.PriorResultRef == "" && source.Lineage.RestartDigest == ""
+	}
+	return source.Lineage.PriorResultRef == e.SourceResultRef && source.Lineage.RestartDigest == e.RequestDigest
 }
 
 func publicationStatus(record triggerqueue.ChildPublication, target ObservationTarget) (Status, error) {
-	status := Status{Action: target.Action, IntentDigest: record.Digest, State: record.State, Head: target.Head, Base: target.Base, Commit: target.Commit, NeedsHuman: record.State == "effect_pending", CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	status := Status{SourceRunID: target.SourceRunID, ExecutionEpoch: target.ExecutionEpoch, Action: target.Action, IntentDigest: record.Digest, State: record.State, Head: target.Head, Base: target.Base, Commit: target.Commit, NeedsHuman: record.State == "effect_pending", CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	switch record.State {
 	case "prepared":
 		status.Observation = "no_effect_begun"

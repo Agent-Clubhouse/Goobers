@@ -29,7 +29,7 @@ function Publication({ client, runId, publication, available, refresh }: {
     setBusy(true); setNotice("");
     key.current ??= crypto.randomUUID();
     try {
-      const result = await client.checkChildPublication(runId, key.current, { action: publication.action, expectedIntentDigest: publication.intentDigest });
+      const result = await client.checkChildPublication(publication.sourceRunId || runId, key.current, { action: publication.action, expectedIntentDigest: publication.intentDigest });
       setChecked(result.publication); key.current = undefined; setPending(false);
       setNotice(result.publication.state === "confirmed"
         ? "Publication confirmed. This check did not restart the child."
@@ -52,6 +52,7 @@ function Publication({ client, runId, publication, available, refresh }: {
   return <li>
     <div><strong>{label}</strong><span>{current.state === "confirmed" ? "Confirmed" : current.state === "prepared" ? "Prepared; no effect begun" : "Needs confirmation"}</span></div>
     <p>{current.head} → {current.base}</p>
+    {current.sourceRunId && <p>{current.executionEpoch > 0 ? `Requested by human restart ${current.executionEpoch}` : "Requested by original child execution"} · <a href={`#/run/${encodeURIComponent(current.sourceRunId)}`}>Open publishing execution</a></p>}
     {link && <a href={link} target="_blank" rel="noopener noreferrer">Open published PR{current.pullRequestNumber ? ` #${current.pullRequestNumber}` : ""}</a>}
     {current.needsHuman && <p>The publication request may have reached the provider. Its result is not yet confirmed.</p>}
     {current.needsHuman && available && <button type="button" disabled={busy} onClick={() => { void check(); }}>{busy ? "Checking publication…" : pending ? "Retry same publication check" : `Check ${label.toLowerCase()} publication`}</button>}

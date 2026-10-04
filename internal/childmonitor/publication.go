@@ -26,7 +26,7 @@ import (
 type PublicationObservation func(context.Context, httpapi.Principal, journal.RunIdentity, childpublication.ObservationTarget, func(context.Context, childpublication.EffectObserver, *journal.Run, []journal.Event) error) error
 
 func publicationView(status childpublication.Status) apicontract.ChildPublicationSummary {
-	view := apicontract.ChildPublicationSummary{Action: string(status.Action), IntentDigest: status.IntentDigest, State: status.State, Head: status.Head, Base: status.Base, Commit: status.Commit, PullRequestURL: status.PullRequestURL, PullRequestNumber: status.PullRequestNumber, NeedsHuman: status.NeedsHuman, CreatedAt: status.CreatedAt, UpdatedAt: status.UpdatedAt, Observation: status.Observation}
+	view := apicontract.ChildPublicationSummary{SourceRunID: status.SourceRunID, ExecutionEpoch: status.ExecutionEpoch, Action: string(status.Action), IntentDigest: status.IntentDigest, State: status.State, Head: status.Head, Base: status.Base, Commit: status.Commit, PullRequestURL: status.PullRequestURL, PullRequestNumber: status.PullRequestNumber, NeedsHuman: status.NeedsHuman, CreatedAt: status.CreatedAt, UpdatedAt: status.UpdatedAt, Observation: status.Observation}
 	if !status.CheckedAt.IsZero() {
 		view.CheckedAt = &status.CheckedAt
 	}
@@ -57,7 +57,7 @@ func (s *Service) publications(ctx context.Context, p httpapi.Principal, id jour
 	if len(statuses) == 0 {
 		return nil
 	}
-	page.PublicationRunID = child.RunID
+	page.PublicationRunID = statuses[0].SourceRunID
 	permissions, err := s.Permissions.InteractiveCapabilities(ctx, p, id.Gaggle)
 	if err != nil {
 		return err
@@ -105,14 +105,14 @@ func (s *Service) CheckChildPublication(ctx context.Context, p httpapi.Principal
 	if err != nil {
 		return result, publicationConflict()
 	}
-	if target.ChildRunID != run || target.ParentRunID != id.Child.ParentRunID {
+	if target.SourceRunID != run || target.ParentRunID != id.Child.ParentRunID {
 		return result, publicationConflict()
 	}
 	ctx, cancel := context.WithTimeout(ctx, childpublication.EffectTimeout)
 	defer cancel()
 	err = s.Observe(ctx, p, id, target, func(ctx context.Context, observer childpublication.EffectObserver, writer *journal.Run, events []journal.Event) error {
 		var callErr error
-		result, callErr = s.checkPublicationOwned(ctx, p, child, key, input, observer, writer, events)
+		result, callErr = s.checkPublicationOwned(ctx, p, child, target.SourceRunID, key, input, observer, writer, events)
 		return callErr
 	})
 	return result, err
@@ -158,7 +158,7 @@ func publicationConflict() error {
 	return httpapi.NewInterventionError(http.StatusConflict, "publication_intent_changed", "The recorded publication is unavailable or differs from this request. Refresh before checking again.", nil)
 }
 
-func (s *Service) checkPublicationOwned(ctx context.Context, p httpapi.Principal, child triggerqueue.ChildRecord, key string, input apicontract.ChildPublicationCheckRequest, observer childpublication.EffectObserver, writer *journal.Run, events []journal.Event) (apicontract.ChildPublicationCheckResult, error) {
+func (s *Service) checkPublicationOwned(ctx context.Context, p httpapi.Principal, child triggerqueue.ChildRecord, sourceRunID, key string, input apicontract.ChildPublicationCheckRequest, observer childpublication.EffectObserver, writer *journal.Run, events []journal.Event) (apicontract.ChildPublicationCheckResult, error) {
 	var zero apicontract.ChildPublicationCheckResult
 	if writer == nil || observer == nil {
 		return zero, errors.New("publication observation dependencies unavailable")
@@ -190,13 +190,13 @@ func (s *Service) checkPublicationOwned(ctx context.Context, p httpapi.Principal
 		}
 	}
 	if record.Outcome != nil {
-		return replayPublicationCheck(writer.Dir(), record, input, child.RunID)
+		return replayPublicationCheck(writer.Dir(), record, input, sourceRunID)
 	}
 	status, err := (childpublication.Reconciler{Queue: s.Queue, Observer: observer}).Check(ctx, child.Identity, childpublication.Action(input.Action), input.ExpectedIntentDigest)
 	if err != nil {
 		return zero, httpapi.NewInterventionError(http.StatusServiceUnavailable, "publication_observation_failed", "The publication could not be observed. Retry the same check.", nil)
 	}
-	result := apicontract.ChildPublicationCheckResult{RunID: child.RunID, RequestID: record.Request.RequestID, Publication: publicationView(status)}
+	result := apicontract.ChildPublicationCheckResult{RunID: sourceRunID, RequestID: record.Request.RequestID, Publication: publicationView(status)}
 	raw, err := json.Marshal(result)
 	if err != nil {
 		return zero, err

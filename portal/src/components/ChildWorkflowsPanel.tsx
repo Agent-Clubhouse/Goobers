@@ -46,7 +46,7 @@ export function ChildWorkflowsPanel({ client, runId }: { client: DaemonClient; r
           {!execution.runAvailable && <p>The execution journal is not available.</p>}
         </li>)}</ol>
       </section>}
-      {page.publicationRunId && page.publicationRunId !== runId && <p>These publication records belong to the original child execution. Checks are recorded in that execution’s history.</p>}
+      {page.publicationRunId && page.publicationRunId !== runId && <p>These publication records belong to another child execution. Checks are recorded in the execution that created the publication.</p>}
       <ChildPublications client={client} runId={page.publicationRunId ?? runId} publications={page.publications ?? []} available={page.publicationCheckAvailable ?? false} reason={page.publicationCheckReason} refresh={() => setRefresh((value) => value + 1)} />
       {page.parent && <p>Started by <a href={`#/run/${encodeURIComponent(page.parent.runId)}`}>{page.parent.workflow} · parent run</a> for “{page.parent.invocationKey}”.</p>}
       {page.children.length === 0 ? <p>No child workflows on this page.</p> : <>

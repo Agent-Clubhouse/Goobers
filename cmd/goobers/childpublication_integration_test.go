@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
@@ -79,12 +80,15 @@ func TestIntegrationProductionChildFactoryPublishesWithHostOnlyCredential(t *tes
 func TestIntegrationProductionChildRunnerPreservesDirtyOutputAcrossPublicationStages(t *testing.T) {
 	testProductionChildPublication(t, true)
 }
-func testProductionChildPublication(t *testing.T, drive bool) {
+func testProductionChildPublication(t *testing.T, drive bool, humanEpoch ...bool) {
 	t.Helper()
 	testdep.Require(t, "git")
 	parent := t.TempDir()
 	recoveryCLIGit(t, parent, "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(parent, "file.txt"), []byte("base"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "private.txt"), []byte("preserved excluded baseline"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	recoveryCLIGit(t, parent, "add", ".")
@@ -107,7 +111,7 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 			t.Fatal(err)
 		}
 		coordinator := childworkflow.WorkspaceCoordinator{Queue: s.childQueue, Worktrees: m}
-		if err = coordinator.Capture(t.Context(), c, childworkflow.YieldedWorkspace{Path: parent, RepoURL: url, RepositoryKey: childRepoKey(project)}); err != nil {
+		if err = coordinator.Capture(t.Context(), c, childworkflow.YieldedWorkspace{Path: parent, RepoURL: url, RepositoryKey: childRepoKey(project), Policy: recovery.SnapshotPolicy{ExcludedPaths: []string{"private.txt"}}}); err != nil {
 			t.Fatal(err)
 		}
 		if err = m.WithRecoveryMirror(t.Context(), url, func(mirror string) error { recoveryCLIGit(t, mirror, "fetch", parent, "main"); return nil }); err != nil {
@@ -127,6 +131,10 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 		}
 		return admission
 	}})
+	human := len(humanEpoch) > 0 && humanEpoch[0]
+	if human {
+		ownedPath = prepareHumanPublicationEpoch(t, &f, ownedPath, project)
+	}
 	s := f.writer.service
 	s.Replace(credentialPlaneDefinitionsFromSet(f.parent.applied))
 	log, _, err := journal.OpenInstanceLog(t.TempDir())
@@ -137,6 +145,9 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	s.log = log
 	var resolved []string
 	s.buildSources = func(credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
+		if human {
+			t.Fatal("human publication reached automation credentials")
+		}
 		functions := map[string]credentials.ResolveFunc{}
 		grants := []credentials.Grant{}
 		for _, key := range []string{"repo:push", "provider:pr:write", "agent:model"} {
@@ -151,7 +162,15 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	}
 	pr := &hostPublicationPR{}
 	s.childPublisher = func(target childpublication.Target, key string, credential httpapi.MintedCredential, _ string) (childpublication.Publisher, error) {
-		if credential.Value != "host-only-token-"+key || target.Child.RunID != f.child.RunID || !strings.HasPrefix(target.Remote, "https://") || target.Base != "main" {
+		expected := "host-only-token-" + key
+		if human {
+			expected = "human-publication-token"
+			resolved = append(resolved, key)
+			if target.Identity.Child.ExecutionEpoch != 1 || target.Identity.RunID != f.writer.identity.RunID {
+				t.Fatal("publication emitter lost human epoch")
+			}
+		}
+		if credential.Value != expected || target.Child.RunID != f.child.RunID || !strings.HasPrefix(target.Remote, "https://") || target.Base != "main" {
 			t.Fatal("host authority changed", target, key)
 		}
 		return childpublication.Publisher{Queue: s.childQueue, Git: hostPublicationGit{remote}, PRs: pr}, nil
@@ -206,11 +225,15 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 			}
 			env := *f.attempt.Envelope
 			env.Goober = ""
-			env.TaskID = f.child.RunID + ":" + stage
+			env.TaskID = f.writer.identity.RunID + ":" + stage
 			env.Workspace = ownedPath
 			env.Capabilities = task.Capabilities
 			if stage == "open" {
-				env.Inputs = map[string]any{"title": "child title", "body": "body containing host-only-token-repo:push", "draft": true}
+				body := "body containing host-only-token-repo:push"
+				if human {
+					body = "body containing human-publication-token"
+				}
+				env.Inputs = map[string]any{"title": "child title", "body": body, "draft": true}
 			}
 			attempt, proof := invoke.WithWorkspaceQuiescence(ctx)
 			result, err := executor.Run(attempt, env, *task.Run)
@@ -228,7 +251,20 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	if got := recoveryCLIGit(t, parent, "--git-dir="+remote, "show", "refs/heads/"+pr.requests[0].Head+":child.txt"); got != "owned child output" {
 		t.Fatal("dirty child contribution lost across stages", got)
 	}
-	if strings.Contains(pr.requests[0].Body, "host-only-token") {
+	if got := recoveryCLIGit(t, parent, "--git-dir="+remote, "show", "refs/heads/"+pr.requests[0].Head+":private.txt"); got != "preserved excluded baseline" {
+		t.Fatal("excluded baseline deleted by publication", got)
+	}
+	if human {
+		if got := recoveryCLIGit(t, parent, "--git-dir="+remote, "show", "refs/heads/"+pr.requests[0].Head+":human.txt"); got != "human epoch output" {
+			t.Fatal("human contribution lost", got)
+		}
+		original, err := s.childQueue.ChildExecutionResult(t.Context(), f.child.Identity, f.child.RunID)
+		if err != nil || original.ReceiptDigest != f.writer.identity.Child.PriorResultRef {
+			t.Fatal("publication changed original sealed result", err)
+		}
+		recoveryCLIGit(t, parent, "--git-dir="+remote, "merge-base", "--is-ancestor", "main", "refs/heads/"+pr.requests[0].Head)
+	}
+	if strings.Contains(pr.requests[0].Body, "host-only-token") || strings.Contains(pr.requests[0].Body, "human-publication-token") {
 		t.Fatal("credential escaped PR body")
 	}
 	events, err := journal.OpenReadOnly(recorder.Dir())
@@ -260,7 +296,7 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	task, _ := start.Proposal.Machine.Task("push")
 	env := *f.attempt.Envelope
 	env.Goober = ""
-	env.TaskID = f.child.RunID + ":push"
+	env.TaskID = f.writer.identity.RunID + ":push"
 	env.Attempt = 2
 	env.Capabilities = task.Capabilities
 	env.Workspace = ownedPath

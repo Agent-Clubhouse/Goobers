@@ -219,6 +219,8 @@ export const goWireFixtures = {
     "runId": "child-run",
     "requestId": "human-one",
     "publication": {
+      "sourceRunId": "original-child",
+      "executionEpoch": 0,
       "observation": "not_observed",
       "action": "pr",
       "intentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -249,6 +251,8 @@ export const goWireFixtures = {
     "publicationRunId": "original-child",
     "publications": [
       {
+        "sourceRunId": "original-child",
+        "executionEpoch": 0,
         "observation": "not_observed",
         "action": "pr",
         "intentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

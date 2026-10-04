@@ -13,7 +13,7 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func (p *childStagePod) publicationTarget(authority childworkflow.Authority, stage, path string, fork recovery.ChildSnapshot) (childpublication.Target, error) {
+func (p *childStagePod) publicationTarget(ctx context.Context, authority childworkflow.Authority, stage, path string, fork recovery.ChildSnapshot) (childpublication.Target, error) {
 	project := authority.Admission.Gaggle.Spec.Project
 	defs := p.service.defs.Load()
 	if defs == nil || !reflect.DeepEqual(project, p.runtime.repoRef) || !reflect.DeepEqual(defs.Scopes[p.identity.Gaggle].Project, project) {
@@ -22,6 +22,16 @@ func (p *childStagePod) publicationTarget(authority childworkflow.Authority, sta
 	remote, err := childRepoCloneURL(project)
 	if err != nil {
 		return childpublication.Target{}, err
+	}
+	if p.identity.Child.ExecutionEpoch > 0 {
+		// The execution fork contains the previous result, whose excluded paths
+		// are already omitted. Restore publication omissions from the original
+		// accepted repository base while capturing the entire current tree.
+		custody := childworkflow.WorkspaceCoordinator{Queue: p.service.childQueue}
+		fork, err = custody.RetainedFork(ctx, p.start.Child, remote)
+		if err != nil {
+			return childpublication.Target{}, err
+		}
 	}
 	base := project.Branch
 	if base == "" {

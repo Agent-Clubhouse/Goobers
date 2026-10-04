@@ -20,6 +20,9 @@ import (
 
 func (u *upSession) childPublicationObservation() childmonitor.PublicationObservation {
 	return func(ctx context.Context, p httpapi.Principal, id journal.RunIdentity, target childpublication.ObservationTarget, use func(context.Context, childpublication.EffectObserver, *journal.Run, []journal.Event) error) error {
+		if target.SourceRunID != id.RunID {
+			return httpapi.NewInterventionError(http.StatusConflict, "publication_execution_changed", "Check publication through the execution that created it.", nil)
+		}
 		repository := target.Repository
 		selected := interactiveaccess.Target{Kind: "repository", Repository: apiv1.InteractiveRepositoryIdentity{Provider: apiv1.Provider(repository.Provider), Owner: repository.Owner, Project: repository.Project, Name: repository.Name}}
 		err := u.setup.InteractiveAccess.WithRunObservationCredential(ctx, p, id.Gaggle, selected, func(ctx context.Context, credential interactiveaccess.Credential) error {

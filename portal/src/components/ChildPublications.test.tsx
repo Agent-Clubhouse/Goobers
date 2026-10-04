@@ -5,7 +5,7 @@ import { FixtureDaemonClient } from "../api/fixtureClient";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 import { ChildPublications } from "./ChildPublications";
 
-const publication: ChildPublicationSummary = { action:"pr", intentDigest:"sha256:abc", state:"effect_pending", head:"goobers/children/child", base:"main", commit:"abc", needsHuman:true, createdAt:"2026-10-04T12:00:00Z", updatedAt:"2026-10-04T12:00:00Z", observation:"pending" };
+const publication: ChildPublicationSummary = { sourceRunId: "child", executionEpoch: 0, action:"pr", intentDigest:"sha256:abc", state:"effect_pending", head:"goobers/children/child", base:"main", commit:"abc", needsHuman:true, createdAt:"2026-10-04T12:00:00Z", updatedAt:"2026-10-04T12:00:00Z", observation:"pending" };
 describe("ChildPublications", () => {
  it("recovers an uncertain check with the same key and distinguishes confirmation from restart", async () => {
   const client = new FixtureDaemonClient(populatedDaemonFixtures());
@@ -19,6 +19,16 @@ describe("ChildPublications", () => {
   expect(check.mock.calls[1]).toEqual(check.mock.calls[0]);
   expect(check.mock.calls[0][2]).toEqual({action:"pr", expectedIntentDigest:publication.intentDigest});
   await waitFor(()=>expect(refresh).toHaveBeenCalledOnce());
+ });
+ it("links and checks the exact publishing human epoch from another run page", async () => {
+  const client = new FixtureDaemonClient(populatedDaemonFixtures());
+  const epoch = {...publication, sourceRunId: "human-epoch", executionEpoch: 2};
+  const check = vi.spyOn(client,"checkChildPublication").mockResolvedValue({runId:"human-epoch",requestId:"one",publication:epoch});
+  render(<ChildPublications client={client} runId="original" publications={[epoch]} available refresh={()=>{}} />);
+  expect(screen.getByText(/Requested by human restart 2/)).toBeInTheDocument();
+  expect(screen.getByRole("link", {name:"Open publishing execution"})).toHaveAttribute("href","#/run/human-epoch");
+  fireEvent.click(screen.getByRole("button", {name:"Check pull request publication"}));
+  await waitFor(()=>expect(check).toHaveBeenCalledWith("human-epoch",expect.any(String),{action:"pr",expectedIntentDigest:epoch.intentDigest}));
  });
  it("keeps unresolved checks actionable and respects observation access", async () => {
   const client = new FixtureDaemonClient(populatedDaemonFixtures());
@@ -37,6 +47,6 @@ describe("ChildPublications", () => {
   render(<ChildPublications client={client} runId="child" publications={[{...publication,state:"prepared",needsHuman:false,pullRequestUrl:"javascript:alert(1)"}]} available refresh={()=>{}} />);
   expect(screen.getByText("Prepared; no effect begun")).toBeInTheDocument();
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
-  expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", {name: /Open published PR/})).not.toBeInTheDocument();
  });
 });

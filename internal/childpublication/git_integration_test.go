@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -28,6 +30,66 @@ func publicationGitTest(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %s: %v", args, out, err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func TestIntegrationChildEpochFirstPublicationPreservesHistoryAndEmitter(t *testing.T) {
+	q, original, path := publicationFixture(t)
+	original = publicationRepository(t, original)
+	base := original.Fork.Record.BaseSHA
+	publicationGitTest(t, original.Workspace, "add", "child.txt")
+	publicationGitTest(t, original.Workspace, "commit", "-m", "original child progress")
+	target := restartPublicationTarget(t, q, original)
+	publicationGitTest(t, target.Workspace, "checkout", "-b", "goobers/children/"+target.Identity.RunID)
+	if err := os.WriteFile(filepath.Join(target.Workspace, "human.txt"), []byte("human repair"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{Queue: q, Git: GitCommand{AllowLocal: true}}
+	receipt, err := publisher.Push(t.Context(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicationGitTest(t, target.Workspace, "merge-base", "--is-ancestor", base, receipt.SHA)
+	for name, expected := range map[string]string{"child.txt": "child work", "human.txt": "human repair"} {
+		if got := publicationGitTest(t, target.Workspace, "--git-dir="+target.Remote, "show", receipt.SHA+":"+name); got != expected {
+			t.Fatal("publication lost full contribution", name, got)
+		}
+	}
+	fake := &publicationHTTP{t: t, target: target, lose: true}
+	publisher.PRs = providers.NewGitHubProvider("human-provider-token", providers.WithHTTPClient(fake), providers.WithMaxTransientRetries(0))
+	if _, err = publisher.OpenPR(t.Context(), target, "child title", "human-approved body", true); err == nil || fake.creates != 1 {
+		t.Fatal("unknown PR effect not retained", err, fake.creates)
+	}
+	pr, err := q.ChildPublication(t.Context(), target.Child.Identity, "pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := triggerqueue.ChildResult{Receipt: []byte("immutable human epoch result")}
+	result.ReceiptDigest = journal.Digest(result.Receipt)
+	if err = q.KeepChildResult(t.Context(), target.Child, result); err != nil {
+		t.Fatal(err)
+	}
+	if err = q.SetChildState(t.Context(), target.Child.Identity, triggerqueue.ChildStateUpdate{ExecutionRunID: target.Identity.RunID, Expected: target.Child.State, State: triggerqueue.ChildFailed, ResultRef: result.ReceiptDigest}, target.Child.UpdatedAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = q.FenceChildParent(t.Context(), target.Child.Identity.ChildParent, "human", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err = q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q, err = triggerqueue.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = q.Close() }()
+	observed, err := (Reconciler{Queue: q, Observer: &publicationObserver{target: target, sha: receipt.SHA}}).Check(t.Context(), target.Child.Identity, ActionPR, pr.Digest)
+	if err != nil || observed.SourceRunID != target.Identity.RunID || observed.ExecutionEpoch != 1 || observed.State != "confirmed" || fake.creates != 1 {
+		t.Fatal("late epoch observation lost emitter or duplicated effect", observed, err)
+	}
+	retained, err := q.ChildExecutionResult(t.Context(), target.Child.Identity, target.Identity.RunID)
+	if err != nil || retained.ReceiptDigest != result.ReceiptDigest {
+		t.Fatal("publication observation changed sealed result", err)
+	}
 }
 func publicationRepository(t *testing.T, target Target) Target {
 	t.Helper()

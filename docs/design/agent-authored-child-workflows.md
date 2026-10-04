@@ -445,9 +445,7 @@ the sealed child before any ordinary workflow-catalog lookup.
 
 Composed queue/runner tests cover superseded read-only inspection, late result
 fencing, and cancellation before the replacement starts. Public human restart
-admission is now installed through the common queued adapter described below. Publication
-from later child epochs still needs explicit emitter identity support; an existing
-publication intent keeps its original epoch identity.
+admission is now installed through the common queued adapter described below.
 
 
 ### Delivered common human child restart admission
@@ -470,5 +468,14 @@ workspace binding is not serialized back into the pre-admission plan.
 
 Composed tests exercise HumanService, real SQLite acceptance, queued capacity,
 Runner continuation, fresh attempt/guidance, completion, escalation sealing,
-revocation and parent cancellation. Later-epoch PR publication remains a separate
-explicit emitter-identity change; the adapter does not bypass that restriction.
+revocation and parent cancellation. First publication from a later epoch is supported under the original delegation
+ceiling; publication custody retains its exact emitting execution.
+
+### Delivered first publication from human child epochs
+
+A later child epoch may create the accepted child's first branch snapshot and PR
+under its current interactive identity and the original delegation ceiling.
+Publication custody independently records the emitting execution; checks and
+provider attribution stay attached to that execution even after another restart.
+Existing branch/PR intents cannot be revised, relabeled or reused by a later epoch.
+Bounded revisions of the same owned branch and PR remain follow-on work.

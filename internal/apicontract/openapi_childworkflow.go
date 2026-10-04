@@ -32,8 +32,8 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"ChildWorkflowExecution": closedChildObject([]string{"epoch", "runId", "runAvailable", "current", "state", "acceptedAt", "updatedAt"}, map[string]any{
 			"epoch": map[string]any{"type": "integer", "minimum": 0, "maximum": 8}, "runId": stringSchema(), "runAvailable": map[string]any{"type": "boolean"}, "current": map[string]any{"type": "boolean"}, "state": custody["state"], "sourceRunId": stringSchema(), "actor": stringSchema(), "stage": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
 		}),
-		"ChildPublicationSummary": closedChildObject([]string{"action", "intentDigest", "state", "head", "base", "commit", "needsHuman", "createdAt", "updatedAt", "observation"}, map[string]any{
-			"action": map[string]any{"type": "string", "enum": []string{"branch", "pr"}}, "intentDigest": digest,
+		"ChildPublicationSummary": closedChildObject([]string{"sourceRunId", "executionEpoch", "action", "intentDigest", "state", "head", "base", "commit", "needsHuman", "createdAt", "updatedAt", "observation"}, map[string]any{
+			"sourceRunId": stringSchema(), "executionEpoch": map[string]any{"type": "integer", "minimum": 0, "maximum": 8}, "action": map[string]any{"type": "string", "enum": []string{"branch", "pr"}}, "intentDigest": digest,
 			"state": map[string]any{"type": "string", "enum": []string{"prepared", "effect_pending", "confirmed"}}, "head": stringSchema(), "base": stringSchema(), "commit": stringSchema(),
 			"checkedAt": dateTimeSchema(), "observation": stringSchema(), "pullRequestUrl": stringSchema(), "pullRequestNumber": map[string]any{"type": "integer", "minimum": 0}, "needsHuman": map[string]any{"type": "boolean"}, "createdAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
 		}),

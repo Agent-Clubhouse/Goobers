@@ -78,7 +78,7 @@ func (t Target) validate() error {
 	if err := t.Identity.ValidateChildLineage(); err != nil {
 		return err
 	}
-	if t.Identity.Child == nil || t.Child.RunID != t.Identity.RunID || t.Child.Identity.Gaggle != t.Identity.Gaggle || t.Child.Identity.ParentRunID != t.Identity.Child.ParentRunID || t.Child.Identity.StageOccurrence != t.Identity.Child.StageOccurrence || t.Child.Identity.InvocationKey != t.Identity.Child.InvocationKey || t.Child.AcceptanceID != t.Identity.Child.AcceptanceID || t.Stage == "" || len(t.Stage) > 256 || t.Workspace == "" || t.Remote == "" || t.Base == "" || t.Head == "" || t.Base == t.Head {
+	if t.Identity.Child == nil || t.Child.ActiveRunID() != t.Identity.RunID || t.Child.Identity.Gaggle != t.Identity.Gaggle || t.Child.Identity.ParentRunID != t.Identity.Child.ParentRunID || t.Child.Identity.StageOccurrence != t.Identity.Child.StageOccurrence || t.Child.Identity.InvocationKey != t.Identity.Child.InvocationKey || t.Child.AcceptanceID != t.Identity.Child.AcceptanceID || t.Stage == "" || len(t.Stage) > 256 || t.Workspace == "" || t.Remote == "" || t.Base == "" || t.Head == "" || t.Base == t.Head {
 		return errors.New("child publication target lacks exact admitted custody")
 	}
 	if !strings.HasSuffix(t.Head, "/children/"+t.Identity.RunID) {
@@ -93,12 +93,13 @@ func (p Publisher) Push(ctx context.Context, t Target) (BranchReceipt, error) {
 	if p.Queue == nil || p.Git == nil {
 		return zero, errors.New("child publication unavailable")
 	}
-	if err := t.validate(); err != nil {
+	execution, err := p.validateTarget(ctx, t)
+	if err != nil {
 		return zero, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, EffectTimeout)
 	defer cancel()
-	snapshot, commit, err := recovery.CaptureChildPublication(ctx, t.Workspace, t.Identity.RunID, t.Fork, t.Child.AcceptedAt)
+	snapshot, commit, err := recovery.CaptureChildPublication(ctx, t.Workspace, t.Identity.RunID, t.Fork, execution.AcceptedAt)
 	if err != nil {
 		return zero, err
 	}
@@ -107,7 +108,7 @@ func (p Publisher) Push(ctx context.Context, t Target) (BranchReceipt, error) {
 	if err != nil {
 		return zero, err
 	}
-	retained, err := p.Queue.PrepareChildPublication(ctx, t.Child.Identity, "branch", data)
+	retained, err := p.Queue.PrepareChildExecutionPublication(ctx, t.Child.Identity, t.Identity.RunID, "branch", data)
 	if err != nil {
 		return zero, err
 	}
@@ -125,7 +126,7 @@ func (p Publisher) Push(ctx context.Context, t Target) (BranchReceipt, error) {
 	} else if observed != "" || retained.State == "confirmed" {
 		return zero, errors.New("child publication branch differs from retained intent")
 	}
-	if err = p.Queue.BeginChildPublicationEffect(ctx, retained); err != nil {
+	if err = p.Queue.BeginChildExecutionPublicationEffect(ctx, retained, t.Identity.RunID); err != nil {
 		return zero, err
 	}
 	// The creation lease expects absence even on replay. No rebase, force-update,
@@ -160,7 +161,7 @@ func (p Publisher) OpenPR(ctx context.Context, t Target, title, body string, dra
 	if p.Queue == nil || p.PRs == nil || p.Git == nil {
 		return zero, errors.New("child PR publication unavailable")
 	}
-	if err := t.validate(); err != nil {
+	if _, err := p.validateTarget(ctx, t); err != nil {
 		return zero, err
 	}
 	if err := validatePRText(title, body); err != nil {
@@ -177,7 +178,7 @@ func (p Publisher) OpenPR(ctx context.Context, t Target, title, body string, dra
 	if err != nil {
 		return zero, err
 	}
-	intent, err := p.Queue.PrepareChildPublication(ctx, t.Child.Identity, "pr", data)
+	intent, err := p.Queue.PrepareChildExecutionPublication(ctx, t.Child.Identity, t.Identity.RunID, "pr", data)
 	if err != nil {
 		return zero, err
 	}
@@ -241,7 +242,7 @@ func (p Publisher) performPR(ctx context.Context, t Target, intent triggerqueue.
 		if found {
 			return zero, errors.New("child PR already exists without owned effect admission")
 		}
-		if err = p.Queue.BeginChildPublicationEffect(ctx, intent); err != nil {
+		if err = p.Queue.BeginChildExecutionPublicationEffect(ctx, intent, t.Identity.RunID); err != nil {
 			return zero, err
 		}
 		result, err = p.PRs.OpenPullRequest(ctx, request)

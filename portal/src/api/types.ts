@@ -2071,6 +2071,8 @@ export interface InteractiveActionPermission {
 
 /** Human-only surface; source of authority is the authenticated gaggle policy. */
 export interface ChildPublicationSummary {
+  sourceRunId: string;
+  executionEpoch: number;
   action: "branch" | "pr";
   intentDigest: string;
   state: "prepared" | "effect_pending" | "confirmed";
