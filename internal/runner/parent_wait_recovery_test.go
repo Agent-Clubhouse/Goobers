@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -73,5 +74,50 @@ func TestRecoveredAcceptedWaitPreservesOriginalAccounting(t *testing.T) {
 				t.Fatal("recovery replay changed marker", err)
 			}
 		})
+	}
+}
+
+func TestRecoveredAcceptedWaitPreservesIndependentParallelBranches(t *testing.T) {
+	_, run, original := childOriginRuntime(t, &childOriginGoober{})
+	if err := run.Append(journal.Event{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{{Branch: 1}, {Branch: 2}}}); err != nil {
+		t.Fatal(err)
+	}
+	requests := make([]ChildHandoffRequest, 0, 2)
+	for branch := 1; branch <= 2; branch++ {
+		frame := original
+		frame.t.Name = fmt.Sprintf("stage-%d", branch)
+		frame.jr = &branchJournal{run: run, branch: branch}
+		if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+			t.Fatal(err)
+		}
+		child := fmt.Sprintf("child-%d", branch)
+		request := ChildHandoffRequest{Gaggle: "web", ParentRunID: frame.in.RunID, Action: "wait", RequestID: journal.Digest([]byte(child)), ChildRunID: child, AcceptanceID: "trigger-" + child, InvocationKey: child, SourceDigest: journal.Digest([]byte("source")), Origin: *frame.childOrigin}
+		requests = append(requests, request)
+		custody := ContainedParentWorkspaceCustody{Version: 1, Origin: frame.childOrigin, Workspace: worktree.StageCustody{OwnerRunID: frame.in.RunID}}
+		scope := journal.Event{Stage: frame.t.Name, Attempt: 1, Branch: branch, Seq: run.Seq()}
+		env := apiv1.InvocationEnvelope{RunID: frame.in.RunID, Gaggle: frame.in.Gaggle, ChildWorkflowOrigin: frame.childOrigin}
+		if err := RecordContainedParentRecovery(run, scope, journal.Digest([]byte(child)), custody, env, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, request := range requests {
+		if err := RecoverContainedParentWait(run, request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader, _ := journal.OpenReadOnly(run.Dir())
+	events, err := reader.Events()
+	if err != nil || !ParkedOnChild(events) {
+		t.Fatal("both branch waits not retained", err)
+	}
+	for i, request := range requests {
+		actual, started, waiting, err := ParkedChildRequestForOrigin(events, request.Origin)
+		if err != nil || !waiting || actual != request || started.Branch != i+1 {
+			t.Fatal("wrong branch custody", actual, started, err)
+		}
+		before := run.Seq()
+		if err := RecoverContainedParentWait(run, request); err != nil || run.Seq() != before {
+			t.Fatal("repeat wait changed sibling", err)
+		}
 	}
 }

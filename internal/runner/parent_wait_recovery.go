@@ -60,12 +60,12 @@ func RecoverContainedParentWait(writer interface {
 	if err != nil {
 		return err
 	}
-	pending, _, err := pendingChildWait(events)
+	pending, _, waiting, err := ParkedChildRequestForOrigin(events, request.Origin)
 	if err != nil {
 		return err
 	}
-	if pending != nil {
-		if pending.Request != request {
+	if waiting {
+		if pending != request {
 			return errors.New("recovered wait differs from pending child")
 		}
 		return nil
@@ -78,6 +78,7 @@ func RecoverContainedParentWait(writer interface {
 	if err != nil {
 		return err
 	}
+	event.Branch = started.Branch
 	return writer.Append(event)
 }
 
@@ -86,14 +87,10 @@ func recoverAcceptedWait(reader *journal.Reader, events []journal.Event, request
 	var accounting *childAttemptAccounting
 	var started journal.Event
 	for _, event := range events {
-		if event.Type == journal.EventStageStarted {
-			origin, err := journal.ChildWorkflowOriginForEvent(request.ParentRunID, event)
-			if err == nil && *origin == request.Origin {
-				started = event
-			}
-			if started.Seq != 0 && event.Seq > started.Seq {
-				return childWaitRecord{}, started, errors.New("recovered wait has a newer stage owner")
-			}
+		var err error
+		started, err = acceptedWaitStart(event, request, started)
+		if err != nil {
+			return childWaitRecord{}, started, err
 		}
 		if event.Type != journal.EventRunnerAnnotation || started.Seq == 0 || event.Stage != started.Stage || event.Attempt != started.Attempt || event.Branch != started.Branch {
 			continue
@@ -128,6 +125,20 @@ func recoverAcceptedWait(reader *journal.Reader, events []journal.Event, request
 		record.CostUSD = usage.costUSD.RatString()
 	}
 	return record, started, nil
+}
+
+func acceptedWaitStart(event journal.Event, request ChildHandoffRequest, previous journal.Event) (journal.Event, error) {
+	if event.Type != journal.EventStageStarted {
+		return previous, nil
+	}
+	origin, err := journal.ChildWorkflowOriginForEvent(request.ParentRunID, event)
+	if err == nil && *origin == request.Origin {
+		return event, nil
+	}
+	if previous.Seq != 0 && event.Seq > previous.Seq && event.Branch == previous.Branch {
+		return previous, errors.New("recovered wait has a newer stage owner")
+	}
+	return previous, nil
 }
 
 func restoreChildAccounting(record childAttemptAccounting, observed map[string]float64) (*stageUsageTotals, error) {
@@ -175,7 +186,12 @@ func (r *Runner) restoreAcceptedParentWait(ctx context.Context, tf *taskFrame, s
 	if err != nil {
 		return err
 	}
-	record, marker, err := pendingChildWait(events)
+	header, marker, err := journal.PendingChildWaitForBranch(events, tf.containedRecoveryBranch(events))
+	var record *childWaitRecord
+	if err == nil && header != nil {
+		raw, _ := json.Marshal(marker.Runner["childWait"])
+		err = json.Unmarshal(raw, &record)
+	}
 	if err != nil || record == nil {
 		return errors.Join(errors.New("accepted child wait was not retained"), err)
 	}
@@ -184,6 +200,19 @@ func (r *Runner) restoreAcceptedParentWait(ctx context.Context, tf *taskFrame, s
 	*accounting = &resumeRetryAccounting{policyAttempts: record.PolicyAttempts, infrastructureFailures: record.InfrastructureFailures, replacementConsumesPolicy: marker.AttemptClass != journal.AttemptInfra}
 	tf.containedRecovery = nil // the wait carries the same accumulated usage
 	return nil
+}
+
+func (tf *taskFrame) containedRecoveryBranch(events []journal.Event) int {
+	for _, event := range events {
+		if event.Type != journal.EventStageStarted {
+			continue
+		}
+		origin, err := journal.ChildWorkflowOriginForEvent(tf.in.RunID, event)
+		if err == nil && *origin == *tf.containedRecovery.Custody.Origin {
+			return event.Branch
+		}
+	}
+	return -1
 }
 
 func readChildAttemptAccounting(event journal.Event, origin apiv1.ChildWorkflowOrigin, duplicate bool) (*childAttemptAccounting, error) {
