@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,13 +48,19 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 }
 
 func admitChildPodPlan(start childExecutionStart) error {
-	if start.Proposal == nil || start.Proposal.CredentialCeiling().AllowPublication || len(start.Proposal.Placements) == 0 {
-		return &childStartDeferred{Reason: "child requires explicit isolated pod placement without publication delegation"}
+	if start.Proposal == nil {
+		return &childStartDeferred{Reason: "child requires explicit contained placement"}
 	}
 	if err := admitChildPodStages(start); err != nil {
 		return err
 	}
 	for _, pin := range start.Proposal.Placements {
+		if task, ok := start.Proposal.Machine.Task(pin.Stage); ok {
+			action, _ := childPublicationAction(task.Run)
+			if action != "" {
+				continue
+			}
+		}
 		if pin.Self || pin.Queue == "" || len(pin.Eligible) == 0 {
 			return &childStartDeferred{Reason: "child self placement is not a contained execution backend"}
 		}
@@ -101,6 +108,13 @@ func (f childPodFactory) executor(rec runner.ArtifactRecorder, goober string) (*
 }
 
 func (p *childStagePod) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	action, err := childPublicationAction(&run)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	if action != "" {
+		return p.publish(ctx, env, run, action)
+	}
 	out, err := p.execute(ctx, env, &run, false)
 	return out.Result, err
 }
@@ -147,7 +161,11 @@ func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelop
 	}
 	transport := childpod.TemporalDispatch{Client: p.client, WorkflowQueue: p.service.config.EffectiveEngineConfig().TaskQueue, DispatchQueue: pin.Queue, Admit: p.admit}
 	executor := childpod.Executor{Dispatcher: transport, Surrenders: p.surrenders, Blobs: blobs, Recorder: p.journal, KeepAttempt: blobs.keepAttempt}
-	executionCtx, proof := invoke.WithWorkspaceQuiescence(ctx)
+	executionCtx, err := credentials.WithChildCeiling(ctx, request.Ceiling)
+	if err != nil {
+		return dispatcher.SurrenderedResult{}, err
+	}
+	executionCtx, proof := invoke.WithWorkspaceQuiescence(executionCtx)
 	out, report, callErr := executor.Execute(executionCtx, request)
 	if report.ChildCreateAttempted {
 		custodyErr = proof.Verify()
@@ -221,7 +239,7 @@ func (p *childStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelop
 		remote.Workspace = ""
 		a.Envelope = &remote
 	}
-	request := childpod.Request{Identity: p.identity, Attempt: a, Eligible: pin.Eligible, Ceiling: ceiling, StartedAt: started.Time}
+	request := childpod.Request{Identity: p.identity, Attempt: a, Eligible: pin.Eligible, Ceiling: ceiling.ModelOnly(), StartedAt: started.Time}
 	request.Workspace, err = p.workspace(ctx, reader, env, workspace)
 	return request, pin, reader, err
 }
@@ -234,7 +252,11 @@ func (p *childStagePod) stagePlan(stage string, run *apiv1.DeterministicRun, rev
 			break
 		}
 	}
-	if pin.Stage == "" || pin.Self {
+	action, _ := childPublicationAction(run)
+	if pin.Stage == "" && action != "" {
+		pin = dispatcher.PinnedPlacement{Stage: stage, Self: true}
+	}
+	if pin.Stage == "" || (pin.Self && action == "") {
 		return pin, "", errors.New("child stage has no pinned isolated placement")
 	}
 	if review {
@@ -314,7 +336,21 @@ func admitChildPodStages(start childExecutionStart) error {
 		placed[pin.Stage] = true
 	}
 	for _, task := range start.Proposal.Workflow.Spec.Tasks {
-		if !placed[task.Name] {
+		action, err := childPublicationAction(task.Run)
+		if err != nil {
+			return err
+		}
+		if action != "" {
+			key, err := childPublicationCapability(task, action)
+			ceiling := start.Proposal.CredentialCeiling()
+			if err != nil || !ceiling.AllowPublication || !slices.Contains(ceiling.AllowedKeys, key) {
+				return errors.Join(errors.New("child typed publication was not delegated"), err)
+			}
+			if task.EffectiveWorkspace() != apiv1.WorkspaceRepo {
+				return errors.New("child publication requires its managed repository")
+			}
+		}
+		if !placed[task.Name] && action == "" {
 			return &childStartDeferred{Reason: "child task has no explicit contained placement"}
 		}
 		if task.Run != nil && (task.Run.Network != "" || task.Run.SyncBase || task.Run.InjectRunContext) {

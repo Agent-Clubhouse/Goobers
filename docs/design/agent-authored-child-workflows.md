@@ -299,6 +299,46 @@ specifies permitted repositories and publication mode within existing policy.
 Discard never means delete a published PR, remote branch, issue edit, or comment.
 Additional cleanup is a distinct policy-authorized action with its own receipt.
 
+### Initial host publication capability
+
+The first implementation supports the canonical deterministic commands
+`[goobers, push-branch]` and `[goobers, open-pr]` against the admitted gaggle
+repository and base branch. They require the corresponding declared capability,
+policy action, parent publication grant and current authority. Flags, shell,
+network/environment overrides and alternate destinations are refused. The host
+resolves only the exact stage credential; every contained model process retains
+a model-only ceiling even when its workflow has publication permission.
+
+A branch snapshot includes verified imported working-tree edits and preserves
+real repository ancestry. Private/excluded paths preserve their original
+repository versions; publication does not change the managed HEAD or index.
+The destination is the configured branch namespace plus `children/<child-run>`.
+An existing branch without a retained effect intent is never adopted.
+
+V1 retains one immutable branch snapshot and one immutable PR request per
+accepted child. Changed content, target or PR text is an explicit conflict.
+Publication intent and confirmed effect evidence occupy at most two bounded
+rows (64 KiB intent and 16 KiB receipt each), reserve capacity before effects,
+and are pruned with their child lineage. Unconfirmed effects pin the entire
+family after acknowledgement/settlement and keep receipt capacity reserved;
+late read-only confirmation may release that pin without changing child results.
+Durable digest selectors distinguish
+never-admitted work from missing/corrupt custody. Instance credential audit and
+run observation/ref-touched records identify the exact parent/child stage.
+
+A lost push reply is reconciled against the exact retained commit and remote
+reference. A lost PR reply can confirm the same head/base PR; if none can be
+observed, it remains uncertain and cannot issue another creation request. This
+initial slice does not automatically resolve an uncertain publication after the
+child stage/run has settled. Publication recovery must preserve that receipt
+until a subsequent authorized reconciliation can observe the provider effect.
+
+Follow-on **HAW-CHD-007-PUB-REVISIONS** adds bounded revisions of the same owned
+branch/PR after review or repass. **HAW-CHD-007-PUB-RECOVERY** adds an operator
+reconciliation path for settled children and explicit decisions when no provider
+effect can be observed. Neither permits multiple PR destinations or replaces an
+unknown outcome with a fresh identity.
+
 ## 9. Bounds and operational evidence
 
 Proposed v1 defaults: 4 accepted children per stage occurrence (maximum 32), one

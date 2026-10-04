@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,9 +80,18 @@ func TestProductionChildFactoryUsesRetainedKitAndScopedSurrender(t *testing.T) {
 func TestProductionChildFactoryDrivesActualGeneratedRunner(t *testing.T) {
 	testProductionChildFactory(t, true)
 }
+func TestProductionChildFactoryWithPublicationStillDispatchesModelOnly(t *testing.T) {
+	testProductionChildFactory(t, false, false, true)
+}
 func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 	t.Helper()
-	f := newChildKitFixture(t, true)
+	var f childKitFixture
+	if len(lost) > 1 && lost[1] {
+		parent := strings.Replace(childValidationParent, "capabilities: [agent:model]", "capabilities: [agent:model, repo:push]", 1)
+		f = newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, parent: parent})
+	} else {
+		f = newChildKitFixture(t, true)
+	}
 	s := f.writer.service
 
 	launcher := &queuedChildLauncher{layout: s.layout, queue: s.childQueue, authority: s.children}
@@ -108,6 +118,14 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		contract, err := childpod.DecodeContract(raw, a.ChildExecutionDigest)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if contract.Ceiling.AllowPublication {
+			t.Fatal("host publication grant escaped to pod")
+		}
+		for _, key := range contract.Ceiling.AllowedKeys {
+			if key != "agent:model" {
+				t.Fatal("provider key escaped contract", key)
+			}
 		}
 		if contract.Identity.Child == nil || *contract.Identity.Child != start.Lineage || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
 			t.Fatal("custody changed", contract)

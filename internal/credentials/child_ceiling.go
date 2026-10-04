@@ -93,3 +93,9 @@ func ChildCeilingFromContext(ctx context.Context) (ChildCeiling, bool) {
 	ceiling.AllowedKeys = slices.Clone(ceiling.AllowedKeys)
 	return ceiling, ok
 }
+
+// ModelOnly returns the ceiling for a contained model process even when its
+// workflow separately delegates publication to a host-owned typed stage.
+func (c ChildCeiling) ModelOnly() ChildCeiling {
+	return NewChildCeiling(false, c.AllowedKeys, c.AllowedKeys)
+}

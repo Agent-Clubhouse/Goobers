@@ -29,16 +29,45 @@ type childKitFixture struct {
 	attempt dispatcher.Attempt
 	parent  pinnedChildFixture
 	child   triggerqueue.ChildRecord
+	manager *worktree.Manager
+}
+
+type childKitFixtureOptions struct {
+	gooberCapabilities []string
+	isolated           bool
+	parent             string
+	source             string
+	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *runner.ChildWorkspaceAdmission
 }
 
 func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
 	t.Helper()
+	return newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: len(isolated) > 0 && isolated[0]})
+}
+func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) childKitFixture {
+	t.Helper()
 	f := newPinnedChildFixture(t, func(root string) {
 		parent := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-		writeFileContent(t, parent, strings.Replace(childValidationParent, "allowPRPublication: true", "allowPRPublication: false", 1))
+		source := options.parent
+		if source == "" {
+			source = strings.Replace(childValidationParent, "allowPRPublication: true", "allowPRPublication: false", 1)
+		}
+		writeFileContent(t, parent, source)
 		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
 		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))
-		if len(isolated) > 0 && isolated[0] {
+		if options.gooberCapabilities != nil {
+			var goober apiv1.Goober
+			if err := yaml.Unmarshal([]byte(readFileContent(t, path)), &goober); err != nil {
+				t.Fatal(err)
+			}
+			goober.Spec.Capabilities = options.gooberCapabilities
+			data, err := yaml.Marshal(goober)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFileContent(t, path, string(data))
+		}
+		if options.isolated {
 			configPath := filepath.Join(root, "instance.yaml")
 			var document map[string]any
 			if err := yaml.Unmarshal([]byte(readFileContent(t, configPath)), &document); err != nil {
@@ -74,12 +103,16 @@ func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
 	t.Cleanup(func() { _ = revoke() })
 	source := strings.Replace(childValidationProposal, "type: deterministic", "type: agentic\n      goober: coder\n      workspace: scratch\n      capabilities: [agent:model]", 1)
 	source = strings.Replace(source, "      run: {command: [\"true\"]}\n", "", 1)
-	if len(isolated) > 0 && isolated[0] {
+	if options.isolated {
 		source = strings.Replace(source, "      workspace: scratch", "      workspace: scratch\n      runsOn: {os: linux, capabilities: [isolated-child]}", 1)
+	}
+	if options.source != "" {
+		source = options.source
 	}
 	accepted, err := service.children.HTTPService().StartChildWorkflow(t.Context(), access.BearerToken, parentEnv.RunID, "kit", []byte(source))
 	if err != nil {
-		t.Fatal(err)
+		validation, validationErr := service.children.HTTPService().ValidateChildWorkflow(t.Context(), access.BearerToken, parentEnv.RunID, []byte(source))
+		t.Fatalf("child admission: %v; validation: %+v; error: %v", err, validation, validationErr)
 	}
 	identity := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: parentEnv.Gaggle, ParentRunID: parentEnv.RunID}, StageOccurrence: parentEnv.ChildWorkflowOrigin.StageOccurrence, InvocationKey: "kit"}
 	receipt, err := queue.ChildStart(t.Context(), identity)
@@ -121,12 +154,16 @@ func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	driver, err := runner.New(runner.Config{Worktrees: manager, RunsDir: f.layout.ForGaggle(parentEnv.Gaggle).RunsDir(), ScratchDir: t.TempDir(), ConfigGeneration: ref.Envelope.ConfigGeneration, InstanceID: f.parent.InstanceID})
+	var workspace *runner.ChildWorkspaceAdmission
+	if options.workspace != nil {
+		workspace = options.workspace(service, ref.Child, manager)
+	}
+	driver, err := runner.New(runner.Config{RepoCloneURL: repoCloneURL, Worktrees: manager, RunsDir: f.layout.ForGaggle(parentEnv.Gaggle).RunsDir(), ScratchDir: t.TempDir(), ConfigGeneration: ref.Envelope.ConfigGeneration, InstanceID: f.parent.InstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ceiling := proposal.CredentialCeiling()
-	_, err = driver.Start(t.Context(), runner.StartInput{RunID: accepted.RunID, Gaggle: parentEnv.Gaggle, Child: &ref.Lineage, Machine: proposal.Machine, GooberDigest: gooberDigest, ChildCredentials: &ceiling, OnJournalPublished: func() error { return errors.New("publication interrupted") }})
+	_, err = driver.Start(t.Context(), runner.StartInput{RepoRef: f.applied.Gaggles[0].Spec.Project, ChildWorkspace: workspace, RunID: accepted.RunID, Gaggle: parentEnv.Gaggle, Child: &ref.Lineage, Machine: proposal.Machine, GooberDigest: gooberDigest, ChildCredentials: &ceiling, OnJournalPublished: func() error { return errors.New("publication interrupted") }})
 	if err == nil {
 		t.Fatal("expected interrupted launch")
 	}
@@ -153,7 +190,7 @@ func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
 	}
 	t.Cleanup(func() { _ = recorder.Close() })
 	env := apiv1.InvocationEnvelope{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, WorkflowID: id.Workflow, ConfigGeneration: id.ConfigGeneration, GooberDigest: id.GooberDigest, Goober: "coder", TaskID: id.RunID + ":check", Attempt: 1, Capabilities: []string{"agent:model"}}
-	return childKitFixture{driver: driver, writer: childKitWriter{service: service, identity: id, blobs: blobs, recorder: recorder}, attempt: dispatcher.Attempt{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow, Stage: "check", Number: 1, Agentic: true, Envelope: &env}, parent: f, child: ref.Child}
+	return childKitFixture{manager: manager, driver: driver, writer: childKitWriter{service: service, identity: id, blobs: blobs, recorder: recorder}, attempt: dispatcher.Attempt{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow, Stage: "check", Number: 1, Agentic: true, Envelope: &env}, parent: f, child: ref.Child}
 }
 
 func TestChildKitWriterUsesRealAcceptedSourceAndRetainedInstructions(t *testing.T) {
@@ -191,5 +228,40 @@ func TestChildKitWriterUsesRealAcceptedSourceAndRetainedInstructions(t *testing.
 	}
 	if _, err := f.writer.WriteKit(context.Background(), f.attempt); err == nil {
 		t.Fatal("cancelled family published another kit")
+	}
+}
+
+func TestChildKitWithPublicationDelegationStillContainsOnlyModelGrants(t *testing.T) {
+	parent := strings.Replace(childValidationParent, "capabilities: [agent:model]", "capabilities: [agent:model, repo:push]", 1)
+	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{parent: parent})
+	start, release, err := (&queuedChildLauncher{layout: f.writer.service.layout, queue: f.writer.service.childQueue, authority: f.writer.service.children}).admittedChildIdentity(t.Context(), f.writer.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if !start.Proposal.CredentialCeiling().AllowPublication {
+		t.Fatal("fixture lacks delegation")
+	}
+	digest, err := f.writer.WriteKit(t.Context(), f.attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := f.writer.blobs.Get(t.Context(), digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kit agentickit.Kit
+	if err = json.Unmarshal(raw, &kit); err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range kit.Grants {
+		if grant.Capability != "agent:model" {
+			t.Fatal("publication credential escaped kit", grant.Capability)
+		}
+	}
+	for key := range kit.EnvCapabilities {
+		if key != "agent:model" {
+			t.Fatal("publication env escaped kit", key)
+		}
 	}
 }

@@ -71,7 +71,15 @@ func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Contex
 		lease.release()
 		return refuse()
 	}
-	childCtx, err := credentials.WithChildCeiling(ctx, lease.ceiling)
+	effective := lease.ceiling
+	if attempt != nil {
+		effective = lease.ceiling.ModelOnly()
+		if !sameChildCeiling(effective, attempt.contract.Ceiling) {
+			lease.release()
+			return refuse()
+		}
+	}
+	childCtx, err := credentials.WithChildCeiling(ctx, effective)
 	if err != nil {
 		lease.release()
 		return refuse()

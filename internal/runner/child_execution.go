@@ -7,7 +7,8 @@ import (
 )
 
 // ChildExecutionFactories are supplied only by an isolated host dispatcher.
-// Neither factory may fall back to execution on the daemon host. The dispatcher
+// Authored code cannot fall back to execution on the daemon host. Canonical
+// typed host publication may use its separately validated ceiling. The dispatcher
 // owns placement, credentials, workspace transport and writer-termination proof.
 type ChildExecutionFactories struct {
 	NewDeterministic NewDeterministicFunc
@@ -36,8 +37,8 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	cfg.BaselineHealth, cfg.LookPathFunc = nil, nil
 	cfg.ChildHandoff, cfg.ChildParentCapacity = nil, nil
 	cfg.AdditionalRepos = nil
-	// The supplied factories exclusively dispatch remote attempts; their pinned
-	// placement admission owns host capability and self-deny enforcement.
+	// The supplied factories dispatch authored code remotely and separately admit
+	// typed host publication; they own placement and capability enforcement.
 	cfg.SelfExecutionDenied, cfg.SelfExecutionObserved = false, nil
 	return New(cfg)
 }

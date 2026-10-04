@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
@@ -107,6 +108,7 @@ type daemonCredentialService struct {
 	childExecutors   childExecutorProvider
 	parentExecutors  parentExecutorProvider
 	parentRecovery   func(context.Context, journal.RunIdentity) error
+	childPublisher   func(childpublication.Target, string, httpapi.MintedCredential, string) (childpublication.Publisher, error)
 	childPodRecovery func(context.Context, *journal.Reader, string, childPodScope) error
 	layout           instance.Layout
 	config           *instance.Config

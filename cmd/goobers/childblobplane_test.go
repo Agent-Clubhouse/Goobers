@@ -142,7 +142,7 @@ func publishChildPodContract(t *testing.T, f *actualChildFixture, id journal.Run
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := childpod.Contract{Version: 1, Identity: id, Stage: stage, Attempt: attempt, PodAttempt: int(event.Seq), StartedAt: event.Time, Ceiling: credentials.NewChildCeiling(false, []string{"agent:model"}, nil)}
+	c := childpod.Contract{Version: 1, Identity: id, Stage: stage, Attempt: attempt, PodAttempt: int(event.Seq), StartedAt: event.Time, Ceiling: credentials.NewChildCeiling(false, []string{"agent:model"}, []string{"agent:model"})}
 	raw, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)

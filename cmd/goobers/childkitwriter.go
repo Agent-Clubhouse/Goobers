@@ -54,7 +54,7 @@ func (w childKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attempt
 			return "", errors.New("child reviewer capabilities differ from pinned Goober")
 		}
 	}
-	ceiling := start.Proposal.CredentialCeiling()
+	ceiling := start.Proposal.CredentialCeiling().ModelOnly()
 	if err := narrowChildKit(kit, ceiling); err != nil {
 		return "", err
 	}

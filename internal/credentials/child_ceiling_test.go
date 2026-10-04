@@ -65,3 +65,21 @@ func TestChildPublicationDelegationStillIntersectsEnclosingGrant(t *testing.T) {
 		t.Fatal("read PAT accepted without publication permission")
 	}
 }
+
+func TestChildPublicationPodCeilingWithholdsDelegatedProviderAuthority(t *testing.T) {
+	full := NewChildCeiling(true, []string{"agent:model", "repo:push", "provider:pr:write"}, []string{"agent:model", "repo:push", "provider:pr:write"})
+	model := full.ModelOnly()
+	if model.AllowPublication || !slices.Equal(model.AllowedKeys, []string{"agent:model"}) {
+		t.Fatal("publication escaped into model process", model)
+	}
+	if !full.AllowPublication || len(full.AllowedKeys) != 3 {
+		t.Fatal("host ceiling mutated", full)
+	}
+	ctx, err := WithChildCeiling(t.Context(), model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys := FilterChildCredentialKeys(ctx, full.AllowedKeys); !slices.Equal(keys, []string{"agent:model"}) {
+		t.Fatal(keys)
+	}
+}
