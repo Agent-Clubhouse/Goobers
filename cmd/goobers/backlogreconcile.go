@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,16 +99,51 @@ type backlogReconcileScan struct {
 }
 
 type backlogReconcileCursorState struct {
-	Schema        string            `json:"schema"`
-	Gaggle        string            `json:"gaggle,omitempty"`
-	Provider      string            `json:"provider"`
-	Repository    string            `json:"repository"`
-	TrustLabel    string            `json:"trustLabel"`
-	ThresholdDays int               `json:"thresholdDays"`
-	Phase         string            `json:"phase"`
-	Open          backlogScanCursor `json:"open,omitempty"`
-	Closed        backlogScanCursor `json:"closed,omitempty"`
-	Claim         string            `json:"claim,omitempty"`
+	Schema         string            `json:"schema"`
+	Gaggle         string            `json:"gaggle,omitempty"`
+	Provider       string            `json:"provider"`
+	Repository     string            `json:"repository"`
+	TrustLabel     string            `json:"trustLabel"`
+	AssignedTo     string            `json:"assignedTo,omitempty"`
+	ScopedAssignee bool              `json:"scopedAssignee,omitempty"`
+	Ownership      ownershipScopeKey `json:"ownership,omitempty"`
+	ThresholdDays  int               `json:"thresholdDays"`
+	Phase          string            `json:"phase"`
+	Open           backlogScanCursor `json:"open,omitempty"`
+	Closed         backlogScanCursor `json:"closed,omitempty"`
+	Claim          string            `json:"claim,omitempty"`
+}
+
+type backlogReconcileAssigneeScope struct {
+	respectAssignee bool
+	assignedTo      string
+	ownership       issueOwnershipScope
+}
+
+type ownershipScopeKey struct {
+	Assignees  []string `json:"assignees,omitempty"`
+	Unassigned string   `json:"unassigned,omitempty"`
+}
+
+func (s backlogReconcileAssigneeScope) permits(item providers.WorkItem) bool {
+	if s.respectAssignee && !item.AssigneeMatches(s.assignedTo) {
+		return false
+	}
+	return s.ownership.permits(item)
+}
+
+func (s backlogReconcileAssigneeScope) queryAssignee() string {
+	if s.respectAssignee && s.assignedTo != "" {
+		return s.assignedTo
+	}
+	if !s.respectAssignee && len(s.ownership.assignees) == 1 && s.ownership.unassigned == ownershipUnassignedRefuse {
+		return s.ownership.assignees[0]
+	}
+	return ""
+}
+
+func (s backlogReconcileAssigneeScope) key() ownershipScopeKey {
+	return ownershipScopeKey{Assignees: append([]string(nil), s.ownership.assignees...), Unassigned: s.ownership.unassigned}
 }
 
 type backlogReconcileReservation struct {
@@ -245,8 +281,13 @@ func reconcileBacklogMetadataDetailed(
 	trustLabel string,
 	stalenessPolicy backlogStalenessPolicy,
 	now func() time.Time,
+	scopes ...backlogReconcileAssigneeScope,
 ) (backlogReconciliationResult, error) {
 	result := backlogReconciliationResult{}
+	scope := backlogReconcileAssigneeScope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
 	// Reap terminal and expired ledger leases before inspecting provider labels.
 	// This makes the ledger's liveness decision available to the provider-marker
 	// reconciliation below, so a dead claimant cannot keep its marker forever.
@@ -260,13 +301,13 @@ func reconcileBacklogMetadataDetailed(
 	budget := newBacklogReconcileBudget(backlogReconcileMetadataBudget(result.Scan.Budget), observedAt, now)
 	restoreClient := installBacklogReconcileBudget(provider, budget)
 	defer restoreClient()
-	cursorKey := backlogReconcileCursorKey(repo, providerGaggle(), trustLabel, stalenessPolicy)
+	cursorKey := backlogReconcileCursorKey(repo, providerGaggle(), trustLabel, stalenessPolicy, scope)
 	result.cursorKey = cursorKey
 	store, err := openStageStateStore(l)
 	if err != nil {
 		return result, fmt.Errorf("open scheduler state: %w", err)
 	}
-	observedCursor, err := readBacklogReconcileCursor(ctx, store, cursorKey, repo, providerGaggle(), trustLabel, stalenessPolicy)
+	observedCursor, err := readBacklogReconcileCursor(ctx, store, cursorKey, repo, providerGaggle(), trustLabel, stalenessPolicy, scope)
 	if err != nil {
 		return result, err
 	}
@@ -283,7 +324,7 @@ func reconcileBacklogMetadataDetailed(
 	if openLimit < 1 && budget.limit > 0 {
 		openLimit = 1
 	}
-	open, err := reconcileBacklogMetadataPhase(ctx, l, provider, repo, trustLabel, backlogReconcilePhaseOpen, stalenessPolicy, observedAt, budget, openLimit, observedCursor.Open, blockedRecords, &botLogin, now)
+	open, err := reconcileBacklogMetadataPhase(ctx, l, provider, repo, trustLabel, backlogReconcilePhaseOpen, stalenessPolicy, observedAt, scope, budget, openLimit, observedCursor.Open, blockedRecords, &botLogin, now)
 	result.Reconciled += open.Reconciled
 	result.Scan.Examined += open.Examined
 	result.Scan.OpenExamined += open.Examined
@@ -301,7 +342,7 @@ func reconcileBacklogMetadataDetailed(
 	}
 	remainingPhaseBudget := budget.limit - budget.Spent()
 	if remainingPhaseBudget > 0 {
-		closed, closedErr := reconcileBacklogMetadataPhase(ctx, l, provider, repo, trustLabel, backlogReconcilePhaseClosed, stalenessPolicy, observedAt, budget, remainingPhaseBudget, observedCursor.Closed, blockedRecords, &botLogin, now)
+		closed, closedErr := reconcileBacklogMetadataPhase(ctx, l, provider, repo, trustLabel, backlogReconcilePhaseClosed, stalenessPolicy, observedAt, scope, budget, remainingPhaseBudget, observedCursor.Closed, blockedRecords, &botLogin, now)
 		result.Reconciled += closed.Reconciled
 		result.Scan.Examined += closed.Examined
 		result.Scan.ClosedExamined += closed.Examined
@@ -347,6 +388,7 @@ func reconcileBacklogMetadataPhase(
 	trustLabel, phase string,
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
+	scope backlogReconcileAssigneeScope,
 	budget *backlogReconcileBudget,
 	phaseBudget int,
 	cursor backlogScanCursor,
@@ -372,12 +414,14 @@ func reconcileBacklogMetadataPhase(
 	skippedDeferred := false
 	seen := map[string]bool{}
 	phaseStartSpent := budget.Spent()
+	queryAssignee := scope.queryAssignee()
 	for budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
 		pageInfo := &providers.ListWorkItemsPageInfo{}
 		items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 			Repository:   repo,
 			Labels:       []string{trustLabel},
 			State:        state,
+			Assignee:     queryAssignee,
 			UpdatedSince: updatedSince,
 			Limit:        1,
 			Cursor:       result.Cursor.Cursor,
@@ -418,6 +462,20 @@ func reconcileBacklogMetadataPhase(
 			continue
 		}
 		item := items[0]
+		if !scope.permits(item) {
+			result.Examined++
+			result.Cursor = carryDeferredBacklogCursor(result.Cursor, next)
+			if !pageInfo.HasNext {
+				if cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
+					result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred, Child: result.Cursor.Child}
+					wrapped = true
+					continue
+				}
+				result.Cursor = backlogScanCursor{}
+				return finishBacklogReconcilePhase(result, skippedDeferred), nil
+			}
+			continue
+		}
 		if result.Cursor.Deferred == item.ID {
 			skippedDeferred = true
 			result.Examined++
@@ -451,7 +509,7 @@ func reconcileBacklogMetadataPhase(
 		if childCursor != nil && childCursor.ParentID != item.ID {
 			childCursor = nil
 		}
-		reconciled, err := reconcileBacklogMetadataItem(ctx, l, provider, repo, item, observedAt, stalenessPolicy, blockedRecords, botLogin, budget, now, childCursor)
+		reconciled, err := reconcileBacklogMetadataItem(ctx, l, provider, repo, item, observedAt, stalenessPolicy, scope, blockedRecords, botLogin, budget, now, childCursor)
 		if err != nil {
 			if errors.Is(err, errBacklogReconcileBudgetExhausted) {
 				result.Examined++
@@ -515,6 +573,7 @@ func reconcileBacklogMetadataItem(
 	item providers.WorkItem,
 	observedAt time.Time,
 	stalenessPolicy backlogStalenessPolicy,
+	scope backlogReconcileAssigneeScope,
 	blockedRecords map[string]blockedRecord,
 	botLogin *string,
 	budget *backlogReconcileBudget,
@@ -539,6 +598,9 @@ func reconcileBacklogMetadataItem(
 	current, err = provider.GetWorkItem(ctx, repo, current.ID)
 	if err != nil {
 		return false, fmt.Errorf("refresh issue #%s before reconcile: %w", item.ID, err)
+	}
+	if !scope.permits(current) {
+		return false, nil
 	}
 	correction, login, err = inspectBacklogMetadataWithChildCursor(ctx, provider, repo, current, *botLogin, observedAt, stalenessPolicy, blockedRecords, childCursor, budget)
 	if err != nil {
@@ -619,23 +681,25 @@ func applyBacklogMetadataCorrection(
 			comment = backlogClaimReleaseBreadcrumb(correction.claimEpochRunID) + "\n\n" + comment
 		}
 		req := providers.UpdateWorkItemRequest{
-			Repository:   repo,
-			ID:           current.ID,
-			AddLabels:    correction.addLabels,
-			RemoveLabels: correction.removeLabels,
-			State:        state,
-			Comment:      comment,
+			Repository:       repo,
+			ID:               current.ID,
+			ExpectedRevision: current.Revision,
+			AddLabels:        correction.addLabels,
+			RemoveLabels:     correction.removeLabels,
+			State:            state,
+			Comment:          comment,
 		}
 		_, err = updateBacklogWorkItem(ctx, provider, budget, req)
 		return err
 	}
 	req := providers.UpdateWorkItemRequest{
-		Repository:   repo,
-		ID:           current.ID,
-		AddLabels:    correction.addLabels,
-		RemoveLabels: correction.removeLabels,
-		State:        state,
-		Comment:      comment,
+		Repository:       repo,
+		ID:               current.ID,
+		ExpectedRevision: current.Revision,
+		AddLabels:        correction.addLabels,
+		RemoveLabels:     correction.removeLabels,
+		State:            state,
+		Comment:          comment,
 	}
 	_, err := updateBacklogWorkItem(ctx, provider, budget, req)
 	return err
@@ -725,17 +789,23 @@ func backlogReconcileScanBudget() int {
 	return limit
 }
 
-func backlogReconcileCursorKey(repo providers.RepositoryRef, gaggle, trustLabel string, stalenessPolicy backlogStalenessPolicy) string {
+func backlogReconcileCursorKey(repo providers.RepositoryRef, gaggle, trustLabel string, stalenessPolicy backlogStalenessPolicy, scope backlogReconcileAssigneeScope) string {
 	key, _ := json.Marshal(struct {
-		Repository    providers.RepositoryRef `json:"repository"`
-		Gaggle        string                  `json:"gaggle,omitempty"`
-		TrustLabel    string                  `json:"trustLabel"`
-		ThresholdDays int                     `json:"thresholdDays"`
+		Repository     providers.RepositoryRef `json:"repository"`
+		Gaggle         string                  `json:"gaggle,omitempty"`
+		TrustLabel     string                  `json:"trustLabel"`
+		AssignedTo     string                  `json:"assignedTo,omitempty"`
+		ScopedAssignee bool                    `json:"scopedAssignee,omitempty"`
+		Ownership      ownershipScopeKey       `json:"ownership,omitempty"`
+		ThresholdDays  int                     `json:"thresholdDays"`
 	}{
-		Repository:    repo,
-		Gaggle:        gaggle,
-		TrustLabel:    trustLabel,
-		ThresholdDays: stalenessPolicy.thresholdDays,
+		Repository:     repo,
+		Gaggle:         gaggle,
+		TrustLabel:     trustLabel,
+		AssignedTo:     scope.assignedTo,
+		ScopedAssignee: scope.respectAssignee,
+		Ownership:      scope.key(),
+		ThresholdDays:  stalenessPolicy.thresholdDays,
 	})
 	sum := sha256.Sum256(key)
 	return stateclient.ReconcileCursorKey(fmt.Sprintf("%x", sum))
@@ -748,24 +818,29 @@ func readBacklogReconcileCursor(
 	repo providers.RepositoryRef,
 	gaggle, trustLabel string,
 	stalenessPolicy backlogStalenessPolicy,
+	scope backlogReconcileAssigneeScope,
 ) (backlogReconcileCursorState, error) {
 	value, err := store.Get(ctx, key)
 	if err != nil {
 		return backlogReconcileCursorState{}, err
 	}
 	if !value.Exists() {
-		return newBacklogReconcileCursor(repo, gaggle, trustLabel, stalenessPolicy), nil
+		return newBacklogReconcileCursor(repo, gaggle, trustLabel, stalenessPolicy, scope), nil
 	}
 	var cursor backlogReconcileCursorState
 	if err := json.Unmarshal(value.Data, &cursor); err != nil {
 		return backlogReconcileCursorState{}, fmt.Errorf("decode backlog reconciliation cursor: %w", err)
 	}
-	want := newBacklogReconcileCursor(repo, gaggle, trustLabel, stalenessPolicy)
+	want := newBacklogReconcileCursor(repo, gaggle, trustLabel, stalenessPolicy, scope)
 	if cursor.Schema != want.Schema ||
 		cursor.Gaggle != want.Gaggle ||
 		cursor.Provider != want.Provider ||
 		cursor.Repository != want.Repository ||
 		cursor.TrustLabel != want.TrustLabel ||
+		cursor.AssignedTo != want.AssignedTo ||
+		cursor.ScopedAssignee != want.ScopedAssignee ||
+		!slices.Equal(cursor.Ownership.Assignees, want.Ownership.Assignees) ||
+		cursor.Ownership.Unassigned != want.Ownership.Unassigned ||
 		cursor.ThresholdDays != want.ThresholdDays ||
 		(cursor.Phase != backlogReconcilePhaseOpen && cursor.Phase != backlogReconcilePhaseClosed) {
 		return backlogReconcileCursorState{}, fmt.Errorf("decode backlog reconciliation cursor: integrity mismatch")
@@ -773,15 +848,18 @@ func readBacklogReconcileCursor(
 	return cursor, nil
 }
 
-func newBacklogReconcileCursor(repo providers.RepositoryRef, gaggle, trustLabel string, stalenessPolicy backlogStalenessPolicy) backlogReconcileCursorState {
+func newBacklogReconcileCursor(repo providers.RepositoryRef, gaggle, trustLabel string, stalenessPolicy backlogStalenessPolicy, scope backlogReconcileAssigneeScope) backlogReconcileCursorState {
 	return backlogReconcileCursorState{
-		Schema:        backlogReconcileCursorSchema,
-		Gaggle:        gaggle,
-		Provider:      string(repo.Provider),
-		Repository:    backlogReconcileRepositoryKey(repo),
-		TrustLabel:    trustLabel,
-		ThresholdDays: stalenessPolicy.thresholdDays,
-		Phase:         backlogReconcilePhaseOpen,
+		Schema:         backlogReconcileCursorSchema,
+		Gaggle:         gaggle,
+		Provider:       string(repo.Provider),
+		Repository:     backlogReconcileRepositoryKey(repo),
+		TrustLabel:     trustLabel,
+		AssignedTo:     scope.assignedTo,
+		ScopedAssignee: scope.respectAssignee,
+		Ownership:      scope.key(),
+		ThresholdDays:  stalenessPolicy.thresholdDays,
+		Phase:          backlogReconcilePhaseOpen,
 	}
 }
 
@@ -802,21 +880,25 @@ func advanceBacklogReconcileCursor(
 	if err != nil {
 		return fmt.Errorf("open scheduler state: %w", err)
 	}
-	return store.Update(ctx, key, claimLockOperationBacklogScanCursor,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeBacklogReconcileCursorValue(value, observed)
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogScanCursor,
+		func(value stateclient.Value) (backlogReconcileCursorState, error) {
+			return decodeBacklogReconcileCursorValue(value, observed)
+		},
+		func(cursor backlogReconcileCursorState) ([]byte, error) {
+			data, err := json.Marshal(cursor)
 			if err != nil {
-				return nil, false, err
+				return nil, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
 			}
+			return data, nil
+		},
+		func(current backlogReconcileCursorState) (backlogReconcileCursorState, bool, error) {
 			if !reflect.DeepEqual(current, observed) {
-				return nil, false, nil
+				return current, false, nil
 			}
-			data, err := json.Marshal(next)
-			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
-			}
-			return data, true, nil
-		})
+			return next, true, nil
+		},
+	)
 }
 
 func decodeBacklogReconcileCursorValue(value stateclient.Value, fallback backlogReconcileCursorState) (backlogReconcileCursorState, error) {
@@ -1476,16 +1558,14 @@ func withoutString(values []string, reject string) []string {
 }
 
 func uniqueSortedLabels(labels []string) []string {
-	seen := make(map[string]bool, len(labels))
 	out := make([]string, 0, len(labels))
 	for _, label := range labels {
-		if label != "" && !seen[label] {
-			seen[label] = true
+		if label != "" {
 			out = append(out, label)
 		}
 	}
-	sort.Strings(out)
-	return out
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func reconciliationComment(reasons []string) string {
@@ -1512,6 +1592,7 @@ func restoreInvisibleClaimsWindow(
 	stderr io.Writer,
 	limit int,
 	cursor string,
+	scope backlogReconcileAssigneeScope,
 ) (invisibleClaimScanResult, error) {
 	result := invisibleClaimScanResult{Complete: true}
 	if limit <= 0 {
@@ -1569,7 +1650,7 @@ func restoreInvisibleClaimsWindow(
 		itemID := claimEntryItemID(entry)
 		result.Examined++
 		result.NextCursor = itemID
-		entryResult, err := restoreInvisibleClaimWindowEntry(ctx, l, provider, repo, ledger, entry, gaggle, now, budget, stderr)
+		entryResult, err := restoreInvisibleClaimWindowEntry(ctx, l, provider, repo, ledger, entry, gaggle, now, budget, stderr, scope)
 		result.Spent = budget.Spent()
 		if err != nil {
 			return result, err
@@ -1609,6 +1690,7 @@ func restoreInvisibleClaimWindowEntry(
 	now func() time.Time,
 	budget *backlogReconcileBudget,
 	stderr io.Writer,
+	scope backlogReconcileAssigneeScope,
 ) (invisibleClaimEntryResult, error) {
 	itemID := claimEntryItemID(entry)
 	if entry.Verification.State == "ownership-mismatch" && !entry.Verification.ObservedAt.IsZero() {
@@ -1628,6 +1710,9 @@ func restoreInvisibleClaimWindowEntry(
 	if item.HasLabel(providers.LabelClaimed) {
 		return invisibleClaimEntryResult{}, nil
 	}
+	if !scope.permits(item) {
+		return invisibleClaimEntryResult{}, nil
+	}
 	live, err := claimEntryStillLive(ctx, ledger, entry, gaggle, string(repo.Provider), now())
 	if err != nil {
 		pf(stderr, "warning: could not revalidate claim ledger owner for item %s: %v\n", itemID, err)
@@ -1638,7 +1723,7 @@ func restoreInvisibleClaimWindowEntry(
 		return invisibleClaimEntryResult{incomplete: true}, nil
 	}
 	recordClaimObservation(ctx, ledger, entry, localscheduler.ClaimVerification{State: "missing", ObservedAt: time.Now()}, stderr)
-	claim, err := restoreClaimVisibility(ctx, l, provider, repo, itemID, entry, budget, stderr)
+	claim, err := restoreClaimVisibility(ctx, l, provider, repo, item, entry, budget, stderr)
 	recordProviderClaimObservation(ctx, ledger, entry, repo, claim, err, stderr)
 	if err != nil {
 		pf(stderr, "warning: could not restore the claim marker on item %s held by run %s: %v\n",
@@ -1691,24 +1776,32 @@ func advanceBacklogReconcileClaimCursor(
 	if err != nil {
 		return fmt.Errorf("open scheduler state: %w", err)
 	}
-	return store.Update(ctx, key, claimLockOperationBacklogScanCursor,
-		func(value stateclient.Value) ([]byte, bool, error) {
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogScanCursor,
+		func(value stateclient.Value) (backlogReconcileCursorState, error) {
 			var cursor backlogReconcileCursorState
 			if value.Exists() {
 				if err := json.Unmarshal(value.Data, &cursor); err != nil {
-					return nil, false, fmt.Errorf("decode backlog reconciliation cursor: %w", err)
+					return backlogReconcileCursorState{}, fmt.Errorf("decode backlog reconciliation cursor: %w", err)
 				}
 			}
-			cursor.Claim = nextClaimCursor
+			return cursor, nil
+		},
+		func(cursor backlogReconcileCursorState) ([]byte, error) {
 			data, err := json.Marshal(cursor)
 			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
+				return nil, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
 			}
-			return data, true, nil
-		})
+			return data, nil
+		},
+		func(cursor backlogReconcileCursorState) (backlogReconcileCursorState, bool, error) {
+			cursor.Claim = nextClaimCursor
+			return cursor, true, nil
+		},
+	)
 }
 
-func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *providers.GitHubProvider, repo providers.RepositoryRef, itemID string, entry claimsclient.Entry, budget *backlogReconcileBudget, stderr io.Writer) (providers.ClaimResult, error) {
+func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *providers.GitHubProvider, repo providers.RepositoryRef, item providers.WorkItem, entry claimsclient.Entry, budget *backlogReconcileBudget, stderr io.Writer) (providers.ClaimResult, error) {
 	if !entry.SharedDeadline.IsZero() {
 		labels := budgetedSharedClaimVisibility{
 			Visibility: providers.GitHubSharedClaimVisibility{Provider: provider, Repository: repo},
@@ -1716,6 +1809,7 @@ func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *pr
 		}
 		return confirmSharedClaimVisibility(ctx, entry, stageSharedClaimResolverWithBudget(l, budget), labels, stderr)
 	}
+	itemID := item.ID
 	epochs, err := provider.OpenClaimEpochs(ctx, repo, itemID)
 	if err != nil {
 		return providers.ClaimResult{}, err
@@ -1727,17 +1821,18 @@ func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *pr
 		if epoch.RunID != entry.RunID {
 			return providers.ClaimResult{ClaimedBy: epoch.RunID}, nil
 		}
-		return restoreLedgerClaimMarker(ctx, provider, repo, itemID, entry.RunID, "", budget)
+		return restoreLedgerClaimMarker(ctx, provider, repo, itemID, item.Revision, entry.RunID, "", budget)
 	}
-	return restoreLedgerClaimMarker(ctx, provider, repo, itemID, entry.RunID, "", budget)
+	return restoreLedgerClaimMarker(ctx, provider, repo, itemID, item.Revision, entry.RunID, "", budget)
 }
 
-func restoreLedgerClaimMarker(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, itemID, runID, comment string, budget *backlogReconcileBudget) (providers.ClaimResult, error) {
+func restoreLedgerClaimMarker(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, itemID, expectedRevision, runID, comment string, budget *backlogReconcileBudget) (providers.ClaimResult, error) {
 	req := providers.UpdateWorkItemRequest{
-		Repository: repo,
-		ID:         itemID,
-		AddLabels:  []string{providers.LabelClaimed},
-		Comment:    comment,
+		Repository:       repo,
+		ID:               itemID,
+		ExpectedRevision: expectedRevision,
+		AddLabels:        []string{providers.LabelClaimed},
+		Comment:          comment,
 	}
 	item, err := updateBacklogWorkItem(ctx, provider, budget, req)
 	if err != nil {

@@ -39,6 +39,17 @@ func (d mutationSidecarDeterministic) Run(_ context.Context, env apiv1.Invocatio
 	return apiv1.ResultEnvelope{Status: status, Summary: "mutated"}, d.err
 }
 
+func TestReadMutationSidecarDoesNotValidateIdentityFields(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, mutationsSidecarFile), []byte("{\"operation\":\"update\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	facts, issues := readMutationSidecar(workspace)
+	if len(facts) != 1 || len(issues) != 0 || facts[0].Operation != "update" {
+		t.Fatalf("facts = %+v, issues=%v", facts, issues)
+	}
+}
+
 func TestDispatchTaskPreservesMergeReceiptAfterExecutorError(t *testing.T) {
 	fact := `{"provider":"github","kind":"pr","id":"7","operation":"merge","mergeConfirmation":{"repositoryApiUrl":"https://api.github.com/repos/acme/web","pullId":"7","mergeSha":"confirmed-sha"}}`
 	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {

@@ -161,7 +161,7 @@ var inputSchemas = map[string][]Input{
 		stringListsIn("headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
-	"gate-removal-guard": schema(stringsIn("base"), pathsIn("resultFile")),
+	"gate-removal-guard": schema(stringsIn("base", "configRepo", "configRepoBase", "configRepoDir"), pathsIn("resultFile")),
 	"issue-close-out": schema(
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -173,9 +173,9 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
-		stringsIn("base", "body", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
+		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
 		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "recordLiveVerification", "runIdFooter"),
-		stringListsIn("actionRoots", "docsRoots"), pathsIn("resultFile"), durationsIn("timeout"),
+		stringListsIn("actionRoots", "docsRoots", "reviewers"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
@@ -240,7 +240,8 @@ var inputSchemas = map[string][]Input{
 	// an explicit empty schema distinguishes them from external/unknown
 	// commands and makes a newly added consumer fail the structural parity
 	// test until its contract is declared here.
-	"push-branch":        {},
+	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir")),
+	"config-checkout":    schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "head")),
 	"recovery-restore":   {},
 	"recovery-resume":    {},
 	"ios-simulator-test": schema(integersIn("maxOutputBytes"), pathsIn("resultFile")),
@@ -254,6 +255,8 @@ var inputSchemas = map[string][]Input{
 // command implementation.
 var executorInputs = []Input{
 	{Name: "maxOutputBytes", Type: InputInteger, State: InputCurrent},
+	{Name: "ownershipAssignees", Type: InputStringList, State: InputCurrent},
+	{Name: "ownershipUnassigned", Type: InputString, State: InputCurrent},
 	{Name: "timeout", Type: InputDuration, State: InputCurrent},
 }
 

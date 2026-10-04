@@ -25,6 +25,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Configure cost publication](cost-publication.md)
 - [Custom deterministic stage cookbook](custom-stage-cookbook.md)
 - [Daemon readiness and trigger progress](daemon-readiness.md)
+- [Decision-gate A/B harness and reliability report](decision-gate-ab-harness.md)
 - [Diagnostics bundle](diagnostics-bundle.md)
 - [Use the Goobers agent toolkit](dsl-authoring-skill.md)
 - [Engine fallback observability](engine-fallback-observability.md)

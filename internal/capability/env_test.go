@@ -19,6 +19,15 @@ func TestCredentialExpiryEnvVarIsOutsideTheCredentialPrefix(t *testing.T) {
 	}
 }
 
+func TestADOPackagingReadCredentialEnvNames(t *testing.T) {
+	if got := CredentialEnvVar("ado:packaging:read"); got != "GOOBERS_CRED_ADO_PACKAGING_READ" {
+		t.Fatalf("CredentialEnvVar = %q", got)
+	}
+	if got := CredentialExpiryEnvVar("ado:packaging:read"); got != "GOOBERS_CREDENTIAL_EXPIRES_ADO_PACKAGING_READ" {
+		t.Fatalf("CredentialExpiryEnvVar = %q", got)
+	}
+}
+
 func TestCredentialExpiryRoundTrips(t *testing.T) {
 	expiresAt := time.Date(2026, 9, 28, 13, 4, 5, 0, time.FixedZone("x", 3600))
 	parsed, ok := ParseCredentialExpiry(FormatCredentialExpiry(expiresAt))

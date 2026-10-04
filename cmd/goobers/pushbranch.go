@@ -32,7 +32,7 @@ import (
 // provider pushes with the runner-injected repo:push token; an Azure DevOps
 // origin must be the routed repository and gets the ADO header in the scheme
 // the daemon delivered beside the token (pushBranchEnvironment).
-const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
+const pushBranchHelp = "Usage: goobers push-branch [--config-repo] [path]\n\n" +
 	"Push the worktree's checked-out branch to origin, authenticated via the\n" +
 	"configured repository credential — never the host's ambient git\n" +
 	"credentials, and never persisted to .git/config.\n" +
@@ -43,13 +43,21 @@ const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"A push the remote refuses outright (an ADO branch policy, or a GitHub\n" +
 	"App lacking the `workflows` permission for a .github/workflows change)\n" +
 	"fails immediately without retrying.\n" +
-	"[path] defaults to the current directory (the stage's worktree).\n" +
+	"[path] defaults to the current directory (the stage's worktree).\n\n" +
+	"Flag --config-repo (TUT-A8) pushes the instance CONFIG repository\n" +
+	"checkout instead — [path] defaults to the configRepoDir input (default\n" +
+	"\"config-repo\", as created by `goobers config-checkout`) — authenticated\n" +
+	"with the stage's declared configrepo:write credential, never repo:push. The\n" +
+	"checkout's origin must be the workflowSource repository. Other inputs:\n" +
+	"configRepo (owner/name) and configRepoBase, used only where no instance\n" +
+	"config is readable (a stage pod).\n" +
 	"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n"
 
 func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("push-branch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "push-branch")
+	configRepo := fs.Bool(configRepoFlag, false, "push the instance config repository checkout with configrepo:write")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -62,12 +70,35 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		dir = fs.Arg(0)
 	}
 
+	// Opt-in config-repo target (TUT-A8): push the config-repo checkout with
+	// the configrepo:write credential instead of the worktree with repo:push.
+	// Everything else — empty-branch handling, race retry, receipt — is shared.
+	baseBranch := ""
+	var env pushBranchAuthEnv
+	factDir := dir
+	configTarget, isConfig, err := configRepoTargetFor(*configRepo, providerStageRoot(""))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if isConfig {
+		if fs.NArg() == 0 {
+			dir = configRepoDir()
+		}
+		factDir = "."
+		baseBranch = configTarget.Base
+	}
+
 	branch, err := currentBranch(dir)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	env, err := pushBranchAuth(dir)
+	if isConfig {
+		env, err = configRepoPushAuth(dir, configTarget)
+	} else {
+		env, err = pushBranchAuth(dir)
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -91,7 +122,13 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	// empty branch — and failing the stage would regress the first case on
 	// substrates where it is legitimate. So the stage still succeeds; what it
 	// stops doing is claiming a push that did not happen.
-	empty, emptyErr := branchHasNoCommitsBeyondBase(dir, branch)
+	var empty bool
+	var emptyErr error
+	if isConfig {
+		empty, emptyErr = branchHasNoCommitsBeyondBaseBranch(dir, branch, baseBranch)
+	} else {
+		empty, emptyErr = branchHasNoCommitsBeyondBase(dir, branch)
+	}
 	if emptyErr != nil {
 		// Cannot tell: preserve today's behaviour exactly rather than guess.
 		pf(stderr, "warning: could not determine whether %q has commits to push (%v); pushing anyway\n", branch, emptyErr)
@@ -110,7 +147,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	// re-claim discovery reads it back: a prior run whose journal shows a
 	// pushed branch did not strand its diff, so gather-implement-context must
 	// not offer that run's work as recoverable.
-	appendBranchPushFact(dir, branch)
+	appendBranchPushFact(factDir, branch)
 
 	pf(stdout, "pushed %s to origin\n", branch)
 	return 0
@@ -438,7 +475,13 @@ func stageBaseBranch() string {
 // a wrong "empty" verdict would silently drop a real diff, which is worse than
 // the problem being fixed.
 func branchHasNoCommitsBeyondBase(dir, branch string) (bool, error) {
-	base := stageBaseBranch()
+	return branchHasNoCommitsBeyondBaseBranch(dir, branch, stageBaseBranch())
+}
+
+// branchHasNoCommitsBeyondBaseBranch is branchHasNoCommitsBeyondBase against an
+// explicit base: the config-repo target's base is workflowSource's ref, not the
+// gaggle's product base branch.
+func branchHasNoCommitsBeyondBaseBranch(dir, branch, base string) (bool, error) {
 	// Two substrates store the base under different refs and BOTH must resolve,
 	// or the check silently degrades to "cannot tell" on one of them. A pod's
 	// `git clone --branch <base>` yields a remote-tracking origin/<base>; the
@@ -714,7 +757,15 @@ func isADORemote(remote string) bool {
 // expiry (Goobers#6120), so a long remediation does not push with the value
 // it was handed at stage start.
 func gitAuthEnv(token string) []string {
-	token = currentStageToken(capability.RepoPush, token)
+	return gitAuthEnvFor(capability.RepoPush, token)
+}
+
+// gitAuthEnvFor is gitAuthEnv for the credential delivered under cap. The
+// capability only selects which refreshing grant (if any) re-resolves the
+// value; the config-repo target uses it so configrepo:write is refreshed as
+// itself and never as repo:push.
+func gitAuthEnvFor(cap capability.Capability, token string) []string {
+	token = currentStageToken(cap, token)
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	return append(os.Environ(),
 		"GIT_CONFIG_COUNT=1",

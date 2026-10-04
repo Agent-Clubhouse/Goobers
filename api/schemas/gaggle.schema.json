@@ -122,6 +122,23 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
+        "issueOwnershipScope": {
+          "description": "Default ownership policy every workflow task in this gaggle inherits for provider-visible issue writes. A task may override it with ownershipAssignees and ownershipUnassigned inputs. Omitted leaves issue writes unrestricted.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "assignees": {
+              "description": "Provider identities this gaggle may mutate. Empty means no assigned-owner restriction, though unassigned may still refuse unassigned issues.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "unassigned": {
+              "description": "Whether unassigned issues are inside this gaggle's write scope. Empty behaves as allow when assignees is empty and refuse when assignees is set.",
+              "type": "string",
+              "enum": ["allow", "refuse"]
+            }
+          }
+        },
         "siblings": {
           "description": "Other gaggles/instances known to independently work the same target repo, for the sibling-overlap validation warning (MIRC-2, #1901).",
           "type": "array",

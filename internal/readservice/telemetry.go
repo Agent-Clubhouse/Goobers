@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -361,12 +362,12 @@ type TelemetryStageStats struct {
 	P50Tokens            *int64   `json:"p50Tokens,omitempty"`
 	P95Tokens            *int64   `json:"p95Tokens,omitempty"`
 	CostSamples          int      `json:"costSamples"`
-	P50CostUSD           *float64 `json:"p50CostUSD,omitempty"`
-	P95CostUSD           *float64 `json:"p95CostUSD,omitempty"`
+	P50CostAIC           *float64 `json:"p50CostAIC,omitempty"`
+	P95CostAIC           *float64 `json:"p95CostAIC,omitempty"`
 	RetryWasteAttempts   int      `json:"retryWasteAttempts"`
 	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
 	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
-	RetryWasteCostUSD    *float64 `json:"retryWasteCostUSD,omitempty"`
+	RetryWasteCostAIC    *float64 `json:"retryWasteCostAIC,omitempty"`
 	// StuckAbortedAttempts is how many of TotalAttempts belong to a run that
 	// hung and was later aborted (the watchdog's max-duration expiry),
 	// excluded from Avg/Min/MaxDurationMs and from P50/P95DurationMs —
@@ -391,12 +392,12 @@ type TelemetryUsageStats struct {
 	P50CopilotPremiumRequests *float64 `json:"p50CopilotPremiumRequests,omitempty"`
 	P95CopilotPremiumRequests *float64 `json:"p95CopilotPremiumRequests,omitempty"`
 	CostSamples               int      `json:"costSamples"`
-	CostUSD                   *float64 `json:"costUSD,omitempty"`
-	P50CostUSD                *float64 `json:"p50CostUSD,omitempty"`
-	P95CostUSD                *float64 `json:"p95CostUSD,omitempty"`
+	CostAIC                   *float64 `json:"costAIC,omitempty"`
+	P50CostAIC                *float64 `json:"p50CostAIC,omitempty"`
+	P95CostAIC                *float64 `json:"p95CostAIC,omitempty"`
 	RetryWasteAttempts        int      `json:"retryWasteAttempts"`
 	RetryWasteTokens          *int64   `json:"retryWasteTokens,omitempty"`
-	RetryWasteCostUSD         *float64 `json:"retryWasteCostUSD,omitempty"`
+	RetryWasteCostAIC         *float64 `json:"retryWasteCostAIC,omitempty"`
 }
 
 // TelemetryModelStats is observed usage totaled by model.
@@ -410,7 +411,7 @@ type TelemetryModelStats struct {
 	PremiumRequestSamples  int      `json:"premiumRequestSamples"`
 	CopilotPremiumRequests *float64 `json:"copilotPremiumRequests,omitempty"`
 	CostSamples            int      `json:"costSamples"`
-	CostUSD                *float64 `json:"costUSD,omitempty"`
+	CostAIC                *float64 `json:"costAIC,omitempty"`
 }
 
 // TelemetryErrorSignaturesRequest filters the recurring failure-reason rollup.
@@ -511,15 +512,15 @@ func projectTelemetryUsage(stat rollup.UsageStats) TelemetryUsageStats {
 		item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
 	}
 	if stat.HasCost {
-		item.CostUSD = float64Pointer(stat.CostUSD)
-		item.P50CostUSD = float64Pointer(stat.P50CostUSD)
-		item.P95CostUSD = float64Pointer(stat.P95CostUSD)
+		item.CostAIC = costAICPointer(stat.CostUSD)
+		item.P50CostAIC = costAICPointer(stat.P50CostUSD)
+		item.P95CostAIC = costAICPointer(stat.P95CostUSD)
 	}
 	if stat.HasRetryWasteTokens {
 		item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
 	}
 	if stat.HasRetryWasteCost {
-		item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
+		item.RetryWasteCostAIC = costAICPointer(stat.RetryWasteCostUSD)
 	}
 	return item
 }
@@ -693,8 +694,8 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.P95Tokens = int64Pointer(stat.P95Tokens)
 		}
 		if stat.HasCost {
-			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
-			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
+			item.P50CostAIC = costAICPointer(stat.P50CostUSD)
+			item.P95CostAIC = costAICPointer(stat.P95CostUSD)
 		}
 		if stat.HasRetryWasteDuration {
 			item.RetryWasteDurationMs = int64Pointer(stat.RetryWasteDurationMs)
@@ -703,7 +704,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
 		}
 		if stat.HasRetryWasteCost {
-			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
+			item.RetryWasteCostAIC = costAICPointer(stat.RetryWasteCostUSD)
 		}
 		result.Stages = append(result.Stages, item)
 	}
@@ -729,7 +730,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.CopilotPremiumRequests = float64Pointer(stat.CopilotPremiumRequests)
 		}
 		if stat.HasCost {
-			item.CostUSD = float64Pointer(stat.CostUSD)
+			item.CostAIC = costAICPointer(stat.CostUSD)
 		}
 		result.Models = append(result.Models, item)
 	}
@@ -1466,3 +1467,8 @@ func int64Pointer(value int64) *int64        { return &value }
 func intPointer(value int) *int              { return &value }
 func boolPointer(value bool) *bool           { return &value }
 func timePointer(value time.Time) *time.Time { return &value }
+
+func costAICPointer(costUSD float64) *float64 {
+	value := costUSD * float64(telemetry.NanoAIUPerUSD) / float64(telemetry.NanoAIUPerAICredit)
+	return &value
+}

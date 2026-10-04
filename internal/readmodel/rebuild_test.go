@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -263,6 +264,40 @@ func TestCatchUpUsesTheChangeFeedNotOnlyPendingIntake(t *testing.T) {
 			"would publish stale at source position 10 and nothing would report it", ids)
 	}
 	_ = rebuild.Abort()
+}
+
+func TestCatchUpRunIDsReturnsDistinctSortedIDs(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	for _, runID := range []string{"run-b", "run-a"} {
+		if err := store.UpsertRun(ctx, completed(runID, 1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rebuild, err := store.BeginRebuild(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rebuild.Abort() })
+
+	if err := store.UpsertRun(ctx, completed("run-b", 2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(ctx, completed("run-a", 2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(ctx, completed("run-b", 3)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := rebuild.CatchUpRunIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"run-a", "run-b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("catch-up run IDs = %v, want %v", got, want)
+	}
 }
 
 // TestAbortLeavesNoArtefacts pins that a discarded build cleans up, including

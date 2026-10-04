@@ -24,6 +24,7 @@ capabilities must also appear on its referenced Goober.
 | --- | --- |
 | `repo:read` | Read-only checkout of the target repository for the stage. |
 | `repo:push` | Commit/push authority for the run branch. |
+| `configrepo:write` | Push a branch and open a pull request in the instance's **config repository** (the `workflowSource` repository), and nowhere else. Used with `push-branch --config-repo` / `open-pr --config-repo` and `config-checkout`; see the "Config-repo target" section of `docs/guides/tutor-write-boundary.md`. Fails closed unless the instance has a github-app `workflowSource` (or an explicit `credentials:` entry for it). Never backed by a gaggle's product-repo token. |
 | `github:issues:read` | Read GitHub issues without mutation. |
 | `github:issues:write` | Query, create, edit, label, comment on, or close GitHub issues, excluding the trusted approval label. |
 | `github:milestones:write` | Assign an existing GitHub milestone. |
@@ -41,6 +42,7 @@ capabilities must also appear on its referenced Goober.
 | `ado:pr:status` | Publish Azure Repos pull-request statuses. Optional on the `report-pr-status` policy action, which requires `github:pr:write`; declaring `ado:pr:status` alongside it is accepted but not required. |
 | `ado:pr:complete` | Complete an Azure Repos pull request. Optional: accepted on `merge-pr` and `merge-queue-poll` alongside the required `github:pr:merge`, and when declared, completion uses its credential instead. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. Consumed only by `open-pr`, which links an Azure DevOps pull request to its work item natively when the stage declares it (optional: without it the pull request opens with a text reference and a note); an Azure DevOps repository credential backs it. Elsewhere it is inert in DSL 2.0 (warns `CAP006`): declare `github:issues:write`. |
+| `ado:packaging:read` | Read Azure Artifacts package feeds. Inert for built-in DSL 2.0 stages (warns `CAP006`); custom stage commands receive it as `GOOBERS_CRED_ADO_PACKAGING_READ`. |
 | `telemetry:read` | Read local telemetry and configured external telemetry connectors. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |
@@ -70,7 +72,8 @@ on `merge-pr` and `merge-queue-poll` (completion uses its credential instead of
 `github:pr:merge`'s), and `ado:work-items:write` on `open-pr` (it links the
 pull request to its work item natively). `ado:pr:status` is accepted on
 `report-pr-status` but harmless: nothing reads it, and `github:pr:write`
-authorizes the status. The remaining names have no consumer on a built-in
+authorizes the status. `ado:packaging:read` is optional for custom commands
+that read Azure Artifacts feeds. The remaining names have no consumer on a built-in
 stage in DSL 2.0. They stay valid, so configurations that followed older docs
 keep loading, but `goobers validate` reports `CAP006` and names what
 authorizes the operation:
@@ -81,6 +84,7 @@ authorizes the operation:
 | `ado:pr:comment` | `github:pr:write` |
 | `ado:pr:write` | `github:pr:write` |
 | `ado:work-items:write` | `github:issues:write` authorizes work-item updates on the backlog provider (`github:issues:read` for reads). Not reported on `open-pr`, which consumes it to link the pull request to its work item; `github:issues:write` does not replace it there. |
+| `ado:packaging:read` | No built-in DSL 2.0 stage consumes it; keep it only when the stage's own command reads Azure Artifacts package feeds. |
 
 The advice is provider-neutral: it names the capability that authorizes the
 operation on whichever provider the stage routes to. A task that runs its own

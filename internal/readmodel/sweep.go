@@ -121,47 +121,42 @@ func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
 // that have received repair budget. A configured root absent from this result
 // has not been visited yet and starts at the beginning.
 func (s *Store) SweepRootCursors(ctx context.Context) ([]SweepRootCursor, error) {
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var cursors []SweepRootCursor
+	err := s.withReadRows(ctx, `
 		SELECT root, after_name, cycle_started_at, last_cycle_completed_at,
 		       entries_this_cycle
 		FROM sweep_root_cursor
-		ORDER BY root`)
+		ORDER BY root`,
+		nil,
+		"readmodel: read sweep root cursors",
+		"readmodel: read sweep root cursor rows",
+		func(rows *sql.Rows) error {
+			var (
+				cursor    SweepRootCursor
+				started   sql.NullString
+				completed sql.NullString
+			)
+			if err := rows.Scan(
+				&cursor.Root,
+				&cursor.AfterName,
+				&started,
+				&completed,
+				&cursor.EntriesThisCycle,
+			); err != nil {
+				return fmt.Errorf("readmodel: scan sweep root cursor: %w", err)
+			}
+			var err error
+			if cursor.CycleStartedAt, err = optionalTimeValue(started); err != nil {
+				return err
+			}
+			if cursor.LastCycleCompletedAt, err = optionalTimeValue(completed); err != nil {
+				return err
+			}
+			cursors = append(cursors, cursor)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: read sweep root cursors: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var cursors []SweepRootCursor
-	for rows.Next() {
-		var (
-			cursor    SweepRootCursor
-			started   sql.NullString
-			completed sql.NullString
-		)
-		if err := rows.Scan(
-			&cursor.Root,
-			&cursor.AfterName,
-			&started,
-			&completed,
-			&cursor.EntriesThisCycle,
-		); err != nil {
-			return nil, fmt.Errorf("readmodel: scan sweep root cursor: %w", err)
-		}
-		if cursor.CycleStartedAt, err = optionalTimeValue(started); err != nil {
-			return nil, err
-		}
-		if cursor.LastCycleCompletedAt, err = optionalTimeValue(completed); err != nil {
-			return nil, err
-		}
-		cursors = append(cursors, cursor)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: read sweep root cursor rows: %w", err)
+		return nil, err
 	}
 	return cursors, nil
 }

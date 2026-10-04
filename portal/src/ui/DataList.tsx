@@ -65,13 +65,22 @@ export function DataList({
 
 interface DataRowProps {
   children: React.ReactNode;
+  focusRestoreKey?: string;
   href?: string;
   interactiveChildren?: boolean;
   label: string;
   onClick?: () => void;
 }
 
-export function DataRow({ children, href, interactiveChildren, label, onClick }: DataRowProps) {
+export function DataRow({
+  children,
+  focusRestoreKey,
+  href,
+  interactiveChildren,
+  label,
+  onClick,
+}: DataRowProps) {
+  const restoreKey = focusRestoreKey ?? (href ? label : undefined);
   const content = (
     <>
       {children}
@@ -95,7 +104,12 @@ export function DataRow({ children, href, interactiveChildren, label, onClick }:
     }
     return (
       <div className="data-row data-row-stretched">
-        <a aria-label={label} className="data-row-stretch-link" href={href} />
+        <a
+          aria-label={label}
+          className="data-row-stretch-link"
+          data-focus-restore={restoreKey}
+          href={href}
+        />
         {content}
       </div>
     );
@@ -103,7 +117,12 @@ export function DataRow({ children, href, interactiveChildren, label, onClick }:
 
   if (href) {
     return (
-      <a aria-label={label} className="data-row" href={href}>
+      <a
+        aria-label={label}
+        className="data-row"
+        data-focus-restore={restoreKey}
+        href={href}
+      >
         {content}
       </a>
     );
@@ -114,7 +133,13 @@ export function DataRow({ children, href, interactiveChildren, label, onClick }:
   }
 
   return (
-    <button aria-label={label} className="data-row" onClick={onClick} type="button">
+    <button
+      aria-label={label}
+      className="data-row"
+      data-focus-restore={focusRestoreKey}
+      onClick={onClick}
+      type="button"
+    >
       {content}
     </button>
   );

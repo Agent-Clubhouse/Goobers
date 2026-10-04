@@ -801,6 +801,10 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		Sandbox:          &apiv1.GaggleSandbox{Agentic: "enforced"},
 		Workcopies:       &apiv1.GaggleWorkcopies{Root: "/var/goobers/workcopies"},
 		RequireLabels:    []string{"team:web"},
+		IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+			Assignees:  []string{"goobers-bot"},
+			Unassigned: "refuse",
+		},
 		Siblings: []apiv1.GaggleSibling{{
 			Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"},
 			Label:   "Billing team",
@@ -1243,6 +1247,9 @@ func gaggleOnlyFeatureIDs() []FeatureID {
 		featureGaggleOutboxMirrorPath,
 		featureGaggleWorkcopiesRoot,
 		featureGaggleRequireLabels,
+		featureGaggleIssueOwnershipScope,
+		featureGaggleIssueOwnershipScopeAssignees,
+		featureGaggleIssueOwnershipScopeUnassigned,
 		featureGaggleSiblings,
 	}
 }

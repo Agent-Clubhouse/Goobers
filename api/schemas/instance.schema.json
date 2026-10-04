@@ -175,7 +175,32 @@
       "default": false,
       "description": "Opts `goobers up` into native desktop notifications for escalated and failed runs. The one-shot daemon override is `goobers up --notify` (`--notify=all` adds completed and aborted runs)."
     },
-    "speech": {
+    "decisionGate": {
+      "description": "Opt-in decision-model (System One) layer. Omitted means off and nothing is sent to any endpoint. The *Env fields name environment variables; secrets are never stored here.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["off", "shadow", "enforce"], "default": "off", "description": "`shadow` scores and records without changing any outcome; `enforce` lets the decision change outcomes." },
+        "baseURLEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the endpoint URL." },
+        "keyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the API key." },
+        "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the model name." },
+        "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
+        "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
+        "gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Thresholds, cache and concurrency limits.",
+          "properties": {
+            "thresholds": { "type": "object", "description": "Per-question accept/reject cutoffs, keyed by question name. A probability between reject and accept is uncertain.", "additionalProperties": { "type": "object", "additionalProperties": false, "properties": { "accept": { "type": "number", "minimum": 0, "maximum": 1, "description": "Yes-probability at or above which the answer counts as yes." }, "reject": { "type": "number", "minimum": 0, "maximum": 1, "description": "Yes-probability at or below which the answer counts as no; must be below accept." } } } },
+            "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Choice answers below this confidence count as uncertain." },
+            "maxConcurrent": { "type": "integer", "minimum": 0, "description": "Bound on in-flight decision calls; 0 means 4." },
+            "cacheEntries": { "type": "integer", "minimum": 0, "description": "Digest cache size; 0 disables caching." },
+            "cacheTTL": { "description": "How long a cached answer is reused; 0 means 1h.", "$ref": "#/$defs/duration" },
+            "callTimeout": { "description": "Bound on one decision call; 0 means 5s.", "$ref": "#/$defs/duration" }
+          }
+        }
+      }
+    },    "speech": {
       "description": "Opt-in local speech sink for the same terminal alerts. Omitted stays silent.",
       "$ref": "#/$defs/speech"
     },
@@ -583,6 +608,7 @@
           "enum": [
             "repo:read",
             "repo:push",
+            "configrepo:write",
             "github:issues:read",
             "github:issues:write",
             "github:milestones:write",
@@ -603,6 +629,7 @@
             "ado:pr:status",
             "ado:pr:complete",
             "ado:work-items:write",
+            "ado:packaging:read",
             "telemetry:read",
             "journal:read",
             "agent:model"

@@ -154,6 +154,7 @@
         "enum": [
           "repo:read",
           "repo:push",
+          "configrepo:write",
           "github:issues:read",
           "github:issues:write",
           "github:milestones:write",
@@ -174,6 +175,7 @@
           "ado:pr:status",
           "ado:pr:complete",
           "ado:work-items:write",
+          "ado:packaging:read",
           "telemetry:read",
           "journal:read",
           "agent:model"

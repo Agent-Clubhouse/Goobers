@@ -33,9 +33,12 @@
 // name here resolves in the CLI registry (the inventory cannot invent
 // commands), and a companion test asserts every providerstage.Commands()
 // name is present here (the inventory cannot silently lag the manifest).
-// This package has no dependencies beyond the stdlib so both interpreters
-// and cmd/goobers tests can import it freely.
+// This package has no dependencies beyond the stdlib and the lightweight
+// internal/textsuggest helper, so both interpreters and cmd/goobers tests can
+// import it freely.
 package builtincmd
+
+import "github.com/goobers/goobers/internal/textsuggest"
 
 // names is the inventory, sorted. Keep it sorted: tests enforce order and
 // uniqueness so diffs stay reviewable and lookups can stay simple.
@@ -51,6 +54,7 @@ var names = []string{
 	"cancel-pending-ci",
 	"check-fail-first",
 	"check-issue-staleness",
+	"config-checkout",
 	"docs-churn",
 	"elect-lander",
 	"file-issues",
@@ -122,7 +126,7 @@ func Suggest(name string) (string, bool) {
 	bestDistance := -1
 	best := ""
 	for _, candidate := range names {
-		distance := editDistance(name, candidate)
+		distance := textsuggest.Distance(name, candidate)
 		if bestDistance == -1 || distance < bestDistance {
 			bestDistance = distance
 			best = candidate
@@ -132,28 +136,4 @@ func Suggest(name string) (string, bool) {
 		return "", false
 	}
 	return best, true
-}
-
-func editDistance(a, b string) int {
-	previous := make([]int, len(b)+1)
-	for j := range previous {
-		previous[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		current := make([]int, len(b)+1)
-		current[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 0
-			if a[i-1] != b[j-1] {
-				cost = 1
-			}
-			current[j] = min(
-				current[j-1]+1,
-				previous[j]+1,
-				previous[j-1]+cost,
-			)
-		}
-		previous = current
-	}
-	return previous[len(b)]
 }

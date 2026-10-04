@@ -3,7 +3,8 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -141,6 +142,10 @@ type RunInput struct {
 	// gaggle configuration mid-flight.
 	BacklogQueryBacklogLabels  string `json:"backlogQueryBacklogLabels,omitempty"`
 	BacklogQueryLabelPredicate string `json:"backlogQueryLabelPredicate,omitempty"`
+	// IssueOwnershipAssignees/Unassigned pin the gaggle's provider-visible
+	// issue-write ownership defaults for every task in the run.
+	IssueOwnershipAssignees  string `json:"issueOwnershipAssignees,omitempty"`
+	IssueOwnershipUnassigned string `json:"issueOwnershipUnassigned,omitempty"`
 	// GooberDigest is the content digest of the goober kit this run's stages
 	// are meant to execute, pinned at start exactly as the local scheduler
 	// stamps it onto a runner-driven StartRequest
@@ -883,6 +888,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// Pure function of pinned RunInput data, so it is replay-deterministic; a
 	// no-op for a gaggle that configures neither.
 	inputs = backlogdefaults.Apply(t, inputs, in.BacklogQueryAssignedTo, in.BacklogQueryRequireLabels)
+	inputs = backlogdefaults.ApplyIssueOwnershipScope(inputs, in.IssueOwnershipAssignees, in.IssueOwnershipUnassigned)
 	limits, err := wf.TaskLimits(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
@@ -1285,12 +1291,7 @@ func normalizeArtifactIntegrity(taskType apiv1.TaskType, artifacts []apiv1.Artif
 }
 
 func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {

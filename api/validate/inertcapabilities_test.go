@@ -102,6 +102,13 @@ spec:
       run:
         command: ["./scripts/sync-work-items.sh"]
       capabilities: ["ado:work-items:write"]
+      next: restore
+    - name: restore
+      type: deterministic
+      goal: restore private packages with a custom script
+      run:
+        command: ["./scripts/restore-private-packages.sh"]
+      capabilities: ["ado:packaging:read"]
       next: review
     - name: review
       type: agentic
@@ -140,6 +147,7 @@ func TestInertADOCapabilityWarnsWithAuthorizingName(t *testing.T) {
 		{"Workflow", "inert-flow", `task "comment" declares capability "ado:pr:comment"|"github:pr:write" authorizes`},
 		{"Workflow", "inert-flow", `task "triage" declares capability "ado:work-items:write"|"github:issues:write" authorizes work-item updates|only open-pr consumes "ado:work-items:write"`},
 		{"Workflow", "inert-flow", `task "sync" declares capability "ado:work-items:write"|no built-in DSL 2.0 stage consumes|keep it only if that command uses it`},
+		{"Workflow", "inert-flow", `task "restore" declares capability "ado:packaging:read"|no built-in DSL 2.0 stage consumes|receives the credential it selects`},
 		{"Workflow", "inert-flow", `task "triage" declares capability "ado:code:read"|no capability is needed: repository reads use the repository credential`},
 		{"Goober", "reviewer", `grants "ado:pr:write"|"github:pr:write" authorizes`},
 	}

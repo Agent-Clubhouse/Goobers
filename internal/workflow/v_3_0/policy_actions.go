@@ -40,6 +40,8 @@ var policyActionContracts = map[string]policyActionContract{
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
+	"open-or-update-config-pr":      {requiredCapabilities: []capability.Capability{capability.ConfigRepoWrite}},
+	"push-config-repo-branch":       {requiredCapabilities: []capability.Capability{capability.ConfigRepoWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -65,6 +67,11 @@ var policyActionContracts = map[string]policyActionContract{
 	"update-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"update-pr-branch":         {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"watch-merge-queue":        {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
+}
+
+var configRepoCommandPolicyActions = map[string][]string{
+	"open-pr":     {"open-or-update-config-pr"},
+	"push-branch": {"push-config-repo-branch"},
 }
 
 var commandPolicyActions = map[string][]string{
@@ -282,6 +289,16 @@ func missingPolicyActionCapabilities(task apiv1.Task, action string, contract po
 	return problems
 }
 
+// commandActionsFor is the command's base policy actions. --config-repo
+// (TUT-A8) re-aims push-branch/open-pr at the instance config repository: the
+// stage then needs configrepo:write, never the product-repository capabilities.
+func commandActionsFor(task apiv1.Task, command string) []string {
+	if configActions, ok := configRepoCommandPolicyActions[command]; ok && task.Run != nil && booleanCommandArgument(task.Run.Command[2:], "config-repo") {
+		return configActions
+	}
+	return commandPolicyActions[command]
+}
+
 func policyCommand(task apiv1.Task) string {
 	if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
 		return ""
@@ -297,7 +314,8 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 			return nil
 		}
 	}
-	actions := append([]string(nil), commandPolicyActions[command]...)
+	base := commandActionsFor(task, command)
+	actions := append([]string(nil), base...)
 	actions = append(actions, prescribedInputPolicyActions(task, command)...)
 	argumentActions := commandArgumentPolicyActions[command]
 	if task.Run == nil || len(argumentActions) == 0 {

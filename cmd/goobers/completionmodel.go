@@ -516,6 +516,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"escalations": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
+		{name: "limit", takesArg: true, desc: "Maximum escalated runs to show"},
+		{name: "since", takesArg: true, desc: "Only include runs started at or after this time"},
 	},
 	"escalations show": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
@@ -611,6 +613,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"backlog-health": {
 		{name: "feedback", desc: "Include backlog feedback"},
+	},
+	"gate-removal-guard": {
+		{name: "config-repo", desc: "Inspect the instance config repository checkout"},
+	},
+	"push-branch": {
+		{name: "config-repo", desc: "Push the instance config repository checkout with configrepo:write"},
+	},
+	"open-pr": {
+		{name: "config-repo", desc: "Open the PR in the instance config repository with configrepo:write"},
 	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},

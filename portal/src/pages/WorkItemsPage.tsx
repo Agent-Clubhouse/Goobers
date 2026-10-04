@@ -3,10 +3,13 @@ import type {
   DaemonClient,
   WorkItemDetail,
   WorkItemKind,
+  WorkItemOutcome,
   WorkItemPage,
   WorkItemSummary,
 } from "../api/types";
+import { DaemonApiError, MissingCapabilityError } from "../api/errors";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { PageToolbar, type ActivePageFilter } from "../components/PageToolbar";
 import type { Navigate, Route } from "../routing";
 import { routeHash } from "../routing";
 import { formatTimestamp } from "../runDetailData";
@@ -16,6 +19,12 @@ type PageState<T> =
   | { status: "loading" }
   | { status: "error"; error: Error }
   | { status: "ready"; data: T };
+
+type WorkItemFilters = {
+  kind?: WorkItemKind;
+  gaggle?: string;
+  outcome?: WorkItemOutcome;
+};
 
 export function WorkItemsPage({
   client,
@@ -47,6 +56,7 @@ export function WorkItemsPage({
       gaggle={route.gaggle}
       kind={route.kind}
       navigate={navigate}
+      outcome={route.outcome}
       query={route.query}
       standalone={standalone}
     />
@@ -58,6 +68,7 @@ function WorkItemListView({
   gaggle,
   kind,
   navigate,
+  outcome,
   query,
   standalone,
 }: {
@@ -65,16 +76,40 @@ function WorkItemListView({
   gaggle?: string;
   kind?: WorkItemKind;
   navigate: Navigate;
+  outcome?: WorkItemOutcome;
   query?: string;
   standalone: boolean;
 }) {
-  const [state, setState] = useState<PageState<WorkItemPage>>({ status: "loading" });
+  const [state, setState] = useState<PageState<{
+    page: WorkItemPage;
+    filterItems: WorkItemSummary[];
+  }>>({ status: "loading" });
   const [searchQuery, setSearchQuery] = useState(query ?? "");
+  const [draft, setDraft] = useState<WorkItemFilters>({ kind, gaggle, outcome });
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
-    client.listWorkItems({ kind, limit: 200 }, { signal: controller.signal }).then(
-      (data) => setState({ status: "ready", data }),
+    const pullRequests = client.listWorkItems(
+      { kind: "pr", limit: 200 },
+      { signal: controller.signal },
+    );
+    const issues = client.listWorkItems(
+      { kind: "issue", limit: 200 },
+      { signal: controller.signal },
+    );
+    const page = kind === "pr"
+      ? pullRequests
+      : kind === "issue"
+        ? issues
+        : client.listWorkItems({ limit: 200 }, { signal: controller.signal });
+    Promise.all([page, pullRequests, issues]).then(
+      ([data, pullRequestData, issueData]) => setState({
+        status: "ready",
+        data: {
+          page: data,
+          filterItems: [...pullRequestData.items, ...issueData.items],
+        },
+      }),
       (error: Error) => {
         if (!controller.signal.aborted) setState({ status: "error", error });
       },
@@ -84,18 +119,38 @@ function WorkItemListView({
 
   useEffect(load, [client, kind]);
   useEffect(() => setSearchQuery(query ?? ""), [query]);
+  useEffect(() => setDraft({ kind, gaggle, outcome }), [kind, gaggle, outcome]);
 
   if (state.status === "loading") return <DaemonLoadingState standalone={standalone} />;
   if (state.status === "error") {
+    if (isMissingWorkItemsCapability(state.error)) {
+      return (
+        <section className="daemon-state daemon-state-error" role="alert">
+          <div>
+            <h1>Work Items unavailable</h1>
+            <p>
+              This daemon does not support work item history. Upgrade Goobers to use this page.
+            </p>
+          </div>
+          <button className="reconnect-button" onClick={load} type="button">
+            Retry
+          </button>
+        </section>
+      );
+    }
     return <DaemonErrorState error={state.error} retry={load} standalone={standalone} />;
   }
 
-  const gaggleOptions = [...new Set(
-    state.data.items.map((item) => item.gaggle).filter((value): value is string => Boolean(value)),
+  const gaggleOptions = (selectedKind?: WorkItemKind) => [...new Set(
+    state.data.filterItems
+      .filter((item) => !selectedKind || item.kind === selectedKind)
+      .map((item) => item.gaggle)
+      .filter((value): value is string => Boolean(value)),
   )].sort((left, right) => left.localeCompare(right));
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
-  const items = state.data.items.filter((item) => {
+  const items = state.data.page.items.filter((item) => {
     if (gaggle && item.gaggle !== gaggle) return false;
+    if (outcome && item.outcome !== outcome) return false;
     if (!normalizedQuery) return true;
     return [
       workItemLabel(item.repository, item.externalId),
@@ -103,11 +158,12 @@ function WorkItemListView({
       item.externalId,
     ].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
   });
-  const updateFilters = (updates: { kind?: WorkItemKind; gaggle?: string; query?: string }) => {
+  const updateFilters = (updates: WorkItemFilters & { query?: string }) => {
     navigate({
       page: "work-items",
       kind,
       gaggle,
+      outcome,
       query: searchQuery || undefined,
       ...updates,
     });
@@ -118,51 +174,112 @@ function WorkItemListView({
       page: "work-items",
       kind,
       gaggle,
+      outcome,
       query: value || undefined,
     });
     window.history.replaceState(window.history.state, "", hash);
   };
-
-  return (
-    <>
-      <header className="page-heading">
-        <p className="page-kicker">External activity</p>
-        <h1>Work Items</h1>
-        <p>
-          Pull requests, issues, and work items that Goobers changed through a recorded
-          provider operation.
-        </p>
-      </header>
-      <div aria-label="Work item type" className="filter-bar">
+  const filterError = workItemFilterError(kind, gaggle, gaggleOptions(kind));
+  const activeFilters: ActivePageFilter[] = [
+    ...(kind ? [{
+      key: "kind",
+      label: kind === "pr" ? "Pull requests" : "Issues",
+      onRemove: () => updateFilters({ kind: undefined }),
+    }] : []),
+    ...(gaggle ? [{
+      key: "gaggle",
+      label: `Gaggle: ${gaggle}`,
+      onRemove: () => updateFilters({ gaggle: undefined }),
+    }] : []),
+    ...(outcome ? [{
+      key: "outcome",
+      label: `Status: ${workItemOutcomeLabel(outcome)}`,
+      onRemove: () => updateFilters({ outcome: undefined }),
+    }] : []),
+  ];
+  const renderFilters = (mobile: boolean) => {
+    const values = mobile ? draft : { kind, gaggle, outcome };
+    const options = gaggleOptions(values.kind);
+    const change = (updates: WorkItemFilters) => {
+      if (mobile) {
+        setDraft((current) => ({ ...current, ...updates }));
+      } else {
+        updateFilters(updates);
+      }
+    };
+    return (
+      <div aria-label="Work item filters" className="filter-bar" role="group">
         {([
           ["all", undefined],
           ["pull requests", "pr"],
           ["issues", "issue"],
         ] as const).map(([label, value]) => (
           <button
-            className={kind === value ? "filter-button filter-button-active" : "filter-button"}
+            aria-pressed={values.kind === value}
+            className={values.kind === value ? "filter-button filter-button-active" : "filter-button"}
             key={label}
-            onClick={() => updateFilters({ kind: value })}
+            onClick={() => change({ kind: value })}
             type="button"
           >
             {label}
           </button>
         ))}
-        <div className="work-item-filter-fields">
-          <label className="filter-select work-item-filter-field">
-            <span>Gaggle</span>
-            <select
-              aria-label="Filter work items by gaggle"
-              onChange={(event) => updateFilters({ gaggle: event.target.value || undefined })}
-              value={gaggle ?? ""}
-            >
-              <option value="">All gaggles</option>
-              {gaggleOptions.map((option) => (
-                <option key={option} value={option}>{option}</option>
-              ))}
-            </select>
-          </label>
-          <label className="filter-search work-item-filter-field">
+        <label className="filter-select work-item-filter-field">
+          <span>Status</span>
+          <select
+            aria-label={mobile ? "Draft work item status filter" : "Filter work items by status"}
+            onChange={(event) => change({
+              outcome: workItemOutcomeFilter(event.target.value),
+            })}
+            value={values.outcome ?? ""}
+          >
+            <option value="">All statuses</option>
+            <option value="done">Done</option>
+            <option value="in-progress">In progress</option>
+            <option value="bad-terminal">Bad terminal</option>
+          </select>
+        </label>
+        <label className="filter-select work-item-filter-field">
+          <span>Gaggle</span>
+          <select
+            aria-label={mobile ? "Draft work item gaggle filter" : "Filter work items by gaggle"}
+            onChange={(event) => change({ gaggle: event.target.value || undefined })}
+            value={values.gaggle ?? ""}
+          >
+            <option value="">All gaggles</option>
+            {options.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <PageToolbar
+        activeFilters={activeFilters}
+        count={items.length}
+        description="Pull requests, issues, and work items changed through a recorded provider operation."
+        filterError={filterError}
+        filters={renderFilters}
+        onApplyFilters={() => {
+          updateFilters(draft);
+        }}
+        onOpenFilters={() => setDraft({ kind, gaggle, outcome })}
+        onResetFilters={() => navigate({
+          page: "work-items",
+          query: searchQuery || undefined,
+        })}
+        onValidateFilters={() => workItemFilterError(
+          draft.kind,
+          draft.gaggle,
+          gaggleOptions(draft.kind),
+          false,
+        )}
+        search={
+          <label className="filter-search page-toolbar-search">
             <span>Find work item</span>
             <input
               aria-label="Search work items"
@@ -172,8 +289,9 @@ function WorkItemListView({
               value={searchQuery}
             />
           </label>
-        </div>
-      </div>
+        }
+        title="Work Items"
+      />
       <section className="content-section">
         {items.length === 0 ? (
           <p className="inline-empty">
@@ -184,48 +302,73 @@ function WorkItemListView({
         ) : (
           <div className="data-table data-table-shell work-items-table">
             <div aria-hidden="true" className="data-header data-table-header work-item-grid">
-              <span>Work item</span><span>Last action</span><span>Workflow</span><span>Actions</span><span />
+              <span>Work item</span><span>Outcome</span><span>Workflow</span><span>Actions</span><span />
             </div>
-            {items.map((item) => (
-              <button
-                aria-label={
-                  item.repository
-                    ? `Open ${workItemShortKind(item)} #${item.externalId} in ${item.repository}`
-                    : `${workItemShortKind(item)} #${item.externalId} has no recorded repository`
-                }
-                className="data-row work-item-grid"
-                disabled={!item.repository}
-                title={item.repository ? undefined : "No repository was recorded for this item, so it has no detail page."}
-                key={workItemRowKey(item)}
-                onClick={() => item.repository && navigate({
-                  page: "work-items",
-                  provider: item.provider,
-                  repository: item.repository,
-                  kind: item.kind,
-                  id: item.externalId,
-                })}
-                type="button"
-              >
-                <span className="work-item-identity">
-                  <strong className="data-table-primary">{workItemLabel(item.repository, item.externalId)}</strong>
-                  <small className="data-table-meta">
-                    {item.provider} · {workItemKindLabel(item.provider, item.kind)}
-                    {!item.repository && " · repository unknown"}
-                  </small>
-                </span>
-                <span>
-                  <strong>{humanizeOperation(item.lastOperation)}</strong>
-                  <small>{formatTimestamp(item.lastActionAt)}</small>
-                </span>
-                <span>
-                  <strong>{item.workflow || "Unknown"}</strong>
-                  <small>{item.gaggle || "No gaggle recorded"}</small>
-                </span>
-                <strong>{item.actionCount}</strong>
-                <Icon name="chevron" size={15} />
-              </button>
-            ))}
-            {state.data.hasMore && (
+            {items.map((item) => {
+              const label = workItemLabel(item.repository, item.externalId);
+              return (
+                <button
+                  aria-label={
+                    item.repository
+                      ? `Open ${workItemShortKind(item)} #${item.externalId} in ${item.repository}`
+                      : `${workItemShortKind(item)} #${item.externalId} has no recorded repository`
+                  }
+                  className={`data-row work-item-grid work-item-row-${item.outcome}`}
+                  disabled={!item.repository}
+                  title={item.repository
+                    ? undefined
+                    : "No repository was recorded for this item, so it has no detail page."}
+                  key={workItemRowKey(item)}
+                  onClick={() => item.repository && navigate({
+                    page: "work-items",
+                    provider: item.provider,
+                    repository: item.repository,
+                    kind: item.kind,
+                    id: item.externalId,
+                  })}
+                  type="button"
+                >
+                  <span className="work-item-identity">
+                    <strong className="data-table-primary" title={label}>{label}</strong>
+                    <small className="data-table-meta">
+                      {item.provider} · {workItemKindLabel(item.provider, item.kind)}
+                      {!item.repository && " · repository unknown"}
+                    </small>
+                  </span>
+                  <span className="work-item-last-action">
+                    <strong className={`status-badge work-item-outcome-${item.outcome}`}>
+                      {workItemOutcomeLabel(item.outcome)}
+                    </strong>
+                    <small>
+                      Last action: {humanizeOperation(item.lastOperation)} ·{" "}
+                      {formatTimestamp(item.lastActionAt)}
+                    </small>
+                  </span>
+                  <span className="work-item-workflow">
+                    <strong>{item.workflow || "Unknown"}</strong>
+                    <small>{item.gaggle || "No gaggle recorded"}</small>
+                  </span>
+                  <strong className="work-item-action-count">{item.actionCount}</strong>
+                  <span className="work-item-mobile-context">
+                    <span
+                      className={`status-badge work-item-status work-item-outcome-${item.outcome}`}
+                      data-status={item.outcome}
+                    >
+                      {workItemOutcomeLabel(item.outcome)}
+                    </span>
+                    <span>
+                      Last action: {humanizeOperation(item.lastOperation)} · {item.actionCount}{" "}
+                      {item.actionCount === 1 ? "action" : "actions"}
+                    </span>
+                    <span>
+                      {item.gaggle || "Unknown gaggle"} / {item.workflow || "Unknown workflow"}
+                    </span>
+                  </span>
+                  <span className="row-arrow"><Icon name="chevron" size={15} /></span>
+                </button>
+              );
+            })}
+            {state.data.page.hasMore && (
               <p className="data-overflow">Showing the 200 most recently actioned work items.</p>
             )}
           </div>
@@ -233,6 +376,36 @@ function WorkItemListView({
       </section>
     </>
   );
+}
+
+function workItemFilterError(
+  kind: WorkItemKind | undefined,
+  gaggle: string | undefined,
+  gaggles: string[],
+  inspectRoute = true,
+): string | undefined {
+  const search = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const rawKind = search.get("kind");
+  if (inspectRoute && search.has("kind") && rawKind !== "pr" && rawKind !== "issue") {
+    return `Invalid work item type "${rawKind}". Choose pull requests or issues.`;
+  }
+  const rawOutcome = search.get("outcome");
+  if (
+    inspectRoute &&
+    search.has("outcome") &&
+    rawOutcome !== "done" &&
+    rawOutcome !== "in-progress" &&
+    rawOutcome !== "bad-terminal"
+  ) {
+    return `Invalid work item status "${rawOutcome}". Choose done, in progress, or bad terminal.`;
+  }
+  if (kind && kind !== "pr" && kind !== "issue") {
+    return `Invalid work item type "${kind}". Choose pull requests or issues.`;
+  }
+  if (gaggle && !gaggles.includes(gaggle)) {
+    return `Invalid gaggle filter "${gaggle}". Choose a recorded gaggle.`;
+  }
+  return undefined;
 }
 
 function WorkItemDetailView({
@@ -413,18 +586,27 @@ function workItemLabel(repository: string | undefined, externalId: string): stri
   return repository ? `${repository}#${externalId}` : `#${externalId}`;
 }
 
+function workItemOutcomeLabel(outcome: WorkItemOutcome): string {
+  switch (outcome) {
+    case "done":
+      return "Done";
+    case "bad-terminal":
+      return "Bad terminal";
+    case "in-progress":
+      return "In progress";
+  }
+}
+
+function workItemOutcomeFilter(value: string): WorkItemOutcome | undefined {
+  return value === "done" || value === "in-progress" || value === "bad-terminal"
+    ? value
+    : undefined;
+}
+
 function formatWorkItemCost(cost: WorkItemDetail["cost"]): string {
   if (!cost) return "Not attributed";
-  if (cost.costUSD !== undefined) {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 4,
-    }).format(cost.costUSD);
-  }
   if (cost.nanoAIU !== undefined) {
-    return `${new Intl.NumberFormat("en-US").format(cost.nanoAIU)} nano-AIU`;
+    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(cost.nanoAIU / 1_000_000_000)} AIC`;
   }
   return "Not measured";
 }
@@ -434,4 +616,12 @@ function humanizeOperation(operation: string): string {
   return operation
     .replaceAll("-", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isMissingWorkItemsCapability(error: Error): boolean {
+  return (
+    (error instanceof MissingCapabilityError && error.capability === "work-items") ||
+    (error instanceof DaemonApiError &&
+      (error.status === 404 || error.code === "not_found"))
+  );
 }

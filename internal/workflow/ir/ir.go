@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/stringpolicy"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -271,7 +272,7 @@ func NormalizeWithMetadata(def workflow.Definition, provenance *Provenance, feat
 		}
 		return doc.Edges[i].To < doc.Edges[j].To
 	})
-	doc.Permissions = unique(doc.Permissions)
+	doc.Permissions = stringpolicy.Unique(doc.Permissions)
 	sort.Strings(doc.Permissions)
 	if err := Validate(doc); err != nil {
 		return Document{}, err
@@ -870,7 +871,7 @@ func taskInputs(task apiv1.Task) []Port {
 	for name := range task.InputsFrom {
 		names = append(names, name)
 	}
-	return ports(unique(names))
+	return ports(stringpolicy.Unique(names))
 }
 
 func taskSchema(task apiv1.Task) Schema {
@@ -882,18 +883,6 @@ func taskSchema(task apiv1.Task) Schema {
 		fields[port.Name] = port.Type
 	}
 	return Schema{Name: task.Name, Fields: fields}
-}
-
-func unique(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value]; !ok {
-			seen[value] = struct{}{}
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
@@ -908,7 +897,7 @@ func cloneStringMap(values map[string]string) map[string]string {
 }
 
 func canonicalizeFeatureGates(values []string) []string {
-	canonical := unique(append([]string(nil), values...))
+	canonical := stringpolicy.Unique(values)
 	sort.Strings(canonical)
 	return canonical
 }

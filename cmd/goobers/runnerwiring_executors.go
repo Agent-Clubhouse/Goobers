@@ -82,13 +82,17 @@ var credentialedCapabilities = []capability.Capability{
 }
 
 // adoRepoCredentialedCapabilities are backed by a repository's own credential
-// only when that repository is on Azure DevOps (#5925). The ADO repository
-// credential backs ado:work-items:write, so a stage that declares it (open-pr's
-// native work-item link) needs no separate credentials: entry; a GitHub or
-// Gitea repository credential never backs an Azure Boards capability. Only a
-// stage that declares the capability receives its credential, which keeps
-// work-item mutation separate from pull-request creation and completion.
-var adoRepoCredentialedCapabilities = []capability.Capability{capability.ADOWorkItemsWrite}
+// only when that repository is on Azure DevOps (#5925, #6581). The ADO
+// repository credential backs ado:work-items:write and ado:packaging:read, so
+// a stage that declares either needs no separate credentials: entry; a GitHub
+// or Gitea repository credential never backs an Azure DevOps capability. Only
+// a stage that declares the capability receives its credential, which keeps
+// work-item mutation and package-feed reads separate from pull-request
+// creation and completion.
+var adoRepoCredentialedCapabilities = []capability.Capability{
+	capability.ADOWorkItemsWrite,
+	capability.ADOPackagingRead,
+}
 
 // repoCredentialedCapabilityNames is the capability set credentials.RunnerGrants
 // binds to a repository credential: credentialedCapabilities plus
@@ -156,6 +160,7 @@ func buildEnvCapabilities() map[string]string {
 	for _, c := range credentialedCapabilities {
 		envCaps[string(c)] = credentialGrantEnv
 	}
+	envCaps[string(capability.ADOPackagingRead)] = executor.CredentialEnvVar(string(capability.ADOPackagingRead))
 	envCaps[string(capability.GitHubIssuesApprove)] = executor.CredentialEnvVar(string(capability.GitHubIssuesApprove))
 	envCaps[string(capability.GitHubMilestonesWrite)] = executor.CredentialEnvVar(string(capability.GitHubMilestonesWrite))
 	envCaps[string(capability.AgentModel)] = copilotModelEnv
@@ -556,6 +561,7 @@ type agenticExecutorInput struct {
 	SharedRegistry   *journal.RegistryScrubber
 	RunsDir          string
 	SandboxPosture   instance.SandboxPosture
+	Observer         harness.Observer
 	ArtifactRecorder runner.ArtifactRecorder
 	SecretRegistrar  runner.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
@@ -634,6 +640,9 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 	}
 	if input.SandboxPosture == instance.SandboxEnforced {
 		opts = append(opts, harness.WithSandboxEnforcement())
+	}
+	if input.Observer != nil {
+		opts = append(opts, harness.WithObserver(input.Observer))
 	}
 	return harness.NewExecutor(
 		adapter,

@@ -221,6 +221,7 @@ Use only the target release's registry. The current set is:
 |---|---|
 | `repo:read` | Read-only target-repository checkout. |
 | `repo:push` | Push the run branch to the target repository. |
+| `configrepo:write` | Push a branch and open a PR in the instance config repository (`workflowSource`) only, via `push-branch --config-repo` / `open-pr --config-repo` / `config-checkout`. |
 | `github:issues:read` | Query GitHub issues without mutation authority. |
 | `github:issues:write` | Query, create, label, close, or comment on GitHub issues. |
 | `github:milestones:write` | Assign existing GitHub milestones to selected issues. |
@@ -241,6 +242,7 @@ Use only the target release's registry. The current set is:
 | `ado:pr:status` | Publish Azure Repos pull-request statuses that branch policies gate on. |
 | `ado:pr:complete` | Complete (merge) an Azure Repos pull request. Optional: accepted alongside the required `github:pr:merge`; when declared, Azure DevOps completion uses it instead. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. Consumed only by `open-pr` (linking an ADO pull request to its work item); elsewhere inert in DSL 2.0 (`CAP006`); generate `github:issues:write`. |
+| `ado:packaging:read` | Read Azure Artifacts package feeds. Inert for built-in DSL 2.0 stages (`CAP006`); custom stage commands receive it as `GOOBERS_CRED_ADO_PACKAGING_READ`. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |
@@ -259,9 +261,10 @@ project provider (PR threads, labels, statuses, branch deletion), and
 `github:pr:merge` is the landing authority (completion or auto-complete).
 `ado:pr:complete` is optional and honoured when declared on `merge-pr` or
 `merge-queue-poll`; `ado:work-items:write` is optional and consumed by
-`open-pr` (native work-item link); `ado:pr:status` is accepted on
+`open-pr` (native work-item link); `ado:packaging:read` is optional for custom
+commands that read Azure Artifacts feeds; `ado:pr:status` is accepted on
 `report-pr-status` but harmless. `ado:code:read`, `ado:pr:comment`,
-`ado:pr:write` and `ado:work-items:write` (outside `open-pr`) have no
+`ado:pr:write`, `ado:packaging:read` and `ado:work-items:write` (outside `open-pr`) have no
 built-in DSL 2.0 consumer: validation accepts them with the strict-neutral
 warning `CAP006`, which names the `github:*` capability to declare instead
 (on a custom command it only notes that no built-in stage consumes the name).

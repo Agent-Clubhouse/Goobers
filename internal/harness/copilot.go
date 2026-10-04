@@ -17,6 +17,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -1254,7 +1255,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			invalidCompletionPayload = append([]byte(nil), payload...)
 		}
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
-			ctx, runner, req, result, payload, argv, env, promptArg, flag,
+			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv, promptArg, flag,
 			promptStdin, completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
 		)
 	}
@@ -1299,6 +1300,7 @@ func runCopilotCompletionRepair(
 	result ProcessResult,
 	payload []byte,
 	argv, env []string,
+	refreshEnv func(context.Context, []string, RunRequest) ([]string, error),
 	promptArg int,
 	flag string,
 	promptStdin []byte,
@@ -1311,15 +1313,26 @@ func runCopilotCompletionRepair(
 	if !repairableCompletionError(completionErr) {
 		return result, payload, nil, completionErr
 	}
-
 	totalTimeout := req.Timeout
 	if totalTimeout <= 0 {
 		totalTimeout = DefaultTimeout
 	}
 	remaining := totalTimeout - time.Since(started)
 	if remaining <= 0 {
-		runErr, keptErr := repairExit(completionErr, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]))
-		return result, payload, runErr, keptErr
+		return copilotCompletionRepairTimeout(result, payload, completionErr, totalTimeout, argv[0])
+	}
+	if refreshEnv != nil {
+		refreshCtx, cancel := context.WithTimeout(ctx, remaining)
+		refreshedEnv, err := refreshEnv(refreshCtx, env, req)
+		cancel()
+		remaining = totalTimeout - time.Since(started)
+		if remaining <= 0 {
+			return copilotCompletionRepairTimeout(result, payload, completionErr, totalTimeout, argv[0])
+		}
+		if err != nil {
+			return result, payload, nil, errors.Join(completionErr, fmt.Errorf("refresh credentials before completion repair: %w", err))
+		}
+		env = refreshedEnv
 	}
 
 	recoveryArgv := append([]string(nil), argv...)
@@ -1337,7 +1350,7 @@ func runCopilotCompletionRepair(
 	} else {
 		recoveryStdin = []byte(recoveryPrompt)
 	}
-	recovery, err := runner.Run(ctx, ProcessRequest{
+	recoveryReq := ProcessRequest{
 		Command:                      recoveryArgv,
 		Stdin:                        recoveryStdin,
 		Dir:                          req.Workspace,
@@ -1348,7 +1361,19 @@ func runCopilotCompletionRepair(
 		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
 		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		Activity:                     agentTelemetry.activityObserver(),
-	})
+	}
+	if restarter, ok := runner.(copilotRepairRestarter); ok {
+		if err := restarter.RestartCopilotForRepair(ctx, recoveryReq); err != nil {
+			runErr, keptErr := repairExit(completionErr, err)
+			return result, payload, runErr, keptErr
+		}
+		remaining = totalTimeout - time.Since(started)
+		if remaining <= 0 {
+			return copilotCompletionRepairTimeout(result, payload, completionErr, totalTimeout, argv[0])
+		}
+		recoveryReq.Timeout = remaining
+	}
+	recovery, err := runner.Run(ctx, recoveryReq)
 	result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 	if err != nil {
 		runErr, keptErr := repairExit(completionErr, err)
@@ -1359,6 +1384,56 @@ func runCopilotCompletionRepair(
 		req, recoveryCapture, completionInResponse, nativeTranscriptPath)
 	completionErr = validateCompletion(req, payload, completionErr)
 	return result, payload, nil, completionErr
+}
+
+type copilotRepairRestarter interface {
+	RestartCopilotForRepair(context.Context, ProcessRequest) error
+}
+
+func copilotCompletionRepairTimeout(
+	result ProcessResult,
+	payload []byte,
+	completionErr error,
+	totalTimeout time.Duration,
+	command string,
+) (ProcessResult, []byte, error, error) {
+	runErr, keptErr := repairExit(completionErr, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, command))
+	return result, payload, runErr, keptErr
+}
+
+func (c *CopilotAdapter) refreshCredentialEnv(ctx context.Context, env []string, req RunRequest) ([]string, error) {
+	if req.Credentials == nil {
+		return env, nil
+	}
+	refreshed := append([]string(nil), env...)
+	for _, capabilityName := range req.Envelope.Capabilities {
+		envVar, ok := c.EnvCapabilities[capabilityName]
+		if !ok || !CredentialFitsEnvAudience(capabilityName, envVar, req.Envelope.RepoRef.Provider) {
+			continue
+		}
+		if !envHasName(refreshed, envVar) {
+			continue
+		}
+		token, err := req.Credentials.Refresh(ctx, capabilityName)
+		if err != nil {
+			if errors.Is(err, credentials.ErrNoCredentialForCapability) && c.OptionalCredentialCapabilities[capabilityName] {
+				continue
+			}
+			return nil, fmt.Errorf("harness: %s: resolve %s: %w", c.Name(), capabilityName, err)
+		}
+		refreshed = overrideEnv(refreshed, envVar, token)
+	}
+	return refreshed, nil
+}
+
+func envHasName(env []string, target string) bool {
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyCopilotUsageDocument(out *Outcome, path string) {

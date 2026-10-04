@@ -798,8 +798,14 @@ func TestRepositoryBaselineIsCurrent(t *testing.T) {
 		}
 	}
 	upKey := key("cmd/goobers/up.go", "runUpContextWithForce")
-	if base.BodyLengths[upKey] == 0 {
-		t.Error("runUpContextWithForce must remain visible in the body-length baseline")
+	// #3052 decomposes this former oversized body into bounded phases. Keep
+	// checking that the command is measured, without retaining its old escape
+	// hatch in the live baseline after the extraction.
+	if !present[upKey] {
+		t.Error("runUpContextWithForce must remain visible to the complexity scan")
+	}
+	if measuredBodyLengths[upKey] >= base.BodyLengthCap || base.BodyLengths[upKey] != 0 {
+		t.Error("runUpContextWithForce must stay below the body-length cap without a baseline exemption")
 	}
 	for entryKey := range base.Entries {
 		if !present[entryKey] {

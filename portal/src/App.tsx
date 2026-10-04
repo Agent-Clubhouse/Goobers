@@ -28,13 +28,20 @@ import { GoobersPage } from "./pages/GoobersPage";
 import { CostPage } from "./pages/CostPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
+import { InstanceDetailPage } from "./pages/InstanceDetailPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { WorkItemsPage } from "./pages/WorkItemsPage";
 import { instanceWarnings } from "./prototypeFixtures";
-import { activeArea, parseRoute, routeHash, type Route } from "./routing";
+import {
+  activeArea,
+  parseRoute,
+  routeHash,
+  type NavigateOptions,
+  type Route,
+} from "./routing";
 import { scopeIdentity } from "./scope";
 import { GettingStartedShell } from "./shell/GettingStartedShell";
 import { PortalShell, type PortalHeaderHost } from "./shell/PortalShell";
@@ -159,6 +166,37 @@ function routeScrollKey(route: Route): string {
   return route.page === "run" ? `run/${route.id}` : routeHash(route);
 }
 
+interface RouteRestoreState {
+  focusKey?: string;
+  scrollTop: number;
+}
+
+interface PortalHistoryState {
+  portalOrigin?: boolean;
+  portalRestore?: RouteRestoreState;
+}
+
+function rememberCurrentRoutePosition(focusKey?: string): void {
+  const scrollPane = document.querySelector<HTMLElement>(".portal-main");
+  if (!scrollPane) {
+    return;
+  }
+  const active = document.activeElement;
+  const restoreFocusKey =
+    focusKey ?? (active instanceof HTMLElement ? active.dataset.focusRestore : undefined);
+  const state = (window.history.state ?? {}) as PortalHistoryState;
+  window.history.replaceState(
+    {
+      ...state,
+      portalRestore: {
+        focusKey: restoreFocusKey,
+        scrollTop: scrollPane.scrollTop,
+      },
+    } satisfies PortalHistoryState,
+    "",
+  );
+}
+
 function Portal({
   client,
   mode,
@@ -177,12 +215,45 @@ function Portal({
   const [config, setConfig] = useState<PortalConfig>(cachedConfig ?? defaultPortalConfig);
   const [loading, setLoading] = useState(cachedConfig === undefined);
   const initialRoute = useRef(true);
+  const linkedRoutePending = useRef(false);
   const scrollKey = routeScrollKey(route);
 
   useEffect(() => {
-    const onHashChange = () => setRoute(parseRoute());
+    const onHashChange = () => {
+      if (linkedRoutePending.current) {
+        linkedRoutePending.current = false;
+        const state = (window.history.state ?? {}) as PortalHistoryState;
+        const { portalRestore: _portalRestore, ...nextState } = state;
+        window.history.replaceState({ ...nextState, portalOrigin: true }, "");
+      }
+      setRoute(parseRoute());
+    };
+    const rememberLinkedRoute = (event: MouseEvent) => {
+      const target = event.target;
+      const link = target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        link?.hasAttribute("download") ||
+        (link?.target && link.target.toLowerCase() !== "_self")
+      ) {
+        return;
+      }
+      if (link?.hash.startsWith("#/") && link.hash !== window.location.hash) {
+        rememberCurrentRoutePosition(link.dataset.focusRestore);
+        linkedRoutePending.current = true;
+      }
+    };
     window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    document.addEventListener("click", rememberLinkedRoute);
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      document.removeEventListener("click", rememberLinkedRoute);
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -191,13 +262,20 @@ function Portal({
       return;
     }
     const scrollPane = document.querySelector<HTMLElement>(".portal-main");
+    const restore = (window.history.state as PortalHistoryState | null)?.portalRestore;
+    const scrollTop = restore?.scrollTop ?? 0;
     if (typeof scrollPane?.scrollTo === "function") {
-      scrollPane.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      scrollPane.scrollTo({ top: scrollTop, left: 0, behavior: "auto" });
     } else if (scrollPane) {
-      scrollPane.scrollTop = 0;
+      scrollPane.scrollTop = scrollTop;
       scrollPane.scrollLeft = 0;
     }
-    document.getElementById("main-content")?.focus();
+    const focusTarget = restore?.focusKey
+      ? document.querySelector<HTMLElement>(
+          `[data-focus-restore="${CSS.escape(restore.focusKey)}"]`,
+        )
+      : null;
+    (focusTarget ?? document.getElementById("main-content"))?.focus({ preventScroll: true });
   }, [scrollKey]);
 
   useEffect(() => {
@@ -254,11 +332,16 @@ function Portal({
   // intervention UI exists yet, and the underlying gate-resolution/rerun
   // wiring is #466/#468's scope, not this seam's.
   const { navigate, revealRun } = bindUIActions({
-    navigate: (nextRoute: Route) => {
+    navigate: (nextRoute: Route, options?: NavigateOptions) => {
       const nextHash = routeHash(nextRoute);
       if (window.location.hash === nextHash) {
         setRoute(nextRoute);
+      } else if (options?.replace) {
+        window.history.replaceState(window.history.state, "", nextHash);
+        setRoute(nextRoute);
       } else {
+        rememberCurrentRoutePosition();
+        linkedRoutePending.current = true;
         window.location.hash = nextHash;
       }
     },
@@ -292,7 +375,10 @@ function Portal({
 
   let warningSource: ConfigurationWarningSource = { kind: "none" };
   let warningFixtures = noWarnings;
-  if (route.page === "overview") {
+  if (
+    route.page === "overview" ||
+    (route.page === "instance-detail" && route.detail === "warnings")
+  ) {
     warningSource = { kind: "instance" };
     warningFixtures = instanceWarnings;
   } else if (route.page === "workflow" && route.gaggle) {
@@ -327,6 +413,15 @@ function Portal({
             <OverviewPage
               client={client}
               configurationWarnings={configurationWarnings}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "instance-detail" && (
+            <InstanceDetailPage
+              client={client}
+              configurationWarnings={configurationWarnings}
+              detail={route.detail}
+              navigate={navigate}
               standalone={standalone}
             />
           )}

@@ -384,7 +384,7 @@ func init() {
 			// actually accept (#4887). It previously pinned v0.1.0, which
 			// every build since has been newer than, so the shipped example
 			// failed verbatim for every reader who ran it.
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.1"),
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.6.1"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",
@@ -763,6 +763,10 @@ func init() {
 			withSynopsis(synopsisByID["push-branch"]).
 			withHelp("push the worktree's checked-out branch to origin (a workflow stage)", pushBranchHelp).
 			withExamples("goobers push-branch"),
+		stageCommand("config-checkout", apicontract.ActionWorkflowExecution, runConfigCheckout).
+			withSynopsis(synopsisByID["config-checkout"]).
+			withHelp("clone the instance config repository for a config-repo-targeted stage (a workflow stage)", configCheckoutHelp).
+			withExamples("goobers config-checkout"),
 		stageCommand("preflight-repo-write", apicontract.ActionWorkflowExecution, runPreflightRepoWrite).
 			withSynopsis(synopsisByID["preflight-repo-write"]).
 			withHelp("check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)", preflightRepoWriteHelp).

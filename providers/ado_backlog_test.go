@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestADOMergeLabels pins the add/remove label reconciliation UpdateWorkItem
@@ -124,10 +125,14 @@ func handleADOTestConnectionData(t *testing.T, mux *http.ServeMux) {
 // Tag writes behave like ADO's shared, case-insensitive tag namespace: a tag
 // already present keeps the casing it was first written with.
 type adoClaimFake struct {
-	mu          sync.Mutex
-	comments    []map[string]interface{}
-	tags        string
-	patchedTags []string
+	mu             sync.Mutex
+	comments       []map[string]interface{}
+	tags           string
+	patchedTags    []string
+	raceWinner     string
+	patchConflicts int
+	patchAttempts  int
+	operations     []string
 }
 
 // adoTestFirstWriterTags applies a System.Tags write the way ADO does: the
@@ -151,14 +156,22 @@ func adoTestFirstWriterTags(existing, written string) string {
 }
 
 func (f *adoClaimFake) seed(authorID, text string) {
+	f.seedAt(authorID, text, time.Time{})
+}
+
+func (f *adoClaimFake) seedAt(authorID, text string, createdAt time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.comments = append(f.comments, map[string]interface{}{
+	comment := map[string]interface{}{
 		"commentId": len(f.comments) + 1,
 		"text":      text,
 		// A forger can pick any display name; only the id identifies them.
 		"createdBy": map[string]string{"id": authorID, "displayName": "Goobers Bot"},
-	})
+	}
+	if !createdAt.IsZero() {
+		comment["createdDate"] = createdAt.Format(time.RFC3339Nano)
+	}
+	f.comments = append(f.comments, comment)
 }
 
 func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
@@ -182,7 +195,18 @@ func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
 		case http.MethodPost:
 			var body map[string]string
 			decodeJSON(t, r, &body)
+			if f.raceWinner != "" {
+				f.seed(adoTestSelfID, claimBreadcrumb(f.raceWinner))
+				f.raceWinner = ""
+			}
 			f.seed(adoTestSelfID, body["text"])
+			f.mu.Lock()
+			if claimReleaseRunID(body["text"]) != "" {
+				f.operations = append(f.operations, "release")
+			} else {
+				f.operations = append(f.operations, "claim")
+			}
+			f.mu.Unlock()
 			writeJSON(t, w, map[string]interface{}{"commentId": 99, "text": body["text"]})
 		default:
 			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -192,6 +216,12 @@ func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if r.Method == http.MethodPatch {
+			f.patchAttempts++
+			if f.patchConflicts > 0 {
+				f.patchConflicts--
+				http.Error(w, `{"message":"VS403351: test operation failed for /rev"}`, http.StatusBadRequest)
+				return
+			}
 			var ops []map[string]interface{}
 			decodeJSON(t, r, &ops)
 			for _, op := range ops {
@@ -199,6 +229,7 @@ func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
 					value, _ := op["value"].(string)
 					f.patchedTags = append(f.patchedTags, value)
 					f.tags = adoTestFirstWriterTags(f.tags, value)
+					f.operations = append(f.operations, "label")
 				}
 			}
 		}
@@ -254,6 +285,58 @@ func TestADOClaimIgnoresReleaseFromAnotherIdentity(t *testing.T) {
 	}
 	if result.Claimed || result.ClaimedBy != "run-owner" {
 		t.Fatalf("claim = %#v, want run-owner to keep the claim despite a forged release", result)
+	}
+}
+
+func TestADOOpenClaimEpochsReportsTrustedAttributionAndCreatedAt(t *testing.T) {
+	created := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	fake := &adoClaimFake{}
+	fake.seedAt(adoTestSelfID, claimBreadcrumbWithAttribution(t, "trusted-run", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), created)
+	fake.seed(adoTestOtherID, claimBreadcrumb("forged-run"))
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = fake.server(t, true).URL })
+
+	epochs, err := provider.OpenClaimEpochs(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "42")
+	if err != nil {
+		t.Fatalf("OpenClaimEpochs: %v", err)
+	}
+	if len(epochs) != 2 {
+		t.Fatalf("epochs = %+v, want trusted and forged epochs", epochs)
+	}
+	if !epochs[0].Trusted || epochs[0].RunID != "trusted-run" ||
+		epochs[0].InstanceID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		!epochs[0].CreatedAt.Equal(created) {
+		t.Fatalf("trusted epoch = %+v", epochs[0])
+	}
+	if epochs[1].Trusted || epochs[1].RunID != "forged-run" {
+		t.Fatalf("forged epoch = %+v", epochs[1])
+	}
+}
+
+func TestADOClaimLosesConcurrentBreadcrumb(t *testing.T) {
+	fake := &adoClaimFake{raceWinner: "run-racer"}
+	result, err := claimADOTestItem(t, fake.server(t, true), "run-ours")
+	if err != nil {
+		t.Fatalf("ClaimWorkItem: %v", err)
+	}
+	if result.Claimed || result.ClaimedBy != "run-racer" {
+		t.Fatalf("claim = %#v, want run-racer to win", result)
+	}
+	if fake.patchAttempts != 0 {
+		t.Fatalf("losing claim made %d label patch attempt(s), want none", fake.patchAttempts)
+	}
+}
+
+func TestADOClaimLabelRetriesRevisionConflict(t *testing.T) {
+	fake := &adoClaimFake{patchConflicts: 1}
+	result, err := claimADOTestItem(t, fake.server(t, true), "run-ours")
+	if err != nil {
+		t.Fatalf("ClaimWorkItem: %v", err)
+	}
+	if !result.Claimed || !result.Item.HasLabel(LabelClaimed) {
+		t.Fatalf("claim = %#v, want visible claim after retry", result)
+	}
+	if fake.patchAttempts != 2 {
+		t.Fatalf("label patch attempts = %d, want 2", fake.patchAttempts)
 	}
 }
 
@@ -355,6 +438,55 @@ func TestADOReleaseWorkItemClaimPreservesNewerOwner(t *testing.T) {
 	}
 	if mutations != 0 {
 		t.Fatalf("newer-owner refusal performed %d provider mutation(s), want none", mutations)
+	}
+}
+
+func TestADOReleaseWorkItemClaimAllowsLedgerAuthorizedWinner(t *testing.T) {
+	fake := &adoClaimFake{tags: LabelClaimed}
+	fake.seed(adoTestSelfID, claimBreadcrumb("run-owner"))
+	server := fake.server(t, true)
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	released, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository:       RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"},
+		ID:               "42",
+		RunID:            "run-cleanup",
+		LedgerAuthorized: true,
+	})
+	if err != nil {
+		t.Fatalf("ReleaseWorkItemClaim: %v", err)
+	}
+	if released.HasLabel(LabelClaimed) {
+		t.Fatalf("ledger-authorized release left claim label visible: %#v", released)
+	}
+	winner, claimed, err := provider.adoClaimWinner(context.Background(), RepositoryRef{Project: "project"}, "42")
+	if err != nil {
+		t.Fatalf("adoClaimWinner: %v", err)
+	}
+	if claimed || winner != "" {
+		t.Fatalf("winner after ledger-authorized release = (%q, %v), want none", winner, claimed)
+	}
+}
+
+func TestADOReleaseWritesBreadcrumbBeforeRemovingLabel(t *testing.T) {
+	fake := &adoClaimFake{tags: LabelClaimed}
+	fake.seed(adoTestSelfID, claimBreadcrumb("run-owner"))
+	server := fake.server(t, true)
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+
+	_, err := provider.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: RepositoryRef{Provider: ProviderADO, Name: "repo", Project: "project"},
+		ID:         "42",
+		RunID:      "run-owner",
+	})
+	if err != nil {
+		t.Fatalf("ReleaseWorkItemClaim: %v", err)
+	}
+	fake.mu.Lock()
+	operations := append([]string(nil), fake.operations...)
+	fake.mu.Unlock()
+	if strings.Join(operations, ",") != "release,label" {
+		t.Fatalf("release operations = %v, want [release label]", operations)
 	}
 }
 

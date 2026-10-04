@@ -2,12 +2,16 @@ package baseline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // Observation is one measurement of a CI command against a repository's target
@@ -142,7 +146,7 @@ func staleResolution(blocker *Blocker, observation Observation) bool {
 	if observation.ObservedAt.Before(blocker.LastSeenAt) {
 		return true
 	}
-	if len(blocker.BaseSHAs) > 1 && contains(blocker.BaseSHAs[:len(blocker.BaseSHAs)-1], observation.BaseSHA) {
+	if len(blocker.BaseSHAs) > 1 && slices.Contains(blocker.BaseSHAs[:len(blocker.BaseSHAs)-1], observation.BaseSHA) {
 		return true
 	}
 	return false
@@ -172,7 +176,7 @@ func (s *Store) Park(observation Observation, waiter Waiter) (Blocker, error) {
 	}
 	blocker.Resolved = false
 	blocker.LastSeenAt = waiter.ParkedAt
-	if !contains(blocker.BaseSHAs, observation.BaseSHA) {
+	if !slices.Contains(blocker.BaseSHAs, observation.BaseSHA) {
 		blocker.BaseSHAs = append(blocker.BaseSHAs, observation.BaseSHA)
 	}
 	if waiter.Subject != "" {
@@ -269,27 +273,21 @@ func (s *Store) persistLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("baseline: create store directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".tmp*")
-	if err != nil {
-		return fmt.Errorf("baseline: create store temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("baseline: write store: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("baseline: sync store: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("baseline: close store: %w", err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		_ = os.Remove(tmpName)
+	if err := durability.WriteFileAtomic(s.path, data, 0o600,
+		durability.WithTempPattern(filepath.Base(s.path)+".tmp*")); err != nil {
+		var writeErr *durability.AtomicWriteError
+		if errors.As(err, &writeErr) {
+			switch writeErr.Operation {
+			case durability.AtomicWriteCreateTemp:
+				return fmt.Errorf("baseline: create store temp file: %w", err)
+			case durability.AtomicWriteWrite:
+				return fmt.Errorf("baseline: write store: %w", err)
+			case durability.AtomicWriteSync:
+				return fmt.Errorf("baseline: sync store: %w", err)
+			case durability.AtomicWriteClose:
+				return fmt.Errorf("baseline: close store: %w", err)
+			}
+		}
 		return fmt.Errorf("baseline: replace store: %w", err)
 	}
 	return nil
@@ -302,13 +300,4 @@ func BlockerKey(repo, fingerprint string) string {
 
 func observationKey(repo, baseSHA, command string) string {
 	return repo + "\x00" + baseSHA + "\x00" + command
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

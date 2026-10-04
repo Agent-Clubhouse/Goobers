@@ -101,6 +101,110 @@ func TestOfflineRunsListsJournalsWithoutDaemon(t *testing.T) {
 	}
 }
 
+func TestTelemetryReadsReturnNonNilEmptySlicesWithoutDatabase(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, _ := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-without-telemetry",
+		machine.Def.Name,
+		machine.Def.Spec.Gaggle,
+		time.Now(),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	attempts, err := service.telemetryStageAttempts(context.Background(), "run-without-telemetry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts == nil || len(attempts) != 0 {
+		t.Fatalf("stage attempts = %#v, want non-nil empty slice", attempts)
+	}
+
+	spans, err := service.RunSpans(context.Background(), "run-without-telemetry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spans == nil || len(spans) != 0 {
+		t.Fatalf("spans = %#v, want non-nil empty slice", spans)
+	}
+}
+
+func TestWithTelemetryDBUsesInjectedDatabaseAndNormalizesNil(t *testing.T) {
+	db, err := rollup.Open(filepath.Join(t.TempDir(), "injected.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service := &Local{sources: LocalSources{Telemetry: db}}
+
+	result, err := withTelemetryDB(service, []int{}, func(got *rollup.DB) ([]int, error) {
+		if got != db {
+			t.Fatal("withTelemetryDB did not use the injected database")
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || len(result) != 0 {
+		t.Fatalf("result = %#v, want non-nil empty slice", result)
+	}
+	if _, err := db.StageAttempts(context.Background(), "run"); err != nil {
+		t.Fatalf("injected database was closed: %v", err)
+	}
+}
+
+func TestWithTelemetryDBPropagatesOpenFailure(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.WriteFile(layout.TelemetryDB(), []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, wantErr := rollup.Open(layout.TelemetryDB())
+	if wantErr == nil {
+		t.Fatal("rollup.Open unexpectedly accepted invalid database")
+	}
+
+	_, gotErr := withTelemetryDB(&Local{sources: LocalSources{Layout: layout}}, []int{}, func(*rollup.DB) ([]int, error) {
+		t.Fatal("read called after open failure")
+		return nil, nil
+	})
+	if gotErr == nil || gotErr.Error() != wantErr.Error() {
+		t.Fatalf("withTelemetryDB error = %v, want exact open error %v", gotErr, wantErr)
+	}
+}
+
+func TestWithTelemetryDBClosesTemporaryDatabase(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var temporary *rollup.DB
+
+	result, err := withTelemetryDB(&Local{sources: LocalSources{Layout: layout}}, []int{}, func(db *rollup.DB) ([]int, error) {
+		temporary = db
+		return []int{1}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 || result[0] != 1 {
+		t.Fatalf("result = %v, want [1]", result)
+	}
+	if _, err := temporary.StageAttempts(context.Background(), "run"); err == nil {
+		t.Fatal("temporary database remained open")
+	}
+}
+
 func createFixtureRun(
 	t *testing.T,
 	layout instance.Layout,

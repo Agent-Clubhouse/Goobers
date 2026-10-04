@@ -1668,11 +1668,17 @@ export interface TelemetryStageStats {
   p50Tokens?: number;
   p95Tokens?: number;
   costSamples: number;
+  p50CostAIC?: number;
+  p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
+  retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   retryWasteCostUSD?: number;
   // How many of totalAttempts belong to a run that hung and was later
   // aborted (the watchdog's max-duration expiry), excluded from
@@ -1695,11 +1701,19 @@ export interface TelemetryUsageStats {
   p50CopilotPremiumRequests?: number;
   p95CopilotPremiumRequests?: number;
   costSamples: number;
+  costAIC?: number;
+  p50CostAIC?: number;
+  p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   costUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
   retryWasteTokens?: number;
+  retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   retryWasteCostUSD?: number;
 }
 
@@ -1713,6 +1727,8 @@ export interface TelemetryModelStats {
   premiumRequestSamples: number;
   copilotPremiumRequests?: number;
   costSamples: number;
+  costAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   costUSD?: number;
 }
 
@@ -1799,6 +1815,7 @@ export interface PortalConfig {
 }
 
 export type WorkItemKind = "pr" | "issue";
+export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 
 export interface WorkItemListOptions {
   provider?: string;
@@ -1812,6 +1829,7 @@ export interface WorkItemSummary {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   actionCount: number;
   lastOperation: string;
   lastActionAt: string;
@@ -1843,6 +1861,7 @@ export interface WorkItemDetail {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   cost?: WorkItemCost;
   relatedPullRequests: RelatedWorkItem[];
   actions: WorkItemAction[];
@@ -1850,8 +1869,9 @@ export interface WorkItemDetail {
 }
 
 export interface WorkItemCost {
-  costUSD?: number;
   nanoAIU?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to nano-AIU by the HTTP client. */
+  costUSD?: number;
   totalRuns: number;
   measuredRuns: number;
   totalAttempts: number;

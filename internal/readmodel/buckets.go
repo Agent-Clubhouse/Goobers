@@ -73,27 +73,24 @@ func (s *Store) DirtyDays(ctx context.Context, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = defaultDirtyDayBatch
 	}
-	db, release, err := s.readHandle()
+	var out []string
+	err := s.withReadRows(ctx,
+		`SELECT day FROM dirty_day ORDER BY day ASC LIMIT ?`,
+		[]any{limit},
+		"readmodel: read dirty days",
+		"",
+		func(rows *sql.Rows) error {
+			var day string
+			if err := rows.Scan(&day); err != nil {
+				return fmt.Errorf("readmodel: scan dirty day: %w", err)
+			}
+			out = append(out, day)
+			return nil
+		})
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-	rows, err := db.QueryContext(ctx,
-		`SELECT day FROM dirty_day ORDER BY day ASC LIMIT ?`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: read dirty days: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []string
-	for rows.Next() {
-		var day string
-		if err := rows.Scan(&day); err != nil {
-			return nil, fmt.Errorf("readmodel: scan dirty day: %w", err)
-		}
-		out = append(out, day)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 const defaultDirtyDayBatch = 64

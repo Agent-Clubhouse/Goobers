@@ -32,6 +32,7 @@
             "enum": [
               "repo:read",
               "repo:push",
+              "configrepo:write",
               "github:issues:read",
               "github:issues:write",
               "github:milestones:write",
@@ -52,6 +53,7 @@
               "ado:pr:status",
               "ado:pr:complete",
               "ado:work-items:write",
+              "ado:packaging:read",
               "telemetry:read",
               "journal:read",
               "agent:model"
@@ -87,8 +89,10 @@
               "label-issue",
               "merge-pr",
               "modify-repository",
+              "open-or-update-config-pr",
               "open-or-update-pr",
               "publish-review",
+              "push-config-repo-branch",
               "push-pr-branch",
               "push-repository-branch",
               "rebase-pr",
@@ -139,8 +143,10 @@
               "label-issue",
               "merge-pr",
               "modify-repository",
+              "open-or-update-config-pr",
               "open-or-update-pr",
               "publish-review",
+              "push-config-repo-branch",
               "push-pr-branch",
               "push-repository-branch",
               "rebase-pr",
@@ -237,6 +243,7 @@
           "enum": [
             "repo:read",
             "repo:push",
+            "configrepo:write",
             "github:issues:read",
             "github:issues:write",
             "github:milestones:write",
@@ -257,6 +264,7 @@
             "ado:pr:status",
             "ado:pr:complete",
             "ado:work-items:write",
+            "ado:packaging:read",
             "telemetry:read",
             "journal:read",
             "agent:model"

@@ -147,10 +147,11 @@ func (r Runner) gaggleProbes(cfg *instance.Config, gaggle string, project apiv1.
 // against its own provider's repositories — an ado:* override is never used
 // by a GitHub gaggle, nor a github:* one by an Azure DevOps project — and
 // ado:work-items:write acts on the Boards project, not the repository (its
-// reachability is checkADOBacklogProjects' concern), so neither is probed.
+// reachability is checkADOBacklogProjects' concern), and ado:packaging:read
+// acts on package feeds, so neither is probed as git repository access.
 func capabilityActsOnRepo(capabilityName string, repo instance.RepoRef) bool {
 	switch {
-	case capabilityName == string(capability.ADOWorkItemsWrite):
+	case capabilityName == string(capability.ADOWorkItemsWrite), capabilityName == string(capability.ADOPackagingRead):
 		return false
 	case strings.HasPrefix(capabilityName, "github:"):
 		return repo.Provider == string(apiv1.ProviderGitHub)

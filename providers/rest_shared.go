@@ -190,6 +190,9 @@ type ClaimEpoch struct {
 	Trusted bool
 	// RunID is the run the claim breadcrumb names.
 	RunID string
+	// CreatedAt is when the opening claim breadcrumb was posted. A zero value
+	// means the provider did not return a timestamp.
+	CreatedAt time.Time
 	// InstanceID is the durable instance identity carried by the breadcrumb's
 	// attribution marker. Empty means the breadcrumb is unattributed (legacy)
 	// or its marker does not parse; it never identifies a particular instance.
@@ -241,6 +244,9 @@ func scanClaimEpochs(raw []restComment, markerAuthor string) []ClaimEpoch {
 			Author:  comment.User.Login,
 			Trusted: strings.EqualFold(comment.User.Login, markerAuthor),
 			RunID:   runID,
+		}
+		if comment.CreatedAt != nil {
+			epoch.CreatedAt = *comment.CreatedAt
 		}
 		if attribution, ok, err := ParseAttribution(comment.Body); err == nil && ok {
 			epoch.InstanceID = attribution.InstanceID
@@ -401,43 +407,51 @@ func createRESTWorkItemComment(ctx context.Context, c restMutationRecorder, kind
 }
 
 func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, kind ProviderKind, baseURL string, attribution Attribution, req ClaimWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.RunID == "" {
-		return WorkItem{}, fmt.Errorf("run id is required to release an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-	winner, claimed, err := claimWinner(ctx, c, baseURL, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if claimed && winner != req.RunID && !req.LedgerAuthorized {
-		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
-	}
-	before, err := c.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	releasedRunID := req.RunID
-	if claimed {
-		releasedRunID = winner
-		if err := postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if before.HasLabel(label) {
-		if err := c.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	final, err := c.GetWorkItem(ctx, req.Repository, req.ID)
+	before, final, releasedRunID, err := releaseClaimWithProtocol(ctx, req, releaseClaimProtocolHooks{
+		validate: func() (string, error) {
+			if err := requireOwnerRepo(req.Repository); err != nil {
+				return "", err
+			}
+			if req.ID == "" {
+				return "", errIssueIDRequired
+			}
+			if req.RunID == "" {
+				return "", fmt.Errorf("run id is required to release an item")
+			}
+			if req.ClaimLabel == "" {
+				return LabelClaimed, nil
+			}
+			return req.ClaimLabel, nil
+		},
+		winner: func(ctx context.Context) (string, bool, error) {
+			return claimWinner(ctx, c, baseURL, req.Repository, req.ID)
+		},
+		getItem: func(ctx context.Context) (WorkItem, error) {
+			return c.GetWorkItem(ctx, req.Repository, req.ID)
+		},
+		postRelease: func(ctx context.Context, winner string) error {
+			return postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release")
+		},
+		hasLabel: func(item WorkItem, label string) bool {
+			return item.HasLabel(label)
+		},
+		removeLabel: func(ctx context.Context, label string) (WorkItem, error) {
+			if err := c.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+				return WorkItem{}, err
+			}
+			return c.GetWorkItem(ctx, req.Repository, req.ID)
+		},
+		restoreLabel: func(ctx context.Context, label string) (WorkItem, error) {
+			if err := c.applyLabelChanges(ctx, req.Repository, req.ID, []string{label}, nil); err != nil {
+				return WorkItem{}, err
+			}
+			return c.GetWorkItem(ctx, req.Repository, req.ID)
+		},
+		finishWithoutLabel: func(ctx context.Context, _ WorkItem) (WorkItem, error) {
+			return c.GetWorkItem(ctx, req.Repository, req.ID)
+		},
+		readItemBeforeBreadcrumb: true,
+	})
 	if err != nil {
 		return WorkItem{}, err
 	}

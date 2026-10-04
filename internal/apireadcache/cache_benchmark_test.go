@@ -10,7 +10,7 @@ import (
 func BenchmarkAPIReadCachePersistPointUpdate(b *testing.B) {
 	for _, count := range []int{1, 512} {
 		b.Run(fmt.Sprint(count), func(b *testing.B) {
-			cache := &apiReadCache{schedulerDir: b.TempDir()}
+			cache := newAPIReadCache(b.TempDir(), "", nil)
 			body := []byte(strings.Repeat("response-body", 800))
 			e := apiReadCacheEntry{Body: body, ETag: `"initial"`, Stored: time.Now().Unix()}
 			for i := range count {

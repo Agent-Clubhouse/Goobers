@@ -13,6 +13,15 @@ import (
 // or returns stale metadata. No notification delivery guarantees are required.
 const AuditInterval = 30 * time.Second
 
+// SettleDelay is how long an input must sit unmodified before its metadata can
+// vouch for its content. Filesystems stamp mtime and ctime from a coarse
+// kernel clock (4ms ticks on ext4 with HZ=250, whole seconds on others), so an
+// edit made within one tick of an earlier change, or of the snapshot that
+// observed it, carries identical metadata and is invisible to the comparison.
+// Snapshots touching anything modified more recently than this are not cached
+// and the next poll reads content again (the "racy timestamp" rule git uses).
+const SettleDelay = 50 * time.Millisecond
+
 // Cache is serialized by its caller. Its zero value is ready to use.
 type Cache struct {
 	digest  string
@@ -62,7 +71,7 @@ func (c *Cache) Digest(now time.Time, roots []string, hash func(observe func(str
 	}
 	digest, err := hash(observe)
 	c.files = nil
-	if err == nil && valid && unchanged(files) {
+	if err == nil && valid && unchanged(files) && settled(files, time.Now().Add(-SettleDelay)) {
 		c.digest, c.checked, c.files = digest, now, files
 	}
 	return digest, err
@@ -77,6 +86,17 @@ func unchanged(files map[string]os.FileInfo) bool {
 		if err != nil || previous == nil || !os.SameFile(previous, current) ||
 			previous.Size() != current.Size() || previous.Mode() != current.Mode() ||
 			!previous.ModTime().Equal(current.ModTime()) || changedTime(previous) != changedTime(current) {
+			return false
+		}
+	}
+	return true
+}
+
+// settled reports whether no input was modified after cutoff, so identical
+// metadata later really does mean identical content.
+func settled(files map[string]os.FileInfo, cutoff time.Time) bool {
+	for _, info := range files {
+		if info != nil && (info.ModTime().After(cutoff) || changedAt(info).After(cutoff)) {
 			return false
 		}
 	}

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -186,32 +185,6 @@ func TestUpJournalsPeriodicClaimRecoveryError(t *testing.T) {
 	}
 }
 
-func TestSweepErrorReporterRateLimitsIdenticalConsecutiveErrors(t *testing.T) {
-	dir := t.TempDir()
-	log, _, err := journal.OpenInstanceLog(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = log.Close() })
-
-	reporter := newSweepErrorReporter(log, "claim_recovery_failed")
-	reporter.reportEvery = 3
-	repeated := errors.New("ledger unavailable")
-	for range 4 {
-		reporter.report(repeated)
-	}
-	if got := countInstanceErrors(t, dir, "claim_recovery_failed"); got != 2 {
-		t.Fatalf("reported identical errors = %d, want first and fourth ticks only", got)
-	}
-
-	reporter.report(errors.New("ledger corrupt"))
-	reporter.report(nil)
-	reporter.report(repeated)
-	if got := countInstanceErrors(t, dir, "claim_recovery_failed"); got != 4 {
-		t.Fatalf("reported errors after change/reset = %d, want both reported immediately", got)
-	}
-}
-
 func waitForInstanceError(t *testing.T, schedulerDir, code string) journal.Event {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -228,21 +201,6 @@ func waitForInstanceError(t *testing.T, schedulerDir, code string) journal.Event
 	}
 	t.Fatalf("timed out waiting for instance-journal error %q", code)
 	return journal.Event{}
-}
-
-func countInstanceErrors(t *testing.T, schedulerDir, code string) int {
-	t.Helper()
-	events, err := journal.ReadInstanceLog(schedulerDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	for _, event := range events {
-		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == code {
-			count++
-		}
-	}
-	return count
 }
 
 // TestRenewLiveClaimsExtendsLeaseBeyondOriginalWindow is issue #2014's AC1+AC2:

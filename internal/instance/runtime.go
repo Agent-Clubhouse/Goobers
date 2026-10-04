@@ -18,6 +18,13 @@ import (
 
 const legacyRuntimeMigrationStateFile = "legacy-runtime-migration.json"
 
+type runtimeDirKind string
+
+const (
+	runsRuntimeDir       runtimeDirKind = "runs"
+	workcopiesRuntimeDir runtimeDirKind = "workcopies"
+)
+
 // RuntimeMigration reports populated legacy runtime directories moved into a
 // gaggle-scoped layout.
 type RuntimeMigration struct {
@@ -50,33 +57,50 @@ func (l Layout) RunDirs() ([]string, error) {
 // RunDirsContext returns every existing run-journal root, checking ctx between
 // filesystem operations. Individual filesystem calls may still block.
 func (l Layout) RunDirsContext(ctx context.Context) ([]string, error) {
+	return l.scopedRuntimeDirs(ctx, runsRuntimeDir)
+}
+
+// WorkcopiesDirs returns every existing managed-working-copy root in
+// deterministic order, the same shape as RunDirs (see its doc): a scoped
+// layout returns only its own root, while an instance layout also includes
+// the legacy flat root when present (skipping it when it is a single-gaggle
+// compatibility alias, so it is not scanned twice). Used to enumerate
+// every gaggle's mirrors on the node — e.g. the object-cache GC helper's
+// fail-closed dependents scan (#654, design §3 B3), which must check every
+// gaggle's workcopies root, not just one.
+func (l Layout) WorkcopiesDirs() ([]string, error) {
+	return l.scopedRuntimeDirs(context.Background(), workcopiesRuntimeDir)
+}
+
+func (l Layout) scopedRuntimeDirs(ctx context.Context, kind runtimeDirKind) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if l.gaggle != "" {
-		return []string{l.RunsDir()}, nil
+		return []string{kind.dir(l)}, nil
 	}
 
 	var dirs []string
+	legacyDir := kind.dir(l)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if info, err := os.Lstat(l.RunsDir()); err == nil {
-		alias, err := isLegacyRuntimeAlias(l.RunsDir(), info)
+	if info, err := os.Lstat(legacyDir); err == nil {
+		alias, err := isLegacyRuntimeAlias(legacyDir, info)
 		if err != nil {
-			return nil, fmt.Errorf("inspect legacy runs alias: %w", err)
+			return nil, fmt.Errorf("inspect legacy %s alias: %w", kind, err)
 		}
 		switch {
 		case alias:
 			// A single-gaggle compatibility alias points at the scoped root,
 			// which is discovered below. Do not scan it twice.
 		case info.IsDir():
-			dirs = append(dirs, l.RunsDir())
+			dirs = append(dirs, legacyDir)
 		default:
-			return nil, fmt.Errorf("read runs directory: %s is not a directory", l.RunsDir())
+			return nil, fmt.Errorf("read %s directory: %s is not a directory", kind, legacyDir)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("inspect legacy runs directory: %w", err)
+		return nil, fmt.Errorf("inspect legacy %s directory: %w", kind, err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -96,11 +120,11 @@ func (l Layout) RunDirsContext(ctx context.Context) ([]string, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		runsDir := l.ForGaggle(entry.Name()).RunsDir()
-		if info, err := os.Stat(runsDir); err == nil && info.IsDir() {
-			dirs = append(dirs, runsDir)
+		scopedDir := kind.dir(l.ForGaggle(entry.Name()))
+		if info, err := os.Stat(scopedDir); err == nil && info.IsDir() {
+			dirs = append(dirs, scopedDir)
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("inspect runs directory for gaggle %q: %w", entry.Name(), err)
+			return nil, fmt.Errorf("inspect %s directory for gaggle %q: %w", kind, entry.Name(), err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -110,58 +134,11 @@ func (l Layout) RunDirsContext(ctx context.Context) ([]string, error) {
 	return dirs, nil
 }
 
-// WorkcopiesDirs returns every existing managed-working-copy root in
-// deterministic order, the same shape as RunDirs (see its doc): a scoped
-// layout returns only its own root, while an instance layout also includes
-// the legacy flat root when present (skipping it when it is a single-gaggle
-// compatibility alias, so it is not scanned twice). Used to enumerate
-// every gaggle's mirrors on the node — e.g. the object-cache GC helper's
-// fail-closed dependents scan (#654, design §3 B3), which must check every
-// gaggle's workcopies root, not just one.
-func (l Layout) WorkcopiesDirs() ([]string, error) {
-	if l.gaggle != "" {
-		return []string{l.WorkcopiesDir()}, nil
+func (kind runtimeDirKind) dir(l Layout) string {
+	if kind == runsRuntimeDir {
+		return l.RunsDir()
 	}
-
-	var dirs []string
-	if info, err := os.Lstat(l.WorkcopiesDir()); err == nil {
-		alias, err := isLegacyRuntimeAlias(l.WorkcopiesDir(), info)
-		if err != nil {
-			return nil, fmt.Errorf("inspect legacy workcopies alias: %w", err)
-		}
-		switch {
-		case alias:
-			// A single-gaggle compatibility alias points at the scoped root,
-			// which is discovered below. Do not scan it twice.
-		case info.IsDir():
-			dirs = append(dirs, l.WorkcopiesDir())
-		default:
-			return nil, fmt.Errorf("read workcopies directory: %s is not a directory", l.WorkcopiesDir())
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("inspect legacy workcopies directory: %w", err)
-	}
-
-	entries, err := os.ReadDir(l.GagglesDir())
-	if errors.Is(err, fs.ErrNotExist) {
-		return dirs, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read gaggles directory: %w", err)
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		workcopiesDir := l.ForGaggle(entry.Name()).WorkcopiesDir()
-		if info, err := os.Stat(workcopiesDir); err == nil && info.IsDir() {
-			dirs = append(dirs, workcopiesDir)
-		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("inspect workcopies directory for gaggle %q: %w", entry.Name(), err)
-		}
-	}
-	sort.Strings(dirs)
-	return dirs, nil
+	return l.WorkcopiesDir()
 }
 
 // FindRunDir resolves runID across scoped and legacy run roots.

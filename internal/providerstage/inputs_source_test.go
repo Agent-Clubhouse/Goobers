@@ -26,7 +26,16 @@ type inputSourceOwner struct {
 // file must declare its command owner; a new call in an existing file is
 // checked automatically.
 var providerInputSourceOwners = map[string]inputSourceOwner{
-	"applyverdict.go":                {command: "apply-verdict"},
+	"applyverdict.go":   {command: "apply-verdict"},
+	"configcheckout.go": {command: "config-checkout"},
+	"configrepotarget.go": {
+		command: "push-branch",
+		shared: map[string][]string{
+			"configRepo":     {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepoBase": {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepoDir":  {"open-pr", "config-checkout", "gate-removal-guard"},
+		},
+	},
 	"backlogassignment.go":           {command: "backlog-assignment"},
 	"backlogdedupe.go":               {command: "backlog-dedupe"},
 	"backloghealth.go":               {command: "backlog-health"},
@@ -57,6 +66,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"mergepr.go":                     {command: "merge-pr"},
 	"mergequeuepoll.go":              {command: "merge-queue-poll"},
 	"openpr.go":                      {command: "open-pr"},
+	"ownershipscope.go":              {},
 	"postmerge.go":                   {command: "post-merge"},
 	"postmergereconcile.go":          {command: "reconcile-post-merge"},
 	"prclaim.go":                     {command: "pr-claim"},
@@ -213,6 +223,10 @@ func providerInputArgumentName(expression ast.Expr) (string, bool) {
 			return "resultFile", true
 		case "InputMaxOutputBytes":
 			return "maxOutputBytes", true
+		case "InputOwnershipAssignees":
+			return "ownershipAssignees", true
+		case "InputOwnershipUnassigned":
+			return "ownershipUnassigned", true
 		}
 	}
 	return "", false

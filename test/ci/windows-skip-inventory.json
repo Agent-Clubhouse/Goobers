@@ -253,6 +253,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/daemonheartbeat",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Daemon heartbeat tests extracted from cmd/goobers; the Windows CLI test selection did not run these tests. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/daemonlog",
       "coverage": "none",
       "category": "not-selected",
@@ -266,6 +272,12 @@
     },
     {
       "package": "internal/decider",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/decisiongate",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -409,6 +421,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/handoffcheck",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/hostedprogress",
       "coverage": "none",
       "category": "not-selected",
@@ -419,6 +437,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the read-model definition invalidation test runs, in the 'Windows worktree and event stream' step."
+    },
+    {
+      "package": "internal/instancelock",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Instance lock mechanics extracted from cmd/goobers; runs on the Linux unit shards."
     },
     {
       "package": "internal/intervention",
@@ -613,6 +637,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/providerconfig",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure provider configuration mapping extracted from cmd/goobers; runs on the Linux unit shards."
+    },
+    {
       "package": "internal/providerfixture",
       "coverage": "none",
       "category": "not-selected",
@@ -649,7 +679,19 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/releaseversion",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure canonical-version parsing has no Windows-specific seam; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/remediation",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/retryutil",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -751,6 +793,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/stringpolicy",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/supportmatrix",
       "coverage": "none",
       "category": "not-selected",
@@ -779,6 +827,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the two runtime-alias dedup tests run ('Windows rollup migration alias dedup'); the rest of the ~15s suite is not Windows-sensitive."
+    },
+    {
+      "package": "internal/sweepreport",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Sweep error reporting extracted from cmd/goobers; the Windows CLI test selection did not run its rate-limit unit test. Runs on the Linux unit shards."
     },
     {
       "package": "internal/telemetry",
@@ -821,6 +875,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/textsuggest",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure byte-oriented edit-distance tests have no Windows-specific seam; runs on the Linux unit shards only."
     },
     {
       "package": "internal/toolchain",
@@ -905,6 +965,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/workflowgraph",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Platform-neutral workflow graph traversal has no Windows-specific seam; runs on the Linux unit shards only."
     },
     {
       "package": "internal/workflowsafety",

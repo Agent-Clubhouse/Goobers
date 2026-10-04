@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -162,7 +163,7 @@ func (s *instanceState) apply(event journal.Event) {
 		if s.restart != nil &&
 			runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
 			event.RunID != "" &&
-			!containsString(s.restart.RunIDs, event.RunID) {
+			!slices.Contains(s.restart.RunIDs, event.RunID) {
 			s.restart.RunIDs = append(s.restart.RunIDs, event.RunID)
 		}
 	}

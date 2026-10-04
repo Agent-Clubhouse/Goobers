@@ -1,4 +1,4 @@
-package main
+package daemonheartbeat
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func TestEmitHeartbeatsPrintsLiveWorkflowCount(t *testing.T) {
 	defer cancel()
 	stdout := newDaemonOutput()
 	done := make(chan struct{})
-	go emitHeartbeats(ctx, stdout, dir, func() int { return int(count.Load()) }, tail, nil, 10*time.Millisecond, nil, done)
+	go Emit(ctx, stdout, dir, func() int { return int(count.Load()) }, tail, nil, 10*time.Millisecond, nil, done)
 
 	waitForHeartbeatCount(t, stdout, "3 workflow(s)")
 	// Simulate the config reload applying two more workflows.

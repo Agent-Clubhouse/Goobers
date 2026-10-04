@@ -25,6 +25,7 @@ type usageAttemptFixture struct {
 	metrics        map[string]float64
 	modelUsage     []telemetry.ModelUsage
 	skipSpan       bool
+	spanEndDelay   time.Duration
 }
 
 func seedUsageRun(
@@ -62,6 +63,7 @@ func seedUsageRun(
 		attrs := map[string]string{
 			telemetry.AttrStage:         stage,
 			telemetry.AttrAttemptNumber: strconv.Itoa(attemptNumber),
+			telemetry.AttrBranch:        strconv.Itoa(attempt.branch),
 		}
 		if attempt.model != "" || attempt.harnessVersion != "" {
 			attrs[telemetry.AttrModel] = attempt.model
@@ -85,7 +87,7 @@ func seedUsageRun(
 			Name:       "task/" + stage,
 			Kind:       telemetry.SpanKindTask,
 			StartTime:  started,
-			EndTime:    cursor,
+			EndTime:    cursor.Add(attempt.spanEndDelay),
 			Status:     "ok",
 			Attributes: attrs,
 		}
@@ -171,6 +173,47 @@ func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
 		!got.HasRetryWasteTokens || got.RetryWasteTokens != 15 ||
 		!got.HasRetryWasteCost || got.RetryWasteCostUSD != 0.5 {
 		t.Fatalf("repass retry waste = %#v", got)
+	}
+}
+
+func TestUsageRollupDisambiguatesOverlappingRepassSpanByFirstBranchStart(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "implement", "implement", fixtureStart,
+		usageAttemptFixture{number: 1, branch: 1, duration: 10 * time.Millisecond, status: "failure",
+			spanEndDelay: 100 * time.Millisecond,
+			metrics:      map[string]float64{telemetry.AttrGenAIUsageInputTokens: 5}},
+		usageAttemptFixture{number: 1, branch: 2, duration: 10 * time.Millisecond, status: "success",
+			metrics: map[string]float64{telemetry.AttrGenAIUsageInputTokens: 10}},
+		usageAttemptFixture{number: 1, branch: 1, duration: 10 * time.Millisecond, status: "success",
+			metrics: map[string]float64{telemetry.AttrGenAIUsageInputTokens: 15}})
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), dir); err != nil {
+		t.Fatalf("IngestRun overlapping repass span: %v", err)
+	}
+
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 3 {
+		t.Fatalf("attempts = %#v, want three traversals", attempts)
+	}
+	for i, want := range []struct {
+		traversal int
+		branch    int
+		input     int64
+	}{
+		{traversal: 1, branch: 1, input: 5},
+		{traversal: 2, branch: 2, input: 10},
+		{traversal: 3, branch: 1, input: 15},
+	} {
+		got := attempts[i]
+		if got.Traversal != want.traversal || got.Branch != want.branch ||
+			got.InputTokens == nil || *got.InputTokens != want.input {
+			t.Fatalf("attempt %d = %#v, want traversal %d branch %d input %d", i, got, want.traversal, want.branch, want.input)
+		}
 	}
 }
 

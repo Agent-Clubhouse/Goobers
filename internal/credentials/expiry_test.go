@@ -118,3 +118,47 @@ func TestMaterializeCarriesExpiryIntoTheSet(t *testing.T) {
 		t.Fatalf("undeclared capability error = %v, want ErrUndeclaredCapability", err)
 	}
 }
+
+func TestMaterializedExpiringCredentialRefreshReResolves(t *testing.T) {
+	expires := time.Now().Add(time.Hour).UTC()
+	calls := 0
+	resolver, err := NewResolverWithExpiring(nil, nil, nil,
+		map[string]ExpiringResolveFunc{
+			"minted-ref": func(context.Context) (string, time.Time, error) {
+				calls++
+				if calls == 1 {
+					return "delivered-token-value", expires, nil
+				}
+				return "retry-token-value", expires.Add(time.Hour), nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrar := &expiryTestRegistrar{}
+	injector, err := NewInjector(resolver, []Grant{{Capability: "agent:model", Ref: "minted-ref"}}, registrar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := injector.Materialize(context.Background(), []string{"agent:model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := set.Token(context.Background(), "agent:model"); err != nil || got != "delivered-token-value" {
+		t.Fatalf("Token = %q, %v; want delivered value before refresh", got, err)
+	}
+	if got, err := set.Refresh(context.Background(), "agent:model"); err != nil || got != "retry-token-value" {
+		t.Fatalf("Refresh = %q, %v; want re-resolved retry value", got, err)
+	}
+	if calls != 2 {
+		t.Fatalf("source calls = %d, want initial materialize plus forced refresh", calls)
+	}
+	if expiresAt, ok := set.Expiry("agent:model"); !ok || !expiresAt.Equal(expires.Add(time.Hour)) {
+		t.Fatalf("refreshed expiry = %v, %v; want %v, true", expiresAt, ok, expires.Add(time.Hour))
+	}
+	if len(registrar.registered) != 2 {
+		t.Fatalf("registrar saw %d values, want delivered and refreshed tokens", len(registrar.registered))
+	}
+}

@@ -22,14 +22,14 @@ import (
 // that races them directly could pass even with the bug reintroduced. This
 // instead asserts the one thing that actually guarantees safety: the sweep
 // call's source position precedes the resume call's, in program order,
-// inside runUpContextWithForce.
+// inside (*upSession).recoverRuns.
 func TestSweepOrphanedEphemeralTmpRunsBeforeResume(t *testing.T) {
 	source, err := os.ReadFile("up.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
-	const sweepCall = "reconcileStartupEphemeralTemp(setup, tracker, stdout)"
+	const sweepCall = "reconcileStartupEphemeralTemp(u.setup, u.tracker, u.stdout)"
 	const resumeCall = "resumeStartupRuns("
 	sweepAt := strings.Index(text, sweepCall)
 	resumeAt := strings.Index(text, resumeCall)

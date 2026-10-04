@@ -129,21 +129,10 @@ func reconcileReservations(ctx context.Context, root string, names []string, sta
 // enumerate it would make reclamation impossible precisely when it is needed.
 // The scan is still bounded, by the structural ceiling every writer enforces.
 func listReservationNames(root string, before os.FileInfo) ([]string, error) {
-	file, err := os.Open(root)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	after, err := file.Stat()
-	if err != nil || !os.SameFile(before, after) {
-		return nil, fmt.Errorf("recovery inventory changed while opening")
-	}
-	names, err := file.Readdirnames(MaxInventoryEntries + 1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	slices.Sort(names)
-	return names, nil
+	return listStableNames(root, before, listNamesOptions{
+		readLimit:        MaxInventoryEntries + 1,
+		changedRootError: "recovery inventory changed while opening",
+	})
 }
 
 // isReservationName accepts only the deterministic identity digest

@@ -10,6 +10,8 @@ import (
 
 // Wiring for internal/apireadcache (#1053): resolve the instance scheduler dir
 // and the current scheduler-evaluation snapshot, then hand them to the cache.
+// Persistence is transactional in internal/apireadstore; the former staged
+// writeDisk and writeBody filesystem paths no longer exist.
 
 // newCachedGitHubProvider builds a stage GitHub provider whose GETs go through
 // the shared conditional-GET cache under root's instance scheduler dir.

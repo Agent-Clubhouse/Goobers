@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -199,7 +200,7 @@ func (s *daemonCredentialService) mintPodStageGrant(request httpapi.CredentialRe
 func expiringDeclaredCapabilities(resolved stageResolution) []string {
 	var expiring []string
 	for _, minted := range resolved.minted {
-		if minted.ExpiresAt != nil && containsString(resolved.profile.capabilities, minted.Capability) {
+		if minted.ExpiresAt != nil && slices.Contains(resolved.profile.capabilities, minted.Capability) {
 			expiring = append(expiring, minted.Capability)
 		}
 	}

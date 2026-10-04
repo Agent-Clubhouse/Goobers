@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/mcpio"
 )
 
@@ -57,48 +56,35 @@ func prepareClaudeMCP(ctx context.Context, req RunRequest) (mcpConfigArg string,
 	if len(req.MCPServers) == 0 {
 		return "", nil, nil
 	}
-	if err := mcpconfig.ValidateForHarness(apiv1.HarnessClaudeCode, req.MCPServers, req.Envelope.Capabilities, req.Tools); err != nil {
-		return "", nil, fmt.Errorf("harness: claude-code: invalid MCP configuration: %w", err)
+	opts := mcpMaterializeOptions{
+		harness: apiv1.HarnessClaudeCode,
+	}
+	if err := validateDeclaredMCP("claude-code", req, opts); err != nil {
+		return "", nil, err
+	}
+	servers, assignments, err := materializeDeclaredMCP(ctx, "claude-code", req, opts)
+	if err != nil {
+		return "", nil, err
 	}
 
-	config := claudeMCPConfig{MCPServers: make(map[string]claudeMCPServer, len(req.MCPServers))}
-	for serverIndex, server := range req.MCPServers {
-		materialized := claudeMCPServer{}
+	config := claudeMCPConfig{MCPServers: make(map[string]claudeMCPServer, len(servers))}
+	for _, server := range servers {
+		rendered := claudeMCPServer{
+			Env:     server.Env,
+			Headers: server.Headers,
+		}
 		if server.Command != "" {
-			materialized.Type = "stdio"
-			materialized.Command = server.Command
-			materialized.Args = append([]string(nil), server.Args...)
+			rendered.Type = "stdio"
+			rendered.Command = server.Command
+			rendered.Args = server.Args
 		} else {
-			materialized.Type = "http"
-			materialized.URL = server.URL
+			rendered.Type = "http"
+			rendered.URL = server.URL
 		}
-		for refIndex, ref := range server.CredentialRefs {
-			_, token, err := resolveMCPCredential(ctx, "claude-code", req, server.Name, ref)
-			if err != nil {
-				return "", nil, err
-			}
-			envName := fmt.Sprintf("GOOBERS_MCP_CREDENTIAL_%d_%d", serverIndex, refIndex)
-			envAdditions = append(envAdditions, envName+"="+token)
-			expansion := "${" + envName + "}"
-			if ref.Env != "" {
-				if materialized.Env == nil {
-					materialized.Env = make(map[string]string)
-				}
-				materialized.Env[ref.Env] = expansion
-				continue
-			}
-			if materialized.Headers == nil {
-				materialized.Headers = make(map[string]string)
-			}
-			switch ref.Scheme {
-			case apiv1.MCPHeaderSchemeBearer:
-				expansion = "Bearer " + expansion
-			case apiv1.MCPHeaderSchemeBasic:
-				expansion = "Basic " + expansion
-			}
-			materialized.Headers[ref.Header] = expansion
-		}
-		config.MCPServers[server.Name] = materialized
+		config.MCPServers[server.Name] = rendered
+	}
+	for _, assignment := range assignments {
+		envAdditions = append(envAdditions, assignment.Name+"="+assignment.Value)
 	}
 
 	configRel := filepath.Join(filepath.FromSlash(claudeMCPRuntimeSubdir), claudeMCPConfigName)

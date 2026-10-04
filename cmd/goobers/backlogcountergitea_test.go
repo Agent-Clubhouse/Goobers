@@ -84,6 +84,7 @@ func TestBacklogCounterRepoRefCarriesConfiguredProvider(t *testing.T) {
 }
 
 func TestBuildOpenPRRefresherValidatesTheSelectedRepoProvider(t *testing.T) {
+	t.Parallel()
 	workflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{
 		Gaggle: "selected", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 3},
 	}}}
@@ -227,6 +228,7 @@ func TestBacklogCounterGiteaCachesStaticBaseURL(t *testing.T) {
 // would 401 on every refresh and leave the cap silently reading a stale count,
 // so the unsupported combination must fail loudly at wiring time instead.
 func TestBuildOpenPRRefresherRefusesNonGitHubRepo(t *testing.T) {
+	t.Parallel()
 	cappedWorkflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{
 		Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 3},
 	}}}

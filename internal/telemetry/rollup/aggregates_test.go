@@ -575,6 +575,49 @@ func TestTopErrorSignaturesAllowsUnclassifiedSchedulerErrors(t *testing.T) {
 	}
 }
 
+func TestSchedulerErrorProjectionRetainsAffectedRunID(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, []string{
+		instanceEventLine(1, "error", `"workflow":"implement","runId":"`+fixtureRunID+`","error":{"code":"telemetry_ingest_run_failed","message":"ambiguous usage span"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatal(err)
+	}
+
+	errors, err := db.Errors(context.Background(), ErrorsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errors) != 1 || errors[0].RunID != fixtureRunID || errors[0].Workflow != "" {
+		t.Fatalf("scheduler errors = %#v, want affected run ID %q", errors, fixtureRunID)
+	}
+	signatures, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signatures) != 1 || signatures[0].ExampleRunID != fixtureRunID {
+		t.Fatalf("scheduler signatures = %#v, want affected run ID %q", signatures, fixtureRunID)
+	}
+	scopedErrors, err := db.Errors(context.Background(), ErrorsRequest{Workflow: "implement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopedErrors) != 0 {
+		t.Fatalf("workflow-scoped scheduler errors = %#v, want none", scopedErrors)
+	}
+	scopedSignatures, err := db.TopErrorSignatures(context.Background(), StatsRequest{Workflow: "implement"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopedSignatures) != 0 {
+		t.Fatalf("workflow-scoped scheduler signatures = %#v, want none", scopedSignatures)
+	}
+}
+
 func TestProviderMutationCountsGroupsByShape(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")

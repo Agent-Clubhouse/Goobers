@@ -16,6 +16,7 @@ import (
 	"time"
 
 	copilotsdk "github.com/github/copilot-sdk/go"
+	"github.com/github/copilot-sdk/go/rpc"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/yaml"
 
@@ -610,6 +611,62 @@ func TestCopilotAdapterStoredAuthWithRepoPushKeepsTokenOutOfSubprocess(t *testin
 	}
 	if token, err := creds.Token(context.Background(), "repo:push"); err != nil || token != "repository-token" {
 		t.Fatalf("scoped repo:push credential = %q, %v; want repository-token retained for its consumer", token, err)
+	}
+}
+
+func TestCopilotAdapterRepairKeepsStoredAuthRepoPushTokenOutOfSubprocess(t *testing.T) {
+	workspace := t.TempDir()
+	var calls []ProcessRequest
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner.act = func(req ProcessRequest) error {
+		calls = append(calls, req)
+		payload := []byte(`{"status":"invalid"}`)
+		if len(calls) == 2 {
+			payload = []byte(`{"status":"success","outputs":{},"summary":"done"}`)
+		}
+		_, err := req.StdoutCapture.Write(payload)
+		return err
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model": "COPILOT_GITHUB_TOKEN",
+			"repo:push":   "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	t.Setenv("PUSH_TOKEN_ENV", "repository-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "push-ref", Env: "PUSH_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{Capability: "repo:push", Ref: "push-ref"}}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "repo:push"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Mode:           ModeInvoke,
+		Envelope:       testEnvelope(workspace, "agent:model", "repo:push"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+		Tools:          []string{"view"},
+	}); err != nil {
+		t.Fatalf("Run with stored auth repair: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("process calls = %d, want initial call plus repair", len(calls))
+	}
+	for i, call := range calls {
+		if containsEnv(call.Env, "GH_TOKEN=repository-token") {
+			t.Fatalf("call %d exposed repository token to stored-auth Copilot subprocess: %v", i+1, redactedNames(call.Env))
+		}
 	}
 }
 
@@ -1457,6 +1514,255 @@ func TestCopilotAdapterRepairsInvalidResponseAndRecordsScrubbedDiagnostic(t *tes
 	}
 	if len(result.Artifacts) != 1 || result.Artifacts[0].MediaType != "application/json" {
 		t.Fatalf("result artifacts = %+v, want diagnostic pointer", result.Artifacts)
+	}
+}
+
+func TestCopilotAdapterRefreshesModelCredentialBeforeRepair(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("COPILOT_HOME", "")
+	expires := time.Now().Add(time.Hour).UTC()
+	sourceCalls := 0
+	resolver, err := credentials.NewResolverWithExpiring(nil, nil, nil,
+		map[string]credentials.ExpiringResolveFunc{
+			"model-ref": func(context.Context) (string, time.Time, error) {
+				sourceCalls++
+				if sourceCalls == 1 {
+					return "initial-installation-token", expires, nil
+				}
+				return "refreshed-installation-token", expires.Add(time.Hour), nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{Capability: "agent:model", Ref: "model-ref"}}, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []ProcessRequest
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner.act = func(req ProcessRequest) error {
+		calls = append(calls, req)
+		payload := []byte(`{"status":"invalid"}`)
+		if len(calls) == 2 {
+			payload = []byte(`{"status":"success","outputs":{},"summary":"done"}`)
+		}
+		_, err := req.StdoutCapture.Write(payload)
+		return err
+	}
+	adapter := &CopilotAdapter{
+		Command:         []string{"copilot"},
+		Runner:          runner,
+		EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+	}
+	workspace := t.TempDir()
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Mode:           ModeInvoke,
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+		Tools:          []string{"view"},
+	})
+	if err != nil || len(out.Payload) == 0 {
+		t.Fatalf("Run = payload %q, err %v; want repaired success", out.Payload, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("process calls = %d, want initial call plus repair", len(calls))
+	}
+	if !containsEnv(calls[0].Env, "COPILOT_GITHUB_TOKEN=initial-installation-token") {
+		t.Fatalf("initial env did not carry initial token: %v", redactedNames(calls[0].Env))
+	}
+	if !containsEnv(calls[1].Env, "COPILOT_GITHUB_TOKEN=refreshed-installation-token") {
+		t.Fatalf("repair env did not carry refreshed token: %v", redactedNames(calls[1].Env))
+	}
+	if sourceCalls != 2 {
+		t.Fatalf("source calls = %d, want materialize plus forced repair refresh", sourceCalls)
+	}
+}
+
+type repairCredentialSession struct {
+	token      string
+	probeCall  int
+	modelCalls int
+}
+
+func (s *repairCredentialSession) InitializeTools(context.Context) error { return nil }
+
+func (s *repairCredentialSession) ListMCP(context.Context) (*rpc.MCPServerList, error) {
+	return &rpc.MCPServerList{Servers: []rpc.MCPServer{{Name: goobersIOServerName, Status: rpc.MCPServerStatusConnected}}}, nil
+}
+
+func (s *repairCredentialSession) ListMCPTools(context.Context, string) (*rpc.MCPListToolsResult, error) {
+	tools := &rpc.MCPListToolsResult{}
+	for _, name := range goobersIOTools {
+		tools.Tools = append(tools.Tools, rpc.MCPTools{Name: name})
+	}
+	return tools, nil
+}
+
+func (s *repairCredentialSession) ExecuteTool(context.Context, string) (rpc.ToolResult, error) {
+	s.probeCall++
+	return rpc.ToolResultExpanded{ResultType: rpc.ToolResultTypeSuccess}, nil
+}
+
+func (s *repairCredentialSession) RunPrompt(_ context.Context, _ string, req ProcessRequest) (ProcessResult, error) {
+	s.modelCalls++
+	if s.probeCall == 0 {
+		return ProcessResult{ExitCode: -1}, errors.New("model dispatched before readiness probe")
+	}
+	if req.StdoutCapture != nil {
+		payload := fmt.Sprintf(`{"status":"success","outputs":{"token":%q},"summary":"done"}`, s.token)
+		if _, err := req.StdoutCapture.Write([]byte(payload)); err != nil {
+			return ProcessResult{ExitCode: -1}, err
+		}
+	}
+	return ProcessResult{}, nil
+}
+
+func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential(t *testing.T) {
+	workspace := t.TempDir()
+	var opened []string
+	tokenFromEnv := func(env []string) string {
+		for _, entry := range env {
+			if value, ok := strings.CutPrefix(entry, "COPILOT_GITHUB_TOKEN="); ok {
+				return value
+			}
+		}
+		return ""
+	}
+	runner := &copilotControlledRunner{
+		request:     RunRequest{Workspace: workspace, Tools: append([]string{"view"}, goobersIOAvailableToolNames()...)},
+		promptIndex: 0,
+		factory: func(_ context.Context, req ProcessRequest, _ *copilotControlledRunner) (copilotModelSession, error) {
+			token := tokenFromEnv(req.Env)
+			opened = append(opened, token)
+			return &repairCredentialSession{token: token}, nil
+		},
+	}
+	initialReq := ProcessRequest{
+		Command: []string{copilotPromptArg(defaultPromptFlag, "initial")},
+		Dir:     workspace,
+		Env:     []string{"COPILOT_GITHUB_TOKEN=initial-installation-token"},
+		Timeout: time.Second,
+	}
+	if _, err := runner.Run(context.Background(), initialReq); err != nil {
+		t.Fatalf("initial controlled run: %v", err)
+	}
+
+	payload := []byte(`{"status":"invalid"}`)
+	result, repaired, runErr, completionErr := runCopilotCompletionRepair(
+		context.Background(),
+		runner,
+		RunRequest{Mode: ModeInvoke, Workspace: workspace, Timeout: time.Second, Tools: []string{"view"}},
+		ProcessResult{},
+		payload,
+		initialReq.Command,
+		initialReq.Env,
+		func(_ context.Context, env []string, _ RunRequest) ([]string, error) {
+			return overrideEnv(env, "COPILOT_GITHUB_TOKEN", "refreshed-installation-token"), nil
+		},
+		0,
+		defaultPromptFlag,
+		nil,
+		true,
+		"",
+		time.Now(),
+		fmt.Errorf("%w: invalid payload", ErrInvalidCompletion),
+		&adapterAgentEmitter{},
+	)
+	if runErr != nil || completionErr != nil || result.ExitCode != 0 {
+		t.Fatalf("repair result=(%+v, payload %q, runErr %v, completionErr %v), want success", result, repaired, runErr, completionErr)
+	}
+	if len(opened) != 2 || opened[0] != "initial-installation-token" || opened[1] != "refreshed-installation-token" {
+		t.Fatalf("controlled sessions opened with tokens %v, want initial then refreshed", opened)
+	}
+	if !bytes.Contains(repaired, []byte("refreshed-installation-token")) {
+		t.Fatalf("repair payload %q did not come from refreshed controlled session credential", repaired)
+	}
+}
+
+func TestCopilotCompletionRepairSkipsRefreshWhenBudgetExhausted(t *testing.T) {
+	refreshCalls := 0
+	completionErr := fmt.Errorf("%w: invalid payload", ErrInvalidCompletion)
+	result, payload, runErr, keptErr := runCopilotCompletionRepair(
+		context.Background(),
+		&fakeProcessRunner{},
+		RunRequest{Timeout: time.Nanosecond},
+		ProcessResult{},
+		[]byte(`{"status":"invalid"}`),
+		[]string{"copilot"},
+		nil,
+		func(context.Context, []string, RunRequest) ([]string, error) {
+			refreshCalls++
+			return nil, errors.New("refresh should not run")
+		},
+		0,
+		defaultPromptFlag,
+		nil,
+		false,
+		"",
+		time.Now().Add(-time.Second),
+		completionErr,
+		nil,
+	)
+	if refreshCalls != 0 {
+		t.Fatalf("refresh calls = %d, want 0 after timeout budget is exhausted", refreshCalls)
+	}
+	if !errors.Is(runErr, ErrTimeout) || keptErr != nil {
+		t.Fatalf("repair result runErr=%v keptErr=%v, want timeout replacing invalid completion", runErr, keptErr)
+	}
+	if len(result.Transcript) != 0 || string(payload) != `{"status":"invalid"}` {
+		t.Fatalf("result=%+v payload=%q changed despite skipped repair", result, payload)
+	}
+}
+
+func TestCopilotCompletionRepairBoundsCredentialRefreshByRemainingBudget(t *testing.T) {
+	refreshCalls := 0
+	runner := &fakeProcessRunner{
+		act: func(ProcessRequest) error {
+			t.Fatal("repair subprocess should not run after refresh consumes the retry budget")
+			return nil
+		},
+	}
+	completionErr := fmt.Errorf("%w: invalid payload", ErrInvalidCompletion)
+	started := time.Now()
+	_, _, runErr, keptErr := runCopilotCompletionRepair(
+		context.Background(),
+		runner,
+		RunRequest{Timeout: 20 * time.Millisecond},
+		ProcessResult{},
+		nil,
+		[]string{"copilot"},
+		nil,
+		func(ctx context.Context, env []string, _ RunRequest) ([]string, error) {
+			refreshCalls++
+			<-ctx.Done()
+			return env, ctx.Err()
+		},
+		0,
+		defaultPromptFlag,
+		nil,
+		false,
+		"",
+		started,
+		completionErr,
+		nil,
+	)
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1 bounded refresh attempt", refreshCalls)
+	}
+	if !errors.Is(runErr, ErrTimeout) || keptErr != nil {
+		t.Fatalf("repair result runErr=%v keptErr=%v, want timeout after refresh consumes budget", runErr, keptErr)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatal("refresh was not bounded by the remaining retry budget")
 	}
 }
 

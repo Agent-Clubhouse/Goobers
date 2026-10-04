@@ -82,7 +82,7 @@ export function CostPage({
       <header className="page-heading">
         <h1>Cost</h1>
         <p>
-          Instance spend, selected-scope AI cost, retry waste, and attributed pull request and
+          Instance spend, selected-scope cost, retry waste, and attributed pull request and
           issue costs.
         </p>
       </header>
@@ -121,7 +121,7 @@ export function CostPage({
       {view.usage && (
         <section className="content-section">
           <div className="section-heading">
-            <h2>Cost summary</h2>
+            <h2>Cost Summary</h2>
             <span className="section-count">Measured attempts only</span>
           </div>
           <p className="usage-description">

@@ -22,6 +22,7 @@ describe("definition routing", () => {
         page: "work-items" as const,
         kind: "pr" as const,
         gaggle: "core tools",
+        outcome: "done" as const,
         query: "acme/app#42",
       };
       const detail = {
@@ -33,7 +34,9 @@ describe("definition routing", () => {
       };
 
       expect(parseRoute(routeHash(list))).toEqual(list);
-      expect(routeHash(list)).toBe("#/work-items?kind=pr&gaggle=core+tools&q=acme%2Fapp%2342");
+      expect(routeHash(list)).toBe(
+        "#/work-items?kind=pr&gaggle=core+tools&outcome=done&q=acme%2Fapp%2342",
+      );
       expect(routeHash(detail)).toBe("#/work-items/github/acme/app/issue/42");
       expect(parseRoute(routeHash(detail))).toEqual(detail);
       expect(activeArea(detail)).toBe("work-items");
@@ -69,6 +72,7 @@ describe("definition routing", () => {
         page: "work-items",
         kind: undefined,
         gaggle: undefined,
+        outcome: undefined,
         query: undefined,
       });
       expect(routeHash({
@@ -85,6 +89,16 @@ describe("definition routing", () => {
     const route = { page: "goobers" as const, gaggle: "core tools" };
 
     expect(routeHash(route)).toBe("#/goobers?gaggle=core+tools");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+  });
+
+  it("round-trips the no-work run visibility filter", () => {
+    const route = {
+      page: "runs" as const,
+      filters: { status: "all" as const, showNoWork: true },
+    };
+
+    expect(routeHash(route)).toBe("#/runs?status=all&showNoWork=1");
     expect(parseRoute(routeHash(route))).toEqual(route);
   });
 
@@ -116,6 +130,14 @@ describe("definition routing", () => {
       id: "run-1",
       tab: "artifacts",
     });
+  });
+
+  it("round-trips instance detail routes under the Overview area", () => {
+    for (const detail of ["recovery", "retention", "warnings"] as const) {
+      const route = { page: "instance-detail" as const, detail };
+      expect(parseRoute(routeHash(route))).toEqual(route);
+      expect(activeArea(route)).toBe("overview");
+    }
   });
 });
 

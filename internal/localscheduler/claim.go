@@ -88,7 +88,11 @@ type ClaimLedger struct {
 
 const (
 	claimLedgerSchema = "goobers.dev/scheduler/claims/v1"
-	claimHistoryTTL   = 30 * 24 * time.Hour
+	// ClaimHistoryTTL is how long released claim history is retained once a run
+	// has no active ledger entries.
+	ClaimHistoryTTL = 30 * 24 * time.Hour
+
+	claimHistoryTTL = ClaimHistoryTTL
 )
 
 type claimLedgerState struct {

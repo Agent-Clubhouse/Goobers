@@ -433,6 +433,21 @@ func (p *GiteaProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequ
 	})
 }
 
+// OpenClaimEpochs lists the issue's open provider claim epochs, including the
+// ones authored by identities the claim election does not trust.
+func (p *GiteaProvider) OpenClaimEpochs(ctx context.Context, repo RepositoryRef, id string) ([]ClaimEpoch, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, errIssueIDRequired
+	}
+	return openClaimEpochs(ctx, p, p.BaseURL, repo, id)
+}
+
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its
 // label mirror.
 func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {

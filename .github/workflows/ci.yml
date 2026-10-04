@@ -1730,7 +1730,7 @@ jobs:
         run: go test ./internal/instanceannotations ./internal/branchretention ./internal/engineoperator
 
       - name: Windows containment and journals
-        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/secretpattern
+        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/pathutil ./internal/secretpattern
 
       # Exercise native Logs delivery and real journal-writing CLI lifetimes.
       # Keep the large CLI/engine suites filtered; test/ci checks this selection
@@ -1778,7 +1778,7 @@ jobs:
         # Immutable generations also require native archive, shared-lease,
         # retention and relative-path execution coverage (#5382).
         # The rollback runner must also open native drive-letter SQLite paths.
-        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./test/diagnosticsrollback
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets ./internal/configgeneration ./internal/safeio ./test/diagnosticsrollback
 
       - name: Windows worktree and event stream
         env:

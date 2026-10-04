@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/releaseversion"
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
@@ -320,31 +320,14 @@ type releaseVersion struct {
 }
 
 func parseReleaseVersion(value string, allowDevelopment bool) (releaseVersion, error) {
-	if value == initialFeatureSinceVersion {
-		if allowDevelopment {
-			return releaseVersion{}, nil
-		}
-		return releaseVersion{}, fmt.Errorf("%q is only valid for the initial pre-release baseline", value)
+	parsed, err := releaseversion.Parse(value, releaseversion.Options{
+		DevelopmentSentinel: initialFeatureSinceVersion,
+		AllowDevelopment:    allowDevelopment,
+	})
+	if err != nil {
+		return releaseVersion{}, err
 	}
-	if value != strings.TrimSpace(value) || !strings.HasPrefix(value, "v") {
-		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-	}
-	parts := strings.Split(strings.TrimPrefix(value, "v"), ".")
-	if len(parts) != 3 {
-		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-	}
-	numbers := make([]uint64, len(parts))
-	for i, part := range parts {
-		if part == "" || (len(part) > 1 && part[0] == '0') {
-			return releaseVersion{}, fmt.Errorf("must use canonical vMAJOR.MINOR.PATCH")
-		}
-		number, err := strconv.ParseUint(part, 10, 64)
-		if err != nil {
-			return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-		}
-		numbers[i] = number
-	}
-	return releaseVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, nil
+	return releaseVersion{major: parsed.Major, minor: parsed.Minor, patch: parsed.Patch}, nil
 }
 
 func compareReleaseVersions(left, right releaseVersion) int {
@@ -617,6 +600,9 @@ const (
 	featureGaggleOutboxMirrorPath               FeatureID = "gaggle.spec.outboxMirrorPath"
 	featureGaggleWorkcopiesRoot                 FeatureID = "gaggle.spec.workcopies.root"
 	featureGaggleRequireLabels                  FeatureID = "gaggle.spec.requireLabels"
+	featureGaggleIssueOwnershipScope            FeatureID = "gaggle.spec.issueOwnershipScope"
+	featureGaggleIssueOwnershipScopeAssignees   FeatureID = "gaggle.spec.issueOwnershipScope.assignees"
+	featureGaggleIssueOwnershipScopeUnassigned  FeatureID = "gaggle.spec.issueOwnershipScope.unassigned"
 	featureGaggleSiblings                       FeatureID = "gaggle.spec.siblings"
 
 	// The DSL 3.0 surface (dsl-3.0.md §2/§4/§8, issue #3505): the runsOn
@@ -856,7 +842,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleRunControlsMaxRunDuration,
 		featureGaggleOutboxMirrorPath,
 		featureGaggleWorkcopiesRoot,
-		featureGaggleRequireLabels,
+		featureGaggleRequireLabels, featureGaggleIssueOwnershipScope, featureGaggleIssueOwnershipScopeAssignees, featureGaggleIssueOwnershipScopeUnassigned,
 		featureGaggleSiblings,
 		featureTaskRunsOn,
 		featureTaskRunsOnOS,
@@ -1344,10 +1330,24 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 	if spec.RequireLabels != nil {
 		used.add(featureGaggleRequireLabels)
 	}
+	addGaggleIssueOwnershipFeatures(used, spec.IssueOwnershipScope)
 	if spec.Siblings != nil {
 		used.add(featureGaggleSiblings)
 	}
 	return currentFeatureRegistry.resolve(used.ids())
+}
+
+func addGaggleIssueOwnershipFeatures(used featureSet, scope *apiv1.IssueOwnershipScope) {
+	if scope == nil {
+		return
+	}
+	used.add(featureGaggleIssueOwnershipScope)
+	if scope.Assignees != nil {
+		used.add(featureGaggleIssueOwnershipScopeAssignees)
+	}
+	if scope.Unassigned != "" {
+		used.add(featureGaggleIssueOwnershipScopeUnassigned)
+	}
 }
 
 // addParallelFeatures records the GA DSL fields used by a parallel state.

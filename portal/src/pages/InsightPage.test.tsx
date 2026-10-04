@@ -188,34 +188,34 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Cost summary" }),
+      await screen.findByRole("heading", { name: "Cost Summary" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("AI credits")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: /^View AI credit runs behind/ }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /^View retry-waste runs behind/ })).not.toBeInTheDocument();
     expect(screen.getByText("12,000 tokens")).toBeInTheDocument();
-    expect(screen.getByText("$0.75")).toBeInTheDocument();
+    expect(screen.getByText("75 AIC")).toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
       JSON.stringify(["workflow", "core", "implementation"]),
     );
-    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
       JSON.stringify(["gaggle", "core"]),
     );
-    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
       JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
-    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
@@ -223,13 +223,13 @@ describe("Insight page", () => {
     );
 
     const unmeasuredCost = screen
-      .getByText("AI cost", { selector: ".usage-metric-static .usage-metric-heading strong" })
+      .getByText("AIC", { selector: ".usage-metric-static .usage-metric-heading strong" })
       .closest<HTMLElement>(".usage-metric-static");
     if (!unmeasuredCost) throw new Error("Expected a static AI cost metric.");
     expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(2);
     expect(within(unmeasuredCost).getByText("0 runs")).toBeInTheDocument();
     expect(screen.getByText("No retry waste")).toBeInTheDocument();
-    expect(within(unmeasuredCost).queryByText("$0.00")).not.toBeInTheDocument();
+    expect(within(unmeasuredCost).queryByText("0 AIC")).not.toBeInTheDocument();
     expect(unmeasuredCost.tagName).toBe("DIV");
   });
 
@@ -244,21 +244,29 @@ describe("Insight page", () => {
       await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Exact recorded usage · Loaded Jul 18, 2026/)).toBeInTheDocument();
-    const table = screen.getByRole("table");
+    const comparison = screen.getByRole("region", { name: "Attributed costs comparison" });
+    expect(comparison).toHaveAttribute("tabindex", "0");
+    expect(comparison).toHaveAccessibleDescription(
+      "Scroll sideways to compare every cost column.",
+    );
+    const table = screen.getByRole("table", { name: "Attributed costs" });
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(4);
+    const pullRequestRow = within(table)
+      .getAllByRole("row")
+      .find((row) => within(row).queryByText("PR #4398"));
+    expect(pullRequestRow).toHaveTextContent("github2.5 AIC");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
-    expect(screen.getAllByText("3 AIC").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("$0.03").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("$0.42").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("42 AIC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2.5 AIC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("42 AIC estimated").length).toBeGreaterThan(0);
     expect(
       screen.getByText("Lower bound: 2 of 3 runs and 3 of 4 attempts measured."),
     ).toBeInTheDocument();
     expect(
       screen.getByText("Complete coverage: 2 runs and 2 attempts measured."),
     ).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.6-sol: 3 AIC · 3/3 attempts")).toBeInTheDocument();
-    expect(screen.getByText("claude-sonnet: $0.42 · 2/2 attempts")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-sol: 2.5 AIC · 3/3 attempts")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet: 42 AIC estimated · 2/2 attempts")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View 1 run for PR #4398" }));
     expect(screen.getByRole("dialog", { name: "PR #4398 runs" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "01JZ455ESCALATE" })).toHaveAttribute(
@@ -292,16 +300,16 @@ describe("Insight page", () => {
     await user.click(screen.getByRole("button", { name: "Close run list" }));
 
     let rows = within(table).getAllByRole("row").slice(1);
-    expect(rows[0]).toHaveTextContent("PR #4398");
-    const nativeSort = screen.getByRole("button", { name: /Provider-native/ });
-    expect(nativeSort.closest('[role="columnheader"]')).toHaveAttribute(
+    expect(rows[0]).toHaveTextContent("Issue #4398");
+    const aicSort = within(table).getByRole("button", { name: "AIC" });
+    expect(aicSort.closest('[role="columnheader"]')).toHaveAttribute(
       "aria-sort",
       "descending",
     );
-    await user.click(nativeSort);
+    await user.click(aicSort);
     rows = within(table).getAllByRole("row").slice(1);
-    expect(rows[0]).toHaveTextContent("Issue #4398");
-    expect(nativeSort.closest('[role="columnheader"]')).toHaveAttribute(
+    expect(rows[0]).toHaveTextContent("PR #4398");
+    expect(aicSort.closest('[role="columnheader"]')).toHaveAttribute(
       "aria-sort",
       "ascending",
     );
@@ -331,7 +339,7 @@ describe("Insight page", () => {
     const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "Cost summary" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost Summary" })).toBeInTheDocument();
     expect(screen.getByLabelText("Scope")).toHaveDisplayValue("Workflow · implementation");
     expect(
       await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
@@ -354,7 +362,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Cost summary" }),
+      await screen.findByRole("heading", { name: "Cost Summary" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -375,7 +383,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Cost summary" }),
+      await screen.findByRole("heading", { name: "Cost Summary" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -400,11 +408,12 @@ describe("Insight page", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("img", {
-        name: /AI cost trend by bucket.*cumulative.*P95/i,
+        name: /Cost trend by bucket.*cumulative.*P95/i,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Cumulative cost")).toBeInTheDocument();
-    expect(screen.getByText("P95 run cost")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Cost chart legend" })).toBeInTheDocument();
+    expect(screen.getByText("Cumulative AIC")).toBeInTheDocument();
+    expect(screen.getByText("P95 run AIC")).toBeInTheDocument();
     expect(screen.getAllByText(/vs\. previous 7 days/)).toHaveLength(2);
 
     await waitFor(() => {
@@ -467,9 +476,9 @@ describe("Insight page", () => {
           tokenSamples: 8,
           premiumRequestSamples: 0,
           costSamples: 8,
-          costUSD: 4,
-          p50CostUSD: 0.8,
-          p95CostUSD: 2.5,
+          costAIC: 400,
+          p50CostAIC: 80,
+          p95CostAIC: 250,
           retryWasteAttempts: 0,
         },
         {
@@ -479,15 +488,15 @@ describe("Insight page", () => {
           tokenSamples: 0,
           premiumRequestSamples: 0,
           costSamples: 3,
-          costUSD: 6,
-          p50CostUSD: 0.1,
-          p95CostUSD: 5.8,
+          costAIC: 600,
+          p50CostAIC: 10,
+          p95CostAIC: 580,
           retryWasteAttempts: 0,
         },
       ],
       models: [
-        { model: "claude", usageSamples: 8, inputTokenSamples: 8, outputTokenSamples: 8, premiumRequestSamples: 0, costSamples: 6, costUSD: 6 },
-        { model: "gpt", usageSamples: 2, inputTokenSamples: 2, outputTokenSamples: 2, premiumRequestSamples: 0, costSamples: 2, costUSD: 4 },
+        { model: "claude", usageSamples: 8, inputTokenSamples: 8, outputTokenSamples: 8, premiumRequestSamples: 0, costSamples: 6, costAIC: 600 },
+        { model: "gpt", usageSamples: 2, inputTokenSamples: 2, outputTokenSamples: 2, premiumRequestSamples: 0, costSamples: 2, costAIC: 400 },
       ],
       curation: {
         everRecorded: false,
@@ -519,11 +528,11 @@ describe("Insight page", () => {
 
     expect(await screen.findByRole("heading", { name: "Cost by gaggle" })).toBeInTheDocument();
     const coreLink = screen.getByRole("link", {
-      name: /View instance spend for gaggle core: total \$4\.00, 8 runs, P50 \$0\.80, P95 \$2\.50/,
+      name: /View instance cost for gaggle core: total 400 AIC, 8 runs, P50 80 AIC, P95 250 AIC/,
     });
     expect(coreLink).toBeInTheDocument();
     const toolsLink = screen.getByRole("link", {
-      name: /View instance spend for gaggle tools: total \$6\.00, 3 runs, P50 \$0\.10, P95 \$5\.80/,
+      name: /View instance cost for gaggle tools: total 600 AIC, 3 runs, P50 10 AIC, P95 580 AIC/,
     });
     expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
@@ -547,7 +556,7 @@ describe("Insight page", () => {
       stages: [],
       usage: [],
       models: [
-        { model: "claude", usageSamples: 1, inputTokenSamples: 1, outputTokenSamples: 1, premiumRequestSamples: 0, costSamples: 1, costUSD: 10 },
+        { model: "claude", usageSamples: 1, inputTokenSamples: 1, outputTokenSamples: 1, premiumRequestSamples: 0, costSamples: 1, costAIC: 1000 },
       ],
       curation: {
         everRecorded: false,
@@ -577,7 +586,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Soft budget (USD)")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Soft budget")).not.toBeInTheDocument();
   });
 
   it("keeps a selected Cost workflow visible without a gaggle aggregate row", async () => {

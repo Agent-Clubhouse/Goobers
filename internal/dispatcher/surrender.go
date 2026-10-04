@@ -347,32 +347,28 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("dispatcher: create surrender dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".surrender-*")
-	if err != nil {
-		return fmt.Errorf("dispatcher: stage surrendered result: %w", err)
-	}
-	staged := tmp.Name()
-	defer func() { _ = os.Remove(staged) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("dispatcher: write surrendered result: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("dispatcher: sync surrendered result: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("dispatcher: close surrendered result: %w", err)
-	}
-	if err := durability.ReplaceFile(staged, path); err != nil {
-		if _, statErr := os.Stat(path); statErr == nil {
-			// The same pod's retry already landed the identical document.
-			return nil
+	if err := durability.WriteFileAtomic(path, data, 0o600,
+		durability.WithTempPattern(".surrender-*"),
+		durability.WithPublishRaceCheck(func(path string) error {
+			_, err := os.Stat(path)
+			return err
+		})); err != nil {
+		var writeErr *durability.AtomicWriteError
+		if errors.As(err, &writeErr) {
+			switch writeErr.Operation {
+			case durability.AtomicWriteCreateTemp:
+				return fmt.Errorf("dispatcher: stage surrendered result: %w", err)
+			case durability.AtomicWriteWrite:
+				return fmt.Errorf("dispatcher: write surrendered result: %w", err)
+			case durability.AtomicWriteSync:
+				return fmt.Errorf("dispatcher: sync surrendered result: %w", err)
+			case durability.AtomicWriteClose:
+				return fmt.Errorf("dispatcher: close surrendered result: %w", err)
+			case durability.AtomicWriteSyncDir:
+				return fmt.Errorf("dispatcher: sync surrender dir: %w", err)
+			}
 		}
 		return fmt.Errorf("dispatcher: publish surrendered result: %w", err)
-	}
-	if err := durability.SyncDir(dir); err != nil {
-		return fmt.Errorf("dispatcher: sync surrender dir: %w", err)
 	}
 	return nil
 }

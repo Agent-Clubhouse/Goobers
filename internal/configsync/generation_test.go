@@ -3,6 +3,7 @@ package configsync
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 
@@ -61,6 +62,47 @@ func managedGenerations(t *testing.T, c client.Client) map[string]int {
 	return seen
 }
 
+func selectedGaggleNames(t *testing.T, c client.Client, generation string) []string {
+	t.Helper()
+	var selected v1alpha1.GaggleList
+	if err := c.List(context.Background(), &selected,
+		client.InNamespace(DefaultNamespace), GenerationSelector(generation),
+	); err != nil {
+		t.Fatalf("select generation: %v", err)
+	}
+	names := make([]string, 0, len(selected.Items))
+	for i := range selected.Items {
+		name := selected.Items[i].Annotations[OriginalNameAnnotation]
+		if name == "" {
+			name = selected.Items[i].Name
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func selectedGaggle(t *testing.T, c client.Client, generation, name string) v1alpha1.Gaggle {
+	t.Helper()
+	var selected v1alpha1.GaggleList
+	if err := c.List(context.Background(), &selected,
+		client.InNamespace(DefaultNamespace), GenerationSelector(generation),
+	); err != nil {
+		t.Fatalf("select generation: %v", err)
+	}
+	for i := range selected.Items {
+		got := selected.Items[i].Annotations[OriginalNameAnnotation]
+		if got == "" {
+			got = selected.Items[i].Name
+		}
+		if got == name {
+			return selected.Items[i]
+		}
+	}
+	t.Fatalf("generation %s did not select Gaggle %q; selected %v", generation, name, selectedGaggleNames(t, c, generation))
+	return v1alpha1.Gaggle{}
+}
+
 func applyErrorOf(t *testing.T, err error) *ApplyError {
 	t.Helper()
 	var applyErr *ApplyError
@@ -103,6 +145,9 @@ func TestClientApplier_PublishesOneGeneration(t *testing.T) {
 	if len(selected.Items) != 2 {
 		t.Fatalf("generation selector returned %d objects, want 2", len(selected.Items))
 	}
+	if got, want := selectedGaggleNames(t, c, generation), []string{"api", "web"}; !equalStrings(got, want) {
+		t.Fatalf("selected gaggles = %v, want %v", got, want)
+	}
 }
 
 func TestClientApplier_GenerationIsContentIdentity(t *testing.T) {
@@ -142,7 +187,7 @@ func TestClientApplier_ApplyFailureKeepsPreviousGeneration(t *testing.T) {
 
 	failing, failingClient := newInterceptedApplier(t, interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-			if obj.GetName() == "api" {
+			if obj.GetAnnotations()[OriginalNameAnnotation] == "api" {
 				return apierrors.NewTimeoutError("create timed out", 1)
 			}
 			return c.Create(ctx, obj, opts...)
@@ -166,6 +211,9 @@ func TestClientApplier_ApplyFailureKeepsPreviousGeneration(t *testing.T) {
 	if got := authoritative(t, failingClient); got != previous {
 		t.Errorf("authoritative generation = %s after failed apply, want unchanged %s", got, previous)
 	}
+	if got, want := selectedGaggleNames(t, failingClient, previous), []string{"web"}; !equalStrings(got, want) {
+		t.Errorf("previous generation selected gaggles = %v, want %v", got, want)
+	}
 }
 
 func TestClientApplier_IncompleteGenerationDoesNotBecomeAuthoritative(t *testing.T) {
@@ -178,13 +226,13 @@ func TestClientApplier_IncompleteGenerationDoesNotBecomeAuthoritative(t *testing
 	previous := authoritative(t, c)
 
 	failing, failingClient := newInterceptedApplier(t, interceptor.Funcs{
-		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-			if obj.GetName() == "web" {
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if obj.GetAnnotations()[OriginalNameAnnotation] == "web" {
 				labels := obj.GetLabels()
 				delete(labels, GenerationLabel)
 				obj.SetLabels(labels)
 			}
-			return c.Update(ctx, obj, opts...)
+			return c.Create(ctx, obj, opts...)
 		},
 	}, seedManaged(t, c)...)
 
@@ -199,6 +247,9 @@ func TestClientApplier_IncompleteGenerationDoesNotBecomeAuthoritative(t *testing
 	}
 	if got := authoritative(t, failingClient); got != previous {
 		t.Errorf("authoritative generation = %s, want unchanged %s", got, previous)
+	}
+	if got, want := selectedGaggleNames(t, failingClient, previous), []string{"web"}; !equalStrings(got, want) {
+		t.Errorf("previous generation selected gaggles = %v, want %v", got, want)
 	}
 }
 
@@ -232,10 +283,8 @@ func TestClientApplier_SwitchFailureLeavesPreviousGenerationAndSkipsPrune(t *tes
 	if got := authoritative(t, failingClient); got != previous {
 		t.Errorf("authoritative generation = %s, want unchanged %s", got, previous)
 	}
-	var stale v1alpha1.Gaggle
-	if err := failingClient.Get(context.Background(),
-		types.NamespacedName{Namespace: DefaultNamespace, Name: "stale"}, &stale); err != nil {
-		t.Errorf("prune must not run before the switch commits: %v", err)
+	if got, want := selectedGaggleNames(t, failingClient, previous), []string{"stale"}; !equalStrings(got, want) {
+		t.Errorf("previous generation selected gaggles = %v, want %v", got, want)
 	}
 }
 
@@ -278,6 +327,81 @@ func TestClientApplier_PruneBeginsOnlyAfterSwitch(t *testing.T) {
 	if m, ok := mutationFor(applyErr.Mutations, "Gaggle/"+DefaultNamespace+"/stale"); !ok || m.Status != MutationAmbiguous {
 		t.Errorf("prune mutation = %v (found %t), want ambiguous", m, ok)
 	}
+	if got, want := selectedGaggleNames(t, failingClient, published), []string{"web"}; !equalStrings(got, want) {
+		t.Errorf("published generation selected gaggles = %v, want %v", got, want)
+	}
+}
+
+func TestClientApplier_RetryPrunesAfterAmbiguousCommittedSwitch(t *testing.T) {
+	a, c := newApplier(t, managedGaggle("stale"))
+	if err := a.Apply(context.Background(), gaggleSet("stale")); err != nil {
+		t.Fatalf("seed apply: %v", err)
+	}
+	previous := authoritative(t, c)
+	staleName := selectedGaggle(t, c, previous, "stale").Name
+
+	failing, failingClient := newInterceptedApplier(t, interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*corev1.ConfigMap); ok {
+				if err := c.Update(ctx, obj, opts...); err != nil {
+					return err
+				}
+				return apierrors.NewTimeoutError("pointer switch timed out after commit", 1)
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}, seedManaged(t, c)...)
+
+	if err := failing.Apply(context.Background(), gaggleSet("web")); err == nil {
+		t.Fatal("apply should report the ambiguous pointer switch")
+	}
+	published := authoritative(t, failingClient)
+	if published == previous {
+		t.Fatalf("authoritative generation = %s, want committed new generation", published)
+	}
+
+	retry, retryClient := newApplier(t, seedManaged(t, failingClient)...)
+	if err := retry.Apply(context.Background(), gaggleSet("web")); err != nil {
+		t.Fatalf("retry apply: %v", err)
+	}
+	var stale v1alpha1.Gaggle
+	err := retryClient.Get(context.Background(), types.NamespacedName{Namespace: DefaultNamespace, Name: staleName}, &stale)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("retry should prune replaced generation object, got err=%v", err)
+	}
+	if got, want := selectedGaggleNames(t, retryClient, published), []string{"web"}; !equalStrings(got, want) {
+		t.Fatalf("published generation selected gaggles = %v, want %v", got, want)
+	}
+	assertNoPendingPrune(t, retryClient)
+}
+
+func TestClientApplier_BlocksNewGenerationWhilePrunePending(t *testing.T) {
+	a, c := newApplier(t, managedGaggle("stale"))
+	if err := a.Apply(context.Background(), gaggleSet("stale")); err != nil {
+		t.Fatalf("seed apply: %v", err)
+	}
+
+	failing, failingClient := newInterceptedApplier(t, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			return apierrors.NewTimeoutError("delete timed out", 1)
+		},
+	}, seedManaged(t, c)...)
+	if err := failing.Apply(context.Background(), gaggleSet("web")); err == nil {
+		t.Fatal("apply should fail while pruning the replaced generation")
+	}
+	published := authoritative(t, failingClient)
+
+	next, nextClient := newApplier(t, seedManaged(t, failingClient)...)
+	err := next.Apply(context.Background(), gaggleSet("api"))
+	if err == nil {
+		t.Fatal("new generation should wait for pending prune to finish")
+	}
+	if phase := applyErrorOf(t, err).Phase; phase != "switch" {
+		t.Fatalf("phase = %q, want switch", phase)
+	}
+	if got := authoritative(t, nextClient); got != published {
+		t.Fatalf("authoritative generation = %s, want pending-prune generation %s", got, published)
+	}
 }
 
 func TestClientApplier_DoesNotStampCallerObjects(t *testing.T) {
@@ -288,6 +412,21 @@ func TestClientApplier_DoesNotStampCallerObjects(t *testing.T) {
 	}
 	if _, ok := set.Objects[0].GetLabels()[GenerationLabel]; ok {
 		t.Error("apply must not mutate the caller's render set")
+	}
+	if got := set.Objects[0].GetName(); got != "web" {
+		t.Errorf("apply renamed caller object to %q, want web", got)
+	}
+}
+
+func assertNoPendingPrune(t *testing.T, c client.Client) {
+	t.Helper()
+	var pointer corev1.ConfigMap
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: DefaultNamespace, Name: GenerationConfigMapName}, &pointer); err != nil {
+		t.Fatalf("read pointer: %v", err)
+	}
+	if _, ok := pointer.Data[PreviousGenerationConfigMapKey]; ok {
+		t.Fatalf("pending prune marker still set in pointer data: %v", pointer.Data)
 	}
 }
 
@@ -329,6 +468,7 @@ func TestApplyErrorMessage(t *testing.T) {
 		},
 		Err: errors.New("boom"),
 	}
+
 	msg := err.Error()
 	for _, want := range []string{"gabc", "apply", "create Gaggle/goobers-system/web (committed)", "update Gaggle/goobers-system/api (ambiguous)"} {
 		if !strings.Contains(msg, want) {
@@ -339,6 +479,18 @@ func TestApplyErrorMessage(t *testing.T) {
 	if !strings.Contains(empty, "no mutations committed") {
 		t.Errorf("error %q should say no mutations committed", empty)
 	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // seedManaged snapshots the managed objects and the generation pointer of a

@@ -28,6 +28,7 @@ package netpolrender
 import (
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 
@@ -189,7 +190,7 @@ func Classes(runners []Runner) []Class {
 				Value:        value,
 				Restrictions: canonical,
 				Preimage:     runnercap.RunnerClassPreimage(canonical),
-				NetworkNone:  contains(canonical, string(runnercap.RestrictionNetworkNone)),
+				NetworkNone:  slices.Contains(canonical, string(runnercap.RestrictionNetworkNone)),
 			}
 			byValue[value] = class
 		}
@@ -431,15 +432,6 @@ func kustomizationFile(classes []Class) File {
 		fmt.Fprintf(&b, "  - %s\n", classFileName(class.Value))
 	}
 	return File{Name: "kustomization.yaml", Content: []byte(b.String())}
-}
-
-func contains(list []string, want string) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 var (

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sandbox"
@@ -194,10 +195,18 @@ type Executor struct {
 	timeout         time.Duration
 	transcriptLimit int64
 	sandboxEnforced bool
+	observer        Observer
 	newSandbox      func() (sandbox.Sandbox, error)
 
 	guardedCredentialFiles bool
 }
+
+// Observer is told about every completed Invoke. It is advisory: it must not
+// block, and it cannot change the result it is given (it receives a copy).
+type Observer func(env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope)
+
+// WithObserver registers an advisory Observer. Nil leaves behavior unchanged.
+func WithObserver(o Observer) Option { return func(e *Executor) { e.observer = o } }
 
 // Option configures an Executor at construction.
 type Option func(*Executor)
@@ -387,6 +396,7 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript
+	attachHandoffValidationOutput(ctx, &result)
 	if out.TranscriptTruncated {
 		// Mirrors internal/executor.ShellExecutor's stdoutTruncated/
 		// stderrTruncated outputs (#245): the recorded span already carries
@@ -413,7 +423,24 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return result, err
 	}
 	result.Artifacts = append(result.Artifacts, out.DiagnosticArtifacts...)
+	if e.observer != nil {
+		e.observer(env, result)
+	}
 	return result, nil
+}
+
+func attachHandoffValidationOutput(ctx context.Context, result *apiv1.ResultEnvelope) {
+	if result == nil {
+		return
+	}
+	report, ok := handoffcheck.ReportFromContext(ctx)
+	if !ok {
+		return
+	}
+	if result.Outputs == nil {
+		result.Outputs = map[string]interface{}{}
+	}
+	result.Outputs[handoffcheck.OutputKey] = report
 }
 
 // Review implements invoke.Goober: runs an agentic reviewer gate through the

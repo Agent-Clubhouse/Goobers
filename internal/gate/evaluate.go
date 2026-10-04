@@ -129,13 +129,14 @@ type Result struct {
 
 // RepassCause is the machine-readable upstream reason for a repass.
 type RepassCause struct {
-	Kind         string `json:"kind"`
-	Gate         string `json:"gate,omitempty"`
-	Outcome      string `json:"outcome,omitempty"`
-	Stage        string `json:"stage,omitempty"`
-	ErrorCode    string `json:"errorCode,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
-	Rationale    string `json:"rationale,omitempty"`
+	Kind         string          `json:"kind"`
+	Gate         string          `json:"gate,omitempty"`
+	Outcome      string          `json:"outcome,omitempty"`
+	Stage        string          `json:"stage,omitempty"`
+	ErrorCode    string          `json:"errorCode,omitempty"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+	Rationale    string          `json:"rationale,omitempty"`
+	Findings     []apiv1.Finding `json:"findings,omitempty"`
 	// Infrastructure is true when Kind is "stage-failure" and the failed
 	// attempt that triggered this repass was itself classified as an
 	// infrastructure/environment failure rather than an ordinary
