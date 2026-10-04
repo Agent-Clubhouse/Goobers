@@ -170,6 +170,20 @@ custody before calling the adapter. Manual editing routes and UI remain disabled
 until that host custody and authorization path is installed. Relationships and
 repository PR proposals use separate contracts.
 
+Durable command custody now records the exact actor, source target, request,
+operation digest and accepted/attempted/completed timestamps in the shared queue
+database. A command can claim at most one effect attempt, including across process
+restart. Provider acknowledgement and observed matching state remain separate;
+uncertain effects cannot be replayed automatically. The host must recheck current
+actor, source target and field permission when accepting or reading receipts.
+
+Receipt capacity is reserved before acceptance against the shared byte budget,
+with at most 1,000 live or retained commands per gaggle. Confirmed/not-applied
+details remain for 30 days, followed by a compact replay tombstone for 30 more.
+The resulting idempotency guarantee is 60 days. Accepted, attempting and unknown
+commands never expire automatically to free capacity. This custody slice does not
+enable editing until the authorized host/API is installed.
+
 
 ## Interactive read service
 

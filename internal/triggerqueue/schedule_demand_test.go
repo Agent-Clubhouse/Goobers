@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -147,10 +148,11 @@ func TestScheduleDemandMigrationPreservesSessionAndSourceTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if migrations[len(migrations)-1] != scheduleDemandSchema {
-		t.Fatal("migration ordering fixture needs latest tail")
+	index := slices.Index(migrations, scheduleDemandSchema)
+	if index < 1 {
+		t.Fatal("schedule demand migration unavailable")
 	}
-	if err = sqliteschema.Migrate(t.Context(), db, "triggerqueue", migrations[:len(migrations)-1]); err != nil {
+	if err = sqliteschema.Migrate(t.Context(), db, "triggerqueue", migrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec(`INSERT INTO source_start_cursors(scope,cursor_ns) VALUES('old',1)`); err != nil {
