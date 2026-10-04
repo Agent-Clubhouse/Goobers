@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -74,6 +75,10 @@ func (s *durableTriggerService) recordChildRunning(ctx context.Context, child tr
 	return s.queue.SetChildState(ctx, child.Identity, triggerqueue.ChildStateUpdate{Expected: child.State, State: triggerqueue.ChildRunning}, s.dispatch.now())
 }
 
+// Unknown worker observations share one pass budget. The cursor is advanced
+// before each attempt so a slow child cannot starve later families on retry.
+const childReconcilePassBudget = 10 * time.Second
+
 // This bounded sweep also visits Dispatched starts: execution reconciliation
 // must outlive start acceptance. Parent fences are a durable cancellation outbox;
 // cancellation is retried until a verified terminal result removes the entry.
@@ -81,6 +86,8 @@ func (s *durableTriggerService) reconcileChildren(ctx context.Context) error {
 	if s.children == nil || s.observeChild == nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, childReconcilePassBudget)
+	defer cancel()
 	children, err := s.queue.ActiveChildren(ctx, s.childCursor, 100)
 	if err != nil {
 		return err

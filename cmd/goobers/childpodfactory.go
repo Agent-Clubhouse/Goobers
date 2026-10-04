@@ -27,6 +27,9 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 		return
 	}
 	s.installParentPodFactories(client, surrenders)
+	s.childPodRecovery = func(ctx context.Context, reader *journal.Reader, digest string, scope childPodScope) error {
+		return s.recoverChildPod(ctx, reader, digest, scope, client, surrenders)
+	}
 	s.childExecutors = func(_ context.Context, start childExecutionStart, runtime preparedChildRuntime) (runner.ChildExecutionFactories, error) {
 		if err := admitChildPodPlan(start); err != nil {
 			return runner.ChildExecutionFactories{}, err
@@ -119,8 +122,9 @@ func (p *childStagePod) Review(ctx context.Context, env apiv1.InvocationEnvelope
 func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelope, run *apiv1.DeterministicRun, review bool) (dispatcher.SurrenderedResult, error) {
 	// Synchronous preparation owns no detached process; the executor registers
 	// its separate physical pod writer before transport acceptance.
+	var custodyErr error
 	if ack := invoke.RegisterWorkspaceWriter(ctx); ack != nil {
-		defer ack(nil)
+		defer func() { ack(custodyErr) }()
 	}
 	// Ordinary local runner envelopes omit the Goober; this factory was
 	// selected by the trusted compiled stage and repeats that binding below.
@@ -131,7 +135,7 @@ func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelop
 	if err != nil {
 		return dispatcher.SurrenderedResult{}, err
 	}
-	blobs := childpod.ScopedBlobs{Queue: p.service.childQueue, Identity: p.start.Child.Identity}
+	blobs := &childInvocationBlobs{ScopedBlobs: childpod.ScopedBlobs{Queue: p.service.childQueue, Identity: p.start.Child.Identity}, recorder: p.journal}
 	if err = copyContainedPodContext(ctx, reader, p.identity.RunID, blobs, env.ContextPointers); err != nil {
 		return dispatcher.SurrenderedResult{}, err
 	}
@@ -142,8 +146,12 @@ func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelop
 		}
 	}
 	transport := childpod.TemporalDispatch{Client: p.client, WorkflowQueue: p.service.config.EffectiveEngineConfig().TaskQueue, DispatchQueue: pin.Queue, Admit: p.admit}
-	executor := childpod.Executor{Dispatcher: transport, Surrenders: p.surrenders, Blobs: blobs, Recorder: p.journal}
-	out, report, callErr := executor.Execute(ctx, request)
+	executor := childpod.Executor{Dispatcher: transport, Surrenders: p.surrenders, Blobs: blobs, Recorder: p.journal, KeepAttempt: blobs.keepAttempt}
+	executionCtx, proof := invoke.WithWorkspaceQuiescence(ctx)
+	out, report, callErr := executor.Execute(executionCtx, request)
+	if report.ChildCreateAttempted {
+		custodyErr = proof.Verify()
+	}
 	if report.Runner != "" {
 		placement := journal.Placement{Runner: report.Runner, Node: report.Node, OS: report.OS, Build: report.Build, Worker: report.Worker, Image: report.Image, Pod: report.Pod, QueuedAt: &report.QueuedAt, PodStartedAt: &report.PodStartedAt}
 		callErr = errors.Join(callErr, p.journal.Append(journal.PlacementEvent(request.Attempt.Stage, request.Attempt.Number, request.Attempt.Class, placement)))
@@ -151,7 +159,13 @@ func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelop
 	if report.WorkspaceWritersStopped && report.SurrenderConfirmed {
 		owned, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		callErr = errors.Join(callErr, adoptContainedPodOutputs(owned, p.journal, blobs, &out))
+		scoped := childpod.ChildAttemptBlobs{Store: blobs.ScopedBlobs, ContractDigest: blobs.digest}
+		custodyErr = errors.Join(custodyErr, adoptContainedPodOutputs(owned, p.journal, scoped, &out))
+		callErr = errors.Join(callErr, custodyErr)
+	}
+	if blobs.started && custodyErr == nil {
+		custodyErr = blobs.record(childPodWriterJoined)
+		callErr = errors.Join(callErr, custodyErr)
 	}
 	if out.ObservedUsageReported {
 		invoke.ReportAgentUsage(ctx, out.ObservedUsage)
@@ -182,6 +196,10 @@ func (p *childStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelop
 	reader, err := journal.OpenReadOnly(p.journal.Dir())
 	if err != nil {
 		return empty, noPin, nil, err
+	}
+	pending, _, err := p.service.pendingChildPodScopes(ctx, reader)
+	if err != nil || len(pending) != 0 {
+		return empty, noPin, nil, errors.Join(invoke.ErrWorkspaceNotQuiescent, err)
 	}
 	started, err := childPodStarted(reader, stage, int(env.Attempt), review)
 	if err != nil {

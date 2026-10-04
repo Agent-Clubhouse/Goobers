@@ -19,30 +19,58 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 type factoryWorkerRun struct {
 	client.WorkflowRun
 	result engine.ChildDispatchResult
+	err    error
 }
 
 func (r factoryWorkerRun) Get(_ context.Context, out any) error {
 	*out.(*engine.ChildDispatchResult) = r.result
-	return nil
+	return r.err
 }
 
 type factoryWorkerClient struct {
 	client.Client
-	execute func(context.Context, engine.ChildDispatchInput) (engine.ChildDispatchResult, error)
-	starts  int
+	execute    func(context.Context, engine.ChildDispatchInput) (engine.ChildDispatchResult, error)
+	starts     int
+	gets       int
+	result     engine.ChildDispatchResult
+	workflowID string
+	getErr     error
+	lostReply  bool
 }
 
-func (c *factoryWorkerClient) ExecuteWorkflow(ctx context.Context, _ client.StartWorkflowOptions, _ any, args ...any) (client.WorkflowRun, error) {
+func (c *factoryWorkerClient) ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, _ any, args ...any) (client.WorkflowRun, error) {
 	c.starts++
 	in := args[0].(engine.ChildDispatchInput)
 	out, err := c.execute(ctx, in)
 	out.BindingDigest = in.BindingDigest()
+	c.result, c.workflowID = out, options.ID
+	if c.lostReply {
+		err = errors.New("lost worker acceptance reply")
+	}
 	return factoryWorkerRun{result: out}, err
+}
+
+func (c *factoryWorkerClient) GetWorkflow(_ context.Context, id, _ string) client.WorkflowRun {
+	c.gets++
+	if id != c.workflowID {
+		return factoryWorkerRun{err: errors.New("wrong recovery identity")}
+	}
+	return factoryWorkerRun{result: c.result, err: c.getErr}
+}
+func (c *factoryWorkerClient) SignalWorkflow(_ context.Context, id, _, signal string, _ interface{}) error {
+	if id != c.workflowID || signal != engine.ChildDispatchStopSignal {
+		return errors.New("wrong recovery stop identity")
+	}
+	return nil
+}
+func TestProductionChildFactoryRecoversLostWorkerReply(t *testing.T) {
+	testProductionChildFactory(t, false, true)
 }
 
 func TestProductionChildFactoryUsesRetainedKitAndScopedSurrender(t *testing.T) {
@@ -51,7 +79,7 @@ func TestProductionChildFactoryUsesRetainedKitAndScopedSurrender(t *testing.T) {
 func TestProductionChildFactoryDrivesActualGeneratedRunner(t *testing.T) {
 	testProductionChildFactory(t, true)
 }
-func testProductionChildFactory(t *testing.T, resume bool) {
+func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 	t.Helper()
 	f := newChildKitFixture(t, true)
 	s := f.writer.service
@@ -67,7 +95,7 @@ func testProductionChildFactory(t *testing.T, resume bool) {
 		t.Fatal(err)
 	}
 	blobs := childpod.ScopedBlobs{Queue: s.childQueue, Identity: f.child.Identity}
-	worker := &factoryWorkerClient{}
+	worker := &factoryWorkerClient{lostReply: len(lost) > 0 && lost[0]}
 	worker.execute = func(ctx context.Context, in engine.ChildDispatchInput) (engine.ChildDispatchResult, error) {
 		a := in.Attempt
 		if a.Stage != "check" || a.PodAttempt < 2 || a.Envelope == nil || a.Envelope.Workspace != "" {
@@ -100,12 +128,13 @@ func testProductionChildFactory(t *testing.T, resume bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = blobs.Put(ctx, ref.Digest, output); err != nil {
+		scoped := childpod.ChildAttemptBlobs{Store: blobs, ContractDigest: a.ChildExecutionDigest}
+		if err = scoped.Put(ctx, ref.Digest, output); err != nil {
 			t.Fatal(err)
 		}
 		carrier, _ := json.Marshal(childpod.Output{Version: 1, ContractDigest: a.ChildExecutionDigest})
 		digest := journal.Digest(carrier)
-		if err = blobs.Put(ctx, digest, carrier); err != nil {
+		if err = scoped.Put(ctx, digest, carrier); err != nil {
 			t.Fatal(err)
 		}
 		surrendered := dispatcher.SurrenderedResult{ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
@@ -158,6 +187,13 @@ func testProductionChildFactory(t *testing.T, resume bool) {
 	var usage map[string]float64
 	ctx = invoke.WithAgentUsageReporter(ctx, func(m map[string]float64) { usage = m })
 	out, err := executor.Invoke(ctx, *f.attempt.Envelope)
+	if worker.lostReply {
+		if err == nil || proof.Verify() == nil {
+			t.Fatal("unknown worker lost pending proof", err)
+		}
+		testChildFactoryLostReplyRecovery(t, s, launcher, start, recorder, worker)
+		return
+	}
 	if err != nil || out.Status != apiv1.ResultSuccess || proof.Verify() != nil {
 		t.Fatal(out, err, proof.Verify())
 	}
@@ -206,5 +242,51 @@ func TestChildFactoryUnsupportedPlacementHasNoHostFallback(t *testing.T) {
 	release()
 	if _, err = s.childExecutors(t.Context(), start, preparedChildRuntime{}); err == nil || worker.starts != 0 {
 		t.Fatal("self silently executed", err)
+	}
+}
+
+func testChildFactoryLostReplyRecovery(t *testing.T, s *daemonCredentialService, launcher *queuedChildLauncher, start childExecutionStart, recorder *journal.Run, worker *factoryWorkerClient) {
+	t.Helper()
+	if err := recorder.Append(journal.Event{Type: journal.EventRunFinished, Status: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenReadOnly(recorder.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher.runners = newDaemonRunnerRegistry()
+	launcher.result = launcher.captureTerminal
+	launcher.reconcile = s.reconcileChildPodCustody
+	// Missing Temporal history is never interpreted as an absent pod or success.
+	worker.getErr = errors.New("workflow history temporarily unavailable")
+	if _, err = launcher.Result(t.Context(), start.childExecutionRef); err == nil {
+		t.Fatal("unknown history settled custody")
+	}
+	pending, _, err := s.pendingChildPodScopes(t.Context(), reader)
+	if err != nil || len(pending) != 1 {
+		t.Fatal("lost pending physical attempt", pending, err)
+	}
+	worker.getErr = nil
+	result, err := launcher.Result(t.Context(), start.childExecutionRef)
+	if err != nil || result.State != triggerqueue.ChildFailed || result.ResultRef == "" {
+		t.Fatal(result, err)
+	}
+	pending, _, err = s.pendingChildPodScopes(t.Context(), reader)
+	if err != nil || len(pending) != 0 {
+		t.Fatal("custody remained unjoined", pending, err)
+	}
+	if _, err = launcher.Result(t.Context(), start.childExecutionRef); err != nil {
+		t.Fatal(err)
+	}
+	if worker.starts != 1 || worker.gets != 2 {
+		t.Fatal("recovery launched or replayed a joined worker", worker.starts, worker.gets)
+	}
+	ref, _ := journal.ArtifactRef([]byte("verified result"))
+	data, err := reader.ArtifactBytes(ref)
+	if err != nil || string(data) != "verified result" {
+		t.Fatal("late output not adopted", string(data), err)
 	}
 }

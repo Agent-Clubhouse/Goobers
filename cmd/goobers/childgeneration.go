@@ -25,6 +25,24 @@ func (l *queuedChildLauncher) resolveGeneration(ctx context.Context, id journal.
 	if err != nil {
 		return executionGenerationRuntime{}, err
 	}
+	if l.reconcile != nil {
+		custody, ok := l.runners.acquireChildCustody(id.RunID)
+		if !ok {
+			return executionGenerationRuntime{}, errors.New("child recovery has a live execution owner")
+		}
+		defer custody()
+		dir, err := l.layout.FindRunDir(id.RunID)
+		if err != nil {
+			return executionGenerationRuntime{}, err
+		}
+		reader, err := journal.OpenReadOnly(dir)
+		if err != nil {
+			return executionGenerationRuntime{}, err
+		}
+		if err := l.reconcile(ctx, reader); err != nil {
+			return executionGenerationRuntime{}, err
+		}
+	}
 	a, release, err := l.acquire(ctx, ref.Envelope)
 	if err != nil {
 		return executionGenerationRuntime{}, err

@@ -19,6 +19,7 @@ type childAttemptCustody struct {
 	blobs    childpod.ChildAttemptBlobs
 	reader   *journal.Reader
 	review   bool
+	service  *daemonCredentialService
 }
 
 // The signed contract chooses one physical attempt; request body identities
@@ -64,7 +65,7 @@ func (s *daemonCredentialService) childAttempt(ctx context.Context) (childAttemp
 	if err != nil {
 		return childAttemptCustody{}, err
 	}
-	return childAttemptCustody{contract: contract, digest: p.GeneratedChildContractDigest, blobs: blobs, reader: reader, review: review}, nil
+	return childAttemptCustody{contract: contract, digest: p.GeneratedChildContractDigest, blobs: blobs, reader: reader, review: review, service: s}, nil
 }
 
 // Review authority is derived only from the immutable, trusted workflow input.
@@ -96,6 +97,22 @@ func (a childAttemptCustody) active(ctx context.Context) error {
 	return nil
 }
 
+// Custody allows only the original unresolved writer to finish surrendering.
+// It never authorizes credentials, a new dispatch or child tool authority.
+func (a childAttemptCustody) custody(ctx context.Context) error {
+	if err := a.active(ctx); err == nil {
+		return nil
+	}
+	pending, err := a.service.childPodCustodyPending(ctx, a.reader, a.digest)
+	if err != nil {
+		return err
+	}
+	if !pending {
+		return childworkflow.ErrAuthorityUnavailable
+	}
+	return nil
+}
+
 type generatedBlobPlane struct {
 	base    blobstore.Store
 	service *daemonCredentialService
@@ -111,7 +128,7 @@ func (p generatedBlobPlane) store(ctx context.Context) (blobstore.Store, error) 
 	if err != nil {
 		return nil, err
 	}
-	if err = a.active(ctx); err != nil {
+	if err = a.custody(ctx); err != nil {
 		return nil, err
 	}
 	return a.blobs, nil
