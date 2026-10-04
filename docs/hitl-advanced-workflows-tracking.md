@@ -229,8 +229,12 @@ a bounded outbox retains the original envelope/plan before receipt admission.
 Retry after a lost reply reuses that occurrence and receipt. Matched consumers
 run through the existing durable router; no-match publication also completes.
 Actual runner/outbox/consumer race tests, current revocation and failed-reload
-checks pass. Producer settlement and outbox pruning are the next retention slice;
-completed intents currently remain conservatively pinned. Engine, remote,
+checks pass. Verified completed/aborted producers now settle under exclusive registry and
+journal custody. After the replay window, bounded maintenance compacts outboxes
+into exact-request tombstones and frees capacity without re-executing effects.
+Failed/escalated/interrupted producers retain their source groups and inputs for
+continuation, including failures before the first event publication. Saturation,
+migration, lost-acknowledgement and actual terminal-resume tests pass. Engine, remote,
 child/human-continuation producers and self-subscriptions are explicitly refused
 until their corresponding ancestry/transport contract exists.
 
