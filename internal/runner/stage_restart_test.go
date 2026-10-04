@@ -52,6 +52,7 @@ func TestStageRestartExecutesPinnedGuidanceInDistinctContinuation(t *testing.T) 
 		return finisher, nil
 	}, nil)
 	r.cfg.ScratchDir = t.TempDir()
+	r.cfg.AdditionalRepos = []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "other", Name: "repo", Branch: "main"}}
 	r.cfg.StageRestartContext = func(ctx context.Context, _ journal.RunIdentity) (context.Context, error) { return ctx, nil }
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
 	source, err := r.Start(context.Background(), StartInput{RunID: "restart-source", Machine: machine, Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo})
@@ -178,11 +179,14 @@ func TestStageRestartRejectsFrozenAndSealedChildIdentities(t *testing.T) {
 	}
 }
 
-type restartUpstream struct{ calls int }
+type restartUpstream struct {
+	calls    int
+	revision *apiv1.WorkspaceRevision
+}
 
 func (s *restartUpstream) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	s.calls++
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"ticket": "retained-upstream-value"}}, nil
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"ticket": "retained-upstream-value"}, WorkspaceRevision: s.revision.DeepCopy()}, nil
 }
 func TestStageRestartRestoresUpstreamWithoutExecutingItAgain(t *testing.T) {
 	def := restartMachine(t).Def
@@ -193,9 +197,12 @@ func TestStageRestartRestoresUpstreamWithoutExecutingItAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upstream, agent := &restartUpstream{}, &rerunTaskGoober{}
+	revision := runnerWorkspaceRevision("other", "repo", strings.Repeat("a", 40))
+	revision.BaseRepository = &apiv1.RepositoryIdentity{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
+	upstream, agent := &restartUpstream{revision: revision}, &rerunTaskGoober{}
 	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) { return agent, nil }, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return upstream, nil })
 	r.cfg.ScratchDir = t.TempDir()
+	r.cfg.AdditionalRepos = []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "other", Name: "repo", Branch: "main"}}
 	r.cfg.StageRestartContext = func(ctx context.Context, _ journal.RunIdentity) (context.Context, error) { return ctx, nil }
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
 	if _, err = r.Start(context.Background(), StartInput{RunID: "context-source", Machine: machine, Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo}); err != nil {
@@ -216,6 +223,9 @@ func TestStageRestartRestoresUpstreamWithoutExecutingItAgain(t *testing.T) {
 	}
 	if _, err = r.Resume(context.Background(), ResumeInput{RunID: "context-epoch", Machine: machine, RepoRef: repo}); err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.SourceWorkspaceRevision, revision) || !reflect.DeepEqual(agent.invocations[1].WorkspaceRevision, revision) {
+		t.Fatal("restart lost selected repository authority")
 	}
 	if upstream.calls != 1 {
 		t.Fatalf("upstream executed %d times", upstream.calls)

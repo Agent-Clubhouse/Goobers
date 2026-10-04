@@ -37,10 +37,11 @@ type StageRestartRequest struct {
 // StageRestartPlan is a fully snapshotted continuation request. Its source
 // branch/repository and verification callback must be supplied by admission.
 type StageRestartPlan struct {
-	Continuation     journal.ContinuationRequest
-	Source           journal.RunIdentity
-	GuidanceDigest   string
-	PreviousRepasses map[string]int
+	Continuation            journal.ContinuationRequest
+	Source                  journal.RunIdentity
+	GuidanceDigest          string
+	PreviousRepasses        map[string]int
+	SourceWorkspaceRevision *apiv1.WorkspaceRevision
 }
 
 type stageRestartManifest struct {
@@ -113,6 +114,10 @@ func PrepareStageRestart(reader *journal.Reader, machine *workflow.Machine, requ
 	} else {
 		upstream = restartHistory(upstream, id.RunID)
 	}
+	sourceRevision, err := reconstructWorkspaceRevision(history, machine)
+	if err != nil {
+		return StageRestartPlan{}, err
+	}
 	guidance, err := selectedRestartGuidance(events, request.GuidanceIDs, scrubber)
 	if err != nil {
 		return StageRestartPlan{}, err
@@ -140,7 +145,7 @@ func PrepareStageRestart(reader *journal.Reader, machine *workflow.Machine, requ
 	if len(pointers) > 128 {
 		return StageRestartPlan{}, errors.New("retained restart context exceeds 128 artifact pointers")
 	}
-	return StageRestartPlan{Source: id, GuidanceDigest: manifest.GuidanceDigest, PreviousRepasses: targetRepassSeed(budgetHistory), Continuation: journal.ContinuationRequest{RunID: request.EpochID, SourceRunID: id.RunID, ExpectedTerminalSeq: request.ExpectedTerminalSeq, Operator: request.PrincipalRef, Target: request.Stage, Inputs: inputs, InputIntegrity: grades, InputSource: sources, ContextPointers: pointers}}, nil
+	return StageRestartPlan{Source: id, SourceWorkspaceRevision: sourceRevision.DeepCopy(), GuidanceDigest: manifest.GuidanceDigest, PreviousRepasses: targetRepassSeed(budgetHistory), Continuation: journal.ContinuationRequest{RunID: request.EpochID, SourceRunID: id.RunID, ExpectedTerminalSeq: request.ExpectedTerminalSeq, Operator: request.PrincipalRef, Target: request.Stage, Inputs: inputs, InputIntegrity: grades, InputSource: sources, ContextPointers: pointers}}, nil
 }
 
 func validateStageRestartIdentity(id journal.RunIdentity, machine *workflow.Machine, request StageRestartRequest) error {
@@ -243,7 +248,7 @@ func restartHistory(events []journal.Event, runID string) []journal.Event {
 	for _, event := range events {
 		switch event.Type {
 		case journal.EventStageStarted, journal.EventStageFinished, journal.EventGateStarted, journal.EventGateEvaluated, journal.EventRunnerAnnotation:
-			result = append(result, journal.Event{Type: event.Type, RunID: runID, Stage: event.Stage, Gate: event.Gate, Attempt: event.Attempt, AttemptClass: event.AttemptClass, Status: event.Status, Verdict: event.Verdict, Target: event.Target, Escalated: event.Escalated, Integrity: event.Integrity, Outputs: event.Outputs, Runner: maps.Clone(event.Runner)})
+			result = append(result, journal.Event{Type: event.Type, RunID: runID, Stage: event.Stage, Gate: event.Gate, Attempt: event.Attempt, AttemptClass: event.AttemptClass, Status: event.Status, Verdict: event.Verdict, Target: event.Target, Escalated: event.Escalated, Integrity: event.Integrity, Outputs: event.Outputs, WorkspaceRevision: event.WorkspaceRevision.DeepCopy(), Runner: maps.Clone(event.Runner)})
 		}
 	}
 	return result
@@ -432,6 +437,9 @@ func (r *Runner) restoreResumeFrame(ctx context.Context, jr *journal.Run, rd *jo
 		return ctx, nil, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
 	}
 	f.restart = restart
+	if err := r.restoreRestartWorkspace(ctx, f); err != nil {
+		return ctx, nil, err
+	}
 	restoreRestartFrame(f, in.Machine)
 
 	return ctx, f, nil
@@ -455,4 +463,17 @@ func retainedRestartPointers(id journal.RunIdentity, inputs map[string][]byte) [
 		result = append(result, pointer)
 	}
 	return result
+}
+
+func (r *Runner) restoreRestartWorkspace(ctx context.Context, f *resumeFrame) error {
+	if f.restart == nil {
+		return nil
+	}
+	history := append(append([]journal.Event(nil), f.restart.History...), f.events...)
+	restored, err := r.restoreWorkspaceRevision(ctx, f.ws.in, history)
+	if err != nil {
+		return fmt.Errorf("runner: restore human restart workspace authority: %w", err)
+	}
+	f.ws.in = restored
+	return nil
 }
