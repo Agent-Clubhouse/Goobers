@@ -37,9 +37,15 @@ The same operations are available to authorized agents through typed daemon oper
 - Child workflows use the same attention and intervention experience. V1 supports a
   parent iterating over children; recursive workflow creation is outside this release.
 
-## 2. Current implementation and the remaining gap
+## 2. Original baseline and remaining gaps
 
-These are source observations, not claims that a deployed instance passed an end-to-end test.
+The table records the original main-branch baseline above. It is historical input
+to this design, not the current local delivery status. The stack now installs
+per-gaggle human access, sequence-bound decisions, queued stage restarts, shared
+native agent sessions, source browsing and audited manual/session field edits.
+Needs-human resolution and agent PR repair remain active implementation slices.
+See the [delivery ledger](../hitl-advanced-workflows-tracking.md). No deployed
+end-to-end qualification is claimed.
 
 | Existing seam | What ships / what this design adds |
 | --- | --- |
@@ -223,8 +229,9 @@ any budget change is a separately authorized, recorded operation, not implied by
 An open execution can consume the restart through its runner-owned command path.
 A settled execution requires an executable linked continuation with a new run identity,
 immutable source-terminal reference and equivalent provider/branch checks. Finish actual
-dispatch and recovery before exposing this action: the current continuation CLI is only
-a journal-preparation foundation. Map parent observation to the accepted continuation
+dispatch and recovery before exposing this action. The original continuation CLI
+was only a journal-preparation foundation; the local stack now installs queued
+human epoch dispatch and recovery. Map parent observation to the accepted continuation
 explicitly; never rewrite an old child's successful/failed result or source journal.
 
 ## 8. Child human handoffs and wait lifecycle

@@ -411,6 +411,8 @@ or source owners are visible conflicts. No progress rollups are introduced.
 These source primitives contact no provider and write no source file. Subsequent
 slices now install gaggle source configuration, exact-credential native ingestion,
 read routes, portal backlog browsing, and live-session source tools. The field edit
-adapter is implemented; durable command installation and editing UI, repository
-objective ingestion, graph projection and governed repository PR proposals remain
-separate delivery slices. See [source metadata reference](../reference/workbench-source-metadata.md).
+adapter, durable command custody, manual and session editing paths are installed.
+Configured repository objective ingestion, graph projection and bounded portal
+relationship navigation are also installed. Governed repository metadata PRs,
+native relationship mutations and suggestion acceptance remain separate active
+implementation slices. See [source metadata reference](../reference/workbench-source-metadata.md).

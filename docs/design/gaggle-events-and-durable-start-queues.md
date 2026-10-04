@@ -6,17 +6,20 @@ Baseline: `04198152b63d228a9714ae2f92a7dca079ba5213` (2026-10-03)
 Task prefix: `HAW-EVT`; task identifiers are stable planning identifiers, not GitHub issues.
 
 Implementation checkpoint: the local stack implements bounded receipts, pinned
-route snapshots, configured same-gaggle subscriptions, shared storage reservations,
-transactional routing/debounce,
-host routing sweeps, exact archived local-runner consumer starts and reconciliation.
-Both event dependency inventories protect journals and configuration archives
-before routing is installed. See [receipt profile and limits](../reference/gaggle-event-receipts.md).
-Public ingress, workflow publication, normalization of all start sources, queue
-fairness/deadlines and engine/Temporal event input transport remain implementation
-work. Workflow root budgets stay retained until a host proves all producers and
-descendants settled. A journal-verified helper now preserves up to 32 roots across consumer
-publication and refuses over-bound sets before acceptance; actual workflow
-publication transport and child/continuation ancestry adapters remain pending.
+routing/debounce, host routing sweeps, archived local consumers, typed workflow
+publication and retained causal-root budgets. Manual, scheduled, demand-sized,
+signal, standalone/detached, direct-engine, child, shared-session and human restart
+starts have durable queue custody. Bounded sweep cursors prevent held batches from
+starving later eligible starts. Scoped GH/ADO GET reads and typed ADO list-plan
+sharing are installed.
+
+External authenticated producer ingress and queue inspection/cancellation/deadline
+policy remain implementation work. Engine/Temporal event-input transport and
+child/human-continuation event production remain explicitly unsupported until their
+transport and ancestry contracts are implemented. Unresolved producers and starts
+retain custody; neither age nor missing journal evidence proves termination. See
+[receipt profile and limits](../reference/gaggle-event-receipts.md) and the
+[current delivery ledger](../hitl-advanced-workflows-tracking.md).
 
 ## 1. Intent and confirmed boundaries
 

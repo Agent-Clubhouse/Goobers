@@ -75,40 +75,72 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-interactive-execution` | `codex/haw-contained-pod-tokens` | Execute and recover human restarts with interactive credentials |
 | `codex/haw-parent-authority` | `codex/haw-interactive-execution` | Bind contained parent authority and execution custody |
 | `codex/haw-contained-launcher` | `codex/haw-parent-authority` | Install contained child factories and recover parent secret delivery |
-| `codex/haw-contained-recovery` | `codex/haw-contained-launcher` | Contained serial parent routing, exact child attempt authority, and durable replacement refusal |
-| `codex/haw-event-subscriptions` | `codex/haw-contained-recovery` | Pin bounded subscriptions and transactionally route debounce groups into durable starts |
-| `codex/haw-worker-reconciliation` | `codex/haw-event-subscriptions` | Retain exact worker attempts, rejoin without launch, and replay the original workspace application plan |
-| `codex/haw-event-configuration` | `codex/haw-worker-reconciliation` | Declare gaggle subscriptions and compile immutable same-gaggle target revisions |
-
+| `codex/haw-contained-recovery` | `codex/haw-contained-launcher` | Connect contained parent execution and exact child observation authority |
+| `codex/haw-event-subscriptions` | `codex/haw-contained-recovery` | Match event subscriptions and persist debounce start custody |
+| `codex/haw-worker-reconciliation` | `codex/haw-event-subscriptions` | Reconcile retained workers without replacement execution |
+| `codex/haw-event-configuration` | `codex/haw-worker-reconciliation` | Configure gaggle-local event consumers and debounce policies |
 | `codex/haw-host-recovery` | `codex/haw-event-configuration` | Recover exact parent and child worker custody before resuming retained work |
-
-| `codex/haw-accepted-child-recovery` | `codex/haw-host-recovery` | Restore a committed child acceptance before dispatching parent continuation |
-
-| `codex/haw-event-host-routing` | `codex/haw-accepted-child-recovery` | Dispatch and recover pinned event consumers through ordinary scheduler ownership |
-
-| `codex/haw-child-portal` | `codex/haw-event-host-routing` | Browse authorized child state, result acknowledgement and verified run links |
-
-| `codex/haw-parallel-child-projection` | `codex/haw-child-portal` | Project independent branch waits and coordinate whole-run scheduler capacity |
-
-| `codex/haw-event-causal-roots` | `codex/haw-parallel-child-projection` | Preserve bounded original event roots across chained consumers |
-
-| `codex/haw-parallel-parent-custody` | `codex/haw-event-causal-roots` | Bind parent contracts and recovered writers to owned branch journals |
-
-| `codex/haw-discard-settlement` | `codex/haw-parallel-parent-custody` | Settle verified child discard without mutable parent filesystem access |
-
-| `codex/haw-child-repository-custody` | `codex/haw-discard-settlement` | Resolve production child repository URLs and verify both custody identities |
-
-| `codex/haw-child-host-publication` | `codex/haw-child-repository-custody` | Publish delegated immutable child branches and PRs through host-owned effects |
-
-| `codex/haw-event-publication` | `codex/haw-child-host-publication` | Publish typed workflow events through retained outbox and receipt custody |
-
-These are local branches, not published PRs. Publication is currently blocked by
-the session's remote-write approval policy. Prepared PR descriptions preserve the
-intended bases. Add actual URLs here only after creation and attachment.
+| `codex/haw-accepted-child-recovery` | `codex/haw-host-recovery` | Restore accepted child waits before parent continuation |
+| `codex/haw-event-host-routing` | `codex/haw-accepted-child-recovery` | Dispatch pinned event consumers with durable input and recovery custody |
+| `codex/haw-child-portal` | `codex/haw-event-host-routing` | Show child workflow custody and verified run links in the portal |
+| `codex/haw-parallel-child-projection` | `codex/haw-child-portal` | Coordinate branch child waits without surrendering runnable siblings capacity |
+| `codex/haw-event-causal-roots` | `codex/haw-parallel-child-projection` | Preserve original event chain limits across grouped consumers |
+| `codex/haw-parallel-parent-custody` | `codex/haw-event-causal-roots` | Bind contained parent custody to owned branch journals |
+| `codex/haw-discard-settlement` | `codex/haw-parallel-parent-custody` | Settle child discard without mutable parent checkout access |
+| `codex/haw-child-repository-custody` | `codex/haw-discard-settlement` | Fix production child repository custody wiring |
+| `codex/haw-child-host-publication` | `codex/haw-child-repository-custody` | Publish delegated child branches and PRs through durable host effects |
+| `codex/haw-event-publication` | `codex/haw-child-host-publication` | Publish typed workflow events through durable outbox receipts |
+| `codex/haw-parent-contribution` | `codex/haw-event-publication` | Preserve contained parent contributions across serial stages |
+| `codex/haw-event-producer-retention` | `codex/haw-parent-contribution` | Fence and compact completed event publication outboxes |
+| `codex/haw-parent-parallel-lanes` | `codex/haw-event-producer-retention` | Release parallel branch slots while waiting for child workflows |
+| `codex/haw-child-publication-checks` | `codex/haw-parent-parallel-lanes` | Review uncertain child publication through the human portal |
+| `codex/haw-child-restart-custody` | `codex/haw-child-publication-checks` | Preserve child results across bounded human restart epochs |
+| `codex/haw-restart-canonical-ids` | `codex/haw-child-restart-custody` | Use canonical human restart IDs without duplicating legacy runs |
+| `codex/haw-child-interactive-credentials` | `codex/haw-restart-canonical-ids` | Bind child restart effects to the gaggle interactive identity |
+| `codex/haw-child-execution-history` | `codex/haw-child-interactive-credentials` | Show child execution history with attributed human restarts |
+| `codex/haw-child-epoch-workspaces` | `codex/haw-child-execution-history` | Fork human child restarts from sealed prior work |
+| `codex/haw-parent-parallel-workspaces` | `codex/haw-child-epoch-workspaces` | feat: isolate writable parallel parent contributions |
+| `codex/haw-ordinary-start-queue` | `codex/haw-parent-parallel-workspaces` | feat: queue daemon ordinary starts with pinned targets |
+| `codex/haw-child-restart-core` | `codex/haw-ordinary-start-queue` | feat: reuse common restart core for contained child epochs |
+| `codex/haw-session-ledger` | `codex/haw-child-restart-core` | feat: persist shared sessions and ordered turn custody |
+| `codex/haw-child-epoch-runtime` | `codex/haw-session-ledger` | feat: bind child restart runtime and retained workspace custody |
+| `codex/haw-session-portal` | `codex/haw-child-epoch-runtime` | feat: add shared session portal and human command API |
+| `codex/haw-scheduled-signal-starts` | `codex/haw-session-portal` | feat: durably queue scheduled, webhook and named signal starts |
+| `codex/haw-child-epoch-observation` | `codex/haw-scheduled-signal-starts` | Follow child execution epochs without reviving source authority |
+| `codex/haw-scoped-provider-read-integration` | `codex/haw-child-epoch-observation` | Partition shared provider reads by gaggle and credential policy |
+| `codex/haw-session-provenance` | `codex/haw-scoped-provider-read-integration` | Pin shared-session context and real execution provenance |
+| `codex/haw-queued-worker-occurrences` | `codex/haw-session-provenance` | Queue backlog and refill workers with shared pending capacity |
+| `codex/haw-child-human-admission` | `codex/haw-queued-worker-occurrences` | Admit human child restarts through the durable common execution path |
+| `codex/haw-session-coordinator` | `codex/haw-child-human-admission` | Coordinate shared-session turns and durable execution custody |
+| `codex/haw-provider-read-scope-fence` | `codex/haw-session-coordinator` | Fence provider caches to trusted gaggle execution scope |
+| `codex/haw-workbench-metadata` | `codex/haw-provider-read-scope-fence` | feat(workbench): define source-owned objective and relationship contracts |
+| `codex/haw-session-native-runtime` | `codex/haw-workbench-metadata` | feat(sessions): execute shared turns through native human runtime |
+| `codex/haw-child-epoch-publication` | `codex/haw-session-native-runtime` | feat(children): publish first PR from verified human execution epoch |
+| `codex/haw-demand-schedule-starts` | `codex/haw-child-epoch-publication` | feat(queue): preserve pinned demand schedule obligations |
+| `codex/haw-workbench-source-configuration` | `codex/haw-demand-schedule-starts` | feat(workbench): configure explicit planning sources and read authority |
+| `codex/haw-workbench-provider-reads` | `codex/haw-workbench-source-configuration` | feat(workbench): project bounded native backlog items and relationships |
+| `codex/haw-workbench-native-field-edits` | `codex/haw-workbench-provider-reads` | feat(workbench): add guarded native backlog field edits |
+| `codex/haw-workbench-authorized-reads` | `codex/haw-workbench-native-field-edits` | feat(workbench): share authorized portal and session source reads |
+| `codex/haw-session-backlog-tools` | `codex/haw-workbench-authorized-reads` | feat(sessions): add authorized and attributed backlog read tools |
+| `codex/haw-workbench-browser` | `codex/haw-session-backlog-tools` | Browse configured backlog sources and share authorized readers with native sessions |
+| `codex/haw-standalone-queued-starts` | `codex/haw-workbench-browser` | Queue standalone and detached workflow starts before dispatch |
+| `codex/haw-repository-source-readers` | `codex/haw-standalone-queued-starts` | Read authorized repository objectives and relationship manifests at verified commits |
+| `codex/haw-native-edit-custody` | `codex/haw-repository-source-readers` | Retain durable one-attempt native backlog edit custody and receipts |
+| `codex/haw-direct-engine-queued-starts` | `codex/haw-native-edit-custody` | Queue exact direct engine starts and reconcile uncertain provider outcomes |
+| `codex/haw-source-graph-foundation` | `codex/haw-direct-engine-queued-starts` | Project source-owned objectives and relationships with explicit conflicts and coverage |
+| `codex/haw-repository-document-browser` | `codex/haw-source-graph-foundation` | Browse configured repository objectives and relationship manifests in the portal |
+| `codex/haw-authorized-source-graph` | `codex/haw-repository-document-browser` | Browse authorized objective relationships with explicit coverage and conflicts |
+| `codex/haw-native-backlog-editor` | `codex/haw-authorized-source-graph` | Edit native backlog fields with current authority and durable command receipts |
+| `codex/haw-ado-shared-read-plans` | `codex/haw-native-backlog-editor` | Share scoped ADO query and hydration reads without caching mutations |
+| `codex/haw-pending-start-fairness` | `codex/haw-ado-shared-read-plans` | Prevent held start batches from starving later eligible work |
+| `codex/haw-intervention-view-scope` | `codex/haw-pending-start-fairness` | Keep human intervention actions scoped to the current run and queued restart |
+| `codex/haw-session-backlog-edits` | `codex/haw-intervention-view-scope` | Enable audited backlog edits from shared agent sessions |
+| `codex/haw-queued-human-restarts` | `codex/haw-session-backlog-edits` | Queue human restart epochs before execution capacity admission |
+| `codex/haw-delivery-checkpoints` | `codex/haw-queued-human-restarts` | Reconcile delivery checkpoints and feature catalog snapshots |
 
 ## Implementation status and next acceptance boundaries
 
-### Child workflows — in progress
+### Child workflows — implemented locally; live qualification remains
 
 The DSL 3.1 preview policy, strict generated-source validator and advisory CLI
 are implemented. Stage-only signed grants are tied to actual journal occurrence
@@ -153,7 +185,8 @@ Supported parents consist of opted-in repository agents with explicit Linux
 image placement and a configured worker transport. A serial repository seed can
 fan out into isolated branch workspaces and continue through a declared join. Actual runner-to-worker
 composition passes with real Git workspaces and a simulated worker. This is not
-a live Kubernetes or model qualification. Remaining delivery gates:
+a live Kubernetes or model qualification. The following checkpoints distinguish
+implemented custody from remaining qualification and unsupported shapes:
 
 Serial stage handoff now preserves tracked edits and new files in the held
 checkout. Successful completion archives the verified final contribution before
@@ -196,14 +229,14 @@ execution remains refused until a common base pin is defined.
   Contained factories and writable fork/join now pass real Git runner tests at
   concurrency one and two. Live worker qualification remains outstanding; gates
   and other unsupported contained shapes remain refused.
-- Complete child workspace family holds through crash reaping and terminal
-  disposition; active or unresolved families must survive unbounded waits.
-- Check enclosing run/stage deadlines, revocation, human escalation and continuation
-  together. A wait must not consume retry/repass allowance.
-- Extend the current safe application boundary for file/directory replacements and
-  case-only path renames, currently refused before filesystem effects.
+- Family retention and terminal disposition preserve active or unresolved child
+  custody through long waits; live crash/reaping qualification remains required.
+- Live qualification must exercise enclosing deadlines, revocation, human
+  escalation and continuation together. Simulated waits preserve attempt allowances.
+- File/directory replacement and case-only rename support are future extensions;
+  those dispositions currently refuse before filesystem effects.
 - Parent/child read-only portal visibility is delivered with bounded pagination
-  and explicit refresh. Complete the common HITL intervention path.
+  and explicit refresh. The common HITL intervention path is installed.
   The queue now retains up to eight human execution epochs per accepted child,
   with immutable prior results and an active-execution pointer. Concurrent
   restart/cancel/disposition races, exact replay, retained-byte limits and family
@@ -212,8 +245,9 @@ execution remains refused until a common base pin is defined.
   and cancels operations during policy reload without reversing lock order.
   The portal links the current execution and shows bounded restart history with
   human attribution; publication checks remain anchored to the original emitting
-  execution. History reads omit restart-plan payloads. Runtime admission and full
-  worker lifetime leases still gate enabling sealed-child restart.
+  execution. History reads omit restart-plan payloads. Current-policy admission and worker lifetime custody gate each sealed-child
+  restart. Their simulated/real-Git acceptance checks pass; live worker
+  qualification remains outstanding.
 - Keep recursion deferred as agreed; one unresolved child per stage occurrence,
   including distinct parallel occurrences, remains the required v1 scope.
 
@@ -247,7 +281,8 @@ closure. Current gaggle permissions gate creation and messaging. Unknown command
 outcomes retry the same key and content; access failures clear the visible
 conversation. The native daemon runtime is now installed with pinned model profiles, live human
 leases and writer join evidence. Source operations remain separately gated. See [shared sessions](reference/shared-sessions.md).
-Backlog edits and PR repair remain acceptance work. The installed human restart
+Manual and typed-session native backlog field edits are installed with one-attempt
+command receipts. Needs-human resolution and PR repair remain acceptance work. The installed human restart
 adapters cover affected-stage fresh allowances, queued capacity and sealed-child
 continuation; live worker qualification remains outstanding. Saved guidance alone is
 explicitly labeled as saved; it is not described as delivered or resumed.
@@ -270,10 +305,11 @@ migration, lost-acknowledgement and actual terminal-resume tests pass. Engine, r
 child/human-continuation producers and self-subscriptions are explicitly refused
 until their corresponding ancestry/transport contract exists.
 
-The agreed event stream still requires all workflow starts to enter durable queues,
-gaggle-local authenticated ingress/emit, configurable consumer debounce, causal
-history and centralized bounded GH/ADO polling/reads. Existing child receipts are
-one input to that broader queue work, not its completion.
+Durable admission is installed for manual, scheduled, demand-sized, signal,
+standalone/detached, direct-engine, child, shared-session and human restart starts.
+Consumer debounce and workflow event emission are installed. External authenticated
+ingress, queue inspection/cancellation/deadline policy and broader transport parity
+remain distinct completion/qualification work.
 
 Internal event receipt custody now uses bounded CloudEvents JSON, explicit gaggle
 and authenticated producer binding, immutable routing snapshots, no-match success,
@@ -289,8 +325,8 @@ local-runner consumers through ordinary scheduler budgets, claims, capacity and
 shutdown ownership. Input manifests and journal lineage reconcile uncertain
 starts without duplication; only verified terminal journals settle groups.
 Dependency inventories protect source journals and archived configuration before
-routing is installed. Public ingress, workflow emission, all-source normalization
-and engine consumer transport remain pending. Trusted consumer ancestry now carries
+routing is installed. Public external ingress, queue lifecycle controls and engine
+consumer event-input transport remain pending. Trusted consumer ancestry now carries
 up to 32 original roots across another event generation, survives source-history
 pruning, and charges every root atomically. A new consumer RunID cannot reset those
 limits. Child and human-continuation ancestry still require verified adapters.
@@ -311,10 +347,12 @@ Shared provider reads now have an explicit gaggle/binding/generation partition,
 full request-representation isolation, bounded body capture, and an ADO GET
 transport adapter. Stage reads require an explicit host-supplied automation scope; human and unknown
 launches bypass cache reuse. Daemon counter/open-PR callers now use gaggle and
-configuration partitions, including ADO GETs. ADO WIQL/batch hydration remains
-pending under HAW-EVT-008; no claim of complete shared polling is made.
+configuration partitions, including ADO GETs. Typed ADO WIQL/batch plans now share
+identical live reads and explicit evaluation snapshots without caching arbitrary
+POSTs or mutations. Interactive sequential refreshes remain live. Unsupported ADO
+demand counters remain unsupported; no claim of complete shared polling is made.
 
-### Backlog — authorized native browsing and repository readers implemented
+### Backlog — source browsing, relationships and native field edits implemented
 
 The source metadata foundation now validates stable gaggle-qualified references,
 objective frontmatter, relationship manifests and explicit ownership. Candidate
@@ -343,9 +381,9 @@ portal editor. Each command is attempted at most once; lost responses remain
 unknown and can be inspected without resending the write. Settled receipts are
 pruned by bounded daemon maintenance; unresolved custody never expires by age.
 
-The backlog workbench still requires editing surfaces and consistent explicit
-relations to items, PRs, dependencies and source-owned Markdown objectives in any
-configured gaggle repository. Repository mutations use policy-governed PRs;
+Remaining workbench delivery includes governed repository metadata PRs, supported
+native relationship edits and creation/curation relationship suggestions. Sources
+may reside in any configured gaggle repository. Repository mutations use policy-governed PRs;
 provider/repository truth stays external to Goobers. Organization precedes progress
 tracking. See the respective designs for the complete stable task list.
 
