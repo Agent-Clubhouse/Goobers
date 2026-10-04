@@ -430,6 +430,8 @@ type ContinuationRequest struct {
 	ContextPointers     []apiv1.ContextPointer
 	// ChildContinuation is populated only after exact queue epoch admission.
 	ChildContinuation *ChildLineage
+	// ChildWorkspace pins a newly provisioned epoch fork; it never reuses the source checkout.
+	ChildWorkspace *ChildContinuationWorkspace
 	// VerifySourceBranch checks the provider's current branch head before reuse.
 	VerifySourceBranch func(branch, sha string) error `json:"-"`
 }

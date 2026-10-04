@@ -61,7 +61,7 @@ func ParseStageRestartPlan(raw []byte) (StageRestartPlan, error) {
 
 func validateRetainedRestartPlan(plan StageRestartPlan) error {
 	req, source := plan.Continuation, plan.Source
-	if req.VerifySourceBranch != nil || req.ChildContinuation != nil || !apiv1.ValidRunID(req.RunID) || req.RunID == source.RunID || req.SourceRunID != source.RunID || req.ExpectedTerminalSeq == 0 || req.Target == "" || req.Operator == "" {
+	if req.VerifySourceBranch != nil || req.ChildContinuation != nil || req.ChildWorkspace != nil || !apiv1.ValidRunID(req.RunID) || req.RunID == source.RunID || req.SourceRunID != source.RunID || req.ExpectedTerminalSeq == 0 || req.Target == "" || req.Operator == "" {
 		return errors.New("runner: retained restart plan has unbound identity or runtime admission")
 	}
 	if source.Child != nil && source.ValidateChildLineage() != nil {
