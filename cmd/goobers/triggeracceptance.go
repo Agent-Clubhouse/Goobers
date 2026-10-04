@@ -130,10 +130,16 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 func (s *durableTriggerService) Drain(ctx context.Context) error {
 	s.sweepMu.Lock()
 	defer s.sweepMu.Unlock()
+	// Child custody shares the ordinary queue database. Retention must run
+	// even while no scheduler is attached; otherwise inactive installations
+	// retain terminal lineages and cancellation fences indefinitely.
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, 250*time.Millisecond)
+	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
+	cancelPrune()
 	if s.dispatch.triggerer() == nil {
-		return nil
+		return pruneErr
 	}
-	reconcileErr := s.reconcileObserved(ctx)
+	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx))
 	records, err := s.queue.Pending(ctx, 100)
 	if err != nil {
 		return errors.Join(reconcileErr, err)
