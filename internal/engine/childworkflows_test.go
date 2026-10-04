@@ -5,10 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"go.temporal.io/sdk/testsuite"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
-	"go.temporal.io/sdk/testsuite"
 )
 
 func TestChildWorkflowExecutionRefusedAtEngineBoundaries(t *testing.T) {

@@ -1,9 +1,10 @@
 package validate
 
 import (
-	"sigs.k8s.io/yaml"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
 
 const childPolicyWorkflow = `apiVersion: goobers.dev/v1alpha1

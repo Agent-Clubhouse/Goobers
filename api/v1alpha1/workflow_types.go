@@ -235,8 +235,10 @@ type ChildWorkflowPolicy struct {
 }
 
 const (
+	// DefaultMaxChildWorkflows limits sequential children when the policy omits a limit.
 	DefaultMaxChildWorkflows int32 = 4
-	MaxChildWorkflows        int32 = 32
+	// MaxChildWorkflows is the hard ceiling for one parent stage occurrence.
+	MaxChildWorkflows int32 = 32
 )
 
 // EffectiveMaxChildren resolves omission without changing the authored policy.
