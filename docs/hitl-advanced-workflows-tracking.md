@@ -198,6 +198,11 @@ remains until isolated branch forks and fan-in are implemented.
   case-only path renames, currently refused before filesystem effects.
 - Parent/child read-only portal visibility is delivered with bounded pagination
   and explicit refresh. Complete the common HITL intervention path.
+  The queue now retains up to eight human execution epochs per accepted child,
+  with immutable prior results and an active-execution pointer. Concurrent
+  restart/cancel/disposition races, exact replay, retained-byte limits and family
+  cleanup are covered. Runtime admission and interactive credential binding
+  still gate enabling sealed-child restart.
 - Keep recursion deferred as agreed; one unresolved child per stage occurrence,
   including distinct parallel occurrences, remains the required v1 scope.
 
