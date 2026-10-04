@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,5 +204,69 @@ func seedImplementationConflict(t *testing.T, root, gaggle, runID string, at tim
 	}
 	if err := run.Close(); err != nil {
 		t.Fatalf("close conflict run: %v", err)
+	}
+}
+
+func newConflictPlane(t *testing.T, status int, code string) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": "refused"}})
+	}))
+	t.Cleanup(server.Close)
+	setPlaneEnv(t, server.URL, "token", "0123456789abcdef", "acme-web")
+}
+
+func TestRecentImplementationConflictsDegradesWhenPlaneRefusesForCapacity(t *testing.T) {
+	root := initDemo(t)
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusBadGateway} {
+		newConflictPlane(t, status, "request_budget_exceeded")
+		touches, reason, err := recentImplementationConflicts(root, "acme-web", time.Now().Add(-time.Hour))
+		if err != nil || len(touches) != 0 || !strings.Contains(reason, "request_budget_exceeded") {
+			t.Fatalf("status %d: touches=%v reason=%q err=%v, want empty + reason + nil error", status, touches, reason, err)
+		}
+	}
+}
+
+func TestRecentImplementationConflictsStaysFatalOnContractErrors(t *testing.T) {
+	root := initDemo(t)
+	for _, status := range []int{http.StatusForbidden, http.StatusUnauthorized, http.StatusBadRequest} {
+		newConflictPlane(t, status, "gaggle_mismatch")
+		if _, reason, err := recentImplementationConflicts(root, "acme-web", time.Now().Add(-time.Hour)); err == nil || reason != "" {
+			t.Fatalf("status %d: reason=%q err=%v, want a hard error", status, reason, err)
+		}
+	}
+}
+
+func TestGatherImplementContextEmitsWarningWhenConflictHistoryRefused(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(10, "goobers/implementation/run-10", "main", "head10", "base",
+		false, nil, []fakePRFile{{path: "internal/runner/run.go"}})
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-implementation-context")
+	t.Setenv("GOOBERS_GAGGLE", "acme-web")
+	newConflictPlane(t, http.StatusServiceUnavailable, "request_budget_exceeded")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, _, stderr := runArgs(t, "gather-implement-context", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q, want success", code, stderr)
+	}
+	if !strings.Contains(stderr, "conflict history unavailable") {
+		t.Fatalf("stderr = %q, want a warning", stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, implementationContextResultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got implementationContext
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.ConflictHistoryUnavailable || !strings.Contains(got.ConflictHistoryUnavailableReason, "request_budget_exceeded") ||
+		got.HotFileMap.RecentConflictRuns != 0 || got.HotFileMap.OpenPullRequests != 1 {
+		t.Fatalf("context = %+v", got)
 	}
 }
