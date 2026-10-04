@@ -329,6 +329,13 @@ items and relationship coverage. Exact-credential repository readers return boun
 commit-pinned Markdown objectives and relationship manifests; repository API/UI,
 graph composition and write service installation are the next slices.
 
+The pure graph foundation now composes trusted source pages with verified target
+and commit pins, explicit authored/native edges, unresolved targets and visible
+ownership/identity conflicts. It retains no planning database and computes no
+progress. Aggregate server reads and graph visualization still need installation.
+Durable native edit command custody is also implemented; authorized write service
+and portal controls remain the next editing slices.
+
 The backlog workbench still requires editing surfaces and consistent explicit
 relations to items, PRs, dependencies and source-owned Markdown objectives in any
 configured gaggle repository. Repository mutations use policy-governed PRs;

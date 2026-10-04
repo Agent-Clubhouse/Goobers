@@ -234,3 +234,27 @@ the caller restarts its read. Exhausting a page is not deletion evidence or proo
 of a coherent multi-page scan. Repository credentials and conditional caching use
 the same current interactive policy boundary as native backlog reads. Repository
 HTTP/portal installation follows in a separate review slice.
+
+## Rebuildable graph projection
+
+The graph projector accepts already-authorized provider/document adapter pages
+under one configured source set. It verifies target digests and coherent repository
+commit/path windows, then retains explicit native relationships, objective edges
+and manifest aliases. It performs no reads and accepts no client-authored graph as
+source truth. Node and edge keys identify this projection; they do not create new
+source-owned identities.
+
+Nodes retain every distinct observation. Duplicate objective locations, competing
+edge IDs or source owners remain visible conflicts with no selected winner.
+Unresolved or unread targets remain explicit; native backlog pages retain their
+non-snapshot consistency even after pagination ends. The graph reports source
+coverage and omissions without inferring deletion, movement or progress.
+
+Inputs are bounded to 512 pages and 32 MiB, with at most 10,000 nodes and 50,000
+edges. Document bodies are excluded from graph output. The aggregate authorized
+service, graph API and visualization are separate installation slices.
+
+Native edit identity uses the physical source target and exact patch. Objective
+classification and unrelated configuration changes do not change that identity,
+so a confirmed command can be replayed without minting a token or re-reading its
+obsolete pre-edit revision. Current source and field authority still apply.
