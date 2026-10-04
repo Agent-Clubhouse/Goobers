@@ -32,6 +32,19 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-child-stage-grants` | child MCP | HAW-CHD-003 credential lifetime | Launcher grant acquisition, durable ownership/revocation and harness cleanup; focused race tests and lint pass |
 | `codex/haw-child-dispatch` | child stage grants | HAW-CHD-003 execution custody | Typed dispatch, retained-source recompilation and journal reconciliation; queue recovery tests pass; launcher installation remains pending |
 
+| `codex/haw-child-capacity` | `codex/haw-child-daemon` | HAW-CHD-003/005 | Scheduler race tests; normal budget and concurrency limits |
+| `codex/haw-child-snapshot-custody` | `codex/haw-child-capacity` | HAW-CHD-004 | SQLite reopen, corruption, retention and Git integration tests |
+| `codex/haw-child-runtime-acceptance` | `codex/haw-child-snapshot-custody` | HAW-CHD-003 | Configured archive-to-harness acceptance and concurrent reload race tests |
+| `codex/haw-child-results` | `codex/haw-child-runtime-acceptance` | HAW-CHD-004 | Committed and dirty child changes retained against original fork; bounded family retention |
+| `codex/haw-child-parent-suspension` | `codex/haw-child-results` | HAW-CHD-005 | Scheduler capacity and restart ownership race tests |
+| `codex/haw-child-writer-custody` | `codex/haw-child-parent-suspension` | HAW-CHD-004/005 | Process-owner proof tests; sandbox verifies fail-closed Darwin inventory refusal |
+| `codex/haw-child-disposition-apply` | `codex/haw-child-writer-custody` | HAW-CHD-004 | Git/race tests for merge, replace, discard, partial application, intervening edits and slot release |
+| `codex/haw-child-disposition-tools` | `codex/haw-child-disposition-apply` | HAW-CHD-002/004 | Signed HTTP request-to-host-ack test, conditional MCP tools, Go/TS wire contract tests |
+| `codex/haw-child-launcher` | `codex/haw-child-disposition-tools` | HAW-CHD-003/005 | Real queue-to-Runner publication, cancellation barrier and capacity race tests |
+| `codex/haw-child-lifecycle` | `codex/haw-child-launcher` | HAW-CHD-003/004/005 | Journal-only crash recovery, cancellation, source pins, terminal result and registry custody tests |
+| `codex/haw-interactive-policy` | `codex/haw-child-lifecycle` | HAW-HITL-001/002 | Per-gaggle authorization, verified groups, exact credential scope, reload fencing, daemon route and portal contract tests |
+| `codex/haw-child-parent-continuation` | `codex/haw-interactive-policy` | HAW-CHD-005 | Serial runner wait/continuation and Git workspace recovery tests; adapter installation pending |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -40,91 +53,98 @@ intended bases. Add actual URLs here only after creation and attachment.
 
 ### Child workflows — in progress
 
-HAW-CHD-001 adds the optional DSL 3.1 preview `task.childWorkflows` policy, bounded
-existing-Goober and registered-capability allowlists, default/max child counts,
-and the upfront publication ceiling. Closed schema, CRD, DeepCopy and feature
-catalog move with the Go type. Older dialects and deterministic task use refuse
-it; omission preserves existing workflows.
+The DSL 3.1 preview policy, strict generated-source validator and advisory CLI
+are implemented. Stage-only signed grants are tied to actual journal occurrence
+and attempt identities, immutable archived definitions and currently applied
+permissions. The real local harness and HTTP service use that authority; reload
+revokes changed-gaggle grants before publishing the new catalog. Source, start,
+lineage and result custody share the bounded SQLite trigger database and existing
+family retention sweep.
 
-Both execution backends still **refuse execution of opted-in workflows**. Local
-start, resume, terminal resume and rerun reject before execution effects; a pinned
-resume does not repair or mutate its journal. Temporal registry admission and the
-direct workflow entry point also refuse. This is a deliberate incomplete-feature
-boundary until HAW-CHD-002–009 connect validation, custody, child execution,
-workspace reconciliation, waits and Portal intervention. It is not a claim that
-an agent can start a child yet.
+The typed child launcher now uses normal runner execution and scheduler capacity,
+charged to the configured parent budget. A publication barrier commits exact
+journal identity before stage effects; uncertain handoff is recovered from that
+journal. Cancellation fences submissions and queued starts before signaling live
+owners. Generated recovery uses retained source rather than a named catalog alias.
 
-Focused evidence: workflow/interpreter tests, API/schema/config validation,
-DeepCopy isolation, runtime refusal and resume/rerun regressions, authoring tests,
-complexity gate, and `make verify-fast`. The complete `make ci` merge gate was attempted and stopped at `portal-audit`
-because the environment could not resolve `registry.npmjs.org`; no full merge-gate
-pass is claimed. Preceding dead-code, tidy, vet, policy, complexity, documentation,
-and configuration-inventory checks passed. The complete gate remains required. The pinned controller generator produces unrelated invalid baseline
-DeepCopy output under the current toolchain; only the relevant generated policy,
-Task, and CRD additions are retained, with their behavior checked directly.
+Workspace capture includes permitted staged, dirty and untracked work. Separate
+child forks preserve both committed and uncommitted changes in the returned
+result. Parent merge/replace/discard requests are durable and keep the occurrence
+occupied. Under exclusive writer custody, the coordinator persists an application
+plan, checks each path against its before/after state, applies atomic file changes,
+stages only changed paths, verifies the result, and atomically acknowledges the
+child. HEAD, unrelated staged entries and excluded credential/runtime paths remain
+untouched. Repeated acknowledgement cannot reapply child work over later parent
+progress. Discard never retracts an already-published PR.
 
-Proposal validation now checks exact source and canonical digests, the pinned
-gaggle/catalog/policy, existing Goober and capability subsets, one plain manual
-trigger, no generated-child recursion, normal compilation, provider requirements,
-and executable placement. The durable submission path repeats those checks.
-The author-facing CLI and its real command-path tests are implemented.
+The serial runner has an actual invocation handoff: stop/join writers, persist a
+wait marker, retain the managed checkout, suspend concurrency without refunding
+budget, wait, reacquire capacity and dispatch a fresh attempt in the same stage
+occurrence. Previous context, transcript and lifetime usage remain available.
+Recovery adopts the held checkout across a crash; watchdogs recognize child waits.
 
-Stage authority uses a separate signed credential bound to gaggle, parent run,
-stage occurrence, current attempt, and config/policy digests. It has no general
-pod or human permissions and cannot fall back to human authentication. Enabling
-its verifier is explicit. The service must still check current attempt/policy
-authority before every operation; signatures alone do not admit execution.
-Its 24-hour credential lifetime does not set a child-wait deadline: the launcher
-must renew/rebind active work after a longer durable wait. Harness acquisition now
-binds the grant and revokes it on session exit, including failure. Expired active
-attempts can renew; revoked attempts cannot. Older cleanup cannot revoke a newer
-attempt. Daemon service wiring is still pending.
+**General child opt-in execution remains refused.** Remaining delivery gates:
 
-Focused authorization tests cover cross-key and cross-token-domain use,
-tampering, expiry, wrong parent, missing origin claims, and every existing API
-route. The complete podauth/httpapi suites also contain socket-listener tests;
-the sandbox refuses those listeners, so those complete suites have not passed.
-Package lint found and fixed three initial policy formatting/comment issues;
-the affected policy, engine, podauth and httpapi packages now report zero issues.
+- Finish production daemon handoff/launcher installation and boot reconciliation.
+- Verify explicit PR publication delegation against the actual credential surface.
+- Support a child from each concurrent parent stage without releasing a live
+  sibling's capacity; remove temporary serial/repository-only restrictions after
+  tests cover branch workspaces, scratch work and join behavior.
+- Complete child workspace family holds through crash reaping and terminal
+  disposition; active or unresolved families must survive unbounded waits.
+- Check enclosing run/stage deadlines, revocation, human escalation and continuation
+  together. A wait must not consume retry/repass allowance.
+- Extend the current safe application boundary for file/directory replacements and
+  case-only path renames, currently refused before filesystem effects.
+- Add parent/child portal visibility and the common HITL intervention path.
+- Keep recursion deferred as agreed; one unresolved child per stage occurrence,
+  including distinct parallel occurrences, remains the required v1 scope.
 
-The submission service now requires a durable current-attempt binding as well as
-the trusted runtime resolver. Supersession and revocation cannot race acceptance.
-Exact source bytes are committed in the queue database with lineage/start custody;
-retries verify retained bytes and cannot repair missing or tampered accepted
-evidence. Its production pruner bounds maintenance and preserves unresolved work.
-The ordinary trigger dispatcher recognizes child envelopes and leaves them queued
-while child launch support is absent, preventing accidental named-catalog dispatch.
+### HITL — authorization and credential slice implemented
 
-The authoring command validates proposals against a selected configured parent
-without creating runs or writing proposal state. Its report explicitly identifies
-current-config advisory validation. Runtime submission instead requires the
-parent's immutable execution archive and current authority.
+Optional gaggle interactive policy defines explicit viewer/operator grants for
+verified issuer/subject or group identities. Instance role checks still apply;
+an unlisted instance administrator does not bypass gaggle policy. Named instance
+credential sources bind exactly to backlog or repository targets and reuse current
+GH/ADO authentication, secret stores and redaction. Automation credentials are
+never an interactive fallback. Omission preserves authorized read-only monitoring.
+Repository edits require PR publication policy.
 
-Workspace support captures filtered working state, carries a bounded delta from
-the exact base commit, preserves child edits on retries, and prepares verified
-merge/replace/discard trees. It does **not** yet apply those trees to the live
-parent; durable application intent, exclusive custody and recovery remain required.
+The actual capabilities route distinguishes configured permission from implemented
+operation availability. Current policy fences bounded authorization/provider effect
+callbacks against reload. New actions are not advertised as usable until their
+handlers exist. Shared portal approval/escalation/guidance actions are in progress;
+fresh affected-stage allowances, settled-run continuation, transient sessions,
+backlog edits and PR repair remain acceptance work. Saved guidance alone must not
+be described as delivered or resumed.
 
-The HTTP adapter and scoped MCP tools now connect agent-authored source to signed,
-bounded submission/status operations. Requests cannot supply another run, stage,
-endpoint, credential or policy. MCP runtime credentials are private and omitted
-from prompts and command arguments. Run identities preserve the accepted parent
-occurrence and source/envelope pins. The dispatcher distinguishes known refusal
-from uncertain handoff and reconciles durable journal evidence after reopening
-the queue. Cancellation delivery alone does not imply terminal cancellation.
+### Events and backlog — designs prepared, implementation pending
 
-Next: install the journal-backed authority and pinned-generation loaders, daemon
-services and child launcher; complete workspace custody/application, durable
-waits, wait-aware timeouts/capacity, family cancellation and portal intervention.
-Execution remains refused until those boundaries work together. Repository child
-adoption and dynamic admission are in progress; parallel child workspace isolation
-and branch-aware parent capacity remain required acceptance work.
+The agreed event stream still requires all workflow starts to enter durable queues,
+gaggle-local authenticated ingress/emit, configurable consumer debounce, causal
+history and centralized bounded GH/ADO polling/reads. Existing child receipts are
+one input to that broader queue work, not its completion.
 
-### Other streams — designs prepared, implementation pending
+The backlog workbench still requires browse/edit surfaces and consistent explicit
+relations to items, PRs, dependencies and source-owned Markdown objectives in any
+configured gaggle repository. Repository mutations use policy-governed PRs;
+provider/repository truth stays external to Goobers. Organization precedes progress
+tracking. See the respective designs for the complete stable task list.
 
-Human operations follows children, then events/queued starts/shared reads, then
-backlog browsing/editing and visuals. Their complete acceptance tasks remain in
-the respective design documents; no completion is implied by the local docs stack.
+### Validation and review preparation
+
+Integrated fast validation (formatting, no-phone-home, vet and all command builds)
+passes through the child continuation and interactive policy stack. Targeted Go
+race suites, Git recovery/application tests, Go API contracts, TypeScript typecheck
+and portal contract tests pass for the implemented slices. Full CI is not claimed:
+package-audit DNS and existing socket-listener tests are restricted in this session.
+Darwin process inventory is also restricted, so that integration fixture verifies
+refusal and writer cleanup; successful native capture needs an unrestricted host.
+
+Before publication, add the required unique command-growth justification to each
+older affected review branch and recheck the stack bases. The legacy baseline file
+must not be repinned for normal growth. Local draft descriptions and recovery
+bundles are maintained separately; no remote PR exists yet.
 
 ## Publication mapping
 
