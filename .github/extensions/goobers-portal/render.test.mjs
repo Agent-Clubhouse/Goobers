@@ -805,7 +805,7 @@ test("renderInsightPanel renders outcome, curation, credit, usage, trend, and st
     assert.match(html, /Tokens and retry waste/);
     assert.match(html, /1,234 AIC/);
     // AIC trend: only the most recent 8 (bucket count for 24h) buckets show, all 4 fixture buckets included here.
-    assert.match(html, /AIC over time/);
+    assert.match(html, /Cost over time/);
     assert.match(html, /300 AIC/);
     // Slowest stages.
     assert.match(html, /Slowest stages/);
@@ -1013,12 +1013,12 @@ test("deriveExternalCostRows normalizes PR and issue cost aggregates", () => {
 test("renderCostPanel renders summary, trend, instance rollup, external breakdown, and lookup result", () => {
     const lookup = { ...COST_RESULT_FIXTURE, scope: "pr", externalId: "5183", issues: [] };
     const html = renderCostPanel(COST_STATS_FIXTURE, COST_RESULT_FIXTURE, { kind: "instance" }, "7d", lookup);
-    assert.match(html, /AIC summary/);
+    assert.match(html, /Cost Summary/);
     assert.match(html, /1,550 AIC/);
-    assert.match(html, /AIC over time/);
-    assert.match(html, /AIC by gaggle/);
+    assert.match(html, /Cost over time/);
+    assert.match(html, /Cost by gaggle/);
     assert.match(html, /core/);
-    assert.match(html, /AIC by pull request and issue/);
+    assert.match(html, /Cost by pull request and issue/);
     assert.match(html, /PR #5183/);
     assert.match(html, /Issue #99/);
     assert.match(html, /Lookup result/);
@@ -1054,7 +1054,7 @@ test("renderCostPanel orders mixed native and normalized costs by AIC value", ()
 
 test("renderCostPanel hides instance rollup outside instance scope and renders empty states", () => {
     const scoped = renderCostPanel(COST_STATS_FIXTURE, { pullRequests: [], issues: [] }, { kind: "gaggle", gaggle: "core" }, "all");
-    assert.doesNotMatch(scoped, /AIC by gaggle/);
+    assert.doesNotMatch(scoped, /Cost by gaggle/);
     assert.match(scoped, /bounded time window/);
     assert.match(scoped, /No pull request or issue cost was attributed/);
 
@@ -1127,7 +1127,7 @@ test("renderCostPanel caps external rows and per-row model details", () => {
     assert.doesNotMatch(html, /PR #1</);
 });
 
-test("renderHtml includes AIC tab controls and inlines every cost helper", () => {
+test("renderHtml includes Cost tab controls and inlines every cost helper", () => {
     const page = renderHtml("inst-1");
     assert.match(page, /dashboard-tab-cost/);
     assert.match(page, /id="cost-lookup-id"/);

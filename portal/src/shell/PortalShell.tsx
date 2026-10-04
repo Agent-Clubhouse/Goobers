@@ -378,13 +378,13 @@ export function PortalShell({
           </button>
           <button
             aria-current={activeArea === "cost" ? "page" : undefined}
-            aria-label="AIC"
+            aria-label="Cost"
             className={activeArea === "cost" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => navigate({ page: "cost", filters: scopedFilters })}
             type="button"
           >
             <Icon name="cost" />
-            <span className="nav-label">AIC</span>
+            <span className="nav-label">Cost</span>
           </button>
         </nav>
 
@@ -513,7 +513,7 @@ export function PortalShell({
               <MobileDestination
                 active={activeArea === "cost"}
                 icon="cost"
-                label="AIC"
+                label="Cost"
                 onClick={() =>
                   navigateFromMobileMenu({ page: "cost", filters: scopedFilters })
                 }
