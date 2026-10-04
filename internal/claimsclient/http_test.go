@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,9 +24,10 @@ type fakePlane struct {
 }
 
 type fakePlaneRequest struct {
-	path   string
-	bearer string
-	body   map[string]any
+	path        string
+	bearer      string
+	contentType string
+	body        map[string]any
 }
 
 func (p *fakePlane) handler(w http.ResponseWriter, r *http.Request) {
@@ -36,9 +38,10 @@ func (p *fakePlane) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	p.mu.Lock()
 	p.requests = append(p.requests, fakePlaneRequest{
-		path:   r.URL.Path,
-		bearer: strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
-		body:   body,
+		path:        r.URL.Path,
+		bearer:      strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+		contentType: r.Header.Get("Content-Type"),
+		body:        body,
 	})
 	p.mu.Unlock()
 	status, response := p.answer(r.URL.Path, body)
@@ -69,13 +72,16 @@ func newFakePlane(t *testing.T, answer func(path string, body map[string]any) (i
 }
 
 func TestNewHTTPRequiresBaseURLTokenAndRun(t *testing.T) {
-	for name, cfg := range map[string]HTTPConfig{
-		"no base url": {Token: "t", RunID: "r"},
-		"no token":    {BaseURL: "http://d", RunID: "r"},
-		"no run":      {BaseURL: "http://d", Token: "t"},
+	for name, test := range map[string]struct {
+		cfg  HTTPConfig
+		want string
+	}{
+		"no base url": {HTTPConfig{Token: "t", RunID: "r"}, "claimsclient: HTTP backend requires a base URL"},
+		"no token":    {HTTPConfig{BaseURL: "http://d", RunID: "r"}, "claimsclient: HTTP backend requires a bearer token"},
+		"no run":      {HTTPConfig{BaseURL: "http://d", Token: "t"}, "claimsclient: HTTP backend requires the stage's run ID"},
 	} {
-		if _, err := NewHTTP(cfg); err == nil {
-			t.Errorf("%s: NewHTTP accepted %+v", name, cfg)
+		if _, err := NewHTTP(test.cfg); err == nil || err.Error() != test.want {
+			t.Errorf("%s: NewHTTP error = %v, want %q", name, err, test.want)
 		}
 	}
 }
@@ -102,7 +108,7 @@ func TestHTTPClaimScopedWire(t *testing.T) {
 		t.Fatalf("contended acquire = %v, %q, %v; want refused naming run-1", ok, holder, err)
 	}
 	got := plane.recorded()
-	if len(got) != 2 || got[0].path != apicontract.ClaimAcquirePath || got[0].bearer != "claims-token" {
+	if len(got) != 2 || got[0].path != apicontract.ClaimAcquirePath || got[0].bearer != "claims-token" || got[0].contentType != "application/json" {
 		t.Fatalf("recorded = %+v", got)
 	}
 	want := map[string]any{"gaggle": "g", "provider": "github", "itemId": "7", "runId": "run-1", "workflow": "implementation", "leaseSeconds": float64(91)}
@@ -138,8 +144,58 @@ func TestHTTPErrorEnvelope(t *testing.T) {
 	if !errors.As(err, &planeErr) || planeErr.Status != http.StatusForbidden || planeErr.Code != "run_mismatch" {
 		t.Fatalf("err = %v, want a *Error with 403 run_mismatch", err)
 	}
+
 	if !strings.Contains(err.Error(), "not your run") {
 		t.Fatalf("error text %q lost the plane's message", err)
+	}
+}
+
+func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewHTTP(HTTPConfig{BaseURL: server.URL, Token: "t", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = client.ClaimScoped(t.Context(), Key{Gaggle: "g", Provider: "p", ExternalID: "1"}, "run-1", "w", time.Minute)
+	var planeErr *Error
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+		t.Fatalf("error = %#v", planeErr)
+	}
+}
+
+func TestHTTPResponseBodyCeiling(t *testing.T) {
+	const limit = 4 << 20
+	response := `{"ok":true}`
+
+	for name, padding := range map[string]int{
+		"at limit":   limit - len(response),
+		"over limit": limit - len(response) + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, strings.Repeat(" ", padding)+response)
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewHTTP(HTTPConfig{BaseURL: server.URL, Token: "t", RunID: "run-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ok, _, err := client.ClaimScoped(t.Context(), Key{Gaggle: "g", Provider: "p", ExternalID: "1"}, "run-1", "w", time.Minute)
+			if name == "at limit" {
+				if err != nil || !ok {
+					t.Fatalf("ClaimScoped() = %v, %v; want a decoded response at %d bytes", ok, err, limit)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "decode response") {
+				t.Fatalf("ClaimScoped() error = %v, want decode failure above %d bytes", err, limit)
+			}
+		})
 	}
 }
 

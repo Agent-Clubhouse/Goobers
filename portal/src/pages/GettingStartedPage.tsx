@@ -13,7 +13,9 @@ import {
   type GuidedRepositoryInspection,
   type GuidedRepositoryReadiness,
   type GuidedState,
+  type GuidedSupervisionPreview,
   type GuidedWorkflow,
+  type RuntimeMode,
 } from "../guided/client";
 import { Icon } from "../ui/Icon";
 
@@ -128,6 +130,10 @@ function withEnvironment(shell: ShellKind, name: string, value: string, command:
     : `${name}=${value} ${command}`;
 }
 
+function quotedCommand(...parts: string[]): string {
+  return parts.map((part) => `"${part.replaceAll('"', '\\"')}"`).join(" ");
+}
+
 // The wizard's default selection per provider. Azure DevOps mirrors
 // `goobers init --template=standard --provider=ado`, which adds merge-review.
 function defaultGuidedWorkflows(provider: GuidedProvider): GuidedWorkflow[] {
@@ -223,11 +229,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     stderr: string;
   } | null>(null);
   const [promptCopied, setPromptCopied] = useState(false);
-  const [startAtSignIn, setStartAtSignIn] = useSessionState(
-    "goobers-wizard-start-at-sign-in",
-    true,
+  const [runtimeMode, setRuntimeMode] = useSessionState<RuntimeMode>(
+    "goobers-wizard-runtime-mode",
+    "foreground",
   );
+  const [confirmLocalSystem, setConfirmLocalSystem] = useState(false);
   const [completeResult, setCompleteResult] = useState<GuidedCompleteResult | null>(null);
+  const [supervisionPreview, setSupervisionPreview] =
+    useState<GuidedSupervisionPreview | null>(null);
 
   const statePass = useRef<{ generation: number; controller: AbortController | null }>({
     generation: 0,
@@ -381,6 +390,35 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     }
   }, [pageIndex, pages.length, setPageIndex]);
 
+  const onCompletePage =
+    pages[Math.min(pageIndex, pages.length - 1)]?.id === "complete";
+  useEffect(() => {
+    if (!onCompletePage || state?.platform !== "windows" || completeResult) {
+      return;
+    }
+    let canceled = false;
+    setSupervisionPreview(null);
+    client.getSupervisionPreview().then(
+      (preview) => {
+        if (!canceled) {
+          setSupervisionPreview(preview);
+        }
+      },
+      (error: unknown) => {
+        if (!canceled) {
+          setActionError(
+            `Unable to inspect Windows supervision: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      },
+    );
+    return () => {
+      canceled = true;
+    };
+  }, [client, completeResult, onCompletePage, state?.platform]);
+
   if (query.status === "loading") {
     return (
       <section aria-live="polite" className="daemon-state" role="status">
@@ -444,6 +482,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       : inspection?.provider === "ado"
         ? `az repos clone --organization https://dev.azure.com/${inspection.owner} --project "${inspection.project}" --repository "${inspection.name}"`
         : "";
+  const foregroundCommand = quotedCommand(state.executable, "up", state.instancePath);
+  const scheduledTaskPreview = supervisionPreview?.scheduledTask;
+  const machineServicePreview = supervisionPreview?.machineService;
 
   const runAction = async <T,>(
     kind: Exclude<BusyAction, null>,
@@ -570,7 +611,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const finishSetup = () =>
     void runAction(
       "complete",
-      () => client.complete(state.platform === "windows" && startAtSignIn),
+      () => client.complete(runtimeMode, confirmLocalSystem),
       setCompleteResult,
     );
 
@@ -1138,6 +1179,21 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 </span>
               </label>
             </fieldset>
+            <label className="guided-field">
+              <span>Model token environment variable (optional)</span>
+              <input
+                aria-label="Model token environment variable"
+                onChange={(event) => setModelTokenEnv(event.target.value)}
+                placeholder="Example: COPILOT_GITHUB_TOKEN"
+                type="text"
+                value={modelTokenEnv}
+              />
+              <small>
+                Enter only the variable name for an explicit <code>agent:model</code>{" "}
+                credential. Goobers records the name and never reads or displays its value
+                in this wizard. Leave this blank to use the selected CLI&apos;s stored login.
+              </small>
+            </label>
           </WizardPage>
         );
       case "review":
@@ -1364,61 +1420,215 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage
             className="guided-complete-page"
-            title={completeResult ? "Goobers is ready" : "Finish setup"}
+            title={completeResult ? "Setup complete" : "Choose how Goobers will run"}
           >
             <div aria-hidden="true" className="guided-complete-mascot">
               <AnimatedGoober />
             </div>
-            <p className="guided-welcome-lead">Your configuration is ready.</p>
-            {completeResult && <p>The setup server has stopped.</p>}
-            <p>Next, ask your coding agent to tailor the generated gaggle to this repository.</p>
+            <p className="guided-welcome-lead">
+              Configuration and repository preparation are complete.
+            </p>
+            <ReviewTable
+              rows={[
+                ["Goobers Instance", state.instancePath],
+                ["Executable", state.executable],
+                ["Validated interactive identity", state.runtimeIdentity],
+                ...(validationPassed
+                  ? ([
+                      [
+                        "Harness and repository checks",
+                        `Passed under ${state.runtimeIdentity}`,
+                      ],
+                    ] as Array<[string, string]>)
+                  : []),
+                [
+                  "Harness authentication",
+                  modelTokenEnv.trim()
+                    ? `${harness}: agent:model reads ${modelTokenEnv.trim()} at runtime (value not displayed)`
+                    : `${harness}: stored CLI login validated for ${state.runtimeIdentity}`,
+                ],
+              ]}
+            />
+            <p>
+              Stored Copilot or Claude Code login validation proves access only for{" "}
+              <strong>{state.runtimeIdentity}</strong>. A per-user Scheduled Task keeps
+              that profile. LocalSystem does not inherit this user&apos;s CLI sessions,
+              GitHub CLI keyring, Credential Manager entries, <code>%LOCALAPPDATA%</code>,
+              mapped drives, or user PATH.
+            </p>
+            {harness === "copilot" && (
+              <DocumentationLink
+                href="https://github.com/Agent-Clubhouse/Goobers/issues/4292"
+                label="Review the remaining ambient Copilot preflight limitation"
+              />
+            )}
             {!completeResult && (
               <div className="guided-complete-setup">
-                {state.platform === "windows" && (
+                <fieldset className="guided-radio-group">
+                  <legend>Runtime and supervision</legend>
+                  <label data-selected={runtimeMode === "foreground"}>
+                    <input
+                      checked={runtimeMode === "foreground"}
+                      name="runtime-mode"
+                      onChange={() => setRuntimeMode("foreground")}
+                      type="radio"
+                    />
+                    <span>
+                      <strong>Run in the foreground now (recommended first run)</strong>
+                      <small><code>{foregroundCommand}</code></small>
+                    </span>
+                  </label>
+                  {state.platform === "windows" && (
+                    <>
+                      <label data-selected={runtimeMode === "scheduled-task"}>
+                        <input
+                          checked={runtimeMode === "scheduled-task"}
+                          name="runtime-mode"
+                          onChange={() => setRuntimeMode("scheduled-task")}
+                          type="radio"
+                        />
+                        <span>
+                          <strong>Start automatically for me</strong>
+                          <small>
+                            Per-user Scheduled Task as {state.runtimeIdentity}:{" "}
+                            {scheduledTaskPreview ? (
+                              scheduledTaskPreview.command ? (
+                                <code>{scheduledTaskPreview.command}</code>
+                              ) : (
+                                <strong>already running; no start/install command will run</strong>
+                              )
+                            ) : (
+                              <span>checking current status…</span>
+                            )}
+                          </small>
+                        </span>
+                      </label>
+                      <label data-selected={runtimeMode === "machine-service"}>
+                        <input
+                          checked={runtimeMode === "machine-service"}
+                          name="runtime-mode"
+                          onChange={() => setRuntimeMode("machine-service")}
+                          type="radio"
+                        />
+                        <span>
+                          <strong>Advanced machine service</strong>
+                          <small>
+                            LocalSystem:{" "}
+                            {machineServicePreview ? (
+                              machineServicePreview.command ? (
+                                <code>{machineServicePreview.command}</code>
+                              ) : (
+                                <strong>already running; no start/install command will run</strong>
+                              )
+                            ) : (
+                              <span>checking current status…</span>
+                            )}
+                          </small>
+                        </span>
+                      </label>
+                    </>
+                  )}
+                  <label data-selected={runtimeMode === "not-now"}>
+                    <input
+                      checked={runtimeMode === "not-now"}
+                      name="runtime-mode"
+                      onChange={() => setRuntimeMode("not-now")}
+                      type="radio"
+                    />
+                    <span>
+                      <strong>Not now</strong>
+                      <small>Start later with <code>{foregroundCommand}</code></small>
+                    </span>
+                  </label>
+                </fieldset>
+                {runtimeMode === "machine-service" && (
                   <label className="guided-check">
                     <input
-                      checked={startAtSignIn}
-                      onChange={(event) => setStartAtSignIn(event.target.checked)}
+                      checked={confirmLocalSystem}
+                      onChange={(event) => setConfirmLocalSystem(event.target.checked)}
                       type="checkbox"
                     />
                     <span>
-                      Start Goobers automatically when I sign in. The Scheduled Task runs as my
-                      current Windows account so it can use my user-scoped credentials.
+                      I understand this installs as LocalSystem and cannot use my stored
+                      CLI login, GitHub CLI keyring, Credential Manager entries,
+                      %LOCALAPPDATA%, mapped drives, or user PATH by default.
                     </span>
                   </label>
                 )}
                 <Action
                   variant="primary"
                   className="reconnect-button"
-                  disabled={busy !== null}
+                  disabled={
+                    busy !== null ||
+                    (runtimeMode === "machine-service" && !confirmLocalSystem) ||
+                    ((runtimeMode === "scheduled-task" ||
+                      runtimeMode === "machine-service") &&
+                      supervisionPreview === null)
+                  }
                   onClick={finishSetup}
                   type="button"
                 >
-                  {busy === "complete" ? "Finishing…" : "Finish setup"}
+                  {busy === "complete" ? "Applying runtime choice…" : "Apply and finish"}
                 </Action>
               </div>
             )}
-            {completeResult?.scheduledTaskInstalled && (
-              <p className="guided-success">Goobers will start automatically when you sign in.</p>
+            {completeResult && (
+              <>
+                <p className={completeResult.daemonRunning ? "guided-success" : undefined}>
+                  Daemon:{" "}
+                  <strong>
+                    {completeResult.daemonRunning
+                      ? `running under ${completeResult.account || "the configured account"}`
+                      : completeResult.supervisionMode === "foreground"
+                        ? "not running yet; it starts in this terminal when the setup server closes"
+                        : "not running"}
+                  </strong>
+                  . Supervision: <strong>{completeResult.supervisionMode}</strong>.
+                </p>
+                <p>
+                  Foreground command: <code>{completeResult.foregroundCommand}</code>
+                </p>
+                <h3>Enabled workflows</h3>
+                {completeResult.workflows.map((workflow) => (
+                  <div className="guided-workflow-runtime" key={workflow.name}>
+                    <strong>{workflow.name}</strong>
+                    <p>
+                      {workflow.schedules.length > 0
+                        ? `Schedule: ${workflow.schedules.join(", ")}`
+                        : "Manual/event-driven; it will not run on a timer."}
+                    </p>
+                    <code>{workflow.command}</code>
+                  </div>
+                ))}
+                <p>No workflow was started by setup.</p>
+                <p>
+                  Next, ask your coding agent to tailor the generated gaggle to this
+                  repository.
+                </p>
+              </>
             )}
-            <div className="guided-prompt-copy">
-              <code>{customizationPrompt}</code>
-              <button
-                aria-label={promptCopied ? "Prompt copied" : "Copy prompt"}
-                className="guided-copy-button"
-                onClick={() => {
-                  void navigator.clipboard.writeText(customizationPrompt).then(
-                    () => setPromptCopied(true),
-                    (error) =>
-                      setActionError(error instanceof Error ? error.message : String(error)),
-                  );
-                }}
-                title={promptCopied ? "Copied" : "Copy prompt"}
-                type="button"
-              >
-                <Icon name={promptCopied ? "check" : "copy"} size={17} />
-              </button>
-            </div>
+            {completeResult && (
+              <div className="guided-prompt-copy">
+                <code>{customizationPrompt}</code>
+                <button
+                  aria-label={promptCopied ? "Prompt copied" : "Copy prompt"}
+                  className="guided-copy-button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(customizationPrompt).then(
+                      () => setPromptCopied(true),
+                      (error) =>
+                        setActionError(
+                          error instanceof Error ? error.message : String(error),
+                        ),
+                    );
+                  }}
+                  title={promptCopied ? "Copied" : "Copy prompt"}
+                  type="button"
+                >
+                  <Icon name={promptCopied ? "check" : "copy"} size={17} />
+                </button>
+              </div>
+            )}
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md"
               label="Learn how to customize gaggles and workflows with an agent"

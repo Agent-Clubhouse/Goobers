@@ -92,81 +92,105 @@ type requestSpec struct {
 
 // Refresh executes the provider contract request set and returns normalized responses.
 func Refresh(ctx context.Context, cfg RefreshConfig) (Fixture, error) {
+	return refreshWithBackend(ctx, &githubRefreshBackend{cfg: cfg})
+}
+
+type githubRefreshBackend struct {
+	cfg     RefreshConfig
+	target  target
+	baseURL string
+	// basePath is the escaped path prefix of baseURL (for example /api/v3 on
+	// GitHub Enterprise Server). Recorded exchange paths stay relative to the
+	// API root, exactly as the request specs name them.
+	basePath string
+	client   HTTPClient
+}
+
+func (b *githubRefreshBackend) validate() error {
+	cfg := b.cfg
 	if cfg.Repository.Owner == "" || cfg.Repository.Name == "" {
-		return Fixture{}, fmt.Errorf("repository owner and name are required")
+		return fmt.Errorf("repository owner and name are required")
 	}
 	target, err := fixtureTarget(cfg.Issue, cfg.PullRequest)
 	if err != nil {
-		return Fixture{}, err
+		return err
 	}
 	if cfg.Token == "" {
-		return Fixture{}, fmt.Errorf("dedicated provider fixture token is required")
+		return fmt.Errorf("dedicated provider fixture token is required")
 	}
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
-	if _, err := url.ParseRequestURI(baseURL); err != nil {
-		return Fixture{}, fmt.Errorf("parse GitHub base URL: %w", err)
+	parsedBaseURL, err := url.ParseRequestURI(baseURL)
+	if err != nil {
+		return fmt.Errorf("parse GitHub base URL: %w", err)
 	}
 	client := cfg.Client
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	b.target = target
+	b.baseURL = baseURL
+	b.basePath = strings.TrimRight(parsedBaseURL.EscapedPath(), "/")
+	b.client = client
+	return nil
+}
 
-	specs := target.requestSet(cfg.Repository)
-	fixture := Fixture{
-		SchemaVersion: SchemaVersion,
-		Provider:      string(providers.ProviderGitHub),
-		Repository:    Repository{Owner: normalizedOwner, Name: normalizedRepo},
-		Issue:         cfg.Issue,
-		PullRequest:   cfg.PullRequest,
-		Exchanges:     make([]Exchange, 0, len(specs)),
-	}
+func (b *githubRefreshBackend) providerName() string {
+	return string(providers.ProviderGitHub)
+}
+
+func (b *githubRefreshBackend) repositoryIdentity() Repository {
+	return Repository{Owner: normalizedOwner, Name: normalizedRepo}
+}
+
+func (b *githubRefreshBackend) targetIdentity() (string, string) {
+	return b.cfg.Issue, b.cfg.PullRequest
+}
+
+func (b *githubRefreshBackend) requestSet(_ HTTPClient) []refreshRequest {
+	specs := b.target.requestSet(b.cfg.Repository)
+	requests := make([]refreshRequest, 0, len(specs))
 	for _, spec := range specs {
-		req, err := http.NewRequestWithContext(ctx, spec.method, baseURL+spec.path, nil)
-		if err != nil {
-			return Fixture{}, fmt.Errorf("create %s request: %w", spec.name, err)
-		}
-		req.Header.Set("Accept", "application/vnd.github+json")
-		req.Header.Set("Authorization", "Bearer "+cfg.Token)
-		req.Header.Set("User-Agent", "goobers-provider-fixture-refresh")
-		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return Fixture{}, fmt.Errorf("%s request: %w", spec.name, err)
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-		closeErr := resp.Body.Close()
-		if readErr != nil {
-			return Fixture{}, fmt.Errorf("read %s response: %w", spec.name, readErr)
-		}
-		if closeErr != nil {
-			return Fixture{}, fmt.Errorf("close %s response: %w", spec.name, closeErr)
-		}
-		if len(body) > maxResponseBytes {
-			return Fixture{}, fmt.Errorf("%s response exceeds %d bytes", spec.name, maxResponseBytes)
-		}
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			return Fixture{}, fmt.Errorf("%s request returned status %d: %s", spec.name, resp.StatusCode, strings.TrimSpace(string(body)))
-		}
-		normalizedBody, err := normalizeJSON(body, cfg.Repository)
-		if err != nil {
-			return Fixture{}, fmt.Errorf("normalize %s response: %w", spec.name, err)
-		}
-		fixture.Exchanges = append(fixture.Exchanges, Exchange{
-			Name:   spec.name,
-			Method: spec.method,
-			Path:   replaceRepository(spec.path, cfg.Repository),
-			Response: FixtureResponse{
-				Status:  resp.StatusCode,
-				Headers: normalizeHeaders(resp.Header, cfg.Repository),
-				Body:    normalizedBody,
+		spec := spec
+		requests = append(requests, refreshRequest{
+			name:             spec.name,
+			rejectNonSuccess: true,
+			execute: func(ctx context.Context, client HTTPClient) error {
+				req, err := http.NewRequestWithContext(ctx, spec.method, b.baseURL+spec.path, nil)
+				if err != nil {
+					return fmt.Errorf("create %s request: %w", spec.name, err)
+				}
+				_, err = client.Do(req)
+				return err
 			},
 		})
 	}
-	return fixture, nil
+	return requests
+}
+
+func (b *githubRefreshBackend) httpClient() HTTPClient {
+	return b.client
+}
+
+func (b *githubRefreshBackend) decorateRequest(req *http.Request) {
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+b.cfg.Token)
+	req.Header.Set("User-Agent", "goobers-provider-fixture-refresh")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+}
+
+func (b *githubRefreshBackend) normalizePath(path string) string {
+	return replaceRepository(strings.TrimPrefix(path, b.basePath), b.cfg.Repository)
+}
+
+func (b *githubRefreshBackend) normalizeBody(body []byte) (json.RawMessage, error) {
+	return normalizeJSON(body, b.cfg.Repository)
+}
+
+func (b *githubRefreshBackend) normalizeResponseHeaders(headers http.Header) map[string]string {
+	return normalizeHeaders(headers, b.cfg.Repository)
 }
 
 // Read loads and validates a normalized fixture.

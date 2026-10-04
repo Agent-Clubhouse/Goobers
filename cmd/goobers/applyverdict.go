@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"slices"
 	"sort"
@@ -1840,16 +1839,10 @@ func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedN
 	if reason != "" {
 		out["reason"] = reason
 	}
-	data, err := json.Marshal(out)
-	if err != nil {
-		pf(stderr, "error: marshal verdict result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", path, err)
-		return 2
-	}
-	return 0
+	return writeStageResultJSON(stderr, path, out, stageResultOptions{
+		MarshalLabel:       "marshal verdict result",
+		WriteErrorExitCode: 2,
+	})
 }
 
 // readLatestGateVerdict reads runID's own journal and returns the Verdict

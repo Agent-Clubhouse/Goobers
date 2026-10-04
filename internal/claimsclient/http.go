@@ -1,17 +1,16 @@
 package claimsclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/planehttp"
 )
 
 // Wire shapes restated from internal/httpapi (the server), tag for tag; the
@@ -109,7 +108,8 @@ type HTTPConfig struct {
 
 // HTTP is the claims-plane backend.
 type HTTP struct {
-	cfg HTTPConfig
+	cfg   HTTPConfig
+	plane *planehttp.Client
 }
 
 // NewHTTP constructs the plane backend.
@@ -118,74 +118,63 @@ func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
 }
 
 func newHTTP(cfg HTTPConfig, anonymous bool) (*HTTP, error) {
-	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if cfg.BaseURL == "" {
-		return nil, errors.New("claimsclient: HTTP backend requires a base URL")
-	}
-	if strings.TrimSpace(cfg.Token) == "" && !anonymous {
-		return nil, errors.New("claimsclient: HTTP backend requires a bearer token")
+	plane, err := planehttp.New(planehttp.Config{
+		BaseURL:      cfg.BaseURL,
+		Token:        cfg.Token,
+		Client:       cfg.Client,
+		Timeout:      DefaultHTTPTimeout,
+		AllowNoToken: anonymous,
+		BaseURLError: errors.New("claimsclient: HTTP backend requires a base URL"),
+		TokenError:   errors.New("claimsclient: HTTP backend requires a bearer token"),
+	})
+	if err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(cfg.RunID) == "" {
 		return nil, errors.New("claimsclient: HTTP backend requires the stage's run ID")
 	}
-	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: DefaultHTTPTimeout}
-	}
+	cfg.BaseURL = plane.BaseURL()
+	cfg.Client = plane.HTTPClient()
 	if cfg.MergeLockPoll <= 0 {
 		cfg.MergeLockPoll = DefaultMergeLockPoll
 	}
 	if cfg.MergeLockLease <= 0 {
 		cfg.MergeLockLease = DefaultMergeLockLease
 	}
-	return &HTTP{cfg: cfg}, nil
+	return &HTTP{cfg: cfg, plane: plane}, nil
 }
 
 func (h *HTTP) post(ctx context.Context, path string, body, target any) error {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("claimsclient: encode request: %w", err)
-	}
 	endpoint := h.cfg.BaseURL + path
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	response, err := h.plane.DoJSON(ctx, http.MethodPost, path, body, nil)
 	if err != nil {
-		return fmt.Errorf("claimsclient: build request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if h.cfg.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	}
-	response, err := h.cfg.Client.Do(request)
-	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "encode" {
+			return fmt.Errorf("claimsclient: encode request: %w", requestErr.Err)
+		}
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return fmt.Errorf("claimsclient: build request: %w", requestErr.Err)
+		}
 		return fmt.Errorf("claimsclient: %s: %w", endpoint, err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	raw, err := planehttp.ReadBounded(response.Body, 4<<20)
 	if err != nil {
 		return fmt.Errorf("claimsclient: read response from %s: %w", endpoint, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		planeErr := &Error{Status: response.StatusCode}
-		var envelope struct {
-			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(raw, &envelope) == nil && envelope.Error.Code != "" {
-			planeErr.Code, planeErr.Message = envelope.Error.Code, envelope.Error.Message
-		} else {
-			detail := strings.TrimSpace(string(raw))
-			if len(detail) > 400 {
-				detail = detail[:400] + "…"
-			}
-			planeErr.Code, planeErr.Message = "http_"+fmt.Sprint(response.StatusCode), detail
-		}
-		return planeErr
+		return planehttp.DecodeError(response.StatusCode, raw, newPlaneError, planehttp.ErrorFallback{
+			CodePrefix: "http_", DetailLimit: 400, Ellipsis: "…",
+		})
 	}
 	if err := json.Unmarshal(raw, target); err != nil {
 		return fmt.Errorf("claimsclient: decode response from %s: %w", endpoint, err)
 	}
 	return nil
+}
+
+func newPlaneError(status int, code, message string) error {
+	return &Error{Status: status, Code: code, Message: message}
 }
 
 func scopedKey(key Key) error {
