@@ -39,7 +39,7 @@ describe("Insight page", () => {
     });
     expect(screen.queryByRole("heading", { name: "Instance spend" })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "AIC by pull request and issue" }),
+      screen.queryByRole("heading", { name: "Cost by pull request and issue" }),
     ).not.toBeInTheDocument();
   });
 
@@ -188,7 +188,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "AIC summary" }),
+      await screen.findByRole("heading", { name: "Cost Summary" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("AI credits")).not.toBeInTheDocument();
     expect(
@@ -241,7 +241,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "AIC by pull request and issue" }),
+      await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Exact recorded usage · Loaded Jul 18, 2026/)).toBeInTheDocument();
     const comparison = screen.getByRole("region", { name: "Attributed costs comparison" });
@@ -339,10 +339,10 @@ describe("Insight page", () => {
     const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "AIC summary" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost Summary" })).toBeInTheDocument();
     expect(screen.getByLabelText("Scope")).toHaveDisplayValue("Workflow · implementation");
     expect(
-      await screen.findByRole("heading", { name: "AIC by pull request and issue" }),
+      await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
     expect(getTelemetryCosts).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -362,7 +362,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "AIC summary" }),
+      await screen.findByRole("heading", { name: "Cost Summary" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -383,16 +383,16 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "AIC summary" }),
+      await screen.findByRole("heading", { name: "Cost Summary" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "AIC trends are not supported by this daemon. Upgrade Goobers to enable this section.",
+        "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "AIC by gaggle" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Cost by gaggle" })).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "AIC by pull request and issue" }),
+      screen.getByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
   });
 
@@ -404,11 +404,11 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "AIC over time" }),
+      await screen.findByRole("heading", { name: "Cost over time" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("img", {
-        name: /AIC trend by bucket.*cumulative.*P95/i,
+        name: /Cost trend by bucket.*cumulative.*P95/i,
       }),
     ).toBeInTheDocument();
     expect(screen.getByRole("list", { name: "Cost chart legend" })).toBeInTheDocument();
@@ -526,13 +526,13 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "AIC by gaggle" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost by gaggle" })).toBeInTheDocument();
     const coreLink = screen.getByRole("link", {
-      name: /View instance AIC for gaggle core: total 400 AIC, 8 runs, P50 80 AIC, P95 250 AIC/,
+      name: /View instance cost for gaggle core: total 400 AIC, 8 runs, P50 80 AIC, P95 250 AIC/,
     });
     expect(coreLink).toBeInTheDocument();
     const toolsLink = screen.getByRole("link", {
-      name: /View instance AIC for gaggle tools: total 600 AIC, 3 runs, P50 10 AIC, P95 580 AIC/,
+      name: /View instance cost for gaggle tools: total 600 AIC, 3 runs, P50 10 AIC, P95 580 AIC/,
     });
     expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
@@ -542,7 +542,7 @@ describe("Insight page", () => {
       screen.getByLabelText("Scope"),
       JSON.stringify(["gaggle", "core"]),
     );
-    expect(screen.queryByRole("heading", { name: "AIC by gaggle" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Cost by gaggle" })).not.toBeInTheDocument();
   });
 
   it("shows total cost without a browser-local soft budget", async () => {
@@ -585,7 +585,7 @@ describe("Insight page", () => {
     });
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "AIC" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Soft budget")).not.toBeInTheDocument();
   });
 
@@ -595,7 +595,7 @@ describe("Insight page", () => {
     fixtures.telemetryStats.gaggles = [];
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
-    expect(await screen.findByRole("heading", { name: "AIC" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
     expect(screen.getByLabelText("Scope")).toHaveDisplayValue("Workflow · implementation");
   });
 
@@ -821,8 +821,8 @@ describe("Insight page", () => {
     expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
     expect(window.location.hash).toContain("window=24h");
 
-    await user.click(screen.getByRole("button", { name: "AIC" }));
-    expect(await screen.findByRole("heading", { name: "AIC" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cost" }));
+    expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
     expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
 
     await user.click(screen.getByRole("button", { name: "Insight" }));

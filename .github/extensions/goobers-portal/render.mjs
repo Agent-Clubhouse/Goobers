@@ -1065,7 +1065,7 @@ export function renderInsightPanel(stats, scope, windowValue) {
         return '<div class="empty-state insight-empty"><h3>No telemetry in this window</h3>' +
             "<p>Choose a wider time window or another scope to inspect recorded runs.</p></div>";
     }
-    const trendHtml = '<section class="content-section"><h3>AIC over time</h3>' +
+    const trendHtml = '<section class="content-section"><h3>Cost over time</h3>' +
         renderInsightTrendSection(stats, scope, windowValue) + "</section>";
     return outcomeHtml + curationHtml + creditHtml + usageHtml + trendHtml + stagesHtml;
 }
@@ -1152,7 +1152,7 @@ function compareExternalCostRows(a, b) {
 function renderCostSummarySection(stats, scope) {
     const usage = insightUsageForScope(stats, scope);
     if (!usage) {
-        return '<section class="content-section"><h3>AIC summary</h3>' +
+        return '<section class="content-section"><h3>Cost Summary</h3>' +
             '<p class="inline-empty">No measured AI usage for this scope in the selected window.</p></section>';
     }
     const rows = [
@@ -1170,13 +1170,13 @@ function renderCostSummarySection(stats, scope) {
         '<div class="kv"><div class="label">' + escapeAssociationHtml(label) +
             '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
     ).join("");
-    return '<section class="content-section"><h3>AIC summary</h3>' +
+    return '<section class="content-section"><h3>Cost Summary</h3>' +
         '<p class="section-description">Measured attempts only; unreported runner usage remains unmeasured.</p>' +
         '<div class="kv-grid">' + items + "</div></section>";
 }
 
 function renderCostTrendSection(stats, scope, windowValue) {
-    return '<section class="content-section"><h3>AIC over time</h3>' +
+    return '<section class="content-section"><h3>Cost over time</h3>' +
         renderInsightTrendSection(stats, scope, windowValue) + "</section>";
 }
 
@@ -1190,7 +1190,7 @@ function renderInstanceCostRollupSection(stats, scope, windowValue) {
         .filter((entry) => (entry.usage?.costSamples || 0) > 0)
         .sort((a, b) => (b.usage?.costAIC || 0) - (a.usage?.costAIC || 0));
     if (!rows.length) {
-        return '<section class="content-section"><h3>AIC by gaggle</h3>' +
+        return '<section class="content-section"><h3>Cost by gaggle</h3>' +
             '<p class="inline-empty">No gaggle has measured AIC in this window.</p></section>';
     }
     const body = rows.map(({ gaggle, usage }) =>
@@ -1200,7 +1200,7 @@ function renderInstanceCostRollupSection(stats, scope, windowValue) {
         "<td>" + escapeAssociationHtml(insightFormatCost(usage.p95CostAIC)) + "</td>" +
         "<td>" + escapeAssociationHtml(insightFormatSamples(usage.costSamples)) + "</td></tr>",
     ).join("");
-    return '<section class="content-section"><h3>AIC by gaggle</h3>' +
+    return '<section class="content-section"><h3>Cost by gaggle</h3>' +
         '<p class="section-description">All gaggles · ' + escapeAssociationHtml(windowValue === "all" ? "all time" : windowValue) + "</p>" +
         '<div class="table-scroll"><table><thead><tr><th>Gaggle</th><th>Total</th><th>P50</th><th>P95</th><th>Samples</th></tr></thead>' +
         "<tbody>" + body + "</tbody></table></div></section>";
@@ -1230,7 +1230,7 @@ function renderExternalCostBreakdownSection(costs, lookupCosts) {
             : '<p class="inline-empty">No attributed costs match that pull request or issue in this window.</p>')
         : "";
     if (!costs) {
-        return '<section class="content-section"><h3>AIC by pull request and issue</h3>' +
+        return '<section class="content-section"><h3>Cost by pull request and issue</h3>' +
             '<p class="inline-empty">Attributed pull request and issue costs could not be loaded; selected-scope cost summary remains available.</p>' +
             lookupHtml + "</section>";
     }
@@ -1241,7 +1241,7 @@ function renderExternalCostBreakdownSection(costs, lookupCosts) {
         ? '<p class="muted">+' + (allRows.length - rows.length) + " more work items.</p>"
         : "";
     if (!rows.length) {
-        return '<section class="content-section"><h3>AIC by pull request and issue</h3>' +
+        return '<section class="content-section"><h3>Cost by pull request and issue</h3>' +
             '<p class="inline-empty">No pull request or issue cost was attributed in this window.</p>' + lookupHtml + "</section>";
     }
     const bounded = costs.scope === "summary" && costs.since && costs.until
@@ -1250,7 +1250,7 @@ function renderExternalCostBreakdownSection(costs, lookupCosts) {
             (costs.boundedAllTime ? " (all-time attribution is capped at 90 days)." : ".") +
             "</p>"
         : '<p class="usage-description">Attribution is instance-wide regardless of the selected operational scope.</p>';
-    return '<section class="content-section"><h3>AIC by pull request and issue</h3>' +
+    return '<section class="content-section"><h3>Cost by pull request and issue</h3>' +
         '<p class="section-description">Exact recorded usage by external work item, sorted by AIC; lower-bound rows have incomplete coverage.</p>' +
         bounded +
         '<div class="table-scroll"><table><thead><tr><th>Work item</th><th>Provider</th><th>AIC</th><th>Coverage</th><th>Runs</th><th>Models</th></tr></thead><tbody>' +
@@ -1263,7 +1263,7 @@ export function renderCostPanel(stats, costs, scope, windowValue, lookupCosts = 
     }
     const statsUnavailable = stats
         ? ""
-        : '<section class="content-section"><h3>AIC summary</h3>' +
+        : '<section class="content-section"><h3>Cost Summary</h3>' +
             '<p class="inline-empty">Selected-scope usage, trend, and instance rollup are unavailable; attributed work-item costs remain available.</p></section>';
     const summaryHtml = stats ? renderCostSummarySection(stats, scope) : statsUnavailable;
     const trendHtml = stats ? renderCostTrendSection(stats, scope, windowValue) : "";
@@ -1413,7 +1413,7 @@ export function renderWorkItemDetail(item, actionType = "all") {
         '<div class="work-item-heading-links">' + headingLink + relatedLinks + "</div></div>" +
         '<div class="cards work-item-summary-cards"><div class="card"><div class="label">Confirmed actions</div>' +
         '<div class="value">' + escapeAssociationHtml(actions.length) + "</div></div>" +
-        '<div class="card"><div class="label">Attributed AIC to date</div><div class="value">' +
+        '<div class="card"><div class="label">Attributed cost to date</div><div class="value">' +
         escapeAssociationHtml(formatWorkItemCost(item.cost)) + "</div>" + coverage + lowerBound + "</div></div>" +
         '<div class="filters-bar work-item-action-filters"><label>Action type ' +
         '<select id="work-item-action-type" aria-label="Filter actions by type">' + options +
@@ -2355,7 +2355,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <button id="dashboard-tab-runs" role="tab" data-tab="runs" aria-controls="dashboard-panel-runs">Runs</button>
       <button id="dashboard-tab-work-items" role="tab" data-tab="work-items" aria-controls="dashboard-panel-work-items">Work Items</button>
       <button id="dashboard-tab-insights" role="tab" data-tab="insights" aria-controls="dashboard-panel-insights">Insights</button>
-      <button id="dashboard-tab-cost" role="tab" data-tab="cost" aria-controls="dashboard-panel-cost">AIC</button>
+      <button id="dashboard-tab-cost" role="tab" data-tab="cost" aria-controls="dashboard-panel-cost">Cost</button>
     </div>
     <section id="dashboard-panel-attention" role="tabpanel" aria-labelledby="dashboard-tab-attention">
       <div id="needs-you" aria-labelledby="needs-you-heading">
@@ -2482,8 +2482,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       <div id="insight-content"></div>
     </section>
     <section id="dashboard-panel-cost" role="tabpanel" aria-labelledby="dashboard-tab-cost" hidden>
-      <h2>AIC</h2>
-      <p class="section-description">Instance spend, selected-scope AIC, retry waste, and attributed pull request and issue AIC.</p>
+      <h2>Cost</h2>
+      <p class="section-description">Instance spend, selected-scope cost, retry waste, and attributed pull request and issue costs.</p>
       <div class="filters-bar" id="cost-filters">
         <select id="cost-scope" aria-label="Scope" title="Select instance, gaggle, or workflow scope">
           <option value="instance">Instance</option>

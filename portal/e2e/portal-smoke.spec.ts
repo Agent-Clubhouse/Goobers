@@ -19,7 +19,7 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   runs: { path: "/#/runs", heading: "Runs" },
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
-  cost: { path: "/#/cost", heading: "AIC" },
+  cost: { path: "/#/cost", heading: "Cost" },
   "work-items": { path: "/#/work-items", heading: "Work Items" },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
@@ -31,7 +31,7 @@ const COMPACT_NAV_ROUTES = [
   ["Goobers", "/#/goobers", "Goobers", "more"],
   ["Runs", "/#/runs", "Runs", "direct"],
   ["Insight", "/#/insight", "Insight", "more"],
-  ["AIC", "/#/cost", "AIC", "more"],
+  ["Cost", "/#/cost", "Cost", "more"],
 ] as const;
 
 function trackConsoleErrors(page: Page): string[] {
@@ -182,7 +182,7 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
     }
 
     await page.goto("/#/cost");
-    const costHeading = page.getByRole("heading", { name: "AIC", exact: true });
+    const costHeading = page.getByRole("heading", { name: "Cost", exact: true });
     const summary = page.locator(".usage-analytics").first();
     await expect(costHeading, `Cost title at ${layout.name}`).toBeVisible();
     await expect(summary, `Cost summary at ${layout.name}`).toBeVisible();
@@ -782,8 +782,8 @@ test("bounds route reads when daemon admission is constrained", async ({ page },
   await page.getByRole("button", { name: "Workflows" }).click();
   await page.getByRole("button", { name: "Runs" }).click();
   await page.getByRole("button", { name: "Insight" }).click();
-  await page.getByRole("button", { name: "AIC" }).click();
-  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cost" }).click();
+  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
 
   const result = await page.request.get("/api/v1/test/admission", { headers });
   const stats = (await result.json()) as { peak: number; requests: number };
@@ -808,7 +808,7 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   const more = primary.getByRole("button", { name: "More" });
   await more.click();
   const dialog = page.getByRole("dialog", { name: "Goobers" });
-  for (const name of ["Goobers", "Work Items", "Insight", "AIC"]) {
+  for (const name of ["Goobers", "Work Items", "Insight", "Cost"]) {
     await expect(dialog.getByRole("button", { name })).toBeVisible();
   }
   await expect(page.getByRole("navigation", { name: "Gaggles" })).toBeVisible();
@@ -824,8 +824,8 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
     expect(box!.height).toBeGreaterThanOrEqual(24);
   }
 
-  await dialog.getByRole("button", { name: "AIC" }).click();
-  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Cost" }).click();
+  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
   await expect(more).toHaveAttribute("aria-current", "page");
 
   for (const control of [
@@ -861,7 +861,7 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   );
 
   const costPivot = page.getByRole("link", {
-    name: "View core / Implementation in AIC",
+    name: "View core / Implementation in Cost",
   });
   await expect(costPivot).toHaveAttribute(
     "href",
@@ -869,7 +869,7 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   );
   await costPivot.click();
   await expect(page).toHaveURL(/#\/cost\?gaggle=core&workflow=implementation$/);
-  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
   await expect(page.getByLabel("Scope")).toHaveValue(
     JSON.stringify(["workflow", "core", "implementation"]),
   );
