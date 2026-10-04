@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { FixtureDaemonClient } from "../api/fixtureClient";
+import { populatedDaemonFixtures } from "../test/daemonFixtures";
 import { HttpDaemonClient } from "../api/httpClient";
-import type { InteractiveRunView } from "../api/types";
+import type { InteractiveRunView, InteractiveRunCommandResult, DaemonClient } from "../api/types";
 import { RunInterventionPanel } from "./RunInterventionPanel";
 
 function view(): InteractiveRunView {
@@ -87,4 +89,73 @@ it("restarts with explicitly selected saved guidance and links the distinct exec
   expect(await screen.findByRole("link", { name: "Open restarted execution" })).toHaveAttribute("href", "#/run/human-restart-1");
   expect(JSON.parse(requests[0].body as string)).toEqual({ kind: "restart", stage: "implement", expectedSubjectSequence: 8, guidanceIds: ["chosen-note"], rationale: "Retry after review." });
   expect(requests).toHaveLength(1);
+});
+
+it("clears a previous client/run synchronously and ignores its late command completion", async () => {
+  const first: DaemonClient = new FixtureDaemonClient(populatedDaemonFixtures());
+  vi.spyOn(first, "getInteractiveRun").mockResolvedValue(view());
+  let resolveOld!: (value: InteractiveRunCommandResult) => void;
+  vi.spyOn(first, "commandInteractiveRun").mockReturnValue(new Promise((resolve) => { resolveOld = resolve; }));
+  const { rerender } = render(<RunInterventionPanel client={first} runId="run-1" />);
+  fireEvent.change(await screen.findByLabelText("Guidance"), { target: { value: "Private old draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save guidance" }));
+  const second: DaemonClient = new FixtureDaemonClient(populatedDaemonFixtures());
+  vi.spyOn(second, "getInteractiveRun").mockResolvedValue({ ...view(), runId: "run-2" });
+  vi.spyOn(second, "commandInteractiveRun");
+  rerender(<RunInterventionPanel client={second} runId="run-2" />);
+  expect(screen.queryByLabelText("Guidance")).not.toBeInTheDocument();
+  expect(vi.mocked(first.commandInteractiveRun).mock.calls[0][3]?.signal?.aborted).toBe(true);
+  expect(await screen.findByLabelText("Guidance")).toHaveValue("");
+  await act(async () => { resolveOld({ status: "saved", accepted: true, runId: "run-1", phase: "escalated", journalSequence: 8 }); });
+  expect(screen.queryByText(/Guidance saved/)).not.toBeInTheDocument();
+  expect(second.commandInteractiveRun).not.toHaveBeenCalled();
+  expect(second.getInteractiveRun).toHaveBeenCalledTimes(1);
+});
+
+it("does not carry an uncertain command key into a new stage occurrence", async () => {
+  const client: DaemonClient = new FixtureDaemonClient(populatedDaemonFixtures());
+  vi.spyOn(client, "getInteractiveRun").mockResolvedValue(view());
+  const command = vi.spyOn(client, "commandInteractiveRun").mockRejectedValue(new Error("lost"));
+  render(<RunInterventionPanel client={client} runId="run-1" />);
+  fireEvent.change(await screen.findByLabelText("Guidance"), { target: { value: "Old occurrence draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save guidance" }));
+  await screen.findByRole("button", { name: "Check same request" });
+  const next = view(); next.actions[0].subjectSequence = 9;
+  vi.mocked(client.getInteractiveRun).mockResolvedValue(next);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh human operations" }));
+  await screen.findByText("Observed occurrence 9");
+  expect(screen.getByLabelText("Guidance")).toHaveValue("");
+  expect(screen.queryByRole("button", { name: "Check same request" })).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Guidance"), { target: { value: "New occurrence draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save guidance" }));
+  await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
+  expect(command.mock.calls[1][1]).not.toBe(command.mock.calls[0][1]);
+  expect(command.mock.calls[1][2]).toMatchObject({ expectedSubjectSequence: 9, guidance: "New occurrence draft" });
+});
+
+it("refuses a read response for another run", async () => {
+  const client: DaemonClient = new FixtureDaemonClient(populatedDaemonFixtures());
+  vi.spyOn(client, "getInteractiveRun").mockResolvedValue({ ...view(), runId: "foreign" });
+  render(<RunInterventionPanel client={client} runId="run-1" />);
+  await screen.findByText(/Human operations are unavailable/);
+  expect(screen.queryByLabelText("Guidance")).not.toBeInTheDocument();
+});
+
+it("retains queued restart identity without implying its execution already exists", async () => {
+  const state = view();
+  state.actions = [{ kind: "restart", stage: "review", subjectSequence: 8, decisions: [], available: true, reason: "" }];
+  state.guidance = [{ request: { schema: "goobers.dev/operator-message/request/v1", requestId: "note", idempotencyKey: "note-key", targetAddress: "stage:review@8", principalRef: "issuer:human", requestedAt: "2026-10-04T10:00:00Z", purpose: "stage-restart-guidance", content: { text: "Use the corrected requirements." }, deliveryMode: "shared-guidance" }, state: "accepted" }];
+  const client: DaemonClient = new FixtureDaemonClient(populatedDaemonFixtures());
+  vi.spyOn(client, "getInteractiveRun").mockResolvedValue(state);
+  const command = vi.spyOn(client, "commandInteractiveRun").mockResolvedValueOnce({ status: "pending", accepted: true, runId: "run-1", continuationRunId: "reserved-run", phase: "escalated", journalSequence: 8 }).mockResolvedValueOnce({ status: "started", accepted: true, runId: "run-1", continuationRunId: "reserved-run", phase: "escalated", journalSequence: 8 });
+  render(<RunInterventionPanel client={client} runId="run-1" />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /corrected requirements/ }));
+  fireEvent.change(screen.getByLabelText("Rationale"), { target: { value: "Ready to resume" } });
+  fireEvent.click(screen.getByRole("button", { name: "Restart stage" }));
+  await screen.findByText(/Restart queued/);
+  expect(screen.getByText("reserved-run")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Open restarted execution" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Check same request" }));
+  expect(await screen.findByRole("link", { name: "Open restarted execution" })).toHaveAttribute("href", "#/run/reserved-run");
+  expect(command.mock.calls[1].slice(0, 3)).toEqual(command.mock.calls[0].slice(0, 3));
 });

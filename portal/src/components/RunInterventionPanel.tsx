@@ -5,19 +5,22 @@ import { DaemonApiError, DaemonAuthError } from "../api/errors";
 /** Deliberately separate from read-only monitoring: permission failures cannot
  * hide the run, and saved guidance is never presented as agent delivery. */
 export function RunInterventionPanel({ client, runId, revision }: { client: DaemonClient; runId: string; revision?: string | number }) {
-  const [view, setView] = useState<InteractiveRunView>();
-  const [unavailable, setUnavailable] = useState("");
+  const [loaded, setLoaded] = useState<{ client: DaemonClient; runId: string; view?: InteractiveRunView; error?: string }>();
+  const current = loaded?.client === client && loaded.runId === runId ? loaded : undefined;
+  const view = current?.view;
+  const unavailable = current?.error ?? "";
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     void client.getInteractiveRun(runId, { signal: controller.signal }).then((next) => {
-      if (!controller.signal.aborted) { setView(next); setUnavailable(""); }
+      if (controller.signal.aborted) return;
+      if (next.runId !== runId) throw new Error("Run observation identity changed");
+      setLoaded({ client, runId, view: next });
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
-      setView(undefined);
-      setUnavailable(error instanceof DaemonAuthError
+      setLoaded({ client, runId, error: error instanceof DaemonAuthError
         ? "Human operations require sign-in and explicit access to this gaggle. Monitoring remains available."
-        : "Human operations are unavailable for this run. Monitoring remains available.");
+        : "Human operations are unavailable for this run. Monitoring remains available." });
     });
     return () => controller.abort();
   }, [client, runId, revision, refresh]);
@@ -29,7 +32,7 @@ export function RunInterventionPanel({ client, runId, revision }: { client: Daem
     {view && <>
       <p>Decisions apply to the observed stage occurrence. Saved guidance is shared with authorized gaggle viewers; it does not deliver a message or restart work.</p>
       {view.actions.length === 0 && <p>No approval or escalation action is available at this run position.</p>}
-      <div className="run-human-actions">{view.actions.map((action) => <HumanActionForm key={`${action.kind}:${action.stage}`} action={action} guidance={view.guidance} client={client} runId={runId} refresh={() => setRefresh((n) => n + 1)} />)}</div>
+      <div className="run-human-actions">{view.actions.map((action) => <HumanActionForm key={`${action.kind}:${action.stage}:${action.subjectSequence}`} action={action} guidance={view.guidance} client={client} runId={runId} refresh={() => setRefresh((n) => n + 1)} />)}</div>
       <p>{view.restartReason}</p>
       <h3>Saved guidance</h3>
       {view.guidance.length === 0 ? <p>No shared guidance has been saved.</p> : <ol>{view.guidance.map(({ request }) => <li key={request.requestId}>
@@ -48,8 +51,17 @@ function HumanActionForm({ action, guidance, client, runId, refresh }: { action:
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState(false);
   const request = useRef<{ key: string; command: InteractiveRunCommand } | undefined>(undefined);
+  const lifetime = useRef<AbortController>(undefined);
+  const active = useRef(false);
+  useEffect(() => {
+    const controller = new AbortController(); lifetime.current = controller;
+    return () => controller.abort();
+  }, [client, runId, action.kind, action.stage, action.subjectSequence]);
   const label = action.kind === "restart" ? "Restart stage" : action.kind === "guidance" ? "Save guidance" : action.kind === "deny" ? "Deny escalation" : action.kind === "override" ? "Override gate" : "Apply gate decision";
   async function submit() {
+    const controller = lifetime.current;
+    if (!controller || controller.signal.aborted || active.current) return;
+    active.current = true;
     setBusy(true); setNotice("");
     if (!request.current) request.current = { key: crypto.randomUUID(), command: {
       kind: action.kind, stage: action.stage, expectedSubjectSequence: action.subjectSequence,
@@ -58,16 +70,21 @@ function HumanActionForm({ action, guidance, client, runId, refresh }: { action:
       ...(action.kind === "guidance" ? { guidance: text } : text ? { rationale: text } : {}),
     } };
     try {
-      const result = await client.commandInteractiveRun(runId, request.current.key, request.current.command);
+      const result = await client.commandInteractiveRun(runId, request.current.key, request.current.command, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (result.runId !== runId) throw new Error("Command result identity changed");
+      if (result.continuationRunId) setContinuation(result.continuationRunId);
       if (result.status === "pending") {
-        setPending(true); setNotice("The outcome is still pending. Check the same request before issuing another command.");
+        setPending(true); setNotice(result.accepted && result.continuationRunId
+          ? "Restart queued. Check the same request for admission; its execution will be available after it starts."
+          : "The outcome is still pending. Check the same request before issuing another command.");
       } else {
         request.current = undefined; setPending(false); setText("");
-        if (result.continuationRunId) setContinuation(result.continuationRunId);
         setNotice(result.status === "started" ? "Restart accepted as a linked execution. Open it to follow progress." : result.status === "failed" ? "The intervention failed. Review the run journal before issuing a new command." : result.status === "saved" ? "Guidance saved. It has not been delivered to an agent." : "Decision applied to the journal.");
         refresh();
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       // Known refusals permit a new command; transport failures retain the exact
       // occurrence, payload and key because acceptance may already have happened.
       if (error instanceof DaemonAuthError || (error instanceof DaemonApiError && error.status >= 400 && error.status < 500 && error.status !== 429)) {
@@ -77,7 +94,7 @@ function HumanActionForm({ action, guidance, client, runId, refresh }: { action:
       } else {
         setPending(true); setNotice("The outcome is unknown. Check the same request; your text and request key are preserved.");
       }
-    } finally { setBusy(false); }
+    } finally { if (!controller.signal.aborted) { active.current = false; setBusy(false); } }
   }
   return <form aria-label={`${label}: ${action.stage}`} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
     <h3>{action.stage} · {label}</h3>
@@ -88,6 +105,6 @@ function HumanActionForm({ action, guidance, client, runId, refresh }: { action:
     <button type="submit" disabled={busy || !action.available || (action.kind === "restart" && guidanceIds.length === 0)}>{busy ? "Submitting…" : pending ? "Check same request" : label}</button>
     {!action.available && <p>{action.reason}</p>}
     {notice && <p role="status">{notice}</p>}
-    {continuation && <a href={`#/run/${encodeURIComponent(continuation)}`}>Open restarted execution</a>}
+    {continuation && (pending ? <p>Queued execution: <code>{continuation}</code></p> : <a href={`#/run/${encodeURIComponent(continuation)}`}>Open restarted execution</a>)}
   </form>;
 }
