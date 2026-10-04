@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"net/url"
 	"regexp"
@@ -95,14 +96,16 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	maxCandidates := defaultDedupeCandidates
-	if raw := providerInput("maxCandidates", ""); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > maxDedupeCandidates {
-			pf(stderr, "error: invalid maxCandidates %q (want an integer between 1 and %d)\n", raw, maxDedupeCandidates)
-			return 1
-		}
-		maxCandidates = n
+	maxCandidates, err := parseIntInput(
+		providerInput("maxCandidates", strconv.Itoa(defaultDedupeCandidates)),
+		func(value int) bool { return value >= 1 && value <= maxDedupeCandidates },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("invalid maxCandidates %q (want an integer between 1 and %d)", raw, maxDedupeCandidates)
+		},
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 
 	runID, _, err := providerRunContext()

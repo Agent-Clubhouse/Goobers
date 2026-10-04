@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -437,14 +436,26 @@ func fileIssuesPolicy() (nomination.Policy, error) {
 	if policy.PartitionLabel == "" {
 		return nomination.Policy{}, errors.New("partitionLabel input is required (the instance's claim partition label, e.g. the label backlog-query's requireLabels demands)")
 	}
-	maxPerRun, err := strconv.Atoi(providerInput("maxPerRun", "3"))
-	if err != nil || maxPerRun <= 0 {
-		return nomination.Policy{}, fmt.Errorf("maxPerRun input must be a positive integer, got %q", providerInput("maxPerRun", "3"))
+	maxPerRun, err := parseIntInput(
+		providerInput("maxPerRun", "3"),
+		func(value int) bool { return value > 0 },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("maxPerRun input must be a positive integer, got %q", raw)
+		},
+	)
+	if err != nil {
+		return nomination.Policy{}, err
 	}
 	policy.MaxPerRun = maxPerRun
-	days, err := strconv.Atoi(providerInput("dedupeWindowDays", "21"))
-	if err != nil || days < 0 {
-		return nomination.Policy{}, fmt.Errorf("dedupeWindowDays input must be a non-negative integer, got %q", providerInput("dedupeWindowDays", "21"))
+	days, err := parseIntInput(
+		providerInput("dedupeWindowDays", "21"),
+		func(value int) bool { return value >= 0 },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("dedupeWindowDays input must be a non-negative integer, got %q", raw)
+		},
+	)
+	if err != nil {
+		return nomination.Policy{}, err
 	}
 	policy.DedupeWindow = time.Duration(days) * 24 * time.Hour
 	// The vocabulary is exact, not case-folded: the workflow policy table

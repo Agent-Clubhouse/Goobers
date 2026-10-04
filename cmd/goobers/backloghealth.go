@@ -110,22 +110,30 @@ func resolveBacklogHealthScanOptions(stderr io.Writer) (backlogHealthScanOptions
 		maxPages:   defaultTransitionScanMaxPages,
 		quotaFloor: defaultTransitionScanQuotaFloor,
 	}
-	if raw := providerInput("transitionScanMaxPages", ""); raw != "" {
-		pages, err := strconv.Atoi(raw)
-		if err != nil || pages < 1 {
-			pf(stderr, "error: input transitionScanMaxPages must be an integer of at least 1, got %q\n", raw)
-			return opts, false
-		}
-		opts.maxPages = pages
+	pages, err := parseIntInput(
+		providerInput("transitionScanMaxPages", strconv.Itoa(defaultTransitionScanMaxPages)),
+		func(value int) bool { return value >= 1 },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("input transitionScanMaxPages must be an integer of at least 1, got %q", raw)
+		},
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return opts, false
 	}
-	if raw := providerInput("transitionScanQuotaFloor", ""); raw != "" {
-		floor, err := strconv.ParseFloat(raw, 64)
-		if err != nil || floor < 0 || floor >= 1 {
-			pf(stderr, "error: input transitionScanQuotaFloor must be a fraction in [0,1), got %q\n", raw)
-			return opts, false
-		}
-		opts.quotaFloor = floor
+	opts.maxPages = pages
+	floor, err := parseFloatInput(
+		providerInput("transitionScanQuotaFloor", strconv.FormatFloat(defaultTransitionScanQuotaFloor, 'f', -1, 64)),
+		func(value float64) bool { return !(value < 0 || value >= 1) },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("input transitionScanQuotaFloor must be a fraction in [0,1), got %q", raw)
+		},
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return opts, false
 	}
+	opts.quotaFloor = floor
 	return opts, true
 }
 
@@ -655,11 +663,14 @@ func applyImplementationFeedback(
 	scan backlogHealthScan,
 	stdout, stderr io.Writer,
 ) int {
-	threshold, err := strconv.Atoi(providerInput(
-		"implementationFailureThreshold",
-		strconv.Itoa(defaultImplementationFailureThreshold),
-	))
-	if err != nil || threshold < 2 {
+	threshold, err := parseIntInput(
+		providerInput("implementationFailureThreshold", strconv.Itoa(defaultImplementationFailureThreshold)),
+		func(value int) bool { return value >= 2 },
+		func(_ string, _ error) string {
+			return "implementationFailureThreshold must be an integer of at least 2"
+		},
+	)
+	if err != nil {
 		pf(stderr, "error: implementationFailureThreshold must be an integer of at least 2\n")
 		return 1
 	}
