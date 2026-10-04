@@ -14,8 +14,8 @@ describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
       "workbenchGraph", "workbenchDocuments", "workbenchSources", "workbenchItems", "workbenchItem",
-      "workbenchWriteCapabilities", "workbenchPatch", "workbenchCommand",
       "sessionCreate", "sessionInput", "sessionClose", "session", "sessions", "sessionMessages", "sessionAccepted",
+      "workbenchWriteCapabilities", "workbenchPatch", "workbenchCommand",
       "childPublicationCheck",
       "childPublicationResult",
       "childWorkflowPage",

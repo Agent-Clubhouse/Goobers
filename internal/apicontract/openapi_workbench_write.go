@@ -38,3 +38,18 @@ func workbenchWriteResponses(id RouteID) map[string]any {
 	}
 	return map[string]any{"200": jsonResponse("Current authorized command evidence or native capabilities; uncertainty is not success", schemaRef(name)), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
 }
+
+// workbenchResponses keeps the source read/write family separate from generic
+// run and daemon responses without changing any route's status or schema.
+func workbenchResponses(id RouteID) map[string]any {
+	if id == RouteWorkbenchGraph {
+		return map[string]any{"200": jsonResponse("Current server-authorized graph; coverage and conflicts remain explicit", schemaRef("WorkbenchGraph")), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
+	}
+	if workbenchWriteRoute(id) {
+		return workbenchWriteResponses(id)
+	}
+	if workbenchReadRoute(id) {
+		return workbenchReadResponses(id)
+	}
+	return nil
+}

@@ -263,17 +263,11 @@ func openAPIRequestBody(route Route) map[string]any {
 }
 
 func openAPIResponses(route Route) map[string]any {
-	if route.ID == RouteWorkbenchGraph {
-		return map[string]any{"200": jsonResponse("Current server-authorized graph; coverage and conflicts remain explicit", schemaRef("WorkbenchGraph")), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
-	}
-	if workbenchWriteRoute(route.ID) {
-		return workbenchWriteResponses(route.ID)
+	if response := workbenchResponses(route.ID); response != nil {
+		return response
 	}
 	if sessionOperationRoute(route.ID) {
 		return sessionOperationResponses(route.ID)
-	}
-	if workbenchReadRoute(route.ID) {
-		return workbenchReadResponses(route.ID)
 	}
 	if sessionRoute(route.ID) {
 		return sessionResponses(route)

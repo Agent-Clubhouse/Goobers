@@ -1,7 +1,7 @@
 # Source-owned workbench metadata
 
-Status: local implementation foundation; source configuration and portal adapters
-are not installed yet. These formats store planning truth in a repository.
+Status: configured source reads, relationship navigation and native field edits
+are installed locally. These formats store planning truth in a repository.
 Changes must be proposed through the gaggle's source-write PR policy.
 
 ## Markdown objectives
@@ -165,9 +165,9 @@ replace the full visible set; generic edits preserve service control labels.
 The adapter issues a single native mutation without automatic retry, then makes
 one readback. Receipts separately report provider acknowledgement and whether the
 observed value matches. Matching state after a lost response remains uncertain;
-it does not prove this command authored that state. The host must persist command
-custody before calling the adapter. Manual editing routes and UI remain disabled
-until that host custody and authorization path is installed. Relationships and
+it does not prove this command authored that state. The installed host persists command
+custody before calling the adapter and exposes authorized manual editing routes
+and portal controls. Relationships and
 repository PR proposals use separate contracts.
 
 Durable command custody now records the exact actor, source target, request,
@@ -181,8 +181,7 @@ Receipt capacity is reserved before acceptance against the shared byte budget,
 with at most 1,000 live or retained commands per gaggle. Confirmed/not-applied
 details remain for 30 days, followed by a compact replay tombstone for 30 more.
 The resulting idempotency guarantee is 60 days. Accepted, attempting and unknown
-commands never expire automatically to free capacity. This custody slice does not
-enable editing until the authorized host/API is installed.
+commands never expire automatically to free capacity. The installed writer/API uses this custody for manual field edits.
 
 
 ## Interactive read service
@@ -214,7 +213,7 @@ The same service is the default source reader for native shared-session tools.
 Tools bind the exact initiating human, live execution lease and retained source
 configuration; providers remain in the host. A missing source or read grant leaves
 the session in conversation-only mode. Read availability is advertised only after
-the daemon installs the reader. Manual source edits remain a later slice.
+the daemon installs the reader. Manual field edits use the installed writer described below.
 
 ## Repository document reads
 
@@ -277,3 +276,28 @@ Native edit identity uses the physical source target and exact patch. Objective
 classification and unrelated configuration changes do not change that identity,
 so a confirmed command can be replayed without minting a token or re-reading its
 obsolete pre-edit revision. Current source and field authority still apply.
+
+
+## Installed native field commands
+
+The portal detail editor checks current source capabilities before offering a
+field. `PATCH /api/v1/gaggles/{gaggle}/workbench/sources/{source}/items/{item}`
+requires a unique `Idempotency-Key`, stable source identity and expected revision.
+The service stores the verified human identity, admits the immutable request and
+claims one attempt before resolving the configured interactive credential.
+Duplicates and receipt reads recheck current authority without resolving tokens
+or repeating provider effects. No automation credential fallback is used.
+
+One field is edited per command. ADO uses an atomic revision test; GitHub checks
+its timestamp before the mutation but cannot provide an atomic issue revision
+condition. Control labels are preserved; needs-human resolution is a separate
+operation. Provider acknowledgement and a matching readback are both needed for a
+confirmed receipt. A lost response remains unknown even if the observed content
+matches. The editor retains the command key and offers receipt inspection; a fresh
+edit after a settled result first reads the current item and capabilities.
+
+The daemon performs bounded receipt maintenance even without an active scheduler.
+Confirmed/not-applied evidence becomes a compact tombstone after 30 days, retained
+for another 30 days. Accepted, attempting and unknown custody does not expire.
+Governed repository metadata PRs and native relationship writes are separate
+capabilities; this field editor does not claim those operations.

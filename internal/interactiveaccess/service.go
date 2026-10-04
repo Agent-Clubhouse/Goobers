@@ -35,6 +35,7 @@ type Service struct {
 	stageRestartAvailable   atomic.Bool
 	sessionsAvailable       atomic.Bool
 	backlogReadAvailable    atomic.Bool
+	backlogEditAvailable    atomic.Bool
 	repositoryReadAvailable atomic.Bool
 	mu                      sync.RWMutex
 	gaggles                 map[string]*apiv1.Gaggle
@@ -200,8 +201,24 @@ func (s *Service) operationAvailable(g *apiv1.Gaggle, action apiv1.InteractiveAc
 		return s.sessionsAvailable.Load()
 	case "backlog.read":
 		return s.backlogReadAvailable.Load() && workbenchSourceKind(g, "backlog")
+	case "backlog.edit":
+		return s.backlogEditAvailable.Load() && workbenchEditableBacklog(g)
 	case "repository.read":
 		return s.repositoryReadAvailable.Load() && (workbenchSourceKind(g, "documents") || workbenchSourceKind(g, "relationships"))
+	}
+	return false
+}
+
+// SetBacklogEditAvailable advertises an installed durable writer, never a grant.
+func (s *Service) SetBacklogEditAvailable(available bool) { s.backlogEditAvailable.Store(available) }
+
+func workbenchEditableBacklog(g *apiv1.Gaggle) bool {
+	if g.Spec.Workbench != nil {
+		for _, source := range g.Spec.Workbench.Sources {
+			if source.Kind == "backlog" && source.Writes != nil && len(source.Writes.Fields) > 0 {
+				return true
+			}
+		}
 	}
 	return false
 }
