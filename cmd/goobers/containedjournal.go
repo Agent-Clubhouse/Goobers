@@ -164,5 +164,5 @@ func (s *daemonCredentialService) containedAttempt(ctx context.Context) (contain
 	if err != nil {
 		return containedAttemptCustody{}, err
 	}
-	return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, custody: a.active, review: a.review}, nil
+	return containedAttemptCustody{contract: a.contract, digest: a.digest, blobs: a.blobs, custody: a.custody, review: a.review}, nil
 }

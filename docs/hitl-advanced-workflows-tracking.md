@@ -80,6 +80,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-worker-reconciliation` | `codex/haw-event-subscriptions` | Retain exact worker attempts, rejoin without launch, and replay the original workspace application plan |
 | `codex/haw-event-configuration` | `codex/haw-worker-reconciliation` | Declare gaggle subscriptions and compile immutable same-gaggle target revisions |
 
+| `codex/haw-host-recovery` | `codex/haw-event-configuration` | Recover exact parent and child worker custody before resuming retained work |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -124,14 +126,11 @@ Linux image placement and a configured worker transport. Actual runner-to-worker
 composition passes with real Git workspaces and a simulated worker. This is not
 a live Kubernetes or model qualification. Remaining delivery gates:
 
-- Complete exact worker crash reconciliation. Parent and child factories now
-  use retained kits, exact signed physical-attempt credentials and scoped HTTP
-  planes through the existing Temporal transport. Parent writer start/join
-  evidence and its original fork snapshot preserve a managed checkout after an
-  uncertain dispatch; retry, Resume and Rerun refuse a replacement until custody
-  is recovered. Bounded late parent teardown and the shared exact-worker
-  reconciliation engine are implemented; production recovery sweep wiring is
-  next. See
+- Exercise exact recovery against a live worker deployment. Parent and child host
+  recovery now rejoin the retained worker, import its verified output and preserve
+  the original checkout before allowing continuation. Child resume ownership is
+  fenced against parent cancellation and terminal result capture. Combined race
+  and real Git tests pass with simulated worker transport. See the
   [contained attempt contract](reference/contained-workflow-attempts.md).
 - Verify explicit PR publication delegation against the actual credential surface,
   including ambient credentials and model credentials that also authorize GitHub.

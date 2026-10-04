@@ -3,9 +3,8 @@
 Generated child workflow execution and a parent task that can delegate require
 an isolated worker pod. The first connected parent lane supports serial opted-in repository agents with
 explicit Linux image placement and configured worker transport. Unsupported
-workflow shapes are refused. Recovery of an uncertain physical worker remains
-in progress at the host integration boundary; the shared executor can now
-reconcile a retained worker without launching a replacement.
+workflow shapes are refused. Parent and child host recovery use the shared
+executor to reconcile a retained worker without launching a replacement.
 
 ## Parent task authority
 
@@ -50,7 +49,7 @@ and transcript captures are namespaced by physical contract. Inline artifact
 publication, span reads and artifact-reference adoption all use the request's
 scoped store, including bounded reads; none fall back to shared blob storage.
 
-An exact host-started, unjoined parent contract retains bounded teardown custody
+An exact host-started, unjoined parent or child contract retains bounded teardown custody
 after its stage stops. Credentials and new-child grants still require active
 authority. Once the run journal is terminal, fresh direct observations remain
 refused; final transcript and workspace artifacts can still be uploaded and
@@ -111,8 +110,13 @@ stops/joins it and verifies its exact payload binding; it never submits another
 start. Returned edits require both stopped-writer evidence and a matching output
 carrier. Workspace application records the exact plan before effects, so a crash
 replays that plan instead of adopting a later checkout as a new merge baseline.
-Conflicting intervening edits retain custody and require resolution. Connecting
-this engine to parent/child host recovery and nonterminal resumption is ongoing.
+Conflicting intervening edits retain custody and require resolution. Parent host
+recovery imports the original checkout before recording writer join; an authorized
+continuation then reuses it. Child recovery uses the same contract, preserves its
+RunID and rechecks the durable parent fence before resuming execution. Recovery
+reservations prevent terminal result capture from racing a new child owner.
+Recovery observation can finish after cancellation, while fresh execution still
+requires current admission and credential authority.
 
 The completion boundary checks both inline outputs and reviewer evidence against
 bounded attempt custody. It rejects claimed source-trust grades, inconsistent
