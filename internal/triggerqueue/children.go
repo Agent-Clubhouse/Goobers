@@ -93,6 +93,8 @@ type ChildRecord struct {
 	StartKey              string
 	ProposalDigest        string
 	RunID                 string
+	ExecutionEpoch        int
+	ExecutionRunID        string
 	State                 ChildState
 	ResultRef             string
 	WorkspaceRef          string
@@ -107,10 +109,12 @@ type ChildRecord struct {
 // ChildStateUpdate is a compare-and-swap, not an instruction to execute effects.
 // Terminal outcomes require a verified result reference, including cancellation.
 type ChildStateUpdate struct {
-	Expected     ChildState
-	State        ChildState
-	ResultRef    string
-	WorkspaceRef string
+	// ExecutionRunID is mandatory after human restart to fence stale observers.
+	ExecutionRunID string
+	Expected       ChildState
+	State          ChildState
+	ResultRef      string
+	WorkspaceRef   string
 }
 
 const childSchema = `
@@ -197,7 +201,7 @@ func childStartKey(i ChildIdentity) string {
 	return "haw-child:v1:" + childDigest(b)
 }
 
-const childColumns = `c.gaggle,c.parent_run,c.occurrence,c.invocation_key,c.sequence,c.child_id,c.acceptance_id,c.start_key,c.state,c.result_ref,c.workspace_ref,c.accepted_ns,c.updated_ns,c.terminal_ns,c.acknowledged_ns,c.tombstoned_ns,p.cancelled_ns IS NOT NULL,c.proposal_digest`
+const childColumns = `c.gaggle,c.parent_run,c.occurrence,c.invocation_key,c.sequence,c.child_id,c.acceptance_id,c.start_key,c.state,c.result_ref,c.workspace_ref,c.accepted_ns,c.updated_ns,c.terminal_ns,c.acknowledged_ns,c.tombstoned_ns,p.cancelled_ns IS NOT NULL,c.proposal_digest,c.execution_epoch,c.execution_run`
 const childFrom = ` FROM child_lineages c JOIN child_parents p USING(gaggle,parent_run)`
 const childWhere = ` WHERE c.gaggle=? AND c.parent_run=? AND c.occurrence=? AND c.invocation_key=?`
 
@@ -211,7 +215,7 @@ func scanChild(row scanner) (ChildRecord, error) {
 	var terminal, ack, tombstone sql.NullInt64
 	err := row.Scan(&c.Identity.Gaggle, &c.Identity.ParentRunID, &c.Identity.StageOccurrence, &c.Identity.InvocationKey,
 		&c.Sequence, &c.ChildID, &c.AcceptanceID, &c.StartKey, &c.State, &c.ResultRef, &c.WorkspaceRef,
-		&accepted, &updated, &terminal, &ack, &tombstone, &c.CancellationRequested, &c.ProposalDigest)
+		&accepted, &updated, &terminal, &ack, &tombstone, &c.CancellationRequested, &c.ProposalDigest, &c.ExecutionEpoch, &c.ExecutionRunID)
 	if err != nil {
 		return ChildRecord{}, err
 	}

@@ -68,7 +68,7 @@ func (s *Store) WithChildLaunch(ctx context.Context, identity ChildIdentity, pub
 	if err != nil {
 		return err
 	}
-	if child.State != ChildQueued || child.CancellationRequested || !child.TombstonedAt.IsZero() {
+	if child.ExecutionEpoch != 0 || child.State != ChildQueued || child.CancellationRequested || !child.TombstonedAt.IsZero() {
 		return ErrTransition
 	}
 	var state State

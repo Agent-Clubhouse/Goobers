@@ -262,6 +262,23 @@ authority. This binding contains no provider credentials.
 - User guidance on child: use the same intervention API and affected-stage restart
   contract as any run. Prior history stays; the recovery allowance is a new epoch.
 
+The queue now distinguishes the fixed accepted child identity from its current
+execution run. A human restart reserves one of eight bounded execution epochs by
+comparing the exact source run, terminal journal sequence, retained result and
+selected-guidance plan. Every epoch retains its own immutable result; the active
+pointer changes atomically with the parent cancellation fence. An admitted
+parent disposition or acknowledged slot prevents restart. Prior result references
+cannot acknowledge or dispose the new epoch. Escalated sources must first have
+verified stopped-writer result custody, even though the child awaits a human.
+
+Epoch context is bounded to 4 MiB and result storage is reserved before admission
+against the existing shared queue quota. The production child-family pruner
+releases context/result bytes after acknowledged family settlement plus 30 days;
+small execution identity tombstones survive the next 30 days. This queue/journal
+foundation does not enable sealed-child restart by itself: the common human
+restart adapter still needs execution, interactive credential, fork, observation
+and recovery wiring before HAW-CHD-008 is complete.
+
 Cancellation is idempotent and includes queued children, live child pods, claims,
 workspace leases, and interventions. The portal says `cancellation requested`
 until cleanup is confirmed. Pruners cannot remove control references still needed

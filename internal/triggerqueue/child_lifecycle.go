@@ -2,6 +2,7 @@ package triggerqueue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 )
@@ -40,14 +41,9 @@ func (s *Store) SetChildState(ctx context.Context, identity ChildIdentity, updat
 	if err != nil {
 		return err
 	}
-	if !c.TombstonedAt.IsZero() {
-		return ErrTransition
-	}
-	if c.State == update.State && c.ResultRef == update.ResultRef && c.WorkspaceRef == update.WorkspaceRef {
-		return nil
-	}
-	if c.State != update.Expected || now.Before(c.UpdatedAt) {
-		return ErrTransition
+	duplicate, err := validateChildStateObservation(ctx, tx, c, update, now)
+	if err != nil || duplicate {
+		return err
 	}
 	var receiptState State
 	if err = tx.QueryRowContext(ctx, `SELECT state FROM triggers WHERE id=?`, c.AcceptanceID).Scan(&receiptState); err != nil {
@@ -60,7 +56,7 @@ func (s *Store) SetChildState(ctx context.Context, identity ChildIdentity, updat
 			return err
 		}
 	}
-	if update.State == ChildRunning && receiptState != Dispatching && receiptState != Dispatched {
+	if c.ExecutionEpoch == 0 && update.State == ChildRunning && receiptState != Dispatching && receiptState != Dispatched {
 		return ErrTransition
 	}
 	var terminal any
@@ -74,7 +70,41 @@ func (s *Store) SetChildState(ctx context.Context, identity ChildIdentity, updat
 	if err = changed(res, err); err != nil {
 		return err
 	}
+	if c.ExecutionEpoch > 0 {
+		if _, err = tx.ExecContext(ctx, `UPDATE child_execution_epochs SET state=?,result_ref=?,workspace_ref=?,updated_ns=?,terminal_ns=? WHERE child_id=? AND epoch=? AND run_id=?`, update.State, update.ResultRef, update.WorkspaceRef, now.UnixNano(), terminal, c.ChildID, c.ExecutionEpoch, c.ActiveRunID()); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+func validateChildStateObservation(ctx context.Context, tx *sql.Tx, c ChildRecord, update ChildStateUpdate, now time.Time) (bool, error) {
+	if !c.TombstonedAt.IsZero() || !childExecutionUpdateMatches(c, update.ExecutionRunID) {
+		return false, ErrTransition
+	}
+	if err := validateCurrentChildExecution(ctx, tx, c); err != nil {
+		return false, err
+	}
+	if c.State == update.State && c.ResultRef == update.ResultRef && c.WorkspaceRef == update.WorkspaceRef {
+		return true, nil
+	}
+	if c.State != update.Expected || now.Before(c.UpdatedAt) {
+		return false, ErrTransition
+	}
+	if c.ExecutionEpoch > 0 && update.State.Terminal() {
+		result, err := readChildResult(ctx, tx, c)
+		if err != nil {
+			return false, err
+		}
+		if result.ReceiptDigest != update.ResultRef {
+			return false, ErrTransition
+		}
+	}
+	return false, nil
+}
+
+func childExecutionUpdateMatches(c ChildRecord, runID string) bool {
+	return (c.ExecutionEpoch == 0 && runID == "") || runID == c.ActiveRunID()
 }
 
 // AcknowledgeChild releases the unresolved-child slot only after the parent

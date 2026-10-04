@@ -66,7 +66,7 @@ func (s *Store) KeepChildResult(ctx context.Context, child ChildRecord, result C
 	if err != nil {
 		return err
 	}
-	if current.ChildID != child.ChildID || current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || !current.TombstonedAt.IsZero() {
+	if !sameChildResultOwner(current, child) {
 		return ErrChildResultUnavailable
 	}
 	retained, err := readChildResult(ctx, tx, current)
@@ -81,6 +81,12 @@ func (s *Store) KeepChildResult(ctx context.Context, child ChildRecord, result C
 	}
 	if !current.AcknowledgedAt.IsZero() || (current.State.Terminal() && current.ResultRef != result.ReceiptDigest) {
 		return ErrTransition
+	}
+	if current.ExecutionEpoch > 0 {
+		if err := keepChildEpochResult(ctx, tx, current, result); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	credit, err := resultStorageCredit(ctx, tx, current.ChildID)
 	if err != nil {
@@ -101,7 +107,7 @@ func (s *Store) KeepChildResult(ctx context.Context, child ChildRecord, result C
 	return tx.Commit()
 }
 
-func readChildResult(ctx context.Context, reader childProposalReader, child ChildRecord) (ChildResult, error) {
+func readInitialChildResult(ctx context.Context, reader childProposalReader, child ChildRecord) (ChildResult, error) {
 	var result ChildResult
 	if err := reader.QueryRowContext(ctx, `SELECT result_digest FROM child_lineages WHERE child_id=? AND tombstoned_ns IS NULL`, child.ChildID).Scan(&result.ReceiptDigest); err != nil {
 		return result, ErrChildResultUnavailable
@@ -125,4 +131,8 @@ func (s *Store) ChildResult(ctx context.Context, identity ChildIdentity) (ChildR
 		return ChildResult{}, err
 	}
 	return readChildResult(ctx, s.db, child)
+}
+
+func sameChildResultOwner(current, observed ChildRecord) bool {
+	return current.ChildID == observed.ChildID && current.AcceptanceID == observed.AcceptanceID && current.ProposalDigest == observed.ProposalDigest && current.ActiveRunID() == observed.ActiveRunID() && current.ExecutionEpoch == observed.ExecutionEpoch && current.TombstonedAt.IsZero()
 }

@@ -79,7 +79,10 @@
         "envelopeDigest": {"description": "Digest of the exact admitted child start envelope.",
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
-        }
+        },
+        "executionEpoch": {"description": "Bounded linked human execution epoch; absent means original acceptance.", "type": "integer", "minimum": 1, "maximum": 8},
+        "priorResultRef": {"description": "Immutable prior child result selected by human restart admission.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "restartDigest": {"description": "Exact durable queue restart request digest; conveys no independent authority.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
       }
     },
     "event": {
