@@ -381,7 +381,8 @@ func childByteCapacity(ctx context.Context, tx *sql.Tx, additionalBytes int) err
  (SELECT COALESCE(SUM(reserved_bytes),0) FROM workbench_commands WHERE tombstoned_ns IS NULL) +
  (SELECT COALESCE(SUM(reserved_bytes),0) FROM needs_human_commands WHERE tombstoned_ns IS NULL) +
  (SELECT COALESCE(SUM(reserved_bytes),0) FROM workbench_proposals WHERE tombstoned_ns IS NULL) +
- (SELECT COALESCE(SUM(reserved_bytes),0) FROM start_controls)`).Scan(&reserved); err != nil {
+ (SELECT COALESCE(SUM(reserved_bytes),0) FROM start_controls) +
+ (SELECT COALESCE(SUM(reserved_bytes),0) FROM pr_repair_commands WHERE tombstoned_ns IS NULL)`).Scan(&reserved); err != nil {
 		return err
 	}
 	var pages, freePages, pageSize int64

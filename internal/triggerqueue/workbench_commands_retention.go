@@ -15,7 +15,7 @@ func (s *Store) PruneWorkbenchCommands(ctx context.Context, now time.Time, limit
 	if now.IsZero() || limit < 1 || limit > 100 {
 		return 0, ErrTransition
 	}
-	pruners := []func(context.Context, time.Time, int) (int, error){s.pruneNativeWorkbenchCommands, s.PruneWorkbenchProposals, s.PruneNeedsHumanCommands}
+	pruners := []func(context.Context, time.Time, int) (int, error){s.pruneNativeWorkbenchCommands, s.PruneWorkbenchProposals, s.PruneNeedsHumanCommands, s.PrunePRRepairCommands}
 	count := 0
 	for i, prune := range pruners {
 		remaining := limit - count
