@@ -42,6 +42,9 @@ func openTriggerPruneGuard(layout instance.Layout, dryRun bool, now time.Time) (
 }
 
 func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Store, candidate retention.Result, now time.Time) error {
+	if err := protectEventJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
 	record, err := queue.ForRun(ctx, candidate.RunID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil

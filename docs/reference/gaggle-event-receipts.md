@@ -155,6 +155,8 @@ is bounded to 100 custody work units and a 50 ms context per daemon sweep, inclu
 scheduler is attached. `EventDependencyPage` exposes source/consumer journals and
 generation pins from receipt acceptance onward; `EventRootDependencyPage` adds
 long-lived root producer references. The host must successfully collect both
-bounded inventories before pruning those resources. Connecting these inventories
-to journal/configuration-generation pruning remains host integration work. Without
-consumer settlement, accepted inputs and starts remain retained.
+bounded inventories before pruning those resources. The existing host journal
+guard and generation-pruning inventory now include both dependency sources,
+including before daemon composition. Intake must hold the accepted generation's
+lease through receipt commit. Without consumer settlement, accepted inputs and
+starts remain retained.

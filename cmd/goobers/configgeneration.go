@@ -47,6 +47,9 @@ func retainedExecutionGenerationPins(ctx context.Context, layout instance.Layout
 		return nil, err
 	}
 	pins := make(map[string]bool)
+	if err := retainEventGenerationPins(ctx, layout, pins); err != nil {
+		return nil, err
+	}
 	for _, root := range roots {
 		entries, err := os.ReadDir(root)
 		if err != nil {
