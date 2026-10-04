@@ -1086,6 +1086,9 @@ func (u *upSession) configureAPI() int {
 	u.credentialPlane.childDispatch = u.triggerPlane
 	u.credentialPlane.Replace(credentialPlaneDefinitionsFromSet(u.setup.Definitions))
 	u.setup.CredentialPlane = u.credentialPlane
+	if err := u.credentialPlane.installQueuedChildren(u.setup, u.durableTriggers, &u.wg); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize queued child execution", err)
+	}
 	// The surrender plane (#3699) rides beside the blob store, under the same
 	// instance-local root — the "<blob-store>/surrender" convention
 	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents

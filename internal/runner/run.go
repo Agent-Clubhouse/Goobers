@@ -440,6 +440,7 @@ type Config struct {
 	// runner. Recovery of a human restart refuses automation fallback.
 	StageRestartContext func(context.Context, journal.RunIdentity) (context.Context, error)
 
+	childExecution      *journal.RunIdentity
 	ChildHandoff        ChildHandoff
 	ChildParentCapacity ChildParentCapacity
 	SelfExecutionDenied bool

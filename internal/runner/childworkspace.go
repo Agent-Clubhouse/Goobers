@@ -45,6 +45,9 @@ func (a ChildWorkspaceAdmission) validate() error {
 }
 
 func (r *Runner) prepareChildWorkspaceStart(ctx context.Context, in *StartInput, inputs map[string][]byte, integrity map[string]apiv1.Integrity) error {
+	if err := r.validateChildExecution(*in); err != nil {
+		return err
+	}
 	if err := pinChildCredentials(in, inputs, integrity); err != nil {
 		return err
 	}
@@ -225,6 +228,9 @@ func (r *Runner) restoreChildWorkspace(ctx context.Context, reader *journal.Read
 // Child runs recover only their pinned fork. Reject persisted redirection before
 // ordinary workspace-revision resolution can contact another repository.
 func (r *Runner) restoreExecutionWorkspace(ctx context.Context, reader *journal.Reader, id journal.RunIdentity, in StartInput, events []journal.Event, parallel *parallelExec, start, branch int) (StartInput, error) {
+	if err := r.validateChildExecution(in); err != nil {
+		return in, err
+	}
 	if in.Child == nil {
 		return r.restoreResumeWorkspaceRevision(ctx, in, events, parallel, start, branch)
 	}

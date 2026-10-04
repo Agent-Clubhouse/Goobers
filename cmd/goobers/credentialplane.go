@@ -104,6 +104,7 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 type daemonCredentialService struct {
 	// Installed before serving. Current child authority lease spans materialization.
 	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
+	childExecutors   childExecutorProvider
 	layout           instance.Layout
 	config           *instance.Config
 	stores           credentials.StoreResolver
