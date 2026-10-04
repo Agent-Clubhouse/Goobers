@@ -817,6 +817,7 @@ type Runner struct {
 	newHeartbeatTicker   func(time.Duration) heartbeatTicker
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
+	gatePrepRetryFloor   time.Duration
 	active               activeRunSet
 	pinnedMu             sync.Mutex
 	pinnedRuns           map[string]*worktree.PinnedLease
@@ -862,6 +863,7 @@ func New(cfg Config) (*Runner, error) {
 		},
 		stalledCancelGrace:   StalledCancellationGrace,
 		stalledTerminalGrace: StalledTerminalizationGrace,
+		gatePrepRetryFloor:   GatePreparationRetryFloor,
 		pinnedRuns:           make(map[string]*worktree.PinnedLease),
 		attributeRun:         creditgraph.WriteRunRecord,
 	}, nil
@@ -5863,13 +5865,15 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, gateWorkspaceMode(g), false, workspaceBranch)
+		prepFailures := 0
+		env, workspace, prepFailures, err = r.buildGateEnvelopeWithRetry(ctx, jr, in, g, gateCaps, gateLimits, upstream, workspaceBranch)
 		if err != nil {
 			prepErr := fmt.Errorf("prepare gate %q: %w", g.Name, err)
 			err = codedStageFailure(provisionFailureCode(err), prepErr)
 			span.Fail(err)
 			return gate.Result{}, err, nil
 		}
+		g = gateWithConsumedPreparationAttempts(g, prepFailures)
 		env.InstructionAddendum = instructionAddendum
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateTelemetryDir = telemetry.ResetStageTelemetryDir(env.Workspace)

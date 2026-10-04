@@ -973,6 +973,22 @@ func (e *gitCommandError) Unwrap() error {
 	return e.cause
 }
 
+// ErrBranchOccupied marks a worktree-add refusal caused by the requested branch
+// being temporarily checked out by a live managed worktree.
+var ErrBranchOccupied = errors.New("worktree branch occupied")
+
+// branchOccupancyError preserves the concrete refusal reason while allowing
+// callers to classify branch-occupancy conflicts without parsing messages.
+type branchOccupancyError struct {
+	reason string
+}
+
+func (e branchOccupancyError) Error() string { return e.reason }
+
+func (e branchOccupancyError) Is(target error) bool {
+	return target == ErrBranchOccupied
+}
+
 // remote5xxPattern matches git's own "HTTP 5xx"/"returned error: 5xx"
 // phrasing for a failed smart-HTTP request (curl's -f behavior surfaces the
 // remote status this way, not as a distinct git exit code).
@@ -1023,6 +1039,13 @@ func IsTransientProvisionError(err error) bool {
 		}
 	}
 	return false
+}
+
+// IsRetryableProvisionError reports whether a workspace-provisioning failure is
+// retryable by a bounded caller: transient git transport/remote failures, or a
+// managed branch that is currently occupied by another live worktree.
+func IsRetryableProvisionError(err error) bool {
+	return IsTransientProvisionError(err) || errors.Is(err, ErrBranchOccupied)
 }
 
 // runGit runs git with args, using dir as the working directory (the process

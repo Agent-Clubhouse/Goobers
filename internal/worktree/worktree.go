@@ -1140,11 +1140,21 @@ func (m *Manager) reconcileReleasedSameRunBranch(ctx context.Context, key, repoD
 	if primary.RepositoryDigest != RepositoryDigest(opts.RepoURL) || primary.Branch != opts.Branch {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: repository or branch identity disagrees", opts.Branch, occupant)
 	}
-	if primary.OwnerRunID == "" || primary.OwnerRunID != opts.OwnerRunID {
+	if primary.OwnerRunID == "" {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: owned by another run", opts.Branch, occupant)
+	}
+	if primary.OwnerRunID != opts.OwnerRunID {
+		if primary.Status == statusActive {
+			return fmt.Errorf("worktree: refuse branch %q occupant %s: %w", opts.Branch, occupant, branchOccupancyError{reason: "owned by another run"})
+		}
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: owned by another run", opts.Branch, occupant)
 	}
 	if primary.Status != statusCleanupPending {
-		return fmt.Errorf("worktree: refuse branch %q occupant %s: owner has not surrendered it (status %q)", opts.Branch, occupant, primary.Status)
+		reason := fmt.Sprintf("owner has not surrendered it (status %q)", primary.Status)
+		if primary.Status == statusActive {
+			return fmt.Errorf("worktree: refuse branch %q occupant %s: %w", opts.Branch, occupant, branchOccupancyError{reason: reason})
+		}
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: %s", opts.Branch, occupant, reason)
 	}
 	if primary.Status != ownership.Status {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: ownership records disagree", opts.Branch, occupant)
