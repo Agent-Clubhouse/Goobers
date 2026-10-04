@@ -42,6 +42,9 @@ func workbenchWriteResponses(id RouteID) map[string]any {
 // workbenchResponses keeps the source read/write family separate from generic
 // run and daemon responses without changing any route's status or schema.
 func workbenchResponses(id RouteID) map[string]any {
+	if workbenchProposalRoute(id) {
+		return workbenchProposalResponses(id)
+	}
 	if id == RouteWorkbenchGraph {
 		return map[string]any{"200": jsonResponse("Current server-authorized graph; coverage and conflicts remain explicit", schemaRef("WorkbenchGraph")), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
 	}

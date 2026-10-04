@@ -1896,6 +1896,12 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+  previewMetadataChange(gaggle: string, source: string, input: import("./workbenchProposalTypes").MetadataChangeRequest, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataPreview>;
+  submitMetadataProposal(gaggle: string, source: string, key: string, input: import("./workbenchProposalTypes").MetadataChangeRequest, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+  getMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+  checkMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+  continueMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+
   getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph>;
   getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities>;
   patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand>;
@@ -2205,3 +2211,4 @@ export interface SessionPage { items: InteractiveSession[]; nextCursor?: string 
 export interface SessionMessagePage { items: SessionMessage[]; nextCursor?: number }
 
 export type { GaggleEventEnvelope, GaggleEventReceipt, GaggleEventDelivery } from "./eventTypes";
+export type { MetadataRevision, MetadataChangeRequest, MetadataPreview, MetadataProposalPR, MetadataProposalPhase, MetadataProposalObservation, MetadataProposalCommand } from "./workbenchProposalTypes";

@@ -3,6 +3,9 @@
 import type {
   GaggleEventEnvelope,
   GaggleEventReceipt,
+  MetadataChangeRequest,
+  MetadataPreview,
+  MetadataProposalCommand,
   WorkbenchDocumentPage,
   WorkbenchGraph,
   BacklogWriteCapabilities,
@@ -70,6 +73,9 @@ import type {
 export interface GoWireFixtures {
   gaggleEventEnvelope: GaggleEventEnvelope;
   gaggleEventReceipt: GaggleEventReceipt;
+  metadataChange: MetadataChangeRequest;
+  metadataPreview: MetadataPreview;
+  metadataProposal: MetadataProposalCommand;
   workbenchDocuments: WorkbenchDocumentPage;
   workbenchGraph: WorkbenchGraph;
   workbenchWriteCapabilities: BacklogWriteCapabilities;
@@ -157,6 +163,63 @@ export const goWireFixtures = {
     "statusUrl": "/api/v1/gaggles/web/events/event-0123456789abcdef0123456789abcdef",
     "tombstoned": false,
     "deliveries": []
+  },
+  "metadataChange": {
+    "path": "plan.md",
+    "expected": {
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "blobId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "contentDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "field": "description",
+    "value": "# Revised strategy\n"
+  },
+  "metadataPreview": {
+    "path": "plan.md",
+    "expected": {
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "blobId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "contentDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "targetDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "operationDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "proposedContentDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "changed": true,
+    "before": "# Strategy\n",
+    "after": "# Revised strategy\n"
+  },
+  "metadataProposal": {
+    "id": "workbench-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "gaggle": "web",
+    "sourceBindingId": "strategy",
+    "actor": {
+      "issuer": "https://identity.example",
+      "subject": "alice"
+    },
+    "path": "plan.md",
+    "state": "unknown",
+    "duplicate": false,
+    "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "operationDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "expected": {
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "blobId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "contentDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "proposedContentDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "branch": "goobers/workbench/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "acceptedAt": "2026-10-04T12:00:00Z",
+    "phases": [
+      {
+        "name": "tree",
+        "outcome": "unknown",
+        "claimedAt": "2026-10-04T12:00:00Z",
+        "finishedAt": "2026-10-04T12:00:00Z"
+      }
+    ],
+    "observations": [],
+    "omittedObservations": 0,
+    "nextAction": "Inspect the exact retained effect; do not retry the write."
   },
   "workbenchGraph": {
     "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

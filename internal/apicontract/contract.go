@@ -680,6 +680,12 @@ var v1Routes = []Route{
 	{ID: RouteSessionNeedsHumanInspect, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/inspect_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionNeedsHumanResolve, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/resolve_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionNeedsHumanReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_needs_human_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchProposalPreview, Method: http.MethodPost, Path: WorkbenchProposalPreviewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchProposalSubmit, Method: http.MethodPost, Path: WorkbenchProposalsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchProposal, Method: http.MethodGet, Path: WorkbenchProposalPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchProposalCheck, Method: http.MethodPost, Path: WorkbenchProposalCheckPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchProposalContinue, Method: http.MethodPost, Path: WorkbenchProposalContinuePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
 	{ID: RouteWorkbenchWriteCapabilities, Method: http.MethodGet, Path: WorkbenchWriteCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchPatch, Method: http.MethodPatch, Path: WorkbenchItemPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchCommand, Method: http.MethodGet, Path: WorkbenchCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

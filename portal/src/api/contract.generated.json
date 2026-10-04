@@ -863,6 +863,61 @@
       "recoverySafe": false
     },
     {
+      "id": "workbenchProposalPreview",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/proposal-preview",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchProposalSubmit",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/proposals",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchProposal",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/proposals/{command}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchProposalCheck",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/proposals/{command}/check",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchProposalContinue",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/proposals/{command}/continue",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workbenchWriteCapabilities",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/write-capabilities",

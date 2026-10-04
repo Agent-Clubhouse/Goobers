@@ -111,6 +111,12 @@ interface FixtureRunCursor {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+
+  async previewMetadataChange(): Promise<import("./types").MetadataPreview> { throw new Error("Source previews require a connected daemon."); }
+  async submitMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Source proposals require a connected daemon."); }
+  async getMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Proposal receipts require a connected daemon."); }
+  async checkMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Proposal checks require a connected daemon."); }
+  async continueMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Source proposals require a connected daemon."); }
   async getWorkbenchGraph(): Promise<import("./types").WorkbenchGraph> { throw new Error("Relationship browsing requires a connected daemon."); }
   async getWorkbenchWriteCapabilities(_gaggle: string, _source: string, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogWriteCapabilities> { return { fields: [], relationships: [], revisionSemantics: "timestamp-preflight", maxAssignees: 10, controlLabelChanges: false }; }
   async patchWorkbenchItem(_gaggle: string, _source: string, _item: string, _key: string, _input: import("./types").BacklogPatchInput, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogEditCommand> { throw new Error("Source editing requires a connected daemon."); }

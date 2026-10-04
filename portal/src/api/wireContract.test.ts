@@ -14,6 +14,7 @@ describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
       "gaggleEventEnvelope", "gaggleEventReceipt",
+      "metadataChange", "metadataPreview", "metadataProposal",
       "workbenchGraph", "workbenchDocuments", "workbenchSources", "workbenchItems", "workbenchItem",
       "sessionCreate", "sessionInput", "sessionClose", "session", "sessions", "sessionMessages", "sessionAccepted",
       "workbenchWriteCapabilities", "workbenchPatch", "workbenchCommand",

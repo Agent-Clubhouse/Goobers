@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if eventIngressRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if eventIngressRoute(route.ID) || workbenchProposalRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if sessionOperationRoute(route.ID) {
@@ -195,7 +195,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
-	case RouteWorkbenchPatch, RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
+	case RouteWorkbenchProposalSubmit, RouteWorkbenchPatch, RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
 		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand, RouteChildPublicationCheck, RouteSessionCreate, RouteSessionMessage, RouteSessionClose:
 		return true
 	default:
@@ -212,6 +212,9 @@ func openAPIRequestBody(route Route) map[string]any {
 	}
 	if route.Method == http.MethodGet || route.Method == http.MethodHead {
 		return nil
+	}
+	if workbenchProposalRoute(route.ID) {
+		return workbenchProposalRequestBody(route.ID)
 	}
 	if route.ID == RouteBlobPut || route.ID == RouteRunRecoveryPublish {
 		return map[string]any{

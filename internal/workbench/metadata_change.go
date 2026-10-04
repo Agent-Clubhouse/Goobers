@@ -104,7 +104,7 @@ func PreviewMetadataChange(set SourceSet, binding string, current MetadataFile, 
 		OperationDigest: operation, ProposedContentDigest: metadataContentDigest(after),
 		Changed: string(current.Content) != string(after), Before: string(current.Content), After: string(after)}
 	encoded, err := json.Marshal(preview)
-	if err != nil || len(encoded) > MaxMetadataPreviewBytes {
+	if err != nil || len(encoded)+1 > MaxMetadataPreviewBytes {
 		return MetadataPreview{}, ErrMetadataPreview
 	}
 	return preview, nil

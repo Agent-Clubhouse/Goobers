@@ -1,3 +1,5 @@
+import type { MetadataChangeRequest, MetadataPreview, MetadataProposalCommand } from "./workbenchProposalTypes";
+import { readMetadataResponse } from "./workbenchProposalTransport";
 import type { WorkbenchGraph } from "./workbenchGraphTypes";
 import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
 import type { BacklogWriteCapabilities, BacklogPatchInput, BacklogEditCommand } from "./workbenchWriteTypes";
@@ -504,6 +506,29 @@ export class HttpDaemonClient implements DaemonClient {
       options,
       { provider, kind, id: externalId },
     ).then(normalizeLegacyWorkItemCost);
+  }
+
+  previewMetadataChange(gaggle: string, source: string, input: MetadataChangeRequest, options?: RequestOptions): Promise<MetadataPreview> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalPreview, { gaggle, source }, input, 4 << 20, undefined, options);
+  }
+  submitMetadataProposal(gaggle: string, source: string, key: string, input: MetadataChangeRequest, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalSubmit, { gaggle, source }, input, 128 << 10, key, options);
+  }
+  getMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.withResponse(clientRoutes.workbenchProposal, undefined, options, "application/json", (response) => readMetadataResponse<MetadataProposalCommand>(response, 128 << 10), { gaggle, source, command });
+  }
+  checkMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalCheck, { gaggle, source, command }, {}, 128 << 10, undefined, options);
+  }
+  continueMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalContinue, { gaggle, source, command }, {}, 128 << 10, undefined, options);
+  }
+  private async metadataProposalRequest<T>(route: ApiRoute, path: PathParameters, input: MetadataChangeRequest | Record<string, never>, limit: number, key?: string, options?: RequestOptions): Promise<T> {
+    const body = JSON.stringify(input);
+    if (new TextEncoder().encode(body).byteLength > (2 << 20)) throw new Error("The encoded source edit exceeds the two-MiB request bound.");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (key !== undefined) headers["Idempotency-Key"] = key;
+    return this.withResponse(route, undefined, options, "application/json", (response) => readMetadataResponse<T>(response, limit), path, { body, headers });
   }
 
   getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph> {
