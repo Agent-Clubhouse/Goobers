@@ -1,9 +1,11 @@
 package eventing
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -19,12 +21,16 @@ const (
 // Key is already evaluated from that event; a missing key cannot join a global
 // empty-key bucket. All targets inherit the accepting gaggle, with no override.
 type Route struct {
-	Consumer       string    `json:"consumer"`
-	Revision       string    `json:"revision"`
-	Workflow       string    `json:"workflow"`
-	WorkflowDigest string    `json:"workflowDigest"`
-	GooberDigest   string    `json:"gooberDigest"`
-	Debounce       *Debounce `json:"debounce,omitempty"`
+	Consumer         string `json:"consumer"`
+	Revision         string `json:"revision"`
+	Workflow         string `json:"workflow"`
+	WorkflowDigest   string `json:"workflowDigest"`
+	GooberDigest     string `json:"gooberDigest"`
+	ConfigGeneration string `json:"configGeneration"`
+	// FailureReason is a bounded service-authored delivery refusal, for example
+	// a missing evaluated debounce key. It never echoes raw payload content.
+	FailureReason string    `json:"failureReason,omitempty"`
+	Debounce      *Debounce `json:"debounce,omitempty"`
 }
 
 // Debounce uses server receipt time and retains all original memberships even
@@ -71,10 +77,16 @@ func (p Plan) Marshal() ([]byte, error) {
 }
 
 func (r Route) validate() error {
-	for _, value := range []string{r.Consumer, r.Revision, r.Workflow, r.WorkflowDigest, r.GooberDigest} {
+	for _, value := range []string{r.Consumer, r.Revision, r.Workflow, r.WorkflowDigest, r.GooberDigest, r.ConfigGeneration} {
 		if !boundedText(value, 256) {
 			return errors.New("eventing: route must pin consumer, revision and workflow digests")
 		}
+	}
+	if r.FailureReason != "" {
+		if !boundedText(r.FailureReason, 256) {
+			return errors.New("eventing: invalid delivery refusal")
+		}
+		return nil
 	}
 	if r.Debounce == nil {
 		return nil
@@ -82,6 +94,41 @@ func (r Route) validate() error {
 	d := r.Debounce
 	if !boundedText(d.Key, 256) || d.Window < 100*time.Millisecond || d.Window > 5*time.Minute || d.MaxWait < d.Window || d.MaxWait > time.Hour || d.MaxEvents < 1 || d.MaxEvents > 1000 || (d.InputMode != "all" && d.InputMode != "latest") {
 		return fmt.Errorf("eventing: invalid debounce for consumer %q", r.Consumer)
+	}
+	return nil
+}
+
+// ParsePlan validates an immutable routing snapshot without consulting current
+// configuration. Missing pins, duplicate keys and unknown fields fail closed.
+func ParsePlan(raw []byte) (Plan, error) {
+	var plan Plan
+	if err := decodeClosed(raw, MaxRoutingBytes, &plan); err != nil {
+		return plan, err
+	}
+	_, err := plan.Marshal()
+	return plan, err
+}
+
+func decodeClosed(raw []byte, limit int, target any) error {
+	if len(raw) == 0 || len(raw) > limit {
+		return errors.New("eventing: invalid retained document size")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if _, err := decodeValue(decoder, 0); err != nil {
+		return err
+	}
+	if decoder.More() {
+		return errors.New("eventing: multiple documents")
+	}
+	decoder = json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("eventing: multiple documents")
 	}
 	return nil
 }

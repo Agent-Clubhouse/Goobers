@@ -16,7 +16,7 @@ import (
 func eventRequest(id string, matched bool) EventAcceptance {
 	req := EventAcceptance{Producer: EventProducer{Gaggle: "web", Binding: "ingress", Actor: "binding:ingress"}, Envelope: []byte(fmt.Sprintf(`{"specversion":"1.0","id":%q,"source":"/factory","type":"pr.changed","data":{"pr":42}}`, id)), Plan: eventing.Plan{Revision: "routing-1"}}
 	if matched {
-		req.Plan.Routes = []eventing.Route{{Consumer: "repair", Revision: "subscription-1", Workflow: "repair", WorkflowDigest: "workflow-1", GooberDigest: "goober-1", Debounce: &eventing.Debounce{Key: "pr:42", Window: time.Second, MaxWait: 10 * time.Second, MaxEvents: 100, InputMode: "all"}}}
+		req.Plan.Routes = []eventing.Route{{Consumer: "repair", Revision: "subscription-1", Workflow: "repair", WorkflowDigest: "workflow-1", GooberDigest: "goober-1", ConfigGeneration: "generation-1", Debounce: &eventing.Debounce{Key: "pr:42", Window: time.Second, MaxWait: 10 * time.Second, MaxEvents: 100, InputMode: "all"}}}
 	}
 	return req
 }

@@ -19,7 +19,7 @@ func TestDurableTriggerDrainMaintainsEventReceiptsWithoutScheduler(t *testing.T)
 	request := triggerqueue.EventAcceptance{
 		Producer: triggerqueue.EventProducer{Gaggle: "own", Binding: "ingress", Actor: "binding:ingress"},
 		Envelope: []byte(`{"specversion":"1.0","id":"event-1","source":"/test","type":"pr.changed"}`),
-		Plan:     eventing.Plan{Revision: "routing-1", Routes: []eventing.Route{{Consumer: "repair", Revision: "consumer-1", Workflow: "repair", WorkflowDigest: "workflow-1", GooberDigest: "goober-1"}}},
+		Plan:     eventing.Plan{Revision: "routing-1", Routes: []eventing.Route{{Consumer: "repair", Revision: "consumer-1", Workflow: "repair", WorkflowDigest: "workflow-1", GooberDigest: "goober-1", ConfigGeneration: "generation-1"}}},
 	}
 	receipt, _, err := service.queue.AcceptEvent(t.Context(), request, now)
 	if err != nil {
