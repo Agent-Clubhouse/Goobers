@@ -7,7 +7,8 @@
   "additionalProperties": false,
   "properties": {
     "schemaVersion": {
-      "const": "relationship-suggestions/v1"
+      "const": "relationship-suggestions/v1",
+      "description": "Version of the closed, non-authoritative proposal artifact."
     },
     "suggestions": {
       "type": "array",
@@ -15,7 +16,8 @@
       "maxItems": 100,
       "items": {
         "$ref": "#/$defs/suggestion"
-      }
+      },
+      "description": "Bounded candidates for human review; these are not accepted source graph edges."
     }
   },
   "required": [
@@ -30,7 +32,8 @@
           "additionalProperties": false,
           "properties": {
             "ref": {
-              "$ref": "workbench-source.schema.json#/$defs/node"
+              "$ref": "workbench-source.schema.json#/$defs/node",
+              "description": "Existing qualified stable source object; the host must revalidate it before acceptance."
             },
             "evidence": {
               "oneOf": [
@@ -40,12 +43,14 @@
                   "properties": {
                     "sourceTargetDigest": {
                       "type": "string",
-                      "pattern": "^[0-9a-f]{64}$"
+                      "pattern": "^[0-9a-f]{64}$",
+                      "description": "SHA-256 digest of the configured source target and projection semantics."
                     },
                     "nativeRevision": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 512
+                      "maxLength": 512,
+                      "description": "Observed native source revision, independent of the object identity."
                     }
                   },
                   "required": [
@@ -59,12 +64,14 @@
                   "properties": {
                     "sourceTargetDigest": {
                       "type": "string",
-                      "pattern": "^[0-9a-f]{64}$"
+                      "pattern": "^[0-9a-f]{64}$",
+                      "description": "SHA-256 digest of the configured source target and projection semantics."
                     },
                     "path": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 1024
+                      "maxLength": 1024,
+                      "description": "Literal configured repository document path for the observed source object."
                     },
                     "repositoryRevision": {
                       "type": "object",
@@ -72,22 +79,26 @@
                       "properties": {
                         "commit": {
                           "type": "string",
-                          "pattern": "^[0-9a-f]{40}$"
+                          "pattern": "^[0-9a-f]{40}$",
+                          "description": "Lowercase Git commit object identifier for the observed configured branch."
                         },
                         "blobId": {
                           "type": "string",
-                          "pattern": "^[0-9a-f]{40}$"
+                          "pattern": "^[0-9a-f]{40}$",
+                          "description": "Lowercase Git blob identifier for the observed regular file."
                         },
                         "contentDigest": {
                           "type": "string",
-                          "pattern": "^[0-9a-f]{64}$"
+                          "pattern": "^[0-9a-f]{64}$",
+                          "description": "SHA-256 digest of the exact observed file bytes."
                         }
                       },
                       "required": [
                         "commit",
                         "blobId",
                         "contentDigest"
-                      ]
+                      ],
+                      "description": "Exact repository bytes claimed by the agent; transport cache tags do not replace these pins."
                     }
                   },
                   "required": [
@@ -96,7 +107,8 @@
                     "repositoryRevision"
                   ]
                 }
-              ]
+              ],
+              "description": "Claimed source observation to compare with a fresh authorized read."
             }
           },
           "required": [
@@ -116,18 +128,21 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 64,
-                  "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+                  "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$",
+                  "description": "Configured backlog source in the same gaggle."
                 },
                 "requestId": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 128
+                  "maxLength": 128,
+                  "description": "Creation request identity scoped to the actual producing run, stage and attempt."
                 }
               },
               "required": [
                 "sourceBindingId",
                 "requestId"
-              ]
+              ],
+              "description": "Provisional work-item request; resolves only through a confirmed host-inspected creation receipt."
             }
           },
           "required": [
@@ -148,18 +163,22 @@
             "references",
             "milestone-member",
             "implemented-by"
-          ]
+          ],
+          "description": "Directed relationship meaning; journal-derived relations cannot be suggested."
         },
         "from": {
-          "$ref": "#/$defs/endpoint"
+          "$ref": "#/$defs/endpoint",
+          "description": "Origin endpoint in the configured gaggle source namespace."
         },
         "to": {
-          "$ref": "#/$defs/endpoint"
+          "$ref": "#/$defs/endpoint",
+          "description": "Target endpoint in the configured gaggle source namespace."
         },
         "rationale": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 4096
+          "maxLength": 4096,
+          "description": "Agent explanation for human review; it confers no permission or authority."
         }
       },
       "required": [
