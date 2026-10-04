@@ -66,6 +66,10 @@ var ErrInvalidCompletion = errors.New("harness: completion file failed validatio
 // an already-prepared workspace (worktree creation and its BaseRef/branch are
 // the runner's concern via internal/worktree, not this package's).
 type RunRequest struct {
+	// IsolatedHome is an empty launcher-owned home for interactive identity execution.
+	IsolatedHome string `json:"-"`
+	// CredentialAudiences is a trusted per-capability provider binding for split code/backlog sources.
+	CredentialAudiences map[string]apiv1.Provider `json:"-"`
 	// Mode selects the completion contract this session must satisfy.
 	Mode Mode
 	// Envelope is the invocation envelope (goal, context pointers, declared

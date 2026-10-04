@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
@@ -28,6 +29,9 @@ type Dependencies struct {
 // An operation callback must complete its bounded provider effect before
 // returning and must not retain a credential or start asynchronous effects.
 type Service struct {
+	executionMu           sync.Mutex
+	executions            map[*ExecutionLease]struct{}
+	executionDrainTimeout time.Duration
 	stageRestartAvailable atomic.Bool
 	mu                    sync.RWMutex
 	gaggles               map[string]*apiv1.Gaggle
@@ -93,6 +97,9 @@ func (s *Service) Apply(gaggles []apiv1.Gaggle, publish func() error) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.cancelChangedExecutions(next); err != nil {
+		return err
+	}
 	if publish != nil {
 		if err := publish(); err != nil {
 			return err

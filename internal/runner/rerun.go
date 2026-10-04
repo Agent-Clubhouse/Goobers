@@ -42,6 +42,9 @@ type rerunContext struct {
 // The workflow definition remains pinned and unchanged; the operator, addendum,
 // target, and attempt are recorded before the invocation starts.
 func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, error) {
+	if r.cfg.stageRestartOnly != "" {
+		return Result{}, errors.New("runner: human epoch requires a new authorized restart")
+	}
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}

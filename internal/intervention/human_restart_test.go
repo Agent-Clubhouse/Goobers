@@ -61,7 +61,9 @@ func TestHumanRestartLaunchesOneEpochAfterLostAcknowledgement(t *testing.T) {
 				t.Fatal(err)
 			}
 			agent := &restartTestAgent{}
-			humanRunner, err := runner.New(runner.Config{RunsDir: filepath.Dir(fixture.runDir), ScratchDir: t.TempDir(), Worktrees: manager, StageRestartContext: func(ctx context.Context, _ journal.RunIdentity) (context.Context, error) { return ctx, nil }, NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
+			humanRunner, err := runner.New(runner.Config{RunsDir: filepath.Dir(fixture.runDir), ScratchDir: t.TempDir(), Worktrees: manager, StageRestartContext: func(ctx context.Context, _ journal.RunIdentity, _ runner.SecretRegistrar) (context.Context, func(), error) {
+				return ctx, func() {}, nil
+			}, NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
 				return agent, nil
 			}})
 			if err != nil {

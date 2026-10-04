@@ -53,7 +53,9 @@ func TestStageRestartExecutesPinnedGuidanceInDistinctContinuation(t *testing.T) 
 	}, nil)
 	r.cfg.ScratchDir = t.TempDir()
 	r.cfg.AdditionalRepos = []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "other", Name: "repo", Branch: "main"}}
-	r.cfg.StageRestartContext = func(ctx context.Context, _ journal.RunIdentity) (context.Context, error) { return ctx, nil }
+	r.cfg.StageRestartContext = func(ctx context.Context, _ journal.RunIdentity, _ SecretRegistrar) (context.Context, func(), error) {
+		return ctx, func() {}, nil
+	}
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
 	source, err := r.Start(context.Background(), StartInput{RunID: "restart-source", Machine: machine, Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo})
 	if err != nil {
@@ -203,7 +205,9 @@ func TestStageRestartRestoresUpstreamWithoutExecutingItAgain(t *testing.T) {
 	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) { return agent, nil }, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return upstream, nil })
 	r.cfg.ScratchDir = t.TempDir()
 	r.cfg.AdditionalRepos = []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "other", Name: "repo", Branch: "main"}}
-	r.cfg.StageRestartContext = func(ctx context.Context, _ journal.RunIdentity) (context.Context, error) { return ctx, nil }
+	r.cfg.StageRestartContext = func(ctx context.Context, _ journal.RunIdentity, _ SecretRegistrar) (context.Context, func(), error) {
+		return ctx, func() {}, nil
+	}
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
 	if _, err = r.Start(context.Background(), StartInput{RunID: "context-source", Machine: machine, Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo}); err != nil {
 		t.Fatal(err)

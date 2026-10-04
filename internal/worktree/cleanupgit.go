@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/platform/proc"
 )
 
@@ -80,10 +81,18 @@ func runCleanupGit(ctx context.Context, dir, op string, args ...string) error {
 // call sites that need git's stdout (e.g. `worktree list --porcelain`,
 // `for-each-ref`) subject to the identical bound.
 func runCleanupGitOutput(ctx context.Context, dir, op string, args ...string) (string, error) {
+	ctx, env, release, prepareErr := prepareExecutionGit(ctx, nil)
+	if prepareErr != nil {
+		return "", prepareErr
+	}
+	defer release()
 	boundedCtx, cancel := context.WithTimeout(ctx, cleanupGitTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(boundedCtx, "git", hardenedGitArgs(args)...)
+	if env != nil {
+		cmd.Env = env
+	}
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -101,6 +110,13 @@ func runCleanupGitOutput(ctx context.Context, dir, op string, args ...string) (s
 		return "", err
 	}
 
+	if acknowledge := invoke.RegisterWorkspaceWriter(ctx); acknowledge != nil {
+		defer func() {
+			cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), cleanupKillWaitDelay)
+			defer stop()
+			acknowledge(tree.StopAndWait(cleanup))
+		}()
+	}
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 

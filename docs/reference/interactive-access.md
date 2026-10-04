@@ -197,5 +197,37 @@ unattributed recovery state, shared claims without an explicit lease transfer,
 and PR claims whose repository cannot be identified unambiguously. It preserves
 that work for explicit restoration or adoption. It also refuses a source branch
 that moved after the recorded commit. These checks do not reset a workspace or
-publish a provider mutation. The adapter remains uninstalled until the dedicated
-interactive execution builder is available.
+publish a provider mutation. The daemon installs the dedicated interactive execution builder for the
+supported local backend described below. Unsupported stages are refused before
+acceptance.
+
+### Local restart execution identity
+
+The local restart adapter supports DSL 3.1 workflows whose execution consists
+of Claude Code or Codex agents/reviewers using explicitly configured model API
+keys, human/automated gates, and native GitHub/ADO CI polling. Agentic sandboxing
+must be enforced, and the host must support process-termination verification. Shell stages, instance-aware provider CLI stages, remote
+placement, custom harness launchers, external MCP servers, child delegation,
+experiments, and merge/delete/config-repository capabilities are refused before
+acceptance. The ordinary monitoring and automation paths retain their behavior.
+
+Repository and backlog access resolve their independently named interactive
+credentials; the model key remains separate. Agent tools receive capability-
+specific credential variables rather than a shared ambient GitHub identity.
+Native repository reads, Git fetches, and CI polling use the same human-selected
+sources. Automatic failure/escalation/provider cleanup hooks are disabled on
+this driver because those hooks otherwise use automation credentials.
+
+The runtime uses a clean home and environment and denies known host Git, SSH,
+forge, and cloud authentication paths. Existing refusal of configured credential
+files remains in force. This operates within the existing local sandbox trust
+model; it is not a security boundary against arbitrary same-user host credential
+extraction or operating-system keychain access. Use an isolated worker for that
+stronger boundary.
+
+The exact configuration archive stays leased through execution. A changed
+gaggle policy cancels affected human executions and waits for them to join
+before publication. Publication is refused if the bounded drain cannot prove
+that execution returned; cancellation alone is not treated as revocation
+completion. Recovery must rebuild this dedicated human driver from the durable
+verified principal and current policy, and never select an automation runner.

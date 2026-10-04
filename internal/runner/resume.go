@@ -121,6 +121,9 @@ type ResumeFromTerminalInput struct {
 // repeated interrupted evaluations exceed the budget, Evaluate escalates
 // without dispatching the side-effecting evaluator again (#263).
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
+	if r.cfg.stageRestartOnly != "" && r.cfg.stageRestartOnly != in.RunID {
+		return Result{}, errors.New("runner: human restart driver cannot resume another epoch")
+	}
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}
@@ -166,6 +169,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 // appended. The event records the human actor, prior terminal phase, target,
 // and verified workflow pin so a crash after the action can recover it exactly.
 func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalInput) (Result, error) {
+	if r.cfg.stageRestartOnly != "" {
+		return Result{}, errors.New("runner: human epoch requires a new authorized restart")
+	}
 	if !apiv1.ValidRunID(in.RunID) {
 		return Result{}, fmt.Errorf("runner: invalid run id %q", in.RunID)
 	}
@@ -311,6 +317,7 @@ type resumeFrame struct {
 	seedEvents []journal.Event
 	segment    []journal.Event
 
+	restartCleanup     func()
 	restart            *stageRestartManifest
 	rerun              *rerunContext
 	parallelTransition *parallelResumeTransition
@@ -375,6 +382,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	ctx, f, err := r.restoreResumeFrame(ctx, jr, rd, in, id, registrar, events, humanProgress)
 	if err != nil {
 		return Result{}, err
+	}
+	if f.restartCleanup != nil {
+		defer f.restartCleanup()
 	}
 	ws := f.ws
 

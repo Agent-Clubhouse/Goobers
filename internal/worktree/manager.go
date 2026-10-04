@@ -668,10 +668,7 @@ func (m *Manager) remoteGitOutput(ctx context.Context, repoURL, dir string, args
 			return nil, fmt.Errorf("admit remote git operation: %w", err)
 		}
 	}
-	if m.gitEnv == nil {
-		return rawGitOutput(ctx, dir, nil, args...)
-	}
-	env, err := m.gitEnv(ctx, repoURL)
+	env, err := m.executionGitEnvironment(ctx, repoURL)
 	if err != nil {
 		return nil, fmt.Errorf("resolve git environment: %w", err)
 	}
@@ -927,13 +924,9 @@ func maintainMirror(ctx context.Context, dir string) error {
 
 // gitOutput runs git in dir and returns its trimmed stdout.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	out, err := cmd.Output()
+	out, err := gitCommand(ctx, dir, nil, gitRawOutput, args...)
 	if err != nil {
-		return "", fmt.Errorf("git %v: %w", args, err)
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -955,6 +948,11 @@ const (
 )
 
 func gitCommand(ctx context.Context, dir string, env []string, mode gitOutputMode, args ...string) ([]byte, error) {
+	ctx, env, release, prepareErr := prepareExecutionGit(ctx, env)
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
+	defer release()
 	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
@@ -967,9 +965,9 @@ func gitCommand(ctx context.Context, dir string, env []string, mode gitOutputMod
 	var err error
 	switch mode {
 	case gitRawOutput:
-		out, err = cmd.Output()
+		out, err = executeGitCommand(ctx, cmd, mode)
 	case gitCombinedOutput:
-		out, err = cmd.CombinedOutput()
+		out, err = executeGitCommand(ctx, cmd, mode)
 	default:
 		panic(fmt.Sprintf("unsupported git output mode %d", mode))
 	}
@@ -978,7 +976,7 @@ func gitCommand(ctx context.Context, dir string, env []string, mode gitOutputMod
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
-			if mode == gitRawOutput {
+			if mode == gitRawOutput && len(exitErr.Stderr) > 0 {
 				out = exitErr.Stderr
 			}
 		}
@@ -1150,10 +1148,8 @@ func retryOnFileLockWithBudget(ctx context.Context, attempts int, backoff time.D
 // per mirror rather than per Manager so a pre-existing full mirror is left
 // as-is (#646: new mirrors only, no in-place migration).
 func mirrorIsPartial(ctx context.Context, dir string) bool {
-	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs([]string{"config", "--get", "remote.origin.promisor"})...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	return err == nil && strings.TrimSpace(string(out)) == "true"
+	out, err := gitOutput(ctx, dir, "config", "--get", "remote.origin.promisor")
+	return err == nil && out == "true"
 }
 
 // branchExists reports whether a local branch of the given name exists in the
@@ -1163,7 +1159,5 @@ func mirrorIsPartial(ctx context.Context, dir string) bool {
 // Create to decide whether to create the run branch or check out the existing
 // one (#133).
 func branchExists(ctx context.Context, repoDir, branch string) bool {
-	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
-	cmd.Dir = repoDir
-	return cmd.Run() == nil
+	return runGit(ctx, repoDir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch) == nil
 }

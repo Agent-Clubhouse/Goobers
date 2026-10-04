@@ -62,3 +62,17 @@ func (state *WorkspaceQuiescence) Verify() error {
 	}
 	return nil
 }
+
+// VerifyIdle checks all registered processes without requiring a process to have
+// started. A human execution can fail during preparation before launching any.
+func (state *WorkspaceQuiescence) VerifyIdle() error {
+	if state == nil {
+		return ErrWorkspaceNotQuiescent
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.active != 0 || state.failures != nil {
+		return errors.Join(ErrWorkspaceNotQuiescent, state.failures)
+	}
+	return nil
+}

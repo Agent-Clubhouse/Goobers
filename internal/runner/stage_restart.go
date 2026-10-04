@@ -420,11 +420,21 @@ func (r *Runner) restoreResumeFrame(ctx context.Context, jr *journal.Run, rd *jo
 	if err != nil {
 		return ctx, nil, fmt.Errorf("runner: restore human restart epoch: %w", err)
 	}
+	if restart == nil && r.cfg.stageRestartOnly != "" {
+		return ctx, nil, errors.New("runner: human epoch lacks durable restart authority")
+	}
+	var cleanup func()
+	success := false
+	defer func() {
+		if !success && cleanup != nil {
+			cleanup()
+		}
+	}()
 	if restart != nil {
 		if r.cfg.StageRestartContext == nil {
 			return ctx, nil, errors.New("runner: human restart requires its configured interactive credential execution")
 		}
-		if ctx, err = r.cfg.StageRestartContext(ctx, id); err != nil {
+		if ctx, cleanup, err = r.cfg.StageRestartContext(ctx, id, registrar); err != nil {
 			return ctx, nil, fmt.Errorf("runner: authorize human restart: %w", err)
 		}
 	}
@@ -437,10 +447,12 @@ func (r *Runner) restoreResumeFrame(ctx context.Context, jr *journal.Run, rd *jo
 		return ctx, nil, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
 	}
 	f.restart = restart
+	f.restartCleanup = cleanup
 	if err := r.restoreRestartWorkspace(ctx, f); err != nil {
 		return ctx, nil, err
 	}
 	restoreRestartFrame(f, in.Machine)
+	success = true
 
 	return ctx, f, nil
 }

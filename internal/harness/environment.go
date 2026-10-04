@@ -82,6 +82,13 @@ func establishEphemeralTmp(adapterName string, enabled bool, root string) (*ephe
 
 func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunRequest) ([]string, error) {
 	env := baseEnv(cfg.extraEnvAllowlist, cfg.envUnset)
+	if req.IsolatedHome != "" {
+		var err error
+		env, err = isolatedHomeEnvironment(req.IsolatedHome)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if cfg.ephemeralTmp != nil {
 		scoped, err := cfg.ephemeralTmp.Apply(env)
 		if err != nil {
@@ -155,7 +162,11 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 		if !ok {
 			continue
 		}
-		if !CredentialFitsEnvAudience(capability, envVar, req.Envelope.RepoRef.Provider) {
+		audience := req.Envelope.RepoRef.Provider
+		if bound, ok := req.CredentialAudiences[capability]; ok {
+			audience = bound
+		}
+		if !CredentialFitsEnvAudience(capability, envVar, audience) {
 			continue
 		}
 		if req.Credentials == nil {

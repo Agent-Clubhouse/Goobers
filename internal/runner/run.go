@@ -437,8 +437,11 @@ type AgentProvenance struct {
 // supplied per call in StartInput, not fixed here.
 type Config struct {
 	// StageRestartContext is set only on a dedicated interactive-credential
-	// runner. Recovery of a human restart refuses automation fallback.
-	StageRestartContext func(context.Context, journal.RunIdentity) (context.Context, error)
+	// runner. Recovery of a human restart refuses automation fallback. The
+	// callback receives the resumed journal registrar and returns a cleanup
+	// which runs after execution or failed reconstruction has fully returned.
+	StageRestartContext func(context.Context, journal.RunIdentity, SecretRegistrar) (context.Context, func(), error)
+	stageRestartOnly    string
 
 	childExecution      *journal.RunIdentity
 	ChildHandoff        ChildHandoff
@@ -1025,6 +1028,9 @@ func boundFailureMessage(s string) string {
 // Start in its own goroutine per run rather than block its own dispatch loop
 // on it.
 func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
+	if r.cfg.stageRestartOnly != "" {
+		return Result{}, errors.New("runner: human restart driver cannot start automation")
+	}
 	in.instanceID = r.cfg.InstanceID
 	in.configGeneration = r.cfg.ConfigGeneration
 	if in.Child != nil {
