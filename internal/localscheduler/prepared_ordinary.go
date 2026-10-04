@@ -15,6 +15,7 @@ import (
 // PreparedTriggerOptions retains ordinary trigger semantics without letting a
 // queued request choose execution pins or alter the current capacity policy.
 type PreparedTriggerOptions struct {
+	Source      *SourceTrigger
 	Force       bool
 	SourceRun   string
 	PullRequest int
@@ -50,6 +51,12 @@ func (s *Scheduler) TriggerPreparedOrdinary(admission, execution context.Context
 	s.mu.Unlock()
 	if active || reconciled {
 		return "", errors.New("localscheduler: prepared run already owned")
+	}
+	if options.Source != nil {
+		if options.Force || options.SourceRun != "" || options.PullRequest != 0 {
+			return "", errors.New("localscheduler: source cannot change ordinary authority")
+		}
+		return s.dispatchPreparedSource(execution, prepared, runID, *options.Source, now)
 	}
 	trigger, reason, err := s.prepareOrdinaryTrigger(admission, prepared, options)
 	if err != nil {

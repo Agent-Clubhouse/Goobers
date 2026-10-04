@@ -46,6 +46,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 type schedulerSetup struct {
 	OrdinaryRuntime ordinaryRuntimeBuilder
 	OrdinaryCatalog *ordinaryStartCatalog
+	SourceStarts    localscheduler.SourceQueue
 	ChildRuntime    childRuntimeBuilder
 	EventRuntime    eventRuntimeBuilder
 	EventCatalog    eventPublicationSnapshot
@@ -867,6 +868,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			PlacementRefusal: placement.Refusals[identity],
 		})
 		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
+		entries[len(entries)-1].ConfigGeneration = generation
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
@@ -1291,7 +1293,7 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// polled — see its own doc comment), so unlike OpenPRRefresher it's wired
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
-	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota), localscheduler.WithSourceQueue(s.SourceStarts)}
 	if s.Root != "" {
 		opts = append(opts, localscheduler.WithTargetedPRValidator(func(ctx context.Context, entry localscheduler.WorkflowEntry, number int) error {
 			return validateTargetedPullRequest(ctx, s.Root, s.Config, s.SecretStores, s.SharedRegistry, entry, number)

@@ -41,11 +41,18 @@ type Delivery struct {
 	RepositoryOwner string
 	RepositoryName  string
 	PullNumber      int
+	PayloadDigest   string
 }
 
 // Signaler is the scheduler's repository webhook delivery seam.
 type Signaler interface {
 	SignalWebhook(context.Context, Delivery, time.Time) []string
+}
+
+// DurableSignaler acknowledges only after every matching start is durably queued.
+// Implementations retain delivery identities across process restarts.
+type DurableSignaler interface {
+	AcceptWebhook(context.Context, Delivery, time.Time) ([]string, error)
 }
 
 // InstanceJournal records rejected deliveries without creating a run.
@@ -160,11 +167,12 @@ func ValidSignature(secret, body []byte, signature string) bool {
 }
 
 // Handler verifies and routes GitHub deliveries. Delivery IDs are retained in a
-// bounded in-memory set so an identical delivery is acknowledged without
-// waking workflows twice during one daemon lifetime.
+// bounded in-memory set for legacy callers. WithDurableSignaler installs the
+// host ledger and acknowledges only after durable acceptance.
 type Handler struct {
 	secret   []byte
 	signaler Signaler
+	durable  DurableSignaler
 	journal  InstanceJournal
 	gate     *DispatchGate
 	now      func() time.Time
@@ -177,6 +185,11 @@ type Handler struct {
 
 // HandlerOption configures optional delivery consumers.
 type HandlerOption func(*Handler)
+
+// WithDurableSignaler installs durable source acceptance in a configured host.
+func WithDurableSignaler(signaler DurableSignaler) HandlerOption {
+	return func(h *Handler) { h.durable = signaler }
+}
 
 // WithPushHook wakes a config reconciler for authenticated push deliveries.
 func WithPushHook(hook func(context.Context)) HandlerOption {
@@ -243,7 +256,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	mac := hmac.New(sha256.New, h.secret)
-	payload, payloadErr, readErr := readPayload(r.Body, mac)
+	payloadHash := sha256.New()
+	payload, payloadErr, readErr := readPayload(r.Body, io.MultiWriter(mac, payloadHash))
 	if readErr != nil || payloadErr != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(readErr, &tooLarge) || errors.As(payloadErr, &tooLarge) {
@@ -279,20 +293,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.rejectUnusablePayload(w, err)
 		return
 	}
-	now := h.now()
-	if !h.gate.dispatch(func(ctx context.Context) {
-		if h.seen(delivery) {
+	metadata.PayloadDigest = hex.EncodeToString(payloadHash.Sum(nil))
+	if err := h.dispatchDelivery(metadata, h.now()); err != nil {
+		http.Error(w, "durable webhook acceptance unavailable; retry the same delivery", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) dispatchDelivery(metadata Delivery, now time.Time) error {
+	var dispatchErr error
+	accepted := h.gate.dispatch(func(ctx context.Context) {
+		if h.durable != nil {
+			_, dispatchErr = h.durable.AcceptWebhook(ctx, metadata, now)
+			if dispatchErr == nil && metadata.Event == "push" && h.onPush != nil {
+				h.onPush(ctx)
+			}
+			return
+		}
+		if h.seen(metadata.ID) {
 			return
 		}
 		if metadata.Event == "push" && h.onPush != nil {
 			h.onPush(ctx)
 		}
 		h.signaler.SignalWebhook(ctx, metadata, now)
-	}) {
-		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-		return
+	})
+	if !accepted {
+		return errors.New("webhook dispatch gate stopped")
 	}
-	w.WriteHeader(http.StatusAccepted)
+	return dispatchErr
 }
 
 func (h *Handler) rejectInvalidSignature(w http.ResponseWriter) {

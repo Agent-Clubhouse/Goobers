@@ -34,13 +34,15 @@ import (
 // Tick/signal delivery evaluates whichever are set, since nothing prevents
 // a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
-	Workflow        string
-	WorkflowVersion int
-	WorkflowDigest  string
-	GooberDigest    string
-	Gaggle          string
-	Readiness       apiv1.ReadinessConditions
-	Schedules       []Schedule
+	// ConfigGeneration is the host-captured immutable archive, never caller input.
+	ConfigGeneration string
+	Workflow         string
+	WorkflowVersion  int
+	WorkflowDigest   string
+	GooberDigest     string
+	Gaggle           string
+	Readiness        apiv1.ReadinessConditions
+	Schedules        []Schedule
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
 	ScheduleBackoffs []IdleBackoffConfig
@@ -249,6 +251,7 @@ type Scheduler struct {
 	providerQuota     ProviderQuotaGate
 	demandPollTimeout time.Duration
 	afterTick         func(context.Context)
+	sourceQueue       SourceQueue
 	heartbeatInterval time.Duration
 	refreshHeartbeat  func(time.Time) error
 	// onPollProgress, if set, is called after every individual
@@ -1064,7 +1067,14 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if pending.remaining == 0 {
 			candidate.schedule = TickResult{LastEval: now}
 		}
-		if len(entry.Schedules) > 0 {
+		if handled, advanced := s.queuePlainSchedule(ctx, entry, now); handled {
+			if advanced {
+				evaluated = append(evaluated, entry)
+			}
+			candidate.scheduleRemaining = 0
+			candidate.schedulePollDue = false
+			candidate.scheduleDemand = false
+		} else if len(entry.Schedules) > 0 {
 			// Read, evaluate, and write the trigger state under a single lock
 			// acquisition. Tick is exported so a manual trigger and concurrent
 			// Tick calls (e.g. overlapping Run-loop iterations) can race here;

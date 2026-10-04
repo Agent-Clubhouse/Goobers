@@ -378,6 +378,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
 		{name: "no-wait", desc: "Return on durable API acceptance or local dispatch"},
 	},
+	"signal": {
+		{name: "request-id", takesArg: true, desc: "Stable named-signal delivery identity; reuse on retry"},
+	},
 	"approve": {
 		{name: "decision", takesArg: true, desc: "Gate decision"},
 		{name: "actor", takesArg: true, desc: "Recorded actor identity"},

@@ -65,6 +65,9 @@ func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *local
 	}
 	setup.SharedRegistry.Register([]byte(secret))
 	var handlerOpts []webhookhttp.HandlerOption
+	if setup.SourceStarts != nil {
+		handlerOpts = append(handlerOpts, webhookhttp.WithDurableSignaler(sched))
+	}
 	if hasGitSource {
 		handlerOpts = append(handlerOpts, webhookhttp.WithPushHook(reconcileHook))
 	}

@@ -140,17 +140,27 @@ Read-model/SSE projection is asynchronous and rebuildable from retained control 
 | --- | --- |
 | Manual/API/CLI | Caller request key + authenticated initiator; validated target and inputs are pinned at acceptance |
 | Schedule | Gaggle+workflow+schedule revision+nominal fire time; persist source cursor with captured occurrences |
-| Backlog | Gaggle+workflow+qualified item+eligibility episode; one pending intent per episode, no per-poll duplicates |
+| Item-addressed backlog | Gaggle+workflow+qualified item+eligibility episode; one pending intent per episode, no per-poll duplicates |
+| Count/refill worker starts | Gaggle+workflow+durable source observation+worker ordinal; bounded demand, with existing in-workflow scan/claim preserved |
 | Event | Closed group identity, or delivery identity when debounce is disabled |
 | Child | Parent run+stage occurrence (including branch/loop visit)+invocation key; retries reuse the same child acceptance |
 
 A schedule's default catch-up policy is one coalesced start representing missed fire times within the prior hour.
 The captured range/count is recorded; `all` is an explicit bounded policy, limited to 100 occurrences per catch-up sweep.
 Future times are never pre-enqueued; changing a schedule establishes a new revision and cursor.
-Backlog polling records source revision and eligibility evidence; dequeue revalidates eligibility and acquires the existing execution claim.
+Item-addressed backlog polling records source revision and eligibility evidence; dequeue revalidates eligibility and acquires the existing execution claim.
 An item becoming ineligible before admission settles the intent as `obsolete`, with its reason recorded.
 Discovery rotates paginated cursors; partial pages cannot be reported as a complete empty backlog.
-If backlog demand currently lacks item identity, add identity-bearing candidate discovery; do not enqueue anonymous count-sized bursts.
+Legacy count-based scheduling has a different source unit: a worker start.
+The current scheduler passes no item; a workflow's backlog-query stage scans and
+claims work after the run starts (runner StartInput and ClaimLedger.ForRun).
+Queue these starts under a bounded durable observation and ordinal, retaining
+count/current-occupancy evidence without fabricating item IDs or item receipts.
+This preserves the existing claim ledger, provider quota, no-work backoff, and
+work selection behavior. Repeated polls must account for queued as well as live
+workers so they cannot enqueue the same missing capacity repeatedly.
+Identity-bearing discovery is required only for a source that promises to start
+work on a particular item; it is not a prerequisite for these worker starts.
 Repeated observation of an unchanged item does not create a new eligibility episode after a no-work run.
 An episode changes only on a durable source transition, explicit retry, or an existing documented requeue policy.
 Child starts use the same queue and admission; a parked parent occurrence releases execution capacity needed by its child. Runnable sibling accounting prevents a single waiting parallel branch from releasing the entire run permit.
@@ -478,12 +488,56 @@ The remaining source adapters are explicit follow-up work:
 | --- | --- |
 | Standalone `goobers run` / detached one-shot worker | Owns the instance lock and calls the scheduler directly; must enqueue and drain one pinned intent before execution. |
 | Direct `engine-start` | Starts Temporal directly under its existing explicit bypass semantics; needs a reviewed queue-backed compatibility path. |
-| Scheduled polls / demand-sized schedule starts | Scheduler dispatches directly; needs atomic schedule-revision/nominal-fire capture and durable cursor. |
-| Backlog polling | Starts worker workflows from eligible counts; needs bounded durable observation/ordinal occurrences while preserving in-workflow item discovery and claims. Item-addressed sources use qualified eligibility episodes. |
-| Desired-concurrency refill | Direct scheduler dispatch; needs bounded durable worker-start occurrences and current eligibility rules, without inventing item identity. |
-| Direct webhook/signal delivery | Still invokes scheduler delivery; needs durable source identity and ingress authority. |
+| Plain scheduled starts | Delivered below: pinned coalesced worker start and cursor committed together. Demand-sized scheduled polls remain a follow-up. |
+| Backlog polling | Count-based worker starts still dispatch directly; needs durable bounded observation/ordinal and queued-worker accounting while keeping in-workflow claims. Item-addressed sources separately use eligibility episodes. |
+| Desired-concurrency refill | Direct worker dispatch; needs durable missing-capacity observations, queued-worker accounting, and existing current-demand/claim semantics. |
+| Direct webhook/signal delivery | Delivered below: authenticated delivery/caller keys freeze the pinned recipient set before acknowledgement. |
 | One-off / future portal starts | Must call the shared ordinary start admission service when implemented. |
 | Events and generated children | Already use typed pinned starts in the same ledger. |
 
 This slice is not the final all-source queue rollout. No separate queue is
 introduced, and existing runs are not re-enqueued as new workflow starts.
+
+
+### Delivered plain schedules and direct source delivery
+
+The daemon now queues plain scheduled starts before execution. A shared-ledger
+transaction stores the source receipt, exact archived recipient, and evaluation
+cursor together. Cursor compare-and-swap, queue capacity, or archive failures
+leave the previous cursor due. The existing trigger-evaluations file remains a
+status projection. On first adoption, its historical baseline seeds the cursor;
+an outstanding legacy fire is transferred once with a durable adoption marker,
+so a crash before clearing the old file cannot resurrect it.
+
+This compatibility adapter retains the current scheduler's one coalesced worker
+per due evaluation interval across all declared schedules. Captured from/through
+times and workflow/configuration pins preserve the accepted occurrence. It does
+not implement the proposed one-hour lookback or configurable all-occurrences
+catch-up policy above. Those remain an explicit policy change; the existing
+catch-up semantics are preserved. Cursors are per gaggle/workflow, survive edits,
+and count against shared bounded custody; deletion/recreation does not silently
+reset them. Explicit retired-cursor cleanup remains follow-up work.
+
+Authenticated GitHub webhooks retain delivery ID, full authenticated payload
+digest, and repository/event metadata. Acceptance freezes all matching recipients
+(or no-match) in one transaction, bounded to 32 starts. A retry after reload or
+restart observes that original set; changed content under the same key refuses.
+Queue failure returns unavailable rather than acknowledging a lost delivery.
+The existing signature check, repository matching, and idle-backoff selection
+remain. Source receipts and starts share queue slot/byte ceilings, with the
+existing seven-day replay horizon; unfinished starts retain the source receipt
+beyond that horizon. No source receipt is an item claim.
+
+`goobers signal --request-id <key> <name> [path]` uses the same durable source
+adapter while holding its existing standalone instance lock. Without the flag it
+prints a generated key. It starts only its accepted recipients, waits for admitted
+runs as before, and leaves capacity-held starts for `goobers up`; unrelated queue
+records are not executed by this one-shot command. Live-daemon named-signal
+forwarding is not added. Ordinary daemon sweep/reconciliation then uses the same
+reserved run IDs, current eligibility and archived execution path as manual starts.
+
+Acceptance tests exercise actual webhook handlers, exact archive compilation,
+scheduler admission, Runner journals, and CLI key replay. Store tests cover
+transaction rollback, queue-full cursor preservation, legacy transfer uncertainty,
+and no-match/recipient freezing. The remaining demand-sized schedule, count/refill,
+standalone manual, and direct engine adapters keep HAW-EVT-002 in progress.

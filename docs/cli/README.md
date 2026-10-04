@@ -3934,8 +3934,8 @@ and acceptance (default 30s; must be positive). A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal. For local file delegation,
---no-wait returns after dispatch, or after workflow/PR validation succeeds
-and the live daemon durably accepts a capacity-queued request.
+--no-wait returns after the live daemon durably accepts the request.
+Current capacity and targeted PR validation are checked before dispatch.
 ~~~
 
 **Examples**
@@ -4561,7 +4561,7 @@ $ goobers set-milestone --item 1227 --milestone 22
 fire an external signal to subscribed workflows
 
 ~~~text
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id key] <name> [path]
 
 Fire an external signal by name, dispatching every workflow with a
 type=signal trigger subscribed to it, through the same scheduler (run
@@ -4569,6 +4569,8 @@ conditions, instance journal, single-instance lock) a live `goobers up`
 daemon uses (default path "."). A signal may match zero, one, or many
 workflows; waits for every dispatched run to reach a terminal state or
 pause before returning (same blocking UX as `goobers run`).
+Source acceptance is durable. Reuse --request-id after an uncertain reply.
+Starts held by capacity remain queued for goobers up after this command exits.
 Exit codes after waiting: 0 = every admitted run completed (also used when
 none were admitted), 1 = any run failed/aborted or a business error, 2 =
 usage/IO error, 3 = any run escalated. Escalation takes precedence for

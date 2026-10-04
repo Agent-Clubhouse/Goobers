@@ -266,6 +266,7 @@ complete -c goobers -n '__fish_seen_subcommand_from override' -l api -r -d 'Daem
 complete -c goobers -n '__fish_seen_subcommand_from rerun-stage' -l addendum -r -d 'Instruction addendum'
 complete -c goobers -n '__fish_seen_subcommand_from rerun-stage' -l actor -r -d 'Recorded actor identity'
 complete -c goobers -n '__fish_seen_subcommand_from rerun-stage' -l api -r -d 'Daemon API base URL for a remote daemon'
+complete -c goobers -n '__fish_seen_subcommand_from signal' -l request-id -r -d 'Stable named-signal delivery identity; reuse on retry'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show' -l dot -d 'Emit Graphviz DOT'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l gaggle -r -d 'Configured parent gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l parent -r -a '(__goobers_completion_workflows)' -d 'Configured parent workflow'
