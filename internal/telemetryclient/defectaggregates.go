@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/planehttp"
 )
 
 // Aggregate names one admitted detection family.
@@ -503,13 +505,9 @@ func (h *HTTP) DefectAggregates(ctx context.Context, req DefectAggregateRequest)
 	if err != nil {
 		return DefectAggregateResponse{}, err
 	}
-	target := h.cfg.BaseURL + apicontract.TelemetryDefectAggregatesPath + "?" + values.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: build request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	request.Header.Set("Accept", "application/json")
+	path := apicontract.TelemetryDefectAggregatesPath + "?" + values.Encode()
+	headers := make(http.Header)
+	headers.Set("Accept", "application/json")
 
 	// This aggregate derives four families over as much as a week of rollups.
 	// The ordinary 30-second plane budget has expired in live nomination runs.
@@ -517,8 +515,12 @@ func (h *HTTP) DefectAggregates(ctx context.Context, req DefectAggregateRequest)
 	// the caller's context can still impose a shorter deadline.
 	client := *h.cfg.Client
 	client.Timeout = DefectAggregateTimeout
-	response, err := client.Do(request)
+	response, err := h.plane.WithHTTPClient(&client).DoRaw(ctx, http.MethodGet, path, nil, headers)
 	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: build request: %w", requestErr.Err)
+		}
 		return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: read defect aggregates: %w", err)
 	}
 	defer func() {
@@ -532,7 +534,7 @@ func (h *HTTP) DefectAggregates(ctx context.Context, req DefectAggregateRequest)
 	// or broken endpoint must not be able to exhaust a stage pod's memory,
 	// and an answer at the ceiling is a refusal, not a truncated result the
 	// stage would act on.
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	raw, err := planehttp.ReadBounded(response.Body, maxResponseBytes+1)
 	if err != nil {
 		return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: read defect aggregates: %w", err)
 	}

@@ -1,15 +1,14 @@
 package stateclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/planehttp"
 )
 
 // The pod-scoped priority trigger (#3878, decision 005 ruling R3's second
@@ -78,27 +77,25 @@ func (h *HTTP) PriorityTrigger(ctx context.Context, workflow, sourceRun string) 
 	// The gaggle is the client's own, never the caller's to choose: the daemon
 	// refuses a gaggle the caller's run does not belong to, and sending
 	// anything else would only turn a working re-tick into a 403.
-	body, err := json.Marshal(triggerRequest{
+	body := triggerRequest{
 		Gaggle: h.cfg.Gaggle, Workflow: workflow, RequestID: requestID, SourceRun: sourceRun,
-	})
-	if err != nil {
-		return "", fmt.Errorf("stateclient: encode trigger: %w", err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.BaseURL+apicontract.TriggerIngestPath, bytes.NewReader(body))
+	headers := make(http.Header)
+	headers.Set("Idempotency-Key", requestID)
+	headers.Set("Accept", "application/json")
+	response, err := h.plane.DoJSON(ctx, http.MethodPost, apicontract.TriggerIngestPath, body, headers)
 	if err != nil {
-		return "", fmt.Errorf("stateclient: build trigger request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", requestID)
-	request.Header.Set("Accept", "application/json")
-
-	response, err := h.cfg.Client.Do(request)
-	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "encode" {
+			return "", fmt.Errorf("stateclient: encode trigger: %w", requestErr.Err)
+		}
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return "", fmt.Errorf("stateclient: build trigger request: %w", requestErr.Err)
+		}
 		return "", fmt.Errorf("stateclient: trigger: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxTriggerBodyBytes))
+	raw, err := planehttp.ReadBounded(response.Body, maxTriggerBodyBytes)
 	if err != nil {
 		return "", fmt.Errorf("stateclient: read trigger response: %w", err)
 	}
