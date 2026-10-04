@@ -625,6 +625,54 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
     ).toBe("warning");
   });
 
+  it("does not treat bounded successor history as proof that a failure is unrecovered", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const failed = attentionRun(
+      "failed-before-busy-completions",
+      "failed",
+      new Date(NOW - 30 * 60_000).toISOString(),
+    );
+    failed.trigger.ref = "6487";
+    failed.startedAt = new Date(NOW - 60 * 60_000).toISOString();
+    failed.terminalReason = "ISSUE_OVER_SCOPE";
+    const recovered: RunSummary = {
+      ...attentionRun(
+        "successful-successor",
+        "failed",
+        new Date(NOW - 20 * 60_000).toISOString(),
+      ),
+      phase: "completed",
+      trigger: { kind: "item", ref: "6487" },
+      startedAt: new Date(NOW - 25 * 60_000).toISOString(),
+    };
+    const unrelated = Array.from({ length: 21 }, (_, index): RunSummary => {
+      const finishedAt = new Date(NOW - index * 30_000).toISOString();
+      return {
+        ...attentionRun(`unrelated-completion-${index}`, "failed", finishedAt),
+        phase: "completed",
+        startedAt: new Date(Date.parse(finishedAt) - 10_000).toISOString(),
+      };
+    });
+    fixtures.runs = { runs: [failed, recovered, ...unrelated] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+    const candidate = overview.groups.attention.find((run) => run.id === failed.id);
+
+    expect(candidate).toBeDefined();
+    if (!candidate) {
+      throw new Error("Expected the failed run to remain in the attention group.");
+    }
+    expect(overview.groups.recoveryEvidenceIncomplete?.has(failed.id)).toBe(true);
+    expect(
+      attentionSeverity(
+        candidate,
+        [...overview.groups.active, ...overview.groups.attention, ...overview.groups.recent],
+        undefined,
+        overview.groups.recoveryEvidenceIncomplete?.has(failed.id),
+      ),
+    ).toBe("warning");
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);

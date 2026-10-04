@@ -117,6 +117,7 @@ export interface OperationalRunGroups {
   attention: RunSummary[];
   recent: RunSummary[];
   failureReasons?: FailureReasons;
+  recoveryEvidenceIncomplete?: ReadonlySet<string>;
   incomplete?: IncompleteRunPhases;
   attentionCandidatesTruncated?: boolean;
 }
@@ -127,6 +128,7 @@ export function attentionSeverity(
   run: RunSummary,
   runs: readonly RunSummary[] = [],
   failureReason?: Pick<TelemetryError, "code" | "errorClass" | "message">,
+  recoveryEvidenceIncomplete = false,
 ): AttentionSeverity {
   if (
     run.phase === "escalated" ||
@@ -172,6 +174,7 @@ export function attentionSeverity(
     );
     if (
       recovered ||
+      recoveryEvidenceIncomplete ||
       (!explicitlyNonRetryable &&
         /\b(self[._ -]?heal\w*|retryable|will retry|retry scheduled|retry pending)\b/.test(reason))
     ) {
@@ -1745,8 +1748,28 @@ async function loadOverviewRunGroups(
   const availableRuns = [...running, ...escalated, ...failed, ...completed, ...aborted];
   const failureReasons =
     settledValue(failureReasonsResult) ?? previous?.failureReasons ?? new Map();
+  const successorResults = [settled[0], settled[3]];
+  const recoveryEvidenceIncomplete = new Set(
+    failed
+      .filter((run) =>
+        successorResults.some(
+          (result) =>
+            result.status === "rejected" ||
+            (Boolean(result.value.nextCursor) &&
+              result.value.runs.every(
+                (candidate) => Date.parse(candidate.startedAt) > Date.parse(run.startedAt),
+              )),
+        ),
+      )
+      .map((run) => run.id),
+  );
   const severity = (run: RunSummary) =>
-    attentionSeverity(run, availableRuns, failureReasons.get(run.id));
+    attentionSeverity(
+      run,
+      availableRuns,
+      failureReasons.get(run.id),
+      recoveryEvidenceIncomplete.has(run.id),
+    );
   const stalled = running.filter((run) => severity(run) !== "warning");
   const attention = sortRunsByActivity([...stalled, ...escalated, ...failed]).sort(
     (left, right) =>
@@ -1761,6 +1784,7 @@ async function loadOverviewRunGroups(
     attention: attention.slice(0, ATTENTION_RUN_LIMIT),
     recent: sortRuns([...completed, ...aborted]).slice(0, RECENT_OUTCOME_LIMIT),
     ...(failureReasons.size > 0 ? { failureReasons } : {}),
+    ...(recoveryEvidenceIncomplete.size > 0 ? { recoveryEvidenceIncomplete } : {}),
     ...(incomplete ? { incomplete } : {}),
     ...(attentionCandidatesTruncated ? { attentionCandidatesTruncated: true } : {}),
   };
