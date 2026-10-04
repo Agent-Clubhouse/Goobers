@@ -275,6 +275,37 @@ func TestSafetyConditionalRebindSeparatesManagedAndAdvisoryReview(t *testing.T) 
 	assertFinding(t, compile(t, d), EvidenceCode, false)
 }
 
+func TestSafetyExplicitDiffAfterReboundWorkspaceSatisfiesPRReview(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		inputsFrom map[string]string
+		want       bool
+	}{
+		{"same selected PR", map[string]string{"selectedNumber": "selectedNumber", "head": "head", "base": "base"}, false},
+		{"unproven selected PR", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := reviewDefinition()
+			selector := shell("gather-pr-context", "advisory-siblings", "goobers", "gather-pr-context")
+			for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+				selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+			}
+			siblings := shell("advisory-siblings", "implement", "goobers", "gather-sibling-context", "--no-verdict-cache")
+			for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-sibling-context", nil) {
+				siblings.Capabilities = append(siblings.Capabilities, string(use.Capability))
+			}
+			siblings.InputsFrom = tc.inputsFrom
+			siblings.PolicyActions = []string{"flag-scope-drift", "route-verdict"}
+			d.Spec.Start = selector.Name
+			d.Spec.Tasks = append([]apiv1.Task{selector, siblings}, d.Spec.Tasks...)
+			d.Spec.Tasks[3].Run.Command = []string{"git", "diff", "main...HEAD"}
+			d.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceRepo
+			annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+			assertFinding(t, compile(t, d), EvidenceCode, tc.want)
+		})
+	}
+}
+
 func TestSafetyFeedbackUsesRuntimeContextSelection(t *testing.T) {
 	d := reviewDefinition()
 	d.Spec.Tasks[0].ContextFrom = []string{"check"}
