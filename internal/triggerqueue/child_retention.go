@@ -93,6 +93,7 @@ func tombstoneChildLineages(ctx context.Context, tx *sql.Tx, now time.Time, limi
  AND NOT EXISTS(SELECT 1 FROM child_parents d WHERE d.gaggle=c.gaggle AND d.parent_run=substr(c.acceptance_id,9))
  AND COALESCE((SELECT count FROM tombstone_counts h WHERE h.gaggle=c.gaggle),0)<?
  AND EXISTS(SELECT 1 FROM triggers t WHERE t.id=c.acceptance_id AND t.state IN ('dispatched','rejected'))
+ AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=c.acceptance_id AND sc.cancel_ns IS NOT NULL AND sc.disposition='')
  ORDER BY c.acknowledged_ns,c.child_id LIMIT ?`, cutoff, cutoff, MaxChildTombstones, limit)
 	if err != nil {
 		return 0, err

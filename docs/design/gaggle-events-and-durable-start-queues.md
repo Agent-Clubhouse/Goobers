@@ -846,3 +846,28 @@ execution wiring, or unavailable validation. Exact command checks expose that
 reason in the existing portal form. The publication barrier clears stale waiting
 text; an uncertain restart instead says it is awaiting execution confirmation.
 No raw provider errors or credential material are retained in these explanations.
+
+### Durable start controls foundation
+
+The shared ledger now reserves bounded control/audit space for every accepted
+start, including starts not yet classified by a trusted host. A host may pin its
+validated gaggle, source kind, workflow, exact archived generation, payload
+identity, reserved run ID and pending deadline once. Migration invents none of
+those authority fields. Inspection is bounded and partitioned by the pinned
+gaggle; internal records and verified cancellation authority are not wire DTOs.
+
+An authorized cancellation settles only `accepted` custody. An attempted or
+confirmed dispatch retains a cancellation request without claiming termination,
+freeing the effect or authorizing another launch. Requests remain retained
+through ordinary and typed source pruning until observed disposition. A
+certified no-effect requeue cannot bypass the retained request. Admission with a
+captured deadline requires the host's explicit clock and atomically checks it;
+clockless legacy admission refuses deadlines. Expiry never settles attempted
+custody, and child starts have no default deadline in this layer.
+
+This foundation is dormant until host scope pinning, current human policy checks,
+inspection/cancellation routes and deadline configuration are installed. Child
+and session pre-start cancellation/expiry explicitly refuse until their source
+ledger can settle in the same transaction; queue-only rejection is insufficient.
+Actual execution cancellation and observed terminal acknowledgement remain host
+work, not claims made by storing a cancellation request.

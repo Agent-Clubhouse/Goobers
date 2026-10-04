@@ -16,8 +16,8 @@ const (
 	MaxEventDeliveries  = 50000
 	MaxOpenEventGroups  = 1000
 	MaxEventRootStarts  = 100
-	eventRouteAllowance = MaxPayloadBytes + 16*1024
-	eventGroupAllowance = MaxPayloadBytes + 4096
+	eventRouteAllowance = MaxPayloadBytes + 16*1024 + startControlAllowance
+	eventGroupAllowance = MaxPayloadBytes + 4096 + startControlAllowance
 )
 
 const eventGroupSchema = `
@@ -152,10 +152,10 @@ func triggerSlotCapacity(ctx context.Context, tx *sql.Tx, additional int) error 
  (SELECT COALESCE(SUM(reserved_starts),0) FROM event_groups)`).Scan(&count); err != nil {
 		return err
 	}
-	if count+additional > MaxRecords {
+	if additional < 0 || count+additional > MaxRecords {
 		return ErrFull
 	}
-	return nil
+	return childByteCapacity(ctx, tx, additional*(MaxPayloadBytes+startControlAllowance))
 }
 
 func validEventBatch(gaggle string, now time.Time, limit int) error {

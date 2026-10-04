@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`, childSchema, childAuthoritySchema, childProposalSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childStorageSchema, eventSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, eventGroupSchema, eventRootSetSchema, childPublicationSchema, eventOutboxSchema, eventPublicationRetentionSchema, childRestartSchema, sessionSchema, sourceStartSchema, sessionInputSchema, childPublicationExecutionSchema, scheduleDemandSchema, workbenchCommandSchema, directEngineSchema, humanRestartSchema, needsHumanCommandSchema, workbenchProposalSchema}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childStorageSchema, eventSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, eventGroupSchema, eventRootSetSchema, childPublicationSchema, eventOutboxSchema, eventPublicationRetentionSchema, childRestartSchema, sessionSchema, sourceStartSchema, sessionInputSchema, childPublicationExecutionSchema, scheduleDemandSchema, workbenchCommandSchema, directEngineSchema, humanRestartSchema, needsHumanCommandSchema, workbenchProposalSchema, startControlSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -152,7 +152,7 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id)", now.Add(-ReplayRetention).UnixNano()); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='')", now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return Record{}, false, err
 	}
 	if err = triggerSlotCapacity(ctx, tx, 1); err != nil {
@@ -198,7 +198,24 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]Record, error) {
 // BeginDispatch durably claims one request before any scheduler side effect.
 // Concurrent workers cannot both claim it, including across Store instances.
 func (s *Store) BeginDispatch(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state='dispatching',reason='' WHERE id=? AND state='accepted'", id)
+	// Compatibility for receipts without deadlines. A captured deadline requires
+	// the caller's explicit clock through BeginDispatchAt.
+	return s.beginDispatch(ctx, id, 0)
+}
+
+// BeginDispatchAt claims custody using the host's admission clock. A captured
+// deadline or cancellation is checked in the same atomic update as the claim.
+func (s *Store) BeginDispatchAt(ctx context.Context, id string, now time.Time) error {
+	if now.IsZero() {
+		return ErrTransition
+	}
+	return s.beginDispatch(ctx, id, now.UnixNano())
+}
+
+func (s *Store) beginDispatch(ctx context.Context, id string, now int64) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE triggers SET state='dispatching',reason='' WHERE id=? AND state='accepted'
+ AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND
+ (sc.cancel_ns IS NOT NULL OR (sc.deadline_ns IS NOT NULL AND (?=0 OR sc.deadline_ns<=?))))`, id, now, now)
 	return changed(result, err)
 }
 

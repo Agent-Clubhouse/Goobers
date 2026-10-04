@@ -55,7 +55,7 @@ func pruneSessionTombstones(ctx context.Context, tx *sql.Tx, now time.Time, limi
 
 func tombstoneSessionTurns(ctx context.Context, tx *sql.Tx, now time.Time, limit int) (int, error) {
 	cutoff := now.Add(-sessioning.Retention).UnixNano()
-	ids, err := childPruneIDs(ctx, tx, `SELECT t.id FROM interactive_turns t JOIN interactive_sessions s ON s.id=t.session_id WHERE s.state='closed' AND s.active_turn='' AND s.closed_ns<=? AND t.state='settled' AND t.settled_ns<=? AND t.tombstoned_ns IS NULL ORDER BY t.id LIMIT ?`, cutoff, cutoff, limit)
+	ids, err := childPruneIDs(ctx, tx, `SELECT t.id FROM interactive_turns t JOIN interactive_sessions s ON s.id=t.session_id WHERE s.state='closed' AND s.active_turn='' AND s.closed_ns<=? AND t.state='settled' AND t.settled_ns<=? AND t.tombstoned_ns IS NULL AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=t.acceptance_id AND sc.cancel_ns IS NOT NULL AND sc.disposition='') ORDER BY t.id LIMIT ?`, cutoff, cutoff, limit)
 	if err != nil {
 		return 0, err
 	}

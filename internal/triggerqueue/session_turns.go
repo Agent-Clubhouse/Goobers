@@ -100,7 +100,8 @@ func (s *Store) BeginSessionTurn(ctx context.Context, acceptance string, now tim
 	if err != nil {
 		return t, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE triggers SET state='dispatching' WHERE id=?`, acceptance)
+	claimed, err := tx.ExecContext(ctx, `UPDATE triggers SET state='dispatching' WHERE id=? AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND (sc.cancel_ns IS NOT NULL OR (sc.deadline_ns IS NOT NULL AND sc.deadline_ns<=?)))`, acceptance, now.UnixNano())
+	err = changed(claimed, err)
 	if err != nil {
 		return t, err
 	}

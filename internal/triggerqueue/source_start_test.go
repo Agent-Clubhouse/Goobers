@@ -64,6 +64,10 @@ func TestSourceCapacityRollbackDoesNotAdvanceCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This fixture isolates the record-count quota from the independent byte reserve.
+	if _, err := store.db.Exec(`UPDATE start_controls SET reserved_bytes=0`); err != nil {
+		t.Fatal(err)
+	}
 	batch := SourceBatch{Key: "new-fire", Actor: "scheduler", Fingerprint: "input", Starts: []SourceStart{{[]byte("start")}}, Advance: &SourceAdvance{Scope: "scope", Before: before, After: before.Add(time.Minute)}}
 	if _, _, err = store.AcceptSource(t.Context(), batch, before); !errors.Is(err, ErrFull) {
 		t.Fatal(err)
