@@ -27,6 +27,7 @@ type SessionOperationAccess struct {
 	BacklogSources        []string `json:"backlogSources,omitempty"`
 	BacklogWriteSources   []string `json:"backlogWriteSources,omitempty"`
 	BacklogResolveSources []string `json:"backlogResolveSources,omitempty"`
+	PRRepairEnabled       bool     `json:"prRepairEnabled,omitempty"`
 	BacklogReadDisabled   bool     `json:"backlogReadDisabled,omitempty"`
 }
 
@@ -77,11 +78,14 @@ func SessionOperationToolNames(a *SessionOperationAccess, run string) []string {
 	if len(a.BacklogResolveSources) > 0 {
 		names = append(names, "inspect_needs_human", "resolve_needs_human", "get_needs_human_receipt")
 	}
+	if a.PRRepairEnabled {
+		names = append(names, "inspect_selected_pr", "read_selected_pr_file", "repair_selected_pr", "get_pr_repair_receipt")
+	}
 	return names
 }
 func isSessionOperationTool(name string) bool {
 	switch name {
-	case "inspect_needs_human", "resolve_needs_human", "get_needs_human_receipt", "get_backlog_item", "list_backlog_items", "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt":
+	case "inspect_selected_pr", "read_selected_pr_file", "repair_selected_pr", "get_pr_repair_receipt", "inspect_needs_human", "resolve_needs_human", "get_needs_human_receipt", "get_backlog_item", "list_backlog_items", "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt":
 		return true
 	}
 	return false
@@ -131,6 +135,14 @@ func (s *Server) callSessionOperation(name string, raw json.RawMessage) (map[str
 func validateSessionOperationArguments(name string, raw json.RawMessage) error {
 	var err error
 	switch name {
+	case "inspect_selected_pr":
+		_, err = sessioning.DecodePRRepairInspect(raw)
+	case "read_selected_pr_file":
+		_, err = sessioning.DecodePRRepairRead(raw)
+	case "repair_selected_pr":
+		_, err = sessioning.DecodePRRepairRequest(raw)
+	case "get_pr_repair_receipt":
+		_, err = sessioning.DecodePRRepairReceipt(raw)
 	case "inspect_needs_human":
 		_, err = sessioning.DecodeNeedsHumanInspect(raw)
 	case "resolve_needs_human":

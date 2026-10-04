@@ -67,6 +67,9 @@ func (b *Bridge) writeCall(ctx context.Context, token, run, operation, binding s
 	if !invocationOperationOwner(g.invocation, operation) {
 		return ErrDenied
 	}
+	if repairOperation(operation) {
+		binding = g.invocation.Repairer.Target().SourceBindingID
+	}
 	// Reserve enough evidence budget before any possible external effect.
 	if g.calls >= sessioning.MaxOperationsPerTurn || g.bytes+sessioning.MaxOperationResultBytes > sessioning.MaxOperationTurnBytes {
 		return ErrLimit
@@ -127,6 +130,13 @@ func (b *Bridge) recordWriteEvidence(g *grant, note journal.Event, binding strin
 			note.Runner["commandRequestDigest"] = command.RequestDigest
 		}
 		if command, ok := value.(workbench.NeedsHumanResolutionCommand); ok {
+			note.Runner["commandId"] = command.ID
+			note.Runner["outcome"] = command.State
+			note.Runner["operationDigest"] = command.OperationDigest
+			note.Runner["commandRequestDigest"] = command.RequestDigest
+		}
+
+		if command, ok := value.(sessioning.PRRepairCommandView); ok {
 			note.Runner["commandId"] = command.ID
 			note.Runner["outcome"] = command.State
 			note.Runner["operationDigest"] = command.OperationDigest

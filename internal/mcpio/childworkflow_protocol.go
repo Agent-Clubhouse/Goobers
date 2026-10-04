@@ -11,6 +11,9 @@ func (s *Server) toolDefs() []toolDef {
 		if len(s.tools.cfg.SessionOperations.BacklogResolveSources) > 0 {
 			definitions = append(definitions, sessionResolutionToolDefs(s.tools.cfg.SessionOperations.BacklogResolveSources)...)
 		}
+		if s.tools.cfg.SessionOperations.PRRepairEnabled {
+			definitions = append(definitions, sessionRepairToolDefs()...)
+		}
 		if len(s.tools.cfg.SessionOperations.BacklogWriteSources) > 0 {
 			definitions = append(definitions, sessionWriteToolDefs(s.tools.cfg.SessionOperations.BacklogWriteSources)...)
 		}

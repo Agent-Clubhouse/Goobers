@@ -406,6 +406,10 @@ const (
 	RouteSessionBacklogEditCapabilities RouteID = "sessionBacklogEditCapabilities"
 	RouteSessionBacklogEdit             RouteID = "sessionBacklogEdit"
 	RouteSessionBacklogReceipt          RouteID = "sessionBacklogReceipt"
+	RouteSessionPRRepairInspect         RouteID = "sessionPRRepairInspect"
+	RouteSessionPRRepairRead            RouteID = "sessionPRRepairRead"
+	RouteSessionPRRepair                RouteID = "sessionPRRepair"
+	RouteSessionPRRepairReceipt         RouteID = "sessionPRRepairReceipt"
 	RouteSessionNeedsHumanInspect       RouteID = "sessionNeedsHumanInspect"
 	RouteSessionNeedsHumanResolve       RouteID = "sessionNeedsHumanResolve"
 	RouteSessionNeedsHumanReceipt       RouteID = "sessionNeedsHumanReceipt"
@@ -677,6 +681,10 @@ var v1Routes = []Route{
 	{ID: RouteSessionBacklogEditCapabilities, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_capabilities", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionBacklogEdit, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/edit_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionBacklogReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepairInspect, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/inspect_selected_pr", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepairRead, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/read_selected_pr_file", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepair, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/repair_selected_pr", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepairReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_pr_repair_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionNeedsHumanInspect, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/inspect_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionNeedsHumanResolve, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/resolve_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionNeedsHumanReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_needs_human_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},

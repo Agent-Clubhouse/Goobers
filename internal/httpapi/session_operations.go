@@ -74,7 +74,7 @@ func authorizeSessionOperation(r *http.Request, p Principal) error {
 	return nil
 }
 func registerSessionOperationRoutes(router *Router, service SessionOperationService, errorLog *log.Logger) {
-	for _, id := range []apicontract.RouteID{apicontract.RouteSessionBacklogRead, apicontract.RouteSessionBacklogList, apicontract.RouteSessionBacklogEditCapabilities, apicontract.RouteSessionBacklogEdit, apicontract.RouteSessionBacklogReceipt, apicontract.RouteSessionNeedsHumanInspect, apicontract.RouteSessionNeedsHumanResolve, apicontract.RouteSessionNeedsHumanReceipt} {
+	for _, id := range []apicontract.RouteID{apicontract.RouteSessionPRRepairInspect, apicontract.RouteSessionPRRepairRead, apicontract.RouteSessionPRRepair, apicontract.RouteSessionPRRepairReceipt, apicontract.RouteSessionBacklogRead, apicontract.RouteSessionBacklogList, apicontract.RouteSessionBacklogEditCapabilities, apicontract.RouteSessionBacklogEdit, apicontract.RouteSessionBacklogReceipt, apicontract.RouteSessionNeedsHumanInspect, apicontract.RouteSessionNeedsHumanResolve, apicontract.RouteSessionNeedsHumanReceipt} {
 		router.Handle(id, sessionOperationHandler(id, service, errorLog))
 	}
 }
@@ -100,6 +100,9 @@ func sessionOperationHandler(id apicontract.RouteID, service SessionOperationSer
 			return
 		}
 		limit := sessioning.MaxOperationRequestBytes
+		if id == apicontract.RouteSessionPRRepair {
+			limit = sessioning.MaxOperationPRRepairBytes
+		}
 		if id == apicontract.RouteSessionNeedsHumanResolve {
 			limit = sessioning.MaxOperationResolutionBytes
 		}
@@ -121,6 +124,9 @@ func sessionOperationHandler(id apicontract.RouteID, service SessionOperationSer
 	}
 }
 func callSessionOperation(ctx context.Context, service SessionOperationService, id apicontract.RouteID, token, run string, raw []byte) (any, error) {
+	if sessionPRRepairRoute(id) {
+		return callSessionPRRepair(ctx, service, id, token, run, raw)
+	}
 	if sessionResolutionRoute(id) {
 		return callSessionResolution(ctx, service, id, token, run, raw)
 	}

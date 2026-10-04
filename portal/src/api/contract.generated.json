@@ -830,6 +830,50 @@
       "recoverySafe": false
     },
     {
+      "id": "sessionPRRepairInspect",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/inspect_selected_pr",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionPRRepairRead",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/read_selected_pr_file",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionPRRepair",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/repair_selected_pr",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionPRRepairReceipt",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/get_pr_repair_receipt",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "sessionNeedsHumanInspect",
       "method": "POST",
       "path": "/api/v1/runs/{run}/session-operations/inspect_needs_human",

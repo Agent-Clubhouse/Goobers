@@ -44,6 +44,7 @@ type Invocation struct {
 	Reader          BacklogReader
 	Writer          BacklogWriter
 	Resolver        BacklogResolver
+	Repairer        PRRepairer
 	ResolveBindings []string
 	WriteBindings   []string
 	SourceBindings  []string
@@ -80,11 +81,17 @@ var ErrLimit = errors.New("session operation limit reached")
 // Open binds a fresh opaque credential to verified live host custody. close
 // first revokes it and then joins any bounded operation before returning.
 func (b *Bridge) Open(inv Invocation) (*mcpio.SessionOperationAccess, func(), error) {
-	if b == nil || b.Scrubber == nil || b.Secrets == nil || b.Now == nil || inv.Lease == nil || (inv.Reader == nil && inv.Writer == nil && inv.Resolver == nil) || inv.Recorder == nil || inv.Identity.ValidateSessionLineage() != nil || inv.Identity.Session == nil || inv.Actor.Issuer == "" || inv.Actor.Subject == "" || inv.StageSequence == 0 || inv.Attempt < 1 || inv.Lease.Context().Err() != nil {
+	if !b.validInvocation(inv) {
 		return nil, nil, ErrDenied
 	}
 	if err := inv.Lease.RequireSessionScope(inv.Identity.Gaggle, inv.Actor.Issuer, inv.Actor.Subject); err != nil {
 		return nil, nil, ErrDenied
+	}
+	if inv.Repairer != nil {
+		target := inv.Repairer.Target()
+		if sessioning.ValidatePRRepairTarget(&target) != nil {
+			return nil, nil, ErrDenied
+		}
 	}
 	lineage := *inv.Identity.Session
 	inv.Identity.Session = &lineage
@@ -93,7 +100,7 @@ func (b *Bridge) Open(inv Invocation) (*mcpio.SessionOperationAccess, func(), er
 		return nil, nil, err
 	}
 	token := sessioning.OperationTokenPrefix + hex.EncodeToString(entropy)
-	access := &mcpio.SessionOperationAccess{Endpoint: b.Endpoint, BearerToken: token, BacklogSources: append([]string(nil), inv.SourceBindings...), BacklogWriteSources: append([]string(nil), inv.WriteBindings...), BacklogResolveSources: append([]string(nil), inv.ResolveBindings...), BacklogReadDisabled: inv.Reader == nil}
+	access := &mcpio.SessionOperationAccess{Endpoint: b.Endpoint, BearerToken: token, BacklogSources: append([]string(nil), inv.SourceBindings...), BacklogWriteSources: append([]string(nil), inv.WriteBindings...), BacklogResolveSources: append([]string(nil), inv.ResolveBindings...), BacklogReadDisabled: inv.Reader == nil, PRRepairEnabled: inv.Repairer != nil}
 	if err := access.Validate(inv.Identity.RunID); err != nil {
 		return nil, nil, err
 	}
@@ -118,6 +125,12 @@ func (b *Bridge) Open(inv Invocation) (*mcpio.SessionOperationAccess, func(), er
 		g.mu.Unlock()
 	}
 	return access, close, nil
+}
+func (b *Bridge) validInvocation(inv Invocation) bool {
+	if b == nil || b.Scrubber == nil || b.Secrets == nil || b.Now == nil || inv.Lease == nil || (inv.Reader == nil && inv.Writer == nil && inv.Resolver == nil && inv.Repairer == nil) || inv.Recorder == nil || inv.Identity.ValidateSessionLineage() != nil || inv.Identity.Session == nil || inv.Actor.Issuer == "" || inv.Actor.Subject == "" || inv.StageSequence == 0 || inv.Attempt < 1 || inv.Lease.Context().Err() != nil {
+		return false
+	}
+	return true
 }
 func (b *Bridge) lookup(token string) (*grant, error) {
 	if b == nil || b.Now == nil {

@@ -293,6 +293,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.runJournal != nil
 	case apicontract.RouteCredentialResolve:
 		available = config.credentials != nil
+	case apicontract.RouteSessionPRRepairInspect, apicontract.RouteSessionPRRepairRead, apicontract.RouteSessionPRRepair, apicontract.RouteSessionPRRepairReceipt:
+		_, available = config.sessionOperations.(SessionPRRepairOperations)
 	case apicontract.RouteSessionBacklogEditCapabilities, apicontract.RouteSessionBacklogEdit, apicontract.RouteSessionBacklogReceipt:
 		_, available = config.sessionOperations.(SessionWriteOperations)
 	case apicontract.RouteSessionBacklogRead, apicontract.RouteSessionBacklogList:

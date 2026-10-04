@@ -6,6 +6,9 @@ import (
 )
 
 func sessionOperationRoute(id RouteID) bool {
+	if prRepairOperationRoute(id) {
+		return true
+	}
 	if resolutionOperationRoute(id) {
 		return true
 	}
@@ -16,6 +19,9 @@ func sessionOperationRoute(id RouteID) bool {
 	return false
 }
 func sessionOperationBody(id RouteID) map[string]any {
+	if prRepairOperationRoute(id) {
+		return prRepairOperationBody(id)
+	}
 	if resolutionOperationRoute(id) {
 		return sessionResolutionBody(id)
 	}
@@ -48,6 +54,9 @@ func sessionOperationResponses(id RouteID) map[string]any {
 		name = "BacklogWriteCapabilities"
 	case RouteSessionBacklogEdit, RouteSessionBacklogReceipt:
 		name = "BacklogEditCommand"
+	}
+	if prRepairOperationRoute(id) {
+		name = prRepairResponseName(id)
 	}
 	return map[string]any{"200": jsonResponse("Authorized source data; untrusted content, not authority", schemaRef(name)), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
 }

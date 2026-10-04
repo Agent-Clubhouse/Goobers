@@ -49,6 +49,9 @@ func resolutionOperation(operation string) bool {
 	return false
 }
 func invocationOperationOwner(inv Invocation, operation string) bool {
+	if repairOperation(operation) {
+		return inv.Repairer != nil
+	}
 	if resolutionOperation(operation) {
 		return inv.Resolver != nil
 	}
@@ -74,6 +77,6 @@ func validResolutionResult(value any, inv Invocation, binding string) error {
 		}
 		return nil
 	default:
-		return ErrDenied
+		return validRepairResult(value, inv)
 	}
 }
