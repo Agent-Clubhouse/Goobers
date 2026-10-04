@@ -33,17 +33,9 @@ func (s *interactiveStageRestart) preflight(ctx context.Context, plan *runner.St
 	if err != nil {
 		return nil, err
 	}
-	request := interactiveaccess.RestartSourceRequest{}
-	if repository != nil {
-		identity := interactiveRepositoryIdentity(*repository)
-		request.Repository = &identity
-	}
-	for _, claim := range claims {
-		if !strings.HasPrefix(continuationClaimID(claim), pullRequestClaimPrefix) {
-			request.Backlog = true
-		} else if repository == nil || interactiveRepositoryIdentity(*repository) != interactiveRepositoryIdentity(scope.Project) || repository.BaseURL != scope.Project.BaseURL {
-			return nil, restartRefusal("restart_pr_scope_ambiguous", "The selected workspace differs from the source PR repository; an explicit claim-to-repository binding is required.")
-		}
+	request, err := restartClaimSources(repository, scope.Project, claims)
+	if err != nil {
+		return nil, err
 	}
 	sources, err := load(ctx, request)
 	if err != nil {
@@ -94,6 +86,22 @@ func (s *interactiveStageRestart) preflight(ctx context.Context, plan *runner.St
 		return nil, err
 	}
 	return claims, nil
+}
+
+func restartClaimSources(repository *apiv1.RepoRef, project apiv1.RepoRef, claims []localscheduler.ClaimEntry) (interactiveaccess.RestartSourceRequest, error) {
+	request := interactiveaccess.RestartSourceRequest{}
+	if repository != nil {
+		identity := interactiveRepositoryIdentity(*repository)
+		request.Repository = &identity
+	}
+	for _, claim := range claims {
+		if !strings.HasPrefix(continuationClaimID(claim), pullRequestClaimPrefix) {
+			request.Backlog = true
+		} else if repository == nil || interactiveRepositoryIdentity(*repository) != interactiveRepositoryIdentity(project) || repository.BaseURL != project.BaseURL {
+			return interactiveaccess.RestartSourceRequest{}, restartRefusal("restart_pr_scope_ambiguous", "The selected workspace differs from the source PR repository; an explicit claim-to-repository binding is required.")
+		}
+	}
+	return request, nil
 }
 
 func restartSourceRepository(plan runner.StageRestartPlan, project apiv1.RepoRef) *apiv1.RepoRef {

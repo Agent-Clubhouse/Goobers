@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -15,7 +17,6 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestInteractiveRestartRecoverySelectsHumanAuthorityAndCurrentPolicy(t *testing.T) {
