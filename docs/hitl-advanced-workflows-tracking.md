@@ -90,6 +90,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-parallel-child-projection` | `codex/haw-child-portal` | Project independent branch waits and coordinate whole-run scheduler capacity |
 
+| `codex/haw-event-causal-roots` | `codex/haw-parallel-child-projection` | Preserve bounded original event roots across chained consumers |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -211,7 +213,11 @@ shutdown ownership. Input manifests and journal lineage reconcile uncertain
 starts without duplication; only verified terminal journals settle groups.
 Dependency inventories protect source journals and archived configuration before
 routing is installed. Public ingress, workflow emission, all-source normalization
-and engine consumer transport remain pending. Workflow root counters remain retained until
+and engine consumer transport remain pending. Trusted consumer ancestry now carries
+up to 32 original roots across another event generation, survives source-history
+pruning, and charges every root atomically. A new consumer RunID cannot reset those
+limits. Child and human-continuation ancestry still require verified adapters.
+Workflow root counters remain retained until
 all producers/descendants can be proven settled. See
 [receipt limits](reference/gaggle-event-receipts.md).
 
