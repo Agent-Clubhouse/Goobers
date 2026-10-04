@@ -350,3 +350,12 @@ bundles are maintained separately; no remote PR exists yet.
 | HAW-HITL-001–012 | Not created | Not published |
 | HAW-EVT-001–009 | Not created | Not published |
 | HAW-BKL-001–009 | Not created | Not published |
+
+
+### Native shared session delivery
+
+The daemon now installs the pinned model-only session runtime and shared turn
+coordinator, restores all unsettled session custody before admission, and retains
+journals/configuration while writers remain uncertain. Actual HTTP-to-Runner
+adapter tests cover accepted turns, publication refusal and unknown writers.
+Source read/write tools and live model/worker qualification remain follow-up.

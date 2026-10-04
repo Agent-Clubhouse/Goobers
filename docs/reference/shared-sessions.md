@@ -1,8 +1,8 @@
 # Shared interactive sessions
 
-The session ledger and HTTP/portal adapters are implemented. Agent execution
-availability remains disabled until the daemon's session runtime is installed.
-Creating schema tables or wiring a read route does not enable model execution.
+The session ledger, HTTP/portal adapters and native daemon runtime are implemented.
+The daemon advertises execution only after installing the runtime and its lifecycle
+hooks. Creating schema tables or wiring a read route alone does not enable it.
 
 ## Human surface
 
@@ -87,8 +87,10 @@ response reservation. Existing and new databases apply this as an additive
 migration after their source-start tables. Journal/schema, actual Runner.Start,
 parallel message ordering, byte bounds and tamper tests cover these contracts.
 
-The coordinator is implemented below. Session availability remains false until
-the human model driver and daemon lifecycle have been installed.
+The native driver executes the pinned Claude or Codex profile in a model-only
+scratch task, through the current human execution lease. Provider reads and typed
+source mutations require separate installed host operations; this driver supplies
+no default repository credentials, automation claims or external MCP servers.
 
 
 ## Turn coordinator and execution capacity
@@ -109,5 +111,17 @@ turns and prune only settled, closed session records.
 
 Composed tests cover browser disconnect, queued turn ordering, current-policy
 revocation, close/cancel/join, unknown writers, startup custody restoration, exact
-provenance and concurrent per-gaggle/global limits. Native daemon installation is
-still the next slice; these internals do not advertise execution on their own.
+provenance and concurrent per-gaggle/global limits. The native daemon now installs this coordinator, restores its full unsettled
+inventory before new admission, and retains configuration and journals until
+writer custody settles. Session-specific start/join and runtime-close evidence
+are required; an unknown writer cannot release capacity or launch a replacement.
+
+
+## Native runtime qualification
+
+Composed HTTP acceptance tests execute the actual Runner and Claude adapter with
+a fake process boundary. They cover queued response context, cancellation, journal
+publication failure and a writer whose exit cannot be proven. Exact host writer
+markers distinguish model completion from whole-runtime cleanup. These checks do
+not qualify live model, Kubernetes or provider execution. The initial native
+session remains model-only until typed source operations are installed.
