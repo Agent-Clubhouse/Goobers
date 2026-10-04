@@ -96,6 +96,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-discard-settlement` | `codex/haw-parallel-parent-custody` | Settle verified child discard without mutable parent filesystem access |
 
+| `codex/haw-child-repository-custody` | `codex/haw-discard-settlement` | Resolve production child repository URLs and verify both custody identities |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -117,6 +119,11 @@ charged to the configured parent budget. A publication barrier commits exact
 journal identity before stage effects; uncertain handoff is recovered from that
 journal. Cancellation fences submissions and queued starts before signaling live
 owners. Generated recovery uses retained source rather than a named catalog alias.
+Launcher, workspace adoption, recovery and terminal capture now share production
+repository URL resolution when no test override exists. Custody compares the
+provider's qualified repository key and the clone-URL digest independently;
+neither field is accepted in place of the other. Focused command race tests and
+the command growth/lint gates pass for this correction.
 
 Workspace capture includes permitted staged, dirty and untracked work. Separate
 child forks preserve both committed and uncommitted changes in the returned
