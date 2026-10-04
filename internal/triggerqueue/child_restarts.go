@@ -87,8 +87,12 @@ type ChildExecution struct {
 }
 
 func (r ChildRestartRequest) valid(now time.Time) bool {
-	return r.Identity.valid() && apiv1.ValidRunID(r.RunID) && len(r.RunID) <= 256 && apiv1.ValidRunID(r.SourceRunID) && len(r.SourceRunID) <= 256 && r.RunID != r.SourceRunID && r.RunID != r.Identity.ParentRunID && r.SourceTerminalSeq > 0 && r.SourceTerminalSeq <= 1<<63-1 && blobstore.ValidDigest(r.SourceResultRef) && validChildText(r.Actor, 1024, true) && validChildText(r.Stage, 256, true) && len(r.Plan) > 0 && len(r.Plan) <= MaxChildRestartPlanBytes && r.PlanDigest == "sha256:"+childDigest(r.Plan) && !now.IsZero()
+	return r.validMetadata(now) && len(r.Plan) > 0 && len(r.Plan) <= MaxChildRestartPlanBytes && r.PlanDigest == "sha256:"+childDigest(r.Plan)
 }
+func (r ChildRestartRequest) validMetadata(now time.Time) bool {
+	return r.Identity.valid() && apiv1.ValidRunID(r.RunID) && len(r.RunID) <= 256 && apiv1.ValidRunID(r.SourceRunID) && len(r.SourceRunID) <= 256 && r.RunID != r.SourceRunID && r.RunID != r.Identity.ParentRunID && r.SourceTerminalSeq > 0 && r.SourceTerminalSeq <= 1<<63-1 && blobstore.ValidDigest(r.SourceResultRef) && validChildText(r.Actor, 1024, true) && validChildText(r.Stage, 256, true) && blobstore.ValidDigest(r.PlanDigest) && !now.IsZero()
+}
+
 func (r ChildRestartRequest) digest() string {
 	r.Plan = nil
 	raw, _ := json.Marshal(r)

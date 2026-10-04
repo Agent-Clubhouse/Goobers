@@ -15,13 +15,22 @@ func (c ChildRecord) ActiveRunID() string {
 	return c.ExecutionRunID
 }
 
+const childExecutionMetadataColumns = `epoch,run_id,source_run,source_terminal_seq,source_result_ref,actor,stage,NULL,plan_digest,request_digest,state,result_ref,workspace_ref,accepted_ns,updated_ns,terminal_ns`
+
 const childExecutionColumns = `epoch,run_id,source_run,source_terminal_seq,source_result_ref,actor,stage,plan,plan_digest,request_digest,state,result_ref,workspace_ref,accepted_ns,updated_ns,terminal_ns`
 
 func readChildExecution(ctx context.Context, reader childProposalReader, c ChildRecord, runID string) (ChildExecution, error) {
+	return queryChildExecution(ctx, reader, c, runID, false)
+}
+func queryChildExecution(ctx context.Context, reader childProposalReader, c ChildRecord, runID string, metadataOnly bool) (ChildExecution, error) {
+	columns := childExecutionColumns
+	if metadataOnly {
+		columns = childExecutionMetadataColumns
+	}
 	e := ChildExecution{Identity: c.Identity}
 	var accepted, updated int64
 	var terminal sql.NullInt64
-	err := reader.QueryRowContext(ctx, `SELECT `+childExecutionColumns+` FROM child_execution_epochs WHERE child_id=? AND run_id=? AND length(plan)<=?`, c.ChildID, runID, MaxChildRestartPlanBytes).Scan(&e.Epoch, &e.RunID, &e.SourceRunID, &e.SourceTerminalSeq, &e.SourceResultRef, &e.Actor, &e.Stage, &e.Plan, &e.PlanDigest, &e.RequestDigest, &e.State, &e.ResultRef, &e.WorkspaceRef, &accepted, &updated, &terminal)
+	err := reader.QueryRowContext(ctx, `SELECT `+columns+` FROM child_execution_epochs WHERE child_id=? AND run_id=? AND length(plan)<=?`, c.ChildID, runID, MaxChildRestartPlanBytes).Scan(&e.Epoch, &e.RunID, &e.SourceRunID, &e.SourceTerminalSeq, &e.SourceResultRef, &e.Actor, &e.Stage, &e.Plan, &e.PlanDigest, &e.RequestDigest, &e.State, &e.ResultRef, &e.WorkspaceRef, &accepted, &updated, &terminal)
 	if err != nil {
 		return ChildExecution{}, err
 	}
@@ -31,7 +40,7 @@ func readChildExecution(ctx context.Context, reader childProposalReader, c Child
 	}
 	if e.Epoch > 0 {
 		r := ChildRestartRequest{Identity: e.Identity, RunID: e.RunID, SourceRunID: e.SourceRunID, SourceTerminalSeq: e.SourceTerminalSeq, SourceResultRef: e.SourceResultRef, Actor: e.Actor, Stage: e.Stage, Plan: e.Plan, PlanDigest: e.PlanDigest}
-		if e.Epoch > MaxChildExecutionEpochs || r.digest() != e.RequestDigest || (c.TombstonedAt.IsZero() && !r.valid(e.AcceptedAt)) {
+		if e.Epoch > MaxChildExecutionEpochs || r.digest() != e.RequestDigest || (c.TombstonedAt.IsZero() && (!r.validMetadata(e.AcceptedAt) || (!metadataOnly && !r.valid(e.AcceptedAt)))) {
 			return ChildExecution{}, ErrConflict
 		}
 	}
@@ -55,6 +64,21 @@ func (s *Store) ChildExecution(ctx context.Context, id ChildIdentity, runID stri
 }
 func initialChildExecution(c ChildRecord) ChildExecution {
 	return ChildExecution{Identity: c.Identity, RunID: c.RunID, State: c.State, ResultRef: c.ResultRef, WorkspaceRef: c.WorkspaceRef, AcceptedAt: c.AcceptedAt, UpdatedAt: c.UpdatedAt, TerminalAt: c.TerminalAt}
+}
+
+// ChildExecutionMetadata returns bounded identity/status without reading the
+// retained plan BLOB. It verifies the metadata request digest, but is never an
+// execution-authority check: callers that execute use ChildExecution instead.
+func (s *Store) ChildExecutionMetadata(ctx context.Context, id ChildIdentity, runID string) (ChildExecution, error) {
+	c, err := s.GetChild(ctx, id)
+	if err != nil {
+		return ChildExecution{}, err
+	}
+	e, err := queryChildExecution(ctx, s.db, c, runID, true)
+	if errors.Is(err, sql.ErrNoRows) && c.ExecutionEpoch == 0 && runID == c.RunID {
+		return initialChildExecution(c), nil
+	}
+	return e, err
 }
 
 // ChildExecutionHistory returns at most the original execution and eight human
@@ -87,11 +111,10 @@ func (s *Store) ChildExecutionHistory(ctx context.Context, id ChildIdentity) ([]
 	}
 	out := make([]ChildExecution, 0, len(ids))
 	for _, runID := range ids {
-		e, err := readChildExecution(ctx, s.db, c, runID)
+		e, err := queryChildExecution(ctx, s.db, c, runID, true)
 		if err != nil {
 			return nil, err
 		}
-		e.Plan = nil
 		out = append(out, e)
 	}
 	if len(out) != c.ExecutionEpoch+1 {
