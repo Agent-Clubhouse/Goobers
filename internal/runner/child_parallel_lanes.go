@@ -32,6 +32,9 @@ func (r *Runner) newParallelChildRuntime(in StartInput, p apiv1.Parallel, par *p
 	if r.cfg.ChildWorkflowAdmission == nil || !workflowHasChildren(in) {
 		return nil, nil
 	}
+	if err := parentParallelForkBudget(in.RunID, len(p.Branches), events); err != nil {
+		return nil, err
+	}
 	projection, err := journal.ProjectChildWaits(events)
 	if err != nil {
 		return nil, err

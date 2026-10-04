@@ -71,7 +71,7 @@ func TestContainedParentSelectionKeepsDurableRunnerWithWorkerStages(t *testing.T
 }
 
 func TestContainedParentUnsupportedShapesRefuse(t *testing.T) {
-	for _, mode := range []string{"gate", "parallel", "ordinary-task", "scratch", "broader-credential", "copilot", "no-worker", "self"} {
+	for _, mode := range []string{"gate", "parallel-start", "ordinary-task", "scratch", "broader-credential", "copilot", "no-worker", "self"} {
 		t.Run(mode, func(t *testing.T) {
 			f := containedParentFixture(t)
 			_, machine, err := childStageCatalog(f.cfg, f.applied, childworkflow.ParentSelection{Gaggle: f.parent.Gaggle, Workflow: f.parent.Workflow, Stage: "plan"}, childworkflow.BackendRunner)
@@ -81,8 +81,9 @@ func TestContainedParentUnsupportedShapesRefuse(t *testing.T) {
 			switch mode {
 			case "gate":
 				machine.Def.Spec.Gates = []apiv1.Gate{{Name: "gate"}}
-			case "parallel":
+			case "parallel-start":
 				machine.Def.Spec.Parallels = []apiv1.Parallel{{Name: "fork"}}
+				machine.Def.Spec.Start = "fork"
 			case "ordinary-task":
 				machine.Def.Spec.Tasks[0].ChildWorkflows = nil
 			case "scratch":

@@ -73,7 +73,7 @@ type ChildCapacityWaitError struct {
 func (e *ChildCapacityWaitError) Error() string { return e.Reason }
 
 // ChildParentCapacity releases only concurrency, retaining the accepted start
-// and budget. The initial runner integration supports serial parent graphs.
+// and budget. Parallel branches coordinate through one whole-run owner.
 type ChildParentCapacity interface {
 	SuspendChildParent(context.Context, string) (ChildParentSuspension, error)
 }

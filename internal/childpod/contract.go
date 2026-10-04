@@ -19,7 +19,7 @@ import (
 
 // Mandatory hard bounds cover both carrier bytes and their base64 JSON form.
 const (
-	MaxBundleBytes   = 16 << 20
+	MaxBundleBytes   = recovery.MaxPortableCarrierBytes
 	MaxContractBytes = 24 << 20
 	Command          = "__dispatch-child-exec"
 )
@@ -43,10 +43,7 @@ type Request struct {
 }
 
 // Carrier is the bounded tree and its complete independent object custody.
-type Carrier struct {
-	Snapshot recovery.PortableSnapshot `json:"snapshot"`
-	Bundle   []byte                    `json:"bundle"`
-}
+type Carrier = recovery.PortableCarrier
 
 // Contract binds every pod input to its exact accepted child and attempt.
 // Credentials and host filesystem paths are deliberately absent.
@@ -66,11 +63,7 @@ type Contract struct {
 
 // Output returns a tree bound to its input contract. Pod commit history is
 // deliberately squashed when mapped back onto the host's real child fork.
-type Output struct {
-	Version        int      `json:"version"`
-	ContractDigest string   `json:"contractDigest"`
-	Workspace      *Carrier `json:"workspace,omitempty"`
-}
+type Output = recovery.PortableReturn
 
 // Validate checks immutable identity and supported credential delegation.
 func (c Contract) Validate() error {
@@ -96,17 +89,6 @@ func (c Contract) Validate() error {
 	}
 	if c.Workspace != nil {
 		return c.Workspace.Validate()
-	}
-	return nil
-}
-
-// Validate verifies metadata and exact bundle bytes before any Git import.
-func (c Carrier) Validate() error {
-	if err := c.Snapshot.Validate(); err != nil {
-		return err
-	}
-	if len(c.Bundle) == 0 || len(c.Bundle) > MaxBundleBytes || int64(len(c.Bundle)) != c.Snapshot.Record.ArchiveBytes || journal.Digest(c.Bundle) != c.Snapshot.Record.ArchiveDigest {
-		return fmt.Errorf("invalid isolated child workspace carrier")
 	}
 	return nil
 }

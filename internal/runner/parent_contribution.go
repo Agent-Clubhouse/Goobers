@@ -114,18 +114,19 @@ func decodeParentContribution(event journal.Event) (parentContribution, error) {
 	return result, nil
 }
 
-func latestParentContributions(events []journal.Event) (map[int]journal.Event, error) {
-	latest := map[int]journal.Event{}
+func latestParentContributions(events []journal.Event) (map[string]journal.Event, error) {
+	latest := map[string]journal.Event{}
 	for _, event := range events {
 		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != ParentContributionKind {
 			continue
 		}
-		if _, err := decodeParentContribution(event); err != nil {
+		value, err := decodeParentContribution(event)
+		if err != nil {
 			return nil, err
 		}
-		latest[event.Branch] = event
-		if len(latest) > 128 {
-			return nil, errors.New("parent contribution exceeds branch bound")
+		latest[value.Custody.Workspace.WorkspaceID] = event
+		if len(latest) > maxParentForks {
+			return nil, errors.New("parent contribution exceeds workspace bound")
 		}
 	}
 	return latest, nil
@@ -143,26 +144,19 @@ func (r *Runner) restoreParentContribution(ctx context.Context, tf *taskFrame, b
 	if err != nil {
 		return err
 	}
-	latest, err := latestParentContributions(events)
+	event, fork, err := selectParentContribution(events, tf.t, branch)
 	if err != nil {
 		return err
 	}
-	event, found := latest[branch]
-	if !found {
-		if len(tf.t.RepoFrom) > 0 {
-			return errors.New("parent repoFrom predecessor has no durable contribution")
-		}
+	if fork {
+		return r.forkParentContribution(ctx, tf, reader, events, event, branch)
+	}
+	if event.Seq == 0 {
 		return nil
 	}
 	contribution, err := decodeParentContribution(event)
 	if err != nil {
 		return err
-	}
-	if event.Stage != tf.t.Name && (len(tf.t.RepoFrom) != 1 || tf.t.RepoFrom[0] != event.Stage) {
-		return errors.New("parent contribution requires its declared linear repoFrom predecessor")
-	}
-	if event.Stage != tf.t.Name && !parentContributionStageFinished(events, event) {
-		return errors.New("parent repoFrom predecessor has not finished")
 	}
 	if contribution.Custody.Workspace.OwnerRunID != tf.in.RunID {
 		return errors.New("parent contribution belongs to another run")
@@ -240,18 +234,6 @@ func (r *Runner) retireContainedParentContributions(runID string, phase journal.
 	return nil
 }
 
-func parentContributionStageFinished(events []journal.Event, receipt journal.Event) bool {
-	for _, event := range events {
-		if event.Seq <= receipt.Seq || event.Branch != receipt.Branch {
-			continue
-		}
-		if event.Type == journal.EventStageFinished && event.Stage == receipt.Stage && event.Attempt == receipt.Attempt {
-			return true
-		}
-	}
-	return false
-}
-
 // PendingParentContributions pins the journal while any verified imported
 // checkout lacks durable retirement authorization. Malformed receipts refuse
 // pruning. The artifact remains ordinary journal evidence after authorization.
@@ -290,25 +272,26 @@ func parentRetirementAuthorized(events []journal.Event, contribution journal.Eve
 	return false, nil
 }
 
-func parentContributionCoverage(events []journal.Event, latest map[int]journal.Event) error {
-	holds := map[int]journal.Event{}
-	for _, event := range events {
-		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == ContainedParentWorkspaceKind {
-			holds[event.Branch] = event
-			if len(holds) > 128 {
-				return errors.New("parent custody exceeds branch bound")
-			}
-		}
+func parentContributionCoverage(events []journal.Event, latest map[string]journal.Event) error {
+	holds, err := parentWorkspaceHolds(events)
+	if err != nil {
+		return err
 	}
-	for branch, hold := range holds {
-		contribution, found := latest[branch]
+	for id, hold := range holds {
+		contribution, found := latest[id]
 		if !found || contribution.Seq <= hold.Seq {
 			return errors.New("parent workspace has no final retained contribution")
 		}
 		value, err := decodeParentContribution(contribution)
+		if err != nil {
+			return err
+		}
+		if hold.Runner["kind"] == ParentForkReadyKind || hold.Runner["kind"] == ParentForkPlannedKind {
+			continue
+		}
 		data, _ := json.Marshal(hold.Runner["custody"])
 		var custody ContainedParentWorkspaceCustody
-		if err != nil || json.Unmarshal(data, &custody) != nil || !reflect.DeepEqual(custody, value.Custody) {
+		if json.Unmarshal(data, &custody) != nil || !reflect.DeepEqual(custody, value.Custody) {
 			return errors.New("parent contribution differs from final workspace custody")
 		}
 	}
@@ -332,6 +315,9 @@ func (r *Runner) replayContainedParentRetirements(runID string, phase journal.Ru
 	}
 	latest, err := latestParentContributions(events)
 	if err != nil || len(latest) == 0 {
+		return err
+	}
+	if err := parentContributionCoverage(events, latest); err != nil {
 		return err
 	}
 	if err := r.verifyChildWorkflowCustody(reader.Dir()); err != nil {

@@ -20,6 +20,9 @@ type ChildOptions struct {
 	RunID      string
 	OwnerRunID string
 	Gaggle     string
+	// ForkID optionally isolates another host-owned fork within the same run.
+	// Empty preserves the accepted-child branch identity.
+	ForkID string
 	// SnapshotSHA is the verified immutable commit imported and pinned by the
 	// recovery carrier. This low-level method never imports untrusted bytes.
 	SnapshotSHA string
@@ -60,7 +63,14 @@ func childCreateOptions(opts ChildOptions) (CreateOptions, error) {
 	if _, err := hex.DecodeString(opts.SnapshotSHA); err != nil || opts.SnapshotSHA != strings.ToLower(opts.SnapshotSHA) || (len(opts.SnapshotSHA) != 40 && len(opts.SnapshotSHA) != 64) {
 		return CreateOptions{}, fmt.Errorf("child workspace requires an exact snapshot commit")
 	}
-	return CreateOptions{RepoURL: opts.RepoURL, RunID: opts.RunID, OwnerRunID: opts.OwnerRunID, Gaggle: opts.Gaggle, BaseRef: opts.SnapshotSHA, Branch: "goobers/children/" + opts.OwnerRunID, RetainOnCleanup: true}, nil
+	branch := "goobers/children/" + opts.OwnerRunID
+	if opts.ForkID != "" {
+		if !validRunID(opts.ForkID) {
+			return CreateOptions{}, fmt.Errorf("invalid workspace fork identity")
+		}
+		branch = "goobers/parents/" + opts.OwnerRunID + "/" + opts.ForkID
+	}
+	return CreateOptions{RepoURL: opts.RepoURL, RunID: opts.RunID, OwnerRunID: opts.OwnerRunID, Gaggle: opts.Gaggle, BaseRef: opts.SnapshotSHA, Branch: branch, RetainOnCleanup: true}, nil
 }
 
 // AdoptChildFromSnapshot verifies existing exact custody without provisioning,

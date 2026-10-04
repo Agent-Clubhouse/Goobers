@@ -1530,7 +1530,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	r.releaseBaselineParks(ctx, ws)
 	ws.gateEval = r.newWalkGateEvaluator(ws)
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
-		if err := validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
+		if err := r.validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))
 			return res, true, failErr
 		}

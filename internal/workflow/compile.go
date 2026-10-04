@@ -481,7 +481,10 @@ func compileV31(def Definition, config compileConfig) (*Machine, error) {
 	}
 	machine, err := compileV30Base(def, config)
 	if err != nil {
-		return nil, err
+		machine, err = compileContainedParallel(def, config, err)
+		if err != nil {
+			return nil, err
+		}
 	}
 	bindings, diagnostics := lowerArtifactBindings(machine)
 	if len(diagnostics) > 0 {

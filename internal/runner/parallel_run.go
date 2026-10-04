@@ -200,7 +200,7 @@ type concurrentParallelResult struct {
 	paused            bool
 }
 
-func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Parallel) error {
+func (r *Runner) validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Parallel) error {
 	for _, branch := range p.Branches {
 		seen := map[string]bool{}
 		queue := []string{branch.Start}
@@ -214,7 +214,8 @@ func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Par
 
 			if task, ok := machine.Task(state); ok {
 				mode := taskWorkspaceMode(task)
-				if mode != apiv1.WorkspaceScratch && mode != apiv1.WorkspaceRepoReadOnly {
+				contained := task.ChildWorkflows != nil && r.cfg.ChildWorkflowAdmission != nil && r.admitChildWorkflows(machine) == nil
+				if mode != apiv1.WorkspaceScratch && mode != apiv1.WorkspaceRepoReadOnly && !contained {
 					return fmt.Errorf("parallel %q: maxConcurrentBranches %d requires every branch stage to use scratch or repo-readonly; branch %q task %q resolves to workspace %q",
 						p.Name, p.MaxConcurrentBranches, branch.Name, task.Name, mode)
 				}
