@@ -226,8 +226,19 @@ func openAPIRequestBody(route Route) map[string]any {
 			},
 		}
 	}
+	schema := openAPIJSONRequestSchema(route.ID)
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{
+			"application/json": map[string]any{"schema": schema},
+		},
+	}
+}
+
+// openAPIJSONRequestSchema selects the JSON shape independently of media type.
+func openAPIJSONRequestSchema(id RouteID) map[string]any {
 	schema := map[string]any{"type": "object", "additionalProperties": true}
-	switch route.ID {
+	switch id {
 	case RouteWorkbenchPatch:
 		schema = schemaRef("BacklogPatchInput")
 	case RouteChildWorkflowAccessAcquire, RouteChildWorkflowAccessRevoke:
@@ -263,12 +274,7 @@ func openAPIRequestBody(route Route) map[string]any {
 	case RouteGaggleBundleImport:
 		schema = schemaRef("GaggleBundleImportRequest")
 	}
-	return map[string]any{
-		"required": true,
-		"content": map[string]any{
-			"application/json": map[string]any{"schema": schema},
-		},
-	}
+	return schema
 }
 
 func openAPIResponses(route Route) map[string]any {
