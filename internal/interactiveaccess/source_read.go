@@ -74,3 +74,16 @@ func (l *ExecutionLease) RequireWorkbenchSources(gaggle *apiv1.Gaggle) error {
 	}
 	return nil
 }
+
+// AuthorizeSourceRead checks the current execution lease without minting a
+// credential or acquiring the service policy lock. It is an availability check;
+// each actual read still resolves its exact target through Credential.
+func (l *ExecutionLease) AuthorizeSourceRead(action apiv1.InteractiveAction) error {
+	if action != "backlog.read" && action != "repository.read" {
+		return ErrDenied
+	}
+	if err := l.ctx.Err(); err != nil {
+		return err
+	}
+	return authorize(l.principal, l.gaggle, action)
+}
