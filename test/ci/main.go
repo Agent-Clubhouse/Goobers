@@ -426,6 +426,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			expectEmpty: true,
 			group:       groupChecks,
 		},
+		// CI policy tests remain required even when backend unit jobs skip.
+		{label: "ci-policy", command: tools.goCommand, args: []string{"test", "./test/cipolicy", "./test/ci", "-count=1"}, group: groupPreflight},
 		// Discover undeclared downloads before the long unit/browser suites.
 		{label: "runtime-acquisitions", command: tools.goCommand, args: []string{"test", "./test/ci", "-run", "Test.*Acquisition", "-count=1"}, group: groupPreflight},
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
@@ -621,6 +623,20 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			label:        "portal-contract-test",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "run", "test:contract"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-package",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "package:portal"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-package-test",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "test:package"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},
@@ -902,6 +918,12 @@ func portalPreparationChecks(tools toolchain) []check {
 			label:   "portal-embed-vet",
 			command: tools.goCommand,
 			args:    []string{"vet", "-tags", "embed_portal", "./internal/portalassets", "./cmd/goobers"},
+			group:   groupChecks,
+		},
+		{
+			label:   "portal-embed-test",
+			command: tools.goCommand,
+			args:    []string{"test", "-tags", "embed_portal", "-count=1", "./internal/portalassets"},
 			group:   groupChecks,
 		},
 	}

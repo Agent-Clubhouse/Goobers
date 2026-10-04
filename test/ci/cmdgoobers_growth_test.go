@@ -27,8 +27,9 @@ func TestCmdGoobersGrowthGateUsesBaseRevision(t *testing.T) {
 	}
 	aggregate := workflowJob(workflow, "required-ci")
 	for _, want := range []string{
-		"CMDGOOBERS_GROWTH_RESULT: ${{ needs.cmdgoobers-growth.result }}",
-		`check "cmd/goobers growth ratchet"         "$CMDGOOBERS_GROWTH_RESULT"`,
+		"CI_NEEDS: ${{ toJSON(needs) }}",
+		"run: go run ./test/cipolicy gate",
+		"needs: [scope, preflight, cmdgoobers-growth,",
 	} {
 		if !strings.Contains(aggregate, want) {
 			t.Errorf("required-ci missing %q", want)
