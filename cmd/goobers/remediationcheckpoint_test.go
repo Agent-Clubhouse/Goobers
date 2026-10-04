@@ -1611,20 +1611,7 @@ func testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t *testing.
 		t.Fatalf("remediationStateComment: %v", err)
 	}
 
-	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
-	concurrent := filepath.Join(t.TempDir(), "concurrent")
-	runGitT(t, ".", "clone", origin, concurrent)
-	runGitT(t, concurrent, "config", "user.name", "human")
-	runGitT(t, concurrent, "config", "user.email", "human@example.com")
-	if err := os.WriteFile(filepath.Join(concurrent, "base-advance.txt"), []byte("new base\n"), 0o644); err != nil {
-		t.Fatalf("write base advance: %v", err)
-	}
-	runGitT(t, concurrent, "add", "base-advance.txt")
-	runGitT(t, concurrent, "commit", "-m", "advance base")
-	runGitT(t, concurrent, "push", "origin", "main")
-	evaluatedBaseSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
-
-	runGitT(t, ".", "fetch", "origin", "main")
+	evaluatedBaseSHA := advanceRemediationCheckpointOriginMain(t)
 	evaluatedDigest, err := diffDigest(".", evaluatedBaseSHA)
 	if err != nil {
 		t.Fatalf("diffDigest evaluated base: %v", err)
@@ -1677,6 +1664,28 @@ func testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t *testing.
 			state.BaseSHA, state.LastDiffDigest, evaluatedBaseSHA, digest,
 		)
 	}
+}
+
+// advanceRemediationCheckpointOriginMain pushes an unrelated commit to the
+// fixture origin's main and fetches it, returning the new base tip. The
+// checkpoint diffs against the evaluated base, so a "moved base" fixture must
+// name a commit that exists rather than a placeholder SHA.
+func advanceRemediationCheckpointOriginMain(t *testing.T) string {
+	t.Helper()
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	if err := os.WriteFile(filepath.Join(concurrent, "base-advance.txt"), []byte("new base\n"), 0o644); err != nil {
+		t.Fatalf("write base advance: %v", err)
+	}
+	runGitT(t, concurrent, "add", "base-advance.txt")
+	runGitT(t, concurrent, "commit", "-m", "advance base")
+	runGitT(t, concurrent, "push", "origin", "main")
+	advanced := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+	runGitT(t, ".", "fetch", "origin", "main")
+	return advanced
 }
 
 func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.T) {
