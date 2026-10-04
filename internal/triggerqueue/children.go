@@ -361,6 +361,10 @@ func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposa
 	if starts >= MaxRecords || lineages >= MaxChildLineages || tombstones >= MaxChildTombstones {
 		return ErrFull
 	}
+	return childByteCapacity(ctx, tx, proposalBytes)
+}
+
+func childByteCapacity(ctx context.Context, tx *sql.Tx, additionalBytes int) error {
 	var pages, freePages, pageSize int64
 	if err := tx.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pages); err != nil {
 		return err
@@ -373,7 +377,7 @@ func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposa
 	}
 	// The existing database has a 256 MiB hard ceiling. Preserve 20% for
 	// transitions, cancellation and maintenance; do not add a second reserve.
-	if (pages-freePages)*pageSize+int64(proposalBytes)+MaxPayloadBytes+32*1024 > childStoreByteCeiling*4/5 {
+	if (pages-freePages)*pageSize+int64(additionalBytes)+MaxPayloadBytes+32*1024 > childStoreByteCeiling*4/5 {
 		return ErrFull
 	}
 	return nil

@@ -9,7 +9,7 @@ import (
 
 // ChildPruneResult counts maintenance work units. A lineage tombstone also
 // releases its pinned ordinary receipt and potentially its last-owned proposal,
-// so one pass deletes at most 3*limit
+// plus one snapshot carrier, so one pass deletes at most 4*limit
 // physical rows. All stages share the same work budget.
 type ChildPruneResult struct {
 	Tombstoned         int
