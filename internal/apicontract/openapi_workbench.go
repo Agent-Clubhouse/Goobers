@@ -11,7 +11,7 @@ func workbenchCoverage() map[string]any {
 }
 
 func openAPIWorkbenchSchemas() map[string]any {
-	return map[string]any{
+	return mergeSchemaProperties(openAPIWorkbenchDocumentSchemas(), map[string]any{
 		"WorkbenchSourceView": closedChildObject([]string{"bindingId", "kind", "provider", "owner"}, map[string]any{
 			"bindingId": sessionString(64), "kind": map[string]any{"type": "string", "enum": []string{"backlog", "documents", "relationships"}}, "provider": map[string]any{"type": "string", "enum": []string{"github", "ado"}}, "owner": sessionString(256), "project": sessionString(256), "repository": sessionString(256), "branch": sessionString(1024), "paths": workbenchStrings(128, 1024), "writeFields": workbenchStrings(5, 32), "writeRelationships": workbenchStrings(6, 32),
 		}),
@@ -31,11 +31,13 @@ func openAPIWorkbenchSchemas() map[string]any {
 		"BacklogPage": closedChildObject([]string{"items", "exhausted", "partial", "candidates", "omitted", "sourceTargetDigest"}, map[string]any{
 			"items": map[string]any{"type": "array", "maxItems": workbench.MaxBacklogPageItems, "items": schemaRef("BacklogItem")}, "nextCursor": sessionString(workbench.MaxBacklogCursorBytes), "exhausted": map[string]any{"type": "boolean"}, "partial": map[string]any{"type": "boolean"}, "reasons": workbenchStrings(32, 128), "candidates": workbenchNonnegative(), "omitted": workbenchNonnegative(), "sourceTargetDigest": map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"},
 		}),
-	}
+	})
 }
 
 func workbenchReadParameters(id RouteID) []map[string]any {
 	switch id {
+	case RouteWorkbenchDocuments:
+		return []map[string]any{{"name": "cursor", "in": "query", "schema": sessionString(workbench.MaxBacklogCursorBytes)}, {"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": workbench.MaxDocumentPageFiles, "default": workbench.MaxDocumentPageFiles}}}
 	case RouteWorkbenchItems:
 		return []map[string]any{{"name": "cursor", "in": "query", "schema": sessionString(workbench.MaxBacklogCursorBytes)}, {"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": workbench.MaxBacklogPageItems, "default": 50}}}
 	case RouteWorkbenchItem:
@@ -47,6 +49,8 @@ func workbenchReadParameters(id RouteID) []map[string]any {
 func workbenchReadResponses(id RouteID) map[string]any {
 	name := "WorkbenchSourcePage"
 	switch id {
+	case RouteWorkbenchDocuments:
+		name = "WorkbenchDocumentPage"
 	case RouteWorkbenchItems:
 		name = "BacklogPage"
 	case RouteWorkbenchItem:

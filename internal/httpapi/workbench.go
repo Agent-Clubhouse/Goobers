@@ -70,13 +70,17 @@ func workbenchHandler(id apicontract.RouteID, service WorkbenchReadService, erro
 }
 func workbenchReadRequest(r *http.Request, id apicontract.RouteID) (workbench.BacklogPageRequest, workbench.BacklogItemRequest, error) {
 	page := workbench.BacklogPageRequest{Limit: 50}
+	maxItems := workbench.MaxBacklogPageItems
+	if id == apicontract.RouteWorkbenchDocuments {
+		page.Limit, maxItems = workbench.MaxDocumentPageFiles, workbench.MaxDocumentPageFiles
+	}
 	item := workbench.BacklogItemRequest{ID: r.PathValue("item")}
 	query, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		return page, item, err
 	}
 	for key, values := range query {
-		allowed := (id == apicontract.RouteWorkbenchItems && (key == "cursor" || key == "limit")) || (id == apicontract.RouteWorkbenchItem && key == "expectedSourceId")
+		allowed := ((id == apicontract.RouteWorkbenchItems || id == apicontract.RouteWorkbenchDocuments) && (key == "cursor" || key == "limit")) || (id == apicontract.RouteWorkbenchItem && key == "expectedSourceId")
 		if !allowed || len(values) != 1 || values[0] == "" || !utf8.ValidString(values[0]) || len(values[0]) > workbench.MaxBacklogCursorBytes {
 			return page, item, errors.New("invalid workbench query")
 		}
@@ -101,7 +105,7 @@ func workbenchReadRequest(r *http.Request, id apicontract.RouteID) (workbench.Ba
 	if value := query.Get("limit"); value != "" {
 		page.Limit, err = strconv.Atoi(value)
 	}
-	if err != nil || page.Limit < 1 || page.Limit > workbench.MaxBacklogPageItems {
+	if err != nil || page.Limit < 1 || page.Limit > maxItems {
 		return page, item, errors.New("invalid page limit")
 	}
 	return page, item, nil

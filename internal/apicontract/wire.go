@@ -18,16 +18,17 @@ import (
 )
 
 type wireFixtures struct {
-	WorkbenchSources WorkbenchSourcePage   `json:"workbenchSources"`
-	WorkbenchItems   BacklogPage           `json:"workbenchItems"`
-	WorkbenchItem    BacklogItem           `json:"workbenchItem"`
-	SessionCreate    SessionCreateRequest  `json:"sessionCreate"`
-	SessionInput     SessionMessageRequest `json:"sessionInput"`
-	SessionClose     SessionCloseRequest   `json:"sessionClose"`
-	Session          InteractiveSession    `json:"session"`
-	Sessions         SessionPage           `json:"sessions"`
-	SessionMessages  SessionMessagePage    `json:"sessionMessages"`
-	SessionAccepted  SessionAcceptance     `json:"sessionAccepted"`
+	WorkbenchDocuments WorkbenchDocumentPage `json:"workbenchDocuments"`
+	WorkbenchSources   WorkbenchSourcePage   `json:"workbenchSources"`
+	WorkbenchItems     BacklogPage           `json:"workbenchItems"`
+	WorkbenchItem      BacklogItem           `json:"workbenchItem"`
+	SessionCreate      SessionCreateRequest  `json:"sessionCreate"`
+	SessionInput       SessionMessageRequest `json:"sessionInput"`
+	SessionClose       SessionCloseRequest   `json:"sessionClose"`
+	Session            InteractiveSession    `json:"session"`
+	Sessions           SessionPage           `json:"sessions"`
+	SessionMessages    SessionMessagePage    `json:"sessionMessages"`
+	SessionAccepted    SessionAcceptance     `json:"sessionAccepted"`
 
 	ChildPublicationCheck    ChildPublicationCheckRequest               `json:"childPublicationCheck"`
 	ChildPublicationResult   ChildPublicationCheckResult                `json:"childPublicationResult"`
@@ -82,6 +83,7 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "workbenchDocuments", scriptType: "WorkbenchDocumentPage"},
 	{name: "workbenchSources", scriptType: "WorkbenchSourcePage"},
 	{name: "workbenchItems", scriptType: "BacklogPage"},
 	{name: "workbenchItem", scriptType: "BacklogItem"},
