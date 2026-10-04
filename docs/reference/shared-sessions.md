@@ -68,3 +68,25 @@ tests cover attribution, queued-versus-executed links, retry after a lost respon
 refresh, close-pending status and permission revocation. Real model, worker and
 browser qualification remains outstanding. The initial portal does not stream
 agent output or expose backlog/PR mutations from a conversation.
+
+
+## Execution identity and queued context
+
+Accepted turns now carry a genuine session lineage in their own run journals.
+The dedicated session driver executes one scratch agent task with frozen bounded
+context; it does not inherit ordinary automation claims or provider hooks. A
+session run cannot use ordinary resume, rerun or stage-restart paths to acquire
+a different authority. A trusted execution callback is required before any
+journal can be published.
+
+Context is assembled only after the prior turn settles, then frozen before
+dispatch. Thus a queued second human message can include the first agent reply,
+but cannot include a later queued human message. Each accepted turn reserves up
+to 256 KiB for its input manifest in the shared bounded ledger, alongside its
+response reservation. Existing and new databases apply this as an additive
+migration after their source-start tables. Journal/schema, actual Runner.Start,
+parallel message ordering, byte bounds and tamper tests cover these contracts.
+
+These primitives do not yet enable the daemon runtime; session availability
+remains false until the coordinator, human model driver and daemon lifecycle
+have been installed.
