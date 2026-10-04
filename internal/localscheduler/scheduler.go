@@ -242,18 +242,19 @@ type runAdmission struct {
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
-	workflows         map[WorkflowIdentity]WorkflowEntry
-	conditions        *Conditions
-	log               *journal.InstanceLog
-	now               func() time.Time
-	after             func(d time.Duration) <-chan time.Time
-	telemetry         SpanStarter
-	providerQuota     ProviderQuotaGate
-	demandPollTimeout time.Duration
-	afterTick         func(context.Context)
-	sourceQueue       SourceQueue
-	heartbeatInterval time.Duration
-	refreshHeartbeat  func(time.Time) error
+	durableScheduleDemand bool
+	workflows             map[WorkflowIdentity]WorkflowEntry
+	conditions            *Conditions
+	log                   *journal.InstanceLog
+	now                   func() time.Time
+	after                 func(d time.Duration) <-chan time.Time
+	telemetry             SpanStarter
+	providerQuota         ProviderQuotaGate
+	demandPollTimeout     time.Duration
+	afterTick             func(context.Context)
+	sourceQueue           SourceQueue
+	heartbeatInterval     time.Duration
+	refreshHeartbeat      func(time.Time) error
 	// onPollProgress, if set, is called after every individual
 	// provider-backed demand poll Tick issues while holding tickMu (#3806) —
 	// not just once when Tick itself returns. A tick with several due
@@ -904,7 +905,7 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 
 func (s *Scheduler) wakeForDemand(identity WorkflowIdentity) {
 	s.mu.Lock()
-	pending := len(s.pendingScheduleDemand) > 0
+	pending := len(s.pendingScheduleDemand) > 0 || s.durableScheduleDemand
 	refill := false
 	if entry, ok := s.workflows[identity]; ok &&
 		entry.Readiness.DesiredConcurrentRuns > 0 &&
@@ -959,28 +960,31 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 type tickCandidate struct {
-	entry              WorkflowEntry
-	schedule           TickResult
-	scheduleRemaining  int
-	scheduleDemand     bool
-	schedulePollDue    bool
-	scheduleEnqueuedAt time.Time
-	scheduleMetricHeld int
-	backlogPollDue     bool
-	backlogRemaining   int
-	backlogEnqueuedAt  time.Time
-	backlogObserved    bool
-	backlogMetricHeld  int
-	refillRemaining    int
-	refillPollDue      bool
-	refillEligible     int
-	refillEnqueuedAt   time.Time
-	refillObserved     bool
-	refillMetricHeld   int
-	poolSkips          int
-	dispatchedThisTick bool
-	stopped            bool
-	scheduleIndexes    []int
+	demandWake          bool
+	queuedDemand        *QueuedScheduleDemand
+	scheduleDemandLease func()
+	entry               WorkflowEntry
+	schedule            TickResult
+	scheduleRemaining   int
+	scheduleDemand      bool
+	schedulePollDue     bool
+	scheduleEnqueuedAt  time.Time
+	scheduleMetricHeld  int
+	backlogPollDue      bool
+	backlogRemaining    int
+	backlogEnqueuedAt   time.Time
+	backlogObserved     bool
+	backlogMetricHeld   int
+	refillRemaining     int
+	refillPollDue       bool
+	refillEligible      int
+	refillEnqueuedAt    time.Time
+	refillObserved      bool
+	refillMetricHeld    int
+	poolSkips           int
+	dispatchedThisTick  bool
+	stopped             bool
+	scheduleIndexes     []int
 }
 
 type triggerSource uint8
@@ -1053,6 +1057,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	var evaluated []WorkflowEntry
+	defer func() { releaseScheduleDemands(allCandidates) }()
 	for _, entry := range entries {
 		if s.authCircuitOpen(entryIdentity(entry), now) {
 			continue
@@ -1075,13 +1080,10 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if pending.remaining == 0 {
 			candidate.schedule = TickResult{LastEval: now}
 		}
-		if handled, advanced := s.queuePlainSchedule(ctx, entry, now); handled {
+		if handled, advanced := s.queueConfiguredSchedule(ctx, candidate, now); handled {
 			if advanced {
 				evaluated = append(evaluated, entry)
 			}
-			candidate.scheduleRemaining = 0
-			candidate.schedulePollDue = false
-			candidate.scheduleDemand = false
 		} else if len(entry.Schedules) > 0 {
 			// Read, evaluate, and write the trigger state under a single lock
 			// acquisition. Tick is exported so a manual trigger and concurrent
@@ -1145,6 +1147,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.evaluateRefillOpportunities(allCandidates, now)
 	s.paceQuotaResumedCandidates(allCandidates)
 	s.recordQueueSaturation(ctx, allCandidates, now)
+	s.queueDemandWorkers(ctx, allCandidates, now)
 	s.queueCountWorkers(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
@@ -1908,6 +1911,9 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 }
 
 func (s *Scheduler) deferScheduleDemandPoll(candidate *tickCandidate) {
+	if candidate.queuedDemand != nil {
+		return
+	}
 	identity := entryIdentity(candidate.entry)
 	s.persistScheduleDemand(identity, true)
 	s.mu.Lock()
@@ -1982,6 +1988,9 @@ func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
 }
 
 func (s *Scheduler) deferScheduledDispatch(candidate *tickCandidate) {
+	if candidate.queuedDemand != nil {
+		return
+	}
 	identity := entryIdentity(candidate.entry)
 	s.persistScheduleDemand(identity, true)
 	s.mu.Lock()
@@ -2050,6 +2059,9 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	if s.applyQueuedDemand(poll, snapshot) {
+		return
+	}
 	ready := snapshot.ready
 	if poll.schedule {
 		identity := entryIdentity(poll.candidate.entry)
@@ -3097,6 +3109,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		return minPoll
 	}
 	var earliest time.Time
+	if s.durableScheduleDemand {
+		earliest = now.Add(backlogPollInterval)
+	}
 	consider := func(next time.Time) {
 		if earliest.IsZero() || next.Before(earliest) {
 			earliest = next

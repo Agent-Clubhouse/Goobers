@@ -147,7 +147,7 @@ func eventRoutingCapacity(ctx context.Context, tx *sql.Tx, gaggle string, routes
 
 func triggerSlotCapacity(ctx context.Context, tx *sql.Tx, additional int) error {
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM triggers)+(SELECT COUNT(*) FROM source_start_receipts)+(SELECT COUNT(*) FROM source_start_cursors)+
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM triggers)+(SELECT COUNT(*) FROM source_start_receipts)+(SELECT COUNT(*) FROM source_start_cursors)+(SELECT COUNT(*) FROM schedule_demands)+
  (SELECT COALESCE(SUM(reserved_starts),0) FROM event_receipts)+
  (SELECT COALESCE(SUM(reserved_starts),0) FROM event_groups)`).Scan(&count); err != nil {
 		return err

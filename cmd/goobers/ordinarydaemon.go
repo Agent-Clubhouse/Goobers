@@ -20,7 +20,9 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 	}
 	catalog := &ordinaryStartCatalog{generation: s.EventCatalog.generation, entries: append([]localscheduler.WorkflowEntry(nil), s.Entries...), store: s.Generations.Store}
 	s.OrdinaryCatalog = catalog
-	s.SourceStarts = &startintent.Sources{Queue: triggers.queue, Acquire: func(ctx context.Context, target startintent.Target) (func(), error) {
+	s.SourceStarts = &startintent.Sources{Queue: triggers.queue, Build: func(ctx context.Context, target startintent.Target) (startintent.Prepared, error) {
+		return s.OrdinaryRuntime(ctx, target, s.EngineRuntime)
+	}, Acquire: func(ctx context.Context, target startintent.Target) (func(), error) {
 		_, lease, err := s.Generations.Store.Acquire(ctx, target.ConfigGeneration)
 		if err != nil {
 			return nil, err

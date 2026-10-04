@@ -32,6 +32,7 @@ type SourceAdvance struct {
 // SourceBatch identifies the authenticated delivery independently of recipients.
 // A duplicate keeps the first accepted recipient set, even after configuration changes.
 type SourceBatch struct {
+	Demand                  *DemandTransfer
 	PendingLimit            *WorkflowPendingLimit
 	Key, Actor, Fingerprint string
 	Starts                  []SourceStart
@@ -146,6 +147,9 @@ func (s *Store) AcceptSource(ctx context.Context, b SourceBatch, now time.Time) 
 		return SourceReceipt{}, false, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO source_start_receipts(source_key,actor,fingerprint,acceptance_ids,accepted_ns) VALUES(?,?,?,?,?)`, b.Key, b.Actor, b.Fingerprint, raw, now.UnixNano()); err != nil {
+		return SourceReceipt{}, false, err
+	}
+	if err = transferScheduleDemand(ctx, tx, b); err != nil {
 		return SourceReceipt{}, false, err
 	}
 	if err = advanceSourceCursor(ctx, tx, b.Advance); err != nil {

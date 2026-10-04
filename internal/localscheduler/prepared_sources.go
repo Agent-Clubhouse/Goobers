@@ -14,6 +14,9 @@ import (
 
 // Validate checks the closed schedule/signal/worker variants retained by the host.
 func (source SourceTrigger) Validate() error {
+	if err := source.validateScheduleOrdinal(); err != nil {
+		return err
+	}
 	if source.WorkerKind != "" {
 		return source.validateWorker()
 	}

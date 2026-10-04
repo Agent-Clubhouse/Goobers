@@ -539,8 +539,8 @@ reserved run IDs, current eligibility and archived execution path as manual star
 Acceptance tests exercise actual webhook handlers, exact archive compilation,
 scheduler admission, Runner journals, and CLI key replay. Store tests cover
 transaction rollback, queue-full cursor preservation, legacy transfer uncertainty,
-and no-match/recipient freezing. The remaining demand-sized schedule, standalone
-manual, and direct engine adapters keep HAW-EVT-002 in progress.
+and no-match/recipient freezing. Standalone manual and direct engine adapters keep HAW-EVT-002 in progress.
+Demand-sized schedule custody is described below.
 
 
 ### Delivered count-based backlog and refill workers
@@ -578,11 +578,39 @@ and child/event budget owners, exact live-owner exclusion, repeated polling and
 scheduler reconstruction, removed sources, archive failure, refill capacity
 retry, and actual pinned runner execution before queue reconciliation.
 
-Demand-sized scheduled polls still have a separate legacy outstanding-fire
-marker and cursor handoff. They require a durable pre-poll obligation before
-normalization; this slice reserves their planned capacity but does not claim to
-have migrated them. Standalone manual/detached and direct engine starts remain
-explicit follow-up adapters. HAW-EVT-002 remains in progress.
+### Delivered demand-sized schedule custody
+
+The daemon records a coalesced firing and advances its durable cursor together
+before polling demand. The obligation retains exact configuration, workflow and
+Goober pins. Its counter is compiled from that archived generation; provider
+polling still passes through scheduler priority, quota and authentication logic.
+A successful count is sealed once, bounded to 10,000 worker occurrences. Restart
+preserves that count and the next untransferred ordinal rather than recounting
+against a changed definition. An unobserved failure retains its obligation;
+existing timeout/transient fallback semantics still produce one queued worker.
+An explicit zero closes the fire without launching a run.
+
+Each tick transfers at most 32 workers and only the currently missing workflow
+slots. The same transaction updates ordinal progress and accepts ordinary pinned
+starts, including the queued/live occupancy guard. A crash cannot spend an
+ordinal twice. Later due firings coalesce with existing outstanding custody;
+they advance the schedule cursor without replacing the original pins or count.
+Slot release wakes retained demand promptly, and unresolved obligations receive
+bounded periodic retries. Legacy outstanding-fire markers transfer once when a
+cursor is first adopted; stale legacy files cannot resurrect transferred work.
+
+The shared retention inventory includes obligations before provider observation
+and throughout transfer to ordinary starts. Demand IDs sort before start IDs,
+so transferring ownership during pagination does not hide a generation pin.
+Queue slot/byte exhaustion leaves the cursor unchanged. Removed or disabled
+sources retain pending obligations until they can be explicitly resolved; they
+do not launch under another workflow or lose pins through an age-based timeout.
+
+Tests cover count preservation across database reopen and configuration change,
+no-work/fallback decisions, concurrent ordinal transfers, rollback, queue-full
+cursor preservation, failed pin capture, and actual archived Runner execution.
+Standalone manual/detached and direct engine starts remain follow-up adapters;
+HAW-EVT-002 remains in progress.
 
 
 ### Delivered scoped read-cache foundation (HAW-EVT-008)

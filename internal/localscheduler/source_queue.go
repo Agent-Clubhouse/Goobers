@@ -12,15 +12,17 @@ import (
 // SourceTrigger retains the host's schedule/signal/worker provenance with a queued start.
 // ScheduledFrom/At reproduce the captured due indexes against the pinned definition.
 type SourceTrigger struct {
-	WorkerKind    string    `json:"workerKind,omitempty"`
-	ObservedAt    time.Time `json:"observedAt,omitempty"`
-	ObservedCount int       `json:"observedCount,omitempty"`
-	WorkerOrdinal int       `json:"workerOrdinal,omitempty"`
-	Signal        string    `json:"signal,omitempty"`
-	Ref           string    `json:"ref,omitempty"`
-	Webhook       bool      `json:"webhook,omitempty"`
-	ScheduledFrom time.Time `json:"scheduledFrom,omitempty"`
-	ScheduledAt   time.Time `json:"scheduledAt,omitempty"`
+	ScheduleCount   int       `json:"scheduleCount,omitempty"`
+	ScheduleOrdinal int       `json:"scheduleOrdinal,omitempty"`
+	WorkerKind      string    `json:"workerKind,omitempty"`
+	ObservedAt      time.Time `json:"observedAt,omitempty"`
+	ObservedCount   int       `json:"observedCount,omitempty"`
+	WorkerOrdinal   int       `json:"workerOrdinal,omitempty"`
+	Signal          string    `json:"signal,omitempty"`
+	Ref             string    `json:"ref,omitempty"`
+	Webhook         bool      `json:"webhook,omitempty"`
+	ScheduledFrom   time.Time `json:"scheduledFrom,omitempty"`
+	ScheduledAt     time.Time `json:"scheduledAt,omitempty"`
 }
 
 // SourceQueue commits starts without executing them. Methods run under tickMu
