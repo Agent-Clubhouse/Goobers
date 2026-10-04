@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -22,19 +24,37 @@ import (
 )
 
 type childKitFixture struct {
+	driver  *runner.Runner
 	writer  childKitWriter
 	attempt dispatcher.Attempt
 	parent  pinnedChildFixture
 	child   triggerqueue.ChildRecord
 }
 
-func newChildKitFixture(t *testing.T) childKitFixture {
+func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
 	t.Helper()
 	f := newPinnedChildFixture(t, func(root string) {
 		parent := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 		writeFileContent(t, parent, strings.Replace(childValidationParent, "allowPRPublication: true", "allowPRPublication: false", 1))
 		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
 		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))
+		if len(isolated) > 0 && isolated[0] {
+			configPath := filepath.Join(root, "instance.yaml")
+			var document map[string]any
+			if err := yaml.Unmarshal([]byte(readFileContent(t, configPath)), &document); err != nil {
+				t.Fatal(err)
+			}
+			delete(document, "runner")
+			document["schemaVersion"] = 2
+			document["engine"] = map[string]any{"hostPort": "temporal:7233"}
+			document["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": "ghcr.io/example/child:1", "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "capabilities": []string{"isolated-child"}}}}
+			data, err := yaml.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFileContent(t, configPath, string(data))
+		}
+
 	})
 	_, parentEnv := configuredChildStage(t, f)
 	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
@@ -54,6 +74,9 @@ func newChildKitFixture(t *testing.T) childKitFixture {
 	t.Cleanup(func() { _ = revoke() })
 	source := strings.Replace(childValidationProposal, "type: deterministic", "type: agentic\n      goober: coder\n      workspace: scratch\n      capabilities: [agent:model]", 1)
 	source = strings.Replace(source, "      run: {command: [\"true\"]}\n", "", 1)
+	if len(isolated) > 0 && isolated[0] {
+		source = strings.Replace(source, "      workspace: scratch", "      workspace: scratch\n      runsOn: {os: linux, capabilities: [isolated-child]}", 1)
+	}
 	accepted, err := service.children.HTTPService().StartChildWorkflow(t.Context(), access.BearerToken, parentEnv.RunID, "kit", []byte(source))
 	if err != nil {
 		t.Fatal(err)
@@ -129,8 +152,8 @@ func newChildKitFixture(t *testing.T) childKitFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = recorder.Close() })
-	env := apiv1.InvocationEnvelope{RunID: id.RunID, Gaggle: id.Gaggle, WorkflowID: id.Workflow, ConfigGeneration: id.ConfigGeneration, GooberDigest: id.GooberDigest, Goober: "coder", TaskID: id.RunID + ":check", Attempt: 1, Capabilities: []string{"agent:model"}}
-	return childKitFixture{writer: childKitWriter{service: service, identity: id, blobs: blobs, recorder: recorder}, attempt: dispatcher.Attempt{RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow, Stage: "check", Number: 1, Agentic: true, Envelope: &env}, parent: f, child: ref.Child}
+	env := apiv1.InvocationEnvelope{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, WorkflowID: id.Workflow, ConfigGeneration: id.ConfigGeneration, GooberDigest: id.GooberDigest, Goober: "coder", TaskID: id.RunID + ":check", Attempt: 1, Capabilities: []string{"agent:model"}}
+	return childKitFixture{driver: driver, writer: childKitWriter{service: service, identity: id, blobs: blobs, recorder: recorder}, attempt: dispatcher.Attempt{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow, Stage: "check", Number: 1, Agentic: true, Envelope: &env}, parent: f, child: ref.Child}
 }
 
 func TestChildKitWriterUsesRealAcceptedSourceAndRetainedInstructions(t *testing.T) {

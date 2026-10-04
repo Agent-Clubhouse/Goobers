@@ -1106,6 +1106,7 @@ func (u *upSession) configureAPI() int {
 		pf(u.stderr, "error: initialize surrender plane: %v\n", err)
 		return 1
 	}
+	u.credentialPlane.installChildPodFactories(u.engineClient.Temporal(), surrenderStore)
 	// recoverExpiredClaims is the daemon's single stale-claim sweep, defined
 	// once here so the claims plane's recover route (Goobers#4016) and the
 	// startup/periodic call sites below all run the SAME sweep — with the
