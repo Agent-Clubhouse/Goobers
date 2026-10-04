@@ -96,8 +96,26 @@ func childResponse(submission Submission) apicontract.ChildWorkflowResponse {
 		Sequence: c.Sequence, State: string(c.State), Duplicate: submission.Duplicate,
 		SourceDigest: e.SourceDigest, CanonicalDigest: e.CanonicalDigest, ConfigDigest: e.ConfigDigest,
 		PolicyDigest: e.PolicyDigest, WorkflowDigest: e.WorkflowDigest, CancellationRequested: c.CancellationRequested,
-		ResultRef: c.ResultRef, WorkspaceRef: c.WorkspaceRef, AcceptedAt: c.AcceptedAt, UpdatedAt: c.UpdatedAt,
+		Acknowledged: !c.AcknowledgedAt.IsZero(),
+		ResultRef:    c.ResultRef, WorkspaceRef: c.WorkspaceRef, AcceptedAt: c.AcceptedAt, UpdatedAt: c.UpdatedAt,
 	}
+}
+
+// ResolveChildWorkflow records a choice without editing a live agent workspace.
+func (s *HTTPService) ResolveChildWorkflow(ctx context.Context, token, run string, request apicontract.ChildWorkflowResolveRequest) (apicontract.ChildWorkflowResolutionResponse, error) {
+	origin, err := s.authenticate(token, run)
+	if err != nil {
+		return apicontract.ChildWorkflowResolutionResponse{}, err
+	}
+	disposition, err := s.Submission.RequestDisposition(ctx, origin, request.InvocationKey, request.Action, request.ResultRef)
+	if err != nil {
+		return apicontract.ChildWorkflowResolutionResponse{}, childOperationError(err)
+	}
+	response := apicontract.ChildWorkflowResolutionResponse{InvocationKey: request.InvocationKey, Action: disposition.Action, ResultRef: disposition.ResultRef, RequestedAt: disposition.RequestedAt, Applied: !disposition.AppliedAt.IsZero()}
+	if response.Applied {
+		response.AppliedAt = &disposition.AppliedAt
+	}
+	return response, nil
 }
 
 func childHTTPError(status int, code, message string, cause error) error {
@@ -115,6 +133,8 @@ func childOperationError(err error) error {
 		return childHTTPError(http.StatusConflict, "child_workflow_conflict", "the invocation key already identifies different child content", nil)
 	case errors.Is(err, triggerqueue.ErrChildSlotOccupied):
 		return childHTTPError(http.StatusConflict, "child_workflow_unresolved", "this stage occurrence has an unresolved child", nil)
+	case errors.Is(err, triggerqueue.ErrTransition):
+		return childHTTPError(http.StatusConflict, "child_workflow_result_changed", "the child is not at the expected terminal result", nil)
 	case errors.Is(err, triggerqueue.ErrChildLimit):
 		return childHTTPError(http.StatusConflict, "child_workflow_limit", "this stage occurrence has reached its child allowance", nil)
 	case errors.Is(err, triggerqueue.ErrParentCancelled), errors.Is(err, triggerqueue.ErrParentSettled):

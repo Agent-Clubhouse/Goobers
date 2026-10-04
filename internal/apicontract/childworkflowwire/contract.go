@@ -13,6 +13,24 @@ type ChildWorkflowStatusRequest struct {
 	InvocationKey string `json:"invocationKey"`
 }
 
+// ChildWorkflowResolveRequest chooses disposition of an exact terminal result.
+type ChildWorkflowResolveRequest struct {
+	InvocationKey string `json:"invocationKey"`
+	Action        string `json:"action"`
+	ResultRef     string `json:"resultRef"`
+}
+
+// ChildWorkflowResolutionResponse acknowledges a request, separately from its
+// verified application. The parent runner yields before editing its workspace.
+type ChildWorkflowResolutionResponse struct {
+	InvocationKey string     `json:"invocationKey"`
+	Action        string     `json:"action"`
+	ResultRef     string     `json:"resultRef"`
+	RequestedAt   time.Time  `json:"requestedAt"`
+	Applied       bool       `json:"applied"`
+	AppliedAt     *time.Time `json:"appliedAt,omitempty"`
+}
+
 // ChildWorkflowDiagnostic is a bounded, source-free authoring refusal.
 type ChildWorkflowDiagnostic struct {
 	Code    string `json:"code"`
@@ -49,6 +67,7 @@ type ChildWorkflowResponse struct {
 	PolicyDigest          string    `json:"policyDigest"`
 	WorkflowDigest        string    `json:"workflowDigest"`
 	CancellationRequested bool      `json:"cancellationRequested"`
+	Acknowledged          bool      `json:"acknowledged"`
 	ResultRef             string    `json:"resultRef,omitempty"`
 	WorkspaceRef          string    `json:"workspaceRef,omitempty"`
 	AcceptedAt            time.Time `json:"acceptedAt"`
@@ -66,4 +85,5 @@ const (
 	ValidatePath = "/api/v1/runs/{run}/child-workflows/validate"
 	StartPath    = "/api/v1/runs/{run}/child-workflows/start"
 	StatusPath   = "/api/v1/runs/{run}/child-workflows/status"
+	ResolvePath  = "/api/v1/runs/{run}/child-workflows/resolve"
 )

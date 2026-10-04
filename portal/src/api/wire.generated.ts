@@ -3,6 +3,8 @@
 import type {
   ChildWorkflowSourceRequest,
   ChildWorkflowStatusRequest,
+  ChildWorkflowResolveRequest,
+  ChildWorkflowResolutionResponse,
   ChildWorkflowValidationResponse,
   ChildWorkflowResponse,
   TriggerRequest,
@@ -44,6 +46,8 @@ import type {
 export interface GoWireFixtures {
   childWorkflowSource: ChildWorkflowSourceRequest;
   childWorkflowStatus: ChildWorkflowStatusRequest;
+  childWorkflowResolve: ChildWorkflowResolveRequest;
+  childWorkflowResolution: ChildWorkflowResolutionResponse;
   childWorkflowValidation: ChildWorkflowValidationResponse;
   childWorkflow: ChildWorkflowResponse;
   triggerRequest: TriggerRequest;
@@ -86,6 +90,18 @@ export const goWireFixtures = {
   "childWorkflowSource": {
     "source": "kind: Workflow\n"
   },
+  "childWorkflowResolve": {
+    "invocationKey": "inspect-1",
+    "action": "merge",
+    "resultRef": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "childWorkflowResolution": {
+    "invocationKey": "inspect-1",
+    "action": "merge",
+    "resultRef": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "requestedAt": "2026-10-04T12:00:00Z",
+    "applied": false
+  },
   "childWorkflowStatus": {
     "invocationKey": "inspect-1"
   },
@@ -113,6 +129,7 @@ export const goWireFixtures = {
     "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "workflowDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "cancellationRequested": false,
+    "acknowledged": false,
     "acceptedAt": "2026-10-04T12:00:00Z",
     "updatedAt": "2026-10-04T12:00:00Z"
   },

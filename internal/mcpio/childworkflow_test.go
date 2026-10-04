@@ -135,10 +135,10 @@ func TestChildToolsRealProtocolAndTrustedHTTP(t *testing.T) {
 	for _, def := range server.toolDefs() {
 		names = append(names, def.Name)
 	}
-	if len(names) != 8 {
+	if len(names) != 9 {
 		t.Fatalf("tools=%v", names)
 	}
-	if strings.Contains(strings.Join(names, ","), "await") || strings.Contains(strings.Join(names, ","), "resolve") {
+	if strings.Contains(strings.Join(names, ","), "await") {
 		t.Fatal("unsupported operations advertised")
 	}
 }
@@ -325,7 +325,7 @@ func TestChildToolsListUsesConditionalSchemas(t *testing.T) {
 			t.Fatal("tool exposes transport authority")
 		}
 	}
-	if found != 3 {
+	if found != 4 {
 		t.Fatalf("child tools=%d", found)
 	}
 	if strings.Contains(out.String()+stderr.String(), childMCPGrant) {
