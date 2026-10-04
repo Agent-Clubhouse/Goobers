@@ -48,7 +48,7 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] [--expected-source-revision <digest>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort [--api <url>] <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
@@ -67,8 +67,8 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
 	"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n" +
 	"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n" +
-	"escalated. The submission-only --no-wait mode exits 0 on durable API\n" +
-	"acceptance, before dispatch.\n" +
+	"escalated. The submission-only --no-wait mode exits 0 after the API\n" +
+	"returns the durable identity of the dispatched run.\n" +
 	"Without --no-wait, local API callers observe dispatch status then wait\n" +
 	"for the run's terminal journal phase. API failures never silently fall\n" +
 	"back to files. When TLS publishes only a wildcard bind address, the CLI\n" +
@@ -94,16 +94,19 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"actively executing (active-stage cancel + worktree/claim teardown +\n" +
 	"aborted) — the live counterpart to `run abort`'s daemon-down journal\n" +
 	"repair.\n" +
-	"With --api (or $GOOBERS_DAEMON_API) the trigger is submitted to that\n" +
-	"daemon's authenticated HTTP API instead of the local pending-triggers\n" +
+	"With --api (or $GOOBERS_DAEMON_API) the operator start is submitted to\n" +
+	"that daemon's authenticated HTTP API instead of the machine trigger-ingest\n" +
+	"route or local pending-triggers\n" +
 	"drop, so a caller that does not share the daemon's filesystem — CI, a\n" +
 	"webhook receiver, another pod — can start a run at all. Nothing local is\n" +
 	"read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a\n" +
-	"retry use the same acceptance identity. --api-timeout bounds remote validation\n" +
-	"and acceptance (default 30s; must be positive), including any wait for a\n" +
-	"daemon that is still starting after a restart. A timed-out submission has\n" +
-	"unknown acceptance; retry the printed request ID with the same options.\n" +
-	"The command returns once the daemon accepts the trigger because\n" +
+	"retry use the same start identity. --expected-source-revision is required\n" +
+	"and pins admission to the applied workflow definition digest the operator\n" +
+	"reviewed. --api-timeout bounds remote validation and start admission\n" +
+	"(default 30s; must be positive), including any wait for a daemon that is\n" +
+	"still starting after a restart. A timed-out submission has an unknown\n" +
+	"outcome; retry the printed request ID with the same options.\n" +
+	"The command returns once the daemon identifies the minted run because\n" +
 	"a remote client cannot watch the run's journal. For local file delegation,\n" +
 	"--no-wait returns after dispatch, or after workflow/PR validation succeeds\n" +
 	"and the live daemon durably accepts a capacity-queued request.\n"
@@ -123,6 +126,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	noAPI := fs.Bool("no-api", false, "explicitly use local execution/file delegation instead of the daemon API")
 	apiTimeout := fs.Duration("api-timeout", remoteTriggerTimeout, "maximum duration for remote API validation and trigger acceptance")
 	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API submission (default: random)")
+	expectedSourceRevision := fs.String("expected-source-revision", "", "required applied workflow digest for a remote operator start")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -138,6 +142,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	target.PR = *pr
 	target.Force = *force
+	target.ExpectedSourceRevision = strings.TrimSpace(*expectedSourceRevision)
 	if err := validateRunTargetOptions(args, target); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -214,10 +219,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 }
 
 type runTarget struct {
-	Gaggle   string
-	Workflow string
-	PR       int
-	Force    bool
+	Gaggle                 string
+	Workflow               string
+	PR                     int
+	Force                  bool
+	ExpectedSourceRevision string
 }
 
 func (t runTarget) String() string {
@@ -785,7 +791,8 @@ func runFlagArgs(args []string) []string {
 		if arg == "--pr" || arg == "-pr" ||
 			arg == "--api" || arg == "-api" ||
 			arg == "--api-timeout" || arg == "-api-timeout" ||
-			arg == "--request-id" || arg == "-request-id" {
+			arg == "--request-id" || arg == "-request-id" ||
+			arg == "--expected-source-revision" || arg == "-expected-source-revision" {
 			flags = append(flags, arg)
 			if i+1 < len(args) {
 				i++
@@ -795,7 +802,8 @@ func runFlagArgs(args []string) []string {
 		}
 		if strings.HasPrefix(arg, "--api=") || strings.HasPrefix(arg, "-api=") ||
 			strings.HasPrefix(arg, "--api-timeout=") || strings.HasPrefix(arg, "-api-timeout=") ||
-			strings.HasPrefix(arg, "--request-id=") || strings.HasPrefix(arg, "-request-id=") {
+			strings.HasPrefix(arg, "--request-id=") || strings.HasPrefix(arg, "-request-id=") ||
+			strings.HasPrefix(arg, "--expected-source-revision=") || strings.HasPrefix(arg, "-expected-source-revision=") {
 			flags = append(flags, arg)
 			continue
 		}

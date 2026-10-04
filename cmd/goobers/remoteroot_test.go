@@ -53,7 +53,7 @@ func TestRemoteRootRefusesUnverifiableIdentity(t *testing.T) {
 			}))
 			defer server.Close()
 			var stdout, stderr bytes.Buffer
-			if code := runRemoteTrigger(context.Background(), server.URL, runTarget{Workflow: "test"}, "test", true, remoteTriggerTimeout, &stdout, &stderr); code != 2 {
+			if code := runRemoteTrigger(context.Background(), server.URL, runTarget{Workflow: "test", ExpectedSourceRevision: "sha256:test"}, "test", true, remoteTriggerTimeout, &stdout, &stderr); code != 2 {
 				t.Fatalf("invalid target accepted: %d %s", code, stderr.String())
 			}
 		})
@@ -76,7 +76,7 @@ func TestRemoteRootAuthenticatedDisplayBeforeMutation(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"runId":"test"}`)
 	}))
 	defer server.Close()
-	if code := runRemoteTrigger(context.Background(), server.URL, runTarget{Workflow: "test"}, "test", true, remoteTriggerTimeout, &stdout, &stderr); code != 0 {
+	if code := runRemoteTrigger(context.Background(), server.URL, runTarget{Workflow: "test", ExpectedSourceRevision: "sha256:test"}, "test", true, remoteTriggerTimeout, &stdout, &stderr); code != 0 {
 		t.Fatalf("trigger failed: %d %s", code, stderr.String())
 	}
 	if err := prepareRemoteRoot(context.Background(), server.URL, brokenRootBannerWriter{}); err == nil {
@@ -100,7 +100,7 @@ func TestRemoteRootRejectsRedirectAtEitherStep(t *testing.T) {
 			}))
 			defer server.Close()
 			var stdout, stderr bytes.Buffer
-			if code := runRemoteTrigger(context.Background(), server.URL, runTarget{Workflow: "test"}, "test", true, remoteTriggerTimeout, &stdout, &stderr); code != 2 {
+			if code := runRemoteTrigger(context.Background(), server.URL, runTarget{Workflow: "test", ExpectedSourceRevision: "sha256:test"}, "test", true, remoteTriggerTimeout, &stdout, &stderr); code != 2 {
 				t.Fatalf("redirect accepted: %d %s", code, stderr.String())
 			}
 		})

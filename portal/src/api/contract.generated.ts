@@ -51,6 +51,7 @@ export const apiRoutes = {
   "claimsActive": { method: "GET", path: "/api/v1/claims/active", actionClass: "read-only-navigation" },
   "triggerIngest": { method: "POST", path: "/api/v1/triggers", actionClass: "workflow-execution" },
   "triggerStatus": { method: "GET", path: "/api/v1/triggers/{acceptance}", actionClass: "read-only-navigation" },
+  "workflowStart": { method: "POST", path: "/api/v1/workflows/start", actionClass: "workflow-execution" },
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
   "cancelRun": { method: "POST", path: "/api/v1/runs/{run}/cancel", actionClass: "maintenance" },
   "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },

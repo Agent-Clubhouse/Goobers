@@ -1308,6 +1308,27 @@ func TestCronRunHoldsSlotThenManualTriggerRejected(t *testing.T) {
 	}
 }
 
+func TestManualTriggerRequiresExpectedSourceRevision(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "implement",
+		WorkflowDigest: "sha256:current",
+		Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:        starter,
+	}})
+
+	_, err := sched.TriggerWithOptions(context.Background(), "implement", time.Now(), ManualTriggerOptions{
+		ExpectedSourceRevision: "sha256:stale",
+	})
+	var mismatch *SourceRevisionMismatchError
+	if !errors.As(err, &mismatch) || mismatch.Actual != "sha256:current" {
+		t.Fatalf("error = %v, want source revision mismatch", err)
+	}
+	if starter.count() != 0 {
+		t.Fatal("stale source revision dispatched a run")
+	}
+}
+
 func TestManualTriggerBypassesCronButHonorsConditions(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{

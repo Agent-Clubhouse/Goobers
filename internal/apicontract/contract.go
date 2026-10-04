@@ -151,6 +151,7 @@ const (
 	WorkerConfigDivergencePath = V1Prefix + "/worker/config-divergence"
 	TriggerIngestPath          = V1Prefix + "/triggers"
 	TriggerStatusPath          = V1Prefix + "/triggers/{acceptance}"
+	WorkflowStartPath          = V1Prefix + "/workflows/start"
 	RunEscalationResolvePath   = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunCancelPath is the run-control plane (#3807): ask the daemon to stop
 	// a run it is actively executing. The daemon-local seam is the
@@ -339,6 +340,7 @@ const (
 	RouteClaimRecover       RouteID = "claimRecover"
 	RouteTriggerIngest      RouteID = "triggerIngest"
 	RouteTriggerStatus      RouteID = "triggerStatus"
+	RouteWorkflowStart      RouteID = "workflowStart"
 	RouteResolveEscalation  RouteID = "resolveEscalation"
 	RouteCancelRun          RouteID = "cancelRun"
 	RouteJournalEmit        RouteID = "journalEmit"
@@ -552,6 +554,7 @@ var v1Routes = []Route{
 	{ID: RouteClaimsActive, Method: http.MethodGet, Path: ClaimsActivePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerStatus, Method: http.MethodGet, Path: TriggerStatusPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkflowStart, Method: http.MethodPost, Path: WorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	// Cancelling a live run is operator recovery, like `run abort` and the
 	// HITL resolution above — maintenance, outside the runtime parity

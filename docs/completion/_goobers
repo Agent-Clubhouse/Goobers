@@ -172,7 +172,7 @@ _goobers_completion()
             flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
             ;;
         run)
-            flags+=(--no-api --api-timeout --force --gaggle --github-progress --pr --api --request-id --no-wait)
+            flags+=(--no-api --api-timeout --force --gaggle --github-progress --pr --api --request-id --expected-source-revision --no-wait)
             ;;
         approve)
             flags+=(--decision --actor --api)

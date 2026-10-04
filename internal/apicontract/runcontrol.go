@@ -18,6 +18,9 @@ type TriggerRequest struct {
 	// SourceRun requests a priority re-tick following published durable state.
 	// Readiness still applies; a pod principal must name its own run and gaggle.
 	SourceRun string `json:"sourceRun,omitempty"`
+	// ExpectedSourceRevision is transport-internal and is populated only by
+	// the operator start contract.
+	ExpectedSourceRevision string `json:"-"`
 }
 
 // TriggerResponse acknowledges acceptance independently of run dispatch.
@@ -26,6 +29,23 @@ type TriggerResponse struct {
 	State        string `json:"state,omitempty"`
 	RunID        string `json:"runId,omitempty"`
 	Duplicate    bool   `json:"duplicate,omitempty"`
+}
+
+// WorkflowStartRequest is the operator-facing, revision-pinned workflow start
+// contract. ExpectedSourceRevision is the digest of the applied workflow
+// definition the operator intends to run.
+type WorkflowStartRequest struct {
+	Gaggle                 string `json:"gaggle,omitempty"`
+	Workflow               string `json:"workflow"`
+	RequestID              string `json:"requestId,omitempty"`
+	ExpectedSourceRevision string `json:"expectedSourceRevision"`
+	Force                  bool   `json:"force,omitempty"`
+}
+
+// WorkflowStartResponse identifies the run durably minted for an operator.
+type WorkflowStartResponse struct {
+	RunID     string `json:"runId"`
+	Duplicate bool   `json:"duplicate,omitempty"`
 }
 
 // TriggerStatusResponse reports the durable acceptance ledger's current state.

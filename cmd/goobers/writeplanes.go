@@ -625,6 +625,26 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 	return s.dispatchTrigger(ctx, dispatch, request)
 }
 
+func (s *daemonTriggerService) StartWorkflow(ctx context.Context, request httpapi.WorkflowStartRequest) (httpapi.WorkflowStartResponse, error) {
+	response, err := s.Trigger(ctx, httpapi.TriggerRequest{
+		Gaggle:                 request.Gaggle,
+		Workflow:               request.Workflow,
+		RequestID:              request.RequestID,
+		Force:                  request.Force,
+		ExpectedSourceRevision: request.ExpectedSourceRevision,
+	})
+	if err != nil {
+		return httpapi.WorkflowStartResponse{}, err
+	}
+	if response.RunID == "" {
+		return httpapi.WorkflowStartResponse{}, httpapi.NewInterventionError(
+			http.StatusConflict, "workflow_start_in_progress",
+			"the workflow start is still being admitted; retry with the same request ID", nil,
+		)
+	}
+	return httpapi.WorkflowStartResponse{RunID: response.RunID, Duplicate: response.Duplicate}, nil
+}
+
 func (s *daemonTriggerService) validateTriggerAuthority(request httpapi.TriggerRequest) error {
 	// Pod containment (decision 005 R3). The route has already established
 	// that the caller named a gaggle and, for a priority re-tick, its own run;
@@ -700,10 +720,10 @@ func (s *daemonTriggerService) dispatchTrigger(ctx context.Context, dispatch wor
 	case request.Gaggle != "":
 		runID, err = dispatch.TriggerExactWithDispatchContextOptions(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
-		}, s.now(), localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID})
+		}, s.now(), localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID, ExpectedSourceRevision: request.ExpectedSourceRevision})
 	default:
 		runID, err = dispatch.TriggerWithDispatchContextOptions(ctx, dispatchCtx, request.Workflow, s.now(),
-			localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID})
+			localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID, ExpectedSourceRevision: request.ExpectedSourceRevision})
 	}
 	if err != nil {
 		if requestID != "" {
@@ -798,6 +818,10 @@ func triggerPlaneError(err error) error {
 			return httpapi.NewInterventionError(http.StatusTooManyRequests, "trigger_capacity", err.Error(), err)
 		}
 		return httpapi.NewInterventionError(http.StatusConflict, "trigger_rejected", err.Error(), err)
+	}
+	var revisionMismatch *localscheduler.SourceRevisionMismatchError
+	if errors.As(err, &revisionMismatch) {
+		return httpapi.NewInterventionError(http.StatusConflict, "source_revision_conflict", err.Error(), err)
 	}
 	switch {
 	case strings.Contains(err.Error(), "unknown workflow"):

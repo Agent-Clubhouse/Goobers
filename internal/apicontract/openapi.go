@@ -131,7 +131,7 @@ func openAPIParameters(route Route) []map[string]any {
 	}
 	if routeRequiresIdempotency(route.ID) {
 		maxLength := 200
-		if route.ID == RouteTriggerIngest {
+		if route.ID == RouteTriggerIngest || route.ID == RouteWorkflowStart {
 			maxLength = 128
 		}
 		parameters = append(parameters, map[string]any{
@@ -173,7 +173,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
+	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest, RouteWorkflowStart,
 		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit:
 		return true
 	default:
@@ -199,6 +199,8 @@ func openAPIRequestBody(route Route) map[string]any {
 	switch route.ID {
 	case RouteTriggerIngest:
 		schema = schemaRef("TriggerRequest")
+	case RouteWorkflowStart:
+		schema = schemaRef("WorkflowStartRequest")
 	case RouteCancelRun:
 		schema = schemaRef("CancelRunRequest")
 	case RouteOperatorMessageSubmit:
@@ -264,6 +266,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("InstanceReadiness")
 	case RouteTriggerIngest:
 		successSchema = schemaRef("TriggerResponse")
+	case RouteWorkflowStart:
+		successSchema = schemaRef("WorkflowStartResponse")
 	case RouteTriggerStatus:
 		successSchema = schemaRef("TriggerStatusResponse")
 	case RouteCancelRun:
@@ -533,6 +537,23 @@ func openAPIOperationSchemas(authenticated bool) map[string]any {
 				"state":        map[string]any{"type": "string"},
 				"runId":        map[string]any{"type": "string"},
 				"duplicate":    map[string]any{"type": "boolean"},
+			},
+			"WorkflowStartRequest": map[string]any{
+				"type": "object", "required": []string{"workflow", "expectedSourceRevision"}, "additionalProperties": false,
+				"properties": map[string]any{
+					"gaggle":                 map[string]any{"type": "string"},
+					"workflow":               map[string]any{"type": "string", "minLength": 1},
+					"requestId":              map[string]any{"type": "string"},
+					"expectedSourceRevision": map[string]any{"type": "string", "minLength": 1},
+					"force":                  map[string]any{"type": "boolean"},
+				},
+			},
+			"WorkflowStartResponse": map[string]any{
+				"type": "object", "required": []string{"runId"},
+				"properties": map[string]any{
+					"runId":     map[string]any{"type": "string", "minLength": 1},
+					"duplicate": map[string]any{"type": "boolean"},
+				},
 			},
 		},
 		"TriggerStatusResponse": map[string]any{

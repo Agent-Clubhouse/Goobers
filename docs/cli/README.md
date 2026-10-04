@@ -3958,7 +3958,7 @@ $ goobers roots discover --json
 trigger a run manually; --force bypasses cadence budgets
 
 ~~~text
-Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] [--expected-source-revision <digest>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
@@ -3978,8 +3978,8 @@ submits through its API automatically — dispatched through
 the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
-escalated. The submission-only --no-wait mode exits 0 on durable API
-acceptance, before dispatch.
+escalated. The submission-only --no-wait mode exits 0 after the API
+returns the durable identity of the dispatched run.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. When TLS publishes only a wildcard bind address, the CLI
@@ -4005,16 +4005,19 @@ either way. `run cancel` instead asks a live daemon to stop a run it is
 actively executing (active-stage cancel + worktree/claim teardown +
 aborted) — the live counterpart to `run abort`'s daemon-down journal
 repair.
-With --api (or $GOOBERS_DAEMON_API) the trigger is submitted to that
-daemon's authenticated HTTP API instead of the local pending-triggers
+With --api (or $GOOBERS_DAEMON_API) the operator start is submitted to
+that daemon's authenticated HTTP API instead of the machine trigger-ingest
+route or local pending-triggers
 drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
-retry use the same acceptance identity. --api-timeout bounds remote validation
-and acceptance (default 30s; must be positive), including any wait for a
-daemon that is still starting after a restart. A timed-out submission has
-unknown acceptance; retry the printed request ID with the same options.
-The command returns once the daemon accepts the trigger because
+retry use the same start identity. --expected-source-revision is required
+and pins admission to the applied workflow definition digest the operator
+reviewed. --api-timeout bounds remote validation and start admission
+(default 30s; must be positive), including any wait for a daemon that is
+still starting after a restart. A timed-out submission has an unknown
+outcome; retry the printed request ID with the same options.
+The command returns once the daemon identifies the minted run because
 a remote client cannot watch the run's journal. For local file delegation,
 --no-wait returns after dispatch, or after workflow/PR validation succeeds
 and the live daemon durably accepts a capacity-queued request.

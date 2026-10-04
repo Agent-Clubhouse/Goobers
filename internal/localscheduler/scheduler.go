@@ -2221,6 +2221,20 @@ type ManualTriggerOptions struct {
 	// BypassCadenceBudgets ignores MaxRunsPerHour and MaxRunsPerDay for this
 	// invocation. Every other admission condition remains enforced.
 	BypassCadenceBudgets bool
+	// ExpectedSourceRevision pins operator admission to the applied workflow
+	// definition digest. Empty preserves machine-trigger behavior.
+	ExpectedSourceRevision string
+}
+
+// SourceRevisionMismatchError reports an operator start against a superseded
+// applied workflow definition.
+type SourceRevisionMismatchError struct {
+	Expected string
+	Actual   string
+}
+
+func (e *SourceRevisionMismatchError) Error() string {
+	return fmt.Sprintf("localscheduler: workflow source revision is %q, expected %q", e.Actual, e.Expected)
 }
 
 // TriggerWithOptions is Trigger with explicit operator-selected options.
@@ -2273,6 +2287,9 @@ func (s *Scheduler) TriggerWithDispatchContextOptions(ctx, dispatchCtx context.C
 			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
 			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
 		)
+	}
+	if options.ExpectedSourceRevision != "" && entry.WorkflowDigest != options.ExpectedSourceRevision {
+		return "", &SourceRevisionMismatchError{Expected: options.ExpectedSourceRevision, Actual: entry.WorkflowDigest}
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -2358,6 +2375,9 @@ func (s *Scheduler) TriggerExactWithDispatchContextOptions(ctx, dispatchCtx cont
 	s.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
+	}
+	if options.ExpectedSourceRevision != "" && entry.WorkflowDigest != options.ExpectedSourceRevision {
+		return "", &SourceRevisionMismatchError{Expected: options.ExpectedSourceRevision, Actual: entry.WorkflowDigest}
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

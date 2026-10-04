@@ -216,6 +216,14 @@ type TriggerService interface {
 	Trigger(ctx context.Context, request TriggerRequest) (TriggerResponse, error)
 }
 
+type WorkflowStartRequest = apicontract.WorkflowStartRequest
+type WorkflowStartResponse = apicontract.WorkflowStartResponse
+
+// WorkflowStartService synchronously admits an operator's revision-pinned run.
+type WorkflowStartService interface {
+	StartWorkflow(context.Context, WorkflowStartRequest) (WorkflowStartResponse, error)
+}
+
 // Escalation resolutions.
 const (
 	EscalationResolutionApprove  = "approve"
@@ -300,6 +308,17 @@ func WithTriggerService(triggers TriggerService) HandlerOption {
 	}
 }
 
+// WithWorkflowStartService enables the operator-facing workflow start route.
+func WithWorkflowStartService(starts WorkflowStartService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if starts == nil {
+			return errors.New("http API workflow start service is required")
+		}
+		config.workflowStarts = starts
+		return nil
+	}
+}
+
 // WithEscalationService enables the HITL escalation-resolution route.
 func WithEscalationService(escalations EscalationService) HandlerOption {
 	return func(config *handlerConfig) error {
@@ -344,10 +363,62 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
 	registerTriggerStatusRoute(router, config.triggers, errorLog)
+	registerWorkflowStartRoute(router, config.workflowStarts, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCancelRoute(router, config.cancels, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
 	registerCredentialRefreshRoute(router, config.credentials, errorLog)
+}
+
+func registerWorkflowStartRoute(router *Router, starts WorkflowStartService, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteWorkflowStart, func(w http.ResponseWriter, request *http.Request) {
+		if starts == nil {
+			writeError(w, http.StatusServiceUnavailable, "workflow_start_unavailable", "operator workflow start is not available from this server")
+			return
+		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
+		var input WorkflowStartRequest
+		if err := decodeWriteRequest(request, &input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+			return
+		}
+		if strings.TrimSpace(input.Workflow) == "" {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workflow is required")
+			return
+		}
+		if strings.TrimSpace(input.ExpectedSourceRevision) == "" {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "expectedSourceRevision is required")
+			return
+		}
+		if len(input.RequestID) > MaxTriggerRequestIDBytes {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
+				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
+			return
+		}
+		key, err := idempotencyKeyWithLimit(request, MaxTriggerRequestIDBytes)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, CodeIdempotencyKeyRequired, err.Error())
+			return
+		}
+		if bodyKey := strings.TrimSpace(input.RequestID); bodyKey != "" && bodyKey != key {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "requestId must match Idempotency-Key")
+			return
+		}
+		input.RequestID = key
+		response, err := starts.StartWorkflow(request.Context(), input)
+		if err != nil {
+			writePlaneError(w, errorLog, "start workflow", err)
+			return
+		}
+		if strings.TrimSpace(response.RunID) == "" {
+			writeError(w, http.StatusInternalServerError, "run_identity_missing", "operator workflow start returned no durable run identity")
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+	})
 }
 
 func registerClaimRoute(

@@ -60,7 +60,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 		gotMethod  string
 		gotAuth    string
 		gotKey     string
-		gotRequest httpapi.TriggerRequest
+		gotRequest httpapi.WorkflowStartRequest
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotMethod, gotAuth = r.URL.Path, r.Method, r.Header.Get("Authorization")
@@ -79,17 +79,17 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 	t.Setenv(remoteDaemonAPIEnv, "")
 	t.Setenv("GOOBERS_API_TOKEN", "operator-token")
 	code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL,
-		"--request-id", "delivery-1", "--force", "--no-wait")
+		"--request-id", "delivery-1", "--expected-source-revision", "sha256:workflow", "--force", "--no-wait")
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
-	if gotMethod != http.MethodPost || gotPath != apicontract.TriggerIngestPath {
-		t.Fatalf("request = %s %s, want POST %s", gotMethod, gotPath, apicontract.TriggerIngestPath)
+	if gotMethod != http.MethodPost || gotPath != apicontract.WorkflowStartPath {
+		t.Fatalf("request = %s %s, want POST %s", gotMethod, gotPath, apicontract.WorkflowStartPath)
 	}
 	if gotAuth != "Bearer operator-token" {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
-	want := httpapi.TriggerRequest{Gaggle: "example", Workflow: "nightly", RequestID: "delivery-1", Force: true}
+	want := httpapi.WorkflowStartRequest{Gaggle: "example", Workflow: "nightly", RequestID: "delivery-1", ExpectedSourceRevision: "sha256:workflow", Force: true}
 	if gotKey != want.RequestID {
 		t.Fatalf("Idempotency-Key = %q, want %q", gotKey, want.RequestID)
 	}
@@ -101,7 +101,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 	}
 }
 
-func TestRunRemoteTriggerNoWaitSucceedsOnDurableAcceptance(t *testing.T) {
+func TestRunRemoteTriggerRejectsAcceptanceWithoutRunIdentity(t *testing.T) {
 	unsetRunContext(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if serveRemoteRootFixture(w, r) {
@@ -112,12 +112,10 @@ func TestRunRemoteTriggerNoWaitSucceedsOnDurableAcceptance(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(httpapi.TriggerResponse{AcceptanceID: "trigger-durable", State: "accepted"})
 	}))
 	t.Cleanup(server.Close)
-	code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "delivery", "--no-wait")
-	if code != 0 || !strings.Contains(stdout, "accepted trigger trigger-durable") || !strings.Contains(stdout, "state=accepted") {
+	code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "delivery",
+		"--expected-source-revision", "sha256:workflow", "--no-wait")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "no durable run identity") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
-	}
-	if strings.Contains(stdout, "created run") {
-		t.Fatalf("acceptance misreported as dispatch: %q", stdout)
 	}
 }
 
@@ -138,8 +136,9 @@ func TestRunRemoteTriggerRejectsSuccessWithoutDurableIdentity(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "delivery", "--no-wait")
-			if code != 2 || stdout != "" || !strings.Contains(stderr, "no durable acceptance or run identity") {
+			code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "delivery",
+				"--expected-source-revision", "sha256:workflow", "--no-wait")
+			if code != 2 || stdout != "" || !strings.Contains(stderr, "no durable run identity") {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			if !strings.Contains(stderr, `retry with --request-id "delivery"`) {
@@ -163,8 +162,9 @@ func TestRunRemoteTriggerHonorsConfiguredAcceptanceTimeout(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	started := time.Now()
-	code, _, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "timeout-delivery", "--api-timeout", "250ms", "--no-wait")
-	if code != 2 || !strings.Contains(stderr, "acceptance is unknown") || !strings.Contains(stderr, `--request-id "timeout-delivery"`) {
+	code, _, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "timeout-delivery",
+		"--expected-source-revision", "sha256:workflow", "--api-timeout", "250ms", "--no-wait")
+	if code != 2 || !strings.Contains(stderr, "start outcome is unknown") || !strings.Contains(stderr, `--request-id "timeout-delivery"`) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	if time.Since(started) > 5*time.Second {
@@ -182,11 +182,19 @@ func TestRunRemoteTriggerRejectsNonpositiveAPITimeout(t *testing.T) {
 	}
 }
 
+func TestRunRemoteTriggerRequiresExpectedSourceRevision(t *testing.T) {
+	unsetRunContext(t)
+	code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", "http://daemon.invalid", "--no-wait")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "--expected-source-revision is required") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 // The endpoint may come from the environment alone, which is how a CI job or a
 // stage pod is configured.
 func TestRunRemoteTriggerUsesEnvironmentEndpoint(t *testing.T) {
 	unsetRunContext(t)
-	var gotRequest httpapi.TriggerRequest
+	var gotRequest httpapi.WorkflowStartRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if serveRemoteRootFixture(w, r) {
 			return
@@ -200,7 +208,8 @@ func TestRunRemoteTriggerUsesEnvironmentEndpoint(t *testing.T) {
 
 	t.Setenv(remoteDaemonAPIEnv, server.URL)
 	t.Setenv("GOOBERS_API_TOKEN", "")
-	code, stdout, stderr := runArgs(t, "run", "nightly", "--request-id", "delivery-2", "--no-wait")
+	code, stdout, stderr := runArgs(t, "run", "nightly", "--request-id", "delivery-2",
+		"--expected-source-revision", "sha256:workflow", "--no-wait")
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
@@ -229,7 +238,8 @@ func TestRunRemoteTriggerReportsDaemonRefusal(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	t.Setenv(remoteDaemonAPIEnv, "")
-	code, _, stderr := runArgs(t, "run", "nightly", "--api", server.URL, "--no-wait")
+	code, _, stderr := runArgs(t, "run", "nightly", "--api", server.URL,
+		"--expected-source-revision", "sha256:workflow", "--no-wait")
 	if code != 1 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
@@ -246,7 +256,7 @@ func TestRunRemoteTriggerRejectsInvalidErrorBodyAndRedirect(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, apiErr, err := submitRemoteTrigger(t.Context(), server.URL, httpapi.TriggerRequest{RequestID: "delivery"})
+		_, apiErr, err := submitRemoteWorkflowStart(t.Context(), server.URL, httpapi.WorkflowStartRequest{RequestID: "delivery"})
 		if apiErr != nil || err == nil || !strings.Contains(err.Error(), "daemon API returned 502 Bad Gateway with an invalid error body") {
 			t.Fatalf("api error=%+v error=%v", apiErr, err)
 		}
@@ -264,7 +274,7 @@ func TestRunRemoteTriggerRejectsInvalidErrorBodyAndRedirect(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, apiErr, err := submitRemoteTrigger(t.Context(), server.URL, httpapi.TriggerRequest{RequestID: "delivery"})
+		_, apiErr, err := submitRemoteWorkflowStart(t.Context(), server.URL, httpapi.WorkflowStartRequest{RequestID: "delivery"})
 		if apiErr != nil || err == nil || !strings.Contains(err.Error(), "daemon API returned 307 Temporary Redirect with an invalid error body") {
 			t.Fatalf("api error=%+v error=%v", apiErr, err)
 		}
@@ -283,7 +293,8 @@ func TestRunRemoteTriggerReportsTransportFailure(t *testing.T) {
 	server.Close()
 
 	t.Setenv(remoteDaemonAPIEnv, "")
-	code, stdout, stderr := runArgs(t, "run", "nightly", "--api", endpoint, "--no-wait")
+	code, stdout, stderr := runArgs(t, "run", "nightly", "--api", endpoint,
+		"--expected-source-revision", "sha256:workflow", "--no-wait")
 	if code != 2 {
 		t.Fatalf("exit code = %d, stdout = %q", code, stdout)
 	}
@@ -305,7 +316,7 @@ func TestRunRemoteTriggerWithoutNoWaitReportsSubmissionOnly(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	t.Setenv(remoteDaemonAPIEnv, server.URL)
-	code, stdout, stderr := runArgs(t, "run", "nightly")
+	code, stdout, stderr := runArgs(t, "run", "nightly", "--expected-source-revision", "sha256:workflow")
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
@@ -335,7 +346,8 @@ func TestRunRemoteTriggerRefusesOverlongRequestID(t *testing.T) {
 	unsetRunContext(t)
 	t.Setenv(remoteDaemonAPIEnv, "http://daemon.invalid")
 	oversized := strings.Repeat("a", httpapi.MaxTriggerRequestIDBytes+1)
-	code, _, stderr := runArgs(t, "run", "demo", "--request-id", oversized, "--no-wait")
+	code, _, stderr := runArgs(t, "run", "demo", "--request-id", oversized,
+		"--expected-source-revision", "sha256:workflow", "--no-wait")
 	if code != 2 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}

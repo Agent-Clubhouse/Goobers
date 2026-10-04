@@ -277,6 +277,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = routeExtensionAvailable(id, config)
 	case apicontract.RouteTriggerIngest:
 		available = config.triggers != nil
+	case apicontract.RouteWorkflowStart:
+		available = config.workflowStarts != nil
 	case apicontract.RouteResolveEscalation:
 		available = config.escalations != nil
 	case apicontract.RouteCancelRun:

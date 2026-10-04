@@ -1106,6 +1106,7 @@ func (u *upSession) configureAPI() int {
 		httpapi.WithInterventionContext(u.ctx),
 		httpapi.WithClaimService(claimPlane),
 		httpapi.WithTriggerService(u.durableTriggers),
+		httpapi.WithWorkflowStartService(u.triggerPlane),
 		httpapi.WithEscalationService(intervention.NewEscalationResolver(u.interventions)),
 		httpapi.WithCancelService(u.cancelPlane),
 		httpapi.WithCredentialService(u.credentialPlane),

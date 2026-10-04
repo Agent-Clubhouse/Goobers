@@ -605,6 +605,7 @@ type handlerConfig struct {
 	gaggleBundles           GaggleBundleService
 	claims                  ClaimService
 	triggers                TriggerService
+	workflowStarts          WorkflowStartService
 	escalations             EscalationService
 	cancels                 CancelService
 	journal                 JournalService

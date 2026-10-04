@@ -277,6 +277,25 @@ type stubTriggerer struct {
 	lastOptions localscheduler.ManualTriggerOptions
 }
 
+func TestOperatorWorkflowStartPinsRevisionAndReturnsRunID(t *testing.T) {
+	dispatch := &stubTriggerer{}
+	service := newDaemonTriggerService()
+	service.dispatch = dispatch
+
+	response, err := service.StartWorkflow(t.Context(), httpapi.WorkflowStartRequest{
+		Gaggle:                 "example",
+		Workflow:               "implementation",
+		RequestID:              "operator-1",
+		ExpectedSourceRevision: "sha256:workflow",
+	})
+	if err != nil || response.RunID == "" {
+		t.Fatalf("response=%+v error=%v", response, err)
+	}
+	if dispatch.lastOptions.ExpectedSourceRevision != "sha256:workflow" {
+		t.Fatalf("options = %+v", dispatch.lastOptions)
+	}
+}
+
 func (s *stubTriggerer) mint(options localscheduler.ManualTriggerOptions) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

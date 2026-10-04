@@ -68,6 +68,17 @@ type fakeTriggerService struct {
 	requests []TriggerRequest
 }
 
+type fakeWorkflowStartService struct {
+	response WorkflowStartResponse
+	err      error
+	requests []WorkflowStartRequest
+}
+
+func (f *fakeWorkflowStartService) StartWorkflow(_ context.Context, request WorkflowStartRequest) (WorkflowStartResponse, error) {
+	f.requests = append(f.requests, request)
+	return f.response, f.err
+}
+
 func (f *fakeTriggerService) Trigger(_ context.Context, request TriggerRequest) (TriggerResponse, error) {
 	f.requests = append(f.requests, request)
 	return f.response, f.err
@@ -178,6 +189,44 @@ func TestTriggerRouteReportsDurableAcceptance(t *testing.T) {
 	}
 	if response.Code != http.StatusAccepted || result.AcceptanceID != "trigger-1" || result.RunID != "" {
 		t.Fatalf("acceptance = %d %+v", response.Code, result)
+	}
+}
+
+func TestWorkflowStartRouteRequiresRevisionAndReturnsRunIdentity(t *testing.T) {
+	starts := &fakeWorkflowStartService{response: WorkflowStartResponse{RunID: "run-9"}}
+	handler := writePlaneHandler(t, nil, AllowAll, WithWorkflowStartService(starts))
+
+	response := httptest.NewRecorder()
+	request := jsonRequest(http.MethodPost, apicontract.WorkflowStartPath,
+		`{"gaggle":"g","workflow":"impl","requestId":"delivery","expectedSourceRevision":"sha256:workflow"}`)
+	request.Header.Set(HeaderIdempotencyKey, "delivery")
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(starts.requests) != 1 {
+		t.Fatalf("status=%d requests=%+v body=%s", response.Code, starts.requests, response.Body)
+	}
+	if got := starts.requests[0]; got.ExpectedSourceRevision != "sha256:workflow" || got.RequestID != "delivery" {
+		t.Fatalf("request = %+v", got)
+	}
+
+	response = httptest.NewRecorder()
+	request = jsonRequest(http.MethodPost, apicontract.WorkflowStartPath, `{"workflow":"impl"}`)
+	request.Header.Set(HeaderIdempotencyKey, "missing-revision")
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || len(starts.requests) != 1 {
+		t.Fatalf("missing revision status=%d requests=%+v", response.Code, starts.requests)
+	}
+}
+
+func TestWorkflowStartRouteRejectsSuccessWithoutRunIdentity(t *testing.T) {
+	handler := writePlaneHandler(t, nil, AllowAll,
+		WithWorkflowStartService(&fakeWorkflowStartService{response: WorkflowStartResponse{}}))
+	response := httptest.NewRecorder()
+	request := jsonRequest(http.MethodPost, apicontract.WorkflowStartPath,
+		`{"workflow":"impl","expectedSourceRevision":"sha256:workflow"}`)
+	request.Header.Set(HeaderIdempotencyKey, "delivery")
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
 	}
 }
 

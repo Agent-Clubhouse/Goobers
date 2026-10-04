@@ -384,6 +384,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
+		{name: "expected-source-revision", takesArg: true, desc: "Required applied workflow digest for a remote start"},
 		{name: "no-wait", desc: "Return on durable API acceptance or local dispatch"},
 	},
 	"approve": {

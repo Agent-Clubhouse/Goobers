@@ -89,6 +89,10 @@ func runRemoteTrigger(
 		pf(stderr, "error: --pr is not supported over the daemon API; use --no-api from the daemon's own instance root\n")
 		return 2
 	}
+	if strings.TrimSpace(target.ExpectedSourceRevision) == "" {
+		pf(stderr, "error: --expected-source-revision is required for a remote operator start\n")
+		return 2
+	}
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		generated, err := newRemoteTriggerRequestID()
@@ -107,32 +111,30 @@ func runRemoteTrigger(
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	response, apiErr, err := submitRemoteTrigger(ctx, endpoint, httpapi.TriggerRequest{
-		Gaggle:    target.Gaggle,
-		Workflow:  target.Workflow,
-		RequestID: requestID,
-		Force:     target.Force,
+	response, apiErr, err := submitRemoteWorkflowStart(ctx, endpoint, httpapi.WorkflowStartRequest{
+		Gaggle:                 target.Gaggle,
+		Workflow:               target.Workflow,
+		RequestID:              requestID,
+		ExpectedSourceRevision: target.ExpectedSourceRevision,
+		Force:                  target.Force,
 	})
 	if err != nil {
-		pf(stderr, "error: trigger acceptance is unknown: %v; retry with --request-id %q and the same workflow/options\n", err, requestID)
+		pf(stderr, "error: workflow start outcome is unknown: %v; retry with --request-id %q and the same workflow/options\n", err, requestID)
 		return 2
 	}
 	if apiErr != nil {
 		pf(stderr, "error: %s: %s\n", apiErr.Code, apiErr.Message)
 		return 1
 	}
-	if response.AcceptanceID == "" && response.RunID == "" {
-		pf(stderr, "error: daemon returned no durable acceptance or run identity; outcome is unknown, retry with --request-id %q\n", requestID)
+	if response.RunID == "" {
+		pf(stderr, "error: daemon returned no durable run identity; outcome is unknown, retry with --request-id %q\n", requestID)
 		return 2
 	}
 
-	switch {
-	case response.AcceptanceID != "":
-		pf(stdout, "accepted trigger %s (request=%s, workflow=%s, state=%s)\n", response.AcceptanceID, requestID, target.Workflow, response.State)
-	case response.Duplicate:
+	if response.Duplicate {
 		pf(stdout, "trigger request %s already dispatched run %s (workflow=%s, dispatched via daemon API)\n",
 			requestID, response.RunID, target.Workflow)
-	default:
+	} else {
 		pf(stdout, "created run %s (workflow=%s, dispatched via daemon API)\n", response.RunID, target.Workflow)
 	}
 	if !noWait {
@@ -143,6 +145,26 @@ func runRemoteTrigger(
 		pf(stderr, "note: a remote trigger returns once the daemon accepts it; this client cannot watch the run's journal\n")
 	}
 	return 0
+}
+
+func submitRemoteWorkflowStart(
+	ctx context.Context,
+	endpoint string,
+	input httpapi.WorkflowStartRequest,
+) (httpapi.WorkflowStartResponse, *apicontract.APIError, error) {
+	return callDaemonJSON[httpapi.WorkflowStartRequest, httpapi.WorkflowStartResponse](daemonJSONCall[httpapi.WorkflowStartRequest]{
+		Context:         ctx,
+		Endpoint:        endpoint,
+		RouteID:         apicontract.RouteWorkflowStart,
+		IdempotencyKey:  input.RequestID,
+		Input:           input,
+		MaxResponseBody: maxRemoteTriggerResponseBody,
+		AcceptJSON:      true,
+		EncodePrefix:    "encode workflow start request",
+		BuildPrefix:     "build workflow start request",
+		CallPrefix:      "call daemon API " + endpoint,
+		DecodePrefix:    "decode daemon workflow start response",
+	})
 }
 
 // submitRemoteTrigger POSTs one trigger to the daemon's trigger plane. It

@@ -555,6 +555,17 @@
       "recoverySafe": false
     },
     {
+      "id": "workflowStart",
+      "method": "POST",
+      "path": "/api/v1/workflows/start",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "resolveEscalation",
       "method": "POST",
       "path": "/api/v1/runs/{run}/escalation/resolve",
