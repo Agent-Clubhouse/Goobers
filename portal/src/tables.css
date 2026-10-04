@@ -134,30 +134,6 @@
   overflow-y: hidden;
 }
 
-.gaggle-goober-table-wrap {
-  overflow-x: auto;
-}
-
-.gaggle-goober-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-.gaggle-goober-table th,
-.gaggle-goober-table td {
-  overflow-wrap: anywhere;
-  padding: 12px 13px;
-  text-align: left;
-}
-
-.gaggle-goober-table th {
-  padding: 10px 13px;
-}
-
-.gaggle-goober-table tbody tr + tr {
-  border-top: 1px solid var(--line);
-}
-
 .gaggle-goober-table th:last-child,
 .gaggle-goober-table td:last-child {
   text-align: right;

@@ -1,3 +1,4 @@
+import { PageHeading } from "../ui/Heading";
 import type { DaemonClient, TelemetryUsageStats } from "../api/types";
 import { DaemonErrorState } from "../components/DaemonQueryState";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
@@ -68,8 +69,11 @@ export function CostPage({
     scope.stage,
   );
 
-  const snapshot = query.state.status === "ready" || query.state.status === "stale" ? query.state.data : undefined;
-  const availableScopes = snapshot ? insightScopeOptions(snapshot.stats) : [insightScopeOption({ kind: "instance" })];
+  const snapshot =
+    query.state.status === "ready" || query.state.status === "stale" ? query.state.data : undefined;
+  const availableScopes = snapshot
+    ? insightScopeOptions(snapshot.stats)
+    : [insightScopeOption({ kind: "instance" })];
   const scopes = availableScopes.some((option) => option.key === insightScopeKey(requestedScope))
     ? availableScopes
     : [...availableScopes, insightScopeOption(requestedScope)];
@@ -93,31 +97,31 @@ export function CostPage({
 
   return (
     <>
-      <header className="page-heading">
-        <div className="cost-summary-heading">
-          <h1>Cost</h1>
-          <div className="section-heading-meta">
-            <SectionQueryStatus
-              error={query.state.status === "stale" && Boolean(query.state.error)}
-              loading={query.state.status === "loading" || query.refreshing}
-              message={
-                query.state.status === "stale" && query.state.error
-                  ? "Cost refresh failed."
-                  : query.state.status === "loading"
-                    ? "Loading cost summary…"
-                    : query.refreshing
-                      ? "Refreshing cost summary…"
-                      : undefined
-              }
-              retry={query.retry}
-            />
-          </div>
-        </div>
-        <p>
-          Instance spend, selected-scope cost, retry waste, and attributed pull request and
-          issue costs.
-        </p>
-      </header>
+      <PageHeading
+        title="Cost"
+        className=""
+        description="Instance spend, selected-scope cost, retry waste, and attributed pull request and issue costs."
+        titleActions={
+          <>
+            <div className="section-heading-meta">
+              <SectionQueryStatus
+                error={query.state.status === "stale" && Boolean(query.state.error)}
+                loading={query.state.status === "loading" || query.refreshing}
+                message={
+                  query.state.status === "stale" && query.state.error
+                    ? "Cost refresh failed."
+                    : query.state.status === "loading"
+                      ? "Loading cost summary…"
+                      : query.refreshing
+                        ? "Refreshing cost summary…"
+                        : undefined
+                }
+                retry={query.retry}
+              />
+            </div>
+          </>
+        }
+      />
 
       <InsightFilters
         label="Cost filters"
@@ -128,32 +132,37 @@ export function CostPage({
         window={window}
       />
 
-        <section className="content-section">
-          <div className="cost-summary-metrics">
-            <div aria-hidden={!view?.usage || undefined} className={!view?.usage ? "cost-summary-placeholder" : undefined}>
-              <UsageAnalytics
-                filters={view?.filters ?? {}}
-                mode="cost"
-                totalRuns={requestedScope.kind === "stage" ? undefined : view?.summary?.total ?? (snapshot ? undefined : 0)}
-                usage={view?.usage ?? LOADING_USAGE}
-              />
-            </div>
-            {snapshot && !view?.usage && (
-              <div className="cost-summary-status">
-                <SectionQueryStatus
-                  message="No cost measurements in this scope."
-                />
-              </div>
-            )}
+      <section className="content-section">
+        <div className="cost-summary-metrics">
+          <div
+            aria-hidden={!view?.usage || undefined}
+            className={!view?.usage ? "cost-summary-placeholder" : undefined}
+          >
+            <UsageAnalytics
+              filters={view?.filters ?? {}}
+              mode="cost"
+              totalRuns={
+                requestedScope.kind === "stage"
+                  ? undefined
+                  : (view?.summary?.total ?? (snapshot ? undefined : 0))
+              }
+              usage={view?.usage ?? LOADING_USAGE}
+            />
           </div>
-          <CostTrend
-            costTrend={costTrendView}
-            currentUsage={view?.usage ?? LOADING_USAGE}
-            refreshing={costTrend.refreshing}
-            retry={costTrend.retry}
-            window={window}
-          />
-        </section>
+          {snapshot && !view?.usage && (
+            <div className="cost-summary-status">
+              <SectionQueryStatus message="No cost measurements in this scope." />
+            </div>
+          )}
+        </div>
+        <CostTrend
+          costTrend={costTrendView}
+          currentUsage={view?.usage ?? LOADING_USAGE}
+          refreshing={costTrend.refreshing}
+          retry={costTrend.retry}
+          window={window}
+        />
+      </section>
 
       {requestedScope.kind === "instance" && (
         <InstanceCostRollup

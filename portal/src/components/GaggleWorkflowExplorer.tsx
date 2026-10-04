@@ -1,11 +1,8 @@
+import { Tab, TabList } from "../ui/Tabs";
+import { SectionHeading } from "../ui/Heading";
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import type {
-  DaemonClient,
-  RunSummary,
-  WorkflowDetail,
-  WorkflowSummary,
-} from "../api/types";
+import type { DaemonClient, RunSummary, WorkflowDetail, WorkflowSummary } from "../api/types";
 import { latestWorkflowOutcome } from "../operationalData";
 import { routeHash } from "../routing";
 import { validateWorkflowDetail } from "../workflowDetailData";
@@ -35,8 +32,7 @@ export function GaggleWorkflowExplorer({
     workflows[0]?.identity.name ?? "",
   );
   const selectedWorkflow =
-    workflows.find(({ identity }) => identity.name === selectedWorkflowName) ??
-    workflows[0];
+    workflows.find(({ identity }) => identity.name === selectedWorkflowName) ?? workflows[0];
 
   useEffect(() => {
     if (
@@ -50,12 +46,17 @@ export function GaggleWorkflowExplorer({
 
   return (
     <section className="content-section">
-      <div className="section-heading">
-        <h2>Workflows</h2>
-        <span className="graph-legend">
-          {workflows.length} {workflows.length === 1 ? "workflow" : "workflows"}
-        </span>
-      </div>
+      <SectionHeading
+        title="Workflows"
+        className=""
+        actions={
+          <>
+            <span className="graph-legend">
+              {workflows.length} {workflows.length === 1 ? "workflow" : "workflows"}
+            </span>
+          </>
+        }
+      />
       <div className="graph-panel gaggle-topology-panel">
         {selectedWorkflow ? (
           <div className="gaggle-workflow-explorer">
@@ -126,7 +127,7 @@ export function WorkflowPicker({
         <h3>Independent workflows</h3>
         <p>Definitions share this gaggle's resources, but do not imply an execution order.</p>
       </div>
-      <div
+      <TabList
         aria-label={`${gaggleDisplayName} workflows`}
         className="gaggle-workflow-tabs"
         role="tablist"
@@ -139,7 +140,7 @@ export function WorkflowPicker({
             workflow.identity.name,
           );
           return (
-            <button
+            <Tab
               aria-controls="gaggle-selected-workflow"
               aria-selected={selected}
               className={`gaggle-workflow-choice${selected ? " is-selected" : ""}${workflow.enabled ? "" : " definition-disabled"}`}
@@ -155,11 +156,11 @@ export function WorkflowPicker({
             >
               <span className="definition-nameplate">
                 <strong>{workflow.displayName}</strong>
-                {!workflow.enabled && (
-                  <span className="definition-disabled-badge">Disabled</span>
-                )}
+                {!workflow.enabled && <span className="definition-disabled-badge">Disabled</span>}
               </span>
-              <code>{workflow.identity.gaggle} / {workflow.identity.name}</code>
+              <code>
+                {workflow.identity.gaggle} / {workflow.identity.name}
+              </code>
               <small>
                 {workflow.stageCount} {workflow.stageCount === 1 ? "stage" : "stages"} ·{" "}
                 {formatTriggers(workflow)}
@@ -169,10 +170,10 @@ export function WorkflowPicker({
               ) : (
                 <span className="gaggle-workflow-no-runs">No runs</span>
               )}
-            </button>
+            </Tab>
           );
         })}
-      </div>
+      </TabList>
     </div>
   );
 }
@@ -267,11 +268,7 @@ function useWorkflowDefinition(
             return;
           }
           try {
-            validateWorkflowDetail(
-              detail,
-              summary.identity.gaggle,
-              summary.identity.name,
-            );
+            validateWorkflowDetail(detail, summary.identity.gaggle, summary.identity.name);
           } catch (error: unknown) {
             setState({
               status: "error",
@@ -298,13 +295,7 @@ function useWorkflowDefinition(
         },
       );
     return () => controller.abort();
-  }, [
-    client,
-    retryKey,
-    summary.definition.digest,
-    summary.identity.gaggle,
-    summary.identity.name,
-  ]);
+  }, [client, retryKey, summary.definition.digest, summary.identity.gaggle, summary.identity.name]);
 
   return state;
 }

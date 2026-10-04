@@ -461,7 +461,7 @@ describe("runs history pagination under live events", () => {
     ).not.toBeInTheDocument();
     expect(listRuns.mock.calls.slice(callsBeforeFilterChange)).toEqual([
       [
-        { phase: "running", cursor: undefined, limit: 50, showNoWork: false },
+        expect.objectContaining({ phase: "running", cursor: undefined, limit: 50, showNoWork: false, status: "active" }),
         { signal: expect.any(AbortSignal) },
       ],
     ]);

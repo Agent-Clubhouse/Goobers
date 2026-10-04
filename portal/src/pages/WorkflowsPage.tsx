@@ -1,3 +1,8 @@
+import { PageHeading } from "../ui/Heading";
+import { SectionHeading } from "../ui/Heading";
+import { ActionLink } from "../ui/Action";
+import { Action } from "../ui/Action";
+import { Timestamp } from "../ui/Timestamp";
 import { useState } from "react";
 import type { DaemonClient, RunSummary, WorkflowSummary, WorkflowTrigger } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
@@ -30,7 +35,9 @@ export function WorkflowsPage({
     return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
+    return (
+      <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
+    );
   }
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
@@ -59,12 +66,11 @@ function WorkflowInventory({
 }) {
   return (
     <>
-      <header className="page-heading">
-        <div>
-          <h1>Workflows</h1>
-          <p>Versioned processes and their provisioned workforce.</p>
-        </div>
-      </header>
+      <PageHeading
+        title="Workflows"
+        className=""
+        description="Versioned processes and their provisioned workforce."
+      />
 
       {inventoryError && snapshot.inventories.length === 0 ? (
         <div className="run-stale-state run-stale-state-error" role="alert">
@@ -72,9 +78,9 @@ function WorkflowInventory({
             <strong>Workflow inventory is unavailable</strong>
             <small>{inventoryError.message}</small>
           </span>
-          <button className="text-button" onClick={retry} type="button">
+          <Action variant="text" className="text-button" onClick={retry} type="button">
             Retry
-          </button>
+          </Action>
         </div>
       ) : snapshot.loadingSections?.inventory && snapshot.inventories.length === 0 ? (
         <div className="inline-empty section-loading" role="status">
@@ -86,7 +92,9 @@ function WorkflowInventory({
           <img alt="" src="/goober-mascot.png" />
           <div>
             <h2>No gaggles configured</h2>
-            <p>No configuration is available to the Portal yet. Initialize the instance to begin.</p>
+            <p>
+              No configuration is available to the Portal yet. Initialize the instance to begin.
+            </p>
             <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
@@ -132,9 +140,7 @@ function GaggleSection({
           <span>
             <span className="definition-nameplate">
               <strong id={headingId}>{gaggle.displayName}</strong>
-              {!gaggle.enabled && (
-                <span className="definition-disabled-badge">Disabled</span>
-              )}
+              {!gaggle.enabled && <span className="definition-disabled-badge">Disabled</span>}
             </span>
             <code title={gaggleIdentity}>{gaggleIdentity}</code>
           </span>
@@ -234,9 +240,7 @@ function GaggleSection({
                           <>
                             <StatusBadge status={outcome.phase} />
                             <small>
-                              <time dateTime={outcome.finishedAt ?? outcome.startedAt}>
-                                {formatTimestamp(outcome.finishedAt ?? outcome.startedAt)}
-                              </time>
+                              <Timestamp value={outcome.finishedAt ?? outcome.startedAt} />
                             </small>
                           </>
                         ) : (
@@ -275,10 +279,11 @@ function GaggleSection({
           </div>
 
           <div className="content-section gaggle-content">
-            <div className="section-heading">
-              <h3>Goober summary</h3>
-              <span className="section-count">{inventory.goobers.length}</span>
-            </div>
+            <SectionHeading
+              level={3}
+              title="Goober summary"
+              actions={<span className="section-count">{inventory.goobers.length}</span>}
+            />
             {inventory.goobers.length === 0 ? (
               <p className="inline-empty">No goobers are provisioned for this gaggle.</p>
             ) : (
@@ -288,9 +293,12 @@ function GaggleSection({
                   {inventory.goobers.length === 1 ? "persona" : "personas"} ·{" "}
                   {inventory.goobers.map((goober) => goober.displayName).join(", ")}
                 </p>
-                <a href={routeHash({ page: "goobers", gaggle: gaggle.name })}>
+                <ActionLink
+                  size="compact"
+                  href={routeHash({ page: "goobers", gaggle: gaggle.name })}
+                >
                   View {gaggle.displayName} Goobers
-                </a>
+                </ActionLink>
               </div>
             )}
           </div>
@@ -338,27 +346,63 @@ function describeCron(schedule: string): string {
   if (!minute || !hour || !dayOfMonth || !month || !dayOfWeek) {
     return "Scheduled";
   }
-  if (/^\d+$/.test(minute) && /^\*\/\d+$/.test(hour) && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+  if (
+    /^\d+$/.test(minute) &&
+    /^\*\/\d+$/.test(hour) &&
+    dayOfMonth === "*" &&
+    month === "*" &&
+    dayOfWeek === "*"
+  ) {
     return `At ${Number(minute)} minutes past every ${Number(hour.slice(2))} hours`;
   }
-  if (/^\d+$/.test(minute) && /^\d+(,\d+)+$/.test(hour) && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+  if (
+    /^\d+$/.test(minute) &&
+    /^\d+(,\d+)+$/.test(hour) &&
+    dayOfMonth === "*" &&
+    month === "*" &&
+    dayOfWeek === "*"
+  ) {
     const times = hour
       .split(",")
       .map((value) => `${value.padStart(2, "0")}:${minute.padStart(2, "0")}`);
     return `Daily at ${formatList(times)} scheduler time`;
   }
-  if (/^\d+-\d+\/\d+$/.test(minute) && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+  if (
+    /^\d+-\d+\/\d+$/.test(minute) &&
+    hour === "*" &&
+    dayOfMonth === "*" &&
+    month === "*" &&
+    dayOfWeek === "*"
+  ) {
     const [range, interval] = minute.split("/");
     const [start, end] = range.split("-");
     return `Every ${Number(interval)} minutes from minute ${Number(start)} through ${Number(end)}`;
   }
-  if (/^\*\/\d+$/.test(minute) && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+  if (
+    /^\*\/\d+$/.test(minute) &&
+    hour === "*" &&
+    dayOfMonth === "*" &&
+    month === "*" &&
+    dayOfWeek === "*"
+  ) {
     return `Every ${Number(minute.slice(2))} minutes`;
   }
-  if (/^\d+$/.test(minute) && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+  if (
+    /^\d+$/.test(minute) &&
+    hour === "*" &&
+    dayOfMonth === "*" &&
+    month === "*" &&
+    dayOfWeek === "*"
+  ) {
     return `Hourly at minute ${Number(minute)}`;
   }
-  if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+  if (
+    /^\d+$/.test(minute) &&
+    /^\d+$/.test(hour) &&
+    dayOfMonth === "*" &&
+    month === "*" &&
+    dayOfWeek === "*"
+  ) {
     return `Daily at ${hour.padStart(2, "0")}:${minute.padStart(2, "0")} scheduler time`;
   }
   return "Scheduled";
@@ -368,11 +412,4 @@ function formatList(values: string[]): string {
   if (values.length <= 1) return values[0] ?? "";
   if (values.length === 2) return `${values[0]} and ${values[1]}`;
   return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
-}
-
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
 }

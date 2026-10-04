@@ -160,7 +160,7 @@ describe("Insight page", () => {
 
     const heading = await screen.findByRole("heading", { name: "Insight" });
     expect(heading).toBeInTheDocument();
-    expect(heading.closest("header")?.firstElementChild).toBe(heading);
+    expect(heading.closest("header")?.firstElementChild).toContainElement(heading);
     expect(screen.queryByText("Telemetry", { selector: ".page-kicker" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Insight" })).toHaveAttribute(
       "aria-current",
@@ -267,8 +267,7 @@ describe("Insight page", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
     await waitFor(() =>
       expect(listRuns).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -354,11 +353,15 @@ describe("Insight page", () => {
     const pullRequestRow = within(table)
       .getAllByRole("row")
       .find((row) => within(row).queryByText("PR #4398"));
-    expect(pullRequestRow).toHaveTextContent("github2.5 AIC");
+    if (!pullRequestRow) throw new Error("Expected the provider-attributed pull request row.");
+    const pullRequestCells = within(pullRequestRow).getAllByRole("cell");
+    expect(pullRequestCells[0]).toHaveTextContent("github · pull request");
+    expect(pullRequestCells[1]).toHaveTextContent("core");
+    expect(pullRequestCells[2]).toHaveTextContent("2.5 AIC");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
     expect(screen.getAllByText("2.5 AIC").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("42 AIC estimated").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("42 AIC").length).toBeGreaterThan(0);
     expect(
       screen.getByText("Lower bound: 2 of 3 runs and 3 of 4 attempts measured."),
     ).toBeInTheDocument();
@@ -366,19 +369,16 @@ describe("Insight page", () => {
       screen.getByText("Complete coverage: 2 runs and 2 attempts measured."),
     ).toBeInTheDocument();
     expect(screen.getByText("gpt-5.6-sol: 2.5 AIC · 3/3 attempts")).toBeInTheDocument();
-    expect(screen.getByText("claude-sonnet: 42 AIC estimated · 2/2 attempts")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet: 42 AIC · 2/2 attempts")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View 1 run for PR #4398" }));
     expect(screen.getByRole("dialog", { name: "PR #4398 runs" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "01JZ455ESCALATE" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open run 01JZ455ESCALATE" })).toHaveAttribute(
       "href",
       "#/run/01JZ455ESCALATE",
     );
     const runTable = screen.getByRole("table", { name: "PR #4398 run breakdown" });
-    expect(within(runTable).getByRole("columnheader", { name: "Gaggle / workflow" })).toBeInTheDocument();
-    expect(within(runTable).getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
-    expect(within(runTable).getByText("core")).toBeInTheDocument();
-    expect(within(runTable).getByText("implementation")).toBeInTheDocument();
-    expect(within(runTable).getByText("escalated")).toBeInTheDocument();
+    expect(within(runTable).getAllByRole("columnheader").map((header) => header.textContent))
+      .toEqual(["Run", "Started", "Attempts", "AIC", "Models"]);
     expect(
       within(runTable).getByText(
         (_, element) =>
@@ -389,14 +389,16 @@ describe("Insight page", () => {
     expect(within(runTable).getByText("3/3 measured")).toBeInTheDocument();
     expect(within(runTable).getByText("2.5 AIC")).toBeInTheDocument();
     expect(within(runTable).queryByRole("columnheader", { name: "Normalized" })).not.toBeInTheDocument();
-    expect(within(runTable).getByText("ai_credits")).toBeInTheDocument();
+    expect(within(runTable).getByText("Model not recorded")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close run list" }));
 
     await user.click(screen.getByRole("button", { name: "View 1 run for Issue #4398" }));
     const issueRunTable = screen.getByRole("table", { name: "Issue #4398 run breakdown" });
-    expect(within(issueRunTable).getByText("Unknown gaggle")).toBeInTheDocument();
-    expect(within(issueRunTable).getByText("Workflow unavailable")).toBeInTheDocument();
-    expect(within(issueRunTable).getByText("Status unavailable")).toBeInTheDocument();
+    expect(within(issueRunTable).getByRole("link", { name: "Open run 01JZ400FAILED" }))
+      .toHaveAttribute("href", "#/run/01JZ400FAILED");
+    expect(within(issueRunTable).getByText("42 AIC")).toBeInTheDocument();
+    expect(within(issueRunTable).getByText("2/2 measured")).toBeInTheDocument();
+    expect(within(issueRunTable).getByText("Model not recorded")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close run list" }));
 
     let rows = within(table).getAllByRole("row").slice(1);
@@ -414,11 +416,11 @@ describe("Insight page", () => {
       "ascending",
     );
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "pr");
+    await user.click(screen.getByRole("button", { name: "pull requests" }));
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.queryByText("Issue #4398")).not.toBeInTheDocument();
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "all");
+    await user.click(screen.getByRole("button", { name: "all" }));
     await user.type(screen.getByRole("searchbox", { name: "Filter" }), "claude-sonnet");
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
     expect(screen.queryByText("PR #4398")).not.toBeInTheDocument();
@@ -955,8 +957,7 @@ describe("Insight page", () => {
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
     expect(window.location.hash).toContain("window=24h");
 
     await user.click(screen.getByRole("button", { name: "Cost" }));

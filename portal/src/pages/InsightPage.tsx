@@ -1,3 +1,7 @@
+import { PageHeading, SectionHeading } from "../ui/Heading";
+import { Timestamp } from "../ui/Timestamp";
+import { FilterField, FilterOption, FilterOptions } from "../ui/Filters";
+import { Action } from "../ui/Action";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   DaemonClient,
@@ -93,7 +97,9 @@ export function InsightPage({
     return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
+    return (
+      <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
+    );
   }
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
@@ -106,10 +112,7 @@ export function InsightPage({
   const view = deriveInsightViewModel(requestedScope, snapshot);
   return (
     <>
-      <header className="page-heading">
-        <h1>Insight</h1>
-        <p>Run outcomes, usage, and latency.</p>
-      </header>
+      <PageHeading title="Insight" className="" description="Run outcomes, usage, and latency." />
 
       <InsightFilters
         label="Insight filters"
@@ -179,86 +182,81 @@ function InsightContent({
         </section>
       ) : (
         <>
-      {hasOutcomes && (
-        <section className="content-section">
-          <div className="section-heading">
-            <div>
-              <h2>Success and failure</h2>
-            </div>
-            <span className="section-count">Terminal outcomes exclude other states</span>
-          </div>
-          <div className="data-table-shell insight-outcomes">
-            <div aria-hidden="true" className="data-table-header insight-outcome-header">
-              <span>Scope</span>
-              <span>Success rate</span>
-              <span>Succeeded</span>
-              <span>Failed</span>
-              <span>Other</span>
-              <span>Total</span>
-            </div>
-            {summary && <OutcomeRow emphasis metric={summary} />}
-            {breakdown.map((metric) => (
-              <OutcomeRow key={`${metric.unit}:${metric.label}`} metric={metric} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {curationHealth && (
-        <CurationHealth
-          curation={curationHealth.curation}
-          readyPool={curationHealth.readyPool}
-        />
-      )}
-
-      {creditAssignment.length > 0 && (
-        <InsightReportSection title="Highest-contributing nodes">
-          <CreditAssignment credits={creditAssignment} filters={filters} />
-        </InsightReportSection>
-      )}
-
-      {usage && (
-        <InsightReportSection title="Tokens and retry waste">
-          <UsageAnalytics
-            filters={filters}
-            mode="insight"
-            totalRuns={summary?.unit === "runs" ? summary.total : undefined}
-            usage={usage}
-          />
-        </InsightReportSection>
-      )}
-
-      <InsightReportSection title="Failure reasons">
-        <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
-      </InsightReportSection>
-
-      {(hasOutcomes || stages.length > 0) && (
-        <InsightReportSection title="Slowest stages">
-          {stages.length === 0 ? (
-            <p className="inline-empty">No stage duration samples in this scope.</p>
-          ) : (
-            <StageDistributions filters={filters} stages={stages} />
+          {hasOutcomes && (
+            <section className="content-section">
+              <SectionHeading
+                title="Success and failure"
+                className=""
+                actions={
+                  <>
+                    <span className="section-count">Terminal outcomes exclude other states</span>
+                  </>
+                }
+              />
+              <div className="data-table-shell insight-outcomes">
+                <div aria-hidden="true" className="data-table-header insight-outcome-header">
+                  <span>Scope</span>
+                  <span>Success rate</span>
+                  <span>Succeeded</span>
+                  <span>Failed</span>
+                  <span>Other</span>
+                  <span>Total</span>
+                </div>
+                {summary && <OutcomeRow emphasis metric={summary} />}
+                {breakdown.map((metric) => (
+                  <OutcomeRow key={`${metric.unit}:${metric.label}`} metric={metric} />
+                ))}
+              </div>
+            </section>
           )}
-        </InsightReportSection>
-      )}
+
+          {curationHealth && (
+            <CurationHealth
+              curation={curationHealth.curation}
+              readyPool={curationHealth.readyPool}
+            />
+          )}
+
+          {creditAssignment.length > 0 && (
+            <InsightReportSection title="Highest-contributing nodes">
+              <CreditAssignment credits={creditAssignment} filters={filters} />
+            </InsightReportSection>
+          )}
+
+          {usage && (
+            <InsightReportSection title="Tokens and retry waste">
+              <UsageAnalytics
+                filters={filters}
+                mode="insight"
+                totalRuns={summary?.unit === "runs" ? summary.total : undefined}
+                usage={usage}
+              />
+            </InsightReportSection>
+          )}
+
+          <InsightReportSection title="Failure reasons">
+            <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
+          </InsightReportSection>
+
+          {(hasOutcomes || stages.length > 0) && (
+            <InsightReportSection title="Slowest stages">
+              {stages.length === 0 ? (
+                <p className="inline-empty">No stage duration samples in this scope.</p>
+              ) : (
+                <StageDistributions filters={filters} stages={stages} />
+              )}
+            </InsightReportSection>
+          )}
         </>
       )}
     </>
   );
 }
 
-function InsightReportSection({
-  children,
-  title,
-}: {
-  children: React.ReactNode;
-  title: string;
-}) {
+function InsightReportSection({ children, title }: { children: React.ReactNode; title: string }) {
   return (
     <section className="content-section insight-report-section">
-      <div className="section-heading">
-        <h2>{title}</h2>
-      </div>
+      <SectionHeading title={title} className="" />
       {children}
     </section>
   );
@@ -277,7 +275,10 @@ function CreditAssignment({
     <>
       <p className="usage-description">Failure, escalation, and retry-waste contributors.</p>
       <div className="data-table-shell insight-outcomes">
-        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header data-table-header">
+        <div
+          aria-hidden="true"
+          className="credit-assignment-row credit-assignment-header data-table-header"
+        >
           <span>Node</span>
           <span>Failure share</span>
           <span>Failures</span>
@@ -302,7 +303,8 @@ function CreditAssignment({
             <span className="distribution-name">
               <strong>{credit.stage}</strong>
               <small>
-                {credit.kind} · {credit.gaggle} / {credit.workflow} · {credit.routedRuns} routed runs
+                {credit.kind} · {credit.gaggle} / {credit.workflow} · {credit.routedRuns} routed
+                runs
               </small>
             </span>
             <strong>{formatRate(credit.failureShare)}</strong>
@@ -312,7 +314,11 @@ function CreditAssignment({
           </a>
         ))}
         {credits.length > INITIAL_DETAIL_ROWS && (
-          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+          <button
+            className="data-table-disclosure"
+            onClick={() => setShowAll((value) => !value)}
+            type="button"
+          >
             {showAll ? "Show fewer contributors" : `View all ${credits.length} contributors`}
           </button>
         )}
@@ -331,11 +337,7 @@ function CurationHealth({
   const depth = readyPool.depth;
   return (
     <section className="content-section">
-      <div className="section-heading">
-        <div>
-          <h2>Ready-pool health</h2>
-        </div>
-      </div>
+      <SectionHeading title="Ready-pool health" className="" />
       <dl className="curation-health">
         <div>
           <dt>Ready depth</dt>
@@ -356,7 +358,9 @@ function CurationHealth({
           <dd>{formatSeconds(readyPool.averageClaimAgeSeconds, true)}</dd>
         </div>
         <div>
-          <dt title="Time since claim for implementation items currently in progress">In flight now</dt>
+          <dt title="Time since claim for implementation items currently in progress">
+            In flight now
+          </dt>
           <dd>
             {readyPool.inFlightClaimSamples === 0
               ? "0"
@@ -462,7 +466,11 @@ function FailureReasonRows({ snapshot }: { snapshot: InsightErrorSignaturesSnaps
           />
         ))}
         {items.length > INITIAL_DETAIL_ROWS && (
-          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+          <button
+            className="data-table-disclosure"
+            onClick={() => setShowAll((value) => !value)}
+            type="button"
+          >
             {showAll ? "Show fewer failure reasons" : `View all ${items.length} failure reasons`}
           </button>
         )}
@@ -496,7 +504,7 @@ function FailureReasonRow({
       </span>
       <span className="error-class-label">{errorClass}</span>
       <strong className="error-signature-count">{signature.count}</strong>
-      <time dateTime={signature.lastSeen}>{formatTimestamp(signature.lastSeen)}</time>
+      <Timestamp value={signature.lastSeen} />
       <span className="error-signature-example">{example}</span>
       <Icon name="chevron" size={15} />
     </>
@@ -530,7 +538,9 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
   const failureWidth = terminal > 0 ? (metric.failed / terminal) * 100 : 0;
   return (
     <div
-      className={emphasis ? "insight-outcome-row insight-outcome-row-summary" : "insight-outcome-row"}
+      className={
+        emphasis ? "insight-outcome-row insight-outcome-row-summary" : "insight-outcome-row"
+      }
     >
       <span className="insight-scope-label">
         <strong>{metric.label}</strong>
@@ -617,7 +627,15 @@ export function UsageAnalytics({
   const metric = (name: string, value: string, href?: string, ariaLabel?: string) => (
     <div>
       <dt>{name}</dt>
-      <dd>{href ? <a aria-label={ariaLabel} className="usage-summary-link" href={href}>{value}</a> : value}</dd>
+      <dd>
+        {href ? (
+          <a aria-label={ariaLabel} className="usage-summary-link" href={href}>
+            {value}
+          </a>
+        ) : (
+          value
+        )}
+      </dd>
     </div>
   );
   return (
@@ -627,23 +645,40 @@ export function UsageAnalytics({
       role="group"
     >
       <div className="cost-usage-panels">
-        <dl className={`cost-usage-spend${totalRuns !== undefined ? " cost-usage-spend-with-runs" : ""}`}>
+        <dl
+          className={`cost-usage-spend${totalRuns !== undefined ? " cost-usage-spend-with-runs" : ""}`}
+        >
           {cost && metric("Total cost", formatMeasuredAIC(usage.costAIC))}
-          {totalRuns !== undefined && (
-            metric("Total runs", totalRuns.toLocaleString())
+          {totalRuns !== undefined && metric("Total runs", totalRuns.toLocaleString())}
+          {metric(
+            "P50 / stage attempt",
+            formatUsage(cost ? usage.p50CostAIC : usage.p50Tokens),
+            cost ? undefined : tokenHref,
+            `View P50 token usage runs behind ${label}`,
           )}
-          {metric("P50 / stage attempt", formatUsage(cost ? usage.p50CostAIC : usage.p50Tokens),
-            cost ? undefined : tokenHref, `View P50 token usage runs behind ${label}`)}
-          {metric("P95 / stage attempt", formatUsage(cost ? usage.p95CostAIC : usage.p95Tokens),
-            cost ? undefined : tokenHref, `View P95 token usage runs behind ${label}`)}
+          {metric(
+            "P95 / stage attempt",
+            formatUsage(cost ? usage.p95CostAIC : usage.p95Tokens),
+            cost ? undefined : tokenHref,
+            `View P95 token usage runs behind ${label}`,
+          )}
         </dl>
         <div className="cost-usage-waste">
           <dl>
-            {metric("Superseded attempts", usage.retryWasteAttempts.toLocaleString(),
-              cost ? undefined : wasteHref, `View superseded stage attempts behind ${label}`)}
-            {metric(cost ? "Retry waste cost" : "Retry waste tokens",
-              usage.retryWasteAttempts === 0 ? "No retry waste" : formatUsage(cost ? usage.retryWasteCostAIC : usage.retryWasteTokens),
-              cost ? undefined : wasteHref, `View retry-waste runs behind ${label}`)}
+            {metric(
+              "Superseded attempts",
+              usage.retryWasteAttempts.toLocaleString(),
+              cost ? undefined : wasteHref,
+              `View superseded stage attempts behind ${label}`,
+            )}
+            {metric(
+              cost ? "Retry waste cost" : "Retry waste tokens",
+              usage.retryWasteAttempts === 0
+                ? "No retry waste"
+                : formatUsage(cost ? usage.retryWasteCostAIC : usage.retryWasteTokens),
+              cost ? undefined : wasteHref,
+              `View retry-waste runs behind ${label}`,
+            )}
           </dl>
         </div>
       </div>
@@ -671,10 +706,12 @@ export function CostTrend({
       </p>
     );
   }
-  const data = costTrend.status === "ready" || costTrend.status === "stale" ? costTrend.data : undefined;
+  const data =
+    costTrend.status === "ready" || costTrend.status === "stale" ? costTrend.data : undefined;
   const points = data?.points ?? [];
   const hasSamples = points.some((point) => (point.usage?.costSamples ?? 0) > 0);
-  const error = costTrend.status === "error" || costTrend.status === "stale" ? costTrend.error : undefined;
+  const error =
+    costTrend.status === "error" || costTrend.status === "stale" ? costTrend.error : undefined;
   const unavailable = error && isMissingCostCapability(error);
   const loading = costTrend.status === "loading";
 
@@ -704,7 +741,9 @@ export function CostTrend({
       </div>
       <div className="usage-trend-heading">
         <h3>Cost over time</h3>
-        <p className="usage-trend-note">Total cost per 24-hour day in the selected rolling window.</p>
+        <p className="usage-trend-note">
+          Total cost per 24-hour day in the selected rolling window.
+        </p>
       </div>
       {hasSamples ? (
         <CostTrendSparkline points={points} window={window} />
@@ -755,11 +794,17 @@ function CostTrendSparkline({
     };
   });
   const totalMax = Math.max(...chartPoints.map((point) => point.dailyCost ?? 0), 0.0001);
-  const percentileMax = Math.max(...chartPoints.flatMap((point) => [point.p50 ?? 0, point.p95 ?? 0]), 0.0001);
+  const percentileMax = Math.max(
+    ...chartPoints.flatMap((point) => [point.p50 ?? 0, point.p95 ?? 0]),
+    0.0001,
+  );
   const baseline = margin.top + plotHeight;
   const plottedPoints = chartPoints.map((point) => ({
     ...point,
-    totalY: point.dailyCost === undefined ? undefined : baseline - (point.dailyCost / totalMax) * plotHeight,
+    totalY:
+      point.dailyCost === undefined
+        ? undefined
+        : baseline - (point.dailyCost / totalMax) * plotHeight,
     p50Y: point.p50 === undefined ? undefined : baseline - (point.p50 / percentileMax) * plotHeight,
     p95Y: point.p95 === undefined ? undefined : baseline - (point.p95 / percentileMax) * plotHeight,
   }));
@@ -775,139 +820,197 @@ function CostTrendSparkline({
     const mark = target.getBoundingClientRect();
     setTooltip({
       since,
-      day: new Date(since).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      day: formatDateTime(since, "date"),
       name,
       value,
-      x: (mark.left + mark.width / 2 - plot.left) / Math.max(1, plot.width) * 100,
-      y: (mark.top - plot.top) / Math.max(1, plot.height) * 100,
+      x: ((mark.left + mark.width / 2 - plot.left) / Math.max(1, plot.width)) * 100,
+      y: ((mark.top - plot.top) / Math.max(1, plot.height)) * 100,
     });
   };
 
   return (
-    <div className="usage-trend-chart" onKeyDown={(event) => {
-      if (event.key === "Escape") setTooltip(undefined);
-    }}>
-      <div className="usage-trend-plot-wrap" onMouseLeave={() => setTooltip(undefined)} ref={plotRef}>
-      <svg
-        aria-label={sparklineAriaLabel(points)}
-        className="usage-trend-chart-plot"
-        role="img"
-        viewBox={`0 0 ${width} ${height}`}
+    <div
+      className="usage-trend-chart"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") setTooltip(undefined);
+      }}
+    >
+      <div
+        className="usage-trend-plot-wrap"
+        onMouseLeave={() => setTooltip(undefined)}
+        ref={plotRef}
       >
-        <text className="usage-trend-axis-title" x={margin.left} y="16">Total / day (AIC)</text>
-        <text className="usage-trend-axis-title" textAnchor="end" x={width - margin.right} y="16">P50 / P95 per attempt (AIC)</text>
-        {yTicks.map((fraction) => {
-          const y = baseline - fraction * plotHeight;
-          return (
-            <g className="usage-trend-gridline" key={fraction}>
-              <line x1={margin.left} x2={width - margin.right} y1={y} y2={y} />
-              <text x={margin.left - 10} y={y + 4}>
-                {formatMeasuredAIC(totalMax * fraction)}
-              </text>
-              <text className="usage-trend-secondary-tick" x={width - margin.right + 10} y={y + 4}>
-                {formatMeasuredAIC(percentileMax * fraction)}
-              </text>
-            </g>
-          );
-        })}
-        {plottedPoints.map((point) => {
-          const { dailyCost, totalY } = point;
-          if (dailyCost === undefined || totalY === undefined) return null;
-          return (
-          <rect
-            aria-describedby={tooltip?.since === point.since && tooltip.name === "Total per day" ? tooltipId : undefined}
-            aria-label={`Total per day: ${formatMeasuredAIC(point.dailyCost)}`}
-            className="usage-trend-bar"
-            height={baseline - totalY}
-            key={point.since}
-            onBlur={() => setTooltip(undefined)}
-            onFocus={(event) => showTooltip(point.since, "Total per day", dailyCost, event.currentTarget)}
-            onMouseEnter={(event) => showTooltip(point.since, "Total per day", dailyCost, event.currentTarget)}
-            onMouseLeave={() => setTooltip(undefined)}
-            tabIndex={0}
-            width={barWidth}
-            x={point.x - barWidth / 2}
-            y={totalY}
-          />
-          );
-        })}
-        {series.map(({ key, name }) => (
-          <g key={key}>
-            <path className={`usage-trend-line usage-trend-line-${key}`} d={costLinePath(
-              plottedPoints.map((point) => ({ x: point.x, y: key === "p50" ? point.p50Y : point.p95Y })),
-            )} />
-            {plottedPoints.map((point) => {
-              const y = key === "p50" ? point.p50Y : point.p95Y;
-              const value = point[key];
-              if (y === undefined || value === undefined) return null;
-              return (
-            <g key={point.since}>
-              <circle className={`usage-trend-point usage-trend-point-${key}`} cx={point.x} cy={y} r="3" />
-              <circle
-                aria-describedby={tooltip?.since === point.since && tooltip.name === name ? tooltipId : undefined}
-                aria-label={`${name}: ${formatMeasuredAIC(value)}`}
-                className="usage-trend-hit-target"
-                cx={point.x}
-                cy={y}
-                onBlur={() => setTooltip(undefined)}
-                onFocus={(event) => showTooltip(point.since, name, value, event.currentTarget)}
-                onMouseEnter={(event) => showTooltip(point.since, name, value, event.currentTarget)}
-                onMouseLeave={() => setTooltip(undefined)}
-                r="10"
-                tabIndex={0}
-              />
-            </g>
-              );
-            })}
-          </g>
-        ))}
-        {[margin.left, width - margin.right].map((x) => (
-          <line className="usage-trend-axis" key={x} x1={x} x2={x} y1={margin.top} y2={baseline} />
-        ))}
-        <line
-          className="usage-trend-axis"
-          x1={margin.left}
-          x2={width - margin.right}
-          y1={baseline}
-          y2={baseline}
-        />
-        {xTickIndexes.map((index) => {
-          const point = chartPoints[index];
-          return point ? (
-            <text
-              className="usage-trend-x-label"
-              key={point.since}
-              textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}
-              x={point.x}
-              y={height - 15}
-            >
-              {formatBucketTick(point.since, window)}
-            </text>
-          ) : null;
-        })}
-      </svg>
-      {tooltip && (
-        <div
-          className="usage-trend-tooltip"
-          id={tooltipId}
-          role="tooltip"
-          style={{
-            left: `${Math.min(80, Math.max(20, tooltip.x))}%`,
-            top: `${tooltip.y}%`,
-          }}
+        <svg
+          aria-label={sparklineAriaLabel(points)}
+          className="usage-trend-chart-plot"
+          role="img"
+          viewBox={`0 0 ${width} ${height}`}
         >
-          <span className="usage-trend-tooltip-day">{tooltip.day}</span>
-          <span className="usage-trend-tooltip-value">
-            <span>{tooltip.name}</span>
-            <strong>{formatMeasuredAIC(tooltip.value)}</strong>
-          </span>
-        </div>
-      )}
+          <text className="usage-trend-axis-title" x={margin.left} y="16">
+            Total / day (AIC)
+          </text>
+          <text className="usage-trend-axis-title" textAnchor="end" x={width - margin.right} y="16">
+            P50 / P95 per attempt (AIC)
+          </text>
+          {yTicks.map((fraction) => {
+            const y = baseline - fraction * plotHeight;
+            return (
+              <g className="usage-trend-gridline" key={fraction}>
+                <line x1={margin.left} x2={width - margin.right} y1={y} y2={y} />
+                <text x={margin.left - 10} y={y + 4}>
+                  {formatMeasuredAIC(totalMax * fraction)}
+                </text>
+                <text
+                  className="usage-trend-secondary-tick"
+                  x={width - margin.right + 10}
+                  y={y + 4}
+                >
+                  {formatMeasuredAIC(percentileMax * fraction)}
+                </text>
+              </g>
+            );
+          })}
+          {plottedPoints.map((point) => {
+            const { dailyCost, totalY } = point;
+            if (dailyCost === undefined || totalY === undefined) return null;
+            return (
+              <rect
+                aria-describedby={
+                  tooltip?.since === point.since && tooltip.name === "Total per day"
+                    ? tooltipId
+                    : undefined
+                }
+                aria-label={`Total per day: ${formatMeasuredAIC(point.dailyCost)}`}
+                className="usage-trend-bar"
+                height={baseline - totalY}
+                key={point.since}
+                onBlur={() => setTooltip(undefined)}
+                onFocus={(event) =>
+                  showTooltip(point.since, "Total per day", dailyCost, event.currentTarget)
+                }
+                onMouseEnter={(event) =>
+                  showTooltip(point.since, "Total per day", dailyCost, event.currentTarget)
+                }
+                onMouseLeave={() => setTooltip(undefined)}
+                tabIndex={0}
+                width={barWidth}
+                x={point.x - barWidth / 2}
+                y={totalY}
+              />
+            );
+          })}
+          {series.map(({ key, name }) => (
+            <g key={key}>
+              <path
+                className={`usage-trend-line usage-trend-line-${key}`}
+                d={costLinePath(
+                  plottedPoints.map((point) => ({
+                    x: point.x,
+                    y: key === "p50" ? point.p50Y : point.p95Y,
+                  })),
+                )}
+              />
+              {plottedPoints.map((point) => {
+                const y = key === "p50" ? point.p50Y : point.p95Y;
+                const value = point[key];
+                if (y === undefined || value === undefined) return null;
+                return (
+                  <g key={point.since}>
+                    <circle
+                      className={`usage-trend-point usage-trend-point-${key}`}
+                      cx={point.x}
+                      cy={y}
+                      r="3"
+                    />
+                    <circle
+                      aria-describedby={
+                        tooltip?.since === point.since && tooltip.name === name
+                          ? tooltipId
+                          : undefined
+                      }
+                      aria-label={`${name}: ${formatMeasuredAIC(value)}`}
+                      className="usage-trend-hit-target"
+                      cx={point.x}
+                      cy={y}
+                      onBlur={() => setTooltip(undefined)}
+                      onFocus={(event) =>
+                        showTooltip(point.since, name, value, event.currentTarget)
+                      }
+                      onMouseEnter={(event) =>
+                        showTooltip(point.since, name, value, event.currentTarget)
+                      }
+                      onMouseLeave={() => setTooltip(undefined)}
+                      r="10"
+                      tabIndex={0}
+                    />
+                  </g>
+                );
+              })}
+            </g>
+          ))}
+          {[margin.left, width - margin.right].map((x) => (
+            <line
+              className="usage-trend-axis"
+              key={x}
+              x1={x}
+              x2={x}
+              y1={margin.top}
+              y2={baseline}
+            />
+          ))}
+          <line
+            className="usage-trend-axis"
+            x1={margin.left}
+            x2={width - margin.right}
+            y1={baseline}
+            y2={baseline}
+          />
+          {xTickIndexes.map((index) => {
+            const point = chartPoints[index];
+            return point ? (
+              <text
+                className="usage-trend-x-label"
+                key={point.since}
+                textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}
+                x={point.x}
+                y={height - 15}
+              >
+                {formatBucketTick(point.since, window)}
+              </text>
+            ) : null;
+          })}
+        </svg>
+        {tooltip && (
+          <div
+            className="usage-trend-tooltip"
+            id={tooltipId}
+            role="tooltip"
+            style={{
+              left: `${Math.min(80, Math.max(20, tooltip.x))}%`,
+              top: `${tooltip.y}%`,
+            }}
+          >
+            <span className="usage-trend-tooltip-day">{tooltip.day}</span>
+            <span className="usage-trend-tooltip-value">
+              <span>{tooltip.name}</span>
+              <strong>{formatMeasuredAIC(tooltip.value)}</strong>
+            </span>
+          </div>
+        )}
       </div>
       <div aria-label="Cost chart legend" className="usage-trend-legend" role="list">
-        <span role="listitem"><i aria-hidden="true" className="usage-trend-key usage-trend-key-total" />Total per day (AIC, left axis)</span>
-        <span role="listitem"><i aria-hidden="true" className="usage-trend-key usage-trend-key-p50" />P50 per attempt (AIC, right axis)</span>
-        <span role="listitem"><i aria-hidden="true" className="usage-trend-key usage-trend-key-p95" />P95 per attempt (AIC, right axis)</span>
+        <span role="listitem">
+          <i aria-hidden="true" className="usage-trend-key usage-trend-key-total" />
+          Total per day (AIC, left axis)
+        </span>
+        <span role="listitem">
+          <i aria-hidden="true" className="usage-trend-key usage-trend-key-p50" />
+          P50 per attempt (AIC, right axis)
+        </span>
+        <span role="listitem">
+          <i aria-hidden="true" className="usage-trend-key usage-trend-key-p95" />
+          P95 per attempt (AIC, right axis)
+        </span>
       </div>
     </div>
   );
@@ -915,15 +1018,17 @@ function CostTrendSparkline({
 
 function costLinePath(points: { x: number; y: number | undefined }[]): string {
   let previousMeasured = false;
-  return points.map(({ x, y }) => {
-    if (y === undefined) {
-      previousMeasured = false;
-      return "";
-    }
-    const command = previousMeasured ? "L" : "M";
-    previousMeasured = true;
-    return `${command} ${x} ${y}`;
-  }).join(" ");
+  return points
+    .map(({ x, y }) => {
+      if (y === undefined) {
+        previousMeasured = false;
+        return "";
+      }
+      const command = previousMeasured ? "L" : "M";
+      previousMeasured = true;
+      return `${command} ${x} ${y}`;
+    })
+    .join(" ");
 }
 
 function sparklineAriaLabel(
@@ -943,10 +1048,7 @@ function formatBucketLabel(since: string, until: string): string {
 }
 
 function formatBucketTick(since: string, window: InsightWindow): string {
-  const date = new Date(since);
-  return window === "24h"
-    ? date.toLocaleTimeString("en-US", { hour: "numeric" })
-    : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatDateTime(since, window === "24h" ? "hour" : "date");
 }
 
 function CostTrendComparison({
@@ -1031,18 +1133,18 @@ export function ExternalCostBreakdown({
   const runsDialog = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!openRuns) return;
-    const previousFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : undefined;
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     runsDialog.current?.querySelector<HTMLButtonElement>(".dialog-close")?.focus();
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpenRuns(undefined);
       if (event.key !== "Tab") return;
-      const controls = [...(runsDialog.current?.querySelectorAll<HTMLElement>(
-        "button, a[href], [tabindex='0']",
-      ) ?? [])];
+      const controls = [
+        ...(runsDialog.current?.querySelectorAll<HTMLElement>("button, a[href], [tabindex='0']") ??
+          []),
+      ];
       const first = controls[0];
       const last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) {
@@ -1073,20 +1175,14 @@ export function ExternalCostBreakdown({
   );
   const selectSort = (nextSortKey: ExternalCostSortKey) => {
     if (nextSortKey === sortKey) {
-      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
       return;
     }
     setSortKey(nextSortKey);
-    setSortDirection(
-      nextSortKey === "work-item" || nextSortKey === "gaggle" ? "asc" : "desc",
-    );
+    setSortDirection(nextSortKey === "work-item" || nextSortKey === "gaggle" ? "asc" : "desc");
   };
   const sortHeading = (label: string, key: ExternalCostSortKey) => (
-    <button
-      className="external-cost-sort-heading"
-      onClick={() => selectSort(key)}
-      type="button"
-    >
+    <button className="external-cost-sort-heading" onClick={() => selectSort(key)} type="button">
       {label}
       {sortKey === key && <span aria-hidden="true">{sortDirection === "asc" ? "↑" : "↓"}</span>}
     </button>
@@ -1140,119 +1236,175 @@ export function ExternalCostBreakdown({
         <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
       ) : (
         <>
-          <div aria-label="Cost work item filters" className="filter-bar external-cost-controls" role="group">
-            {([
-              ["all", "all"],
-              ["pull requests", "pr"],
-              ["issues", "issue"],
-            ] as const).map(([label, value]) => (
-              <button
-                aria-pressed={kind === value}
-                className={kind === value ? "filter-button filter-button-active" : "filter-button"}
+          <FilterOptions
+            label="Cost work item filters"
+            className="filter-bar external-cost-controls"
+          >
+            {(
+              [
+                ["all", "all"],
+                ["pull requests", "pr"],
+                ["issues", "issue"],
+              ] as const
+            ).map(([label, value]) => (
+              <FilterOption
+                selected={kind === value}
                 key={value}
                 onClick={() => setKind(value)}
                 type="button"
               >
                 {label}
-              </button>
+              </FilterOption>
             ))}
-            <label className="filter-search external-cost-filter-field">
-              <span>Filter</span>
+            <FilterField
+              kind="search"
+              label="Filter"
+              className="filter-search external-cost-filter-field"
+            >
               <input
                 onChange={(event) => setFilter(event.target.value)}
                 placeholder="PR, issue, gaggle, model, or run"
                 type="search"
                 value={filter}
               />
-            </label>
-          </div>
+            </FilterField>
+          </FilterOptions>
           {visibleRows.length === 0 ? (
             <p className="inline-empty">No attributed costs match the current filters.</p>
           ) : (
             <>
-              <div
-                aria-label="Attributed costs comparison"
-                className="data-table-shell external-cost-table-wrap"
-                role="region"
+              <TableShell
+                ariaLabel="Attributed costs comparison"
+                className="external-cost-table-wrap"
                 tabIndex={0}
               >
                 <div aria-label="Attributed costs" className="external-cost-table" role="table">
-                  <div className="data-table-header external-cost-grid external-cost-header" role="row">
-                    <span aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                  <div
+                    className="data-table-header external-cost-grid external-cost-header"
+                    role="row"
+                  >
+                    <span
+                      aria-sort={
+                        sortKey === "work-item"
+                          ? sortDirection === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                      role="columnheader"
+                    >
                       {sortHeading("Work item", "work-item")}
                     </span>
-                    <span aria-sort={sortKey === "gaggle" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                    <span
+                      aria-sort={
+                        sortKey === "gaggle"
+                          ? sortDirection === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                      role="columnheader"
+                    >
                       {sortHeading("Gaggle", "gaggle")}
                     </span>
-                    <span aria-sort={sortKey === "aic" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                    <span
+                      aria-sort={
+                        sortKey === "aic"
+                          ? sortDirection === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                      role="columnheader"
+                    >
                       {sortHeading("AIC", "aic")}
                     </span>
-                    <span aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                    <span
+                      aria-sort={
+                        sortKey === "runs"
+                          ? sortDirection === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                      role="columnheader"
+                    >
                       {sortHeading("Runs / models", "runs")}
                     </span>
                   </div>
                   {visibleRows.map((row) => (
                     <div className="external-cost-grid external-cost-row" key={row.key} role="row">
                       <span className="work-item-identity external-cost-item" role="cell">
-                          {row.repository ? (
-                            <a
-                              className="data-table-link data-table-primary"
-                              href={routeHash({
-                                page: "work-items",
-                                provider: row.provider,
-                                repository: row.repository,
-                                kind: row.externalKind,
-                                id: row.externalId,
-                              })}
-                            >
-                              {row.label}
-                            </a>
-                          ) : (
-                            <strong className="data-table-primary">{row.label}</strong>
-                          )}
-                          <small className="data-table-meta">
-                            {row.provider} · {row.externalKind === "pr" ? "pull request" : "issue"}
-                          </small>
+                        {row.repository ? (
+                          <a
+                            className="data-table-link data-table-primary"
+                            href={routeHash({
+                              page: "work-items",
+                              provider: row.provider,
+                              repository: row.repository,
+                              kind: row.externalKind,
+                              id: row.externalId,
+                            })}
+                          >
+                            {row.label}
+                          </a>
+                        ) : (
+                          <strong className="data-table-primary">{row.label}</strong>
+                        )}
+                        <small className="data-table-meta">
+                          {row.provider} · {row.externalKind === "pr" ? "pull request" : "issue"}
+                        </small>
                       </span>
                       <span className="external-cost-gaggle" role="cell">
                         {externalCostGaggles(row).join(", ") || "Unknown gaggle"}
                       </span>
                       <span className="external-cost-values" role="cell">
                         <strong className="data-table-number">{row.aic}</strong>
-                        <small className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}>
+                        <small
+                          className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}
+                        >
                           {row.coverage}
                         </small>
                       </span>
                       <span className="external-cost-runs" role="cell">
-                          {row.models.length > 0 ? (
-                            <ul
-                              className="external-cost-models"
-                              aria-label={`${row.label} model breakdown`}
-                            >
-                              {row.models.map((model) => <li key={model}>{model}</li>)}
-                            </ul>
-                          ) : <small className="data-table-meta">Model not recorded</small>}
-                          {row.runs.length > 0 && (
-                            <button
-                              aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
-                              className="text-button run-link-action external-cost-runs-button"
-                              onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
-                              type="button"
-                            >
-                              {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
-                            </button>
-                          )}
+                        {row.models.length > 0 ? (
+                          <ul
+                            className="external-cost-models"
+                            aria-label={`${row.label} model breakdown`}
+                          >
+                            {row.models.map((model) => (
+                              <li key={model}>{model}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <small className="data-table-meta">Model not recorded</small>
+                        )}
+                        {row.runs.length > 0 && (
+                          <Action
+                            variant="text"
+                            size="compact"
+                            aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
+                            className="text-button run-link-action external-cost-runs-button"
+                            onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
+                            type="button"
+                          >
+                            {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
+                          </Action>
+                        )}
                       </span>
                     </div>
                   ))}
                 </div>
-              </div>
+              </TableShell>
             </>
           )}
           {openRuns && (
-            <div className="artifact-dialog-backdrop" onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setOpenRuns(undefined);
-            }}>
+            <div
+              className="artifact-dialog-backdrop"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setOpenRuns(undefined);
+              }}
+            >
               <section
                 aria-labelledby="external-cost-runs-title"
                 aria-modal="true"
@@ -1271,48 +1423,39 @@ export function ExternalCostBreakdown({
                     <Icon name="close" size={16} />
                   </button>
                 </header>
-                <div
-                  aria-label={`${openRuns.label} run comparison`}
-                  className="data-table-shell external-cost-run-table-wrap"
-                  role="region"
-                  tabIndex={0}
+                <DataTable
+                  ariaLabel={`${openRuns.label} run breakdown`}
+                  shellLabel={`${openRuns.label} run comparison`}
+                  shellClassName="external-cost-run-table-wrap"
+                  className="external-cost-run-table"
+                  columns={["Run", "Started", "Attempts", "AIC", "Models"]}
                 >
-                  <table aria-label={`${openRuns.label} run breakdown`} className="external-cost-run-table">
-                    <thead className="data-table-header">
-                      <tr>
-                        <th scope="col">Run</th>
-                        <th scope="col">Started</th>
-                        <th scope="col">Attempts</th>
-                        <th scope="col">AIC</th>
-                        <th scope="col">Models</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {openRuns.runs.map((run) => (
-                        <tr key={run.runId}>
-                          <td>
-                            <a
-                              aria-label={`Open run ${run.runId}`}
-                              href={routeHash({ page: "run", id: run.runId })}
-                              title={run.runId}
-                            >
-                              {run.runId}
-                            </a>
-                          </td>
-                          <td>
-                            <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
-                          </td>
-                          <td>{run.measuredAttempts}/{run.usageAttempts} measured</td>
-                          <td>{formatAICAmounts(run.nativeTotals, run.normalizedTotals, "Unmeasured")}</td>
-                          <td>
-                            {run.models.map((model) => model.model).join(", ") ||
-                              "Model not recorded"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                  {openRuns.runs.map((run) => (
+                    <tr key={run.runId}>
+                      <td>
+                        <a
+                          aria-label={`Open run ${run.runId}`}
+                          href={routeHash({ page: "run", id: run.runId })}
+                          title={run.runId}
+                        >
+                          {run.runId}
+                        </a>
+                      </td>
+                      <td>
+                        <Timestamp value={run.startedAt} />
+                      </td>
+                      <td>
+                        {run.measuredAttempts}/{run.usageAttempts} measured
+                      </td>
+                      <td>
+                        {formatAICAmounts(run.nativeTotals, run.normalizedTotals, "Unmeasured")}
+                      </td>
+                      <td>
+                        {run.models.map((model) => model.model).join(", ") || "Model not recorded"}
+                      </td>
+                    </tr>
+                  ))}
+                </DataTable>
               </section>
             </div>
           )}
@@ -1322,20 +1465,19 @@ export function ExternalCostBreakdown({
   );
 }
 
-function ExternalCostHeading({
-  statusMessage,
-}: {
-  statusMessage?: string;
-}) {
+function ExternalCostHeading({ statusMessage }: { statusMessage?: string }) {
   return (
-    <div className="section-heading">
-      <div>
-        <h2>Cost by pull request and issue</h2>
-      </div>
-      <div className="section-heading-meta">
-        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
-      </div>
-    </div>
+    <SectionHeading
+      title="Cost by pull request and issue"
+      className=""
+      actions={
+        <>
+          <div className="section-heading-meta">
+            {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
+          </div>
+        </>
+      }
+    />
   );
 }
 
@@ -1371,9 +1513,7 @@ export function InstanceCostRollup({
 
   return (
     <section className="content-section cost-section-stable">
-      <RollupHeading
-        statusMessage={refreshing ? "Refreshing instance spend…" : undefined}
-      />
+      <RollupHeading statusMessage={refreshing ? "Refreshing instance spend…" : undefined} />
       {costRollup.status === "stale" && costRollup.error && (
         <SectionQueryStatus
           error
@@ -1401,18 +1541,19 @@ export function InstanceCostRollup({
   );
 }
 
-function RollupHeading({
-  statusMessage,
-}: {
-  statusMessage?: string;
-}) {
+function RollupHeading({ statusMessage }: { statusMessage?: string }) {
   return (
-    <div className="section-heading">
-      <h2>Cost by gaggle</h2>
-      <div className="section-heading-meta">
-        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
-      </div>
-    </div>
+    <SectionHeading
+      title="Cost by gaggle"
+      className=""
+      actions={
+        <>
+          <div className="section-heading-meta">
+            {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
+          </div>
+        </>
+      }
+    />
   );
 }
 
@@ -1447,7 +1588,9 @@ function GaggleSpendRow({
       <span data-label="Total AIC">{formatMeasuredAIC(usage?.costAIC)}</span>
       <span data-label="P50 AIC">{formatMeasuredAIC(usage?.p50CostAIC)}</span>
       <span data-label="P95 AIC">{formatMeasuredAIC(usage?.p95CostAIC)}</span>
-      <span data-label="Measured attempts">{formatMeasuredAttemptCount(usage?.costSamples ?? 0)}</span>
+      <span data-label="Measured attempts">
+        {formatMeasuredAttemptCount(usage?.costSamples ?? 0)}
+      </span>
     </a>
   );
 }
@@ -1490,10 +1633,19 @@ function StageDistributions({
           </span>
         </div>
         {visibleStages.map((stage) => (
-          <StageDistributionRow filters={filters} key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`} scaleMax={scaleMax} stage={stage} />
+          <StageDistributionRow
+            filters={filters}
+            key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`}
+            scaleMax={scaleMax}
+            stage={stage}
+          />
         ))}
         {stages.length > INITIAL_DETAIL_ROWS && (
-          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+          <button
+            className="data-table-disclosure"
+            onClick={() => setShowAll((value) => !value)}
+            type="button"
+          >
             {showAll ? "Show fewer stages" : `View all ${stages.length} stages`}
           </button>
         )}
@@ -1513,72 +1665,66 @@ function StageDistributionRow({
 }) {
   return (
     <a
-          aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}${stage.stuckAbortedAttempts > 0 ? `, ${stage.stuckAbortedAttempts} stuck-aborted attempts excluded` : ""}`}
-          className="stage-distribution-row"
-          href={routeHash({
-            page: "runs",
-            filters: insightRunFilters(
-              filters,
-              stage.gaggle,
-              stage.workflow,
-              stage.stage,
-              "finished",
-              "measured",
-            ),
-          })}
-        >
-          <span className="distribution-name">
-            <strong>
-              {stage.gaggle} / {stage.workflow}
-            </strong>
-            <small>
-              {stage.stage} · {stage.durationSamples} samples
-              {stage.stuckAbortedAttempts > 0 && (
-                <span
-                  className="distribution-excluded"
-                  title="Attempts whose run hung and was later aborted (max-duration expiry) are excluded from these duration stats so they don't skew the range."
-                >
-                  {" "}
-                  · {stage.stuckAbortedAttempts} stuck-aborted excluded
-                </span>
-              )}
-            </small>
-          </span>
-          <DistributionPlot scaleMax={scaleMax} stage={stage} />
-          <span className="distribution-values">
-            <span>
-              <small>P50</small>
-              <strong>{formatMeasuredDuration(stage.p50DurationMs)}</strong>
+      aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}${stage.stuckAbortedAttempts > 0 ? `, ${stage.stuckAbortedAttempts} stuck-aborted attempts excluded` : ""}`}
+      className="stage-distribution-row"
+      href={routeHash({
+        page: "runs",
+        filters: insightRunFilters(
+          filters,
+          stage.gaggle,
+          stage.workflow,
+          stage.stage,
+          "finished",
+          "measured",
+        ),
+      })}
+    >
+      <span className="distribution-name">
+        <strong>
+          {stage.gaggle} / {stage.workflow}
+        </strong>
+        <small>
+          {stage.stage} · {stage.durationSamples} samples
+          {stage.stuckAbortedAttempts > 0 && (
+            <span
+              className="distribution-excluded"
+              title="Attempts whose run hung and was later aborted (max-duration expiry) are excluded from these duration stats so they don't skew the range."
+            >
+              {" "}
+              · {stage.stuckAbortedAttempts} stuck-aborted excluded
             </span>
-            <span>
-              <small>P95</small>
-              <strong>{formatMeasuredDuration(stage.p95DurationMs)}</strong>
-            </span>
-            <span>
-              <small>Min</small>
-              <strong>{formatMeasuredDuration(stage.minDurationMs)}</strong>
-            </span>
-            <span>
-              <small>Avg</small>
-              <strong>{formatMeasuredDuration(stage.avgDurationMs)}</strong>
-            </span>
-            <span>
-              <small>Max</small>
-              <strong>{formatMeasuredDuration(stage.maxDurationMs)}</strong>
-            </span>
-          </span>
-          <Icon name="chevron" size={15} />
+          )}
+        </small>
+      </span>
+      <DistributionPlot scaleMax={scaleMax} stage={stage} />
+      <span className="distribution-values">
+        <span>
+          <small>P50</small>
+          <strong>{formatMeasuredDuration(stage.p50DurationMs)}</strong>
+        </span>
+        <span>
+          <small>P95</small>
+          <strong>{formatMeasuredDuration(stage.p95DurationMs)}</strong>
+        </span>
+        <span>
+          <small>Min</small>
+          <strong>{formatMeasuredDuration(stage.minDurationMs)}</strong>
+        </span>
+        <span>
+          <small>Avg</small>
+          <strong>{formatMeasuredDuration(stage.avgDurationMs)}</strong>
+        </span>
+        <span>
+          <small>Max</small>
+          <strong>{formatMeasuredDuration(stage.maxDurationMs)}</strong>
+        </span>
+      </span>
+      <Icon name="chevron" size={15} />
     </a>
   );
 }
 
-function DistributionPlot({
-  scaleMax,
-  stage,
-}: {
-  scaleMax: number;
-  stage: TelemetryStageStats;
-}) {
+function DistributionPlot({ scaleMax, stage }: { scaleMax: number; stage: TelemetryStageStats }) {
   const position = (value: number | undefined) =>
     `${Math.min(100, Math.max(0, ((value ?? 0) / scaleMax) * 100))}%`;
   const min = stage.minDurationMs ?? 0;
@@ -1594,8 +1740,14 @@ function DistributionPlot({
         className="distribution-range"
         style={{ left: position(min), width: position(max - min) }}
       />
-      <span className="distribution-dot distribution-dot-p50" style={{ left: position(stage.p50DurationMs) }} />
-      <span className="distribution-dot distribution-dot-p95" style={{ left: position(stage.p95DurationMs) }} />
+      <span
+        className="distribution-dot distribution-dot-p50"
+        style={{ left: position(stage.p50DurationMs) }}
+      />
+      <span
+        className="distribution-dot distribution-dot-p95"
+        style={{ left: position(stage.p95DurationMs) }}
+      />
     </span>
   );
 }
@@ -1645,3 +1797,5 @@ function formatMeasuredAIC(value: number | undefined): string {
   }
   return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value)} AIC`;
 }
+import { DataTable, TableShell } from "../ui/DataTable";
+import { formatDateTime } from "../dateTime";

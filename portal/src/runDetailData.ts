@@ -226,10 +226,7 @@ export function eventNodeId(event: RunEvent, runId?: string): string | undefined
   return normalizeRunScopedId(event.artifact?.stage || event.gate, runId);
 }
 
-export function semanticStageVisits(
-  events: RunEvent[],
-  runId?: string,
-): SemanticStageVisit[] {
+export function semanticStageVisits(events: RunEvent[], runId?: string): SemanticStageVisit[] {
   const visits: SemanticStageVisit[] = [];
   const visitCounts = new Map<string, number>();
   const active = new Map<string, SemanticStageVisit>();
@@ -405,21 +402,14 @@ function repassBefore(
         event.branch === start.branch &&
         eventNodeId(event, runId) === stage,
     );
-  const relevant = previousStart
-    ? prior.filter((event) => event.seq > previousStart.seq)
-    : prior;
+  const relevant = previousStart ? prior.filter((event) => event.seq > previousStart.seq) : prior;
   const rerun = [...relevant]
     .reverse()
-    .find(
-      (event) =>
-        event.type === "stage.rerun.requested" && eventNodeId(event, runId) === stage,
-    );
+    .find((event) => event.type === "stage.rerun.requested" && eventNodeId(event, runId) === stage);
   const gate = [...relevant]
     .reverse()
     .find(
-      (event) =>
-        event.type === "gate.evaluated" &&
-        normalizeTarget(event.target, runId) === stage,
+      (event) => event.type === "gate.evaluated" && normalizeTarget(event.target, runId) === stage,
     );
   if (visit === 1 && !rerun && !gate) {
     return undefined;
@@ -447,12 +437,13 @@ function repassBefore(
       ? `${humanize(eventNodeId(gate, runId) ?? "gate")} returned ${gate.verdict ?? "a corrective verdict"}.`
       : "The stage was requested again.");
   const errorCode = failure?.error?.code?.toLowerCase() ?? "";
-  const kind =
-    /infra|network|timeout|rate|quota|worktree|runner|provider/.test(errorCode + " " + reason.toLowerCase())
-      ? "infrastructure"
-      : gate || correction
-        ? "correction"
-        : "retry";
+  const kind = /infra|network|timeout|rate|quota|worktree|runner|provider/.test(
+    errorCode + " " + reason.toLowerCase(),
+  )
+    ? "infrastructure"
+    : gate || correction
+      ? "correction"
+      : "retry";
 
   return {
     sourceStage: eventNodeId(anchor ?? failure ?? start, runId) ?? "workflow",
@@ -466,10 +457,7 @@ function normalizeTarget(target: string | undefined, runId?: string): string | u
   return normalizeRunScopedId(target, runId);
 }
 
-function normalizeRunScopedId(
-  value: string | undefined,
-  runId?: string,
-): string | undefined {
+function normalizeRunScopedId(value: string | undefined, runId?: string): string | undefined {
   if (!value) {
     return undefined;
   }
@@ -495,7 +483,12 @@ function friendlyArtifactName(name: string | undefined): string {
     return "Recorded artifact";
   }
   const leaf = name.split(/[\\/]/).at(-1) ?? name;
-  return leaf.replace(/\.[^.]+$/, "").replace(/[._-]+/g, " ").trim() || "Recorded artifact";
+  return (
+    leaf
+      .replace(/\.[^.]+$/, "")
+      .replace(/[._-]+/g, " ")
+      .trim() || "Recorded artifact"
+  );
 }
 
 export function eventNodeAtSequence(
@@ -580,9 +573,7 @@ export function evidenceVisit(
   for (const entry of journalEntries(events, runId)) {
     if (
       entry.kind === "group" &&
-      entry.events.some(
-        (event) => event.branch === evidence.branch && event.seq === evidence.seq,
-      )
+      entry.events.some((event) => event.branch === evidence.branch && event.seq === evidence.seq)
     ) {
       return entry.visit;
     }
@@ -697,10 +688,7 @@ export function evidenceDecision(
     if (event.branch !== evidence.branch) {
       continue;
     }
-    if (
-      event.type === "gate.evaluated" &&
-      (!nodeId || eventNodeId(event, runId) === nodeId)
-    ) {
+    if (event.type === "gate.evaluated" && (!nodeId || eventNodeId(event, runId) === nodeId)) {
       return event;
     }
     if (event.type === "gate.started" || event.type === "stage.started") {
@@ -991,9 +979,7 @@ export function eventSummary(
       if (isVerdictArtifact(event) && associatedDecision?.type === "gate.evaluated") {
         const gate = humanize(eventNodeId(associatedDecision, runId) || node || "review");
         const verdict = associatedDecision.verdict || "a verdict";
-        const target = associatedDecision.target
-          ? ` selecting ${associatedDecision.target}`
-          : "";
+        const target = associatedDecision.target ? ` selecting ${associatedDecision.target}` : "";
         return `${name} captured the ${gate} decision: ${verdict}${target}.${access}`;
       }
       return `${name} was recorded${stage}.${access}`;
@@ -1013,9 +999,8 @@ export function eventSummary(
         return "An external reference was recorded.";
       }
       const kind = externalRefKind(reference.kind);
-      const id = reference.kind === "pr" || reference.kind === "issue"
-        ? `#${reference.id}`
-        : reference.id;
+      const id =
+        reference.kind === "pr" || reference.kind === "issue" ? `#${reference.id}` : reference.id;
       const operation = externalRefOperation(event);
       return `${providerName(reference.provider)} ${operation} ${kind} ${id}.`;
     }
@@ -1123,23 +1108,7 @@ export function formatDuration(milliseconds: number): string {
   return `${seconds}s`;
 }
 
-export function formatTimestamp(value: string | undefined): string {
-  if (!value) {
-    return "In progress";
-  }
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return "Unavailable";
-  }
-  return new Intl.DateTimeFormat("en", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(timestamp);
-}
+export { formatTimestamp } from "./dateTime";
 
 function stateFromGate(event: RunEvent): RunNodeState {
   const target = event.target?.toLowerCase() ?? "";
@@ -1267,7 +1236,10 @@ function stateFromStatus(
 }
 
 export function humanize(value: string): string {
-  const words = value.replace(/[._-]+/g, " ").trim().split(/\s+/);
+  const words = value
+    .replace(/[._-]+/g, " ")
+    .trim()
+    .split(/\s+/);
   if (!words[0]) {
     return "Event";
   }

@@ -1,3 +1,4 @@
+import { Action } from "../ui/Action";
 import { useEffect, useState } from "react";
 import {
   DaemonAuthError,
@@ -50,9 +51,9 @@ export function DaemonErrorState({
             {error.message} (HTTP {error.status})
           </p>
         </div>
-        <button className="reconnect-button" onClick={retry} type="button">
+        <Action variant="primary" className="reconnect-button" onClick={retry} type="button">
           {standalone ? "Reload" : "Retry"}
-        </button>
+        </Action>
       </section>
     );
   }
@@ -67,9 +68,9 @@ export function DaemonErrorState({
           <h1>Daemon update required</h1>
           <p>{error.message} Update the daemon and reload the portal.</p>
         </div>
-        <button className="reconnect-button" onClick={retry} type="button">
+        <Action variant="primary" className="reconnect-button" onClick={retry} type="button">
           {standalone ? "Reload" : "Retry"}
-        </button>
+        </Action>
       </section>
     );
   }
@@ -84,9 +85,9 @@ export function DaemonErrorState({
             : "The portal couldn't load data from the Goobers daemon. Reconnect to try again."}
         </p>
       </div>
-      <button className="reconnect-button" onClick={retry} type="button">
+      <Action variant="primary" className="reconnect-button" onClick={retry} type="button">
         {standalone ? "Reload" : "Reconnect"}
-      </button>
+      </Action>
     </section>
   );
 }

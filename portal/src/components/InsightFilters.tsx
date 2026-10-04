@@ -1,6 +1,7 @@
 import type { InsightWindow } from "../insightData";
 import { insightScopeFromKey, insightScopeKey, type InsightScope } from "../insightScope";
 import { ScopeControl } from "./ScopeControl";
+import { ControlGroup, FilterField } from "../ui/Filters";
 
 const WINDOWS: readonly { label: string; value: InsightWindow }[] = [
   { label: "Last 24 hours", value: "24h" },
@@ -25,14 +26,13 @@ export function InsightFilters({
   window: InsightWindow;
 }) {
   return (
-    <div className="insight-controls" aria-label={label}>
+    <ControlGroup label={label}>
       <ScopeControl
         onChange={(key) => onScopeChange(insightScopeFromKey(key))}
         scopes={scopes}
         value={insightScopeKey(scope)}
       />
-      <label>
-        <span>Time window</span>
+      <FilterField label="Time window">
         <select
           aria-label="Time window"
           onChange={(event) => {
@@ -42,10 +42,12 @@ export function InsightFilters({
           value={window}
         >
           {WINDOWS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
           ))}
         </select>
-      </label>
-    </div>
+      </FilterField>
+    </ControlGroup>
   );
 }

@@ -125,8 +125,9 @@ export function InsightScopePicker({
     <div className="insight-scope-picker" onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) close();
     }} onKeyDown={(event) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && open) {
         event.preventDefault();
+        event.stopPropagation();
         close();
         trigger.current?.focus();
       }

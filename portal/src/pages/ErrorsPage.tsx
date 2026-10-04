@@ -1,17 +1,15 @@
+import { PageHeading } from "../ui/Heading";
+import { Action } from "../ui/Action";
+import { Timestamp } from "../ui/Timestamp";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { QueryState } from "../api/queryState";
-import type {
-  DaemonClient,
-  TelemetryError,
-  TelemetryErrorsOptions,
-} from "../api/types";
+import type { DaemonClient, TelemetryError, TelemetryErrorsOptions } from "../api/types";
 import { ScopedRequests, type ScopedRequest } from "../api/scopedRequest";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { dataCacheKey, type DataCacheDependency } from "../dataCache";
 import { useLiveData } from "../liveData";
 import { routeHash, type ErrorRouteFilters } from "../routing";
 import { scopeWindowLabel } from "../scope";
-import { formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
 const ERRORS_PAGE_SIZE = 50;
@@ -43,7 +41,9 @@ export function ErrorsPage({
     return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
+    return (
+      <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
+    );
   }
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
@@ -57,22 +57,29 @@ export function ErrorsPage({
 
   return (
     <>
-      <header className="page-heading">
-        <p className="page-kicker">Telemetry</p>
-        <h1>Matching errors</h1>
-        <p>
-          Failure events matching <span className="mono">{code}</span> and{" "}
-          <span className="mono">{errorClass}</span>
-          {scopeWindowLabel(filters)}.
-        </p>
-      </header>
+      <PageHeading
+        title="Matching errors"
+        className=""
+        description={
+          <>
+            Failure events matching <span className="mono">{code}</span> and{" "}
+            <span className="mono">{errorClass}</span>
+            {scopeWindowLabel(filters)}.
+          </>
+        }
+        beforeTitle={
+          <>
+            <p className="page-kicker">Telemetry</p>
+          </>
+        }
+      />
 
       {query.state.status === "stale" && query.state.error && (
         <div className="insight-inline-error" role="alert">
           <span>Matching errors could not be refreshed. Showing the last successful page.</span>
-          <button className="text-button" onClick={query.retry} type="button">
+          <Action variant="text" className="text-button" onClick={query.retry} type="button">
             Retry
-          </button>
+          </Action>
         </div>
       )}
 
@@ -81,21 +88,26 @@ export function ErrorsPage({
           <p className="inline-empty">No errors match this signature, scope, and time window.</p>
         ) : (
           <>
-            <div aria-label="Matching error history" className="telemetry-error-groups" role="region">
+            <div
+              aria-label="Matching error history"
+              className="telemetry-error-groups"
+              role="region"
+            >
               {groups.map((group) => (
                 <ErrorGroupCard group={group} key={group.id} />
               ))}
             </div>
             {history.nextCursor && (
               <div className="load-more">
-                <button
+                <Action
+                  variant="text"
                   className="text-button"
                   disabled={history.loadingMore}
                   onClick={query.loadMore}
                   type="button"
                 >
                   {history.loadingMore ? "Loading…" : "Load more errors"}
-                </button>
+                </Action>
               </div>
             )}
           </>
@@ -118,9 +130,11 @@ function ErrorGroupCard({ group }: { group: ErrorGroup }) {
       </span>
       <span className="error-group-location">{location}</span>
       <span className="error-group-meta">
-        <strong>{group.items.length} {group.items.length === 1 ? "occurrence" : "occurrences"} loaded</strong>
+        <strong>
+          {group.items.length} {group.items.length === 1 ? "occurrence" : "occurrences"} loaded
+        </strong>
         <span>
-          Latest <time dateTime={item.occurredAt}>{formatTimestamp(item.occurredAt)}</time>
+          Latest <Timestamp value={item.occurredAt} />
         </span>
         <span className="error-class-label">{item.errorClass || "unknown"}</span>
       </span>
@@ -140,9 +154,7 @@ function ErrorGroupCard({ group }: { group: ErrorGroup }) {
           {latestContent}
         </a>
       ) : (
-        <div className="telemetry-error-latest telemetry-error-row-instance">
-          {latestContent}
-        </div>
+        <div className="telemetry-error-latest telemetry-error-row-instance">{latestContent}</div>
       )}
       {group.items.length > 1 && (
         <>
@@ -155,7 +167,10 @@ function ErrorGroupCard({ group }: { group: ErrorGroup }) {
             {expanded ? "Hide" : "Show"} {group.items.length} individual occurrences
           </button>
           {expanded && (
-            <ol aria-label={`Individual occurrences for ${code}`} className="telemetry-error-occurrences">
+            <ol
+              aria-label={`Individual occurrences for ${code}`}
+              className="telemetry-error-occurrences"
+            >
               {group.items.map((occurrence, index) => (
                 <li key={`${occurrence.runId}:${occurrence.occurredAt}:${index}`}>
                   <ErrorOccurrence item={occurrence} />
@@ -173,7 +188,7 @@ function ErrorOccurrence({ item }: { item: TelemetryError }) {
   const content = (
     <>
       <span>{errorLocation(item)}</span>
-      <time dateTime={item.occurredAt}>{formatTimestamp(item.occurredAt)}</time>
+      <Timestamp value={item.occurredAt} />
     </>
   );
   return item.runId ? (
@@ -243,12 +258,7 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
       };
       setState(fresh ? { status: "ready", data } : { status: "stale", data });
       if (!loadingMore.current && cacheRevision !== undefined) {
-        cache.set(
-          cacheKey,
-          data,
-          errorHistoryDependencies(filters),
-          cacheRevision,
-        );
+        cache.set(cacheKey, data, errorHistoryDependencies(filters), cacheRevision);
       }
     },
     [cache, cacheKey, filters.gaggle, filters.workflow],
@@ -453,9 +463,7 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
           nextCursor.current = cached.nextCursor;
           loadingMore.current = false;
           const data = { ...cached, loadingMore: false };
-          setState(
-            isFresh() ? { status: "ready", data } : { status: "stale", data },
-          );
+          setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
           return true;
         }
         // reason === "initial" with no cache is a genuine first load; anything
@@ -473,7 +481,16 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
       scopedRequests.current.cancelScope();
       request.current = undefined;
     };
-  }, [cache, cacheKey, filters.gaggle, filters.workflow, isFresh, reload, refreshWindow, subscribe]);
+  }, [
+    cache,
+    cacheKey,
+    filters.gaggle,
+    filters.workflow,
+    isFresh,
+    reload,
+    refreshWindow,
+    subscribe,
+  ]);
 
   useEffect(() => {
     setState((current) => {
@@ -499,10 +516,7 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
 // key. Fresh items not already in the loaded window are prepended — the
 // server returns each page newest-first, so a refreshed first page's novel
 // entries stay newest-first ahead of the preserved window.
-function mergeErrors(
-  existing: TelemetryError[],
-  incoming: TelemetryError[],
-): TelemetryError[] {
+function mergeErrors(existing: TelemetryError[], incoming: TelemetryError[]): TelemetryError[] {
   const errorKey = (item: TelemetryError) =>
     `${item.runId}:${item.occurredAt}:${item.code}:${item.attempt}`;
   const seen = new Set(existing.map(errorKey));
@@ -527,9 +541,7 @@ function optionalCachePart(value: string | undefined): string {
   return JSON.stringify([value !== undefined, value ?? ""]);
 }
 
-function errorHistoryDependencies(
-  filters: ErrorRouteFilters,
-): readonly DataCacheDependency[] {
+function errorHistoryDependencies(filters: ErrorRouteFilters): readonly DataCacheDependency[] {
   return [
     { model: "instance" },
     { model: "run", gaggle: filters.gaggle, workflow: filters.workflow },

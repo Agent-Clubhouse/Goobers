@@ -127,6 +127,29 @@ unknown journal events.
 
 ## Co-branding and support hooks
 
+### Shared UI conventions
+
+Use the exported primitives in `src/ui/` rather than copying page-specific
+markup: `PageHeading`/`SectionHeading`, `Action`/`ActionLink`, `ControlGroup`,
+`FilterField`/`FilterOptions`/`FilterOption`, `TabList`/`Tab`, `MetadataGrid`,
+and `DataTable`. Interactive linked lists use `DataList`/`DataRow`; both native
+tables and linked lists share the same table shell, header, and typography.
+Keep layout-specific CSS on the page, but keep font sizes, colors, and control
+treatment in the primitives and `tokens.css`.
+
+The type scale is page title, section title, 14px UI text, 12px dense table and
+secondary text, and 11px uppercase labels, expressed as rem-based tokens.
+Primary actions use `--accent` and `--on-accent`; links use `--accent-ink`.
+Semantic success/warning/error colors remain separate from co-brand accents.
+The primitive stylesheet is included by both Vite and the reusable package.
+
+Use `Timestamp` for visible dates and `dateTime.ts` for dates embedded in
+messages. The shared convention is English month/day/year with local time and
+seconds; precise tooltips include the timezone. Chart ticks use the same
+formatter's compact date/hour variants. Missing and invalid dates are explicit,
+and valid dates retain a machine-readable `datetime`. Do not add local
+`Intl.DateTimeFormat` or `toLocaleDateString` implementations to pages.
+
 The portal reads a `GET /api/v1/portal/config` endpoint at startup and applies
 operator-supplied identity and support links from the instance's `portal:` config
 block. All fields are optional; an unconfigured instance shows standard Goobers

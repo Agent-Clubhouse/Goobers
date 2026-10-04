@@ -8,6 +8,9 @@ import {
   useState,
 } from "react";
 import { Icon } from "../ui/Icon";
+import { HeadingContent } from "../ui/Heading";
+import { ControlGroup } from "../ui/Filters";
+import { Action } from "../ui/Action";
 
 export interface ActivePageFilter {
   key: string;
@@ -141,15 +144,14 @@ export function PageToolbar({
   };
 
   return (
-    <header className={`page-toolbar${className ? ` ${className}` : ""}`}>
-      <div className="page-toolbar-heading">
-        <div className="page-toolbar-title">
-          <h1>{title}</h1>
-        </div>
-        <p>{description}</p>
-      </div>
-      <div className={`page-toolbar-actions${search ? "" : " page-toolbar-actions-empty"}`}>
-        {inlineSearch ? <div className="page-toolbar-mobile-search">{search}</div> : search}
+    <header
+      className={`page-toolbar${inlineSearch ? " page-toolbar-inline" : ""}${className ? ` ${className}` : ""}`}
+    >
+      <HeadingContent className="page-toolbar-heading" description={description} title={title} />
+      <div
+        className={`page-toolbar-actions${search && !inlineSearch ? "" : " page-toolbar-actions-empty"}`}
+      >
+        {!inlineSearch && search}
         <button
           aria-label="Filters"
           aria-expanded={open}
@@ -169,17 +171,17 @@ export function PageToolbar({
         </button>
       </div>
       {scope && (
-        <div className="insight-controls page-toolbar-scope" aria-label={`${title} scope`}>
+        <ControlGroup className="page-toolbar-scope" label={`${title} scope`}>
           {scope}
-        </div>
+        </ControlGroup>
       )}
-      <div className="page-toolbar-desktop-filters">
-        {filters(false)}
-        {inlineSearch && search}
-      </div>
+      <div className="page-toolbar-desktop-filters">{filters(false)}</div>
+      {inlineSearch && search && <div className="page-toolbar-search-slot">{search}</div>}
       {filterError && (
         <div className="page-toolbar-feedback">
-          <p className="page-toolbar-error" role="alert">{filterError}</p>
+          <p className="page-toolbar-error" role="alert">
+            {filterError}
+          </p>
         </div>
       )}
       {open && (
@@ -203,10 +205,18 @@ export function PageToolbar({
               </button>
             </div>
             <div className="page-filter-sheet-fields">{filters(true)}</div>
-            {draftError && <p className="page-toolbar-error" role="alert">{draftError}</p>}
+            {draftError && (
+              <p className="page-toolbar-error" role="alert">
+                {draftError}
+              </p>
+            )}
             <div className="page-filter-sheet-actions">
-              <button className="secondary-button" onClick={cancel} type="button">Cancel</button>
-              <button className="page-filter-apply" onClick={apply} type="button">Apply filters</button>
+              <Action variant="secondary" onClick={cancel}>
+                Cancel
+              </Action>
+              <Action variant="primary" className="page-filter-apply" onClick={apply}>
+                Apply filters
+              </Action>
             </div>
           </div>
         </div>

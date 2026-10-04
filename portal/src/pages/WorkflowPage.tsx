@@ -1,3 +1,9 @@
+import { Tab, TabList } from "../ui/Tabs";
+import { PageHeading, SectionHeading } from "../ui/Heading";
+import { MetadataGrid } from "../ui/MetadataGrid";
+import { ControlGroup } from "../ui/Filters";
+import { Action } from "../ui/Action";
+import { Timestamp } from "../ui/Timestamp";
 import { useState } from "react";
 import { RunTiming } from "../components/RunTiming";
 import { QueueEligibilityPanel } from "../components/QueueEligibilityPanel";
@@ -14,7 +20,6 @@ import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import { ScopePivot } from "../components/ScopePivot";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
-import { formatTimestamp } from "../runDetailData";
 import type { Navigate } from "../routing";
 import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
@@ -66,9 +71,9 @@ export function WorkflowPage({
           <h1>Workflow unavailable</h1>
           <p>{query.state.error.message}</p>
         </div>
-        <button className="reconnect-button" onClick={query.retry} type="button">
+        <Action variant="primary" className="reconnect-button" onClick={query.retry} type="button">
           {standalone ? "Reload" : "Retry"}
-        </button>
+        </Action>
       </section>
     );
   }
@@ -97,7 +102,12 @@ export function WorkflowPage({
             : undefined
         }
       />
-      <QueueEligibilityPanel key={`${gaggle}/${workflowName}`} client={client} gaggle={gaggle} workflow={workflowName} />
+      <QueueEligibilityPanel
+        key={`${gaggle}/${workflowName}`}
+        client={client}
+        gaggle={gaggle}
+        workflow={workflowName}
+      />
     </>
   );
 }
@@ -139,74 +149,79 @@ function WorkflowDetailWorkspace({
         <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>
-      <header className="page-heading workflow-detail-heading">
-        <div>
-          <h1>{workflow.displayName}</h1>
-          <p>{workflow.purpose}</p>
-        </div>
-      </header>
+      <PageHeading
+        title={workflow.displayName}
+        className="workflow-detail-heading"
+        description={workflow.purpose}
+        fullWidth
+      />
 
-      <div className="insight-controls workflow-detail-controls">
+      <ControlGroup className="workflow-detail-controls" label="Workflow scope">
         <ScopePivot
           label={`${workflow.identity.gaggle} / ${workflow.displayName}`}
           scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
         />
-        <section aria-label="Workflow configuration summary" className="workflow-config-summary workflow-detail-summary">
-          <dl>
-          <div>
-            <dt>Trigger</dt>
-            <dd>{formatTriggers(workflow)}</dd>
-          </div>
-          <div>
-            <dt>Concurrency</dt>
-            <dd>
-              {workflow.concurrency.activeRuns} active
-              {workflow.concurrency.desiredRuns !== undefined
-                ? ` / ${workflow.concurrency.desiredRuns} desired`
-                : ""}{" "}
-              / {workflow.concurrency.maxConcurrentRuns} max
-              {workflow.concurrency.admissionBlocked && (
-                <small>Blocked: {workflow.concurrency.blockingCondition}</small>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Gaggle</dt>
-            <dd>{workflow.identity.gaggle}</dd>
-          </div>
-          <div>
-            <dt>Definition</dt>
-            <dd className="mono workflow-definition-pin" title={`v${workflow.definition.version} · ${workflow.definition.digest}`}>
-              v{workflow.definition.version} · {workflow.definition.digest}
-            </dd>
-          </div>
-          <div>
-            <dt>Backprop</dt>
-            <dd>{workflow.backprop?.enabled ? `Enabled (${workflow.backprop.version})` : "Disabled"}</dd>
-          </div>
-          <div>
-            <dt>Owners</dt>
-            <dd>
-              {workflow.owners.length > 0
-                ? workflow.owners.map((owner) => (
-                    <div key={`${owner.gaggle}/${owner.name}`}>
-                      {owner.gaggle}/{owner.name}
-                    </div>
-                  ))
-                : "None declared"}
-            </dd>
-          </div>
-          <div>
-            <dt>Stages</dt>
-            <dd>{workflow.stageCount}</dd>
-          </div>
-          <div>
-            <dt>Readiness</dt>
-            <dd>{formatReadiness(workflow.readiness)}</dd>
-          </div>
-          </dl>
+        <section aria-label="Workflow configuration summary" className="workflow-detail-summary">
+          <MetadataGrid>
+            <div>
+              <dt>Trigger</dt>
+              <dd>{formatTriggers(workflow)}</dd>
+            </div>
+            <div>
+              <dt>Concurrency</dt>
+              <dd>
+                {workflow.concurrency.activeRuns} active
+                {workflow.concurrency.desiredRuns !== undefined
+                  ? ` / ${workflow.concurrency.desiredRuns} desired`
+                  : ""}{" "}
+                / {workflow.concurrency.maxConcurrentRuns} max
+                {workflow.concurrency.admissionBlocked && (
+                  <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Gaggle</dt>
+              <dd>{workflow.identity.gaggle}</dd>
+            </div>
+            <div>
+              <dt>Definition</dt>
+              <dd
+                className="mono workflow-definition-pin"
+                title={`v${workflow.definition.version} · ${workflow.definition.digest}`}
+              >
+                v{workflow.definition.version} · {workflow.definition.digest}
+              </dd>
+            </div>
+            <div>
+              <dt>Backprop</dt>
+              <dd>
+                {workflow.backprop?.enabled ? `Enabled (${workflow.backprop.version})` : "Disabled"}
+              </dd>
+            </div>
+            <div>
+              <dt>Owners</dt>
+              <dd>
+                {workflow.owners.length > 0
+                  ? workflow.owners.map((owner) => (
+                      <div key={`${owner.gaggle}/${owner.name}`}>
+                        {owner.gaggle}/{owner.name}
+                      </div>
+                    ))
+                  : "None declared"}
+              </dd>
+            </div>
+            <div>
+              <dt>Stages</dt>
+              <dd>{workflow.stageCount}</dd>
+            </div>
+            <div>
+              <dt>Readiness</dt>
+              <dd>{formatReadiness(workflow.readiness)}</dd>
+            </div>
+          </MetadataGrid>
         </section>
-      </div>
+      </ControlGroup>
 
       <ConfigurationWarnings context="workflow" {...configurationWarnings} />
 
@@ -258,8 +273,8 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
         </div>
       </div>
       <p className="inspector-description">{stage.goal || "No stage goal declared."}</p>
-      <div className="definition-view-toggle" role="tablist" aria-label="Stage config view">
-        <button
+      <TabList className="definition-view-toggle" role="tablist" aria-label="Stage config view">
+        <Tab
           type="button"
           role="tab"
           aria-selected={view === "fields"}
@@ -267,8 +282,8 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
           onClick={() => setView("fields")}
         >
           Fields
-        </button>
-        <button
+        </Tab>
+        <Tab
           type="button"
           role="tab"
           aria-selected={view === "yaml"}
@@ -276,8 +291,8 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
           onClick={() => setView("yaml")}
         >
           Raw YAML
-        </button>
-      </div>
+        </Tab>
+      </TabList>
       {view === "fields" ? (
         <dl className="property-list">
           <div>
@@ -355,12 +370,15 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
 function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: WorkflowDetail }) {
   return (
     <section className="content-section">
-      <div className="section-heading">
-        <div>
-          <h2>Recent runs</h2>
-        </div>
-        <span className="section-count">{runs.length}</span>
-      </div>
+      <SectionHeading
+        title="Recent runs"
+        className=""
+        actions={
+          <>
+            <span className="section-count">{runs.length}</span>
+          </>
+        }
+      />
       {runs.length === 0 ? (
         <p className="inline-empty">No runs are recorded for this workflow.</p>
       ) : (
@@ -380,7 +398,7 @@ function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: Workflow
                 <span className="row-subtitle">
                   {run.trigger.kind}
                   {run.trigger.ref ? ` · ${run.trigger.ref}` : ""} ·{" "}
-                  <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
+                  <Timestamp value={run.startedAt} />
                 </span>
               </span>
               <StatusBadge status={run.phase} />

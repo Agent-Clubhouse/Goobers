@@ -380,8 +380,7 @@ describe("workflow and gaggle inventory", () => {
       screen.getByRole("link", { name: "View Core product / Implementation in Runs" }),
     );
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
   });
 
   it("renders the ready-empty workflow state", async () => {
@@ -429,7 +428,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByRole("group", { name: "implementation execution graph" }),
     ).toHaveAttribute("data-preview", "true");
-    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
+    expect(screen.getByRole("button", { name: /Repository connections/ })).toHaveAttribute("aria-expanded", "true");
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
@@ -498,7 +497,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       screen.queryByRole("tablist", { name: "Core product workflows" }),
     ).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
+    expect(screen.getByRole("button", { name: /Repository connections/ })).toHaveAttribute("aria-expanded", "true");
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });

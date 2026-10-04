@@ -1,3 +1,5 @@
+import { PageHeading } from "../ui/Heading";
+import { Action } from "../ui/Action";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatedGoober } from "../components/AnimatedGoober";
 import { RecoveryCommand } from "../components/RecoveryAction";
@@ -155,13 +157,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   );
   const [repo, setRepo] = useSessionState("goobers-wizard-repo", "");
   const [branch, setBranch] = useSessionState("goobers-wizard-branch", "main");
-  const [instancePlacement, setInstancePlacement] = useSessionState<
-    "peer" | "custom"
-  >("goobers-wizard-instance-placement", "peer");
-  const [instancePath, setInstancePath] = useSessionState(
-    "goobers-wizard-instance-path",
-    "",
+  const [instancePlacement, setInstancePlacement] = useSessionState<"peer" | "custom">(
+    "goobers-wizard-instance-placement",
+    "peer",
   );
+  const [instancePath, setInstancePath] = useSessionState("goobers-wizard-instance-path", "");
   const [workflows, setWorkflows] = useSessionState<GuidedWorkflow[]>(
     "goobers-wizard-workflows",
     defaultGuidedWorkflows("github"),
@@ -204,17 +204,15 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     "goobers-wizard-push-token",
     "GOOBERS_GITHUB_PUSH_TOKEN",
   );
-  const [modelTokenEnv, setModelTokenEnv] = useSessionState(
-    "goobers-wizard-model-token",
-    "",
-  );
+  const [modelTokenEnv, setModelTokenEnv] = useSessionState("goobers-wizard-model-token", "");
   const [createStarterIssue, setCreateStarterIssue] = useSessionState(
     "goobers-wizard-create-starter-issue",
     true,
   );
   const [inspection, setInspection] = useState<GuidedRepositoryInspection | null>(null);
-  const [repositoryReadiness, setRepositoryReadiness] =
-    useState<GuidedRepositoryReadiness | null>(null);
+  const [repositoryReadiness, setRepositoryReadiness] = useState<GuidedRepositoryReadiness | null>(
+    null,
+  );
 
   const [busy, setBusy] = useState<BusyAction>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -229,9 +227,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     "goobers-wizard-start-at-sign-in",
     true,
   );
-  const [completeResult, setCompleteResult] = useState<GuidedCompleteResult | null>(
-    null,
-  );
+  const [completeResult, setCompleteResult] = useState<GuidedCompleteResult | null>(null);
 
   const statePass = useRef<{ generation: number; controller: AbortController | null }>({
     generation: 0,
@@ -267,9 +263,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       if (!current()) {
         return null;
       }
-      setQuery((previous) =>
-        previous.status === "ready" ? previous : { status: "unavailable" },
-      );
+      setQuery((previous) => (previous.status === "ready" ? previous : { status: "unavailable" }));
       return null;
     } finally {
       if (pass.controller === controller) {
@@ -305,8 +299,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
 
   const state = query.status === "ready" ? query.state : null;
   const implementationSelected = workflows.includes("implementation");
-  const pullRequestsNeeded =
-    implementationSelected || workflows.includes("backlog-curation");
+  const pullRequestsNeeded = implementationSelected || workflows.includes("backlog-curation");
   const customizationPrompt = `Use the goobers-dsl-author skill to inspect ${repo.trim() || "my application repository"} and customize the generated gaggle in the Goobers Instance at ${instancePath.trim() || state?.instancePath || "my instance folder"} for the repository's actual contribution, CI, and review conventions. Explain the proposed state graph and least-privilege capabilities before changing files, then update the configuration and validate it.`;
 
   useEffect(() => {
@@ -318,7 +311,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const provider: GuidedProvider = inspection?.provider ?? "github";
   useEffect(() => {
     const next = providerWorkflows(workflows, provider, workflowsCustomized);
-    if (next.length !== workflows.length || next.some((workflow, index) => workflow !== workflows[index])) {
+    if (
+      next.length !== workflows.length ||
+      next.some((workflow, index) => workflow !== workflows[index])
+    ) {
       setWorkflows(next);
     }
   }, [provider, setWorkflows, workflows, workflowsCustomized]);
@@ -355,12 +351,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     if (instancePlacement === "peer" && inspection.peerInstancePath) {
       setInstancePath(inspection.peerInstancePath);
     }
-  }, [
-    inspection,
-    instancePlacement,
-    setInstancePath,
-    state?.instancePathPinned,
-  ]);
+  }, [inspection, instancePlacement, setInstancePath, state?.instancePathPinned]);
 
   useEffect(() => {
     if (state?.instancePathPinned) {
@@ -405,17 +396,22 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   if (query.status === "unavailable") {
     return (
       <>
-        <header className="page-heading">
-          <p className="page-kicker">Guided onboarding</p>
-          <h1>Getting Started</h1>
-        </header>
+        <PageHeading
+          title="Getting Started"
+          className=""
+          beforeTitle={
+            <>
+              <p className="page-kicker">Guided onboarding</p>
+            </>
+          }
+        />
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
             <h2>Setup is not available from this dashboard</h2>
             <p>
-              Open the setup wizard from a terminal. The command starts Goobers locally and
-              opens this wizard in your browser.
+              Open the setup wizard from a terminal. The command starts Goobers locally and opens
+              this wizard in your browser.
             </p>
             <RecoveryCommand command="goobers init --guided" />
           </div>
@@ -435,11 +431,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       : detectedShell(state.platform);
   const instanceReady = state.instanceExists || initResult?.exitCode === 0;
   const validationPassed = validateResult?.exitCode === 0;
-  const repositoryReady =
-    inspection !== null && !inspection.needsClone && inspection.auth.ready;
+  const repositoryReady = inspection !== null && !inspection.needsClone && inspection.auth.ready;
   const ciCommand = splitCommand(ciCommandText);
-  const runtimeValid =
-    pullRequestCI || (ciCommand.length > 0 && capability.trim() !== "");
+  const runtimeValid = pullRequestCI || (ciCommand.length > 0 && capability.trim() !== "");
   const placementValid = instancePath.trim() !== "";
   const repositoryPrepared =
     repositoryReadiness?.usesWorkItemTags === true ||
@@ -486,8 +480,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     void runAction(
       "authorize",
       async () => {
-        const authorization: GuidedGitHubAuthorizationResult =
-          await client.authorizeGitHub(`${inspection.owner}/${inspection.name}`);
+        const authorization: GuidedGitHubAuthorizationResult = await client.authorizeGitHub(
+          `${inspection.owner}/${inspection.name}`,
+        );
         const refreshed = await client.inspectRepository(repo.trim());
         return { ...refreshed, auth: authorization.auth };
       },
@@ -542,11 +537,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       ...(pullRequestCI
         ? { pullRequestCI: true }
         : implementationSelected
-        ? {
-            ciCommand,
-            requiredCapabilities: [capability.trim()],
-          }
-        : {}),
+          ? {
+              ciCommand,
+              requiredCapabilities: [capability.trim()],
+            }
+          : {}),
       harness,
       repoTokenEnv: repoTokenEnv.trim(),
       workTrackingTokenEnv: issuesTokenEnv.trim(),
@@ -556,9 +551,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       ...(inspection.provider === "ado" ? { authKind: inspection.auth.kind } : {}),
       ...(pullRequestsNeeded ? { pullRequestTokenEnv: prTokenEnv.trim() } : {}),
       ...(implementationSelected ? { repoPushTokenEnv: pushTokenEnv.trim() } : {}),
-      ...(modelTokenEnv.trim()
-        ? { optionalModelTokenEnv: modelTokenEnv.trim() }
-        : {}),
+      ...(modelTokenEnv.trim() ? { optionalModelTokenEnv: modelTokenEnv.trim() } : {}),
     };
     void runAction(
       "init",
@@ -644,8 +637,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             </p>
             <p>
               Guided init inspects how your repository works, creates a reviewable Goobers
-              configuration, and checks that it can run safely. It will not start a workflow
-              or change application code.
+              configuration, and checks that it can run safely. It will not start a workflow or
+              change application code.
             </p>
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md"
@@ -665,8 +658,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Choose the repository">
             <p>
-              Choose an existing local clone for full inspection, or start with a GitHub
-              or Azure DevOps URL and clone it before continuing.
+              Choose an existing local clone for full inspection, or start with a GitHub or Azure
+              DevOps URL and clone it before continuing.
             </p>
             <div aria-label="Repository source" className="guided-source-choice" role="group">
               <button
@@ -726,17 +719,19 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   value={repo}
                 />
                 {repositorySource === "local" && (
-                  <button
+                  <Action
+                    variant="secondary"
                     className="secondary-button guided-browse-button"
                     disabled={busy !== null}
                     onClick={browseRepository}
                     type="button"
                   >
                     {busy === "browse" ? "Choosing…" : "Browse…"}
-                  </button>
+                  </Action>
                 )}
               </div>
-              <button
+              <Action
+                variant="primary"
                 className="reconnect-button"
                 disabled={busy !== null || repo.trim() === ""}
                 type="submit"
@@ -748,7 +743,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                     : repositorySource === "local"
                       ? "Inspect clone"
                       : "Inspect URL"}
-              </button>
+              </Action>
               {busy === "inspect" && (
                 <p aria-live="polite" className="guided-wait-message" role="status">
                   Inspecting repository files and authentication…
@@ -814,9 +809,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                         <ol className="guided-pat-steps">
                           <li>
                             Set <strong>Resource owner</strong> to{" "}
-                            <strong>{inspection.owner}</strong>, the account or organization
-                            that owns this repository. Keep the default personal account when
-                            it is the owner.
+                            <strong>{inspection.owner}</strong>, the account or organization that
+                            owns this repository. Keep the default personal account when it is the
+                            owner.
                           </li>
                           <li>
                             Choose <strong>Only select repositories</strong>, then select{" "}
@@ -824,8 +819,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                           </li>
                           <li>
                             Grant the least-privilege permissions in{" "}
-                            <code>docs/guides/github-token-scopes.md</code>, generate the
-                            token, then restart this wizard:
+                            <code>docs/guides/github-token-scopes.md</code>, generate the token,
+                            then restart this wizard:
                             <ShellSelector onChange={setShellOverride} value={shell} />
                             <RecoveryCommand
                               command={withEnvironment(
@@ -843,7 +838,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                       <code>{inspection.auth.remediationCommand}</code>
                     )}
                     {inspection.provider === "github" && inspection.auth.needsLogin && (
-                      <button
+                      <Action
+                        variant="primary"
                         className="reconnect-button"
                         disabled={busy !== null}
                         onClick={authorizeGitHub}
@@ -852,7 +848,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                         {busy === "authorize"
                           ? "Waiting for GitHub authorization…"
                           : "Sign in with GitHub"}
-                      </button>
+                      </Action>
                     )}
                   </div>
                 )}
@@ -952,9 +948,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Choose where the Goobers Instance lives">
             <p>
-              The Instance contains this workforce&apos;s configuration and local operating
-              data, including journals, claims, and managed workcopies. Keep it outside
-              the application repository.
+              The Instance contains this workforce&apos;s configuration and local operating data,
+              including journals, claims, and managed workcopies. Keep it outside the application
+              repository.
             </p>
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/instance-placement.md"
@@ -984,8 +980,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               />
             )}
             <p className="guided-note">
-              Do not commit the Instance directory. It contains mutable runtime data in
-              addition to the active gaggle and workflow definitions.
+              Do not commit the Instance directory. It contains mutable runtime data in addition to
+              the active gaggle and workflow definitions.
             </p>
           </WizardPage>
         );
@@ -993,49 +989,57 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Set up your first gaggle">
             <p>
-              A gaggle is a team of goobers and workflows for one area of work. This
-              gaggle is stored in the Instance under{" "}
-              <code>config/gaggles/{inspection?.gaggleName || "<repository>"}/</code>.
-              Choose the workflows it should start with; you can customize them later
-              with the Goobers authoring skills.
+              A gaggle is a team of goobers and workflows for one area of work. This gaggle is
+              stored in the Instance under{" "}
+              <code>config/gaggles/{inspection?.gaggleName || "<repository>"}/</code>. Choose the
+              workflows it should start with; you can customize them later with the Goobers
+              authoring skills.
             </p>
             <p className="guided-note">
               These are production-oriented canonical modules adapted from{" "}
-              <code>config-examples/gaggles/acme-web</code>. They are intentionally more
-              complete than the disposable <code>quickstart@v1</code> tutorial workflow.
+              <code>config-examples/gaggles/acme-web</code>. They are intentionally more complete
+              than the disposable <code>quickstart@v1</code> tutorial workflow.
             </p>
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/gaggle.md"
               label="Learn how gaggles and workflow anatomy fit together"
             />
             <div className="guided-module-grid">
-              {workflowChoices.filter((choice) => workflowOffered(choice.id, provider)).map((choice) => (
-                <label className="guided-module-card" data-selected={workflows.includes(choice.id)} key={choice.id}>
-                  <input
-                    checked={workflows.includes(choice.id)}
-                    disabled={choice.id === "implementation"}
-                    onChange={() => {
-                      if (choice.id === "implementation") {
-                        return;
-                      }
-                      setWorkflowsCustomized(true);
-                      setWorkflows(
-                        workflows.includes(choice.id)
-                          ? workflows.filter((workflow) => workflow !== choice.id)
-                          : [...workflows, choice.id],
-                      );
-                    }}
-                    type="checkbox"
-                  />
-                  <img alt="" src={choice.image} />
-                  <span>
-                    <strong>{choice.title}</strong>
-                    <span>{choice.description}</span>
-                    <small>{choice.outcome}</small>
-                    {choice.id === "implementation" && <small>Required for your first gaggle.</small>}
-                  </span>
-                </label>
-              ))}
+              {workflowChoices
+                .filter((choice) => workflowOffered(choice.id, provider))
+                .map((choice) => (
+                  <label
+                    className="guided-module-card"
+                    data-selected={workflows.includes(choice.id)}
+                    key={choice.id}
+                  >
+                    <input
+                      checked={workflows.includes(choice.id)}
+                      disabled={choice.id === "implementation"}
+                      onChange={() => {
+                        if (choice.id === "implementation") {
+                          return;
+                        }
+                        setWorkflowsCustomized(true);
+                        setWorkflows(
+                          workflows.includes(choice.id)
+                            ? workflows.filter((workflow) => workflow !== choice.id)
+                            : [...workflows, choice.id],
+                        );
+                      }}
+                      type="checkbox"
+                    />
+                    <img alt="" src={choice.image} />
+                    <span>
+                      <strong>{choice.title}</strong>
+                      <span>{choice.description}</span>
+                      <small>{choice.outcome}</small>
+                      {choice.id === "implementation" && (
+                        <small>Required for your first gaggle.</small>
+                      )}
+                    </span>
+                  </label>
+                ))}
             </div>
           </WizardPage>
         );
@@ -1043,9 +1047,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Choose which ready issues Goobers may implement">
             <p>
-              Limit implementation to work assigned to your authenticated repository
-              identity, or allow it to pick up any issue carrying the required ready and
-              approval labels.
+              Limit implementation to work assigned to your authenticated repository identity, or
+              allow it to pick up any issue carrying the required ready and approval labels.
             </p>
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/assignment-aware-backlogs.md"
@@ -1088,8 +1091,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Configure the agent runtime">
             <p>
-              A harness runs agentic stages, while deterministic stages and gates keep
-              control of repository effects, retries, and escalation.
+              A harness runs agentic stages, while deterministic stages and gates keep control of
+              repository effects, retries, and escalation.
             </p>
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md"
@@ -1115,8 +1118,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 <span>
                   <strong>GitHub Copilot CLI</strong>
                   <small>
-                    Uses your signed-in Copilot CLI to implement, review, and customize
-                    repository work.
+                    Uses your signed-in Copilot CLI to implement, review, and customize repository
+                    work.
                   </small>
                 </span>
               </label>
@@ -1130,8 +1133,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 <span>
                   <strong>Claude Code CLI</strong>
                   <small>
-                    Uses your signed-in Claude Code CLI for the same generated workforce
-                    roles.
+                    Uses your signed-in Claude Code CLI for the same generated workforce roles.
                   </small>
                 </span>
               </label>
@@ -1157,17 +1159,16 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   "CI validation",
                   pullRequestCI ? "Provider CI after pull request" : ciCommand.join(" "),
                 ],
-                ...(!pullRequestCI
-                  ? [["Required capability", capability.trim()]]
-                  : []),
+                ...(!pullRequestCI ? [["Required capability", capability.trim()]] : []),
               ]}
             />
             <p className="guided-note">
-              Setup creates one Instance directory containing the active configuration,
-              journals, claims, managed workcopies, and other machine-local operating
-              data. Existing Instance contents are never replaced.
+              Setup creates one Instance directory containing the active configuration, journals,
+              claims, managed workcopies, and other machine-local operating data. Existing Instance
+              contents are never replaced.
             </p>
-            <button
+            <Action
+              variant="primary"
               className="reconnect-button guided-create-instance-button"
               disabled={busy !== null || instanceReady}
               onClick={createGuidedInstance}
@@ -1179,12 +1180,12 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   ? "Instance created"
                   : state.instanceExists
                     ? "Instance already exists"
-                  : "Create Goobers instance"}
-            </button>
+                    : "Create Goobers instance"}
+            </Action>
             {state.instanceExists && initResult?.exitCode !== 0 && (
               <p className="guided-note">
-                Restart clears the tutorial answers, but it does not delete Instance
-                Configuration or runtime files that were already created.
+                Restart clears the tutorial answers, but it does not delete Instance Configuration
+                or runtime files that were already created.
               </p>
             )}
             {initResult?.stdout && <p className="guided-success">{initResult.stdout}</p>}
@@ -1192,7 +1193,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               <div className="guided-result" role="alert">
                 <strong>The instance was not created.</strong>
                 <pre className="code-block guided-output">
-                  {initResult.stderr.trim() || `goobers init exited with code ${initResult.exitCode}.`}
+                  {initResult.stderr.trim() ||
+                    `goobers init exited with code ${initResult.exitCode}.`}
                 </pre>
               </div>
             )}
@@ -1202,39 +1204,51 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Prepare the repository">
             <p>
-              Goobers uses repository labels to identify eligible work and record workflow
-              state. Check the repository first; nothing is changed until you approve it.
+              Goobers uses repository labels to identify eligible work and record workflow state.
+              Check the repository first; nothing is changed until you approve it.
             </p>
             {!repositoryReadiness && (
-              <button
+              <Action
+                variant="primary"
                 className="reconnect-button"
                 disabled={busy !== null}
                 onClick={() => prepareRepository(false)}
                 type="button"
               >
                 {busy === "prepare" ? "Checking…" : "Check labels and ready issues"}
-              </button>
+              </Action>
             )}
             {repositoryReadiness?.usesWorkItemTags && (
               <div className="guided-callout">
                 <strong>Azure DevOps uses work-item tags</strong>
                 <span>
-                  These tags are created when Goobers first applies them; no repository
-                  label catalog needs to be changed.
+                  These tags are created when Goobers first applies them; no repository label
+                  catalog needs to be changed.
                 </span>
                 <span>
                   Open tag matches: {repositoryReadiness.tagScanComplete ? "" : "at least "}
-                  {repositoryReadiness.tagMatchCount ?? "unknown"}. This is not full workflow eligibility.
+                  {repositoryReadiness.tagMatchCount ?? "unknown"}. This is not full workflow
+                  eligibility.
                 </span>
                 {repositoryReadiness.tagScanComplete && repositoryReadiness.tagMatchCount === 0 && (
                   <>
                     <label className="guided-check">
-                      <input checked={createStarterIssue} onChange={(event) => setCreateStarterIssue(event.target.checked)} type="checkbox" />
+                      <input
+                        checked={createStarterIssue}
+                        onChange={(event) => setCreateStarterIssue(event.target.checked)}
+                        type="checkbox"
+                      />
                       <span>Create one safe Azure Boards Task with the selector tags.</span>
                     </label>
-                    <button className="reconnect-button" disabled={busy !== null || !createStarterIssue} onClick={() => prepareRepository(true)} type="button">
+                    <Action
+                      variant="primary"
+                      className="reconnect-button"
+                      disabled={busy !== null || !createStarterIssue}
+                      onClick={() => prepareRepository(true)}
+                      type="button"
+                    >
                       {busy === "prepare" ? "Preparing…" : "Create starter task"}
-                    </button>
+                    </Action>
                   </>
                 )}
               </div>
@@ -1268,20 +1282,19 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                       type="checkbox"
                     />
                     <span>
-                      Create one safe starter issue to add a <code>HELLO-GOOBERS.md</code>{" "}
-                      file, with the required ready and approval labels.
+                      Create one safe starter issue to add a <code>HELLO-GOOBERS.md</code> file,
+                      with the required ready and approval labels.
                     </span>
                   </label>
                 )}
-                {(!repositoryPrepared ||
-                  (repositoryReadiness.eligibleCount ?? 0) === 0) && (
+                {(!repositoryPrepared || (repositoryReadiness.eligibleCount ?? 0) === 0) && (
                   <div className="guided-inline-actions">
-                    <button
+                    <Action
+                      variant="primary"
                       className="reconnect-button"
                       disabled={
                         busy !== null ||
-                        ((repositoryReadiness.eligibleCount ?? 0) === 0 &&
-                          !createStarterIssue)
+                        ((repositoryReadiness.eligibleCount ?? 0) === 0 && !createStarterIssue)
                       }
                       onClick={() => prepareRepository(true)}
                       type="button"
@@ -1293,15 +1306,16 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                             ? "Create missing labels and starter issue"
                             : "Create starter issue"
                           : "Create missing labels"}
-                    </button>
-                    <button
+                    </Action>
+                    <Action
+                      variant="secondary"
                       className="secondary-button"
                       disabled={busy !== null}
                       onClick={() => prepareRepository(false)}
                       type="button"
                     >
                       Check again
-                    </button>
+                    </Action>
                   </div>
                 )}
                 {repositoryPrepared && (
@@ -1319,8 +1333,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Check the setup">
             <p>
-              Goobers will validate the configuration, confirm the selected harness is
-              usable, and verify access to the repository.
+              Goobers will validate the configuration, confirm the selected harness is usable, and
+              verify access to the repository.
             </p>
             <RecoveryCommand
               command={`goobers validate --check-harness --check-repos "${state.instancePath}"`}
@@ -1329,18 +1343,18 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/config-pr-validation-gate.md"
               label="Learn how validation and testing protect configuration changes"
             />
-            <button
+            <Action
+              variant="primary"
               className="reconnect-button guided-validate-button"
               disabled={busy !== null}
               onClick={validate}
               type="button"
             >
               {busy === "validate" ? "Checking…" : "Run checks"}
-            </button>
+            </Action>
             {busy === "validate" && (
               <p aria-live="polite" className="guided-wait-message" role="status">
-                This may take a minute or two while Goobers checks the harness and
-                repository.
+                This may take a minute or two while Goobers checks the harness and repository.
               </p>
             )}
             {validateResult && <ValidationResult result={validateResult} />}
@@ -1357,10 +1371,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             </div>
             <p className="guided-welcome-lead">Your configuration is ready.</p>
             {completeResult && <p>The setup server has stopped.</p>}
-            <p>
-              Next, ask your coding agent to tailor the generated gaggle to this
-              repository.
-            </p>
+            <p>Next, ask your coding agent to tailor the generated gaggle to this repository.</p>
             {!completeResult && (
               <div className="guided-complete-setup">
                 {state.platform === "windows" && (
@@ -1371,26 +1382,24 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                       type="checkbox"
                     />
                     <span>
-                      Start Goobers automatically when I sign in. The Scheduled Task
-                      runs as my current Windows account so it can use my user-scoped
-                      credentials.
+                      Start Goobers automatically when I sign in. The Scheduled Task runs as my
+                      current Windows account so it can use my user-scoped credentials.
                     </span>
                   </label>
                 )}
-                <button
+                <Action
+                  variant="primary"
                   className="reconnect-button"
                   disabled={busy !== null}
                   onClick={finishSetup}
                   type="button"
                 >
                   {busy === "complete" ? "Finishing…" : "Finish setup"}
-                </button>
+                </Action>
               </div>
             )}
             {completeResult?.scheduledTaskInstalled && (
-              <p className="guided-success">
-                Goobers will start automatically when you sign in.
-              </p>
+              <p className="guided-success">Goobers will start automatically when you sign in.</p>
             )}
             <div className="guided-prompt-copy">
               <code>{customizationPrompt}</code>
@@ -1401,9 +1410,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   void navigator.clipboard.writeText(customizationPrompt).then(
                     () => setPromptCopied(true),
                     (error) =>
-                      setActionError(
-                        error instanceof Error ? error.message : String(error),
-                      ),
+                      setActionError(error instanceof Error ? error.message : String(error)),
                   );
                 }}
                 title={promptCopied ? "Copied" : "Copy prompt"}
@@ -1448,59 +1455,67 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       <main className="guided-wizard-content">{pageContent}</main>
 
       {currentPage.id !== "complete" && (
-      <nav aria-label="Setup progress" className="guided-wizard-footer">
-        <div className="guided-footer-actions">
-          <button
-            className="secondary-button"
-            disabled={pageIndex === 0 || busy !== null}
-            onClick={goBack}
-            type="button"
-          >
-            Back
-          </button>
-          <button
-            className="guided-restart-button"
-            disabled={busy !== null}
-            onClick={() => {
-              if (!window.confirm("Restart setup? Your selections will be cleared. Files and repository changes already created will remain.")) {
-                return;
-              }
-              for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
-                const key = window.sessionStorage.key(index);
-                if (key?.startsWith("goobers-wizard-")) {
-                  window.sessionStorage.removeItem(key);
+        <nav aria-label="Setup progress" className="guided-wizard-footer">
+          <div className="guided-footer-actions">
+            <Action
+              variant="secondary"
+              className="secondary-button"
+              disabled={pageIndex === 0 || busy !== null}
+              onClick={goBack}
+              type="button"
+            >
+              Back
+            </Action>
+            <button
+              className="guided-restart-button"
+              disabled={busy !== null}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    "Restart setup? Your selections will be cleared. Files and repository changes already created will remain.",
+                  )
+                ) {
+                  return;
                 }
-              }
-              window.location.reload();
-            }}
+                for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+                  const key = window.sessionStorage.key(index);
+                  if (key?.startsWith("goobers-wizard-")) {
+                    window.sessionStorage.removeItem(key);
+                  }
+                }
+                window.location.reload();
+              }}
+              type="button"
+            >
+              Restart
+            </button>
+          </div>
+          <div className="guided-wizard-progress">
+            <div>
+              <span>
+                Step {currentPage.step} of {wizardStepCount}
+              </span>
+            </div>
+            <div
+              aria-valuemax={wizardStepCount}
+              aria-valuemin={1}
+              aria-valuenow={currentPage.step}
+              className="guided-progress-track"
+              role="progressbar"
+            >
+              <span style={{ width: `${(currentPage.step / wizardStepCount) * 100}%` }} />
+            </div>
+          </div>
+          <Action
+            variant="primary"
+            className="reconnect-button"
+            disabled={!canContinue || busy !== null}
+            onClick={() => setPageIndex(Math.min(pages.length - 1, pageIndex + 1))}
             type="button"
           >
-            Restart
-          </button>
-        </div>
-        <div className="guided-wizard-progress">
-          <div>
-            <span>Step {currentPage.step} of {wizardStepCount}</span>
-          </div>
-          <div
-            aria-valuemax={wizardStepCount}
-            aria-valuemin={1}
-            aria-valuenow={currentPage.step}
-            className="guided-progress-track"
-            role="progressbar"
-          >
-            <span style={{ width: `${(currentPage.step / wizardStepCount) * 100}%` }} />
-          </div>
-        </div>
-        <button
-          className="reconnect-button"
-          disabled={!canContinue || busy !== null}
-          onClick={() => setPageIndex(Math.min(pages.length - 1, pageIndex + 1))}
-          type="button"
-        >
-          Continue
-        </button>
-      </nav>
+            Continue
+          </Action>
+        </nav>
       )}
     </div>
   );
@@ -1631,7 +1646,9 @@ function ValidationResult({
   result: { exitCode: number; envelope: DiagnosticsEnvelope | null; stderr: string };
 }) {
   if (result.exitCode === 0) {
-    return <p className="guided-success">All configuration, harness, and repository checks passed.</p>;
+    return (
+      <p className="guided-success">All configuration, harness, and repository checks passed.</p>
+    );
   }
   const findings = result.envelope?.findings ?? [];
   return (
@@ -1670,10 +1687,7 @@ function splitCommand(value: string): string[] {
   return trimmed.split(/\s+/);
 }
 
-function useSessionState<T>(
-  key: string,
-  initialValue: T,
-): [T, (value: T) => void] {
+function useSessionState<T>(key: string, initialValue: T): [T, (value: T) => void] {
   const [value, setValue] = useState<T>(() => {
     const stored = window.sessionStorage.getItem(key);
     if (stored === null) {

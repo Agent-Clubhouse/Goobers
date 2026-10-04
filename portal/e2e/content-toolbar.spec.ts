@@ -1,4 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function chooseDraftScope(page: Page, name: string) {
+  const dialog = page.getByRole("dialog", { name: "Filters", exact: true });
+  await dialog.getByRole("button", { name: "Draft scope", exact: true }).click();
+  await dialog.getByRole("button", { name, exact: true }).click();
+}
 
 const mobileViewports = [
   { width: 320, height: 800 },
@@ -33,7 +39,7 @@ for (const viewport of mobileViewports) {
   });
 }
 
-test("isolates mobile filter drafts and supports dismissal, chips, reset, and Back", async ({
+test("isolates mobile filter drafts and supports dismissal, scope changes, and Back", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -46,25 +52,26 @@ test("isolates mobile filter drafts and supports dismissal, chips, reset, and Ba
   await expect(dialog.getByRole("button", { name: "Cancel filter changes" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(dialog.getByRole("button", { name: "Apply filters" })).toBeFocused();
-  await dialog.getByLabel("Draft gaggle filter").selectOption("core");
+  await chooseDraftScope(page, "Gaggle · core");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL(/#\/runs\?status=all$/);
   await expect(trigger).toBeFocused();
 
   await trigger.click();
-  await dialog.getByLabel("Draft gaggle filter").selectOption("core");
+  await chooseDraftScope(page, "Gaggle · core");
   await dialog.getByRole("button", { name: "Apply filters" }).click();
   await expect(page).toHaveURL(/#\/runs\?gaggle=core&status=all$/);
-  const removeGaggle = page.getByRole("button", { name: "Remove Gaggle: core filter" });
-  await expect(removeGaggle).toBeVisible();
-  await removeGaggle.click();
+  const scope = page.getByRole("button", { name: "Scope", exact: true });
+  await expect(scope).toContainText("Gaggle · core");
+  await scope.click();
+  await page.getByRole("button", { name: "Instance", exact: true }).click();
   await expect(page).toHaveURL(/#\/runs\?status=all$/);
-  await expect(removeGaggle).toBeHidden();
+  await expect(scope).toContainText("Instance");
   await expect(page.getByRole("region", { name: "Run history" })).toBeVisible();
 
   await trigger.click();
-  await dialog.getByLabel("Draft gaggle filter").selectOption("core");
+  await chooseDraftScope(page, "Gaggle · core");
   await dialog.getByRole("button", { name: "Apply filters" }).click();
   await expect(page).toHaveURL(/#\/runs\?gaggle=core&status=all$/);
 
@@ -73,12 +80,15 @@ test("isolates mobile filter drafts and supports dismissal, chips, reset, and Ba
   await expect(dialog).toBeHidden();
   await expect(trigger).toBeFocused();
 
-  await page.getByRole("button", { name: "Reset filters" }).click();
+  await trigger.click();
+  await chooseDraftScope(page, "Instance");
+  await dialog.getByRole("button", { name: "All runs", exact: true }).click();
+  await dialog.getByRole("button", { name: "Apply filters" }).click();
   await expect(page).toHaveURL(/#\/runs$/);
   await expect(page.getByRole("region", { name: "Run history" })).toBeVisible();
 });
 
-test("applies, removes, and resets advanced Runs sheet filters", async ({ page }) => {
+test("applies, edits, and clears advanced Runs sheet filters", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/runs?status=all");
 
@@ -96,9 +106,19 @@ test("applies, removes, and resets advanced Runs sheet filters", async ({ page }
     /#\/runs\?stage=review&outcome=failure&population=attempts&since=2026-07-18T00%3A00%3A00Z&until=2026-07-19T00%3A00%3A00Z&window=24h&status=all$/,
   );
   await expect(page.getByLabel("7 active filters")).toBeVisible();
-  await page.getByRole("button", { name: "Remove Stage: review filter" }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await expect(dialog.getByLabel("Draft stage filter")).toHaveValue("review");
+  await dialog.getByLabel("Draft stage filter").fill("");
+  await dialog.getByRole("button", { name: "Apply filters" }).click();
   await expect(page).not.toHaveURL(/stage=review/);
-  await page.getByRole("button", { name: "Reset filters" }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await dialog.getByRole("button", { name: "All runs", exact: true }).click();
+  await dialog.getByLabel("Draft outcome filter").selectOption("");
+  await dialog.getByLabel("Draft population filter").selectOption("");
+  await dialog.getByLabel("Draft since filter").fill("");
+  await dialog.getByLabel("Draft until filter").fill("");
+  await dialog.getByLabel("Draft time window filter").selectOption("");
+  await dialog.getByRole("button", { name: "Apply filters" }).click();
   await expect(page).toHaveURL(/#\/runs$/);
 });
 
@@ -110,7 +130,7 @@ test("consumes filter sheet history before applying filters", async ({ page }) =
 
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Filters" });
-  await dialog.getByLabel("Draft gaggle filter").selectOption("core");
+  await chooseDraftScope(page, "Gaggle · core");
   await dialog.getByRole("button", { name: "Apply filters" }).click();
   await expect(page).toHaveURL(/#\/runs\?gaggle=core$/);
 
@@ -181,7 +201,7 @@ test("keeps loading, empty, and error states bounded on a narrow screen", async 
 
   await page.goto("/#/work-items");
   await expect(page.locator(".daemon-state[role='status']")).toContainText(
-    "Connecting to Goobers Instance",
+    "Loading...",
   );
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
     .toBeLessThanOrEqual(1);
