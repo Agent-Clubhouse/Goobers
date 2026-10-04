@@ -85,8 +85,8 @@ func (s *Store) AcceptWorkbenchCommand(ctx context.Context, input WorkbenchComma
 	if !errors.Is(err, sql.ErrNoRows) {
 		return WorkbenchCommand{}, false, err
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM workbench_commands WHERE gaggle=?`, input.Scope.Gaggle).Scan(&count); err != nil {
+	count, err := workbenchCommandCount(ctx, tx, input.Scope.Gaggle)
+	if err != nil {
 		return WorkbenchCommand{}, false, err
 	}
 	if count >= MaxWorkbenchCommands {
