@@ -204,8 +204,10 @@ remains until isolated branch forks and fan-in are implemented.
   cleanup are covered. The credential broker now selects current human bindings
   for a verified child epoch, keeps model pods restricted to model credentials,
   and cancels operations during policy reload without reversing lock order.
-  Runtime admission, full worker lifetime leases and portal epoch history still
-  gate enabling sealed-child restart.
+  The portal links the current execution and shows bounded restart history with
+  human attribution; publication checks remain anchored to the original emitting
+  execution. History reads omit restart-plan payloads. Runtime admission and full
+  worker lifetime leases still gate enabling sealed-child restart.
 - Keep recursion deferred as agreed; one unresolved child per stage occurrence,
   including distinct parallel occurrences, remains the required v1 scope.
 
