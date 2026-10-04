@@ -169,3 +169,10 @@ Old branch wait handles cannot resume a later wait. Real scheduler race tests
 cover these boundaries and unchanged start allowances. Branch lane scheduling,
 contained branch factories and writable fork/join integration are still required
 before parallel child delegation is enabled; the current shape gate remains.
+
+Contained factories now accept only a runner-owned root or branch journal
+recorder. Host writer receipts retain branch attribution, and one branch's join
+cannot release a sibling's writer. Whole-run recovery still requires all pending
+scopes to join, processing distinct held workspaces in physical-attempt order and
+refusing ambiguous shared-workspace recovery receipts. This does not enable the
+unfinished parallel execution lane.

@@ -92,6 +92,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-event-causal-roots` | `codex/haw-parallel-child-projection` | Preserve bounded original event roots across chained consumers |
 
+| `codex/haw-parallel-parent-custody` | `codex/haw-event-causal-roots` | Bind parent contracts and recovered writers to owned branch journals |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
