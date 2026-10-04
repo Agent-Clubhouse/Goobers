@@ -129,6 +129,25 @@ func publicationDefinition(t testing.TB) wf.Definition {
 	return d
 }
 
+func unpushedRemediationDefinition(t testing.TB) wf.Definition {
+	t.Helper()
+	d := reviewDefinition()
+	selector := shell("gather-pr-context", "implement", "goobers", "gather-pr-context")
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+		selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+	}
+	d.Spec.Start = selector.Name
+	d.Spec.Tasks = append([]apiv1.Task{selector}, d.Spec.Tasks...)
+	d.Spec.Gates[0].Branches["fail"] = "park-escalated"
+	d.Spec.Gates[0].Branches["needs-changes"] = "park-escalated"
+	park := shell("park-escalated", wf.TargetEscalate, "goobers", "remediation-checkpoint", "--escalate")
+	park.Capabilities = []string{"github:pr:write", "repo:push"}
+	park.PolicyActions = []string{"record-remediation-checkpoint", "escalate-pr"}
+	d.Spec.Tasks = append(d.Spec.Tasks, park)
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+	return d
+}
+
 func TestSafetyPublicationIsPathAndVerdictSpecific(t *testing.T) {
 	d := publicationDefinition(t)
 	bad := assertFinding(t, compile(t, d), PublishCode, true)
@@ -147,6 +166,22 @@ func TestSafetyPublicationIsPathAndVerdictSpecific(t *testing.T) {
 
 	// A publisher can fail and still reach a park when continueOnError is set.
 	d.Spec.Tasks[2].ContinueOnError = true
+	assertFinding(t, compile(t, d), PublishCode, true)
+}
+
+func TestSafetyTerminalParkRecordsUnpushedRemediationReview(t *testing.T) {
+	d := unpushedRemediationDefinition(t)
+	assertFinding(t, compile(t, d), PublishCode, false)
+
+	d.Spec.Gates[0].Branches["fail"] = wf.TargetAbort
+	assertFinding(t, compile(t, d), PublishCode, true)
+
+	d = unpushedRemediationDefinition(t)
+	d.Spec.Tasks[2].Next = "push-remediated"
+	push := shell("push-remediated", "review", "goobers", "push-remediated")
+	push.Capabilities = []string{"github:issues:write", "github:pr:write", "repo:push"}
+	push.PolicyActions = []string{"push-pr-branch", "clear-remediation"}
+	d.Spec.Tasks = append(d.Spec.Tasks, push)
 	assertFinding(t, compile(t, d), PublishCode, true)
 }
 
