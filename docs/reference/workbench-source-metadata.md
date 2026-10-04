@@ -471,3 +471,21 @@ and linked proposal. Settled reviews use 30 days of detail followed by 30 days o
 compact replay identity. Review custody shares the command count, byte budget and
 bounded maintenance with source edits, marker resolutions and PR repairs. The
 repository/provider remains the owner of planning truth.
+
+
+### Reviewed suggestion service
+
+The review service verifies the selected retained artifact and current endpoint
+visibility. Preview re-reads both source identities and revisions, derives the
+configured metadata owner, and returns its ordinary proposal diff. Acceptance
+must carry the exact owner revision and operation digest shown by that preview;
+the client cannot substitute an edge or destination. A repeated linked decision
+returns the existing proposal without advancing another write phase.
+
+Rejection requires an operator's current `source.proposeChange` grant and records
+only a review decision. Receipt inspection remains available under current source
+read authority. The supported acceptance shapes are `references` and
+`contributes-to` between existing native work items and objective documents.
+Provisional creation references, native hierarchy changes and other endpoint
+kinds remain explicit unsupported cases. The service is implemented; portal/API
+installation follows as a separate review slice.
