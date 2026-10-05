@@ -781,10 +781,14 @@ function insightFormatTokens(value) {
     return value === undefined ? "Unmeasured" : value.toLocaleString("en-US") + " tokens";
 }
 
+function formatAICValue(value) {
+    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
 function insightFormatCost(value) {
     return value === undefined
         ? "Unmeasured"
-        : new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value) + " AIC";
+        : formatAICValue(value) + " AIC";
 }
 
 function insightFormatSamples(samples) {
@@ -1099,8 +1103,7 @@ function costAmountByUnit(amounts, unit) {
 
 function formatCostAmount(amount) {
     if (!amount) return "Unmeasured";
-    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(Number(amount.value || 0)) +
-        " AIC" + (amount.estimated ? " estimated" : "");
+    return formatAICValue(Number(amount.value || 0)) + " AIC" + (amount.estimated ? " estimated" : "");
 }
 
 function costAggregateAIC(aggregate) {
@@ -1291,7 +1294,7 @@ export function formatWorkItemTimestamp(value) {
 export function formatWorkItemCost(cost) {
     if (!cost) return "Not attributed";
     if (cost.nanoAIU !== undefined && cost.nanoAIU !== null) {
-        return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(cost.nanoAIU / 1_000_000_000) + " AIC";
+        return formatAICValue(cost.nanoAIU / 1_000_000_000) + " AIC";
     }
     return "Not measured";
 }
@@ -4606,6 +4609,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   const insightFormatRate = ${insightFormatRate.toString()};
   const insightFormatDuration = ${insightFormatDuration.toString()};
   const insightFormatTokens = ${insightFormatTokens.toString()};
+  const formatAICValue = ${formatAICValue.toString()};
   const insightFormatCost = ${insightFormatCost.toString()};
   const insightFormatSamples = ${insightFormatSamples.toString()};
   const insightFormatBucketLabel = ${insightFormatBucketLabel.toString()};

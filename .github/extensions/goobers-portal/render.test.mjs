@@ -757,7 +757,7 @@ const INSTANCE_STATS_FIXTURE = {
     usage: [
         {
             scope: "instance", totalAttempts: 25, p50Tokens: 1200, p95Tokens: 4300,
-            costAIC: 1234, p50CostAIC: 40, p95CostAIC: 110, costSamples: 25,
+            costAIC: 1234.5, p50CostAIC: 0, p95CostAIC: 1234567.6, costSamples: 25,
             retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostAIC: 75,
         },
     ],
@@ -803,7 +803,8 @@ test("renderInsightPanel renders outcome, curation, credit, usage, trend, and st
     assert.match(html, /implement/);
     // Usage / tokens and retry waste.
     assert.match(html, /Tokens and retry waste/);
-    assert.match(html, /1,234 AIC/);
+    assert.match(html, /1,235 AIC/);
+    assert.match(html, /0 AIC \/ 1,234,568 AIC/);
     // AIC trend: only the most recent 8 (bucket count for 24h) buckets show, all 4 fixture buckets included here.
     assert.match(html, /Cost over time/);
     assert.match(html, /300 AIC/);
@@ -974,7 +975,7 @@ const COST_RESULT_FIXTURE = {
             externalKind: "pr",
             externalId: "5183",
             nativeTotals: [{ unit: "usd", value: 4.2, estimated: false }],
-            normalizedTotals: [{ unit: "aiCredits", value: 420, estimated: false }],
+            normalizedTotals: [{ unit: "aiCredits", value: 420.5, estimated: false }],
             coverage: { totalRuns: 2, measuredRuns: 2, totalAttempts: 3, measuredAttempts: 3, complete: true, lowerBound: false },
             models: [
                 {
@@ -992,7 +993,7 @@ const COST_RESULT_FIXTURE = {
             provider: "github",
             externalKind: "issue",
             externalId: "99",
-            nativeTotals: [{ unit: "aiCredits", value: 12, estimated: true }],
+            nativeTotals: [{ unit: "aiCredits", value: 12.4, estimated: true }],
             normalizedTotals: [{ unit: "usd", value: 1.5, estimated: true }],
             coverage: { totalRuns: 2, measuredRuns: 1, totalAttempts: 4, measuredAttempts: 2, complete: false, lowerBound: true },
             models: [],
@@ -1004,7 +1005,7 @@ const COST_RESULT_FIXTURE = {
 test("deriveExternalCostRows normalizes PR and issue cost aggregates", () => {
     const rows = deriveExternalCostRows(COST_RESULT_FIXTURE);
     assert.deepEqual(rows.map((row) => row.label), ["PR #5183", "Issue #99"]);
-    assert.equal(rows[0].aic, "420 AIC");
+    assert.equal(rows[0].aic, "421 AIC");
     assert.equal(rows[1].aic, "12 AIC estimated");
     assert.equal(rows[1].lowerBound, true);
     assert.deepEqual(rows[0].runs, ["run-1", "run-2"]);
@@ -1215,7 +1216,9 @@ test("work item helpers format labels, operations, costs, and local filters", ()
     assert.equal(workItemLabel("", "42"), "#42");
     assert.equal(humanizeWorkItemOperation("request-review"), "Request Review");
     assert.equal(humanizeWorkItemOperation(""), "Provider action");
-    assert.equal(formatWorkItemCost({ nanoAIU: 1_250_000_000 }), "1.25 AIC");
+    assert.equal(formatWorkItemCost({ nanoAIU: 1_500_000_000 }), "2 AIC");
+    assert.equal(formatWorkItemCost({ nanoAIU: 0 }), "0 AIC");
+    assert.equal(formatWorkItemCost({ nanoAIU: 1_234_567_600_000_000 }), "1,234,568 AIC");
     assert.equal(formatWorkItemCost(null), "Not attributed");
     assert.equal(formatWorkItemTimestamp("0001-01-01T00:00:00Z"), "\u2014");
     assert.deepEqual(
@@ -1242,7 +1245,7 @@ test("renderWorkItemDetail renders cost coverage, related links, action filterin
     const html = renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "comment");
     assert.match(html, /acme\/app#42/);
     assert.match(html, /Attributed cost to date/);
-    assert.match(html, /1\.25 AIC/);
+    assert.match(html, /1 AIC/);
     assert.match(html, /Lower bound; some usage is unmeasured/);
     assert.match(html, /1\/2 runs/);
     assert.match(html, /Open pull request/);
