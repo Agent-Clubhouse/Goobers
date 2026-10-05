@@ -1,6 +1,7 @@
 # #6649: worker blob-probe waits for daemon readiness
 
-Growth: about +10 non-test lines in `cmd/goobers` (`worker.go`, `workerblob.go`).
+Growth: about +11 non-test lines in `cmd/goobers` (`worker.go`, `workerblob.go`,
+`completionmodel.go`).
 
 ## Why the growth belongs in the command package
 
@@ -10,6 +11,9 @@ Growth: about +10 non-test lines in `cmd/goobers` (`worker.go`, `workerblob.go`)
   defaults for `goobers worker` live only in this command.
 - `workerblob.go` threads the resulting `workerblob.ProbeOptions` (wait bound
   and stderr progress log) into `workerblob.Open`.
+
+- `completionmodel.go` and `clisynopsis.go` register the new flag; a test
+  requires handler flags, synopsis and completions to agree.
 
 ## Could any of it live elsewhere?
 
