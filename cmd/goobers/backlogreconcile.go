@@ -1064,8 +1064,16 @@ func reserveBacklogClaimReconciliation(
 	// run itself holds, because a same-run claim would renew rather than
 	// refuse — is kept by checking the run's holdings first.
 	contained, onPlane := ledger.(claimsclient.Contained)
+	// Over the plane the RunID is the run's plain id, and the daemon's
+	// pinned-identity check compares the label with the run's pinned workflow,
+	// so the synthetic label would be refused (500 write_failed). File the
+	// reservation under the run's own workflow there.
+	workflowLabel := "backlog-reconcile"
 	if onPlane {
 		runID = contained.ContainedRunID()
+		if own := os.Getenv(executor.WorkflowEnvVar); own != "" {
+			workflowLabel = own
+		}
 	}
 	reservation := &backlogReconcileReservation{
 		itemID:   itemID,
@@ -1087,7 +1095,7 @@ func reserveBacklogClaimReconciliation(
 			}
 		}
 		var err error
-		acquired, _, err = tx.ClaimScoped(claimContext(), reservation.key(), runID, "backlog-reconcile", stageTimeout())
+		acquired, _, err = tx.ClaimScoped(claimContext(), reservation.key(), runID, workflowLabel, stageTimeout())
 		return err
 	})
 	return reservation, acquired, err

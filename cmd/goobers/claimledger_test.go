@@ -505,6 +505,7 @@ func TestBacklogReconcileReservationOverThePlane(t *testing.T) {
 	}
 	stampClaimsPlaneEnv(t, plane, "curation-run", token)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	podRoot := instance.NewLayout(t.TempDir())
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 
@@ -524,6 +525,11 @@ func TestBacklogReconcileReservationOverThePlane(t *testing.T) {
 	}
 	if entry, ok := reopened.LookupScoped(localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "6"}); !ok || entry.RunID != "curation-run" {
 		t.Fatalf("daemon ledger entry for 6 = %+v, %v; want held by curation-run", entry, ok)
+	} else if entry.Workflow != "backlog-curation" {
+		// The daemon's pinned-identity check compares the claim's workflow with
+		// the run's pinned workflow; the synthetic "backlog-reconcile" label is
+		// only valid on a synthesized RunID, never over the plane.
+		t.Fatalf("daemon ledger entry for 6 filed under workflow %q, want the run's own %q", entry.Workflow, "backlog-curation")
 	}
 	if err := releaseBacklogClaimReconciliation(podRoot, *reservation); err != nil {
 		t.Fatal(err)
