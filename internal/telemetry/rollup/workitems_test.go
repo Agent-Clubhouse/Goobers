@@ -93,6 +93,71 @@ func TestWorkItemsGroupsMutationsAndReturnsActionTimeline(t *testing.T) {
 	}
 }
 
+// TestRelatedPullRequestsADO guards #6797: an ADO work item is project-scoped
+// (<org>/<project>) while its pull requests live in repository-scoped
+// <org>/<project>/_git/<repo> URLs, so the PR prefix must be built from the
+// project rather than from the issue's repository as if it were a PR's.
+func TestRelatedPullRequestsADO(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := db.sql.Exec(`
+		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+		VALUES ('run-1', 'implementation', 1, 'core', 'completed', ?)`,
+		formatTime(start)); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		issueURL     = "https://dev.azure.com/org/project/_workitems/edit/42"
+		pullURL      = "https://dev.azure.com/org/project/_git/app/pullrequest/721"
+		otherProject = "https://dev.azure.com/org/other/_git/app/pullrequest/722"
+	)
+	for _, mutation := range []struct {
+		seq       int
+		kind      string
+		external  string
+		url       string
+		operation string
+	}{
+		{1, "issue", "42", issueURL, "claim"},
+		{2, "pr", "721", pullURL, "open"},
+		{3, "issue", "42", issueURL, "link-pr"},
+		{4, "pr", "722", otherProject, "open"},
+	} {
+		if _, err := db.sql.Exec(`
+			INSERT INTO provider_mutations
+				(run_id, seq, provider, kind, external_id, url, operation, occurred_at)
+			VALUES ('run-1', ?, 'ado', ?, ?, ?, ?, ?)`,
+			mutation.seq, mutation.kind, mutation.external, mutation.url,
+			mutation.operation, formatTime(start.Add(time.Duration(mutation.seq)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, attribution := range []struct {
+		kind, id, repository, url string
+	}{
+		{"issue", "42", "org/project", issueURL},
+		{"pr", "721", "org/project/app", pullURL},
+		{"pr", "722", "org/other/app", otherProject},
+	} {
+		if _, err := db.sql.Exec(`
+			INSERT INTO run_cost_attribution
+				(run_id, provider, repository, external_kind, external_id, url, relationship)
+			VALUES ('run-1', 'ado', ?, ?, ?, ?, 'touched')`,
+			attribution.repository, attribution.kind, attribution.id, attribution.url); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	related, err := db.RelatedPullRequests(context.Background(), "ado", "org/project", "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(related) != 1 || related[0].ExternalID != "721" ||
+		related[0].Repository != "org/project/app" || related[0].URL != pullURL {
+		t.Fatalf("related pull requests = %#v", related)
+	}
+}
+
 func TestWorkItemsKeepSameNumberedRepositoriesSeparate(t *testing.T) {
 	db := openTestDB(t, t.TempDir())
 	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
