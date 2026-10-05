@@ -1517,8 +1517,16 @@ func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authentica
 }
 
 func pullRequestCommentAfter(a providers.PullRequestComment, aIndex int, b providers.PullRequestComment, bIndex int) bool {
-	if !a.CreatedAt.IsZero() && !b.CreatedAt.IsZero() && !a.CreatedAt.Equal(b.CreatedAt) {
-		return a.CreatedAt.After(b.CreatedAt)
+	aTime := a.UpdatedAt
+	if aTime.IsZero() {
+		aTime = a.CreatedAt
+	}
+	bTime := b.UpdatedAt
+	if bTime.IsZero() {
+		bTime = b.CreatedAt
+	}
+	if !aTime.IsZero() && !bTime.IsZero() && !aTime.Equal(bTime) {
+		return aTime.After(bTime)
 	}
 	if a.ID != 0 && b.ID != 0 && a.ID != b.ID {
 		return a.ID > b.ID

@@ -146,6 +146,31 @@ func TestPRSelectClearsRunAbortedForCurrentHeadPassFromOtherIdentity(t *testing.
 	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
 }
 
+func TestPRSelectClearsRunAbortedForCanonicalPassUpdatedAfterHumanComment(t *testing.T) {
+	const number = 6779
+	server := newReviewedRunAbortedPRFixture(t, number)
+	passCreatedAt := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
+	server.addRawCommentAtAsType(number, "jeffstei", "", currentHeadPassFromOtherIdentity(t), passCreatedAt)
+	server.addRawCommentAtAsType(number, "reviewer", "", "please recheck this", passCreatedAt.Add(time.Hour))
+	server.mu.Lock()
+	server.issues[number].commentUpdates[0] = passCreatedAt.Add(2 * time.Hour)
+	server.mu.Unlock()
+
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #6779") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want updated current-head pass to clear run-aborted", code, stdout, stderr)
+	}
+	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
+}
+
 func TestPRSelectLeavesCurrentHeadPassParkedAfterNewerHumanComment(t *testing.T) {
 	const number = 6768
 	server := newReviewedRunAbortedPRFixture(t, number)
@@ -174,6 +199,11 @@ func TestPRSelectRestoresRunAbortedAfterHumanCommentFollowingCurrentHeadPass(t *
 
 func addCurrentHeadPassFromOtherIdentity(t *testing.T, server *fakeGitHubServer, number int) {
 	t.Helper()
+	server.addRawCommentAs(number, "jeffstei", currentHeadPassFromOtherIdentity(t))
+}
+
+func currentHeadPassFromOtherIdentity(t *testing.T) string {
+	t.Helper()
 	pass := renderVerdictComment(apiv1.Verdict{
 		Decision: apiv1.VerdictPass,
 		Summary:  "verified",
@@ -195,7 +225,7 @@ func addCurrentHeadPassFromOtherIdentity(t *testing.T, server *fakeGitHubServer,
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.addRawCommentAs(number, "jeffstei", body)
+	return body
 }
 
 func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T) {
