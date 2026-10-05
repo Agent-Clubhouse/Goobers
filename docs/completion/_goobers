@@ -163,7 +163,7 @@ _goobers_completion()
             flags+=(--gaggle --temporal-hostport --temporal-namespace)
             ;;
         worker)
-            flags+=(--instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
+            flags+=(--instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --blob-probe-wait --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
         config-seed)
             flags+=(--mirror --instance)
