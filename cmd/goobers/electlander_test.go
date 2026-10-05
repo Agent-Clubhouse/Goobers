@@ -323,18 +323,20 @@ func TestAsymmetricFindingsDeferClusterWithoutLander(t *testing.T) {
 	if !ok || !strings.Contains(posted.Rationale, "the overlap is a substantive conflict") {
 		t.Fatalf("derived election disposition discarded reviewer rationale: %+v", posted)
 	}
-	hasEscalationLabel := false
+	hasRemediationLabel := false
 	for _, label := range labels {
 		if label == "goobers:merge-escalated" || label == "goobers:needs-human" {
 			t.Fatalf("deferral was published as rejection: %v", labels)
 		}
 		if label == blockedOnSiblingLabel {
-			hasEscalationLabel = true
-			break
+			t.Fatalf("substantive deferral was parked on a sibling: %v", labels)
+		}
+		if label == needsRemediationLabel {
+			hasRemediationLabel = true
 		}
 	}
-	if !hasEscalationLabel {
-		t.Fatalf("labels = %v, want blocked-on-sibling (apply-verdict stdout = %q)", labels, stdout)
+	if !hasRemediationLabel {
+		t.Fatalf("labels = %v, want needs-remediation (apply-verdict stdout = %q)", labels, stdout)
 	}
 	for _, want := range []string{"Cluster has no lander", "#10", "#11", "fifo"} {
 		if !strings.Contains(comments[0], want) {
