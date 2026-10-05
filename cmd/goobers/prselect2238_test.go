@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -87,6 +88,84 @@ func TestPRSelectLeavesRunAbortedPRWithCommentsParked(t *testing.T) {
 	assertFakeIssueLabels(t, server, 5438, []string{abortedRunLabel}, nil)
 }
 
+func TestPRSelectIgnoresGoobersCommentsFromOtherInstanceIdentities(t *testing.T) {
+	const number = 6766
+	server := newReviewedRunAbortedPRFixture(t, number)
+	for i, author := range []string{"jeffstei", "goobersbot"} {
+		body, err := providers.StampAttribution(
+			"automation status",
+			providers.Attribution{
+				InstanceID: strings.Repeat(string(rune('a'+i)), 32),
+				Gaggle:     "goobers",
+				Workflow:   "merge-review",
+				Task:       "apply-verdict",
+				Goober:     "deterministic",
+				Run:        "merge-review-run-" + author,
+			},
+			"comment",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.addRawCommentAs(number, author, body)
+	}
+
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #6766") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want PR selected despite other-instance Goobers comments", code, stdout, stderr)
+	}
+	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
+}
+
+func TestPRSelectClearsRunAbortedForCurrentHeadPassFromOtherIdentity(t *testing.T) {
+	const number = 6767
+	server := newReviewedRunAbortedPRFixture(t, number)
+	pass := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		Summary:  "verified",
+		HeadSHA:  "green-head",
+		BaseSHA:  "main-base",
+	})
+	body, err := providers.StampAttribution(
+		pass,
+		providers.Attribution{
+			InstanceID: strings.Repeat("b", 32),
+			Gaggle:     "goobers",
+			Workflow:   "merge-review",
+			Task:       "apply-verdict",
+			Goober:     "deterministic",
+			Run:        "merge-review-pass",
+		},
+		"comment",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.addRawCommentAs(number, "jeffstei", body)
+
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #6767") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want current-head pass to clear run-aborted", code, stdout, stderr)
+	}
+	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
+}
+
 func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T) {
 	const number = 6407
 	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
@@ -94,7 +173,22 @@ func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T
 	server := newReviewedRunAbortedPRFixture(t, number)
 	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
 	server.addRawCommentAtAsType(number, "reviewer", "", "substantive finding", remediatedAt.Add(-time.Hour))
-	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), remediatedAt)
+	response, err := providers.StampAttribution(
+		remediationResponseMarker("remediation-run"),
+		providers.Attribution{
+			InstanceID: strings.Repeat("c", 32),
+			Gaggle:     "goobers",
+			Workflow:   "pr-remediation",
+			Task:       "respond",
+			Goober:     "deterministic",
+			Run:        "remediation-run",
+		},
+		"comment",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.addRawCommentAtAsType(number, "jeffstei", "", response, remediatedAt)
 
 	root := initDemo(t)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
