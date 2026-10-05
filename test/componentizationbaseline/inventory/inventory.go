@@ -7,6 +7,8 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -53,6 +55,7 @@ func buildInventory(module moduleMetadata, build goEnv, commit string, tags []st
 	prodClosure := localClosure(module.Path, prod)
 	testClosure := localClosure(module.Path, test)
 	packages := mergeLocalPackages(module.Path, prod, test)
+	exports := packageExports(prod, test)
 	root := findRootPackage(target, prod)
 	if root == nil {
 		return inventory{}, fmt.Errorf("production go list did not contain target %q", target)
@@ -69,7 +72,7 @@ func buildInventory(module moduleMetadata, build goEnv, commit string, tags []st
 	var records []packageRecord
 	var tests []testRecord
 	for _, pkg := range packages {
-		analysis, err := analyzePackage(module, pkg, prodClosure, testClosure, domains)
+		analysis, err := analyzePackage(module, pkg, prodClosure, testClosure, exports, domains)
 		if err != nil {
 			return inventory{}, err
 		}
@@ -178,7 +181,19 @@ func findRootPackage(target string, packages []goPackage) *goPackage {
 	return nil
 }
 
-func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosure []string, domains map[string]*domainRecord) (packageAnalysis, error) {
+func packageExports(groups ...[]goPackage) map[string]string {
+	exports := make(map[string]string)
+	for _, group := range groups {
+		for _, pkg := range group {
+			if pkg.Export != "" {
+				exports[canonicalImportPath(pkg.ImportPath)] = pkg.Export
+			}
+		}
+	}
+	return exports
+}
+
+func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosure []string, exports map[string]string, domains map[string]*domainRecord) (packageAnalysis, error) {
 	relDir, err := repositoryPath(module.Dir, pkg.Dir)
 	if err != nil {
 		return packageAnalysis{}, fmt.Errorf("normalize package %s: %w", pkg.ImportPath, err)
@@ -214,7 +229,6 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 				symbolFiles[symbol] = name
 			}
 		}
-		collectGlobalFactories(file, factories)
 	}
 	for name, file := range parsed {
 		for domain, files := range domainFiles {
@@ -255,7 +269,8 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 		}
 		internalFiles[name] = file
 	}
-	typed := typePackage(fset, pkg.ImportPath, pkg.Name, parsed, internalFiles, nil)
+	typed := typePackage(fset, pkg.ImportPath, pkg.Name, parsed, internalFiles, nil, exports)
+	factories = collectGlobalFactories(typed.pkg)
 	for name, file := range parsed {
 		for domain, files := range domainFiles {
 			if !files[name] {
@@ -293,7 +308,7 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 				}
 				groupParsed[name] = file
 			}
-			groupTyped = typePackage(externalFSet, pkg.ImportPath+"_test", pkg.Name+"_test", nil, groupParsed, typed.pkg)
+			groupTyped = typePackage(externalFSet, pkg.ImportPath+"_test", pkg.Name+"_test", nil, groupParsed, typed.pkg, exports)
 			groupTyped.domains = typed.domains
 			groupTyped.factories = typed.factories
 		}
@@ -319,14 +334,24 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 	return packageAnalysis{record: record, tests: tests, symbols: symbolDomains, factories: factories}, nil
 }
 
-func typePackage(fset *token.FileSet, path, name string, production, test map[string]*ast.File, local *types.Package) typedPackage {
+func typePackage(fset *token.FileSet, path, name string, production, test map[string]*ast.File, local *types.Package, exports map[string]string) typedPackage {
 	info := &types.Info{
 		Defs:       make(map[*ast.Ident]types.Object),
 		Uses:       make(map[*ast.Ident]types.Object),
 		Selections: make(map[*ast.SelectorExpr]*types.Selection),
 	}
 	files := sortedASTFiles(production, test)
-	config := types.Config{Importer: importer.Default(), Error: func(error) {}}
+	fallback := types.Importer(importer.Default())
+	if len(exports) > 0 {
+		fallback = importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+			export, ok := exports[path]
+			if !ok {
+				return nil, fmt.Errorf("no export data for %s", path)
+			}
+			return os.Open(export)
+		})
+	}
+	config := types.Config{Importer: fallback, Error: func(error) {}}
 	if local != nil {
 		config.Importer = packageImporter{localPath: local.Path(), local: local, fallback: config.Importer}
 	}
@@ -527,30 +552,18 @@ func declarationNames(decl ast.Decl) []string {
 	}
 }
 
-func collectGlobalFactories(file *ast.File, factories map[string]bool) {
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.VAR {
+func collectGlobalFactories(pkg *types.Package) map[string]bool {
+	factories := make(map[string]bool)
+	for _, name := range pkg.Scope().Names() {
+		object, ok := pkg.Scope().Lookup(name).(*types.Var)
+		if !ok {
 			continue
 		}
-		for _, raw := range gen.Specs {
-			spec := raw.(*ast.ValueSpec)
-			isFactory := false
-			if _, ok := spec.Type.(*ast.FuncType); ok {
-				isFactory = true
-			}
-			for _, value := range spec.Values {
-				if _, ok := value.(*ast.FuncLit); ok {
-					isFactory = true
-				}
-			}
-			if isFactory {
-				for _, name := range spec.Names {
-					factories[name.Name] = true
-				}
-			}
+		if _, ok := object.Type().Underlying().(*types.Signature); ok {
+			factories[name] = true
 		}
 	}
+	return factories
 }
 
 func analyzeTestFunction(pkg, file string, external bool, kind string, fn *ast.FuncDecl, typed typedPackage) testRecord {

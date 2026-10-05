@@ -62,7 +62,7 @@ func TestBuildInventoryNormalizesModulePathsAndClassifiesTests(t *testing.T) {
 	if !reflect.DeepEqual(straddling.EnvironmentAccess, []string{"Getenv", "Setenv"}) {
 		t.Fatalf("environment access = %#v", straddling.EnvironmentAccess)
 	}
-	if !reflect.DeepEqual(straddling.GlobalFactoryAccesses, []string{"newDependency"}) {
+	if !reflect.DeepEqual(straddling.GlobalFactoryAccesses, []string{"newDependency", "newLookupEnv"}) {
 		t.Fatalf("global factories = %#v", straddling.GlobalFactoryAccesses)
 	}
 	if len(shadowed.Domains) != 0 {
@@ -226,8 +226,12 @@ func fixturePackages(t *testing.T) (moduleMetadata, []goPackage, []goPackage) {
 	}
 	files := map[string]string{
 		filepath.Join(commandDir, "docchurn.go"): `package main
-import "example.test/renamed/module/internal/shared"
+import (
+	"os"
+	"example.test/renamed/module/internal/shared"
+)
 var newDependency = func() int { return shared.Value }
+var newLookupEnv = os.LookupEnv
 func runDocsChurn() { commonHelper() }`,
 		filepath.Join(commandDir, "contestedfiles.go"): `package main
 func partitionByContention() {}`,
@@ -258,6 +262,9 @@ func TestAcrossDomains(t *testing.T) {
 	runDocsHelper()
 	partitionByContention()
 	_ = newDependency()
+	lookup := newLookupEnv
+	newLookupEnv = func(string) (string, bool) { return "", false }
+	t.Cleanup(func() { newLookupEnv = lookup })
 }
 func TestShadowedName(t *testing.T) {
 	runDocsChurn := func() {}
@@ -334,8 +341,8 @@ func discoveryRunner(t *testing.T, root, goos, goarch, selected, ignored string)
 	return scriptedRunner{responses: []scriptedResponse{
 		{name: "go", args: "list -m -json", result: commandResult{stdout: []byte(module)}},
 		{name: "go", args: "env -json GOOS GOARCH CGO_ENABLED GOVERSION", result: commandResult{stdout: []byte(`{"GOOS":"` + goos + `","GOARCH":"` + goarch + `","CGO_ENABLED":"0","GOVERSION":"go1.test"}`)}},
-		{name: "go", args: "list -deps -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
-		{name: "go", args: "list -deps -test -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
+		{name: "go", args: "list -deps -export -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
+		{name: "go", args: "list -deps -test -export -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
 		{name: "git", args: "-C " + root + " rev-parse HEAD", result: commandResult{stdout: []byte("abc123\n")}},
 	}}
 }

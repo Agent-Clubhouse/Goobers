@@ -60,6 +60,7 @@ type goPackage struct {
 	TestImports    []string
 	XTestImports   []string
 	ForTest        string
+	Export         string
 	Module         *struct {
 		Path string
 		Dir  string
@@ -108,7 +109,7 @@ func (d discovery) collect(ctx context.Context, target string) (inventory, error
 		return inventory{}, errors.New("decode `go env -json`: missing GOOS, GOARCH, CGO_ENABLED, or GOVERSION")
 	}
 
-	prodArgs := append([]string{"list", "-deps", "-json"}, d.tagArgs()...)
+	prodArgs := append([]string{"list", "-deps", "-export", "-json"}, d.tagArgs()...)
 	prodArgs = append(prodArgs, target)
 	prodResult, err := d.invoke(ctx, "go", prodArgs, env)
 	if err != nil {
@@ -119,7 +120,7 @@ func (d discovery) collect(ctx context.Context, target string) (inventory, error
 		return inventory{}, err
 	}
 
-	testArgs := append([]string{"list", "-deps", "-test", "-json"}, d.tagArgs()...)
+	testArgs := append([]string{"list", "-deps", "-test", "-export", "-json"}, d.tagArgs()...)
 	testArgs = append(testArgs, target)
 	testResult, err := d.invoke(ctx, "go", testArgs, env)
 	if err != nil {
