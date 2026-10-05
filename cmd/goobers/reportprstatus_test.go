@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -276,23 +278,22 @@ func TestReportPRStatusProviderFailureWritesTypedArtifact(t *testing.T) {
 	pointADOStageProviderAt(t, server)
 
 	code, stdout, stderr := runArgs(t, "report-pr-status", root)
-	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "error: publish pull request status: ") || !strings.Contains(stderr, "status 503") {
+	providerError := "publish pull request status: POST " + server.URL +
+		`/acme/project/_apis/git/repositories/web/pullrequests/77/iterations/3/statuses?api-version=7.1 failed: status 503: {"message":"temporarily unavailable"}`
+	if code != 1 || stdout != "" || stderr != "error: "+providerError+"\n" {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if posts != 1 {
 		t.Fatalf("publication calls = %d, want 1", posts)
 	}
-	var result map[string]any
 	data, err := os.ReadFile(resultFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result["errorCode"] != "github_server_error" || result["errorRetryable"] != true ||
-		result["integrity"] != "unapproved" || !strings.Contains(result["errorMessage"].(string), "status 503") || len(result) != 4 {
-		t.Fatalf("typed provider result = %#v", result)
+	wantResult := `{"errorCode":"github_server_error","errorMessage":` +
+		strconv.Quote(providerError) + `,"errorRetryable":true,"integrity":"unapproved"}`
+	if string(data) != wantResult {
+		t.Fatalf("typed provider result = %s, want %s", data, wantResult)
 	}
 }
 
@@ -301,7 +302,8 @@ func TestReportPRStatusCancellationDoesNotPublish(t *testing.T) {
 	setNonGitHubStageEnv(t, providers.ProviderADO)
 	workDir := t.TempDir()
 	t.Chdir(workDir)
-	t.Setenv(executor.InputEnvVar("resultFile"), filepath.Join(workDir, "canceled.json"))
+	resultFile := filepath.Join(workDir, "canceled.json")
+	t.Setenv(executor.InputEnvVar("resultFile"), resultFile)
 	t.Setenv(executor.InputEnvVar("prNumber"), "77")
 	t.Setenv(executor.InputEnvVar(executor.InputTimeout), "100ms")
 
@@ -317,7 +319,8 @@ func TestReportPRStatusCancellationDoesNotPublish(t *testing.T) {
 
 	start := time.Now()
 	code, stdout, stderr := runArgs(t, "report-pr-status", root)
-	if code != 1 || stdout != "" || !strings.Contains(stderr, "context deadline exceeded") {
+	const cancellationError = "publish pull request status: context deadline exceeded"
+	if code != 1 || stdout != "" || stderr != "error: "+cancellationError+"\n" {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if elapsed := time.Since(start); elapsed < 50*time.Millisecond || elapsed > time.Second {
@@ -325,6 +328,15 @@ func TestReportPRStatusCancellationDoesNotPublish(t *testing.T) {
 	}
 	if posts != 0 {
 		t.Fatalf("publication calls = %d, want none when iteration lookup is canceled", posts)
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantResult := `{"errorCode":"provider_error","errorMessage":"` + cancellationError +
+		`","errorRetryable":false,"integrity":"unapproved"}`
+	if string(data) != wantResult {
+		t.Fatalf("typed cancellation result = %s, want %s", data, wantResult)
 	}
 }
 
@@ -356,11 +368,17 @@ func TestReportPRStatusResultWriteFailureDoesNotRepublish(t *testing.T) {
 	pointADOStageProviderAt(t, server)
 
 	code, stdout, stderr := runArgs(t, "report-pr-status", root)
-	if code != 1 || stdout != "" || !strings.Contains(stderr, "error: write "+resultFile) ||
-		!strings.Contains(stderr, "warning: write provider-stage result "+resultFile) {
+	writeError := directoryWriteError(resultFile)
+	wantStderr := "error: write " + resultFile + ": " + writeError + "\n" +
+		"warning: write provider-stage result " + resultFile + ": write typed result: " + writeError + "\n"
+	if code != 1 || stdout != "" || stderr != wantStderr {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if posts != 1 {
 		t.Fatalf("publication calls = %d, want exactly 1 after result-write failure", posts)
 	}
+}
+
+func directoryWriteError(path string) string {
+	return (&os.PathError{Op: "open", Path: path, Err: syscall.EISDIR}).Error()
 }
