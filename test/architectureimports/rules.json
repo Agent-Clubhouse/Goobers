@@ -1,0 +1,125 @@
+{
+  "module": "github.com/goobers/goobers",
+  "builds": [
+    {
+      "name": "linux",
+      "goos": "linux",
+      "goarch": "amd64"
+    },
+    {
+      "name": "macos",
+      "goos": "darwin",
+      "goarch": "amd64"
+    },
+    {
+      "name": "windows",
+      "goos": "windows",
+      "goarch": "amd64"
+    }
+  ],
+  "forbidden": [
+    {
+      "path": "github.com/goobers/goobers/cmd/goobers",
+      "rationale": "package main owns CLI registration, flags, environment resolution, construction, and exit mapping"
+    },
+    {
+      "path": "github.com/goobers/goobers/internal/bootstrap",
+      "rationale": "daemon and runner composition is an adapter responsibility"
+    },
+    {
+      "path": "github.com/goobers/goobers/internal/dispatcher",
+      "rationale": "stage-runner construction is outside pilot domain behavior"
+    },
+    {
+      "path": "github.com/goobers/goobers/internal/engine",
+      "rationale": "workflow-runner construction is outside pilot domain behavior"
+    },
+    {
+      "path": "github.com/goobers/goobers/internal/runner",
+      "rationale": "runner construction is an adapter responsibility"
+    },
+    {
+      "path": "github.com/goobers/goobers/internal/workerhost",
+      "rationale": "worker construction is outside pilot domain behavior"
+    }
+  ],
+  "lanes": [
+    {
+      "path": "github.com/goobers/goobers/internal/docchurn",
+      "decision": "pending",
+      "rationale": "The planned docs-churn domain may use only its durability and configuration boundaries; Git execution and CLI construction stay in the adapter.",
+      "allowedDirect": [
+        "github.com/goobers/goobers/internal/configboundary",
+        "github.com/goobers/goobers/internal/platform/durability"
+      ],
+      "allowedTransitive": [
+        "github.com/goobers/goobers/internal/configboundary",
+        "github.com/goobers/goobers/internal/platform/durability"
+      ]
+    },
+    {
+      "path": "github.com/goobers/goobers/internal/contention",
+      "decision": "pending",
+      "rationale": "Contention owns provider-neutral query and ranking behavior and may reuse provider contracts without constructing a provider or runner.",
+      "allowedDirect": [
+        "github.com/goobers/goobers/providers"
+      ],
+      "allowedTransitive": [
+        "github.com/goobers/goobers/api/integrity",
+        "github.com/goobers/goobers/api/v1alpha1",
+        "github.com/goobers/goobers/internal/diagnostics/featureusage",
+        "github.com/goobers/goobers/internal/fieldpredicate",
+        "github.com/goobers/goobers/internal/journal",
+        "github.com/goobers/goobers/internal/labelpredicate",
+        "github.com/goobers/goobers/internal/lifecycle",
+        "github.com/goobers/goobers/internal/mutationreceipt",
+        "github.com/goobers/goobers/internal/panicguard",
+        "github.com/goobers/goobers/internal/pathutil",
+        "github.com/goobers/goobers/internal/platform/activetime",
+        "github.com/goobers/goobers/internal/platform/durability",
+        "github.com/goobers/goobers/internal/platform/lock",
+        "github.com/goobers/goobers/internal/platform/safeopen",
+        "github.com/goobers/goobers/internal/presentation",
+        "github.com/goobers/goobers/internal/readprobe",
+        "github.com/goobers/goobers/internal/safeio",
+        "github.com/goobers/goobers/internal/secretpattern",
+        "github.com/goobers/goobers/internal/sharedclaim",
+        "github.com/goobers/goobers/internal/stringpolicy",
+        "github.com/goobers/goobers/internal/version",
+        "github.com/goobers/goobers/providers"
+      ]
+    },
+    {
+      "path": "github.com/goobers/goobers/internal/prstatus",
+      "decision": "pending",
+      "rationale": "PR-status owns request and result behavior and may reuse provider contracts without provider, credential, CLI, or runner construction.",
+      "allowedDirect": [
+        "github.com/goobers/goobers/providers"
+      ],
+      "allowedTransitive": [
+        "github.com/goobers/goobers/api/integrity",
+        "github.com/goobers/goobers/api/v1alpha1",
+        "github.com/goobers/goobers/internal/diagnostics/featureusage",
+        "github.com/goobers/goobers/internal/fieldpredicate",
+        "github.com/goobers/goobers/internal/journal",
+        "github.com/goobers/goobers/internal/labelpredicate",
+        "github.com/goobers/goobers/internal/lifecycle",
+        "github.com/goobers/goobers/internal/mutationreceipt",
+        "github.com/goobers/goobers/internal/panicguard",
+        "github.com/goobers/goobers/internal/pathutil",
+        "github.com/goobers/goobers/internal/platform/activetime",
+        "github.com/goobers/goobers/internal/platform/durability",
+        "github.com/goobers/goobers/internal/platform/lock",
+        "github.com/goobers/goobers/internal/platform/safeopen",
+        "github.com/goobers/goobers/internal/presentation",
+        "github.com/goobers/goobers/internal/readprobe",
+        "github.com/goobers/goobers/internal/safeio",
+        "github.com/goobers/goobers/internal/secretpattern",
+        "github.com/goobers/goobers/internal/sharedclaim",
+        "github.com/goobers/goobers/internal/stringpolicy",
+        "github.com/goobers/goobers/internal/version",
+        "github.com/goobers/goobers/providers"
+      ]
+    }
+  ]
+}
