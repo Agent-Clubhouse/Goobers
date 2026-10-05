@@ -122,6 +122,68 @@ type restRepository struct {
 	Owner   githubUser `json:"owner"`
 }
 
+type restPRProjection struct {
+	Number         int
+	Title          string
+	URL            string
+	State          string
+	Merged         bool
+	MergedAt       *time.Time
+	Mergeable      *bool
+	Draft          bool
+	Labels         []string
+	HeadBranch     string
+	HeadRepository *RepositoryRef
+	HeadSHA        string
+	BaseBranch     string
+	BaseSHA        string
+	MergeSHA       string
+	UpdatedAt      time.Time
+	Body           string
+}
+
+func pullSummaryFromProjection(pr restPRProjection, checkState CheckState) PullRequestSummary {
+	return PullRequestSummary{
+		ID:         strconv.Itoa(pr.Number),
+		Number:     pr.Number,
+		URL:        pr.URL,
+		State:      pr.State,
+		Merged:     pr.Merged || pr.MergedAt != nil,
+		Head:       pr.HeadBranch,
+		Base:       pr.BaseBranch,
+		HeadSHA:    pr.HeadSHA,
+		BaseSHA:    pr.BaseSHA,
+		MergeSHA:   pr.MergeSHA,
+		Draft:      pr.Draft,
+		Labels:     pr.Labels,
+		CheckState: checkState,
+		UpdatedAt:  pr.UpdatedAt,
+		Body:       pr.Body,
+		Integrity:  apiintegrity.Unapproved,
+	}
+}
+
+func pullPollResultFromProjection(pr restPRProjection) PullRequestPollResult {
+	return PullRequestPollResult{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          pr.Draft,
+		Labels:         pr.Labels,
+		HeadBranch:     pr.HeadBranch,
+		HeadRepository: pr.HeadRepository,
+		HeadSHA:        pr.HeadSHA,
+		BaseSHA:        pr.BaseSHA,
+		BaseBranch:     pr.BaseBranch,
+		Body:           pr.Body,
+		URL:            pr.URL,
+		Integrity:      apiintegrity.Unapproved,
+	}
+}
+
 // doStatus performs a request with the provider's transient-failure retries.
 // Status codes in allowStatus are treated as success (used to tolerate a 404
 // when removing a label that is not present); the response body is not decoded
