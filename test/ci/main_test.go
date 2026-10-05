@@ -945,6 +945,27 @@ func TestMergeEnvironmentReplacesVariables(t *testing.T) {
 	}
 }
 
+func TestMergeEnvironmentKeepsAmbientGitConfig(t *testing.T) {
+	t.Parallel()
+	base := []string{
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=/workspace",
+	}
+	overrides := []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsync", "GIT_CONFIG_VALUE_0=none"}
+
+	got := mergeEnvironment(base, overrides, false)
+	want := []string{
+		"GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=/workspace",
+		"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_1=core.fsync", "GIT_CONFIG_VALUE_1=none",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeEnvironment() = %q, want %q", got, want)
+	}
+
+	if got := mergeEnvironment([]string{"PATH=/bin"}, overrides, false); !reflect.DeepEqual(got, append([]string{"PATH=/bin"}, overrides...)) {
+		t.Fatalf("no ambient git config must leave overrides untouched, got %q", got)
+	}
+}
+
 func TestProcessExecutorCapturesAndStreamsCommands(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exec := processExecutor{stdout: &stdout, stderr: &stderr}

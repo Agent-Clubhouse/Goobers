@@ -129,6 +129,7 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 	start := time.Now()
 	attempts := 0
+	var lastStatus *dispatcher.BlobStatusError
 	err := retryutil.Until(ctx, wait, retryutil.Policy{Base: base, Max: max}, func(ctx context.Context) (bool, error) {
 		attempts++
 		putCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -138,6 +139,10 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 			return false, nil
 		}
 		if notReady(err) {
+			var status *dispatcher.BlobStatusError
+			if errors.As(err, &status) {
+				lastStatus = status
+			}
 			if opts.Log != nil {
 				_, _ = fmt.Fprintf(opts.Log, "INFO goobers worker: blob-plane probe waiting for daemon readiness (attempt %d, %s elapsed, bound %s): %v\n", attempts, time.Since(start).Round(time.Second), wait, err)
 			}
@@ -148,6 +153,12 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "WORKER_BLOB_STORE_MISMATCH") {
 			return err
+		}
+		// The readiness bound can cancel an attempt mid-flight, leaving a bare
+		// "context deadline exceeded" as the final error. Keep the daemon's
+		// last actual answer: it is the only part that says why it was not ready.
+		if lastStatus != nil && !strings.Contains(err.Error(), lastStatus.Error()) {
+			return fmt.Errorf("WORKER_DAEMON_NOT_READY: daemon blob plane not ready after %s: %w (last daemon response: %w)", time.Since(start).Round(time.Second), err, lastStatus)
 		}
 		return fmt.Errorf("WORKER_DAEMON_NOT_READY: daemon blob plane not ready after %s: %w", time.Since(start).Round(time.Second), err)
 	}
