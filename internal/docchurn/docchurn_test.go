@@ -203,19 +203,16 @@ func TestRunOutputFailureDoesNotAdvanceWatermark(t *testing.T) {
 
 func TestRunPersistenceFailureFollowsSuccessfulOutput(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocker")
-	if err := os.WriteFile(blocker, []byte("block"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var stdout bytes.Buffer
 	opts := baseOptions(t, successfulGit(t))
 	opts.WatermarkPath = filepath.Join(blocker, "watermark.json")
-	opts.Stdout = &stdout
+	opts.ResultFile = blocker
 	err := Run(opts)
 	if err == nil || !strings.HasPrefix(err.Error(), "advance docs watermark ") {
 		t.Fatalf("error = %v, want watermark persistence failure", err)
 	}
-	if stdout.Len() == 0 || stdout.Bytes()[stdout.Len()-1] != '\n' {
-		t.Errorf("digest was not fully written before persistence failure: %q", stdout.String())
+	output, readErr := os.ReadFile(blocker)
+	if readErr != nil || len(output) == 0 || output[len(output)-1] != '\n' {
+		t.Errorf("digest was not fully written before persistence failure: %q, err=%v", output, readErr)
 	}
 }
 
