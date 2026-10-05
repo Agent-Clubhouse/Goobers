@@ -145,8 +145,41 @@ func TestBuildContextDifferencesAreRecorded(t *testing.T) {
 		!reflect.DeepEqual(windows.Packages[0].ProductionFiles, []string{"cmd/goobers/main.go", "cmd/goobers/platform_windows.go"}) {
 		t.Fatalf("selected files: linux=%v windows=%v", linux.Packages[0].ProductionFiles, windows.Packages[0].ProductionFiles)
 	}
-	linuxRunner.assertBuildInvocation(t, "GOOS=linux", "GOARCH=amd64")
-	windowsRunner.assertBuildInvocation(t, "GOOS=windows", "GOARCH=arm64")
+	linuxRunner.assertBuildInvocation(t, "GOFLAGS=", "GOOS=linux", "GOARCH=amd64")
+	windowsRunner.assertBuildInvocation(t, "GOFLAGS=", "GOOS=windows", "GOARCH=arm64")
+}
+
+func TestDiscoveryNeutralizesAmbientBuildTags(t *testing.T) {
+	t.Setenv("GOFLAGS", "-tags=integration")
+	root := t.TempDir()
+	commandDir := filepath.Join(root, "cmd", "goobers")
+	if err := os.MkdirAll(commandDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commandDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	module := moduleMetadata{Path: "example.test/module", Dir: root}
+	pkg := goPackage{
+		ImportPath: "example.test/module/cmd/goobers",
+		Name:       "main",
+		Dir:        commandDir,
+		GoFiles:    []string{"main.go"},
+	}
+	runner := inventoryRunner(t, module, pkg)
+
+	got, err := (discovery{runner: &runner}).collect(context.Background(), "./cmd/goobers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Build.BuildTags) != 0 {
+		t.Fatalf("build tags = %v, want none", got.Build.BuildTags)
+	}
+	for _, call := range runner.calls {
+		if call.name == "go" && !reflect.DeepEqual(call.env, []string{"GOFLAGS="}) {
+			t.Fatalf("%s environment = %v, want GOFLAGS neutralized", call.args, call.env)
+		}
+	}
 }
 
 func TestDiscoveryReportsMalformedAndFailingCommands(t *testing.T) {

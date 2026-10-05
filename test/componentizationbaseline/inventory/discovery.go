@@ -169,7 +169,7 @@ func (d discovery) invoke(ctx context.Context, name string, args, env []string) 
 }
 
 func (d discovery) environment() []string {
-	var env []string
+	env := []string{"GOFLAGS="}
 	if d.goos != "" {
 		env = append(env, "GOOS="+d.goos)
 	}

@@ -13,7 +13,8 @@ go run ./test/componentizationbaseline/inventory > inventory.json
 Use `-goos`, `-goarch`, and `-tags tag1,tag2` to inventory another build
 context, or `-output path` to write directly to a file. The command fails
 without publishing output when Git or Go discovery fails or returns malformed
-metadata.
+metadata. Inherited `GOFLAGS` are cleared for discovery, so only tags passed
+with `-tags` affect the selected build and appear in `buildContext.buildTags`.
 
 ## Schema
 
