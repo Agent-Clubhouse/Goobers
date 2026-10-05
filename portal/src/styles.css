@@ -2473,6 +2473,10 @@ summary:focus-visible {
   grid-template-columns: minmax(150px, 1.2fr) minmax(190px, 1.2fr) minmax(120px, 0.8fr) 60px 18px;
 }
 
+.work-item-grid.data-row {
+  border-left: 3px solid transparent;
+}
+
 .work-item-row-done {
   border-left: 3px solid var(--success);
 }

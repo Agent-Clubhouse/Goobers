@@ -18,4 +18,16 @@ describe("compact shell styles", () => {
       expect(styles).toMatch(/\.usage-trend-gridline \.usage-trend-secondary-tick\s*\{[^}]*text-anchor:\s*start/);
     });
   });
+
+  it("reserves the work-item status gutter for every row", () => {
+    expect(styles).toMatch(
+      /\.work-item-grid\.data-row\s*\{[^}]*border-left:\s*3px solid transparent/,
+    );
+    expect(styles).toMatch(
+      /\.work-item-row-done\s*\{[^}]*border-left:\s*3px solid var\(--success\)/,
+    );
+    expect(styles).toMatch(
+      /\.work-item-row-bad-terminal\s*\{[^}]*border-left:\s*3px solid var\(--danger\)/,
+    );
+  });
 });
