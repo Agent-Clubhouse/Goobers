@@ -322,6 +322,83 @@ func TestRetryCleanupPendingPreservesQueueWhenOwnershipRetirementWriteFails(t *t
 	}
 }
 
+func TestRetryCleanupPendingRepairsPrimaryRetirementWriteFailure(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		return errors.New("defer")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wt := createPendingRetryWorktree(t, ctx, m, repo, "interrupted-primary-stage", "owner")
+	primaryPath := m.markerPath(wt.key, wt.RunID)
+	ownershipPath := m.ownershipPath(wt.key, filepath.Base(wt.Path))
+	for _, path := range []string{primaryPath, ownershipPath} {
+		mk, err := readMarker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mk.CleanupAttempts = cleanupRetryAttemptLimit - 1
+		if err := writeMarker(path, mk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blockedTempPath := primaryPath + ".tmp"
+	if err := os.Mkdir(blockedTempPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 1 || len(report.Warnings) != 1 ||
+		!strings.Contains(report.Warnings[0].Err.Error(), "record cleanup retry failure in marker") {
+		t.Fatalf("interrupted retry report = %+v", report)
+	}
+	primary, err := readMarker(primaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primary.CleanupAttempts != cleanupRetryAttemptLimit-1 ||
+		primary.Status != statusCleanupPending {
+		t.Fatalf("interrupted primary marker = %+v", primary)
+	}
+	ownership, err := readMarker(ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownership.CleanupAttempts != cleanupRetryAttemptLimit ||
+		ownership.Status != statusCleanupRetained ||
+		ownership.CleanupDisposition != CleanupDispositionRetryExhausted {
+		t.Fatalf("retired ownership marker = %+v", ownership)
+	}
+
+	if err := os.Remove(blockedTempPath); err != nil {
+		t.Fatal(err)
+	}
+	report, err = m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 1 || len(report.Warnings) != 1 ||
+		!errors.Is(report.Warnings[0].Err, ErrCleanupRetained) {
+		t.Fatalf("repair report = %+v", report)
+	}
+	for _, path := range []string{primaryPath, ownershipPath} {
+		mk, err := readMarker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mk.CleanupAttempts != cleanupRetryAttemptLimit ||
+			mk.Status != statusCleanupRetained ||
+			mk.CleanupDisposition != CleanupDispositionRetryExhausted {
+			t.Fatalf("repaired marker %s = %+v", path, mk)
+		}
+	}
+}
+
 func TestRetryCleanupPendingRefusesNonCanonicalDurableIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

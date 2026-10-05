@@ -318,6 +318,7 @@ func (m *Manager) retryCleanupPendingOneLocked(ctx context.Context, candidate cl
 		primary.Status = statusCleanupRetained
 		primary.RetainedAt = ownership.RetainedAt
 		primary.CleanupDisposition = ownership.CleanupDisposition
+		primary.CleanupAttempts = ownership.CleanupAttempts
 		if err := writeMarker(candidate.markerPath, primary); err != nil {
 			return nil, fmt.Errorf("worktree: repair cleanup retention marker: %w", err)
 		}
