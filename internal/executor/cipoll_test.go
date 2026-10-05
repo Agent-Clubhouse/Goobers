@@ -705,6 +705,50 @@ func TestCIPollConfigFromEnvelope_RetryInputsParse(t *testing.T) {
 	}
 }
 
+func TestCIPollConfigFromEnvelope_CarryOutputs(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs: map[string]interface{}{
+			InputPRNumber:       "7",
+			InputCarryOutputs:   "remediationCauses, conflict",
+			"remediationCauses": "failing-ci",
+			"conflict":          "false",
+		},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	outcome := addCIPollCarry(ciPollOutcome(providers.CheckStatePassing, "passing", cfg.PullID), cfg)
+	if got := outcome.Outputs["remediationCauses"]; got != "failing-ci" {
+		t.Fatalf("remediationCauses = %v, want failing-ci", got)
+	}
+	if got := outcome.Outputs["conflict"]; got != "false" {
+		t.Fatalf("conflict = %v, want false", got)
+	}
+}
+
+func TestCIPollConfigFromEnvelope_CarryOutputsRejectsInvalidKeys(t *testing.T) {
+	for name, inputs := range map[string]map[string]interface{}{
+		"missing": {
+			InputPRNumber: "7", InputCarryOutputs: "remediationCauses",
+		},
+		"reserved": {
+			InputPRNumber: "7", InputCarryOutputs: OutputCIStatus,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := apiv1.InvocationEnvelope{
+				RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+				Inputs:  inputs,
+			}
+			if _, err := CIPollConfigFromEnvelope(env); err == nil {
+				t.Fatal("expected invalid carryOutputs to fail")
+			}
+		})
+	}
+}
+
 // TestCIPollConfigFromEnvelope_RetryMaxAttemptsDefaultsToZero proves the
 // opt-in default: a workflow that never declares retryFailedChecksMaxAttempts
 // gets 0 (disabled), not some other implicit default.

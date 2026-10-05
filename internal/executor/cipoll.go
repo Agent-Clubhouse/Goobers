@@ -144,6 +144,10 @@ const (
 	// wait, after triggering a rerun, before re-polling. Unset defaults to
 	// this call's effective poll interval.
 	InputRetryFailedChecksBackoffSeconds = "retryFailedChecksBackoffSeconds"
+	// InputCarryOutputs names invocation inputs that ci-poll must copy to its
+	// outputs. This keeps explicit workflow data flow intact when a poll is
+	// inserted between two stages that already exchange typed scalar outputs.
+	InputCarryOutputs = "carryOutputs"
 )
 
 // Default poll cadence for CIPollExecutor: capped exponential backoff and an
@@ -210,6 +214,7 @@ type CIPollConfig struct {
 	// RetryFailedChecksMaxAttempts (the default) disables it.
 	RetryFailedChecksMaxAttempts int
 	RetryFailedChecksBackoff     time.Duration
+	CarryOutputs                 map[string]interface{}
 }
 
 // CIPollConfigFromEnvelope builds a CIPollConfig from the well-known Input*
@@ -249,6 +254,20 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 	}
 	if cfg.RetryFailedChecksBackoff, err = durationInput(env, InputRetryFailedChecksBackoffSeconds); err != nil {
 		return CIPollConfig{}, err
+	}
+	carryKeys := stringSliceInput(env, InputCarryOutputs)
+	if len(carryKeys) > 0 {
+		cfg.CarryOutputs = make(map[string]interface{}, len(carryKeys))
+		for _, key := range carryKeys {
+			if key == OutputCIStatus || key == OutputPRNumber {
+				return CIPollConfig{}, fmt.Errorf("executor: %s cannot carry reserved output %q", InputCarryOutputs, key)
+			}
+			value, ok := env.Inputs[key]
+			if !ok {
+				return CIPollConfig{}, fmt.Errorf("executor: %s names missing input %q", InputCarryOutputs, key)
+			}
+			cfg.CarryOutputs[key] = value
+		}
 	}
 	if env.Limits.MaxDurationSeconds > 0 {
 		stageBudget := time.Duration(env.Limits.MaxDurationSeconds) * time.Second
@@ -437,7 +456,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		invoke.ReportProgress(ctx)
 		if err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
-				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+				return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
 			}
 			if providers.IsUnauthorizedError(err) {
 				if !canRefreshCredential {
@@ -466,7 +485,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			}
 
 			if now().After(deadline) {
-				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+				return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
 			}
 			if serr := sleep(ctx, retryutil.JitteredExponential(pollRetryPolicy, attempt)); serr != nil {
 				if ciPollDeadlineExceeded(parentCtx, ctx) {
@@ -481,11 +500,11 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		// The pull request's own lifecycle is asked FIRST, because a closed PR
 		// can go on reporting pending checks forever (#2786).
 		if outcome, stop := ciPollLifecycleOutcome(result, cfg.PullID); stop {
-			return outcome, nil
+			return addCIPollCarry(outcome, cfg), nil
 		}
 		switch result.CheckState {
 		case providers.CheckStatePassing:
-			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing", cfg.PullID), nil
+			return addCIPollCarry(ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing", cfg.PullID), cfg), nil
 		case providers.CheckStateFailing:
 			retried, rerunErr := e.attemptFailedChecksRetry(ctx, cfg, result, &retriesUsed)
 			if !retried {
@@ -494,32 +513,46 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 				// #4750's fall-through rule applies to the retry attempt itself,
 				// not only the sleeps around it.
 				if rerunErr != nil && ciPollDeadlineExceeded(parentCtx, ctx) {
-					return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+					return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
 				}
-				return e.ciPollFailureOutcome(ctx, cfg, result, rerunErr)
+				outcome, err := e.ciPollFailureOutcome(ctx, cfg, result, rerunErr)
+				return addCIPollCarry(outcome, cfg), err
 			}
 			invoke.ReportProgress(ctx)
 			if now().After(deadline) {
-				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+				return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
 			}
 			if serr := sleep(ctx, retryBackoff); serr != nil {
 				if ciPollDeadlineExceeded(parentCtx, ctx) {
-					return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+					return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
 				}
 				return apiv1.ResultEnvelope{}, serr
 			}
 			continue
 		}
 		if now().After(deadline) {
-			return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+			return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
 		}
 		if err := sleep(ctx, retryutil.JitteredExponential(pollRetryPolicy, attempt)); err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
-				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+				return addCIPollCarry(ciPollTimeoutOutcome(timeout, cfg.PullID), cfg), nil
 			}
 			return apiv1.ResultEnvelope{}, err
 		}
 	}
+}
+
+func addCIPollCarry(outcome apiv1.ResultEnvelope, cfg CIPollConfig) apiv1.ResultEnvelope {
+	if len(cfg.CarryOutputs) == 0 {
+		return outcome
+	}
+	if outcome.Outputs == nil {
+		outcome.Outputs = make(map[string]interface{}, len(cfg.CarryOutputs))
+	}
+	for key, value := range cfg.CarryOutputs {
+		outcome.Outputs[key] = value
+	}
+	return outcome
 }
 
 // ciPollFailureOutcome reports the normal terminal "failing" outcome.
