@@ -240,17 +240,20 @@ func loadGraph(ctx context.Context, root string, build buildContext, importPath 
 	if len(build.Tags) > 0 {
 		args = append(args, "-tags="+strings.Join(build.Tags, ","))
 	}
-	args = append(args, importPath)
+	args = append(args, importPath+"/...")
 	command := exec.CommandContext(ctx, "go", args...)
 	command.Dir = root
 	command.Env = append(os.Environ(), "GOOS="+build.GOOS, "GOARCH="+build.GOARCH, "CGO_ENABLED=0")
-	output, err := command.CombinedOutput()
+	var output, diagnostic bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &diagnostic
+	err := command.Run()
 	if err != nil {
-		return nil, fmt.Errorf("go %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return nil, fmt.Errorf("go %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(diagnostic.String()))
 	}
 
 	graph := make(map[string]listedPackage)
-	decoder := json.NewDecoder(bytes.NewReader(output))
+	decoder := json.NewDecoder(&output)
 	for {
 		var pkg listedPackage
 		err := decoder.Decode(&pkg)
@@ -262,8 +265,11 @@ func loadGraph(ctx context.Context, root string, build buildContext, importPath 
 		}
 		graph[pkg.ImportPath] = pkg
 	}
+	if message := strings.TrimSpace(diagnostic.String()); message != "" {
+		return nil, fmt.Errorf("package discovery failed for namespace %s: %s", importPath, message)
+	}
 	if len(graph) == 0 {
-		return nil, errors.New("go list returned no package graph")
+		return nil, fmt.Errorf("package discovery failed for namespace %s: go list returned no packages", importPath)
 	}
 	for _, pkg := range graph {
 		if pkg.Error != nil {
@@ -365,12 +371,8 @@ func validateImport(cfg config, item lane, imported string, direct bool, chain [
 func laneRoots(path string, graph map[string]listedPackage) []string {
 	var roots []string
 	for importPath := range graph {
-		switch {
-		case importPath == path:
-			roots = append(roots, importPath)
-		case strings.HasPrefix(importPath, path+" ["):
-			roots = append(roots, importPath)
-		case strings.HasPrefix(importPath, path+"_test ["):
+		normalized := normalizeImportPath(importPath)
+		if isWithin(normalized, path) || isWithin(strings.TrimSuffix(normalized, "_test"), path) {
 			roots = append(roots, importPath)
 		}
 	}

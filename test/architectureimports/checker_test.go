@@ -52,6 +52,17 @@ import _ "example.com/architecture/internal/engine"
 			wantChain: "internal/pilot -> example.com/architecture/internal/engine",
 		},
 		{
+			name: "unreferenced nested package",
+			files: map[string]string{
+				"internal/pilot/pilot.go": "package pilot\n",
+				"internal/pilot/nested/nested.go": `package nested
+import _ "example.com/architecture/internal/engine"
+`,
+				"internal/engine/engine.go": "package engine\n",
+			},
+			wantChain: "internal/pilot/nested -> example.com/architecture/internal/engine",
+		},
+		{
 			name: "transitive",
 			files: map[string]string{
 				"internal/pilot/pilot.go": `package pilot

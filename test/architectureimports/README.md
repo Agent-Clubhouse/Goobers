@@ -3,7 +3,8 @@
 `architectureimports` enforces the reviewed library-first direction for the
 `internal/docchurn`, `internal/contention`, and `internal/prstatus` pilots. It
 asks `go list` for each accepted namespace's production and test graph in every
-configured build context; it does not infer imports by searching source text.
+configured build context, including every package below the namespace; it does
+not infer imports by searching source text.
 
 Run the checked-in rules from the repository root:
 
