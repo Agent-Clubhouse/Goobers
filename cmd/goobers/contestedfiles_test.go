@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -74,7 +76,7 @@ func TestFileRefMatchesPath(t *testing.T) {
 
 func TestDistinctPRsTouchingRefs(t *testing.T) {
 	touches := []openPRTouch{
-		{number: 1, files: []string{"internal/gate/gate.go", "a.go"}},
+		{number: 1, files: []string{"internal/gate/gate.go", "internal/gate/gate.go", "a.go"}},
 		{number: 2, files: []string{"internal/gate/gate.go"}},
 		{number: 3, files: []string{"cmd/goobers/backlogquery.go"}},
 	}
@@ -89,6 +91,12 @@ func TestDistinctPRsTouchingRefs(t *testing.T) {
 	}
 	if got := distinctPRsTouchingRefs([]string{"nowhere.go"}, touches); got != 0 {
 		t.Errorf("nowhere.go touched by = %d, want 0", got)
+	}
+}
+
+func TestDistinctPRsTouchingRefsEmptyTouches(t *testing.T) {
+	if got := distinctPRsTouchingRefs([]string{"gate.go"}, nil); got != 0 {
+		t.Fatalf("gate.go touched by empty PR set = %d, want 0", got)
 	}
 }
 
@@ -156,5 +164,189 @@ func TestPartitionByContentionBelowThresholdIsClean(t *testing.T) {
 	}
 	if ordered[0].ID != "1" || ordered[1].ID != "2" {
 		t.Fatalf("order = %v, want unchanged", []string{ordered[0].ID, ordered[1].ID})
+	}
+}
+
+func TestPartitionByContentionThresholdBoundaryAndClamp(t *testing.T) {
+	touches := []openPRTouch{{number: 1, files: []string{"a.go"}}}
+	eligible := []providers.WorkItem{
+		item("1", "contested first", "a.go"),
+		item("2", "clean second", "b.go"),
+	}
+
+	for _, minPRs := range []int{1, 0, -2} {
+		ordered, contested := partitionByContention(eligible, touches, minPRs)
+		if got := []string{ordered[0].ID, ordered[1].ID}; !reflect.DeepEqual(got, []string{"2", "1"}) {
+			t.Fatalf("minPRs %d order = %v, want [2 1]", minPRs, got)
+		}
+		if !reflect.DeepEqual(contested, []string{"1"}) {
+			t.Fatalf("minPRs %d contested = %v, want [1]", minPRs, contested)
+		}
+	}
+}
+
+func TestPartitionByContentionDoesNotMutateOrAliasCallerSlice(t *testing.T) {
+	eligible := []providers.WorkItem{
+		item("1", "contested", "a.go"),
+		item("2", "clean", "b.go"),
+	}
+	wantInput := append([]providers.WorkItem(nil), eligible...)
+
+	ordered, _ := partitionByContention(eligible, []openPRTouch{{number: 1, files: []string{"a.go"}}}, 1)
+	if !reflect.DeepEqual(eligible, wantInput) {
+		t.Fatalf("eligible mutated = %+v, want %+v", eligible, wantInput)
+	}
+	ordered[0].ID = "changed"
+	if eligible[1].ID != "2" {
+		t.Fatalf("ordered aliases eligible: eligible[1].ID = %q, want 2", eligible[1].ID)
+	}
+}
+
+func TestPartitionByContentionEmptyInput(t *testing.T) {
+	ordered, contested := partitionByContention(nil, nil, 2)
+	if len(ordered) != 0 || contested != nil {
+		t.Fatalf("empty partition = (%v, %v), want empty order and nil contested IDs", ordered, contested)
+	}
+}
+
+type recordingOpenPRTouchesProvider struct {
+	pullRequests []providers.PullRequestSummary
+	files        map[string][]providers.ChangedFile
+	listErr      error
+	fileErr      map[string]error
+	calls        []string
+	listRequests []providers.ListPullRequestsRequest
+}
+
+func (p *recordingOpenPRTouchesProvider) ListPullRequests(ctx context.Context, req providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error) {
+	p.calls = append(p.calls, "list")
+	p.listRequests = append(p.listRequests, req)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return p.pullRequests, p.listErr
+}
+
+func (p *recordingOpenPRTouchesProvider) PullRequestFiles(ctx context.Context, _ providers.RepositoryRef, pullID string) ([]providers.ChangedFile, error) {
+	p.calls = append(p.calls, "files:"+pullID)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := p.fileErr[pullID]; err != nil {
+		return nil, err
+	}
+	return p.files[pullID], nil
+}
+
+func TestOpenPRTouchesQueryAndCallOrder(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+	provider := &recordingOpenPRTouchesProvider{
+		pullRequests: []providers.PullRequestSummary{{Number: 7}, {Number: 3}},
+		files: map[string][]providers.ChangedFile{
+			"7": {{Path: "a.go"}, {Path: "a.go"}},
+			"3": {{Path: "b.go"}},
+		},
+	}
+	t.Setenv("GOOBERS_BRANCH_NAMESPACE", "acme")
+
+	got, err := openPRTouches(context.Background(), provider, repo, "release")
+	if err != nil {
+		t.Fatalf("openPRTouches: %v", err)
+	}
+	wantRequest := providers.ListPullRequestsRequest{
+		Repository: repo, Base: "release", HeadPrefix: "acme/", SkipCheckState: true,
+	}
+	if !reflect.DeepEqual(provider.listRequests, []providers.ListPullRequestsRequest{wantRequest}) {
+		t.Fatalf("list requests = %+v, want %+v", provider.listRequests, []providers.ListPullRequestsRequest{wantRequest})
+	}
+	if want := []string{"list", "files:7", "files:3"}; !reflect.DeepEqual(provider.calls, want) {
+		t.Fatalf("calls = %v, want %v", provider.calls, want)
+	}
+	want := []openPRTouch{
+		{number: 7, files: []string{"a.go", "a.go"}},
+		{number: 3, files: []string{"b.go"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("touches = %+v, want %+v", got, want)
+	}
+	provider.files["7"][0].Path = "changed.go"
+	if got[0].files[0] != "a.go" {
+		t.Fatalf("touch paths alias provider response: got %q, want a.go", got[0].files[0])
+	}
+}
+
+func TestOpenPRTouchesUsesDefaultBranchNamespace(t *testing.T) {
+	provider := &recordingOpenPRTouchesProvider{}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+
+	if _, err := openPRTouches(context.Background(), provider, repo, ""); err != nil {
+		t.Fatalf("openPRTouches: %v", err)
+	}
+	if got := provider.listRequests[0].HeadPrefix; got != providers.DefaultBranchNamespace {
+		t.Fatalf("head prefix = %q, want %q", got, providers.DefaultBranchNamespace)
+	}
+}
+
+func TestOpenPRTouchesFailuresReturnNoPartialEvidence(t *testing.T) {
+	listFailure := errors.New("list failed")
+	fileFailure := errors.New("files failed")
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+
+	for _, tc := range []struct {
+		name      string
+		provider  *recordingOpenPRTouchesProvider
+		wantErr   error
+		wantCalls []string
+	}{
+		{
+			name:      "list",
+			provider:  &recordingOpenPRTouchesProvider{listErr: listFailure},
+			wantErr:   listFailure,
+			wantCalls: []string{"list"},
+		},
+		{
+			name: "files after partial collection",
+			provider: &recordingOpenPRTouchesProvider{
+				pullRequests: []providers.PullRequestSummary{{Number: 1}, {Number: 2}},
+				files:        map[string][]providers.ChangedFile{"1": {{Path: "first.go"}}},
+				fileErr:      map[string]error{"2": fileFailure},
+			},
+			wantErr:   fileFailure,
+			wantCalls: []string{"list", "files:1", "files:2"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := openPRTouches(context.Background(), tc.provider, repo, "main")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want identity %v", err, tc.wantErr)
+			}
+			if got != nil {
+				t.Fatalf("touches = %+v, want nil after failure", got)
+			}
+			if !reflect.DeepEqual(tc.provider.calls, tc.wantCalls) {
+				t.Fatalf("calls = %v, want %v", tc.provider.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestOpenPRTouchesCancellationReturnsNoEvidence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	provider := &recordingOpenPRTouchesProvider{
+		pullRequests: []providers.PullRequestSummary{{Number: 1}},
+	}
+
+	got, err := openPRTouches(ctx, provider, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets",
+	}, "main")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if got != nil {
+		t.Fatalf("touches = %+v, want nil after cancellation", got)
+	}
+	if !reflect.DeepEqual(provider.calls, []string{"list"}) {
+		t.Fatalf("calls = %v, want [list]", provider.calls)
 	}
 }

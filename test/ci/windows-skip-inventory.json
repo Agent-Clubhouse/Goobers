@@ -1093,6 +1093,12 @@
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
     },
     {
+      "package": "test/componentizationbaseline/inventory",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
       "package": "test/complexitygate",
       "coverage": "none",
       "category": "not-selected",
