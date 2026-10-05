@@ -11,10 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/docchurn"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/testgit"
 )
+
+type docsWatermark = docchurn.Watermark
+
+const docsWatermarkSchemaVersion = docchurn.WatermarkSchemaVersion
 
 // churnRepo is a temp git repo whose commits are stamped at controlled times so
 // the watermark + buffer window math is exercised deterministically.
@@ -103,6 +108,32 @@ func changedContains(digest docsChurnDigest, path string) bool {
 
 func watermarkPath(root string) string {
 	return instance.NewLayout(root).DocsWatermarkPath("goobers", "docs-updater")
+}
+
+func readDocsWatermark(path string) (docsWatermark, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return docsWatermark{}, false, nil
+		}
+		return docsWatermark{}, false, err
+	}
+	var watermark docsWatermark
+	if err := json.Unmarshal(data, &watermark); err != nil {
+		return docsWatermark{}, false, err
+	}
+	return watermark, true, nil
+}
+
+func writeDocsWatermark(path string, watermark docsWatermark) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(watermark, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 // TestDocsChurnFirstRunBoundedWindowAndAdvancesWatermark: with no watermark the
@@ -352,96 +383,6 @@ func TestDocsWatermarkPathSanitizesIdentity(t *testing.T) {
 	}
 }
 
-func TestWriteDocsChurnDigestExactStdout(t *testing.T) {
-	digest := docsChurnDigest{
-		Schema:           docsChurnSchemaVersion,
-		FirstRun:         true,
-		Since:            time.Date(2026, 10, 4, 1, 2, 3, 0, time.UTC),
-		Head:             "head-sha",
-		BufferMultiplier: 3,
-		SinceFloor:       "168h0m0s",
-		CommitCount:      1,
-		Commits:          []churnCommit{{SHA: "commit-sha", Subject: "subject", Body: "body"}},
-		ChangedFiles:     []string{"docs/guide.md"},
-		Areas:            map[string][]string{"docs": {"docs/guide.md"}},
-		DocsRoots:        []string{"docs"},
-		DocsRootChanges:  []string{"docs/guide.md"},
-		Note:             docsChurnFirstRunNote,
-	}
-	var stdout, stderr bytes.Buffer
-	if code := writeDocsChurnDigest(digest, &stdout, &stderr); code != 0 {
-		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
-	}
-	const want = "{\n" +
-		"  \"schema\": \"goobers.dev/docs-churn/v1\",\n" +
-		"  \"firstRun\": true,\n" +
-		"  \"since\": \"2026-10-04T01:02:03Z\",\n" +
-		"  \"head\": \"head-sha\",\n" +
-		"  \"bufferMultiplier\": 3,\n" +
-		"  \"sinceFloor\": \"168h0m0s\",\n" +
-		"  \"commitCount\": 1,\n" +
-		"  \"commits\": [\n" +
-		"    {\n" +
-		"      \"sha\": \"commit-sha\",\n" +
-		"      \"subject\": \"subject\",\n" +
-		"      \"body\": \"body\"\n" +
-		"    }\n" +
-		"  ],\n" +
-		"  \"changedFiles\": [\n" +
-		"    \"docs/guide.md\"\n" +
-		"  ],\n" +
-		"  \"areas\": {\n" +
-		"    \"docs\": [\n" +
-		"      \"docs/guide.md\"\n" +
-		"    ]\n" +
-		"  },\n" +
-		"  \"docsRoots\": [\n" +
-		"    \"docs\"\n" +
-		"  ],\n" +
-		"  \"docsRootChanges\": [\n" +
-		"    \"docs/guide.md\"\n" +
-		"  ],\n" +
-		"  \"note\": \"first run: no watermark yet, bounded to the since-floor window\"\n" +
-		"}\n"
-	if stdout.String() != want {
-		t.Errorf("stdout bytes =\n%s\nwant exact bytes =\n%s", stdout.String(), want)
-	}
-	if stderr.Len() != 0 {
-		t.Errorf("stderr = %q, want empty", stderr.String())
-	}
-}
-
-func TestWriteDocsWatermarkExactContents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scheduler", "docs-updater", "goobers___docs-updater.json")
-	watermark := docsWatermark{
-		Schema:      docsWatermarkSchemaVersion,
-		Gaggle:      "goobers",
-		Workflow:    "docs-updater",
-		SHA:         "0123456789abcdef",
-		RefreshedAt: time.Date(2026, 10, 4, 1, 2, 3, 0, time.UTC),
-	}
-	if err := writeDocsWatermark(path, watermark); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = "{\n" +
-		"  \"schema\": \"goobers.dev/docs-watermark/v1\",\n" +
-		"  \"gaggle\": \"goobers\",\n" +
-		"  \"workflow\": \"docs-updater\",\n" +
-		"  \"sha\": \"0123456789abcdef\",\n" +
-		"  \"refreshedAt\": \"2026-10-04T01:02:03Z\"\n" +
-		"}\n"
-	if string(data) != want {
-		t.Errorf("watermark bytes =\n%s\nwant exact bytes =\n%s", data, want)
-	}
-	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("temporary watermark remains after replace: %v", err)
-	}
-}
-
 func TestDocsChurnWholeHistoryOrderingAndDocsRootValidation(t *testing.T) {
 	unsetRunContext(t)
 	now := time.Now().UTC()
@@ -600,7 +541,7 @@ func TestDocsChurnGitFailureDoesNotAdvanceWatermark(t *testing.T) {
 		t.Fatal(err)
 	}
 	emptyRepo := newChurnRepo(t)
-	_, gitErr := gitRevParse(emptyRepo.dir, "HEAD")
+	_, gitErr := gitOutput(emptyRepo.dir, "rev-parse", "--verify", "HEAD^{commit}")
 	if gitErr == nil {
 		t.Fatal("empty repo unexpectedly resolved HEAD")
 	}
