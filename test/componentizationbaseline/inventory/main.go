@@ -27,31 +27,31 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, runner co
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "error: unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
+		_, _ = fmt.Fprintf(stderr, "error: unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
 	}
 
 	tags := splitTags(*tagsValue)
 	result, err := (discovery{runner: runner, goos: *goos, goarch: *goarch, tags: tags}).collect(ctx, *target)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: inventory failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: inventory failed: %v\n", err)
 		return 1
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		fmt.Fprintf(stderr, "error: encode inventory: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: encode inventory: %v\n", err)
 		return 1
 	}
 	data = append(data, '\n')
 	if *output == "-" {
 		if _, err := stdout.Write(data); err != nil {
-			fmt.Fprintf(stderr, "error: write inventory: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "error: write inventory: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 	if err := os.WriteFile(*output, data, 0o644); err != nil {
-		fmt.Fprintf(stderr, "error: write inventory %s: %v\n", *output, err)
+		_, _ = fmt.Fprintf(stderr, "error: write inventory %s: %v\n", *output, err)
 		return 1
 	}
 	return 0
