@@ -207,7 +207,7 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
     await expect(
       comparison.getByRole("table", { name: "Attributed costs" }).getByRole("columnheader"),
     ).toHaveCount(4);
-    await expect(comparison.getByText("123,456,789.12 AIC").first()).toBeAttached();
+    await expect(comparison.getByText("123,456,789 AIC").first()).toBeAttached();
     await comparison.locator(".external-cost-models").first().evaluate((element) => {
       element.setAttribute("style", "font-size: 20px");
       element.querySelector("li")!.textContent =

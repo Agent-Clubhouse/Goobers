@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/goobers/goobers/internal/presentation"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -122,7 +122,7 @@ func withAttribution(body string, attribution Attribution, action string) (strin
 		visible += " | instance `" + markdownCode(attribution.Instance) + "`"
 	}
 	if attribution.Cost != nil && attribution.Cost.NanoAIU != nil {
-		visible += " | Cost: " + formatAIC(*attribution.Cost.NanoAIU)
+		visible += " | Cost: " + presentation.FormatAIC(*attribution.Cost.NanoAIU)
 	}
 	body = strings.TrimSpace(attributionMarkerPattern.ReplaceAllString(body, ""))
 	if attributionMarkerStartPattern.MatchString(body) {
@@ -259,10 +259,6 @@ func validateCostReceipt(receipt CostReceipt) error {
 		return fmt.Errorf("model contains invalid text")
 	}
 	return nil
-}
-
-func formatAIC(nanoAIU int64) string {
-	return strconv.FormatFloat(float64(nanoAIU)/1e9, 'f', 2, 64) + " AIC"
 }
 
 func markdownCode(value string) string {

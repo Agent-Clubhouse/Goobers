@@ -72,6 +72,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows journal OTLP export:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows offline diagnostic evidence:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows platform runtime:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows presentation formatting:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows read model and stores:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows release packaging:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows rollup migration alias dedup:go-modules",

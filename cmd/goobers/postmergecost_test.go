@@ -103,8 +103,8 @@ func TestRenderPostMergeCostComments(t *testing.T) {
 	closeOut := mergedPullRequestComment("77", report, "42")
 	for _, want := range []string{
 		"Merged in pull request #77.",
-		"**Total Goobers cost for this PR:** 12.40 AIC",
-		"**Cost attributed to this issue:** 7.00 AIC",
+		"**Total Goobers cost for this PR:** 12 AIC",
+		"**Cost attributed to this issue:** 7 AIC",
 	} {
 		if !strings.Contains(closeOut, want) {
 			t.Fatalf("close-out comment %q does not contain %q", closeOut, want)
@@ -113,9 +113,9 @@ func TestRenderPostMergeCostComments(t *testing.T) {
 
 	summary := renderPostMergeCostSummary(report)
 	for _, want := range []string{
-		"Thanks for using Goobers. Your cost for this PR was **12.40 AIC**.",
-		"- `implementation`: 9.00 AIC",
-		"- `merge-review`: 3.40 AIC",
+		"Thanks for using Goobers. Your cost for this PR was **12 AIC**.",
+		"- `implementation`: 9 AIC",
+		"- `merge-review`: 3 AIC",
 		postMergeCostSummaryMarker,
 	} {
 		if !strings.Contains(summary, want) {
@@ -140,12 +140,12 @@ func TestPostMergePublishesSummaryAndIssueAllocationFromReceipts(t *testing.T) {
 	prComments := append([]string(nil), st.prComments...)
 	issueComments := append([]string(nil), st.issueComments[42]...)
 	st.mu.Unlock()
-	if len(prComments) != 2 || !strings.Contains(prComments[1], "Your cost for this PR was **10.00 AIC**") {
-		t.Fatalf("pull request comments = %q, want one 10.00 AIC summary", prComments)
+	if len(prComments) != 2 || !strings.Contains(prComments[1], "Your cost for this PR was **10 AIC**") {
+		t.Fatalf("pull request comments = %q, want one 10 AIC summary", prComments)
 	}
 	if len(issueComments) != 2 ||
-		!strings.Contains(issueComments[1], "**Total Goobers cost for this PR:** 10.00 AIC") ||
-		!strings.Contains(issueComments[1], "**Cost attributed to this issue:** 10.00 AIC") {
+		!strings.Contains(issueComments[1], "**Total Goobers cost for this PR:** 10 AIC") ||
+		!strings.Contains(issueComments[1], "**Cost attributed to this issue:** 10 AIC") {
 		t.Fatalf("issue comments = %q, want total and issue allocation", issueComments)
 	}
 }
@@ -230,9 +230,9 @@ func TestPostMergeCostCommentsLabelVendorEstimates(t *testing.T) {
 	const footnote = `\* Includes Claude costs, which are vendor-reported estimates normalized to AIC for totals.`
 	summary := renderPostMergeCostSummary(report)
 	for _, want := range []string{
-		`Your cost for this PR was **10.00 AIC\***.`,
-		"- `implementation`: 8.00 AIC\n",
-		"- `merge-review`: 2.00 AIC\\*",
+		`Your cost for this PR was **10 AIC\***.`,
+		"- `implementation`: 8 AIC\n",
+		"- `merge-review`: 2 AIC\\*",
 		footnote,
 	} {
 		if !strings.Contains(summary, want) {
@@ -240,7 +240,7 @@ func TestPostMergeCostCommentsLabelVendorEstimates(t *testing.T) {
 		}
 	}
 	closeOut := mergedPullRequestComment("77", report, "42")
-	for _, want := range []string{`**Total Goobers cost for this PR:** 10.00 AIC\*`, footnote} {
+	for _, want := range []string{`**Total Goobers cost for this PR:** 10 AIC\*`, footnote} {
 		if !strings.Contains(closeOut, want) {
 			t.Fatalf("close-out %q does not contain %q", closeOut, want)
 		}

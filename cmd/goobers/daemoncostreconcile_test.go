@@ -104,8 +104,8 @@ func TestReconcileRecentlyMergedPRCostsIsBoundedOwnedAndIdempotent(t *testing.T)
 	if len(prProvider.updates) != 1 || prProvider.updates[0].ID != "20" {
 		t.Fatalf("updates = %+v, want only PR #20", prProvider.updates)
 	}
-	if !strings.Contains(prProvider.updates[0].Comment, "Your cost for this PR was **6.00 AIC**") {
-		t.Fatalf("summary = %q, want 6.00 AIC", prProvider.updates[0].Comment)
+	if !strings.Contains(prProvider.updates[0].Comment, "Your cost for this PR was **6 AIC**") {
+		t.Fatalf("summary = %q, want 6 AIC", prProvider.updates[0].Comment)
 	}
 	prProvider.comments["20"][len(prProvider.comments["20"])-1].Body += "\n\nPosted by **Goobers**"
 

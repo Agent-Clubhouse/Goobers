@@ -262,12 +262,12 @@ func TestPerformPostMergeADOPublishesReceiptSummaryAndAllocation(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want none", errs)
 	}
-	if len(closer.prCommentReqs) != 1 || !strings.Contains(closer.prCommentReqs[0], "**10.00 AIC**") {
-		t.Fatalf("PR summary comments = %q, want 10.00 AIC", closer.prCommentReqs)
+	if len(closer.prCommentReqs) != 1 || !strings.Contains(closer.prCommentReqs[0], "**10 AIC**") {
+		t.Fatalf("PR summary comments = %q, want 10 AIC", closer.prCommentReqs)
 	}
 	if len(closer.commentReqs) != 1 ||
-		!strings.Contains(closer.commentReqs[0].Comment, "**Total Goobers cost for this PR:** 10.00 AIC") ||
-		!strings.Contains(closer.commentReqs[0].Comment, "**Cost attributed to this issue:** 10.00 AIC") {
+		!strings.Contains(closer.commentReqs[0].Comment, "**Total Goobers cost for this PR:** 10 AIC") ||
+		!strings.Contains(closer.commentReqs[0].Comment, "**Cost attributed to this issue:** 10 AIC") {
 		t.Fatalf("work item close-out comments = %+v, want total and allocation", closer.commentReqs)
 	}
 }
@@ -301,8 +301,8 @@ func TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID(t *testing.T) {
 	if len(closer.prCommentReqs) != 1 {
 		t.Fatalf("PR summary comments = %q, want exactly one: a marker from a same-named identity must not suppress it", closer.prCommentReqs)
 	}
-	if !strings.Contains(closer.prCommentReqs[0], "**2.00 AIC**") {
-		t.Fatalf("PR summary = %q, want 2.00 AIC: a receipt from a same-named identity must not be counted", closer.prCommentReqs[0])
+	if !strings.Contains(closer.prCommentReqs[0], "**2 AIC**") {
+		t.Fatalf("PR summary = %q, want 2 AIC: a receipt from a same-named identity must not be counted", closer.prCommentReqs[0])
 	}
 }
 
@@ -338,8 +338,8 @@ func TestPerformPostMergeADOCostTrustsWorkItemsByIdentityGUID(t *testing.T) {
 	if len(closer.prCommentReqs) != 1 {
 		t.Fatalf("PR summary comments = %q, want exactly one", closer.prCommentReqs)
 	}
-	if !strings.Contains(closer.prCommentReqs[0], "**5.00 AIC**") {
-		t.Fatalf("PR summary = %q, want 5.00 AIC: work-item receipts from a same-named identity must not be counted", closer.prCommentReqs[0])
+	if !strings.Contains(closer.prCommentReqs[0], "**5 AIC**") {
+		t.Fatalf("PR summary = %q, want 5 AIC: work-item receipts from a same-named identity must not be counted", closer.prCommentReqs[0])
 	}
 }
 

@@ -16,6 +16,7 @@ import type {
   TelemetryUsageStats,
 } from "../api/types";
 import { isMissingCostCapability } from "../api/errors";
+import { formatAIC } from "../aicFormat";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
@@ -1621,7 +1622,7 @@ function formatAICAmounts(
   if (!amount) {
     return empty;
   }
-  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC`;
+  return formatAIC(amount.value);
 }
 
 function StageDistributions({
@@ -1812,7 +1813,7 @@ function formatMeasuredAIC(value: number | undefined): string {
   if (value === undefined) {
     return "Unmeasured";
   }
-  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value)} AIC`;
+  return formatAIC(value);
 }
 import { DataTable, TableShell } from "../ui/DataTable";
 import { formatDateTime } from "../dateTime";
