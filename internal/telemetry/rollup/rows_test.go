@@ -48,7 +48,7 @@ func TestQueryRowsIterationError(t *testing.T) {
 		if !errors.Is(err, iterationErr) {
 			t.Fatalf("error = %v, want iteration error", err)
 		}
-		if err != iterationErr {
+		if errors.Unwrap(err) != nil {
 			t.Fatalf("error = %v, want unwrapped error", err)
 		}
 		if len(got) != 1 || got[0] != 7 {
