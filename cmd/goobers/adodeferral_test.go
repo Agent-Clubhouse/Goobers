@@ -16,7 +16,7 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestADODeferralPublishesHoldAndPreservesEvidence(t *testing.T) {
+func TestADODeferralWithoutSiblingPublishesRemediationAndPreservesEvidence(t *testing.T) {
 	for _, reason := range []apiv1.VerdictReasonCode{apiv1.VerdictReasonOrdering, apiv1.VerdictReasonNoLander} {
 		t.Run(string(reason), func(t *testing.T) {
 			var label, state, comment string
@@ -63,7 +63,7 @@ func TestADODeferralPublishesHoldAndPreservesEvidence(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("code=%d stderr=%s", code, stderr.String())
 			}
-			if label != blockedOnSiblingLabel || state != "failed" {
+			if label != needsRemediationLabel || state != "failed" {
 				t.Fatalf("label=%q state=%q", label, state)
 			}
 			got, ok := parseVerdictComment(comment)

@@ -47,8 +47,8 @@ type canonicalFinding struct {
 // pr-remediation, fail -> a human must look (§4 D2: fail is never burned on
 // remediation budget, unlike needs-changes).
 //
-// needs-changes gets one further split (#747): when the findings carry a
-// cross-PR-ordering ask and no real defect, the PR isn't broken — it's waiting
+// needs-changes and defer get one further split (#747): when the findings carry
+// a cross-PR-ordering ask and no real defect, the PR isn't broken — it's waiting
 // on a sibling. Routing that to needs-remediation hands pr-remediation a defect
 // that doesn't exist; it reproduces the identical diff, checkpoints
 // byte-identical, and escalates (the stuck-loop pattern this issue exists to
@@ -78,7 +78,10 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 	case apiv1.VerdictFail, apiv1.VerdictEscalate:
 		return "goobers:merge-escalated"
 	case apiv1.VerdictDefer:
-		return blockedOnSiblingLabel
+		if sequencingOnly(findings) {
+			return blockedOnSiblingLabel
+		}
+		return needsRemediationLabel
 	default:
 		if sequencingOnly(findings) {
 			return blockedOnSiblingLabel
