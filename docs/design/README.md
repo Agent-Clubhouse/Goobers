@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 14 |
+| `draft` | 16 |
 | `approved` | 21 |
 | `implemented` | 28 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **73** |
+| **Total** | **75** |
 
 ## `docs/adr/`
 
@@ -34,6 +34,7 @@ word — read the page, not this table, before depending on it.
 |---|---|---|---|---|---|---|---|
 | [Design: ADO parity on DSL 2.0 — near-term plan for v0.5.0](ado-parity-dsl-2-0.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |
 | [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | — | — | #2745 | — | — | — |
+| [Design: Agent-authored child workflows](agent-authored-child-workflows.md) | `draft` | DSL, agent tools, execution, workspaces, journal, Portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — | — | — | — |
@@ -59,6 +60,7 @@ word — read the page, not this table, before depending on it.
 | [Goobernetes dispatcher — the pod-per-stage substrate (infra-facing design)](goobernetes-dispatcher.md) | `draft` | — | — | — | — | — | — |
 | [Goobernetes restrictions — the effect-based isolation model](goobernetes-restrictions.md) | `approved` | — | — | #3516, #3568, #4540 | — | — | 53566d5a9 (2026-10-02) |
 | [Goobernetes smoke — the distributed-shape v1 exit](goobernetes-smoke.md) | `approved` | — | — | — | — | — | — |
+| [Human operations and advanced workflows program](hitl-advanced-workflows-program.md) | `draft` | workflows, human operations, events, provider reads, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Design: Human-in-the-Loop — escalation visibility & intervention](human-in-the-loop.md) | `implemented` | — | — | #3876, #3877, #3883 | — | — | 09db115bb (2026-09-06) |
 | [Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster](k8s-infra-shape.md) | `approved` | — | — | — | — | — | — |
 | [Large-repo execution model (#2063)](large-repo-execution-model.md) | `draft` | — | — | — | — | — | — |
