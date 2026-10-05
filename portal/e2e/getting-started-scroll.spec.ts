@@ -34,8 +34,10 @@ async function routeGuided(page: Page) {
       if (path === "/guided/state") {
         await route.fulfill({
           json: {
-            version: 2,
+            version: 3,
             platform: "windows",
+            executable: "C:\\Program Files\\Goobers\\goobers.exe",
+            runtimeIdentity: "CONTOSO\\alice",
             workdir: "C:\\work",
             instancePath: "C:\\work\\tutorial-instance",
             instanceExists: false,

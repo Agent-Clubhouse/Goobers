@@ -1,6 +1,6 @@
 # NetworkPolicy composition — the facts the egress model rests on
 
-> Status: approved
+> Status: implemented
 > Delivered-by: #3568, #4294
 > Tracking: #4294
 > Scope-delta: None. This note documents the already-shipped netpol-render egress model; all five facts it set out to record are written down and no designed scope is deferred.

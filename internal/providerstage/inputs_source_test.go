@@ -26,6 +26,7 @@ type inputSourceOwner struct {
 // file must declare its command owner; a new call in an existing file is
 // checked automatically.
 var providerInputSourceOwners = map[string]inputSourceOwner{
+	"advisorypr.go":     {command: "advisory-pr-publish", shared: map[string][]string{"reviewType": {"advisory-pr-select"}, "resultFile": {"advisory-pr-select"}}},
 	"applyverdict.go":   {command: "apply-verdict"},
 	"configcheckout.go": {command: "config-checkout"},
 	"configrepotarget.go": {
@@ -72,6 +73,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"prclaim.go":                     {command: "pr-claim"},
 	"prcommentwatch.go":              {command: "pr-comment-watch"},
 	"preflightrepowrite.go":          {command: "preflight-repo-write"},
+	"prfeedbackrepass.go":            {command: "pr-claim"},
 	"prqueuereport.go":               {command: "backlog-query"},
 	"prremediationlifecycle.go":      {command: "pr-claim"},
 	"prselect.go":                    {command: "pr-select"},
@@ -81,9 +83,11 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"rebasepr.go":                    {command: "rebase-pr"},
 	"reconcilebranches.go":           {command: "reconcile-branches"},
 	"recordmergerefusal.go":          {command: "record-merge-refusal"},
+	"recoveryresume.go":              {command: "recovery-resume"},
 	"remediationcheckpoint.go":       {command: "remediation-checkpoint"},
 	"reportprstatus.go":              {command: "report-pr-status"},
 	"resolvereviewthreads.go":        {command: "resolve-review-threads"},
+	"reviewthreadreceipt.go":         {command: "resolve-review-threads"},
 	"respondtofindings.go":           {command: "respond-to-findings"},
 	"securityalerts.go":              {command: "security-alerts-query"},
 	"selectsource.go":                {command: "select-source"},

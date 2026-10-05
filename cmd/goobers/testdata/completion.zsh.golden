@@ -320,7 +320,7 @@ _goobers_completion()
             flags+=(--gate)
             ;;
         pr-claim)
-            flags+=(--release)
+            flags+=(--release --verify-feedback --classify-feedback-repass)
             ;;
         remediation-checkpoint)
             flags+=(--budget --escalate --escalation-outcome)
@@ -330,6 +330,9 @@ _goobers_completion()
             ;;
         mcp-io)
             flags+=(--config)
+            ;;
+        advisory-pr-reset)
+            flags+=(--gaggle --owner --repo --review-type --pr)
             ;;
     esac
     if [[ "${PREFIX}" == -* ]]; then

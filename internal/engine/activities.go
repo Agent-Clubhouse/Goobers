@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
@@ -298,6 +299,8 @@ type MutationFact struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
@@ -327,17 +330,17 @@ func classifySeamError(err error) error {
 		}
 		return temporal.NewApplicationErrorWithOptions(err.Error(), FailureTypeInfrastructure, options)
 	}
-	// A TRANSIENT worktree-provision failure (#3882, the engine drift-ledger
-	// entry this closes): a lock contended by a concurrent worktree operation,
-	// a fetch that lost its connection, a transiently-unavailable remote. The
-	// local runner already reclassifies these as infrastructure so the attempt
-	// retries instead of burning a repass on the AGENT for something the agent
-	// never touched; the engine classified every provision failure as a stage
-	// failure, which charged the run's own budget for the worker's disk.
+	// A RETRYABLE worktree-provision failure (#3882/#5446): a branch occupied
+	// by another managed worktree, a fetch that lost its connection, a
+	// transiently-unavailable remote. The local runner already reclassifies
+	// these as infrastructure so the attempt retries instead of burning a
+	// repass on the AGENT for something the agent never touched; the engine
+	// classified every provision failure as a stage failure, which charged the
+	// run's own budget for the worker's disk.
 	//
 	// Checked after the invoke marker, not before: an executor that has
 	// already declared its own failure class owns that answer.
-	if worktree.IsTransientProvisionError(err) {
+	if worktree.IsRetryableProvisionError(err) {
 		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
 	}
 	return temporal.NewApplicationError(err.Error(), FailureTypeStage)
@@ -379,7 +382,7 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		WorkspaceDelta:   workspaceDelta,
 	})
 	if err != nil {
-		if worktree.IsTransientProvisionError(err) {
+		if worktree.IsRetryableProvisionError(err) {
 			return nil, invoke.InfrastructureFailure(fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err))
 		}
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)

@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
@@ -834,6 +835,7 @@ type Runner struct {
 	newHeartbeatTicker   func(time.Duration) heartbeatTicker
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
+	gatePrepRetryFloor   time.Duration
 	active               activeRunSet
 	pinnedMu             sync.Mutex
 	pinnedRuns           map[string]*worktree.PinnedLease
@@ -879,6 +881,7 @@ func New(cfg Config) (*Runner, error) {
 		},
 		stalledCancelGrace:   StalledCancellationGrace,
 		stalledTerminalGrace: StalledTerminalizationGrace,
+		gatePrepRetryFloor:   GatePreparationRetryFloor,
 		pinnedRuns:           make(map[string]*worktree.PinnedLease),
 		attributeRun:         creditgraph.WriteRunRecord,
 	}, nil
@@ -3188,11 +3191,11 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 		// The external mutation cannot be rolled back, but its projection
 		// must not silently disappear. Stop on a failed append (which may
 		// have torn the log), preserving the other attempt failures too.
-		if err := jr.Append(journal.WithMutationOutcome(journal.Event{
+		if err := jr.Append(journal.WithSemanticMutation(journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: externalURL},
 			Runner:      providers.MutationReceiptRunnerFields(m.ReceiptID, m.Operation, m.MergeConfirmation, m.QueueAdmission, m.LandingIntent),
-		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID)); err != nil {
+		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID), m.SemanticMutation)); err != nil {
 			return fmt.Errorf("runner: journal provider mutation for %q: %w", stage, errors.Join(err, heartbeatErr, removeErr))
 		}
 	}
@@ -4332,6 +4335,8 @@ type mutationFact struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // readMutationSidecar reads and parses mutationsSidecarFile from workspace,
@@ -4545,13 +4550,15 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
-		env, workspace, err = r.buildEnvelope(ctx, in, g.Name, "gate: "+g.Name, nil, gateCaps, gateLimits, upstream, gateWorkspaceMode(g), false, workspaceBranch)
+		prepFailures := 0
+		env, workspace, prepFailures, err = r.buildGateEnvelopeWithRetry(ctx, jr, in, g, gateCaps, gateLimits, upstream, workspaceBranch)
 		if err != nil {
 			prepErr := fmt.Errorf("prepare gate %q: %w", g.Name, err)
 			err = codedStageFailure(provisionFailureCode(err), prepErr)
 			span.Fail(err)
 			return gate.Result{}, err, nil
 		}
+		g = gateWithConsumedPreparationAttempts(g, prepFailures)
 		env.InstructionAddendum = instructionAddendum
 		if g.Evaluator == apiv1.EvaluatorAgentic {
 			gateTelemetryDir = telemetry.ResetStageTelemetryDir(env.Workspace)

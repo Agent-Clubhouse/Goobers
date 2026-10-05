@@ -12,6 +12,7 @@
 //   - Start starts a Configure-d command and returns a Tree handle.
 //   - Tree.Kill hard-terminates the entire tree.
 //   - Tree.RequestDump asks the tree to emit diagnostics and exit (unix only).
+//   - WaitOrKill waits under a context and bounds cleanup after killing a tree.
 //   - Alive reports whether a pid names a live process.
 //   - StartOrphanReaper installs the container-init reaping contract (linux).
 //

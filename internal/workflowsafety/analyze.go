@@ -88,17 +88,19 @@ type Options struct {
 }
 
 type frame struct {
-	state       string
-	path        []string
-	visited     []string
-	patch       bool
-	unknown     bool
-	codeSubject bool
-	pr          bool
-	rebound     bool
+	state            string
+	path             []string
+	visited          []string
+	patch            bool
+	unknown          bool
+	codeSubject      bool
+	pr               bool
+	rebound          bool
+	reboundWorkspace bool
+	localAttempt     bool
 	// Each pending rejection is scoped to its gate, never satisfied by a
 	// publisher of another verdict.
-	pending      []string
+	pending      []pendingRejection
 	feedback     string
 	lastTask     string
 	cycleStart   string
@@ -115,6 +117,11 @@ type analyzer struct {
 	seen       map[string]bool
 	expansions int
 	bounded    bool
+}
+
+type pendingRejection struct {
+	Gate         string
+	LocalAttempt bool
 }
 
 // Analyze walks the actual compiled graph. It does not compile another
@@ -200,10 +207,11 @@ func (a *analyzer) walk(f frame) {
 	// Path is presentation, not state. The remaining bounded abstract state
 	// includes completed stages so a forward edge is not mistaken for a retry.
 	key, _ := json.Marshal(struct {
-		State, Feedback, LastTask, CycleStart                               string
-		Patch, Unknown, CodeSubject, PR, Rebound, CycleChange, CycleUnknown bool
-		Pending, Visited                                                    []string
-	}{f.state, f.feedback, f.lastTask, f.cycleStart, f.patch, f.unknown, f.codeSubject, f.pr, f.rebound, f.cycleChange, f.cycleUnknown, f.pending, f.visited})
+		State, Feedback, LastTask, CycleStart                                                               string
+		Patch, Unknown, CodeSubject, PR, Rebound, ReboundWorkspace, LocalAttempt, CycleChange, CycleUnknown bool
+		Pending                                                                                             []pendingRejection
+		Visited                                                                                             []string
+	}{f.state, f.feedback, f.lastTask, f.cycleStart, f.patch, f.unknown, f.codeSubject, f.pr, f.rebound, f.reboundWorkspace, f.localAttempt, f.cycleChange, f.cycleUnknown, f.pending, f.visited})
 	if a.seen[string(key)] {
 		return
 	}
@@ -211,7 +219,7 @@ func (a *analyzer) walk(f frame) {
 	a.expansions++
 	if f.state == wf.TerminalComplete || wf.IsReservedAnyTarget(f.state) {
 		if f.state != wf.TargetJoin {
-			a.publication(f, f.state)
+			a.publication(f, f.state, false)
 		}
 		return
 	}
@@ -237,7 +245,7 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 	e := c.apply(CommandEffects(t))
 	// An assertion supplies its named effect, not knowledge of every other
 	// effect a custom command may have.
-	f.unknown = f.unknown || !e.Known || e.ConditionalRebind
+	f.unknown = f.unknown || !e.Known
 	if t.Type == apiv1.TaskDeterministic && !e.Known && !c.assertsEffects() {
 		a.add(CoverageCode, t.Name, f.path, "custom command or agent effects are unknown",
 			"Evidence production, subject changes and publication by this stage are not proven.",
@@ -245,7 +253,7 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 	}
 	recovery := c.RecoveryOnNoWork
 	if e.NoWork {
-		a.publication(f, "no-work -> @complete")
+		a.publication(f, "no-work -> @complete", false)
 	}
 	if e.NoWork && recovery != "" && !slices.Contains(f.visited, recovery) {
 		a.add(RecoveryCode, t.Name, appendPath(f.path, "no-work -> @complete"),
@@ -273,35 +281,57 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 			failed.state = t.Next
 			a.walk(failed)
 		}
-		f.pending = remove(f.pending, e.Publishes)
+		f.pending = removePending(f.pending, e.Publishes)
 	}
 	if e.Parks {
-		a.publication(f, t.Name)
+		a.publication(f, t.Name, true)
+		f.pending = removeParkedLocalAttempts(f.pending)
 	}
 	f.recordEvidence(t, e, c)
 	f.cycleChange = f.cycleChange || e.Changes
 	f.cycleUnknown = f.cycleUnknown || !e.Known
 	f.visited = addSorted(f.visited, t.Name)
 	f.lastTask, f.state = t.Name, t.Next
+	if e.ConditionalRebind {
+		managed := f
+		managed.path = appendPath(f.path, "managed subject workspaceBranch")
+		managed.rebound = true
+		a.walk(managed)
+
+		advisory := f
+		advisory.path = appendPath(f.path, "advisoryMode=true without workspaceBranch")
+		advisory.rebound = false
+		a.walk(advisory)
+		return
+	}
 	a.walk(f)
 }
 
 func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
 	if e.SelectsPR {
 		f.pr = true
-		f.patch, f.rebound = false, false
+		f.patch, f.rebound, f.localAttempt = false, false, false
+		if !e.ConditionalRebind || !preservesReboundWorkspace(t) {
+			f.reboundWorkspace = false
+		}
 	}
 	if e.Rebinds {
 		f.rebound = true
+		f.reboundWorkspace = true
 	}
 	if e.Changes {
 		f.patch = false
+		if e.Pushes {
+			f.localAttempt = false
+		} else if f.pr && f.rebound {
+			f.localAttempt = true
+		}
 	}
 	f.codeSubject = f.codeSubject || e.CodeSubject || e.Patch || t.CommitsRepo
 	if e.Patch {
 		mode := t.EffectiveWorkspace()
 		writable := mode == "" || mode == apiv1.WorkspaceRepo
-		f.patch = c.Evidence == "patch" || (writable && (!f.pr || f.rebound))
+		f.patch = c.Evidence == "patch" || (writable && (!f.pr || f.rebound || f.reboundWorkspace))
 		if !f.patch {
 			f.unknown = true
 		}
@@ -309,6 +339,11 @@ func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
 	if !e.Known && !e.Patch && t.Type == apiv1.TaskDeterministic {
 		f.patch = false
 	}
+}
+
+func preservesReboundWorkspace(t apiv1.Task) bool {
+	return t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" && t.Run.Command[1] == "gather-sibling-context" &&
+		t.InputsFrom["selectedNumber"] == "selectedNumber" && t.InputsFrom["head"] == "head" && t.InputsFrom["base"] == "base"
 }
 
 func (a *analyzer) reviewEvidence(f frame, g apiv1.Gate) bool {
@@ -340,7 +375,7 @@ func (a *analyzer) reviewEvidence(f frame, g apiv1.Gate) bool {
 func (a *analyzer) gate(f frame, g apiv1.Gate) {
 	prReview := a.reviewEvidence(f, g)
 	if c := a.contracts.Stages[g.Name]; c.Publishes == g.Name {
-		f.pending = remove(f.pending, g.Name)
+		f.pending = removePending(f.pending, g.Name)
 	}
 	for _, outcome := range sortedKeys(g.Branches) {
 		if outcome == wf.BranchEscalate {
@@ -352,12 +387,12 @@ func (a *analyzer) gate(f frame, g apiv1.Gate) {
 		next.state = target
 		rejection := outcome == string(apiv1.VerdictNeedsChanges) || outcome == string(apiv1.VerdictFail)
 		if outcome == string(apiv1.VerdictPass) && g.Evaluator == apiv1.EvaluatorAgentic {
-			next.pending = remove(next.pending, g.Name)
+			next.pending = removePending(next.pending, g.Name)
 		}
 		if rejection && g.Evaluator == apiv1.EvaluatorAgentic {
 			next.feedback = g.Name
 			if prReview && a.contracts.Stages[g.Name].Publishes != g.Name {
-				next.pending = addSorted(next.pending, g.Name)
+				next.pending = addPending(next.pending, pendingRejection{Gate: g.Name, LocalAttempt: next.localAttempt})
 			}
 		}
 		reentry := slices.Contains(f.visited, target)
@@ -389,16 +424,19 @@ func (a *analyzer) gate(f frame, g apiv1.Gate) {
 	}
 }
 
-func (a *analyzer) publication(f frame, stage string) {
+func (a *analyzer) publication(f frame, stage string, terminalPark bool) {
 	for _, rejected := range f.pending {
+		if terminalPark && rejected.LocalAttempt {
+			continue
+		}
 		confidence, coverage := "high", "modeled"
 		if f.unknown {
 			confidence, coverage = "uncertain", "partial"
 		}
-		a.add(PublishCode, rejected, appendPath(f.path, stage),
-			fmt.Sprintf("rejected findings from gate %q can terminate or park without a recognized publisher", rejected),
+		a.add(PublishCode, rejected.Gate, appendPath(f.path, stage),
+			fmt.Sprintf("rejected findings from gate %q can terminate or park without a recognized publisher", rejected.Gate),
 			"The PR can remain parked without the findings needed to repair it.",
-			fmt.Sprintf("Route this path through goobers apply-verdict --gate %s, or declare a publisher for that verdict.", rejected),
+			fmt.Sprintf("Route this path through goobers apply-verdict --gate %s, or declare a publisher for that verdict.", rejected.Gate),
 			confidence, coverage, 0, "")
 	}
 }
@@ -442,8 +480,24 @@ func addSorted(items []string, item string) []string {
 	return out
 }
 
-func remove(items []string, item string) []string {
-	return slices.DeleteFunc(slices.Clone(items), func(s string) bool { return s == item })
+func addPending(items []pendingRejection, item pendingRejection) []pendingRejection {
+	for i := range items {
+		if items[i].Gate == item.Gate {
+			items[i].LocalAttempt = items[i].LocalAttempt && item.LocalAttempt
+			return items
+		}
+	}
+	out := append(slices.Clone(items), item)
+	sort.Slice(out, func(i, j int) bool { return out[i].Gate < out[j].Gate })
+	return out
+}
+
+func removePending(items []pendingRejection, gate string) []pendingRejection {
+	return slices.DeleteFunc(slices.Clone(items), func(s pendingRejection) bool { return s.Gate == gate })
+}
+
+func removeParkedLocalAttempts(items []pendingRejection) []pendingRejection {
+	return slices.DeleteFunc(slices.Clone(items), func(s pendingRejection) bool { return s.LocalAttempt })
 }
 
 func budgetClass(infrastructure bool) string {

@@ -20,6 +20,7 @@ type Effects struct {
 	Patch             bool
 	EmptySuccess      bool
 	Changes           bool
+	Pushes            bool
 	CodeSubject       bool
 	SelectsPR         bool
 	Rebinds           bool
@@ -86,10 +87,20 @@ func goobersCommandEffects(command string, args []string) Effects {
 		effects = selectionEffects(command, args)
 	case "push-branch", "push-remediated", "rebase-pr":
 		if len(args) == 0 {
-			effects = Effects{Known: true, Changes: true, CodeSubject: true}
+			effects = Effects{Known: true, Changes: true, Pushes: true, CodeSubject: true}
 		}
 	case "pr-claim":
-		if len(args) == 0 || slices.Equal(args, []string{"--release"}) {
+		// Every mode reads PR state or the run journal and writes only its
+		// result file plus the run's claim ledger: no code changes, no
+		// publication, no park. --verify-feedback (#6126) also compares live
+		// feedback with the recorded snapshot and records the workspace head;
+		// --classify-feedback-repass makes no provider call and only compares
+		// the workspace head with the journal's stale-verdict reference.
+		switch {
+		case len(args) == 0,
+			slices.Equal(args, []string{"--release"}),
+			slices.Equal(args, []string{"--verify-feedback"}),
+			slices.Equal(args, []string{"--classify-feedback-repass"}):
 			effects = Effects{Known: true}
 		}
 	case "remediation-checkpoint":

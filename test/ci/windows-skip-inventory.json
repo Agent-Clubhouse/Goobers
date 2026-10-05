@@ -391,6 +391,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/gagglehealth",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Contract-only package with no production caller until #4425; its file-lock and atomic-write seams are internal/platform/lock and internal/platform/durability, which the Windows gate runs whole. Runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/gaggletemplate",
       "coverage": "none",
       "category": "not-selected",
@@ -535,6 +541,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/mutationreceipt",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Platform-neutral semantic hashing and capture contracts; exercised by Linux unit shards. File durability uses the existing mutationsidecar platform primitives."
+    },
+    {
       "package": "internal/mutationsidecar",
       "coverage": "none",
       "category": "not-selected",
@@ -614,6 +626,12 @@
     },
     {
       "package": "internal/podauth",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/planehttp",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."

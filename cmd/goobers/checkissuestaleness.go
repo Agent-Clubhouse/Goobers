@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"time"
 
@@ -187,14 +185,12 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	if reason != "" {
 		out["reason"] = reason
 	}
-	data, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal issue-staleness result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 2
+	if code := writeStageResultJSON(stderr, resultFile, out, stageResultOptions{
+		MarshalLabel:       "marshal issue-staleness result",
+		Indented:           true,
+		WriteErrorExitCode: 2,
+	}); code != 0 {
+		return code
 	}
 	if stale {
 		pf(stdout, "pr #%s: %s\n", pullNumber, reason)

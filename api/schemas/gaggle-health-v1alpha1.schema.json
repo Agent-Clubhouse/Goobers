@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/gaggle-health-v1alpha1.schema.json",
+  "title": "Gaggle health response",
+  "description": "Versioned read envelope for one gaggle's restart-recoverable health projection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "health"],
+  "properties": {
+    "schemaVersion": { "const": "goobers.dev/gaggle-health/v1alpha1", "description": "Wire-contract version." },
+    "health": { "$ref": "#/$defs/snapshot", "description": "Current projection and bounded episode history." }
+  },
+  "$defs": {
+    "state": {
+      "type": "string",
+      "enum": ["healthy", "degraded", "stalled", "inconsistent", "recovering", "operator-required"],
+      "description": "Aggregate gaggle state or one finding's state contribution."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warning", "error", "critical"],
+      "description": "Finding severity."
+    },
+    "identity": {
+      "type": "object",
+      "description": "Provider-neutral finding scope. Values are stable identifiers, never credentials, environment values, or host paths.",
+      "additionalProperties": false,
+      "required": ["gaggle"],
+      "properties": {
+        "gaggle": { "type": "string", "minLength": 1, "maxLength": 253, "description": "Gaggle owning the finding." },
+        "workflow": { "type": "string", "maxLength": 253, "description": "Optional workflow identity." },
+        "run": { "type": "string", "maxLength": 253, "description": "Optional run identity." },
+        "stage": { "type": "string", "maxLength": 253, "description": "Optional stage identity." },
+        "backlogItem": { "type": "string", "maxLength": 253, "description": "Optional provider backlog-item identity." },
+        "pullRequest": { "type": "string", "maxLength": 253, "description": "Optional provider pull-request identity." },
+        "claim": { "type": "string", "maxLength": 253, "description": "Optional claim-ledger identity." },
+        "runner": { "type": "string", "maxLength": 253, "description": "Optional runner identity." },
+        "worker": { "type": "string", "maxLength": 253, "description": "Optional worker identity." }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "description": "Bounded reference to authoritative, already-redacted journal or artifact evidence.",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Closed-by-producer evidence class, such as journal-event or artifact-digest." },
+        "run": { "type": "string", "maxLength": 253, "description": "Run containing the evidence, when applicable." },
+        "sequence": { "type": "integer", "minimum": 0, "description": "Exact journal sequence, when applicable." },
+        "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Content digest of scrubbed evidence, when applicable." },
+        "detail": { "type": "string", "maxLength": 512, "description": "Bounded redacted explanation; raw logs and host-private paths are forbidden." }
+      }
+    },
+    "repair": {
+      "type": "object",
+      "description": "Repair recommendation, independent policy authorization, attempt, result, and follow-up.",
+      "additionalProperties": false,
+      "required": ["recommendedAction", "policyAuthorized", "disposition", "followUp"],
+      "properties": {
+        "recommendedAction": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Bounded recommended operator or automatic action." },
+        "policyAuthorized": { "type": "boolean", "description": "Whether immutable product safety policy and gaggle policy both authorize automatic repair." },
+        "disposition": { "type": "string", "enum": ["not-attempted", "started", "succeeded", "failed", "refused"], "description": "Observed repair lifecycle disposition, distinct from authorization." },
+        "attemptedAt": { "type": "string", "format": "date-time", "description": "Time an authorized repair attempt started." },
+        "completedAt": { "type": "string", "format": "date-time", "description": "Time the repair attempt produced a result." },
+        "idempotencyKey": { "type": "string", "maxLength": 253, "description": "Stable identity preventing duplicate mutation attempts." },
+        "resultSummary": { "type": "string", "maxLength": 1024, "description": "Bounded redacted observed result; never unrestricted command output." },
+        "followUp": { "type": "string", "enum": ["none", "verifying", "resolved", "escalated"], "description": "Required observation after a repair result." }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "description": "One deduplicated health episode with bounded evidence and explicit remediation phases.",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "code", "severity", "contribution", "identity", "firstObserved", "lastObserved", "observationCount", "episodeKey", "evidence", "summary", "confidence", "evidenceAssessment", "repair"],
+      "properties": {
+        "schemaVersion": { "const": "goobers.dev/gaggle-health/v1alpha1", "description": "Finding-contract version." },
+        "code": { "type": "string", "enum": ["trigger-silence", "no-progress", "workflow-flapping", "prolonged-degradation", "orphaned-claim", "projection-drift"], "description": "Stable finding code." },
+        "severity": { "$ref": "#/$defs/severity", "description": "Finding severity after a safe override." },
+        "contribution": { "$ref": "#/$defs/state", "description": "Finding contribution to deterministic aggregate state." },
+        "identity": { "$ref": "#/$defs/identity", "description": "Gaggle and optional workflow/runtime scope." },
+        "firstObserved": { "type": "string", "format": "date-time", "description": "First observation in this episode." },
+        "lastObserved": { "type": "string", "format": "date-time", "description": "Most recent observation extending this episode." },
+        "observationCount": { "type": "integer", "minimum": 1, "description": "Number of repeated observations merged into this episode." },
+        "episodeKey": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Stable dedupe key derived from finding code and non-secret scope." },
+        "evidence": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/evidence" }, "description": "Bounded authoritative evidence references supporting detection." },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "Bounded redacted human summary." },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Detection confidence from zero through one." },
+        "evidenceAssessment": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "Why evidence is sufficient or insufficient, including uncertainty." },
+        "repair": { "$ref": "#/$defs/repair", "description": "Recommended action, authorization, attempt, observed result, and follow-up." },
+        "resolvedAt": { "type": "string", "format": "date-time", "description": "Time this episode was resolved." },
+        "resolutionEvidence": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/evidence" }, "description": "Bounded authoritative evidence proving resolution." }
+      }
+    },
+    "event": {
+      "type": "object",
+      "description": "Append-only instance health-journal transition carrying a complete bounded finding snapshot.",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "sequence", "occurredAt", "type", "gaggle"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "evaluation" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "episodeKey": false,
+              "finding": false
+            }
+          },
+          "else": {
+            "required": ["episodeKey", "finding"]
+          }
+        }
+      ],
+      "properties": {
+        "schemaVersion": { "const": "goobers.dev/gaggle-health/v1alpha1", "description": "Health-event contract version." },
+        "sequence": { "type": "integer", "minimum": 1, "description": "Strictly increasing instance health-journal sequence." },
+        "occurredAt": { "type": "string", "format": "date-time", "description": "Transition time." },
+        "type": { "type": "string", "enum": ["evaluation", "finding-opened", "finding-updated", "repair-started", "repair-finished", "escalation", "finding-resolved"], "description": "Journaled health transition kind." },
+        "gaggle": { "type": "string", "minLength": 1, "maxLength": 253, "description": "Gaggle partition key." },
+        "episodeKey": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Episode affected by the transition." },
+        "finding": { "$ref": "#/$defs/finding", "description": "Complete finding snapshot for replay; absent only on evaluation." }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "description": "Derived current health and bounded resolved-episode history for one gaggle.",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "gaggle", "state", "updatedAt", "active", "history", "lastSequence"],
+      "properties": {
+        "schemaVersion": { "const": "goobers.dev/gaggle-health/v1alpha1", "description": "Projection-contract version." },
+        "gaggle": { "type": "string", "minLength": 1, "maxLength": 253, "description": "Gaggle isolated by this projection." },
+        "state": { "$ref": "#/$defs/state", "description": "Deterministic aggregate state of active findings." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Time of the most recently replayed event." },
+        "active": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/finding" }, "description": "Current unresolved episodes sorted by episode key." },
+        "history": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/finding" }, "description": "Bounded resolved episode history for restart recovery and operator reads." },
+        "lastSequence": { "type": "integer", "minimum": 0, "description": "Last instance health-journal sequence included in the projection." }
+      }
+    }
+  }
+}

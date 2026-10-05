@@ -163,7 +163,19 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
   (GA 1.22). The dispatcher sets the tmpfs `sizeLimit` explicitly (never default-to-half-node-
   RAM) and adds it to the container memory limit when stamping from the runner ceiling — so a
   stage filling `/tmp` fails with a budgeted, named limit, not a mysterious OOM against a
-  ceiling that never accounted for it.
+  ceiling that never accounted for it. The default is 512Mi; an operator resizes it with
+  `runner.podTmpfsSize` in `instance.yaml` (a Kubernetes quantity such as `1Gi`, validated at
+  load and read by the worker's dispatcher at startup). Because the size is added to the
+  memory limit, raise it only as far as real temp needs.
+- **GOCACHE is not on the tmpfs:** operator images commonly bake `GOCACHE=/tmp/gocache`, and
+  one Go build then filled the 512Mi tmpfs and starved everything else that needs temp
+  (recovery custody's git directory failed with `No space left on device`). Every stage pod
+  overrides `GOCACHE` to `/var/goobers/gocache` (`C:\var\goobers\gocache` on Windows), a
+  disk-backed per-pod `emptyDir`. It is deliberately not the shared `goobers-go-build-cache`
+  claim: a build cache that outlives its pods grows without bound (the 10 GB history in
+  `internal/ephemeraltmp`), whereas a per-pod directory is reclaimed with the pod. Size it
+  through the container's ephemeral-storage ceiling (the runner `disk`). Recovery custody's
+  private Git directories are created inside the repository's own `.git`, not in `/tmp`.
 - **Restriction bindings by OS (decisions 006/007):** Linux `fs:readonly-except-workspace` =
   `readOnlyRootFilesystem: true` + writable workspace + writable HOME; Windows the same effect
   binds to `windowsOptions.runAsUserName: ContainerUser` and the dispatcher **must NOT stamp

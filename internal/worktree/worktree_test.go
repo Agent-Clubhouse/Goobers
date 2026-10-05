@@ -2265,3 +2265,10 @@ func TestIsTransientProvisionErrorRequiresGitCommandError(t *testing.T) {
 		t.Fatal("IsTransientProvisionError matched a non-gitCommandError, want false")
 	}
 }
+
+func TestIsRetryableProvisionErrorIncludesBranchOccupancy(t *testing.T) {
+	err := fmt.Errorf("create worktree: %w", branchOccupancyError{reason: "owned by another run"})
+	if !IsRetryableProvisionError(err) {
+		t.Fatal("branch occupancy was not classified as retryable")
+	}
+}

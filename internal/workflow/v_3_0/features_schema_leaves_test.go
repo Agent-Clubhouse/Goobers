@@ -38,6 +38,26 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.spec.enabled":          "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.enabled": "binary-layer terminal analysis policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.version": "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	// Gaggle-health policy is one binary-layer feature (gaggle.spec.health);
+	// its leaves are payload, not separately versioned DSL capabilities.
+	"gaggle.spec.health.enabled":                         "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.evaluationInterval":              "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.eventWorkflow.enabled":           "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.eventWorkflow.eventTypes":        "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.eventWorkflow.findingCodes":      "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.eventWorkflow.minimumSeverity":   "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.eventWorkflow.workflow":          "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.findings.mode":                   "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.findings.severity":               "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.notifications.enabled":           "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.notifications.escalateAfter":     "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.notifications.minimumSeverity":   "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.thresholds.evidenceRetention":    "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.thresholds.flappingCount":        "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.thresholds.flappingWindow":       "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.thresholds.noProgress":           "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.thresholds.prolongedDegradation": "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.health.thresholds.triggerSilence":       "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
 
 	// Identity envelope: fixed document identity and k8s-style metadata are not
 	// DSL capabilities and are expected to stay excepted.

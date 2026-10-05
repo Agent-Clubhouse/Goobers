@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -340,5 +341,48 @@ func TestRecoveryAuthenticationEnvironmentExcludesStageAndHostSecrets(t *testing
 		if !strings.Contains(got, allowed) {
 			t.Fatalf("recovery Git environment omitted %q: %q", allowed, got)
 		}
+	}
+}
+
+// TestRecoveryResumeOutcomeStartsFreshOnIncompatibleCheckpoint pins the #4418
+// re-claim contract: retained work that no longer applies to current main is
+// skipped (the claim starts fresh and names the skipped run), while any other
+// failure stays fail-closed.
+func TestRecoveryResumeOutcomeStartsFreshOnIncompatibleCheckpoint(t *testing.T) {
+	conflict := fmt.Errorf("retained patch cannot be applied cleanly to current main: %w: exit status 1", recovery.ErrIncompatibleSnapshot)
+	tests := []struct {
+		name       string
+		commit     string
+		sourceRun  string
+		err        error
+		wantStatus string
+		wantErr    bool
+		wantResume bool
+		wantSkip   string
+	}{
+		{name: "no retained work", err: recovery.ErrNoMatchingSnapshot, wantStatus: "fresh"},
+		{name: "incompatible retained work", sourceRun: "run-a", err: conflict, wantStatus: "incompatible", wantSkip: "run-a"},
+		{name: "other failure", sourceRun: "run-a", err: errors.New("receiving issue claim changed"), wantErr: true},
+		{name: "adopted", commit: "abc", sourceRun: "run-a", wantStatus: "resumed", wantResume: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, message, err := recoveryResumeOutcome(tt.commit, tt.sourceRun, tt.err)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %t", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if result.ResumeStatus != tt.wantStatus || result.Resumed != tt.wantResume || result.SkippedRun != tt.wantSkip {
+				t.Fatalf("result = %+v", result)
+			}
+			if result.ResumedFromRun != "" && !tt.wantResume {
+				t.Fatalf("non-resumed outcome claims provenance: %+v", result)
+			}
+			if message == "" {
+				t.Fatal("outcome has no operator message")
+			}
+		})
 	}
 }

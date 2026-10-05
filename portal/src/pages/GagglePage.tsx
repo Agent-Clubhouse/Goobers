@@ -1,3 +1,9 @@
+import { PageHeading, SectionHeading } from "../ui/Heading";
+import { DataTable } from "../ui/DataTable";
+import { MetadataGrid } from "../ui/MetadataGrid";
+import { ControlGroup } from "../ui/Filters";
+import { Timestamp } from "../ui/Timestamp";
+import { Action, ActionLink } from "../ui/Action";
 import { RunTiming } from "../components/RunTiming";
 import type {
   DaemonClient,
@@ -14,11 +20,9 @@ import { providerName } from "../runDetailData";
 import {
   incompleteRunPhasesMessage,
   useGaggleActivity,
-  useGaggleList,
   useOperationalSnapshot,
   type GaggleActivity,
   type GaggleInventory,
-  type GaggleSummary,
 } from "../operationalData";
 import type { Navigate } from "../routing";
 import { routeHash } from "../routing";
@@ -38,22 +42,21 @@ export function GagglePage({
   standalone: boolean;
 }) {
   const query = useOperationalSnapshot(client, { gaggle: gaggleName });
-  const gaggleListQuery = useGaggleList(client);
   const activityQuery = useGaggleActivity(client, gaggleName);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
+    return (
+      <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
+    );
   }
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
 
-  const inventory = query.state.data.inventories.find(
-    ({ gaggle }) => gaggle.name === gaggleName,
-  );
+  const inventory = query.state.data.inventories.find(({ gaggle }) => gaggle.name === gaggleName);
   if (!inventory) {
     return (
       <section className="daemon-state daemon-state-error" role="alert">
@@ -61,21 +64,18 @@ export function GagglePage({
           <h1>Gaggle unavailable</h1>
           <p>No gaggle named "{gaggleName}" is configured in this instance.</p>
         </div>
-        <button
+        <Action
+          variant="primary"
           className="reconnect-button"
           onClick={() => navigate({ page: "workflows" })}
           type="button"
         >
           View workflows
-        </button>
+        </Action>
       </section>
     );
   }
 
-  const gaggleList =
-    gaggleListQuery.state.status === "ready" || gaggleListQuery.state.status === "stale"
-      ? gaggleListQuery.state.data
-      : undefined;
   const activity =
     activityQuery.state.status === "ready" || activityQuery.state.status === "stale"
       ? activityQuery.state.data
@@ -85,7 +85,6 @@ export function GagglePage({
     <GaggleTopology
       activity={activity}
       client={client}
-      gaggleList={gaggleList}
       inventory={inventory}
       navigate={navigate}
       runs={query.state.data.runs}
@@ -96,23 +95,20 @@ export function GagglePage({
 function GaggleTopology({
   activity,
   client,
-  gaggleList,
   inventory,
   navigate,
   runs,
 }: {
   activity: GaggleActivity | undefined;
   client: DaemonClient;
-  gaggleList: GaggleSummary[] | undefined;
   inventory: GaggleInventory;
   navigate: Navigate;
   runs: RunSummary[];
 }) {
   const { gaggle } = inventory;
-  const otherGaggles = (gaggleList ?? []).filter((candidate) => candidate.name !== gaggle.name);
 
   return (
-    <>
+    <div className="gaggle-detail-page">
       <nav aria-label="Breadcrumb" className="breadcrumbs">
         <button onClick={() => navigate({ page: "workflows" })} type="button">
           Workflows
@@ -120,35 +116,19 @@ function GaggleTopology({
         <Icon name="chevron" size={14} />
         <span>{gaggle.displayName}</span>
       </nav>
-      <header className="detail-heading">
-        <div>
-          <span className="definition-label">Gaggle</span>
-          <div className="detail-heading-line">
-            <h1>{gaggle.displayName}</h1>
-            <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
-          </div>
-          <p>
+      <PageHeading
+        title={gaggle.displayName}
+        className="gaggle-detail-heading"
+        description={
+          <>
             {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
-          </p>
-        </div>
-        {otherGaggles.length > 0 && (
-          <label className="gaggle-switcher">
-            <span>Switch gaggle</span>
-            <select
-              aria-label="Switch gaggle"
-              onChange={(event) => navigate({ page: "gaggle", id: event.target.value })}
-              value={gaggle.name}
-            >
-              <option value={gaggle.name}>{gaggle.displayName}</option>
-              {otherGaggles.map((candidate) => (
-                <option key={candidate.name} value={candidate.name}>
-                  {candidate.displayName}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <dl className="detail-meta">
+          </>
+        }
+        fullWidth
+      />
+      <ControlGroup className="gaggle-detail-controls" label="Gaggle scope">
+        <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
+        <MetadataGrid className="detail-meta" layout="inline">
           <div>
             <dt>Status</dt>
             <dd>{gaggle.status}</dd>
@@ -165,8 +145,8 @@ function GaggleTopology({
             <dt>Active runs</dt>
             <dd>{gaggle.activeRunCount}</dd>
           </div>
-        </dl>
-      </header>
+        </MetadataGrid>
+      </ControlGroup>
 
       {gaggle.template && (
         <section className="daemon-state" aria-label="Template updates">
@@ -180,16 +160,28 @@ function GaggleTopology({
             </h2>
             <p>Installed revision: {gaggle.template.installed || "not checked"}</p>
             {gaggle.template.candidate && <p>Source revision: {gaggle.template.candidate}</p>}
-            <p>Last successful check: {gaggle.template.lastSuccess.startsWith("0001-") ? "never" : gaggle.template.lastSuccess}</p>
+            <p>
+              Last successful check:{" "}
+              {gaggle.template.lastSuccess.startsWith("0001-") ? (
+                "never"
+              ) : (
+                <Timestamp value={gaggle.template.lastSuccess} />
+              )}
+            </p>
             {gaggle.template.error && <p role="alert">{gaggle.template.error}</p>}
-            {gaggle.template.pendingBackprop && <p>Runtime edits need backprop into your config repository before deployment.</p>}
+            {gaggle.template.pendingBackprop && (
+              <p>Runtime edits need backprop into your config repository before deployment.</p>
+            )}
             {(gaggle.template.changes?.length ?? 0) > 0 && (
               <p>Changed files: {gaggle.template.changes?.join(", ")}</p>
             )}
             {(gaggle.template.conflicts?.length ?? 0) > 0 && (
               <p>Conflicts: {gaggle.template.conflicts?.join("; ")}</p>
             )}
-            <p>Updates are never applied automatically. Stop the instance, then review with <code>goobers config templates update --gaggle {gaggle.name}</code>.</p>
+            <p>
+              Updates are never applied automatically. Stop the instance, then review with{" "}
+              <code>goobers config templates update --gaggle {gaggle.name}</code>.
+            </p>
           </div>
         </section>
       )}
@@ -213,17 +205,20 @@ function GaggleTopology({
         workflows={inventory.workflows}
       />
 
-      <DisclosureSection
-        count={inventory.connections.length}
-        title="Repository connections"
-      >
-        <ConnectionTopology
-          connections={inventory.connections}
-          gaggleDisplayName={gaggle.displayName}
-          hasWorkflows={inventory.workflows.length > 0}
-        />
-      </DisclosureSection>
-    </>
+      <div className="gaggle-connections-section">
+        <DisclosureSection
+          count={inventory.connections.length}
+          defaultOpen
+          title="Repository connections"
+        >
+          <ConnectionTopology
+            connections={inventory.connections}
+            gaggleDisplayName={gaggle.displayName}
+            hasWorkflows={inventory.workflows.length > 0}
+          />
+        </DisclosureSection>
+      </div>
+    </div>
   );
 }
 
@@ -311,11 +306,7 @@ function GaggleActivitySections({
           {incompleteRunPhasesMessage(activity.incomplete)}
         </p>
       )}
-      <DisclosureSection
-        count={activity?.active.length}
-        defaultOpen
-        title="Active runs"
-      >
+      <DisclosureSection count={activity?.active.length} defaultOpen title="Active runs">
         {!activity ? (
           <p className="inline-empty">Loading active runs…</p>
         ) : activity.active.length === 0 ? (
@@ -327,7 +318,11 @@ function GaggleActivitySections({
             gridClassName="run-grid"
           >
             {activity.active.map((run) => (
-              <DataRow href={routeHash({ page: "run", id: run.id })} key={run.id} label={`Open run ${run.id}`}>
+              <DataRow
+                href={routeHash({ page: "run", id: run.id })}
+                key={run.id}
+                label={`Open run ${run.id}`}
+              >
                 <span className="row-primary">
                   <span className="row-title">
                     {identity(run)} · {run.id}
@@ -345,10 +340,7 @@ function GaggleActivitySections({
         )}
       </DisclosureSection>
 
-      <DisclosureSection
-        count={activity?.recent.length}
-        title="Recent outcomes"
-      >
+      <DisclosureSection count={activity?.recent.length} title="Recent outcomes">
         {!activity ? (
           <p className="inline-empty">Loading recent outcomes…</p>
         ) : activity.recent.length === 0 ? (
@@ -360,7 +352,11 @@ function GaggleActivitySections({
             gridClassName="outcome-grid"
           >
             {activity.recent.map((run) => (
-              <DataRow href={routeHash({ page: "run", id: run.id })} key={run.id} label={`Open run ${run.id}`}>
+              <DataRow
+                href={routeHash({ page: "run", id: run.id })}
+                key={run.id}
+                label={`Open run ${run.id}`}
+              >
                 <span className="row-primary">
                   <span className="row-title">
                     {identity(run)} · {run.id}
@@ -395,32 +391,38 @@ function GoobersPanel({
 }) {
   return (
     <section className="content-section">
-      <div className="section-heading">
-        <h2>Goobers</h2>
-        <span className="section-count">{goobers.length}</span>
-      </div>
-      <div className="gaggle-goober-panel-action">
-        <span>
-          {goobers.length} configured {goobers.length === 1 ? "persona" : "personas"}
-        </span>
-        <a href={routeHash({ page: "goobers", gaggle: gaggleName })}>
-          View full Goober details
-        </a>
-      </div>
+      <SectionHeading
+        title="Goobers"
+        className=""
+        actions={
+          <>
+            <ActionLink
+              variant="text"
+              size="compact"
+              className="text-button run-link-action"
+              href={routeHash({ page: "goobers", gaggle: gaggleName })}
+            >
+              View full Goober details
+            </ActionLink>
+          </>
+        }
+      />
       {goobers.length === 0 ? (
         <p className="inline-empty">No goobers are provisioned for this gaggle.</p>
       ) : (
-        <ul aria-label={`${gaggleDisplayName} goobers`} className="gaggle-goober-list">
+        <DataTable
+          ariaLabel={`${gaggleDisplayName} goobers`}
+          className="gaggle-goober-table"
+          columns={["Goober", "Role", "Stages owned"]}
+        >
           {goobers.map((goober) => (
-            <li className="gaggle-goober-node" key={goober.name}>
-              <strong>{goober.displayName}</strong>
-              <p>{goober.role}</p>
-              <span className="gaggle-goober-meta">
-                {goober.stages.length} {goober.stages.length === 1 ? "stage" : "stages"} owned
-              </span>
-            </li>
+            <tr key={goober.name}>
+              <td className="data-table-primary">{goober.displayName}</td>
+              <td>{goober.role}</td>
+              <td className="data-table-number">{goober.stages.length}</td>
+            </tr>
           ))}
-        </ul>
+        </DataTable>
       )}
     </section>
   );

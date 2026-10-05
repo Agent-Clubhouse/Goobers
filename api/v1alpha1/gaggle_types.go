@@ -84,6 +84,11 @@ type GaggleSpec struct {
 	// this gaggle. A workflow may override either value again.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// Health configures gaggle health observation, escalation, and the narrow
+	// set of product-authorized idempotent repairs. Omitted uses conservative
+	// defaults: observation is enabled and destructive behavior is disabled.
+	// +optional
+	Health *GaggleHealthPolicy `json:"health,omitempty" yaml:"health,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where workflows in
 	// this gaggle mirror their durable journal outbox. A workflow or task may
 	// override it. The local runner appends the run id and journal outbox layout
@@ -144,6 +149,78 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// GaggleHealthPolicy is the gaggle-scoped health contract. Runtime code resolves
+// omitted values through the immutable built-in defaults before evaluation.
+type GaggleHealthPolicy struct {
+	// Enabled controls periodic evaluation. Null or omitted defaults to true.
+	// +optional
+	// +nullable
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// EvaluationInterval is a Go duration. Omitted defaults to five minutes.
+	// +optional
+	EvaluationInterval string `json:"evaluationInterval,omitempty" yaml:"evaluationInterval,omitempty"`
+	// Thresholds bound detector windows and retained evidence.
+	// +optional
+	Thresholds *GaggleHealthThresholds `json:"thresholds,omitempty" yaml:"thresholds,omitempty"`
+	// Findings overrides handling for known finding codes. Unknown codes are
+	// rejected; omission retains the code's hard safety policy.
+	// +optional
+	Findings map[string]GaggleFindingPolicy `json:"findings,omitempty" yaml:"findings,omitempty"`
+	// Notifications configures bounded operator notifications and escalation.
+	// +optional
+	Notifications *GaggleHealthNotifications `json:"notifications,omitempty" yaml:"notifications,omitempty"`
+	// EventWorkflow emits filtered health transitions to a workflow. It can
+	// observe events but can never authorize or perform a repair.
+	// +optional
+	EventWorkflow *GaggleHealthEventWorkflow `json:"eventWorkflow,omitempty" yaml:"eventWorkflow,omitempty"`
+}
+
+// GaggleHealthThresholds controls health detector timing and history bounds.
+type GaggleHealthThresholds struct {
+	TriggerSilence       string `json:"triggerSilence,omitempty" yaml:"triggerSilence,omitempty"`
+	NoProgress           string `json:"noProgress,omitempty" yaml:"noProgress,omitempty"`
+	FlappingWindow       string `json:"flappingWindow,omitempty" yaml:"flappingWindow,omitempty"`
+	FlappingCount        int32  `json:"flappingCount,omitempty" yaml:"flappingCount,omitempty"`
+	ProlongedDegradation string `json:"prolongedDegradation,omitempty" yaml:"prolongedDegradation,omitempty"`
+	EvidenceRetention    string `json:"evidenceRetention,omitempty" yaml:"evidenceRetention,omitempty"`
+}
+
+// GaggleFindingPolicy selects handling and an optional bounded severity
+// override for one known finding code.
+type GaggleFindingPolicy struct {
+	// +kubebuilder:validation:Enum=observe;repair;escalate
+	Mode string `json:"mode" yaml:"mode"`
+	// +kubebuilder:validation:Enum=info;warning;error;critical
+	Severity string `json:"severity,omitempty" yaml:"severity,omitempty"`
+}
+
+// GaggleHealthNotifications controls notification and escalation delivery.
+type GaggleHealthNotifications struct {
+	// Enabled defaults to true.
+	// +optional
+	// +nullable
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// EscalateAfter is a Go duration after which an unresolved finding is
+	// escalated. Omitted defaults to one hour.
+	// +optional
+	EscalateAfter string `json:"escalateAfter,omitempty" yaml:"escalateAfter,omitempty"`
+	// MinimumSeverity suppresses lower-severity notifications.
+	// +optional
+	// +kubebuilder:validation:Enum=info;warning;error;critical
+	MinimumSeverity string `json:"minimumSeverity,omitempty" yaml:"minimumSeverity,omitempty"`
+}
+
+// GaggleHealthEventWorkflow filters journaled health transitions delivered to
+// a workflow. This is notification-only and has no repair authority.
+type GaggleHealthEventWorkflow struct {
+	Enabled      bool     `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Workflow     string   `json:"workflow,omitempty" yaml:"workflow,omitempty"`
+	EventTypes   []string `json:"eventTypes,omitempty" yaml:"eventTypes,omitempty"`
+	FindingCodes []string `json:"findingCodes,omitempty" yaml:"findingCodes,omitempty"`
+	// +kubebuilder:validation:Enum=info;warning;error;critical
+	MinimumSeverity string `json:"minimumSeverity,omitempty" yaml:"minimumSeverity,omitempty"`
 }
 
 // IssueOwnershipScope constrains provider-visible issue writes to owned

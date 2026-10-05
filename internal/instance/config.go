@@ -388,6 +388,9 @@ type RunnerConfig struct {
 	//
 	// Per-stage timeoutSeconds still wins; this only moves the floor.
 	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
+	// RecoveryCustodyTimeout bounds the post-stage pod recovery custody work
+	// before surrender. Empty keeps the dispatcher's default.
+	RecoveryCustodyTimeout string `json:"recoveryCustodyTimeout,omitempty" yaml:"recoveryCustodyTimeout,omitempty"`
 	// StageMemoryLimit caps the memory ONE stage subprocess may use, as a
 	// Kubernetes quantity ("8Gi"). It exists because stage subprocesses share
 	// the daemon's own memory cgroup, so a heavy stage can — and repeatedly
@@ -413,6 +416,13 @@ type RunnerConfig struct {
 	// which one is in force at startup rather than letting a green config
 	// imply a protection that is not there.
 	StageMemoryLimit string `json:"stageMemoryLimit,omitempty" yaml:"stageMemoryLimit,omitempty"`
+	// PodTmpfsSize sizes the memory-backed /tmp tmpfs of a Linux stage pod
+	// whose runner class carries tmp:ephemeral, as a Kubernetes quantity
+	// ("1Gi"). Empty keeps the dispatcher default (512Mi). The size is added to
+	// the container's memory limit (dispatcher design section 5), so raise it
+	// only as far as the stages' real temp needs. Go build caches no longer
+	// live there; see dispatcher.LinuxGoBuildCachePath.
+	PodTmpfsSize string `json:"podTmpfsSize,omitempty" yaml:"podTmpfsSize,omitempty"`
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
 	// keep the built-in default (["copilot"] / ["claude"]). Whatever the
@@ -2150,6 +2160,22 @@ func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
 	}
 	if timeout <= 0 {
 		return 0, fmt.Errorf("runner.defaultStageTimeout must be positive, got %s", timeout)
+	}
+	return timeout, nil
+}
+
+// RecoveryCustodyTimeoutDuration resolves the post-stage recovery custody
+// deadline. Zero means "unset"; the dispatcher keeps its built-in default.
+func (c RunnerConfig) RecoveryCustodyTimeoutDuration() (time.Duration, error) {
+	if c.RecoveryCustodyTimeout == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(c.RecoveryCustodyTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runner.recoveryCustodyTimeout %q: %w", c.RecoveryCustodyTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runner.recoveryCustodyTimeout must be positive, got %s", timeout)
 	}
 	return timeout, nil
 }

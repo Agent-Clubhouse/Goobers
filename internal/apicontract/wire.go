@@ -246,6 +246,25 @@ func gaggleWireFixture(warning validate.CodedWarning, timestamp time.Time) reads
 	}
 }
 
+// wireTelemetryModelFixtures is the per-model usage slice of the telemetry
+// stats fixture; its token and cost totals are shared with the other usage
+// and cost fixtures.
+func wireTelemetryModelFixtures(inputTokens, outputTokens int64, costAIC float64) []readservice.TelemetryModelStats {
+	premiumRequests := 3.0
+	return []readservice.TelemetryModelStats{{
+		Model:                  "gpt-5.4",
+		UsageSamples:           3,
+		InputTokenSamples:      3,
+		InputTokens:            &inputTokens,
+		OutputTokenSamples:     3,
+		OutputTokens:           &outputTokens,
+		PremiumRequestSamples:  3,
+		CopilotPremiumRequests: &premiumRequests,
+		CostSamples:            3,
+		CostAIC:                &costAIC,
+	}}
+}
+
 func newWireFixtures() wireFixtures {
 	timestamp, finishedAt, startedAt := wireFixtureTimes()
 	successRate := 0.75
@@ -263,7 +282,6 @@ func newWireFixtures() wireFixtures {
 	retryWasteCostAIC := 75.0
 	modelInputTokens := int64(36000)
 	modelOutputTokens := int64(12000)
-	modelPremiumRequests := 3.0
 	modelCostAIC := 150.0
 	warning := validate.CodedWarning{
 		Code:        validate.WarningDeprecatedFeature,
@@ -826,30 +844,32 @@ func newWireFixtures() wireFixtures {
 				StuckAbortedRuns: 1,
 			}},
 			Stages: []readservice.TelemetryStageStats{{
-				Gaggle:               "core",
-				Workflow:             "implementation",
-				Stage:                "implement",
-				TotalAttempts:        4,
-				SucceededAttempts:    3,
-				FailedAttempts:       1,
-				SuccessRate:          &successRate,
-				AvgDurationMs:        &averageDuration,
-				MinDurationMs:        &minDuration,
-				MaxDurationMs:        &maxDuration,
-				DurationSamples:      4,
-				P50DurationMs:        &minDuration,
-				P95DurationMs:        &maxDuration,
-				TokenSamples:         4,
-				P50Tokens:            &p50Tokens,
-				P95Tokens:            &p95Tokens,
-				CostSamples:          4,
-				P50CostAIC:           &p50CostAIC,
-				P95CostAIC:           &p95CostAIC,
-				RetryWasteAttempts:   1,
-				RetryWasteDurationMs: &retryWasteDuration,
-				RetryWasteTokens:     &retryWasteTokens,
-				RetryWasteCostAIC:    &retryWasteCostAIC,
-				StuckAbortedAttempts: 1,
+				Gaggle:                 "core",
+				Workflow:               "implementation",
+				Stage:                  "implement",
+				TotalAttempts:          4,
+				SucceededAttempts:      3,
+				FailedAttempts:         1,
+				SuccessRate:            &successRate,
+				AvgDurationMs:          &averageDuration,
+				MinDurationMs:          &minDuration,
+				MaxDurationMs:          &maxDuration,
+				DurationSamples:        4,
+				P50DurationMs:          &minDuration,
+				P95DurationMs:          &maxDuration,
+				TokenSamples:           4,
+				P50Tokens:              &p50Tokens,
+				P95Tokens:              &p95Tokens,
+				CostSamples:            4,
+				P50CostAIC:             &p50CostAIC,
+				P95CostAIC:             &p95CostAIC,
+				RetryWasteAttempts:     1,
+				RetryWasteTokenSamples: 1,
+				RetryWasteCostSamples:  1,
+				RetryWasteDurationMs:   &retryWasteDuration,
+				RetryWasteTokens:       &retryWasteTokens,
+				RetryWasteCostAIC:      &retryWasteCostAIC,
+				StuckAbortedAttempts:   1,
 			}},
 			Usage: []readservice.TelemetryUsageStats{{
 				Scope:                     "workflow",
@@ -867,21 +887,12 @@ func newWireFixtures() wireFixtures {
 				P50CostAIC:                &p50CostAIC,
 				P95CostAIC:                &p95CostAIC,
 				RetryWasteAttempts:        1,
+				RetryWasteTokenSamples:    1,
+				RetryWasteCostSamples:     1,
 				RetryWasteTokens:          &retryWasteTokens,
 				RetryWasteCostAIC:         &retryWasteCostAIC,
 			}},
-			Models: []readservice.TelemetryModelStats{{
-				Model:                  "gpt-5.4",
-				UsageSamples:           3,
-				InputTokenSamples:      3,
-				InputTokens:            &modelInputTokens,
-				OutputTokenSamples:     3,
-				OutputTokens:           &modelOutputTokens,
-				PremiumRequestSamples:  3,
-				CopilotPremiumRequests: &modelPremiumRequests,
-				CostSamples:            3,
-				CostAIC:                &modelCostAIC,
-			}},
+			Models: wireTelemetryModelFixtures(modelInputTokens, modelOutputTokens, modelCostAIC),
 		},
 		TelemetryErrorSignatures: readservice.TelemetryErrorSignaturesResult{
 			Items: []readservice.TelemetryErrorSignature{{

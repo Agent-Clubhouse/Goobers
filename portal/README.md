@@ -127,6 +127,42 @@ unknown journal events.
 
 ## Co-branding and support hooks
 
+### Shared UI conventions
+
+Use the exported primitives in `src/ui/` rather than copying page-specific
+markup: `PageHeading`/`SectionHeading`, `Action`/`ActionLink`, `ControlGroup`,
+`FilterField`/`FilterOptions`/`FilterOption`, `TabList`/`Tab`, `MetadataGrid`,
+and `DataTable`. Interactive linked lists use `DataList`/`DataRow`; both native
+tables and linked lists share the same table shell, header, and typography.
+Keep layout-specific CSS on the page, but keep font sizes, colors, and control
+treatment in the primitives and `tokens.css`.
+
+The first content block below a page heading or toolbar uses
+`--space-page-content` (1rem by default). Override this shared token for themed
+spacing rather than adding page-specific margins. Later sections retain their
+own grouping space. Fields inside `ControlGroup` have no outer padding or margin,
+so their labels and controls align without per-page offsets.
+
+At 820px and below (and on short landscape screens), navigation uses a 56px
+top bar with the current area and a menu containing every destination. The
+desktop sidebar remains unchanged; there is no intermediate navigation grid or
+bottom navigation bar. The menu keeps native dialog focus and history behavior,
+and its scrolling content is inside the rounded sheet so scrollbars cannot
+square off its corners.
+
+The type scale is page title, section title, 14px UI text, 12px dense table and
+secondary text, and 11px uppercase labels, expressed as rem-based tokens.
+Primary actions use `--accent` and `--on-accent`; links use `--accent-ink`.
+Semantic success/warning/error colors remain separate from co-brand accents.
+The primitive stylesheet is included by both Vite and the reusable package.
+
+Use `Timestamp` for visible dates and `dateTime.ts` for dates embedded in
+messages. The shared convention is English month/day/year with local time and
+seconds; precise tooltips include the timezone. Chart ticks use the same
+formatter's compact date/hour variants. Missing and invalid dates are explicit,
+and valid dates retain a machine-readable `datetime`. Do not add local
+`Intl.DateTimeFormat` or `toLocaleDateString` implementations to pages.
+
 The portal reads a `GET /api/v1/portal/config` endpoint at startup and applies
 operator-supplied identity and support links from the instance's `portal:` config
 block. All fields are optional; an unconfigured instance shows standard Goobers

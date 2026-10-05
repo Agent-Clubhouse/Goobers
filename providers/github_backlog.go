@@ -141,11 +141,7 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	// Callers that need a bounded raw scan opt into the PageInfo/Cursor path
 	// above.
 	var items []WorkItem
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var issues []githubIssue
-		if err := json.Unmarshal(page, &issues); err != nil {
-			return fmt.Errorf("decode issues page: %w", err)
-		}
+	if err := walkPagedJSON(ctx, p, endpoint, "decode issues page", func(issues []githubIssue) error {
 		for _, issue := range issues {
 			if issue.PullRequest != nil {
 				continue
@@ -403,64 +399,20 @@ func (p *GitHubProvider) AttachWorkItemBlocker(ctx context.Context, req AttachWo
 
 // CreateWorkItem creates a GitHub issue from a unified work item request.
 func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	// #5245: refuse declared graph edges before any mutation, rather than
-	// creating the item and dropping them.
-	if err := checkCreateWorkItemGraphFields(req); err != nil {
-		return WorkItem{}, err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
-	if err != nil {
-		return WorkItem{}, err
-	}
-	// Idempotency (#140): a prior attempt's POST may have committed on the
-	// server before its response reached us (a timeout), so a policy retry must
-	// not file a duplicate. When the caller supplies a RunID we stamp a
-	// run-id footer into the body and, before creating, search for an existing
-	// item carrying it — returning that instead. Best-effort: GitHub's search
-	// index is eventually consistent, so a retry within a second or two of the
-	// original may still miss it; the footer at least makes any duplicate
-	// traceable and recordExternalRef journals every create.
-	itemBody := withRunIDFooter(req.Body, req.RunID)
-	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.RunID != "" {
-		if existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID); err != nil {
-			return WorkItem{}, err
-		} else if found {
-			return existing, nil
-		}
-	}
-	labels := replaceStatusLabel(req.Labels, req.Status)
-	body := map[string]interface{}{
-		"title":  req.Title,
-		"body":   itemBody,
-		"labels": labels,
-	}
-	if req.Assignee != "" {
-		body["assignees"] = []string{req.Assignee}
-	}
-	var issue githubIssue
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &issue); err != nil {
-		return WorkItem{}, err
-	}
-	item := mapGitHubIssue(issue)
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, strconv.Itoa(issue.Number)),
-		URL:       item.URL,
-		Operation: "create",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(req.Title)},
-			"body":  {After: digestString(itemBody)},
+	return createRESTWorkItem(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req, restCreateWorkItemHooks[githubIssue, []string]{
+		labels: func(_ context.Context, _ RepositoryRef, labels []string) ([]string, error) {
+			return labels, nil
 		},
+		createBody: func(req CreateWorkItemRequest, itemBody string, labels []string) interface{} {
+			body := map[string]interface{}{"title": req.Title, "body": itemBody, "labels": labels}
+			if req.Assignee != "" {
+				body["assignees"] = []string{req.Assignee}
+			}
+			return body
+		},
+		mapIssue:    mapGitHubIssue,
+		findRunItem: p.findRunItem,
 	})
-	return item, nil
 }
 
 // RepositoryLabelNames lists the repository's issue-label names, read-only —
@@ -527,12 +479,8 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 	}
 
 	var existing []string
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageLabels []githubLabel
-		if err := json.Unmarshal(page, &pageLabels); err != nil {
-			return fmt.Errorf("decode labels page: %w", err)
-		}
-		for _, label := range pageLabels {
+	if err := walkPagedJSON(ctx, p, endpoint, "decode labels page", func(labels []githubLabel) error {
+		for _, label := range labels {
 			existing = append(existing, label.Name)
 		}
 		return nil

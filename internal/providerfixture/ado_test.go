@@ -100,6 +100,13 @@ func TestRefreshADONormalizesAndUsesProviderRequestShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	secondRaw, err := canonical(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, secondRaw) {
+		t.Fatalf("canonical ADO fixture bytes changed across refreshes\nfirst:\n%s\nsecond:\n%s", raw, secondRaw)
+	}
 	for _, want := range []string{
 		`"provider": "ado"`,
 		`"owner": "fixture-org"`,
@@ -151,6 +158,55 @@ func TestRefreshADORejectsInvalidConfiguration(t *testing.T) {
 				t.Fatal("RefreshADO() succeeded with invalid configuration")
 			}
 		})
+	}
+}
+
+func TestRefreshADOPreservesMaxResponseSizeError(t *testing.T) {
+	t.Parallel()
+
+	_, err := RefreshADO(context.Background(), ADORefreshConfig{
+		OrganizationURL: "https://dev.azure.com/acme",
+		Project:         "Widgets",
+		WorkItem:        "7",
+		Token:           "ado-pat",
+		Client: httpClientFunc(func(*http.Request) (*http.Response, error) {
+			return fixtureHTTPResponse(http.StatusOK, bytes.Repeat([]byte("x"), maxResponseBytes+1)), nil
+		}),
+	})
+	want := fmt.Sprintf("list-open-work-items response exceeds %d bytes", maxResponseBytes)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("RefreshADO() error = %v, want containing %q", err, want)
+	}
+}
+
+func TestRefreshADOMatchesExistingCanonicalFixtureBytes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "test", "providers", "testdata", "ado_contract.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := RefreshADO(context.Background(), ADORefreshConfig{
+		OrganizationURL: "https://dev.azure.com/" + baseline.Repository.Owner,
+		Project:         baseline.Repository.Name,
+		WorkItem:        baseline.Issue,
+		Token:           "ado-pat",
+		Client:          fixtureReplayClient(t, baseline),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := canonical(refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = append(after, '\n')
+	if !bytes.Equal(before, after) {
+		t.Fatalf("canonical ADO fixture bytes changed after refresh\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 

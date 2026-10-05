@@ -1,12 +1,11 @@
+import { SectionHeading } from "../ui/Heading";
+import { Action } from "../ui/Action";
 import { useId, useState } from "react";
 import type { QueryState } from "../api/queryState";
 import { QueryStateBoundary } from "../api/queryState";
 import type { ValidationWarning } from "../api/types";
 import { SectionQueryStatus } from "./SectionQueryStatus";
-import {
-  configurationWarningKey,
-  sortConfigurationWarnings,
-} from "../configurationWarnings";
+import { configurationWarningKey, sortConfigurationWarnings } from "../configurationWarnings";
 
 export interface ConfigurationWarningsProps {
   context: "instance" | "workflow";
@@ -181,9 +180,8 @@ export function ConfigurationWarnings({
   const refreshing = state.status === "stale" && !state.error;
   const activeWarningCount =
     state.status === "ready" || state.status === "stale"
-      ? state.data.filter(
-          (warning) => !dismissedWarningKeys.has(configurationWarningKey(warning)),
-        ).length
+      ? state.data.filter((warning) => !dismissedWarningKeys.has(configurationWarningKey(warning)))
+          .length
       : undefined;
 
   return (
@@ -191,26 +189,33 @@ export function ConfigurationWarnings({
       aria-labelledby={titleId}
       className={`content-section configuration-warning-section configuration-warning-section-${context}`}
     >
-      <div className="section-heading configuration-warning-heading">
-        <h2 id={titleId}>Configuration warnings</h2>
-        {activeWarningCount !== undefined && (
-          <div className="configuration-warning-actions">
-            <span className="section-count">
-              {activeWarningCount} active {activeWarningCount === 1 ? "warning" : "warnings"}
-            </span>
-            <span aria-hidden="true">|</span>
-            <button
-              aria-label={refreshing ? "Refreshing warnings" : "Refresh warnings"}
-              className="text-button"
-              disabled={refreshing}
-              onClick={onRefresh}
-              type="button"
-            >
-              {refreshing ? "Refreshing…" : "Refresh"}
-            </button>
-          </div>
-        )}
-      </div>
+      <SectionHeading
+        title="Configuration warnings"
+        className="configuration-warning-heading"
+        titleId={titleId}
+        actions={
+          <>
+            {activeWarningCount !== undefined && (
+              <div className="configuration-warning-actions">
+                <span className="section-count">
+                  {activeWarningCount} active {activeWarningCount === 1 ? "warning" : "warnings"}
+                </span>
+                <span aria-hidden="true">|</span>
+                <Action
+                  variant="text"
+                  aria-label={refreshing ? "Refreshing warnings" : "Refresh warnings"}
+                  className="text-button"
+                  disabled={refreshing}
+                  onClick={onRefresh}
+                  type="button"
+                >
+                  {refreshing ? "Refreshing…" : "Refresh"}
+                </Action>
+              </div>
+            )}
+          </>
+        }
+      />
       <QueryStateBoundary
         empty={
           <div className="configuration-warning-empty">
@@ -223,9 +228,7 @@ export function ConfigurationWarnings({
           </div>
         }
         error={(error) => <WarningReadError error={error} onRefresh={onRefresh} />}
-        loading={
-          <SectionQueryStatus loading message="Loading configuration warnings…" />
-        }
+        loading={<SectionQueryStatus loading message="Loading configuration warnings…" />}
         stale={(warnings, error) => (
           <>
             {error && <WarningReadError error={error} onRefresh={onRefresh} stale />}

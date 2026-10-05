@@ -1720,6 +1720,10 @@ export interface TelemetryStageStats {
   /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
+  /** Superseded attempts with usage; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteTokenSamples?: number;
+  /** Superseded attempts with cost; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteCostSamples?: number;
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
@@ -1756,6 +1760,10 @@ export interface TelemetryUsageStats {
   /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
+  /** Superseded attempts with usage; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteTokenSamples?: number;
+  /** Superseded attempts with cost; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteCostSamples?: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
   /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */

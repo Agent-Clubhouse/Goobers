@@ -1362,7 +1362,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), set, goobers)
 	if err != nil {
 		printValidationWarnings(stderr, report.CLIWarnings())
 		pf(stderr, "error: invalid workflow: %v\n", err)
@@ -1727,6 +1727,9 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 			heartbeat, pr, claim, r.Operator.NextTransition)
 		pf(stdout, "  workflow: %s / %s; started %s; last activity %s\n",
 			r.Gaggle, r.Workflow, r.StartedAt.Format(time.RFC3339), formatLastActivity(now, r.LastActivityAt))
+		if r.Operator.ResumedFromRunID != "" {
+			pf(stdout, "  resumed implementation from run %s\n", r.Operator.ResumedFromRunID)
+		}
 		if r.Lineage != nil {
 			if r.Lineage.Source != nil {
 				detail := fmt.Sprintf("  continuation: source %s (%s); target %s; branch %s; historical repasses %d",

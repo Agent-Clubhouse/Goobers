@@ -8,13 +8,17 @@ goobers gather-review-threads \- add native reviews and anchored inline threads 
 .nf
 Usage: goobers gather-review-threads [path]
 
-Read this run's latest remediation brief and replace only its
-gatherReviewThreads section with native review bodies and inline review
-comments. File, line, side, diff-hunk, resolved, and outdated metadata
-are preserved so the remediator can distinguish live feedback from stale
-threads. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
-context gathered (possibly empty), 1 = business/provider/journal error,
-2 = usage/IO error.
+Read this run's latest remediation brief and replace its gatherReviewThreads
+section with native review bodies and inline review comments, refresh its
+general PR comments from the same read, and pin all of it in an immutable
+feedbackSnapshot (goobers.dev/pr-feedback-snapshot/v1) that later stages
+compare against before acting on the feedback. File, line, side,
+diff-hunk, resolved, and outdated metadata are preserved so the remediator
+can distinguish live feedback from stale threads. A pull request that is
+no longer at this run's selected head ends the run as a stale-selection
+no-work. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
+context gathered (possibly empty) or no-work, 1 = business/provider/journal
+error, 2 = usage/IO error.
 .fi
 .SH EXAMPLES
 .nf

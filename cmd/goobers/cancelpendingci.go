@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -123,14 +121,12 @@ func runCancelPendingCIWithProvider(
 }
 
 func writeCancelPendingCIResult(path string, result cancelPendingCIResult, stdout, stderr io.Writer) int {
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		pf(stderr, "error: encode pending-CI cancellation result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", path, err)
-		return 1
+	if code := writeStageResultJSON(stderr, path, result, stageResultOptions{
+		MarshalLabel:    "encode pending-CI cancellation result",
+		Indented:        true,
+		TrailingNewline: true,
+	}); code != 0 {
+		return code
 	}
 	switch result.Status {
 	case "completed":
