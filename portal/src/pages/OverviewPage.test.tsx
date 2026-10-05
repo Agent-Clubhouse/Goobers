@@ -40,6 +40,25 @@ describe("overview page", () => {
     expect(screen.queryByText("Last checked")).not.toBeInTheDocument();
   });
 
+  it("warns when bounded attention candidates leave additional actionable runs unseen", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const failure = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failure) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    fixtures.runs.runs = Array.from({ length: 101 }, (_, index) => ({
+      ...failure,
+      id: `failure-${index}`,
+      lastActivityAt: new Date(Date.now() - 1_000 - index).toISOString(),
+    }));
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(await screen.findByText(/attention candidate window was truncated/)).toHaveTextContent(
+      "additional actionable runs may exist. Inspect the Runs page for the full list.",
+    );
+  });
+
   it("shows durable root identity and warns for a historical root", async () => {
     const fixtures = populatedDaemonFixtures();
     fixtures.instance.computerName = "MDB5";
@@ -188,6 +207,133 @@ describe("overview page", () => {
     expect(
       await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps mixed-severity issue summaries aligned with severity and latest activity", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const stalled = fixtures.runs.runs.find((run) => run.phase === "running");
+    const escalated = fixtures.runs.runs.find((run) => run.phase === "escalated");
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!stalled || !escalated || !failed) {
+      throw new Error("Populated fixtures must include running, escalated, and failed runs.");
+    }
+    const issue = { number: "6487", title: "Mixed attention history" };
+    const now = Date.now();
+    stalled.stale = true;
+    stalled.lastActivityAt = new Date(now - 2 * 60_000).toISOString();
+    stalled.operator = {
+      issue,
+      liveness: "stale",
+      trajectory: "stalled",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+    escalated.lastActivityAt = new Date(now - 3 * 60_000).toISOString();
+    escalated.terminalReason = "Provider action required.";
+    escalated.operator = {
+      issue,
+      liveness: "finished",
+      trajectory: "blocked",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+    failed.lastActivityAt = new Date(now - 60_000).toISOString();
+    failed.operator = {
+      issue,
+      liveness: "finished",
+      trajectory: "failed",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const label = await screen.findByText("#6487 Mixed attention history");
+    const group = label.closest(".attention-group");
+    if (!group) {
+      throw new Error("Mixed-severity attention group was not rendered.");
+    }
+    const summary = group.querySelector<HTMLElement>(".attention-group-summary");
+    if (!summary) {
+      throw new Error("Mixed-severity attention summary was not rendered.");
+    }
+    expect(within(summary).getByText("Blocked")).toBeVisible();
+    expect(within(summary).getByText("3 runs · Provider action required.")).toBeVisible();
+    expect(group.querySelector("time")).toHaveAttribute("datetime", failed.lastActivityAt);
+  });
+
+  it.each([
+    "goobers:needs-human",
+    "goobers:needs-remediation",
+    "goobers:blocked-on-sibling",
+  ])("classifies a terminal failed run with the %s item label as blocked", async (label) => {
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failed) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    failed.operator = {
+      issue: { number: "6487", title: "Blocked failed item", labels: [label] },
+      liveness: "finished",
+      trajectory: "terminal",
+      claim: { leaseStatus: "released", providerMarker: "not-present" },
+      potentialBlockers: [],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const issue = await screen.findByText("#6487 Blocked failed item");
+    const group = issue.closest(".attention-group");
+    if (!group) {
+      throw new Error("Blocked failed attention group was not rendered.");
+    }
+    const summary = group.querySelector<HTMLElement>(".attention-group-summary");
+    if (!summary) {
+      throw new Error("Blocked failed attention summary was not rendered.");
+    }
+    expect(within(summary).getByText("Blocked")).toBeVisible();
+  });
+
+  it("keeps stalled work visible ahead of telemetry-only FYI failures at the cap", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!failed || !running) {
+      throw new Error("Populated fixtures must include failed and running runs.");
+    }
+    const now = Date.now();
+    const failures = Array.from({ length: 21 }, (_, index) => ({
+      ...failed,
+      id: `retryable-failure-${index}`,
+      operator: undefined,
+      terminalReason: undefined,
+      lastActivityAt: new Date(now - 1_000 - index).toISOString(),
+    }));
+    const stalled = {
+      ...running,
+      id: "stalled-work",
+      operator: undefined,
+      stale: true,
+      lastActivityAt: new Date(now - 60_000).toISOString(),
+    };
+    fixtures.runs.runs = [...failures, stalled];
+    fixtures.telemetryErrors.items = failures.map((run, index) => ({
+      runId: run.id,
+      workflow: run.workflow,
+      stage: "implement",
+      attempt: 1,
+      code: "provider.rate_limit",
+      errorClass: "retryable-infrastructure",
+      message: "A retry is scheduled after the provider quota resets.",
+      occurredAt: new Date(now - 1_000 - index).toISOString(),
+    }));
+
+    const { container } = render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const fyiHeading = await screen.findByText("FYI failures");
+    expect(fyiHeading.parentElement).toHaveTextContent("19 runs");
+    expect(container.querySelectorAll(".attention-group-stalled")).toHaveLength(1);
+    expect(screen.getByText("Action required").parentElement).toHaveTextContent("1 run");
   });
 
   it("selects, deselects, dismisses, and restores all visible attention runs", async () => {

@@ -2191,7 +2191,32 @@ summary:focus-visible {
 
 .attention-list {
   display: grid;
+  gap: 16px;
+}
+
+.attention-severity-section {
+  display: grid;
   gap: 8px;
+}
+
+.attention-severity-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+}
+
+.attention-severity-heading strong {
+  font-size: 12px;
+}
+
+.attention-severity-heading span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.attention-severity-section-fyi {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
 }
 
 .section-error {
@@ -2241,6 +2266,39 @@ summary:focus-visible {
 
 .attention-row:hover {
   border-color: var(--danger);
+}
+
+.attention-group-warning .attention-row {
+  background: color-mix(in srgb, var(--warning-soft) 58%, var(--panel));
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--line));
+}
+
+.attention-group-warning .attention-row:hover {
+  border-color: var(--warning);
+}
+
+.attention-group-warning .attention-group-runs {
+  border-color: color-mix(in srgb, var(--warning) 24%, var(--line));
+}
+
+.attention-severity-badge {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 720;
+  justify-self: start;
+  line-height: 1;
+  padding: 3px 6px;
+  width: fit-content;
+}
+
+.attention-severity-blocked,
+.attention-severity-stalled {
+  color: var(--danger);
+}
+
+.attention-severity-warning {
+  color: var(--warning-ink);
 }
 
 .attention-select[type="checkbox"] {
@@ -2345,6 +2403,19 @@ summary:focus-visible {
 .attention-run-row time {
   color: var(--muted);
   font-size: var(--font-label);
+}
+
+.attention-run-link .attention-severity-badge {
+  font-size: 10px;
+}
+
+.attention-run-link .attention-severity-blocked,
+.attention-run-link .attention-severity-stalled {
+  color: var(--danger);
+}
+
+.attention-run-link .attention-severity-warning {
+  color: var(--warning-ink);
 }
 
 .attention-collapse-toggle {

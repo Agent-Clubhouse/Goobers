@@ -104,6 +104,11 @@ clearly if the dashboard is started.
 
 - **Overview**: attention-first operations view, active runs, recent outcomes,
   instance warning, and daemon freshness.
+- **Needs attention**: blocked and stalled work precedes muted FYI failures.
+  Severity uses current work-item labels and runner liveness, not just phase.
+  The list displays up to 20 runs from bounded recent candidates (including
+  up to 100 failures); when candidate pages are truncated, a warning directs
+  operators to the Runs page because additional actionable runs may exist.
 - **Workflows**: dense inventory, gaggle/goober context, and workflow detail
   with selectable stages.
 - **Runs**: status filters and run detail.
