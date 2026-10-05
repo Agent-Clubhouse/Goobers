@@ -318,21 +318,45 @@ func TestCheckContractReplaysRecordedRequests(t *testing.T) {
 	}
 }
 
-func TestCheckContractClassifiesAssertionFailure(t *testing.T) {
+func TestCheckContractPreservesIdentityAssertionError(t *testing.T) {
 	t.Parallel()
 	fixture := cloneFixture(t, validFixture())
 	fixture.Exchanges[1].Response.Body = json.RawMessage(`{
 		"id": 0,
-		"number": 7,
-		"title": "",
+		"number": 9,
+		"title": "Stable fixture issue",
 		"state": "open",
-		"html_url": "https://github.com/fixture-owner/fixture-repo/issues/7",
+		"html_url": "https://github.com/fixture-owner/fixture-repo/issues/9",
 		"created_at": "2000-01-01T00:00:00Z",
 		"updated_at": "2000-01-01T00:00:00Z"
 	}`)
 	err := CheckContract(context.Background(), fixture)
 	if !errors.Is(err, ErrContractAssertion) {
 		t.Fatalf("CheckContract() error = %v, want ErrContractAssertion", err)
+	}
+	if got, want := err.Error(), "provider contract assertion failed: mapped item identity = issue/9, want issue/7"; got != want {
+		t.Fatalf("CheckContract() error = %q, want %q", got, want)
+	}
+}
+
+func TestCheckContractPreservesUnconsumedExchangeError(t *testing.T) {
+	t.Parallel()
+	fixture := cloneFixture(t, validFixture())
+	fixture.Exchanges = append(fixture.Exchanges, Exchange{
+		Name:   "unused",
+		Method: http.MethodGet,
+		Path:   "/unused",
+		Response: FixtureResponse{
+			Status: http.StatusOK,
+			Body:   json.RawMessage(`{}`),
+		},
+	})
+	err := CheckContract(context.Background(), fixture)
+	if !errors.Is(err, ErrContractAssertion) {
+		t.Fatalf("CheckContract() error = %v, want ErrContractAssertion", err)
+	}
+	if got, want := err.Error(), `provider contract assertion failed: fixture exchange "unused" was not consumed`; got != want {
+		t.Fatalf("CheckContract() error = %q, want %q", got, want)
 	}
 }
 

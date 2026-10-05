@@ -143,54 +143,68 @@ func (b *adoRefreshBackend) normalizeResponseHeaders(headers http.Header) map[st
 }
 
 func checkADOContract(ctx context.Context, fixture Fixture) error {
-	client := &replayClient{exchanges: fixture.Exchanges, used: make([]bool, len(fixture.Exchanges))}
+	return checkMappedContract(ctx, fixture, adoContractBackend{fixture: fixture})
+}
+
+type adoContractBackend struct {
+	fixture Fixture
+}
+
+func (b adoContractBackend) provider(client HTTPClient) mappedContractProvider[providers.WorkItem] {
 	provider := providers.NewADOProvider(
-		fixture.Repository.Owner,
-		fixture.Repository.Name,
+		b.fixture.Repository.Owner,
+		b.fixture.Repository.Name,
 		"fixture-token",
 		func(p *providers.ADOProvider) {
 			p.BaseURL = "https://fixture.invalid"
 			p.Client = client
 		},
 	)
-	repository := providers.RepositoryRef{Project: fixture.Repository.Name}
-	items, err := provider.ListWorkItems(ctx, adoFixtureListRequest(repository))
-	if err != nil {
-		return fmt.Errorf("%w: ListWorkItems: %w", ErrContractAssertion, err)
+	repository := providers.RepositoryRef{Project: b.fixture.Repository.Name}
+	return mappedContractProvider[providers.WorkItem]{
+		list: func(ctx context.Context) ([]providers.WorkItem, error) {
+			return provider.ListWorkItems(ctx, adoFixtureListRequest(repository))
+		},
+		get: func(ctx context.Context) (providers.WorkItem, error) {
+			return provider.GetWorkItem(ctx, repository, b.fixture.Issue)
+		},
 	}
-	item, err := provider.GetWorkItem(ctx, repository, fixture.Issue)
-	if err != nil {
-		return fmt.Errorf("%w: GetWorkItem: %w", ErrContractAssertion, err)
-	}
+}
+
+func (b adoContractBackend) targetID() string                    { return b.fixture.Issue }
+func (adoContractBackend) listOperation() string                 { return "ListWorkItems" }
+func (adoContractBackend) getOperation() string                  { return "GetWorkItem" }
+func (adoContractBackend) itemID(item providers.WorkItem) string { return item.ID }
+
+func (b adoContractBackend) assertIdentity(item providers.WorkItem) error {
 	if item.Provider != providers.ProviderADO {
-		return fmt.Errorf("%w: provider = %q, want %q", ErrContractAssertion, item.Provider, providers.ProviderADO)
+		return fmt.Errorf("provider = %q, want %q", item.Provider, providers.ProviderADO)
 	}
-	if item.ID != fixture.Issue || strings.TrimSpace(item.Type) == "" {
-		return fmt.Errorf("%w: mapped work-item identity = %s/%s, want non-empty type/%s", ErrContractAssertion, item.Type, item.ID, fixture.Issue)
-	}
-	if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.URL) == "" {
-		return fmt.Errorf("%w: mapped work item must have a title and URL", ErrContractAssertion)
-	}
-	if item.CreatedAt == nil || item.UpdatedAt == nil {
-		return fmt.Errorf("%w: mapped work item must preserve created and changed dates", ErrContractAssertion)
-	}
-	found := false
-	for _, listed := range items {
-		if listed.ID != fixture.Issue {
-			continue
-		}
-		found = true
-		if listed.Title != item.Title || listed.State != item.State || listed.URL != item.URL {
-			return fmt.Errorf("%w: list/get mappings disagree for work item %s", ErrContractAssertion, fixture.Issue)
-		}
-	}
-	if !found {
-		return fmt.Errorf("%w: ListWorkItems did not return fixture work item %s", ErrContractAssertion, fixture.Issue)
-	}
-	if err := client.verifyConsumed(); err != nil {
-		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+	if item.ID != b.fixture.Issue || strings.TrimSpace(item.Type) == "" {
+		return fmt.Errorf("mapped work-item identity = %s/%s, want non-empty type/%s", item.Type, item.ID, b.fixture.Issue)
 	}
 	return nil
+}
+
+func (adoContractBackend) assertRequiredFields(item providers.WorkItem) error {
+	if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.URL) == "" {
+		return fmt.Errorf("mapped work item must have a title and URL")
+	}
+	if item.CreatedAt == nil || item.UpdatedAt == nil {
+		return fmt.Errorf("mapped work item must preserve created and changed dates")
+	}
+	return nil
+}
+
+func (b adoContractBackend) assertConsistency(listed, item providers.WorkItem) error {
+	if listed.Title != item.Title || listed.State != item.State || listed.URL != item.URL {
+		return fmt.Errorf("list/get mappings disagree for work item %s", b.fixture.Issue)
+	}
+	return nil
+}
+
+func (b adoContractBackend) missingItemError() error {
+	return fmt.Errorf("ListWorkItems did not return fixture work item %s", b.fixture.Issue)
 }
 
 // adoFixtureListRequest is the open-work-items listing both the refresh and
