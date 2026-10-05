@@ -6,7 +6,7 @@ import (
 )
 
 func TestAttributionRoundTripAndReplacement(t *testing.T) {
-	nanoAIU := int64(12_500_000_000)
+	nanoAIU := int64(12_345_000_000)
 	premium := 1.5
 	attribution := Attribution{
 		Instance:   "MDB1",
@@ -53,7 +53,7 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 	if !strings.Contains(first, "| version `dev`") {
 		t.Fatalf("visible attribution version missing from %q", first)
 	}
-	if !strings.Contains(first, "| Cost: 13 AIC") {
+	if !strings.Contains(first, "| Cost: 12.35 AIC") {
 		t.Fatalf("visible attribution cost missing from %q", first)
 	}
 
