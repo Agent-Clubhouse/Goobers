@@ -1489,7 +1489,8 @@ func isGoobersAuthoredComment(comment providers.PullRequestComment, authenticate
 }
 
 func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authenticatedAuthor string) bool {
-	for _, comment := range poll.CommentsSince {
+	latestPass := -1
+	for i, comment := range poll.CommentsSince {
 		if !isGoobersAuthoredComment(comment, authenticatedAuthor) || !isMergeReviewStatusComment(comment.Body) {
 			continue
 		}
@@ -1498,10 +1499,31 @@ func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authentica
 			verdict.Decision == apiv1.VerdictPass &&
 			verdict.HeadSHA != "" && verdict.HeadSHA == poll.HeadSHA &&
 			verdict.BaseSHA != "" && verdict.BaseSHA == poll.BaseSHA {
-			return true
+			if latestPass == -1 || pullRequestCommentAfter(comment, i, poll.CommentsSince[latestPass], latestPass) {
+				latestPass = i
+			}
 		}
 	}
-	return false
+	if latestPass == -1 {
+		return false
+	}
+	for i, comment := range poll.CommentsSince {
+		if !isGoobersAuthoredComment(comment, authenticatedAuthor) &&
+			pullRequestCommentAfter(comment, i, poll.CommentsSince[latestPass], latestPass) {
+			return false
+		}
+	}
+	return true
+}
+
+func pullRequestCommentAfter(a providers.PullRequestComment, aIndex int, b providers.PullRequestComment, bIndex int) bool {
+	if !a.CreatedAt.IsZero() && !b.CreatedAt.IsZero() && !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	if a.ID != 0 && b.ID != 0 && a.ID != b.ID {
+		return a.ID > b.ID
+	}
+	return aIndex > bIndex
 }
 
 func runAbortedPRHasVerifiedRemediation(

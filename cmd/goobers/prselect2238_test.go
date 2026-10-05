@@ -128,6 +128,52 @@ func TestPRSelectIgnoresGoobersCommentsFromOtherInstanceIdentities(t *testing.T)
 func TestPRSelectClearsRunAbortedForCurrentHeadPassFromOtherIdentity(t *testing.T) {
 	const number = 6767
 	server := newReviewedRunAbortedPRFixture(t, number)
+	server.addRawCommentAs(number, "reviewer", "earlier review feedback")
+	addCurrentHeadPassFromOtherIdentity(t, server, number)
+
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #6767") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want current-head pass to clear run-aborted", code, stdout, stderr)
+	}
+	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
+}
+
+func TestPRSelectLeavesCurrentHeadPassParkedAfterNewerHumanComment(t *testing.T) {
+	const number = 6768
+	server := newReviewedRunAbortedPRFixture(t, number)
+	addCurrentHeadPassFromOtherIdentity(t, server, number)
+	server.addRawCommentAs(number, "reviewer", "please recheck this")
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
+func TestPRSelectRestoresRunAbortedAfterHumanCommentFollowingCurrentHeadPass(t *testing.T) {
+	const number = 6769
+	server := newReviewedRunAbortedPRFixture(t, number)
+	addCurrentHeadPassFromOtherIdentity(t, server, number)
+	server.mutatePullRequestAfterLabelRemoval(number, func(s *fakeGitHubServer, _ *fakePR) {
+		issue := s.issues[number]
+		s.nextCommentID++
+		issue.comments = append(issue.comments, "please recheck this")
+		issue.commentIDs = append(issue.commentIDs, s.nextCommentID)
+		issue.commentAuthors = append(issue.commentAuthors, "reviewer")
+		issue.commentTypes = append(issue.commentTypes, "User")
+		issue.commentTimes = append(issue.commentTimes, time.Now().UTC())
+	})
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
+func addCurrentHeadPassFromOtherIdentity(t *testing.T, server *fakeGitHubServer, number int) {
+	t.Helper()
 	pass := renderVerdictComment(apiv1.Verdict{
 		Decision: apiv1.VerdictPass,
 		Summary:  "verified",
@@ -150,20 +196,6 @@ func TestPRSelectClearsRunAbortedForCurrentHeadPassFromOtherIdentity(t *testing.
 		t.Fatal(err)
 	}
 	server.addRawCommentAs(number, "jeffstei", body)
-
-	root := initDemo(t)
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
-	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
-	workDir := t.TempDir()
-	t.Chdir(workDir)
-	resultFile := filepath.Join(workDir, "selected-pr.json")
-	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
-
-	code, stdout, stderr := runArgs(t, "pr-select", root)
-	if code != 0 || !strings.Contains(stdout, "selected PR #6767") {
-		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want current-head pass to clear run-aborted", code, stdout, stderr)
-	}
-	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
 }
 
 func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T) {
