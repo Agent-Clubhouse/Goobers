@@ -334,7 +334,7 @@ func TestCheckContractPreservesIdentityAssertionError(t *testing.T) {
 	if !errors.Is(err, ErrContractAssertion) {
 		t.Fatalf("CheckContract() error = %v, want ErrContractAssertion", err)
 	}
-	if got := errors.Unwrap(err); got != ErrContractAssertion {
+	if got := errors.Unwrap(err); got != ErrContractAssertion { //nolint:errorlint // The exact single unwrap target is the compatibility contract under test.
 		t.Fatalf("errors.Unwrap(CheckContract()) = %v, want ErrContractAssertion", got)
 	}
 	if got, want := err.Error(), "provider contract assertion failed: mapped item identity = issue/9, want issue/7"; got != want {
