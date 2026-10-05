@@ -37,17 +37,20 @@ func TestBuildInventoryNormalizesModulePathsAndClassifiesTests(t *testing.T) {
 	if !reflect.DeepEqual(got.Command.TestOnlyDependencies, []string{"example.test/renamed/module/internal/testkit"}) {
 		t.Fatalf("test-only dependencies = %#v", got.Command.TestOnlyDependencies)
 	}
-	if got.Command.Tests != 3 || got.Command.Benchmarks != 1 || got.Command.Examples != 1 {
+	if got.Command.Tests != 4 || got.Command.Benchmarks != 1 || got.Command.Examples != 1 {
 		t.Fatalf("function counts = tests %d, benchmarks %d, examples %d", got.Command.Tests, got.Command.Benchmarks, got.Command.Examples)
 	}
 
-	var straddling, shadowed testRecord
+	var straddling, shadowed, dispatched testRecord
 	for _, record := range got.Tests {
 		if record.Name == "TestAcrossDomains" {
 			straddling = record
 		}
 		if record.Name == "TestShadowedName" {
 			shadowed = record
+		}
+		if record.Name == "TestViaCommandRegistry" {
+			dispatched = record
 		}
 	}
 	if !straddling.StraddlesDomains {
@@ -64,6 +67,9 @@ func TestBuildInventoryNormalizesModulePathsAndClassifiesTests(t *testing.T) {
 	}
 	if len(shadowed.Domains) != 0 {
 		t.Fatalf("shadowed identifier domains = %#v", shadowed.Domains)
+	}
+	if !reflect.DeepEqual(dispatched.Domains, []string{"docs-churn"}) {
+		t.Fatalf("registry-dispatched domains = %#v", dispatched.Domains)
 	}
 
 	for _, pkg := range got.Packages {
@@ -230,9 +236,22 @@ func runReportPRStatus() {}`,
 		filepath.Join(commandDir, "helpers.go"): `package main
 func commonHelper() {}
 `,
+		filepath.Join(commandDir, "registry.go"): `package main
+type cliCommand struct { name string; run func() }
+var cliCommands []cliCommand
+func command(name string, run func()) cliCommand { return cliCommand{name: name, run: run} }
+func init() {
+	cliCommands = []cliCommand{
+		command("docs-churn", runDocsChurn),
+		command("contention", partitionByContention),
+	}
+}
+func findCLICommand(name string) { _ = cliCommands }
+func run(args []string) { findCLICommand(args[0]) }`,
 		filepath.Join(commandDir, "inventory_test.go"): `package main
 import ("os"; "testing")
 func runDocsHelper() { runDocsChurn() }
+func runArgs(args ...string) { run(args) }
 func TestAcrossDomains(t *testing.T) {
 	t.Setenv("KEY", "value")
 	_ = os.Getenv("KEY")
@@ -243,6 +262,14 @@ func TestAcrossDomains(t *testing.T) {
 func TestShadowedName(t *testing.T) {
 	runDocsChurn := func() {}
 	runDocsChurn()
+}
+func TestViaCommandRegistry(t *testing.T) {
+	for _, args := range [][]string{
+		{"docs-churn", "--repo", "."},
+		{"docs-churn", "--format", "json"},
+	} {
+		runArgs(args...)
+	}
 }
 func BenchmarkDocs(b *testing.B) { runDocsChurn() }
 func Example_docs() { runDocsChurn() }`,
@@ -261,7 +288,7 @@ func TestExternal(t *testing.T) { goobers.RunReportPRStatus() }`,
 	const modulePath = "example.test/renamed/module"
 	command := goPackage{
 		ImportPath: modulePath + "/cmd/goobers", Name: "main", Dir: commandDir,
-		GoFiles:     []string{"reportprstatus.go", "docchurn.go", "contestedfiles.go", "helpers.go"},
+		GoFiles:     []string{"reportprstatus.go", "docchurn.go", "contestedfiles.go", "helpers.go", "registry.go"},
 		TestGoFiles: []string{"inventory_test.go"}, XTestGoFiles: []string{"external_test.go"},
 		IgnoredGoFiles: []string{"platform_windows.go"},
 		Imports:        []string{modulePath + "/internal/shared", "fmt"},

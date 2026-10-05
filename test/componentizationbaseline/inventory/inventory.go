@@ -9,6 +9,7 @@ import (
 	"go/types"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -26,11 +27,13 @@ type packageAnalysis struct {
 }
 
 type typedPackage struct {
-	info      *types.Info
-	pkg       *types.Package
-	functions map[*types.Func]*ast.FuncDecl
-	domains   map[types.Object][]string
-	factories map[types.Object]string
+	info           *types.Info
+	pkg            *types.Package
+	functions      map[*types.Func]*ast.FuncDecl
+	domains        map[types.Object][]string
+	factories      map[types.Object]string
+	commandDomains map[string][]string
+	dispatchers    map[*types.Func]bool
 }
 
 type packageImporter struct {
@@ -270,6 +273,7 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 			typed.factories[object] = name
 		}
 	}
+	typed.collectCommandDispatch(parsed, internalFiles)
 
 	var tests []testRecord
 	for _, group := range []struct {
@@ -345,7 +349,108 @@ func typePackage(fset *token.FileSet, path, name string, production, test map[st
 	return typedPackage{
 		info: info, pkg: checked, functions: functions,
 		domains: make(map[types.Object][]string), factories: make(map[types.Object]string),
+		commandDomains: make(map[string][]string), dispatchers: make(map[*types.Func]bool),
 	}
+}
+
+func (typed *typedPackage) collectCommandDispatch(groups ...map[string]*ast.File) {
+	files := sortedASTFiles(groups...)
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var names []string
+			var domains []string
+			for _, arg := range call.Args {
+				switch value := arg.(type) {
+				case *ast.BasicLit:
+					if value.Kind == token.STRING {
+						if name, err := strconv.Unquote(value.Value); err == nil {
+							names = append(names, name)
+						}
+					}
+				case *ast.Ident:
+					domains = append(domains, typed.domains[typed.info.Uses[value]]...)
+				}
+			}
+			for _, name := range names {
+				typed.commandDomains[name] = append(typed.commandDomains[name], domains...)
+			}
+			return true
+		})
+	}
+
+	registryObjects := make(map[types.Object]bool)
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			assign, ok := node.(*ast.AssignStmt)
+			if !ok || !expressionsContainCommand(assign.Rhs, typed.commandDomains) {
+				return true
+			}
+			for _, expression := range assign.Lhs {
+				if ident, ok := expression.(*ast.Ident); ok {
+					if object := typed.info.Uses[ident]; object != nil && object.Parent() == typed.pkg.Scope() {
+						registryObjects[object] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+
+	calls := make(map[*types.Func][]*types.Func)
+	for function, declaration := range typed.functions {
+		ast.Inspect(declaration.Body, func(node ast.Node) bool {
+			ident, ok := node.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			object := typed.info.Uses[ident]
+			if registryObjects[object] {
+				typed.dispatchers[function] = true
+			}
+			if called, ok := object.(*types.Func); ok && typed.functions[called] != nil {
+				calls[function] = append(calls[function], called)
+			}
+			return true
+		})
+	}
+	for changed := true; changed; {
+		changed = false
+		for function, called := range calls {
+			if typed.dispatchers[function] {
+				continue
+			}
+			for _, target := range called {
+				if typed.dispatchers[target] {
+					typed.dispatchers[function] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+}
+
+func expressionsContainCommand(expressions []ast.Expr, commands map[string][]string) bool {
+	found := false
+	for _, expression := range expressions {
+		ast.Inspect(expression, func(node ast.Node) bool {
+			literal, ok := node.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			value, err := strconv.Unquote(literal.Value)
+			if err == nil && len(commands[value]) > 0 {
+				found = true
+				return false
+			}
+			return true
+		})
+	}
+	return found
 }
 
 func sortedASTFiles(groups ...map[string]*ast.File) []*ast.File {
@@ -460,8 +565,23 @@ func analyzeTestFunction(pkg, file string, external bool, kind string, fn *ast.F
 			}
 			seen[object] = true
 		}
+		localValues := functionLocalValues(current, typed.info)
 		ast.Inspect(current.Body, func(node ast.Node) bool {
 			switch value := node.(type) {
+			case *ast.CallExpr:
+				ident, ok := value.Fun.(*ast.Ident)
+				if !ok {
+					break
+				}
+				called, _ := typed.info.Uses[ident].(*types.Func)
+				if !typed.dispatchers[called] {
+					break
+				}
+				for _, argument := range value.Args {
+					for _, name := range expressionStrings(argument, typed.info, localValues, make(map[types.Object]bool)) {
+						domainNames = append(domainNames, typed.commandDomains[name]...)
+					}
+				}
 			case *ast.Ident:
 				referenced := typed.info.Uses[value]
 				domainNames = append(domainNames, typed.domains[referenced]...)
@@ -488,6 +608,67 @@ func analyzeTestFunction(pkg, file string, external bool, kind string, fn *ast.F
 		Domains: domainNames, StraddlesDomains: len(domainNames) > 1,
 		EnvironmentAccess: sortedUnique(environment), GlobalFactoryAccesses: sortedUnique(factoryNames),
 	}
+}
+
+func functionLocalValues(fn *ast.FuncDecl, info *types.Info) map[types.Object][]ast.Expr {
+	values := make(map[types.Object][]ast.Expr)
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			if len(value.Lhs) != len(value.Rhs) {
+				return true
+			}
+			for i, lhs := range value.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok {
+					if object := info.Defs[ident]; object != nil {
+						values[object] = append(values[object], value.Rhs[i])
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			if len(value.Names) != len(value.Values) {
+				return true
+			}
+			for i, name := range value.Names {
+				if object := info.Defs[name]; object != nil {
+					values[object] = append(values[object], value.Values[i])
+				}
+			}
+		case *ast.RangeStmt:
+			if ident, ok := value.Value.(*ast.Ident); ok {
+				if object := info.Defs[ident]; object != nil {
+					values[object] = append(values[object], value.X)
+				}
+			}
+		}
+		return true
+	})
+	return values
+}
+
+func expressionStrings(expression ast.Expr, info *types.Info, localValues map[types.Object][]ast.Expr, seen map[types.Object]bool) []string {
+	var values []string
+	ast.Inspect(expression, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.BasicLit:
+			if value.Kind == token.STRING {
+				if text, err := strconv.Unquote(value.Value); err == nil {
+					values = append(values, text)
+				}
+			}
+		case *ast.Ident:
+			object := info.Uses[value]
+			if object == nil || seen[object] {
+				return true
+			}
+			seen[object] = true
+			for _, assigned := range localValues[object] {
+				values = append(values, expressionStrings(assigned, info, localValues, seen)...)
+			}
+		}
+		return true
+	})
+	return values
 }
 
 func testKind(name string) (string, bool) {

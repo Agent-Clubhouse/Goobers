@@ -29,12 +29,13 @@ selected build context.
 `tests` classifies each test, benchmark, and example. Domain references use Go
 type information to follow references to declarations owned by `docchurn.go`,
 `contestedfiles.go`, and `reportprstatus.go`, including references reached
-through same-package test helpers. Records also identify tests that straddle
-those domains, access environment APIs, or reference package-level function
-factories. `domains` lists the source and test ownership and existing
-same-package helpers and repository-local imports useful to each domain, rather
-than proposing replacement utilities. `omissions` explicitly states that one
-invocation covers one build context.
+through same-package test helpers and literal command names passed through the
+CLI registry dispatch path. Records also identify tests that straddle those
+domains, access environment APIs, or reference package-level function factories.
+`domains` lists the source and test ownership and existing same-package helpers
+and repository-local imports useful to each domain, rather than proposing
+replacement utilities. `omissions` explicitly states that one invocation covers
+one build context.
 
 All collections and build tags are sorted, paths are repository-relative with
 slash separators, and the output contains no timestamp, absolute path, or Go
