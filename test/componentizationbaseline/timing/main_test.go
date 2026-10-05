@@ -287,6 +287,24 @@ func TestInspectBuildContextRecordsOverrides(t *testing.T) {
 	}
 }
 
+func TestDefaultBuildContextSerializesEmptyTags(t *testing.T) {
+	build, err := inspectBuildContext(context.Background(), ".", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := writeReport(path, report{Build: build}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"tags": []`)) {
+		t.Fatalf("default build tags did not serialize as an array: %s", raw)
+	}
+}
+
 func TestBenchmarkNeutralizesAmbientGOFLAGS(t *testing.T) {
 	t.Setenv("GOFLAGS", "-race -tags=hostile")
 	runner := &fakeRunner{}

@@ -429,7 +429,7 @@ func inspectBuildContext(ctx context.Context, checkout, tags, cgoOverride string
 	if cgoOverride != "" {
 		cgo = cgoOverride
 	}
-	var buildTags []string
+	buildTags := []string{}
 	for _, tag := range strings.Split(tags, ",") {
 		if tag = strings.TrimSpace(tag); tag != "" {
 			buildTags = append(buildTags, tag)
