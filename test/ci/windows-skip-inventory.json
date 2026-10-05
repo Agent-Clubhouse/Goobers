@@ -1069,6 +1069,12 @@
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
     },
     {
+      "package": "test/architectureimports",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository architecture tooling; its synthetic package-graph tests run on the Linux unit shards across explicit Windows, macOS, and Linux build contexts."
+    },
+    {
       "package": "test/benchworkcopy",
       "coverage": "none",
       "category": "not-selected",
