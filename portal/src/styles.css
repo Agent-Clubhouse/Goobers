@@ -2473,7 +2473,11 @@ summary:focus-visible {
   grid-template-columns: minmax(150px, 1.2fr) minmax(190px, 1.2fr) minmax(120px, 0.8fr) 60px 18px;
 }
 
-.work-item-row-done {
+.work-item-grid.data-row {
+  border-left: 3px solid transparent;
+}
+
+.work-item-grid.work-item-row-done {
   border-left: 3px solid var(--success);
 }
 
@@ -2481,7 +2485,7 @@ summary:focus-visible {
   background: var(--success-soft);
 }
 
-.work-item-row-bad-terminal {
+.work-item-grid.work-item-row-bad-terminal {
   border-left: 3px solid var(--danger);
 }
 
