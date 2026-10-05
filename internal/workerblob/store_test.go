@@ -22,6 +22,12 @@ func (d dirPutter) PutOnce(ctx context.Context, digest string, data []byte) erro
 	return d.store.Put(ctx, digest, data)
 }
 
+type probePutterFunc func(context.Context, string, []byte) error
+
+func (f probePutterFunc) PutOnce(ctx context.Context, digest string, data []byte) error {
+	return f(ctx, digest, data)
+}
+
 var fastProbe = ProbeOptions{ReadyWait: 5 * time.Second, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}
 
 // probeServer answers the first notReady PUTs with status/body, then 200 after
@@ -76,7 +82,13 @@ func TestProbeWaitsThroughConnectionRefused(t *testing.T) {
 
 func TestProbeNotReadyBoundExpires(t *testing.T) {
 	local, _ := blobstore.NewDir(t.TempDir())
-	remote, _ := probeServer(t, local, 1<<30, http.StatusServiceUnavailable, "still starting")
+	remote := probePutterFunc(func(context.Context, string, []byte) error {
+		return &dispatcher.BlobStatusError{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Body:       "still starting",
+		}
+	})
 	opts := fastProbe
 	opts.ReadyWait = 50 * time.Millisecond
 	err := VerifyShared(context.Background(), local, remote, opts)
