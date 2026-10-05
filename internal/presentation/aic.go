@@ -1,3 +1,4 @@
+// Package presentation provides shared formatting for human-readable output.
 package presentation
 
 import "strconv"
