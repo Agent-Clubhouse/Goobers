@@ -423,6 +423,12 @@ type RunnerConfig struct {
 	// only as far as the stages' real temp needs. Go build caches no longer
 	// live there; see dispatcher.LinuxGoBuildCachePath.
 	PodTmpfsSize string `json:"podTmpfsSize,omitempty" yaml:"podTmpfsSize,omitempty"`
+	// PodEgressProxy is the forward proxy the dispatcher stamps (HTTPS_PROXY,
+	// HTTP_PROXY, NO_PROXY and their lowercase spellings) into stage pods whose
+	// runner class carries network:allowlist, for deterministic and agentic
+	// stages alike, so registry/package traffic reaches the instance's egress
+	// proxy. A stage's own run.env wins. See PodEgressProxyConfig.
+	PodEgressProxy *PodEgressProxyConfig `json:"podEgressProxy,omitempty" yaml:"podEgressProxy,omitempty"`
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
 	// keep the built-in default (["copilot"] / ["claude"]). Whatever the

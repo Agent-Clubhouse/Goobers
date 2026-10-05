@@ -150,40 +150,17 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	labels := make([]string, 0, len(pr.Labels))
-	for _, label := range pr.Labels {
-		labels = append(labels, label.Name)
-	}
-	assignees := githubUserLogins(pr.Assignees)
-	requestedReviewers := githubUserLogins(pr.RequestedReviewers)
-
-	return PullRequestPollResult{
-		Number:             pr.Number,
-		Title:              pr.Title,
-		Author:             pr.User.Login,
-		Assignees:          assignees,
-		RequestedReviewers: requestedReviewers,
-		State:              pr.State,
-		Merged:             pr.Merged,
-		MergedAt:           pr.MergedAt,
-		Mergeable:          pr.Mergeable,
-		MergeableState:     pr.MergeableState,
-		Draft:              pr.Draft,
-		Labels:             labels,
-		HeadBranch:         pr.Head.Ref,
-		HeadRepository:     repositoryRef(ProviderGitHub, pr.Head.Repo),
-		HeadSHA:            pr.Head.SHA,
-		BaseSHA:            pr.Base.SHA,
-		BaseBranch:         pr.Base.Ref,
-		Body:               pr.Body,
-		ReviewDecision:     decision,
-		RequestedChanges:   requestedChanges,
-		CheckState:         checkState,
-		Checks:             checks,
-		CommentsSince:      comments,
-		URL:                pr.HTMLURL,
-		Integrity:          apiintegrity.Unapproved,
-	}, nil
+	result := pullPollResultFromProjection(githubPRProjection(pr))
+	result.Author = pr.User.Login
+	result.Assignees = githubUserLogins(pr.Assignees)
+	result.RequestedReviewers = githubUserLogins(pr.RequestedReviewers)
+	result.MergeableState = pr.MergeableState
+	result.ReviewDecision = decision
+	result.RequestedChanges = requestedChanges
+	result.CheckState = checkState
+	result.Checks = checks
+	result.CommentsSince = comments
+	return result, nil
 }
 
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
@@ -891,27 +868,32 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 }
 
 func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
-	labels := githubLabelNames(pr.Labels)
-	return PullRequestSummary{
-		ID:                 strconv.Itoa(pr.Number),
-		Number:             pr.Number,
-		URL:                pr.HTMLURL,
-		Author:             pr.User.Login,
-		Assignees:          githubUserLogins(pr.Assignees),
-		RequestedReviewers: githubUserLogins(pr.RequestedReviewers),
-		State:              pr.State,
-		Merged:             pr.Merged || pr.MergedAt != nil,
-		Head:               pr.Head.Ref,
-		Base:               pr.Base.Ref,
-		HeadSHA:            pr.Head.SHA,
-		BaseSHA:            pr.Base.SHA,
-		MergeSHA:           pr.MergeCommitSHA,
-		Draft:              pr.Draft,
-		Labels:             labels,
-		CheckState:         checkState,
-		UpdatedAt:          pr.UpdatedAt,
-		Body:               pr.Body,
-		Integrity:          apiintegrity.Unapproved,
+	summary := pullSummaryFromProjection(githubPRProjection(pr), checkState)
+	summary.Author = pr.User.Login
+	summary.Assignees = githubUserLogins(pr.Assignees)
+	summary.RequestedReviewers = githubUserLogins(pr.RequestedReviewers)
+	return summary
+}
+
+func githubPRProjection(pr githubPullRequestDetail) restPRProjection {
+	return restPRProjection{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		URL:            pr.HTMLURL,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          pr.Draft,
+		Labels:         githubLabelNames(pr.Labels),
+		HeadBranch:     pr.Head.Ref,
+		HeadRepository: repositoryRef(ProviderGitHub, pr.Head.Repo),
+		HeadSHA:        pr.Head.SHA,
+		BaseBranch:     pr.Base.Ref,
+		BaseSHA:        pr.Base.SHA,
+		MergeSHA:       pr.MergeCommitSHA,
+		UpdatedAt:      pr.UpdatedAt,
+		Body:           pr.Body,
 	}
 }
 
