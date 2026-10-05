@@ -37,15 +37,17 @@ func TestBuildInventoryNormalizesModulePathsAndClassifiesTests(t *testing.T) {
 	if !reflect.DeepEqual(got.Command.TestOnlyDependencies, []string{"example.test/renamed/module/internal/testkit"}) {
 		t.Fatalf("test-only dependencies = %#v", got.Command.TestOnlyDependencies)
 	}
-	if got.Command.Tests != 2 || got.Command.Benchmarks != 1 || got.Command.Examples != 1 {
+	if got.Command.Tests != 3 || got.Command.Benchmarks != 1 || got.Command.Examples != 1 {
 		t.Fatalf("function counts = tests %d, benchmarks %d, examples %d", got.Command.Tests, got.Command.Benchmarks, got.Command.Examples)
 	}
 
-	var straddling testRecord
+	var straddling, shadowed testRecord
 	for _, record := range got.Tests {
 		if record.Name == "TestAcrossDomains" {
 			straddling = record
-			break
+		}
+		if record.Name == "TestShadowedName" {
+			shadowed = record
 		}
 	}
 	if !straddling.StraddlesDomains {
@@ -59,6 +61,9 @@ func TestBuildInventoryNormalizesModulePathsAndClassifiesTests(t *testing.T) {
 	}
 	if !reflect.DeepEqual(straddling.GlobalFactoryAccesses, []string{"newDependency"}) {
 		t.Fatalf("global factories = %#v", straddling.GlobalFactoryAccesses)
+	}
+	if len(shadowed.Domains) != 0 {
+		t.Fatalf("shadowed identifier domains = %#v", shadowed.Domains)
 	}
 
 	for _, pkg := range got.Packages {
@@ -107,12 +112,14 @@ func TestInventoryOrderingIsDeterministic(t *testing.T) {
 }
 
 func TestBuildContextDifferencesAreRecorded(t *testing.T) {
-	module, prod, test := fixturePackages(t)
-	linux, err := buildInventory(module, goEnv{GOOS: "linux", GOARCH: "amd64"}, "abc", nil, "./cmd/goobers", prod, test)
+	root := filepath.Clean(t.TempDir())
+	linuxRunner := discoveryRunner(t, root, "linux", "amd64", "platform_linux.go", "platform_windows.go")
+	linux, err := (discovery{runner: &linuxRunner, goos: "linux", goarch: "amd64", tags: []string{"baseline"}}).collect(context.Background(), "./cmd/goobers")
 	if err != nil {
 		t.Fatal(err)
 	}
-	windows, err := buildInventory(module, goEnv{GOOS: "windows", GOARCH: "arm64"}, "abc", nil, "./cmd/goobers", prod, test)
+	windowsRunner := discoveryRunner(t, root, "windows", "arm64", "platform_windows.go", "platform_linux.go")
+	windows, err := (discovery{runner: &windowsRunner, goos: "windows", goarch: "arm64", tags: []string{"baseline"}}).collect(context.Background(), "./cmd/goobers")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +132,12 @@ func TestBuildContextDifferencesAreRecorded(t *testing.T) {
 	if len(windows.Omissions) == 0 || !strings.Contains(strings.Join(windows.Omissions, " "), "other platform") {
 		t.Fatalf("omissions = %#v", windows.Omissions)
 	}
+	if !reflect.DeepEqual(linux.Packages[0].ProductionFiles, []string{"cmd/goobers/main.go", "cmd/goobers/platform_linux.go"}) ||
+		!reflect.DeepEqual(windows.Packages[0].ProductionFiles, []string{"cmd/goobers/main.go", "cmd/goobers/platform_windows.go"}) {
+		t.Fatalf("selected files: linux=%v windows=%v", linux.Packages[0].ProductionFiles, windows.Packages[0].ProductionFiles)
+	}
+	linuxRunner.assertBuildInvocation(t, "GOOS=linux", "GOARCH=amd64")
+	windowsRunner.assertBuildInvocation(t, "GOOS=windows", "GOARCH=arm64")
 }
 
 func TestDiscoveryReportsMalformedAndFailingCommands(t *testing.T) {
@@ -153,6 +166,25 @@ func TestDiscoveryReportsMalformedAndFailingCommands(t *testing.T) {
 	t.Run("package error is not a partial inventory", func(t *testing.T) {
 		_, err := decodePackages([]byte(`{"ImportPath":"example.test/bad","Error":{"Err":"missing generated package"}}`), "production go list")
 		if err == nil || !strings.Contains(err.Error(), `package "example.test/bad": missing generated package`) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("valid JSON missing go env fields", func(t *testing.T) {
+		root := t.TempDir()
+		runner := scriptedRunner{responses: []scriptedResponse{
+			{name: "go", args: "list -m -json", result: commandResult{stdout: []byte(`{"Path":"example.test/module","Dir":` + mustJSON(t, root) + `}`)}},
+			{name: "go", args: "env -json GOOS GOARCH CGO_ENABLED GOVERSION", result: commandResult{stdout: []byte(`{}`)}},
+		}}
+		_, err := (discovery{runner: &runner}).collect(context.Background(), "./cmd/goobers")
+		if err == nil || !strings.Contains(err.Error(), "missing GOOS, GOARCH, CGO_ENABLED, or GOVERSION") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("valid JSON package missing identity", func(t *testing.T) {
+		_, err := decodePackages([]byte(`{}`), "production go list")
+		if err == nil || !strings.Contains(err.Error(), "missing ImportPath, Name, or Dir") {
 			t.Fatalf("error = %v", err)
 		}
 	})
@@ -200,12 +232,17 @@ func commonHelper() {}
 `,
 		filepath.Join(commandDir, "inventory_test.go"): `package main
 import ("os"; "testing")
+func runDocsHelper() { runDocsChurn() }
 func TestAcrossDomains(t *testing.T) {
 	t.Setenv("KEY", "value")
 	_ = os.Getenv("KEY")
-	runDocsChurn()
+	runDocsHelper()
 	partitionByContention()
 	_ = newDependency()
+}
+func TestShadowedName(t *testing.T) {
+	runDocsChurn := func() {}
+	runDocsChurn()
 }
 func BenchmarkDocs(b *testing.B) { runDocsChurn() }
 func Example_docs() { runDocsChurn() }`,
@@ -238,6 +275,44 @@ func TestExternal(t *testing.T) { goobers.RunReportPRStatus() }`,
 	return moduleMetadata{Path: modulePath, Dir: root}, prod, test
 }
 
+func mustJSON(t *testing.T, value string) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func discoveryRunner(t *testing.T, root, goos, goarch, selected, ignored string) scriptedRunner {
+	t.Helper()
+	module := `{"Path":"example.test/module","Dir":` + mustJSON(t, root) + `}`
+	dir := filepath.Join(root, "cmd", "goobers")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"main.go", selected} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pkg := goPackage{
+		ImportPath: "example.test/module/cmd/goobers", Name: "main", Dir: dir,
+		GoFiles: []string{"main.go", selected}, IgnoredGoFiles: []string{ignored},
+	}
+	packageJSON, err := json.Marshal(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scriptedRunner{responses: []scriptedResponse{
+		{name: "go", args: "list -m -json", result: commandResult{stdout: []byte(module)}},
+		{name: "go", args: "env -json GOOS GOARCH CGO_ENABLED GOVERSION", result: commandResult{stdout: []byte(`{"GOOS":"` + goos + `","GOARCH":"` + goarch + `","CGO_ENABLED":"0","GOVERSION":"go1.test"}`)}},
+		{name: "go", args: "list -deps -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
+		{name: "go", args: "list -deps -test -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
+		{name: "git", args: "-C " + root + " rev-parse HEAD", result: commandResult{stdout: []byte("abc123\n")}},
+	}}
+}
+
 func reversePackages(packages []goPackage) {
 	for left, right := 0, len(packages)-1; left < right; left, right = left+1, right-1 {
 		packages[left], packages[right] = packages[right], packages[left]
@@ -253,9 +328,17 @@ type scriptedResponse struct {
 
 type scriptedRunner struct {
 	responses []scriptedResponse
+	calls     []scriptedCall
 }
 
-func (r *scriptedRunner) run(_ context.Context, name string, args, _ []string) (commandResult, error) {
+type scriptedCall struct {
+	name string
+	args string
+	env  []string
+}
+
+func (r *scriptedRunner) run(_ context.Context, name string, args, env []string) (commandResult, error) {
+	r.calls = append(r.calls, scriptedCall{name: name, args: strings.Join(args, " "), env: append([]string{}, env...)})
 	if len(r.responses) == 0 {
 		return commandResult{}, errors.New("unexpected command")
 	}
@@ -265,4 +348,23 @@ func (r *scriptedRunner) run(_ context.Context, name string, args, _ []string) (
 		return commandResult{}, errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
 	}
 	return response.result, response.err
+}
+
+func (r *scriptedRunner) assertBuildInvocation(t *testing.T, wantEnv ...string) {
+	t.Helper()
+	found := 0
+	for _, call := range r.calls {
+		if strings.HasPrefix(call.args, "list -deps ") {
+			found++
+			if !reflect.DeepEqual(call.env, wantEnv) {
+				t.Fatalf("%s environment = %v, want %v", call.args, call.env, wantEnv)
+			}
+			if !strings.Contains(call.args, "-tags baseline") {
+				t.Fatalf("build tags missing from %q", call.args)
+			}
+		}
+	}
+	if found != 2 {
+		t.Fatalf("build invocations = %d, want 2", found)
+	}
 }

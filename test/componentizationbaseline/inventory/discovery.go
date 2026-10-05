@@ -104,6 +104,9 @@ func (d discovery) collect(ctx context.Context, target string) (inventory, error
 	if err := decodeOne(envResult.stdout, &build); err != nil {
 		return inventory{}, fmt.Errorf("decode `go env -json`: %w", err)
 	}
+	if build.GOOS == "" || build.GOARCH == "" || build.CGOEnabled == "" || build.GoVersion == "" {
+		return inventory{}, errors.New("decode `go env -json`: missing GOOS, GOARCH, CGO_ENABLED, or GOVERSION")
+	}
 
 	prodArgs := append([]string{"list", "-deps", "-json"}, d.tagArgs()...)
 	prodArgs = append(prodArgs, target)
@@ -200,12 +203,21 @@ func decodePackages(data []byte, label string) ([]goPackage, error) {
 			return nil, fmt.Errorf("decode %s package %d: %w", label, len(packages)+1, err)
 		}
 		if pkg.Error != nil {
+			if pkg.Error.Err == "" {
+				return nil, fmt.Errorf("decode %s package %d: package Error is missing Err", label, len(packages)+1)
+			}
 			return nil, fmt.Errorf("%s package %q: %s", label, pkg.ImportPath, pkg.Error.Err)
 		}
 		if len(pkg.DepsErrors) > 0 {
 			e := pkg.DepsErrors[0]
+			if e.Err == "" {
+				return nil, fmt.Errorf("decode %s package %d: dependency error is missing Err", label, len(packages)+1)
+			}
 			return nil, fmt.Errorf("%s package %q dependency error at %s via %s: %s",
 				label, pkg.ImportPath, e.Pos, strings.Join(e.ImportStack, " -> "), e.Err)
+		}
+		if pkg.ImportPath == "" || pkg.Name == "" || pkg.Dir == "" {
+			return nil, fmt.Errorf("decode %s package %d: missing ImportPath, Name, or Dir", label, len(packages)+1)
 		}
 		packages = append(packages, pkg)
 	}

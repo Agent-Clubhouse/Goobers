@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -21,6 +23,27 @@ type packageAnalysis struct {
 	tests     []testRecord
 	symbols   map[string][]string
 	factories map[string]bool
+}
+
+type typedPackage struct {
+	info      *types.Info
+	pkg       *types.Package
+	functions map[*types.Func]*ast.FuncDecl
+	domains   map[types.Object][]string
+	factories map[types.Object]string
+}
+
+type packageImporter struct {
+	localPath string
+	local     *types.Package
+	fallback  types.Importer
+}
+
+func (i packageImporter) Import(path string) (*types.Package, error) {
+	if path == i.localPath {
+		return i.local, nil
+	}
+	return i.fallback.Import(path)
 }
 
 func buildInventory(module moduleMetadata, build goEnv, commit string, tags []string, target string, prod, test []goPackage) (inventory, error) {
@@ -175,9 +198,10 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 	factories := make(map[string]bool)
 	parsed := make(map[string]*ast.File)
 	symbolFiles := make(map[string]string)
+	fset := token.NewFileSet()
 	for _, name := range append(append([]string{}, pkg.GoFiles...), pkg.CgoFiles...) {
 		path := filepath.Join(pkg.Dir, name)
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return packageAnalysis{}, fmt.Errorf("parse production file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
 		}
@@ -219,17 +243,58 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 		}
 	}
 
+	internalFiles := make(map[string]*ast.File)
+	for _, name := range pkg.TestGoFiles {
+		path := filepath.Join(pkg.Dir, name)
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return packageAnalysis{}, fmt.Errorf("parse test file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
+		}
+		internalFiles[name] = file
+	}
+	typed := typePackage(fset, pkg.ImportPath, pkg.Name, parsed, internalFiles, nil)
+	for name, file := range parsed {
+		for domain, files := range domainFiles {
+			if !files[name] {
+				continue
+			}
+			for _, decl := range file.Decls {
+				for _, object := range declarationObjects(decl, typed.info) {
+					typed.domains[object] = append(typed.domains[object], domain)
+				}
+			}
+		}
+	}
+	for name := range factories {
+		if object := typed.pkg.Scope().Lookup(name); object != nil {
+			typed.factories[object] = name
+		}
+	}
+
 	var tests []testRecord
 	for _, group := range []struct {
 		files    []string
 		external bool
 	}{{pkg.TestGoFiles, false}, {pkg.XTestGoFiles, true}} {
-		for _, name := range group.files {
-			path := filepath.Join(pkg.Dir, name)
-			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-			if err != nil {
-				return packageAnalysis{}, fmt.Errorf("parse test file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
+		groupParsed := internalFiles
+		groupTyped := typed
+		if group.external {
+			groupParsed = make(map[string]*ast.File)
+			externalFSet := token.NewFileSet()
+			for _, name := range group.files {
+				path := filepath.Join(pkg.Dir, name)
+				file, err := parser.ParseFile(externalFSet, path, nil, 0)
+				if err != nil {
+					return packageAnalysis{}, fmt.Errorf("parse test file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
+				}
+				groupParsed[name] = file
 			}
+			groupTyped = typePackage(externalFSet, pkg.ImportPath+"_test", pkg.Name+"_test", nil, groupParsed, typed.pkg)
+			groupTyped.domains = typed.domains
+			groupTyped.factories = typed.factories
+		}
+		for _, name := range group.files {
+			file := groupParsed[name]
 			for _, decl := range file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
 				if !ok || fn.Recv != nil {
@@ -239,7 +304,7 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 				if !ok {
 					continue
 				}
-				record := analyzeTestFunction(pkg.ImportPath, filepath.ToSlash(filepath.Join(relDir, name)), group.external, kind, fn, symbolDomains, factories)
+				record := analyzeTestFunction(pkg.ImportPath, filepath.ToSlash(filepath.Join(relDir, name)), group.external, kind, fn, groupTyped)
 				tests = append(tests, record)
 				for _, domain := range record.Domains {
 					domains[domain].TestFiles = append(domains[domain].TestFiles, record.File)
@@ -248,6 +313,82 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 		}
 	}
 	return packageAnalysis{record: record, tests: tests, symbols: symbolDomains, factories: factories}, nil
+}
+
+func typePackage(fset *token.FileSet, path, name string, production, test map[string]*ast.File, local *types.Package) typedPackage {
+	info := &types.Info{
+		Defs:       make(map[*ast.Ident]types.Object),
+		Uses:       make(map[*ast.Ident]types.Object),
+		Selections: make(map[*ast.SelectorExpr]*types.Selection),
+	}
+	files := sortedASTFiles(production, test)
+	config := types.Config{Importer: importer.Default(), Error: func(error) {}}
+	if local != nil {
+		config.Importer = packageImporter{localPath: local.Path(), local: local, fallback: config.Importer}
+	}
+	checked, _ := config.Check(path, fset, files, info)
+	if checked == nil {
+		checked = types.NewPackage(path, name)
+	}
+	functions := make(map[*types.Func]*ast.FuncDecl)
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			if object, ok := info.Defs[fn.Name].(*types.Func); ok {
+				functions[object] = fn
+			}
+		}
+	}
+	return typedPackage{
+		info: info, pkg: checked, functions: functions,
+		domains: make(map[types.Object][]string), factories: make(map[types.Object]string),
+	}
+}
+
+func sortedASTFiles(groups ...map[string]*ast.File) []*ast.File {
+	byName := make(map[string]*ast.File)
+	for _, group := range groups {
+		for name, file := range group {
+			byName[name] = file
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	files := make([]*ast.File, 0, len(names))
+	for _, name := range names {
+		files = append(files, byName[name])
+	}
+	return files
+}
+
+func declarationObjects(decl ast.Decl, info *types.Info) []types.Object {
+	var names []*ast.Ident
+	switch value := decl.(type) {
+	case *ast.FuncDecl:
+		names = append(names, value.Name)
+	case *ast.GenDecl:
+		for _, raw := range value.Specs {
+			switch spec := raw.(type) {
+			case *ast.TypeSpec:
+				names = append(names, spec.Name)
+			case *ast.ValueSpec:
+				names = append(names, spec.Names...)
+			}
+		}
+	}
+	objects := make([]types.Object, 0, len(names))
+	for _, name := range names {
+		if object := info.Defs[name]; object != nil {
+			objects = append(objects, object)
+		}
+	}
+	return objects
 }
 
 func sortedFilePaths(dir string, names []string) []string {
@@ -307,22 +448,40 @@ func collectGlobalFactories(file *ast.File, factories map[string]bool) {
 	}
 }
 
-func analyzeTestFunction(pkg, file string, external bool, kind string, fn *ast.FuncDecl, symbolDomains map[string][]string, factories map[string]bool) testRecord {
+func analyzeTestFunction(pkg, file string, external bool, kind string, fn *ast.FuncDecl, typed typedPackage) testRecord {
 	var domainNames, environment, factoryNames []string
-	ast.Inspect(fn.Body, func(node ast.Node) bool {
-		switch value := node.(type) {
-		case *ast.Ident:
-			domainNames = append(domainNames, symbolDomains[value.Name]...)
-			if factories[value.Name] {
-				factoryNames = append(factoryNames, value.Name)
+	seen := make(map[*types.Func]bool)
+	var inspectFunction func(*ast.FuncDecl)
+	inspectFunction = func(current *ast.FuncDecl) {
+		object, _ := typed.info.Defs[current.Name].(*types.Func)
+		if object != nil {
+			if seen[object] {
+				return
 			}
-		case *ast.SelectorExpr:
-			if value.Sel.Name == "Setenv" || value.Sel.Name == "Getenv" || value.Sel.Name == "LookupEnv" || value.Sel.Name == "Environ" {
-				environment = append(environment, value.Sel.Name)
-			}
+			seen[object] = true
 		}
-		return true
-	})
+		ast.Inspect(current.Body, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.Ident:
+				referenced := typed.info.Uses[value]
+				domainNames = append(domainNames, typed.domains[referenced]...)
+				if name := typed.factories[referenced]; name != "" {
+					factoryNames = append(factoryNames, name)
+				}
+				if called, ok := referenced.(*types.Func); ok {
+					if helper := typed.functions[called]; helper != nil {
+						inspectFunction(helper)
+					}
+				}
+			case *ast.SelectorExpr:
+				if value.Sel.Name == "Setenv" || value.Sel.Name == "Getenv" || value.Sel.Name == "LookupEnv" || value.Sel.Name == "Environ" {
+					environment = append(environment, value.Sel.Name)
+				}
+			}
+			return true
+		})
+	}
+	inspectFunction(fn)
 	domainNames = sortedUnique(domainNames)
 	return testRecord{
 		Name: fn.Name.Name, Kind: kind, Package: pkg, File: file, External: external,
