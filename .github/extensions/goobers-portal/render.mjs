@@ -592,7 +592,10 @@ export function renderTelemetryInsights(run = {}) {
         if (value < 1000) return value + "ms";
         return Math.round(value / 1000) + "s";
     };
-    const formatMeasure = (measure) => measure.value === 0 ? "0 " + measure.unit : measure.value.toLocaleString() + " " + measure.unit;
+    const formatMeasure = (measure) => {
+        const value = measure.unit === "AIC" ? formatAICValue(measure.value) : measure.value.toLocaleString();
+        return value + " " + measure.unit;
+    };
     const durationRows = [
         ["Run duration", formatDuration(insights.duration.totalMillis)],
         ["Queue wait", formatDuration(insights.duration.queueMillis)],

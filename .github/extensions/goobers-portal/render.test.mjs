@@ -572,6 +572,20 @@ test("telemetry insights render multi-second durations in seconds", () => {
     assert.match(html, /12s/);
 });
 
+test("telemetry insights round AIC usage and budgets without rounding other units", () => {
+    const html = renderTelemetryInsights({
+        metrics: {
+            inputTokens: { value: 1234.5, unit: "tokens" },
+            costAIC: { value: 1.5, unit: "AIC" },
+            maxCostAIC: { value: 1234567.6, unit: "AIC" },
+        },
+    });
+    assert.match(html, /1,234\.5 tokens/);
+    assert.match(html, />2 AIC</);
+    assert.match(html, />1,234,568 AIC</);
+    assert.doesNotMatch(html, />1\.5 AIC</);
+});
+
 // ---- Insights tab ----
 
 test("INSIGHT_WINDOWS matches the portal's InsightPage.tsx labels and values exactly", () => {
