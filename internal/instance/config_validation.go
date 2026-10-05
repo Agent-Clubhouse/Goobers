@@ -49,6 +49,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.Runner.validateRecoveryCustodyTimeout,
 		c.Runner.validateStageMemoryLimit,
 		c.Runner.validatePodTmpfsSize,
+		c.Runner.validatePodEgressProxy,
 		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
 		c.validateExternalTelemetry,
 		c.Telemetry.Retention.validate,

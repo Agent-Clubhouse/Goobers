@@ -1244,6 +1244,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: literalPodEnv(string(encoded))})
 		}
 	}
+	env = append(env, podEgressProxyEnv(cfg, attempt, class, alreadyOnContainer, env)...)
 	// env:default-deny (#3725). Stamped ONLY for a class that enforces it, so
 	// every other pod spec is byte-identical to before this existed.
 	if class[string(runnercap.RestrictionEnvDefaultDeny)] {
@@ -1254,6 +1255,50 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		)
 	}
 	return env
+}
+
+// podEgressProxyEnvNames lists every variable runner.podEgressProxy stamps.
+// Each setting is stamped under both spellings: Go and npm read either, but
+// curl (and so git) reads only the lowercase proxy variables.
+var podEgressProxyEnvNames = []string{
+	"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+}
+
+// podEgressProxyEnv renders runner.podEgressProxy (#6748) for a stage whose
+// class carries network:allowlist: such a pod has no direct route to module
+// registries, and neither runner classes nor agentic stages can declare env.
+// A name the stage already declares (run.env) or the template container already
+// carries is left alone, so an explicit value always wins. The names are in
+// stageEnvAllowlist, so env:default-deny keeps them, and in procenv.Vars, so
+// they reach the stage command and a harness's tool subprocesses.
+func podEgressProxyEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnContainer []string, stamped []corev1.EnvVar) []corev1.EnvVar {
+	p := cfg.PodEgressProxy
+	if !p.Enabled() || !class[string(runnercap.RestrictionNetworkAllowlist)] {
+		return nil
+	}
+	taken := func(name string) bool {
+		if slices.Contains(alreadyOnContainer, name) {
+			return true
+		}
+		if _, ok := attempt.Env[name]; ok {
+			return true
+		}
+		return slices.ContainsFunc(stamped, func(e corev1.EnvVar) bool { return e.Name == name })
+	}
+	var out []corev1.EnvVar
+	for _, pair := range []struct{ upper, value string }{
+		{"HTTPS_PROXY", p.HTTPSProxy}, {"HTTP_PROXY", p.HTTPProxy}, {"NO_PROXY", p.NoProxy},
+	} {
+		if pair.value == "" {
+			continue
+		}
+		for _, name := range []string{pair.upper, strings.ToLower(pair.upper)} {
+			if !taken(name) {
+				out = append(out, corev1.EnvVar{Name: name, Value: literalPodEnv(pair.value)})
+			}
+		}
+	}
+	return out
 }
 
 // providerBotLogin resolves the bot login for the repository this attempt was
@@ -1436,6 +1481,8 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// durable cache volume is mounted. Keep it through env:default-deny's
 	// in-pod rebuild so restricted stage pods reuse the durable module cache.
 	names = append(names, "GOMODCACHE", "GOCACHE")
+	// runner.podEgressProxy (#6748), stamped by podEgressProxyEnv.
+	names = append(names, podEgressProxyEnvNames...)
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
