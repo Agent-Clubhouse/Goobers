@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -368,7 +367,7 @@ func TestReportPRStatusResultWriteFailureDoesNotRepublish(t *testing.T) {
 	pointADOStageProviderAt(t, server)
 
 	code, stdout, stderr := runArgs(t, "report-pr-status", root)
-	writeError := directoryWriteError(resultFile)
+	writeError := directoryWriteError(t, resultFile)
 	wantStderr := "error: write " + resultFile + ": " + writeError + "\n" +
 		"warning: write provider-stage result " + resultFile + ": write typed result: " + writeError + "\n"
 	if code != 1 || stdout != "" || stderr != wantStderr {
@@ -379,6 +378,11 @@ func TestReportPRStatusResultWriteFailureDoesNotRepublish(t *testing.T) {
 	}
 }
 
-func directoryWriteError(path string) string {
-	return (&os.PathError{Op: "open", Path: path, Err: syscall.EISDIR}).Error()
+func directoryWriteError(t *testing.T, path string) string {
+	t.Helper()
+	err := os.WriteFile(path, nil, 0o644)
+	if err == nil {
+		t.Fatalf("writing directory path %q unexpectedly succeeded", path)
+	}
+	return err.Error()
 }
