@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -205,6 +206,11 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 	}
 
 	publisher := nomination.Publisher{Repo: repo, RunID: runID, Policy: policy, Findings: findings, FindingsUnavailable: findingsSummary.Reason}
+	if screen := publicationLeakScreenForRoot(root, nil); screen != nil {
+		publisher.ObservePublication = func(ctx context.Context, title, body string) {
+			screen(ctx, "issue", title, body)
+		}
+	}
 	if *checkOnly {
 		token, err := providerToken(capability.GitHubIssuesRead)
 		if err != nil {

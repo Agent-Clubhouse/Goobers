@@ -28,10 +28,11 @@ var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // endpoint and key are read from the named environment variables, so this
 // struct is safe to commit as an example.
 type Settings struct {
-	Mode       Mode   `json:"mode,omitempty" yaml:"mode,omitempty"`
-	BaseURLEnv string `json:"baseURLEnv,omitempty" yaml:"baseURLEnv,omitempty"`
-	KeyEnv     string `json:"keyEnv,omitempty" yaml:"keyEnv,omitempty"`
-	ModelEnv   string `json:"modelEnv,omitempty" yaml:"modelEnv,omitempty"`
+	Mode                  Mode   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	BaseURLEnv            string `json:"baseURLEnv,omitempty" yaml:"baseURLEnv,omitempty"`
+	KeyEnv                string `json:"keyEnv,omitempty" yaml:"keyEnv,omitempty"`
+	ModelEnv              string `json:"modelEnv,omitempty" yaml:"modelEnv,omitempty"`
+	PublicationLeakScreen bool   `json:"publicationLeakScreen,omitempty" yaml:"publicationLeakScreen,omitempty"`
 	// Fallback is what a caller does on Uncertain or exhausted retries.
 	Fallback string `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 	// ShadowSample is the fraction (0..1) of eligible handoffs scored in shadow
@@ -115,6 +116,9 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	}
 	if _, ok := cfg.Thresholds[ClaimQuestion]; !ok {
 		cfg.Thresholds[ClaimQuestion] = DefaultClaimThreshold
+	}
+	if _, ok := cfg.Thresholds[PublicationLeakQuestion]; !ok {
+		cfg.Thresholds[PublicationLeakQuestion] = DefaultPublicationLeakThreshold
 	}
 	if cfg.CallTimeout == 0 {
 		cfg.CallTimeout = 5 * time.Second

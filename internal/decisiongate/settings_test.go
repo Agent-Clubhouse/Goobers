@@ -112,6 +112,9 @@ func TestResolveDefaultsClaimThreshold(t *testing.T) {
 	if got := g.cfg.Thresholds[ClaimQuestion]; got != DefaultClaimThreshold {
 		t.Fatalf("claim threshold = %+v, want default", got)
 	}
+	if got := g.cfg.Thresholds[PublicationLeakQuestion]; got != DefaultPublicationLeakThreshold {
+		t.Fatalf("publication threshold = %+v, want default", got)
+	}
 	if s.Gate.Thresholds != nil {
 		t.Fatal("Resolve must not mutate the caller's settings")
 	}
