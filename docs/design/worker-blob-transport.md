@@ -24,7 +24,11 @@ A directory-backed dispatch worker performs a bounded startup check before it
 polls: PUT a fresh, random 32-byte probe through the configured blob plane, then
 read that digest from its directory. A missing or different value refuses
 startup with `WORKER_BLOB_STORE_MISMATCH`. The small content-addressed probe is
-retained. Local directory workers without `--dispatch-namespace` do not contact
+retained. While the daemon is not ready (HTTP 503 or no answer, 4-9 minutes on a
+rollout) the probe waits with backoff for `--blob-probe-wait` (env
+`GOOBERS_WORKER_BLOB_PROBE_WAIT`, default 20m), logging INFO progress; the
+bound expiring exits `WORKER_DAEMON_NOT_READY`. A 4xx, a non-503 5xx or a
+read-back mismatch fails immediately with the daemon's error body. Local directory workers without `--dispatch-namespace` do not contact
 the plane and need no shared signing key.
 
 In endpoint mode, dispatch workers also read the identity-keyed surrender plane
