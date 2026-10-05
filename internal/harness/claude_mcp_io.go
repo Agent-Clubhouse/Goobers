@@ -23,7 +23,7 @@ func withAutoGoobersIOClaude(req RunRequest, selfBin string) RunRequest {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return req
 	}
-	req.Tools = appendMissing(req.Tools, goobersIOClaudeToolNames()...)
+	req.Tools = appendMissing(req.Tools, prefixedGoobersIOTools(req, "mcp__"+goobersIOServerName+"__")...)
 	req.GoobersIORegistered = true
 	return req
 }

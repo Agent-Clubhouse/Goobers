@@ -33,6 +33,128 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "child": {
+      "description": "Immutable same-gaggle generated child lineage and exact queue proposal reference.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gaggle",
+        "parentRunId",
+        "parentWorkflow",
+        "stageOccurrence",
+        "invocationKey",
+        "acceptanceId",
+        "sourceDigest",
+        "envelopeDigest"
+      ],
+      "properties": {
+        "gaggle": {"description": "Gaggle shared by the parent and generated child.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stageOccurrence": {"description": "Durable logical parent stage occurrence that accepted the child.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "invocationKey": {"description": "Parent-supplied idempotency key within the stage occurrence.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parentWorkflow": {"description": "Configured parent workflow whose scheduling and budget limits apply.","type":"string","minLength":1,"maxLength":256},
+        "parentRunId": {"description": "Exact parent run owning this child.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "acceptanceId": {"description": "Durable queue receipt that fixed this child run identity.",
+          "type": "string",
+          "pattern": "^trigger-[0-9a-f]{32}$"
+        },
+        "sourceDigest": {"description": "Digest of the admitted generated workflow source.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "envelopeDigest": {"description": "Digest of the exact admitted child start envelope.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "executionEpoch": {"description": "Bounded linked human execution epoch; absent means original acceptance.", "type": "integer", "minimum": 1, "maximum": 8},
+        "priorResultRef": {"description": "Immutable prior child result selected by human restart admission.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "restartDigest": {"description": "Exact durable queue restart request digest; conveys no independent authority.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "session": {
+      "description": "Immutable accepted shared-session turn provenance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gaggle",
+        "sessionId",
+        "turnId",
+        "messageId",
+        "acceptanceId",
+        "envelopeDigest",
+        "inputDigest"
+      ],
+      "properties": {
+        "gaggle": {
+          "description": "Owning gaggle.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sessionId": {
+          "description": "Shared conversation identity.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "turnId": {
+          "description": "Accepted logical conversational turn.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "messageId": {
+          "description": "Originating attributed human message.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "acceptanceId": {
+          "description": "Exact durable start queue receipt.",
+          "type": "string",
+          "pattern": "^trigger-[0-9a-f]{32}$"
+        },
+        "envelopeDigest": {
+          "description": "Digest of accepted session start envelope.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "inputDigest": {
+          "description": "Digest of immutable bounded conversation input.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "event": {
+      "description": "Immutable accepted event consumer identity; payloads confer no execution authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gaggle", "groupId", "consumer", "revision", "acceptanceId", "envelopeDigest", "manifestDigest"],
+      "properties": {
+        "gaggle": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Owning gaggle, equal to the run gaggle." },
+        "groupId": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Durable group containing the selected original events." },
+        "consumer": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Pinned subscription identity." },
+        "revision": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Immutable consumer definition revision." },
+        "acceptanceId": { "type": "string", "pattern": "^trigger-[0-9a-f]{32}$", "description": "Queue receipt reserving this run identity." },
+        "envelopeDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the exact admitted event-start envelope." },
+        "manifestDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the immutable membership and producer provenance manifest." }
+      }
+    },
     "continuedFromRunId": {
       "description": "The terminal source run this continuation was created from.",
       "type": "string",
@@ -45,11 +167,12 @@
     },
     "operator": { "type": "string", "minLength": 1, "description": "Operator who requested the continuation." },
     "requestedTarget": { "type": "string", "minLength": 1, "description": "Workflow state selected for the continuation." },
+    "workspaceRepository": { "$ref": "gaggle.schema.json#/$defs/repoRef", "description": "Exact repository containing the retained workspace branch." },
     "workspaceBranch": { "type": "string", "minLength": 1, "description": "Existing repository branch reused by this run." },
     "workspaceBranchSha": { "type": "string", "minLength": 1, "description": "Commit pinned for the reused branch." },
     "contextPointers": {
       "type": "array",
-      "description": "Explicit continuation inputs; no ambient source context is copied.",
+      "description": "Explicit host-prepared or continuation inputs; no ambient source context is copied.",
       "items": {
         "type": "object",
         "description": "One explicitly selected source context pointer made available to the continuation.",

@@ -5,10 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/goobers/goobers/internal/apireadcache"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
@@ -106,8 +109,11 @@ func TestPRSelectAndSiblingContextShareProductionListSnapshot(t *testing.T) {
 		{path: "cmd/goobers/main.go", status: "modified"},
 	})
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv(executor.GaggleEnvVar, "goobers")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	t.Setenv(providersnapshot.EnvVar, "tick-1")
+	t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-test")
 
 	t.Chdir(t.TempDir())
 	if code, stdout, stderr := runArgs(t, "pr-select", root); code != 0 {
@@ -120,5 +126,73 @@ func TestPRSelectAndSiblingContextShareProductionListSnapshot(t *testing.T) {
 	}
 	if got := server.pullListRequestCount(); got != 1 {
 		t.Fatalf("production pr-select to sibling-context list requests = %d, want 1", got)
+	}
+}
+
+type scopedStageReadTransport func(*http.Request) (*http.Response, error)
+
+func (f scopedStageReadTransport) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestStageReadCacheUsesGaggleAndPinnedGeneration(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(layoutFor(root).SchedulerDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(providersnapshot.EnvVar, "same-evaluation")
+	t.Setenv(executor.GaggleEnvVar, "one")
+	t.Setenv(executor.ConfigGenerationEnvVar, "generation-1")
+	t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-1")
+	calls := 0
+	transport := scopedStageReadTransport(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("[]"))}, nil
+	})
+	read := func() {
+		t.Helper()
+		p := newCachedGitHubProvider(root, "token", providers.WithHTTPClient(transport))
+		req, err := http.NewRequest(http.MethodGet, "https://api.example/repos/owner/repo/pulls", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := p.Client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	read()
+	read()
+	if calls != 1 {
+		t.Fatalf("same stage scope: %d requests", calls)
+	}
+	t.Setenv(executor.GaggleEnvVar, "two")
+	read()
+	t.Setenv(executor.ConfigGenerationEnvVar, "generation-2")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-2")
+	read()
+	if calls != 3 {
+		t.Fatalf("scope separation: %d requests", calls)
+	}
+	if err := invalidateCurrentProviderSnapshot(root); err != nil {
+		t.Fatal(err)
+	}
+	read()
+	if calls != 4 {
+		t.Fatalf("current scope invalidation: %d requests", calls)
+	}
+	t.Setenv(executor.GaggleEnvVar, "one")
+	t.Setenv(executor.ConfigGenerationEnvVar, "generation-1")
+	t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-1")
+	read()
+	if calls != 4 {
+		t.Fatalf("other scope invalidated: %d requests", calls)
+	}
+	t.Setenv(executor.GaggleEnvVar, "")
+	read()
+	read()
+	if calls != 6 {
+		t.Fatalf("missing scope must bypass: %d requests", calls)
 	}
 }

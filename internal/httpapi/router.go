@@ -83,7 +83,17 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
-	Subject string
+	// GeneratedChild is a signed pod-custody claim, never inferred from mutable
+	// journal presence or accepted from a request body.
+	GeneratedChild               bool
+	GeneratedChildContractDigest string
+	// WorkflowParent identifies a contained parent pod. Its run/attempt authority
+	// is checked independently of generated-child lineage.
+	WorkflowParent               bool
+	WorkflowParentContractDigest string
+	// ChildWorkflow is populated only by the stage-grant authenticator.
+	ChildWorkflow *ChildWorkflowPrincipal
+	Subject       string
 	// Issuer identifies the trust domain that authenticated Subject.
 	Issuer string
 	// Name is a human-readable display claim when the issuer provides one.
@@ -91,6 +101,9 @@ type Principal struct {
 	// Roles are the instance-scoped roles granted to this principal by
 	// configuration. Empty means authenticated but authorized for nothing.
 	Roles []Role
+	// Groups contains stable group identifiers from a configured claim in a
+	// cryptographically verified identity token. Request bodies never set it.
+	Groups []string
 	// Scopes narrow a POD principal to a subset of the pod-reachable planes
 	// (podauth.KnownScopes). Empty means the unscoped pod token, which reaches
 	// every pod plane — the posture GOOBERS_POD_TOKEN has always had, and the
@@ -422,6 +435,9 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if handled, err := authorizeInvocationGrant(request, principal); handled {
+			return err
+		}
 		if principal.Issuer == CredentialGrantPrincipalIssuer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
 				return nil
@@ -439,6 +455,9 @@ func RequireRoles() Authorizer {
 				return nil
 			}
 			return errors.New("worker principal may only read config digest or report config divergence")
+		}
+		if containedPod(principal) {
+			return authorizeContainedPod(request, principal)
 		}
 		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
 			return nil
@@ -535,7 +554,13 @@ func PrincipalFromRequest(request *http.Request) (Principal, bool) {
 	if request == nil {
 		return Principal{}, false
 	}
-	principal, ok := request.Context().Value(principalContextKey{}).(Principal)
+	return PrincipalFromContext(request.Context())
+}
+
+// PrincipalFromContext exposes only the identity established by the router.
+// Scoped storage adapters use it without accepting identity from a payload.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
 	return principal, ok
 }
 
@@ -596,6 +621,7 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
+	prRepairRecovery        PRRepairRecoveryService
 	events                  eventSource
 	authenticator           Authenticator
 	interventions           InterventionService
@@ -609,6 +635,22 @@ type handlerConfig struct {
 	cancels                 CancelService
 	journal                 JournalService
 	runJournal              RunJournalService
+	childWorkflows          ChildWorkflowService
+	interactivePermissions  InteractivePermissionService
+	interactiveRuns         InteractiveRunService
+	childMonitor            ChildWorkflowMonitorService
+	childPublicationChecks  ChildPublicationCheckService
+	interactiveSessions     InteractiveSessionService
+	sessionOperations       SessionOperationService
+	workbenchReads          WorkbenchReadService
+	prSelection             PRSelectionReader
+	workbenchGraph          WorkbenchGraphService
+	workbenchDocuments      WorkbenchDocumentService
+	gaggleEvents            GaggleEventService
+	startQueue              StartQueueService
+	workbenchWrites         WorkbenchWriteService
+	workbenchProposals      WorkbenchProposalService
+	workbenchSuggestions    WorkbenchSuggestionService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
@@ -1062,7 +1104,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 			return nil, err
 		}
 	}
-	router, err := newRouter(config.authenticator, authorizer)
+	router, err := newRouter(sessionOperationAuthenticator{service: config.sessionOperations, next: config.authenticator}, authorizer)
 	if err != nil {
 		return nil, err
 	}
@@ -1200,6 +1242,21 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	})
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
+	registerInteractiveRoutes(router, config.interactivePermissions)
+	registerInteractiveRunRoutes(router, config, errorLog)
+	registerChildMonitorRoute(router, config, errorLog)
+	registerChildPublicationCheckRoute(router, config, errorLog)
+	registerSessionRoutes(router, config, errorLog)
+	registerWorkbenchRoutes(router, config, errorLog)
+	router.Handle(apicontract.RouteWorkbenchPRSelection, prSelectionHandler(config.prSelection, errorLog))
+	registerWorkbenchGraphRoute(router, config, errorLog)
+	registerGaggleEventRoutes(router, config, errorLog)
+	registerStartQueueRoutes(router, config, errorLog)
+	router.Handle(apicontract.RouteWorkbenchDocuments, workbenchDocumentsHandler(config.workbenchDocuments, errorLog))
+	registerWorkbenchWriteRoutes(router, config, errorLog)
+	registerPRRepairRecovery(router, config, errorLog)
+	registerWorkbenchProposalRoutes(router, config, errorLog)
+	registerWorkbenchSuggestionRoutes(router, config, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)

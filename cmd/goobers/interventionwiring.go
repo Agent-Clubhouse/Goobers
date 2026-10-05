@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"path/filepath"
 	"sync"
@@ -67,7 +68,15 @@ func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *ru
 }
 
 func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup, errorLog *log.Logger) *intervention.Service {
-	return intervention.New(interventionServiceConfig(layout, setup.Interventions, setup.RunnerRegistry, setup.InstanceLog, wg, errorLog))
+	cfg := interventionServiceConfig(layout, setup.Interventions, setup.RunnerRegistry, setup.InstanceLog, wg, errorLog)
+	cfg.StageRestartExecution = setup.InteractiveRestartExecution
+	cfg.PinnedInspection = func(ctx context.Context, id journal.RunIdentity) (intervention.Execution, error) {
+		if setup.CredentialPlane == nil {
+			return intervention.Execution{}, errors.New("child inspection unavailable")
+		}
+		return setup.CredentialPlane.inspectChildExecution(ctx, id)
+	}
+	return intervention.New(cfg)
 }
 
 // interventionServiceConfig binds the intervention service to the daemon's

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -27,14 +28,28 @@ const maxGrepMatches = 200
 
 // Toolset implements the generic tools against a fixed Config, loaded once
 // at process start. It never re-reads Config or talks to the journal —
-// every call is a plain, local filesystem operation scoped to Workspace.
+// artifact I/O stays workspace-scoped; optional child operations use only the
+// trusted endpoint and grant captured at startup.
 type Toolset struct {
-	cfg Config
+	cfg              Config
+	childTransport   http.RoundTripper
+	sessionTransport http.RoundTripper
 }
 
 // NewToolset builds a Toolset from an already-loaded, already-validated
 // Config.
 func NewToolset(cfg Config) *Toolset {
+	if cfg.SessionOperations != nil {
+		access := *cfg.SessionOperations
+		access.BacklogSources = append([]string(nil), access.BacklogSources...)
+		access.BacklogWriteSources = append([]string(nil), access.BacklogWriteSources...)
+		access.BacklogResolveSources = append([]string(nil), access.BacklogResolveSources...)
+		cfg.SessionOperations = &access
+	}
+	if cfg.ChildWorkflows != nil {
+		access := *cfg.ChildWorkflows
+		cfg.ChildWorkflows = &access
+	}
 	return &Toolset{cfg: cfg}
 }
 

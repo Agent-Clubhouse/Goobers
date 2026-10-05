@@ -61,6 +61,9 @@ var checkoutCloneURL = runner.DefaultRepoCloneURL
 // other provider. On Azure DevOps it selects the URL-scoped Authorization
 // header every other in-pod ADO git operation sends (checkoutGitAuthEnv).
 func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential, repoAuthScheme string) error {
+	if isolatedChildWorkspace(ctx) {
+		return nil // verified carrier was materialized before invoking the stage
+	}
 	mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace))
 	if mode == "" || mode == string(apiv1.WorkspaceScratch) {
 		return nil

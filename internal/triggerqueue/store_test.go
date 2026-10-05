@@ -201,6 +201,10 @@ func TestCapacityPrunesOnlyExpiredTerminalRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This fixture isolates the record-count quota from the independent byte reserve.
+	if _, err := s.db.Exec(`UPDATE start_controls SET reserved_bytes=0`); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := s.Accept(t.Context(), "overflow", "operator", []byte("payload"), now); !errors.Is(err, ErrFull) {
 		t.Fatalf("overflow: %v", err)
 	}

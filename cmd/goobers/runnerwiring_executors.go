@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/externaltelemetry/adx"
@@ -427,6 +428,7 @@ func harnessCommandOrDefault(overrides map[string][]string, name string, def []s
 }
 
 type deterministicExecutorInput struct {
+	AutomationReadCache bool
 	Config              *instance.Config
 	Resolver            credentials.Resolver
 	Grants              []credentials.Grant
@@ -472,6 +474,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.InstanceRoot = input.InstanceRoot
 	shell.AppliedConfigDigest = input.AppliedConfigDigest
 	shell.ConfigDirectory = input.ConfigDirectory
+	shell.AutomationReadCache = input.AutomationReadCache
 	shell.ScratchDir = input.ScratchDir
 	shell.CredentialGrants = input.CredentialGrants
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
@@ -544,6 +547,9 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	if err := kinds.Register(executor.KindExternalTelemetry, telemetryQuery); err != nil {
 		return nil, err
 	}
+	if err := kinds.Register(eventing.KindPublishEvent, &executor.PublishEventExecutor{Publish: eventPublicationFor(input.InstanceRoot, input.ArtifactRecorder)}); err != nil {
+		return nil, err
+	}
 	return executor.NewTaskExecutor(kinds)
 }
 
@@ -565,6 +571,7 @@ type agenticExecutorInput struct {
 	ArtifactRecorder runner.ArtifactRecorder
 	SecretRegistrar  runner.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
+	ChildWorkflows   harness.ChildWorkflowAccessProvider
 
 	// Local runner only; worker pods do not inherit daemon-host paths.
 	GuardedCredentialPaths []string
@@ -634,6 +641,7 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 		harness.WithSkills(harnessName, workflow.ResolvedSkillFiles(spec, input.SkillPackages)),
 		harness.WithMCPServers(spec.MCPServers),
 		harness.WithTools(spec.Tools),
+		harness.WithChildWorkflowAccess(input.ChildWorkflows),
 	}
 	if spec.TimeoutSeconds > 0 {
 		opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))

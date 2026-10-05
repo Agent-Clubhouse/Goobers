@@ -296,6 +296,8 @@ func lowerMethod(method string) string {
 		return "get"
 	case "POST":
 		return "post"
+	case "PATCH":
+		return "patch"
 	case "PUT":
 		return "put"
 	case "DELETE":

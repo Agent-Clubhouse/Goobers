@@ -1,3 +1,14 @@
+import type { PRRepairCommand } from "./prRepairTypes";
+import type { StartQueuePage, StartQueueItem, StartQueueCancelInput } from "./startQueueTypes";
+export type { StartQueuePage, StartQueueItem, StartQueueCancelInput, StartQueueCancellation } from "./startQueueTypes";
+import type { WorkbenchGraph } from "./workbenchGraphTypes";
+export type * from "./workbenchGraphTypes";
+import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
+export type * from "./workbenchDocumentTypes";
+import type { BacklogWriteCapabilities, BacklogPatchInput, BacklogEditCommand } from "./workbenchWriteTypes";
+import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
+export type * from "./workbenchTypes";
+export type * from "./workbenchWriteTypes";
 import type { ConfigAuthoringErrorCode } from "./contract.generated";
 
 export const API_VERSION = "v1";
@@ -1888,6 +1899,43 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+  listSuggestionArtifacts(gaggle: string, run: string, after?: number, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionInventory>;
+  loadSuggestions(gaggle: string, selection: import("./workbenchSuggestionTypes").SuggestionSelection, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionBatch>;
+  previewSuggestion(gaggle: string, input: import("./workbenchSuggestionTypes").SuggestionPreviewRequest, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionPreview>;
+  decideSuggestion(gaggle: string, input: import("./workbenchSuggestionTypes").SuggestionDecisionRequest, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionReview>;
+  getSuggestionReview(gaggle: string, review: string, options?: RequestOptions): Promise<import("./workbenchSuggestionTypes").SuggestionReview>;
+  previewMetadataChange(gaggle: string, source: string, input: import("./workbenchProposalTypes").MetadataChangeRequest, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataPreview>;
+  submitMetadataProposal(gaggle: string, source: string, key: string, input: import("./workbenchProposalTypes").MetadataChangeRequest, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+  getMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+  checkMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+  continueMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
+
+  getStartQueue(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<StartQueuePage>;
+  getStartQueueItem(gaggle: string, acceptance: string, options?: RequestOptions): Promise<StartQueueItem>;
+  cancelQueuedStart(gaggle: string, acceptance: string, input: StartQueueCancelInput, options?: RequestOptions): Promise<StartQueueItem>;
+  getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph>;
+  getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities>;
+  patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand>;
+  getWorkbenchCommand(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<BacklogEditCommand>;
+  getPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand>;
+  checkPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand>;
+  inspectPullRequest(gaggle: string, source: string, pullRequest: string, options?: RequestOptions): Promise<SessionPRRepairInspection>;
+  listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage>;
+  getWorkbenchDocuments(gaggle: string, source: string, request?: WorkbenchDocumentPageRequest, options?: RequestOptions): Promise<WorkbenchDocumentPage>;
+  getWorkbenchItems(gaggle: string, source: string, request?: BacklogPageRequest, options?: RequestOptions): Promise<BacklogPage>;
+  getWorkbenchItem(gaggle: string, source: string, request: BacklogItemRequest, options?: RequestOptions): Promise<BacklogItem>;
+  getInteractiveCapabilities(gaggle: string, options?: RequestOptions): Promise<InteractiveCapabilities>;
+  listSessions(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<SessionPage>;
+  getSession(gaggle: string, session: string, options?: RequestOptions): Promise<InteractiveSession>;
+  getSessionMessages(gaggle: string, session: string, after?: number, options?: RequestOptions): Promise<SessionMessagePage>;
+  createSession(gaggle: string, key: string, input: SessionCreateRequest, options?: RequestOptions): Promise<SessionAcceptance>;
+  sendSessionMessage(gaggle: string, session: string, key: string, input: SessionMessageRequest, options?: RequestOptions): Promise<SessionAcceptance>;
+  closeSession(gaggle: string, session: string, key: string, input: SessionCloseRequest, options?: RequestOptions): Promise<SessionAcceptance>;
+
+	checkChildPublication(runId: string, key: string, command: ChildPublicationCheckRequest, options?: RequestOptions): Promise<ChildPublicationCheckResult>;
+	getChildWorkflows(runId: string, after?: string, options?: RequestOptions): Promise<ChildWorkflowPage>;
+  getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView>;
+  commandInteractiveRun(runId: string, key: string, command: InteractiveRunCommand, options?: RequestOptions): Promise<InteractiveRunCommandResult>;
   connectEvents(
     request?: EventStreamRequest,
     options?: RequestOptions,
@@ -1969,3 +2017,226 @@ export interface ReadState {
 export interface WithReadState {
   readState?: ReadState;
 }
+
+/** Stage-grant-only child operations. Human session credentials do not authorize these. */
+export interface ChildWorkflowSourceRequest {
+  source: string;
+}
+
+export interface ChildWorkflowStatusRequest {
+  invocationKey: string;
+}
+
+export interface ChildWorkflowResolveRequest {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  expectedRequestDigest?: string;
+}
+
+export interface ChildWorkflowResolutionResponse {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  requestedAt: string;
+  requestDigest: string;
+  planPublished: boolean;
+  applied: boolean;
+  appliedAt?: string;
+}
+
+export interface ChildWorkflowDiagnostic {
+  code: string;
+  stage?: string;
+  field?: string;
+  message: string;
+}
+
+export interface ChildWorkflowValidationResponse {
+  valid: boolean;
+  advisory: boolean;
+  sourceDigest?: string;
+  canonicalDigest?: string;
+  configDigest?: string;
+  policyDigest?: string;
+  workflowDigest?: string;
+  diagnostics: readonly ChildWorkflowDiagnostic[];
+}
+
+/** Acceptance reports custody, not that execution has begun. */
+export interface ChildWorkflowResponse {
+  acknowledged: boolean;
+  childId: string;
+  acceptanceId: string;
+  runId: string;
+  invocationKey: string;
+  sequence: number;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  duplicate?: boolean;
+  sourceDigest: string;
+  canonicalDigest: string;
+  configDigest: string;
+  policyDigest: string;
+  workflowDigest: string;
+  cancellationRequested: boolean;
+  resultRef?: string;
+  workspaceRef?: string;
+  disposition?: ChildWorkflowResolutionResponse;
+  acceptedAt: string;
+  updatedAt: string;
+}
+
+
+/** Current authenticated authority, separate from implemented operations. */
+export interface InteractiveCapabilities {
+  gaggle: string;
+  policyConfigured: boolean;
+  viewer: boolean;
+  operator: boolean;
+  sourceWriteMode: "pull-request";
+  actions: InteractiveActionPermission[];
+}
+
+export interface InteractiveActionPermission {
+  action: "session.create" | "session.message" | "backlog.read" | "backlog.edit" | "backlog.resolve" | "repository.read" | "run.intervene" | "run.restartStage" | "pr.repair" | "source.proposeChange" | "queue.cancel";
+  authorized: boolean;
+  credentialConfigured: boolean;
+  available: boolean;
+  reasonCode: "policy_missing" | "action_not_authorized" | "credential_not_configured" | "operation_not_implemented" | "";
+}
+
+/** Human-only surface; source of authority is the authenticated gaggle policy. */
+export interface ChildPublicationSummary {
+  sourceRunId: string;
+  executionEpoch: number;
+  action: "branch" | "pr";
+  intentDigest: string;
+  state: "prepared" | "effect_pending" | "confirmed";
+  head: string;
+  base: string;
+  commit: string;
+  pullRequestUrl?: string;
+  pullRequestNumber?: number;
+  needsHuman: boolean;
+  createdAt: string;
+  updatedAt: string;
+  checkedAt?: string;
+  observation: string;
+}
+export interface ChildPublicationCheckRequest { action: "branch" | "pr"; expectedIntentDigest: string }
+export interface ChildPublicationCheckResult { runId: string; requestId: string; publication: ChildPublicationSummary }
+export interface ChildWorkflowPage {
+  executionHistory?: ChildWorkflowExecution[];
+  publicationRunId?: string;
+  publications?: ChildPublicationSummary[];
+  publicationCheckAvailable?: boolean;
+  publicationCheckReason?: string;
+  runId: string;
+  gaggle: string;
+  parent?: { runId: string; workflow: string; invocationKey: string };
+  children: ChildWorkflowSummary[];
+  nextCursor?: string;
+}
+export interface ChildWorkflowSummary {
+  executionEpoch?: number;
+  originalRunId?: string;
+  publicationNeedsHuman?: boolean;
+  childId: string;
+  runId?: string;
+  runAvailable: boolean;
+  stage?: string;
+  workflow?: string;
+  invocationKey: string;
+  sequence: number;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  cancellationRequested: boolean;
+  acknowledged: boolean;
+  expired: boolean;
+  acceptedAt: string;
+  updatedAt: string;
+}
+
+export interface ChildWorkflowExecution {
+  epoch: number;
+  runId: string;
+  runAvailable: boolean;
+  current: boolean;
+  state: ChildWorkflowSummary["state"];
+  sourceRunId?: string;
+  actor?: string;
+  stage?: string;
+  acceptedAt: string;
+  updatedAt: string;
+}
+
+export interface InteractiveRunView {
+  runId: string;
+  gaggle: string;
+  phase: string;
+  actions: InteractiveRunAction[];
+  guidance: OperatorMessageRecord[];
+  restartReason: string;
+}
+export interface InteractiveRunAction {
+  kind: "approve" | "override" | "deny" | "guidance" | "restart";
+  stage: string;
+  subjectSequence: number;
+  decisions: string[];
+  available: boolean;
+  reason: string;
+}
+export interface InteractiveRunCommand {
+  kind: InteractiveRunAction["kind"];
+  stage: string;
+  expectedSubjectSequence: number;
+  decision?: string;
+  rationale?: string;
+  guidance?: string;
+  guidanceIds?: string[];
+}
+export interface InteractiveRunCommandResult {
+ pendingReason?: string;
+  status: "applied" | "saved" | "pending" | "failed" | "started" | "cancelled" | "expired";
+  accepted: boolean;
+  runId: string;
+  journalSequence: number;
+  phase: string;
+  guidance?: OperatorMessageRecord;
+  continuationRunId?: string;
+}
+
+
+export interface SessionActor { issuer: string; subject: string }
+export interface SessionCreateRequest { title: string; goober: string }
+export interface SessionPRRepairTarget {
+  sourceBindingId: string;
+  repository: { provider: "github" | "ado"; owner: string; project?: string; name: string };
+  repositorySourceId: string; id: string; sourceId: string; expectedHeadSha: string;
+}
+export interface SessionPRRepairInspection {
+  target: SessionPRRepairTarget; headSha: string; baseSha: string; head: string; base: string;
+  title: string; description: string; url: string; open: boolean; draft: boolean; parentCommandId?: string;
+}
+export interface SessionMessageRequest { text: string; repairTarget?: SessionPRRepairTarget }
+export interface SessionCloseRequest { reason: string }
+export interface InteractiveSession {
+  id: string; gaggle: string; title: string; goober: string; configGeneration: string; gooberDigest: string;
+  state: "idle" | "queued" | "running" | "cancel-requested" | "closed";
+  createdBy: SessionActor; createdAt: string; updatedAt: string; nextSequence: number;
+  activeTurnId?: string; lastOutcome?: string;
+}
+export interface SessionMessage {
+  id: string; sessionId: string; sequence: number; actorKind: "human" | "agent" | "system";
+  actor?: SessionActor; text: string; repairTarget?: SessionPRRepairTarget; createdAt: string; turnId?: string; runId?: string; outcome?: string;
+}
+export interface SessionAcceptance { session: InteractiveSession; message?: SessionMessage; acceptanceId?: string; duplicate: boolean }
+export interface SessionPage { items: InteractiveSession[]; nextCursor?: string }
+export interface SessionMessagePage { items: SessionMessage[]; nextCursor?: number }
+
+export type { GaggleEventEnvelope, GaggleEventReceipt, GaggleEventDelivery } from "./eventTypes";
+export type { MetadataRevision, MetadataChangeRequest, MetadataPreview, MetadataProposalPR, MetadataProposalPhase, MetadataProposalObservation, MetadataProposalCommand } from "./workbenchProposalTypes";
+
+export type { MetadataObjectiveRequest, MetadataAliasRequest } from "./workbenchProposalTypes";
+
+export type { SuggestionSelection, SuggestionArtifact, SuggestionInventory, SuggestionEvidence, SuggestionEndpoint, BoundSuggestion, SuggestionCandidate, SuggestionBatch, SuggestionPreviewRequest, SuggestionPreview, SuggestionDecisionRequest, SuggestionReview } from "./workbenchSuggestionTypes";
+export type { PRRepairCommand, PRRepairObservation } from "./prRepairTypes";

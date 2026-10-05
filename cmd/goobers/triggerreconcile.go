@@ -7,8 +7,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/enginestartintent"
+	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/restartintent"
+	"github.com/goobers/goobers/internal/sessioning"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -39,6 +45,16 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 		if err != nil {
 			return false, err
 		}
+		var header struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(record.Payload, &header); err != nil {
+			return false, err
+		}
+		if header.Kind == startintent.Kind {
+			err := startintent.VerifyIdentity(identity, record)
+			return err == nil, err
+		}
 		var payload acceptedTriggerPayload
 		if err := json.Unmarshal(record.Payload, &payload); err != nil {
 			return false, err
@@ -51,7 +67,7 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 }
 
 func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
-	if s.observe == nil {
+	if s.observe == nil && s.observeChild == nil && s.events == nil && s.ordinary == nil && s.sessions == nil && s.restarts == nil {
 		return nil
 	}
 	records, err := s.queue.Uncertain(ctx, s.reconcileCursor, 100)
@@ -65,11 +81,7 @@ func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
 	var failures error
 	for _, record := range records {
 		s.reconcileCursor = record.ID
-		observed, err := s.observe(ctx, record)
-		if err == nil {
-			err = s.reconcileObservation(ctx, record, observed)
-		}
-		failures = errors.Join(failures, err)
+		failures = errors.Join(failures, s.reconcileAcceptedRecord(ctx, record))
 	}
 	return failures
 }
@@ -93,4 +105,69 @@ func (s *durableTriggerService) reconcileObservation(ctx context.Context, record
 		return nil
 	}
 	return err
+}
+
+// Route by the durable discriminant before consulting an ordinary observer.
+func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, record triggerqueue.Record) error {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return err
+	}
+	if header.Kind == enginestartintent.Kind {
+		return s.drainDirectEngine(ctx, record)
+	}
+	if header.Kind == restartintent.Kind {
+		if s.restarts == nil {
+			return nil
+		}
+		return s.restarts.Reconcile(ctx, record)
+	}
+	if header.Kind == startintent.Kind {
+		if s.ordinary == nil {
+			return nil
+		}
+		err := s.ordinary.Reconcile(ctx, record, s.bootUncertain[record.ID])
+		if err == nil || errors.Is(err, triggerqueue.ErrTransition) {
+			delete(s.bootUncertain, record.ID)
+			return nil
+		}
+		return err
+	}
+	if header.Kind == childworkflow.ChildStartKind {
+		return s.reconcileChildReceipt(ctx, record)
+	}
+	if header.Kind == sessioning.StartKind {
+		if s.sessions == nil {
+			return nil
+		}
+		err := s.sessions.Reconcile(ctx, record, s.bootUncertain[record.ID])
+		if err == nil {
+			delete(s.bootUncertain, record.ID)
+		}
+		return err
+	}
+	if header.Kind == eventing.StartKind {
+		if s.events == nil {
+			return nil
+		}
+		err := s.events.Reconcile(ctx, record, s.bootUncertain[record.ID])
+		if err == nil || errors.Is(err, triggerqueue.ErrTransition) {
+			delete(s.bootUncertain, record.ID)
+			return nil
+		}
+		return err
+	}
+	if header.Kind != "" {
+		return errors.New("unsupported accepted trigger envelope kind")
+	}
+	if s.observe == nil {
+		return nil
+	}
+	observed, err := s.observe(ctx, record)
+	if err != nil {
+		return err
+	}
+	return s.reconcileObservation(ctx, record, observed)
 }

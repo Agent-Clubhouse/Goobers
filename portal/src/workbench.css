@@ -1,0 +1,54 @@
+.workbench-panel { margin: 1.5rem 0; padding: 1.25rem; border: 1px solid var(--border-color, #9ca3af55); border-radius: .75rem; }
+.workbench-panel header, .workbench-actions { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.workbench-panel h2, .workbench-panel h3 { margin-top: 0; }
+.workbench-panel label { display: flex; flex-direction: column; gap: .35rem; }
+.workbench-panel select { font: inherit; color: inherit; background: var(--surface, transparent); border: 1px solid var(--border-color, #9ca3af88); border-radius: .35rem; padding: .55rem; max-width: 100%; }
+.workbench-layout { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(0, 2fr); gap: 1.5rem; margin-top: 1rem; }
+.workbench-layout > nav ul { list-style: none; padding: 0; margin: 0 0 1rem; }
+.workbench-layout > nav li { margin-bottom: .5rem; }
+.workbench-layout > nav li button { display: flex; flex-direction: column; gap: .3rem; width: 100%; text-align: left; padding: .7rem; overflow-wrap: anywhere; }
+.workbench-layout > nav button[aria-pressed="true"] { outline: 2px solid currentColor; }
+.workbench-panel button { cursor: pointer; }
+.workbench-panel p, .workbench-panel dd, .workbench-relations { overflow-wrap: anywhere; }
+.workbench-source-text { white-space: pre-wrap; max-height: 28rem; overflow: auto; padding: .5rem 0; }
+.workbench-detail dl > div { margin-bottom: .6rem; }
+.workbench-detail dd { margin-left: 0; }
+.workbench-detail dt { font-weight: 600; }
+.workbench-coverage { font-size: .875rem; }
+.workbench-objective { border-left: 3px solid currentColor; padding-left: .75rem; }
+.workbench-relations li { margin: .75rem 0; }
+.workbench-relations button, .workbench-relations a { display: block; margin-top: .4rem; }
+.workbench-detail aside { border: 1px solid var(--border-color, #9ca3af55); padding: 1rem; margin-top: 1rem; }
+@media (max-width: 760px) { .workbench-layout { grid-template-columns: 1fr; } }
+
+.workbench-document-text { font: inherit; overflow-wrap: anywhere; }
+
+.workbench-map { margin: 1rem 0 1.5rem; padding: 1rem 0; border-block: 1px solid var(--border-color, #9ca3af55); }
+.workbench-map-filter { display: flex !important; flex-direction: row !important; align-items: center; margin: .8rem 0; }
+.workbench-map-items { display: flex; gap: .5rem; flex-wrap: wrap; padding: 0; list-style: none; }
+.workbench-map-items button[aria-pressed="true"] { outline: 2px solid currentColor; }
+.workbench-map-diagram { overflow: auto; margin-top: 1rem; }
+.workbench-map-diagram svg { display: block; min-width: 40rem; width: 100%; max-height: 38rem; }
+.workbench-map-diagram line { stroke: currentColor; stroke-width: 1.2; opacity: .55; }
+.workbench-map-diagram rect { fill: var(--surface, #fbfaf7); stroke: currentColor; stroke-width: 1; }
+.workbench-map-diagram rect.selected { stroke-width: 3; }
+.workbench-map-diagram text { fill: currentColor; font-size: 14px; pointer-events: none; }
+.workbench-map-diagram g[role="button"] { cursor: pointer; }
+.workbench-map-diagram g[role="button"]:focus rect { stroke-width: 3; }
+.workbench-map-diagram p, .workbench-map-relations small { font-size: .8rem; }
+.workbench-map-relations li { margin: .8rem 0; }
+.workbench-map-relations small { display: block; margin-top: .25rem; }
+.workbench-editor { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.workbench-editor fieldset { display: grid; gap: .75rem; border: 0; padding: 0; min-width: 0; }
+.workbench-editor label { display: grid; gap: .4rem; font-weight: 600; }
+.workbench-editor textarea, .workbench-editor select, .workbench-editor input { width: 100%; box-sizing: border-box; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: .35rem; padding: .55rem; }
+.workbench-editor textarea { resize: vertical; }
+.workbench-editor fieldset button { justify-self: start; }
+.workbench-editor > button { margin: .5rem .5rem 0 0; }
+.workbench-command { padding: .75rem; margin-top: 1rem; border: 1px solid var(--line); border-radius: .4rem; }
+.workbench-command h5 { font-size: 1rem; margin: 0 0 .5rem; }
+.workbench-command code, .workbench-editor code { overflow-wrap: anywhere; }
+
+.workbench-command form { display: grid; gap: .5rem; }
+.workbench-command label { display: grid; gap: .4rem; }
+.workbench-command input { max-width: 100%; box-sizing: border-box; font: inherit; }

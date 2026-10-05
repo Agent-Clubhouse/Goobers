@@ -19,15 +19,27 @@ func reconstructBudgetStarts(events []journal.Event, runsDirs []string, workflow
 		workflow WorkflowIdentity
 		runID    string
 	}
+	childOwners := childBudgetOwners(events)
+	bindSessionBudgetOwners(childOwners, events)
 	seen := make(map[admission]struct{})
 	starts := make(map[WorkflowIdentity][]time.Time)
 	for _, event := range events {
 		if event.Type != journal.EventRunStarted {
 			continue
 		}
-		for _, identity := range resolveRunStartedIdentities(runsDirs, event, workflows) {
+		identities := resolveRunStartedIdentities(runsDirs, event, workflows)
+		budgetKey := event.RunID
+		if _, child := childOwners[event.Gaggle+"/"+event.RunID]; child {
+			attempt, charged := childAdmissionBudgetKey(event)
+			if !charged {
+				continue
+			} // Driver echoes are not additional charges.
+			identities = []WorkflowIdentity{{Gaggle: event.Gaggle, Workflow: event.Workflow}}
+			budgetKey = attempt
+		}
+		for _, identity := range identities {
 			if event.RunID != "" {
-				key := admission{workflow: identity, runID: event.RunID}
+				key := admission{workflow: identity, runID: budgetKey}
 				if _, exists := seen[key]; exists {
 					continue
 				}

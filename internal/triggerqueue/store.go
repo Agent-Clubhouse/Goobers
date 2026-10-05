@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childStorageSchema, eventSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, eventGroupSchema, eventRootSetSchema, childPublicationSchema, eventOutboxSchema, eventPublicationRetentionSchema, childRestartSchema, sessionSchema, sourceStartSchema, sessionInputSchema, childPublicationExecutionSchema, scheduleDemandSchema, workbenchCommandSchema, directEngineSchema, humanRestartSchema, needsHumanCommandSchema, workbenchProposalSchema, startControlSchema, sessionRepairTargetSchema, startControlOutcomeSchema, prRepairCommandSchema, workbenchSuggestionSchema, humanRestartRetrySchema, prRepairObservationSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -152,15 +152,14 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ?", now.Add(-ReplayRetention).UnixNano()); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='' AND sc.cancel_outcome='') AND NOT EXISTS(SELECT 1 FROM human_restart_plans h JOIN start_controls hc ON hc.acceptance_id=h.acceptance_id WHERE h.acceptance_id=triggers.id AND hc.disposition IN ('cancelled','expired'))", now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return Record{}, false, err
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM triggers").Scan(&count); err != nil {
+	if err = triggerSlotCapacity(ctx, tx, 1); err != nil {
 		return Record{}, false, err
 	}
-	if count >= MaxRecords {
-		return Record{}, false, ErrFull
+	if err := childByteCapacity(ctx, tx, len(payload)+len(actor)+len(key)); err != nil {
+		return Record{}, false, err
 	}
 	r = Record{ID: fmt.Sprintf("trigger-%x", randomID()), Key: key, Actor: actor, Payload: append([]byte(nil), payload...), State: Accepted, AcceptedAt: now.UTC()}
 	_, err = tx.ExecContext(ctx, "INSERT INTO triggers (id,key,actor,payload,state,accepted_ns) VALUES (?,?,?,?,?,?)", r.ID, r.Key, r.Actor, r.Payload, r.State, now.UnixNano())
@@ -193,29 +192,30 @@ func (s *Store) ForRun(ctx context.Context, runID string) (Record, error) {
 // Pending returns a bounded FIFO batch. Dispatching is deliberately excluded:
 // a process may have died after starting the run but before recording its ID.
 func (s *Store) Pending(ctx context.Context, limit int) ([]Record, error) {
-	if limit < 1 || limit > 100 {
-		return nil, errors.New("triggerqueue: batch limit must be 1..100")
-	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='accepted' ORDER BY accepted_ns,id LIMIT ?", limit)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var records []Record
-	for rows.Next() {
-		r, err := scanRecord(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, r)
-	}
-	return records, rows.Err()
+	return s.PendingAfter(ctx, PendingCursor{}, limit)
 }
 
 // BeginDispatch durably claims one request before any scheduler side effect.
 // Concurrent workers cannot both claim it, including across Store instances.
 func (s *Store) BeginDispatch(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state='dispatching' WHERE id=? AND state='accepted'", id)
+	// Compatibility for receipts without deadlines. A captured deadline requires
+	// the caller's explicit clock through BeginDispatchAt.
+	return s.beginDispatch(ctx, id, 0)
+}
+
+// BeginDispatchAt claims custody using the host's admission clock. A captured
+// deadline or cancellation is checked in the same atomic update as the claim.
+func (s *Store) BeginDispatchAt(ctx context.Context, id string, now time.Time) error {
+	if now.IsZero() {
+		return ErrTransition
+	}
+	return s.beginDispatch(ctx, id, now.UnixNano())
+}
+
+func (s *Store) beginDispatch(ctx context.Context, id string, now int64) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE triggers SET state='dispatching',reason='' WHERE id=? AND state='accepted'
+ AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND
+ (sc.cancel_ns IS NOT NULL OR (sc.deadline_ns IS NOT NULL AND (?=0 OR sc.deadline_ns<=?))))`, id, now, now)
 	return changed(result, err)
 }
 
@@ -279,7 +279,7 @@ func (s *Store) Uncertain(ctx context.Context, after string, limit int) ([]Recor
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: batch limit must be 1..100")
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='dispatching' AND id>? ORDER BY id LIMIT ?", after, limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='dispatching' AND id>? AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) ORDER BY id LIMIT ?", after, limit)
 	if err != nil {
 		return nil, err
 	}

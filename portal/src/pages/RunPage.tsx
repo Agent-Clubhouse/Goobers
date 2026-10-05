@@ -9,6 +9,8 @@ import type {
   WorkflowGraph,
 } from "../api/types";
 import { newestFirst } from "../chronology";
+import { RunInterventionPanel } from "../components/RunInterventionPanel";
+import { ChildWorkflowsPanel } from "../components/ChildWorkflowsPanel";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -149,6 +151,7 @@ export function RunPage({
         revealRun={revealRun}
         run={query.state.data.run}
         runId={runId}
+        standalone={standalone}
       />
     </>
   );
@@ -156,6 +159,7 @@ export function RunPage({
 
 function RunDetailWorkspace({
   client,
+  standalone,
   events,
   eventDetail,
   navigate,
@@ -167,6 +171,7 @@ function RunDetailWorkspace({
   runId,
 }: {
   client: DaemonClient;
+  standalone: boolean;
   events: RunEvent[];
   eventDetail?: boolean;
   navigate: Navigate;
@@ -589,6 +594,9 @@ function RunDetailWorkspace({
           </span>
         </div>
       )}
+
+      {!standalone && <RunInterventionPanel client={client} runId={runId} revision={events.length} />}
+      {!standalone && <ChildWorkflowsPanel key={runId} client={client} runId={runId} />}
 
       {run.escalation && (
         <EscalationPanel

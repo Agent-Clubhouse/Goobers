@@ -16,6 +16,943 @@
       "additionalProperties": false,
       "required": ["project", "backlog", "isolation"],
       "properties": {
+        "startQueue": {
+          "type": "object",
+          "description": "Pending deadlines captured from the accepted generation; attempted effects and generated child lifetime never expire here.",
+          "additionalProperties": false,
+          "properties": {
+            "pendingDeadlineSeconds": {"type": "integer", "minimum": 1, "maximum": 7776000, "description": "Unattempted ordinary, event, session and human continuation deadline in seconds; omission uses 604800 (seven days)."},
+            "scheduledDeadlineSeconds": {"type": "integer", "minimum": 1, "maximum": 7776000, "description": "Unattempted scheduled worker occurrence deadline in seconds; omission uses 3600 (one hour)."}
+          }
+        },
+        "workbench": {
+          "type": "object",
+          "description": "Source-owned backlog/objective workbench. Omission adds no reads or authority. Provider access requires explicit interactive policy.",
+          "additionalProperties": false,
+          "properties": {
+            "schemaVersion": {
+              "const": "sources/v1",
+              "description": "Version of this source configuration."
+            },
+            "sources": {
+              "type": "array",
+              "description": "Bounded sources from this gaggle backlog and configured project/additional repositories.",
+              "maxItems": 32,
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "description": "A configured source within this gaggle. No arbitrary URL, credential, branch or cross-gaggle target is accepted.",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Persistent source binding identity.",
+                    "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "description": "Existing backlog, literal Markdown files, or one relationship manifest.",
+                    "enum": [
+                      "backlog",
+                      "documents",
+                      "relationships"
+                    ]
+                  },
+                  "repository": {
+                    "type": "object",
+                    "description": "Qualified identity of an already configured gaggle code repository.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Supported code provider.",
+                        "enum": [
+                          "github",
+                          "ado"
+                        ]
+                      },
+                      "owner": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "GitHub owner or Azure DevOps organization.",
+                        "maxLength": 256
+                      },
+                      "project": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Azure DevOps project; forbidden for GitHub.",
+                        "maxLength": 256
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact repository name.",
+                        "maxLength": 256
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "owner",
+                      "name"
+                    ],
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "provider": {
+                              "const": "ado"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "project"
+                          ]
+                        },
+                        "else": {
+                          "not": {
+                            "required": [
+                              "project"
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "paths": {
+                    "type": "array",
+                    "description": "Literal repository-relative file paths, never globs or crawl roots.",
+                    "maxItems": 128,
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "description": "One source file path; scope and extension are checked before use."
+                    }
+                  },
+                  "objectives": {
+                    "type": "object",
+                    "description": "Explicit native objective selection. Any listed ID, type or label matches; no title inference.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "ids": {
+                        "type": "array",
+                        "description": "Stable provider object IDs within this backlog.",
+                        "maxItems": 128,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 512,
+                          "description": "One native object identity."
+                        }
+                      },
+                      "types": {
+                        "type": "array",
+                        "description": "Exact provider item types, such as ADO Epic or Feature.",
+                        "maxItems": 32,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256,
+                          "description": "One native type."
+                        }
+                      },
+                      "labels": {
+                        "type": "array",
+                        "description": "Exact provider labels or tags.",
+                        "maxItems": 32,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256,
+                          "description": "One label or tag."
+                        }
+                      }
+                    },
+                    "required": [],
+                    "anyOf": [
+                      {
+                        "required": [
+                          "ids"
+                        ],
+                        "properties": {
+                          "ids": {
+                            "minItems": 1,
+                            "description": "Requires at least one explicitly selected ids."
+                          }
+                        }
+                      },
+                      {
+                        "required": [
+                          "types"
+                        ],
+                        "properties": {
+                          "types": {
+                            "minItems": 1,
+                            "description": "Requires at least one explicitly selected types."
+                          }
+                        }
+                      },
+                      {
+                        "required": [
+                          "labels"
+                        ],
+                        "properties": {
+                          "labels": {
+                            "minItems": 1,
+                            "description": "Requires at least one explicitly selected labels."
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "writes": {
+                    "type": "object",
+                    "description": "Additional source allowlist. Current human policy, credentials and actual operation support remain required.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "fields": {
+                        "type": "array",
+                        "description": "Fields permitted for this source; omission is read-only.",
+                        "maxItems": 5,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "description": "Supported source field. Documents accept only title/description; manifests none.",
+                          "enum": [
+                            "title",
+                            "description",
+                            "state",
+                            "labels",
+                            "assignees"
+                          ]
+                        }
+                      },
+                      "metadata": {
+                        "type": "array",
+                        "description": "Source-owned identity operations allowed through reviewed PRs. Documents allow assign-objective; the owning relationship manifest allows aliases.",
+                        "maxItems": 2,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "description": "One explicitly permitted metadata operation, additionally restricted by source kind at validation.",
+                          "enum": ["assign-objective", "aliases"]
+                        }
+                      },
+                      "relationships": {
+                        "type": "array",
+                        "description": "Authored relationship kinds permitted for this source.",
+                        "maxItems": 6,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "description": "Canonical authored edge kind; run observations cannot be declared.",
+                          "enum": [
+                            "parent-of",
+                            "blocked-by",
+                            "contributes-to",
+                            "references",
+                            "milestone-member",
+                            "implemented-by"
+                          ]
+                        }
+                      }
+                    },
+                    "required": []
+                  }
+                },
+                "required": [
+                  "name",
+                  "kind"
+                ],
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "backlog"
+                        }
+                      }
+                    },
+                    "then": {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "repository"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "paths"
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "else": {
+                      "required": [
+                        "repository",
+                        "paths"
+                      ],
+                      "not": {
+                        "required": [
+                          "objectives"
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "relationships"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "paths": {
+                          "maxItems": 1
+                        },
+                        "writes": {
+                          "properties": {
+                            "fields": {
+                              "maxItems": 0
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "documents"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "writes": {
+                          "properties": {
+                            "fields": {
+                              "items": {
+                                "enum": [
+                                  "title",
+                                  "description"
+                                ]
+                              }
+                            },
+                            "relationships": {
+                              "items": {
+                                "enum": [
+                                  "contributes-to",
+                                  "references"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "relationshipManifest": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Declared relationships binding for new edges lacking faithful native or frontmatter representation; does not migrate existing ownership.",
+              "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "sources"
+          ]
+        },
+        "events": {
+          "type": "object",
+          "description": "Gaggle-local subscriptions and explicit workflow publication permissions.",
+          "additionalProperties": false,
+          "properties": {
+            "ingress": {
+              "type": "array",
+              "description": "Explicit external producer identities, sources and event type ceilings.",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "issuer",
+                  "subject",
+                  "source",
+                  "allowedTypes"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+                    "description": "Named authenticated ingress binding."
+                  },
+                  "issuer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": "Exact authenticated trust domain; internal goobers issuers are forbidden."
+                  },
+                  "subject": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Exact authenticated producer subject."
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "description": "Exact CloudEvents source URI reference."
+                  },
+                  "allowedTypes": {
+                    "type": "array",
+                    "description": "Literal event types; wildcards are not interpreted.",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  }
+                }
+              }
+            },
+            "publishers": {
+              "type": "array",
+              "description": "Explicit publication permissions for workflows in this gaggle.",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "description": "A workflow and its exact event type ceiling.",
+                "additionalProperties": false,
+                "required": [
+                  "workflow",
+                  "allowedTypes"
+                ],
+                "properties": {
+                  "workflow": {
+                    "type": "string",
+                    "description": "An existing workflow in this gaggle.",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "allowedTypes": {
+                    "type": "array",
+                    "description": "Literal event types; wildcards are not interpreted.",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  }
+                }
+              }
+            },
+            "subscriptions": {
+              "type": "array",
+              "description": "Consumers whose matching configuration is pinned at event acceptance.",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "description": "A consumer targeting an existing workflow within the same gaggle.",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Consumer identity unique in this gaggle.",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+                  },
+                  "workflow": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Name of an existing workflow in this gaggle."
+                  },
+                  "filter": {
+                    "type": "object",
+                    "description": "Require every all condition and at least one any condition when any is supplied.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "all": {
+                        "type": "array",
+                        "description": "Conditions that must all match.",
+                        "minItems": 1,
+                        "maxItems": 15,
+                        "items": {
+                          "type": "object",
+                          "description": "A literal comparison on one CloudEvents envelope attribute.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "attribute": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128,
+                              "description": "Envelope attribute to compare.",
+                              "enum": [
+                                "id",
+                                "source",
+                                "type",
+                                "subject"
+                              ]
+                            },
+                            "equals": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "Literal case-sensitive equality value."
+                            },
+                            "not": {
+                              "type": "boolean",
+                              "description": "Negate equality, including a missing optional attribute."
+                            }
+                          },
+                          "required": [
+                            "attribute",
+                            "equals"
+                          ]
+                        }
+                      },
+                      "any": {
+                        "type": "array",
+                        "description": "Alternatives of which at least one must match.",
+                        "minItems": 1,
+                        "maxItems": 15,
+                        "items": {
+                          "type": "object",
+                          "description": "A literal comparison on one CloudEvents envelope attribute.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "attribute": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128,
+                              "description": "Envelope attribute to compare.",
+                              "enum": [
+                                "id",
+                                "source",
+                                "type",
+                                "subject"
+                              ]
+                            },
+                            "equals": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "Literal case-sensitive equality value."
+                            },
+                            "not": {
+                              "type": "boolean",
+                              "description": "Negate equality, including a missing optional attribute."
+                            }
+                          },
+                          "required": [
+                            "attribute",
+                            "equals"
+                          ]
+                        }
+                      }
+                    },
+                    "anyOf": [
+                      {
+                        "required": [
+                          "all"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "any"
+                        ]
+                      }
+                    ]
+                  },
+                  "debounce": {
+                    "type": "object",
+                    "description": "Optional bounded grouping. Exactly one key source must be declared.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "keyAttribute": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Envelope attribute used for grouping; an absent value fails this delivery.",
+                        "enum": [
+                          "id",
+                          "source",
+                          "type",
+                          "subject"
+                        ]
+                      },
+                      "constantKey": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Explicit constant key used for all matching events."
+                      },
+                      "window": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 32,
+                        "description": "Trailing quiet period from 100ms to 5m; default 5s."
+                      },
+                      "maxWait": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 32,
+                        "description": "Maximum group age, at least window and at most 1h; default 30s."
+                      },
+                      "maxEvents": {
+                        "type": "integer",
+                        "description": "Close the group at this count; default 100.",
+                        "minimum": 1,
+                        "maximum": 1000
+                      },
+                      "inputMode": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Payload selection; defaults to all while retaining every membership.",
+                        "enum": [
+                          "all",
+                          "latest"
+                        ]
+                      }
+                    },
+                    "oneOf": [
+                      {
+                        "required": [
+                          "keyAttribute"
+                        ],
+                        "not": {
+                          "required": [
+                            "constantKey"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "constantKey"
+                        ],
+                        "not": {
+                          "required": [
+                            "keyAttribute"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "workflow",
+                  "filter"
+                ]
+              }
+            }
+          }
+        },
+        "interactiveAccess": {
+          "type": "object",
+          "description": "Explicit per-gaggle human operations policy. Omission enables no new provider reads, sessions or writes; existing monitoring is unchanged.",
+          "additionalProperties": false,
+          "properties": {
+            "humans": {
+              "type": "object",
+              "description": "Instance roles are necessary and explicit gaggle grants are also required, including for administrators.",
+              "additionalProperties": false,
+              "properties": {
+                "viewers": {
+                  "type": "array",
+                  "description": "Human viewers of this gaggle.",
+                  "maxItems": 128,
+                  "items": {
+                    "type": "object",
+                    "description": "Matches an authenticated issuer plus one stable subject or verified group.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "issuer": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact authenticated trust domain, normally the OIDC issuer URL.",
+                        "maxLength": 2048
+                      },
+                      "subject": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact stable authenticated subject; display names are not identifiers.",
+                        "maxLength": 512
+                      },
+                      "group": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact verified group identifier from the configured OIDC groups claim.",
+                        "maxLength": 512
+                      }
+                    },
+                    "required": [
+                      "issuer"
+                    ],
+                    "oneOf": [
+                      {
+                        "required": [
+                          "subject"
+                        ],
+                        "not": {
+                          "required": [
+                            "group"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "group"
+                        ],
+                        "not": {
+                          "required": [
+                            "subject"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "operators": {
+                  "type": "array",
+                  "description": "Human operators; also granted gaggle visibility.",
+                  "maxItems": 128,
+                  "items": {
+                    "type": "object",
+                    "description": "Matches an authenticated issuer plus one stable subject or verified group.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "issuer": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact authenticated trust domain, normally the OIDC issuer URL.",
+                        "maxLength": 2048
+                      },
+                      "subject": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact stable authenticated subject; display names are not identifiers.",
+                        "maxLength": 512
+                      },
+                      "group": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact verified group identifier from the configured OIDC groups claim.",
+                        "maxLength": 512
+                      }
+                    },
+                    "required": [
+                      "issuer"
+                    ],
+                    "oneOf": [
+                      {
+                        "required": [
+                          "subject"
+                        ],
+                        "not": {
+                          "required": [
+                            "group"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "group"
+                        ],
+                        "not": {
+                          "required": [
+                            "subject"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "actions": {
+              "type": "array",
+              "description": "Closed operation allowlist; implementation support is checked separately.",
+              "maxItems": 11,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Allowed human operation.",
+                "enum": [
+                  "session.create",
+                  "session.message",
+                  "backlog.read",
+                  "backlog.edit",
+                  "backlog.resolve",
+                  "repository.read",
+                  "run.intervene",
+                  "run.restartStage",
+                  "pr.repair",
+                  "source.proposeChange",
+                  "queue.cancel"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "credentials": {
+              "type": "object",
+              "description": "Explicit named sources from instance.interactiveCredentials, with no automation or cross-target fallback.",
+              "additionalProperties": false,
+              "properties": {
+                "backlog": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Named credential bound to the configured singleton backlog.",
+                  "maxLength": 128
+                },
+                "repositories": {
+                  "type": "array",
+                  "description": "Explicit credentials for configured project/additional repositories.",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "object",
+                    "description": "One exact repository binding.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "repository": {
+                        "type": "object",
+                        "description": "Qualified identity of an already configured gaggle code repository.",
+                        "additionalProperties": false,
+                        "properties": {
+                          "provider": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Supported code provider.",
+                            "enum": [
+                              "github",
+                              "ado"
+                            ]
+                          },
+                          "owner": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "GitHub owner or Azure DevOps organization.",
+                            "maxLength": 256
+                          },
+                          "project": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Azure DevOps project; forbidden for GitHub.",
+                            "maxLength": 256
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Exact repository name.",
+                            "maxLength": 256
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "owner",
+                          "name"
+                        ],
+                        "allOf": [
+                          {
+                            "if": {
+                              "properties": {
+                                "provider": {
+                                  "const": "ado"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "project"
+                              ]
+                            },
+                            "else": {
+                              "not": {
+                                "required": [
+                                  "project"
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "credentialRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Named instance interactive credential.",
+                        "maxLength": 128
+                      }
+                    },
+                    "required": [
+                      "repository",
+                      "credentialRef"
+                    ]
+                  }
+                }
+              }
+            },
+            "sourceWrites": {
+              "type": "object",
+              "description": "Repository edits always require pull requests. Omission enforces the same rule.",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Only pull-request publication is supported.",
+                  "enum": [
+                    "pull-request"
+                  ],
+                  "default": "pull-request"
+                }
+              },
+              "required": [
+                "mode"
+              ]
+            }
+          },
+          "required": [
+            "humans"
+          ]
+        },
         "displayName": { "type": "string", "description": "Human-facing gaggle name shown in the portal." },
         "cost": {
           "type": "object",

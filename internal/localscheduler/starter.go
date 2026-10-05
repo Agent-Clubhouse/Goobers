@@ -4,6 +4,7 @@ import (
 	"context"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -54,6 +55,8 @@ type StartRequest struct {
 	// Item is the originating backlog item for a claimed unit of work. Nil for
 	// a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
+	// EventInputs is supplied only by the host's pinned event starter.
+	EventInputs *eventing.ExecutionInputs
 }
 
 type gooberDigestStarter struct {

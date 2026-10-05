@@ -146,7 +146,7 @@ func (s *Server) handle(req rpcRequest, stderr io.Writer) (rpcResponse, bool) {
 	case "notifications/initialized", "notifications/cancelled":
 		return rpcResponse{}, false
 	case "tools/list":
-		return s.reply(req, map[string]interface{}{"tools": toolDefs()}, nil), !isNotification
+		return s.reply(req, map[string]interface{}{"tools": s.toolDefs()}, nil), !isNotification
 	case "tools/call":
 		result, err := s.callTool(req.Params)
 		if err != nil {
@@ -319,6 +319,12 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 	var params toolCallParams
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, fmt.Errorf("invalid tools/call params: %w", err)
+	}
+	if isSessionOperationTool(params.Name) {
+		return s.callSessionOperation(params.Name, params.Arguments)
+	}
+	if isChildWorkflowTool(params.Name) {
+		return s.callChildWorkflowTool(params.Name, params.Arguments)
 	}
 	switch params.Name {
 	case "get_run_info":

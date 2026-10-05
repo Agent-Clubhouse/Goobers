@@ -574,6 +574,12 @@ func continuationEligibilityPolicyFor(root string, source journal.RunIdentity) (
 	if definition == nil {
 		return nil, fmt.Errorf("workflow %q for gaggle %q is not configured", source.Workflow, source.Gaggle)
 	}
+	return continuationEligibilityPolicyFromDefinitions(cfg, gaggle, definition)
+}
+
+// Uses the caller's applied snapshot; interactive admission must not reread a
+// possibly newer configuration from disk while holding the policy lease.
+func continuationEligibilityPolicyFromDefinitions(cfg *instance.Config, gaggle *apiv1.Gaggle, definition *apiv1.Workflow) (*continuationEligibilityPolicy, error) {
 	for _, trigger := range definition.Spec.Triggers {
 		if trigger.Type != apiv1.TriggerBacklogItem {
 			continue

@@ -253,6 +253,10 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, string, string) {
 	var available bool
 	switch id {
+	case apicontract.RouteInteractiveRun, apicontract.RouteInteractiveRunCommand:
+		available = config.interactiveRuns != nil
+	case apicontract.RouteGaggleInteractiveCapabilities:
+		available = config.interactivePermissions != nil
 	case apicontract.RouteInstanceReadiness:
 		available = config.instanceReadiness != nil
 	case apicontract.RouteConfigDigest:
@@ -289,6 +293,18 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.runJournal != nil
 	case apicontract.RouteCredentialResolve:
 		available = config.credentials != nil
+	case apicontract.RouteSessionPRRepairInspect, apicontract.RouteSessionPRRepairRead, apicontract.RouteSessionPRRepair, apicontract.RouteSessionPRRepairReceipt:
+		_, available = config.sessionOperations.(SessionPRRepairOperations)
+	case apicontract.RouteSessionBacklogEditCapabilities, apicontract.RouteSessionBacklogEdit, apicontract.RouteSessionBacklogReceipt:
+		_, available = config.sessionOperations.(SessionWriteOperations)
+	case apicontract.RouteSessionBacklogRead, apicontract.RouteSessionBacklogList:
+		available = config.sessionOperations != nil
+	case apicontract.RouteChildWorkflowValidate, apicontract.RouteChildWorkflowStart, apicontract.RouteChildWorkflowStatus:
+		available = config.childWorkflows != nil
+	case apicontract.RouteChildWorkflowResolve:
+		_, available = config.childWorkflows.(ChildWorkflowResolutionService)
+	case apicontract.RouteChildWorkflowAccessAcquire, apicontract.RouteChildWorkflowAccessRevoke:
+		_, available = config.credentials.(ChildWorkflowAccessService)
 	case apicontract.RouteCredentialRefresh:
 		_, available = config.credentials.(CredentialRefreshService)
 	case apicontract.RouteBlobGet, apicontract.RouteBlobPut:

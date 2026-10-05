@@ -26,6 +26,7 @@ Commands:
   validate          Validate an instance or configuration source.
   version           Show build version information.
   workflow show     Show a workflow as a text DAG.
+  workflow validate-child validate a child proposal against its configured parent
 
 Defaults:
   Path arguments use the current directory when omitted.
@@ -73,6 +74,7 @@ Commands:
   validate          Validate an instance or configuration source.
   version           Show build version information.
   workflow show     Show a workflow as a text DAG.
+  workflow validate-child validate a child proposal against its configured parent
 
 Defaults:
   Path arguments use the current directory when omitted.
@@ -117,6 +119,7 @@ Core commands:
   validate          Validate an instance or configuration source.
   version           Show build version information.
   workflow show     Show a workflow as a text DAG.
+  workflow validate-child validate a child proposal against its configured parent
 
 Advanced operator commands:
   agent-kit         install, inspect, or update the release-matched agent toolkit
@@ -2613,8 +2616,8 @@ and acceptance (default 30s; must be positive). A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal. For local file delegation,
---no-wait returns after dispatch, or after workflow/PR validation succeeds
-and the live daemon durably accepts a capacity-queued request.
+--no-wait returns after the live daemon durably accepts the request.
+Current capacity and targeted PR validation are checked before dispatch.
 
 ### run abort
 Usage: goobers run abort [--api=<url>] <run-id> [path]
@@ -2961,7 +2964,7 @@ does not authorize this command. Exit codes: 0 = assigned, 1 = business or
 provider error, 2 = usage/IO error.
 
 ### signal
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id key] <name> [path]
 
 Fire an external signal by name, dispatching every workflow with a
 type=signal trigger subscribed to it, through the same scheduler (run
@@ -2969,6 +2972,8 @@ conditions, instance journal, single-instance lock) a live `goobers up`
 daemon uses (default path "."). A signal may match zero, one, or many
 workflows; waits for every dispatched run to reach a terminal state or
 pause before returning (same blocking UX as `goobers run`).
+Source acceptance is durable. Reuse --request-id after an uncertain reply.
+Starts held by capacity remain queued for goobers up after this command exits.
 Exit codes after waiting: 0 = every admitted run completed (also used when
 none were admitted), 1 = any run failed/aborted or a business error, 2 =
 usage/IO error, 3 = any run escalated. Escalation takes precedence for
@@ -3467,9 +3472,9 @@ Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
 3 = drain timeout expired with in-flight work abandoned.
 
 ### workflow
-Usage: goobers workflow show [flags] <name> [path]
+Usage: goobers workflow <show | validate-child> [flags]
 
-Show the named workflow as a text DAG or Graphviz DOT (default path ".").
+Show a workflow DAG or validate a generated child proposal against its configured parent.
 
 Workflow
 
@@ -3481,6 +3486,21 @@ Usage: goobers workflow show [--dot] <name> [path]
 Load the named workflow from the instance config and show its stages,
 kinds, and transition targets as a text DAG or Graphviz DOT
 (default path ".").
+
+### workflow validate-child
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+
+Validate one generated child Workflow against an opted-in parent stage in
+the instance's current active config/ tree (default path "."). The parent
+supplies policy; child grants are also bounded by the parent's stage capabilities.
+The proposal must pin DSL 3.1 and declare only a plain manual trigger.
+
+This is advisory current-config validation, not durable run admission. It
+does not start or queue work, resolve credentials, invoke a model, or refresh
+workflowSource. --backend selects the validation target (default runner).
+Config digests identify declarative validation inputs, not an execution archive.
+--json emits child-workflow-validation/v1 diagnostics and digests.
+Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 
 ### workspace
 Usage: goobers workspace reset <repo> [path]

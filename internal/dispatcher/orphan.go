@@ -147,7 +147,7 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 			// loop, and `deleted` reflects every pod actually removed. Periodic
 			// reconciliation or a replacement worker retries it within the same
 			// durable instance scope.
-			if err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt}); err != nil {
+			if err := d.disposePod(ctx, pod, orphanDisposalAttempt(pod, attempt)); err != nil {
 				errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
 				continue
 			}
@@ -223,4 +223,17 @@ func sweepSelector(instanceID string) map[string]string {
 		runnercap.LabelRole: runnercap.RoleStage,
 		LabelInstance:       instanceID,
 	}
+}
+
+// Physical pod ordinals remain authoritative for surrender after a restart.
+// Malformed isolated identity returns an unusable digest and refuses disposal.
+func orphanDisposalAttempt(pod *corev1.Pod, identity PodAttempt) Attempt {
+	a := Attempt{RunID: identity.RunID, Stage: identity.Stage, Number: identity.Attempt, ChildExecutionDigest: isolatedDigestFromPod(pod)}
+	if value := pod.Labels[LabelPodAttempt]; value != "" {
+		a.PodAttempt, _ = strconv.Atoi(value)
+		if a.PodAttempt < 1 && a.ChildExecutionDigest != "" {
+			a.ChildExecutionDigest = "invalid"
+		}
+	}
+	return a
 }

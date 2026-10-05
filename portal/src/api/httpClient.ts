@@ -1,3 +1,12 @@
+import type { SuggestionSelection, SuggestionInventory, SuggestionBatch, SuggestionPreviewRequest, SuggestionPreview, SuggestionDecisionRequest, SuggestionReview } from "./workbenchSuggestionTypes";
+import type { PRRepairCommand } from "./prRepairTypes";
+import type { MetadataChangeRequest, MetadataPreview, MetadataProposalCommand } from "./workbenchProposalTypes";
+import { readMetadataResponse } from "./workbenchProposalTransport";
+import type { StartQueuePage, StartQueueItem, StartQueueCancelInput } from "./startQueueTypes";
+import type { WorkbenchGraph } from "./workbenchGraphTypes";
+import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
+import type { BacklogWriteCapabilities, BacklogPatchInput, BacklogEditCommand } from "./workbenchWriteTypes";
+import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
 import {
   DaemonApiError,
   DaemonAuthError,
@@ -26,6 +35,8 @@ import type {
   ArtifactContent,
   AttemptList,
   DaemonClient,
+  InteractiveCapabilities, InteractiveSession, SessionPage, SessionMessagePage, SessionCreateRequest, SessionMessageRequest, SessionCloseRequest, SessionAcceptance,
+  InteractiveRunView, InteractiveRunCommand, InteractiveRunCommandResult,
   DaemonEventStream,
   DaemonUpdateEvent,
   EventList,
@@ -500,6 +511,165 @@ export class HttpDaemonClient implements DaemonClient {
     ).then(normalizeLegacyWorkItemCost);
   }
 
+  listSuggestionArtifacts(gaggle: string, run: string, after?: number, options?: RequestOptions): Promise<SuggestionInventory> {
+    return this.withResponse(clientRoutes.workbenchSuggestionArtifacts, after === undefined ? undefined : { after }, options, "application/json", (response) => readMetadataResponse<SuggestionInventory>(response, 1 << 20), { gaggle, run });
+  }
+  loadSuggestions(gaggle: string, selection: SuggestionSelection, options?: RequestOptions): Promise<SuggestionBatch> {
+    return this.withResponse(clientRoutes.workbenchSuggestionLoad, undefined, options, "application/json", (response) => readMetadataResponse<SuggestionBatch>(response, 1 << 20), { gaggle, run: selection.runId, sequence: String(selection.sequence) });
+  }
+  previewSuggestion(gaggle: string, input: SuggestionPreviewRequest, options?: RequestOptions): Promise<SuggestionPreview> {
+    return this.suggestionRequest(clientRoutes.workbenchSuggestionPreview, gaggle, input, (4 << 20) + 4096, options);
+  }
+  decideSuggestion(gaggle: string, input: SuggestionDecisionRequest, options?: RequestOptions): Promise<SuggestionReview> {
+    return this.suggestionRequest(clientRoutes.workbenchSuggestionDecide, gaggle, input, 1 << 20, options);
+  }
+  getSuggestionReview(gaggle: string, review: string, options?: RequestOptions): Promise<SuggestionReview> {
+    return this.withResponse(clientRoutes.workbenchSuggestionReview, undefined, options, "application/json", (response) => readMetadataResponse<SuggestionReview>(response, 1 << 20), { gaggle, review });
+  }
+  private suggestionRequest<T>(route: ApiRoute, gaggle: string, input: SuggestionPreviewRequest | SuggestionDecisionRequest, limit: number, options?: RequestOptions): Promise<T> {
+    const body = JSON.stringify(input);
+    if (new TextEncoder().encode(body).byteLength > 16384) throw new Error("The suggestion request exceeds its byte bound.");
+    return this.withResponse(route, undefined, options, "application/json", (response) => readMetadataResponse<T>(response, limit), { gaggle }, { body, headers: { "Content-Type": "application/json" } });
+  }
+
+  previewMetadataChange(gaggle: string, source: string, input: MetadataChangeRequest, options?: RequestOptions): Promise<MetadataPreview> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalPreview, { gaggle, source }, input, 4 << 20, undefined, options);
+  }
+  submitMetadataProposal(gaggle: string, source: string, key: string, input: MetadataChangeRequest, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalSubmit, { gaggle, source }, input, 128 << 10, key, options);
+  }
+  getMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.withResponse(clientRoutes.workbenchProposal, undefined, options, "application/json", (response) => readMetadataResponse<MetadataProposalCommand>(response, 128 << 10), { gaggle, source, command });
+  }
+  checkMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalCheck, { gaggle, source, command }, {}, 128 << 10, undefined, options);
+  }
+  continueMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<MetadataProposalCommand> {
+    return this.metadataProposalRequest(clientRoutes.workbenchProposalContinue, { gaggle, source, command }, {}, 128 << 10, undefined, options);
+  }
+  private async metadataProposalRequest<T>(route: ApiRoute, path: PathParameters, input: MetadataChangeRequest | Record<string, never>, limit: number, key?: string, options?: RequestOptions): Promise<T> {
+    const body = JSON.stringify(input);
+    if (new TextEncoder().encode(body).byteLength > (2 << 20)) throw new Error("The encoded source edit exceeds the two-MiB request bound.");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (key !== undefined) headers["Idempotency-Key"] = key;
+    return this.withResponse(route, undefined, options, "application/json", (response) => readMetadataResponse<T>(response, limit), path, { body, headers });
+  }
+
+  getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph> {
+    return this.getJSON(clientRoutes.workbenchGraph, undefined, options, { gaggle });
+  }
+
+  getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities> {
+    return this.getJSON(clientRoutes.workbenchWriteCapabilities, undefined, options, { gaggle, source });
+  }
+
+  patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand> {
+    return this.withResponse(clientRoutes.workbenchPatch, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as BacklogEditCommand; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { gaggle, source, item }, { body: JSON.stringify(input), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
+  }
+
+  getWorkbenchCommand(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<BacklogEditCommand> {
+    return this.getJSON(clientRoutes.workbenchCommand, undefined, options, { gaggle, source, command });
+  }
+
+  getPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand> {
+    return this.withResponse(clientRoutes.prRepairCommand, undefined, options, "application/json", (response) => readMetadataResponse<PRRepairCommand>(response, 128 << 10), { gaggle, command });
+  }
+  checkPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand> {
+    return this.withResponse(clientRoutes.prRepairCheck, undefined, options, "application/json", (response) => readMetadataResponse<PRRepairCommand>(response, 128 << 10), { gaggle, command }, { body: "{}", headers: { "Content-Type": "application/json" } });
+  }
+  inspectPullRequest(gaggle: string, source: string, pullRequest: string, options?: RequestOptions): Promise<import("./types").SessionPRRepairInspection> {
+    return this.getJSON(clientRoutes.workbenchPRSelection, undefined, options, { gaggle, source, pullRequest });
+  }
+
+  listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage> {
+    return this.getJSON(clientRoutes.workbenchSources, undefined, options, { gaggle });
+  }
+
+  getStartQueue(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<StartQueuePage> {
+    return this.getJSON(clientRoutes.startQueue, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle });
+  }
+  getStartQueueItem(gaggle: string, acceptance: string, options?: RequestOptions): Promise<StartQueueItem> {
+    return this.getJSON(clientRoutes.startQueueItem, undefined, options, { gaggle, acceptance });
+  }
+  cancelQueuedStart(gaggle: string, acceptance: string, input: StartQueueCancelInput, options?: RequestOptions): Promise<StartQueueItem> {
+    return this.withResponse(clientRoutes.startQueueCancel, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as StartQueueItem; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { gaggle, acceptance }, { body: JSON.stringify(input), headers: { "Content-Type": "application/json" } });
+  }
+
+  getWorkbenchDocuments(gaggle: string, source: string, request?: WorkbenchDocumentPageRequest, options?: RequestOptions): Promise<WorkbenchDocumentPage> {
+    return this.getJSON(clientRoutes.workbenchDocuments, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle, source });
+  }
+
+  getWorkbenchItems(gaggle: string, source: string, request?: BacklogPageRequest, options?: RequestOptions): Promise<BacklogPage> {
+    return this.getJSON(clientRoutes.workbenchItems, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle, source });
+  }
+
+  getWorkbenchItem(gaggle: string, source: string, request: BacklogItemRequest, options?: RequestOptions): Promise<BacklogItem> {
+    return this.getJSON(clientRoutes.workbenchItem, { expectedSourceId: request.expectedSourceId }, options, { gaggle, source, item: request.id });
+  }
+
+  getInteractiveCapabilities(gaggle: string, options?: RequestOptions): Promise<InteractiveCapabilities> {
+    return this.getJSON(clientRoutes.gaggleInteractiveCapabilities, undefined, options, { gaggle });
+  }
+
+  listSessions(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<SessionPage> {
+    return this.getJSON(clientRoutes.sessionList, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle });
+  }
+
+  getSession(gaggle: string, session: string, options?: RequestOptions): Promise<InteractiveSession> {
+    return this.getJSON(clientRoutes.sessionGet, undefined, options, { gaggle, session });
+  }
+
+  getSessionMessages(gaggle: string, session: string, after?: number, options?: RequestOptions): Promise<SessionMessagePage> {
+    return this.getJSON(clientRoutes.sessionMessages, after === undefined ? undefined : { after }, options, { gaggle, session });
+  }
+
+  createSession(gaggle: string, key: string, input: SessionCreateRequest, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.sessionCommand(clientRoutes.sessionCreate, { gaggle }, key, input, options);
+  }
+
+  sendSessionMessage(gaggle: string, session: string, key: string, input: SessionMessageRequest, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.sessionCommand(clientRoutes.sessionMessage, { gaggle, session }, key, input, options);
+  }
+
+  closeSession(gaggle: string, session: string, key: string, input: SessionCloseRequest, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.sessionCommand(clientRoutes.sessionClose, { gaggle, session }, key, input, options);
+  }
+
+  private sessionCommand(route: ApiRoute, path: PathParameters, key: string, input: unknown, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.withResponse(route, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as SessionAcceptance; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, path, { body: JSON.stringify(input), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
+  }
+
+  checkChildPublication(runId: string, key: string, command: import("./types").ChildPublicationCheckRequest, options?: RequestOptions): Promise<import("./types").ChildPublicationCheckResult> {
+    return this.withResponse(clientRoutes.childPublicationCheck, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as import("./types").ChildPublicationCheckResult; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { run: runId }, { body: JSON.stringify(command), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
+  }
+
+  getChildWorkflows(runId: string, after?: string, options?: RequestOptions): Promise<import("./types").ChildWorkflowPage> {
+    return this.getJSON(clientRoutes.childWorkflowMonitor, after ? { after } : undefined, options, { run: runId });
+  }
+
+  getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView> {
+    return this.getJSON(clientRoutes.interactiveRun, undefined, options, { run: runId });
+  }
+
+  commandInteractiveRun(runId: string, key: string, command: InteractiveRunCommand, options?: RequestOptions): Promise<InteractiveRunCommandResult> {
+    return this.withResponse(clientRoutes.interactiveRunCommand, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as InteractiveRunCommandResult; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { run: runId }, { body: JSON.stringify(command), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
+  }
+
   private async getJSON<T>(
     route: ApiRoute,
     query?: Record<string, QueryValue>,
@@ -625,6 +795,7 @@ export class HttpDaemonClient implements DaemonClient {
     accept: string,
     read: (response: Response) => Promise<T>,
     pathParameters?: PathParameters,
+    mutation?: { body: string; headers: Record<string, string> },
   ): Promise<T> {
     if (options?.signal?.aborted) {
       throw new RequestCancelledError();
@@ -646,7 +817,7 @@ export class HttpDaemonClient implements DaemonClient {
     let responseStatus: number | undefined;
 
     try {
-      return await this.requests.run(requestUrl, controller.signal, async () => {
+      const attempt = async () => {
         timer = globalThis.setTimeout(() => {
           abortKind = "timeout";
           controller.abort();
@@ -654,7 +825,8 @@ export class HttpDaemonClient implements DaemonClient {
         try {
           const next = await this.fetch(requestUrl, {
             method: route.method,
-            headers: { Accept: accept },
+            headers: { Accept: accept, ...mutation?.headers },
+            body: mutation?.body,
             signal: controller.signal,
           });
           responseStatus = next.status;
@@ -668,7 +840,9 @@ export class HttpDaemonClient implements DaemonClient {
             timer = undefined;
           }
         }
-      });
+      };
+      // Mutation retries belong to the operator and must retain the same key.
+      return await (mutation ? attempt() : this.requests.run(requestUrl, controller.signal, attempt));
     } catch (error) {
       if (abortKind === "cancelled" || options?.signal?.aborted) {
         throw new RequestCancelledError({ cause: error });

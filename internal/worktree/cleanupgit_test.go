@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 // buildHangingGit compiles a trivial Go program that sleeps far longer than
@@ -67,6 +69,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+ "github.com/goobers/goobers/internal/invoke"
 )
 
 func main() {
@@ -348,5 +352,18 @@ func TestRunCleanupGitReportsRealGitFailures(t *testing.T) {
 	var gitErr *gitCommandError
 	if !errors.As(err, &gitErr) {
 		t.Fatalf("runCleanupGit error = %v (%T), want *gitCommandError", err, err)
+	}
+}
+
+func TestCleanupWorktreeListAcknowledgesJoinedIntrinsicQuery(t *testing.T) {
+	dir := t.TempDir()
+	runTestGit(t, dir, "init", "-b", "main")
+	ctx, proof := invoke.WithWorkspaceQuiescence(t.Context())
+	output, err := runCleanupGitOutput(ctx, dir, "worktree list", "worktree", "list", "--porcelain")
+	if err != nil || !strings.Contains(output, "worktree ") {
+		t.Fatal(output, err)
+	}
+	if err := proof.Verify(); err != nil {
+		t.Fatal("joined intrinsic registration read was treated as an unknown writer", err)
 	}
 }

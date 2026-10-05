@@ -124,12 +124,18 @@ func cleanDaemonDowntime(events []journal.Event) []daemonDowntime {
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	resolveGeneration executionGenerationResolver
-	mu                sync.RWMutex
-	current           map[string]*runner.Runner
-	owners            map[string]trackedRun
-	nextGeneration    uint64
-	hardStopping      bool
+	childCustody                 map[string]chan struct{}
+	prRepairAdmission            chan struct{}
+	reconcileContained           func(context.Context, journal.RunIdentity) error
+	resolveGeneration            executionGenerationResolver
+	resolveChildGeneration       executionGenerationResolver
+	resolveEventGeneration       executionGenerationResolver
+	resolveInteractiveGeneration executionGenerationResolver
+	mu                           sync.RWMutex
+	current                      map[string]*runner.Runner
+	owners                       map[string]trackedRun
+	nextGeneration               uint64
+	hardStopping                 bool
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {
@@ -171,7 +177,9 @@ func (r *daemonRunnerRegistry) trackRunLease(runID, workflow string, owner *runn
 	if r == nil || owner == nil {
 		return func() {}, false
 	}
-	r.mu.Lock()
+	if !r.lockRunTracking(runID, requireCompatible) {
+		return func() {}, false
+	}
 	if r.owners == nil {
 		r.owners = make(map[string]trackedRun)
 	}
@@ -419,14 +427,14 @@ func sweepStalledRuns(
 		if phase != journal.PhaseRunning {
 			continue
 		}
-		durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
+		events, elapsed, elapsedErr := stalledExecutionClock(reader, identity.StartedAt, now)
+		if elapsedErr != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("read run %q execution clock: %w", identity.RunID, elapsedErr))
+			continue
+		}
+		durationExceeded := runMaxDuration > 0 && elapsed > runMaxDuration
 		stallWindow := runTimeout
 		if !durationExceeded {
-			events, eventsErr := reader.Events()
-			if eventsErr != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, eventsErr))
-				continue
-			}
 			if len(events) == 0 {
 				sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
 				continue
@@ -438,7 +446,7 @@ func sweepStalledRuns(
 			// retried emit or a pod-executed gate's own events can follow
 			// gate.paused. Testing only the last event escalated a run that
 			// was still waiting for a human. See journal.ParkedAtGate.
-			if journal.ParkedAtGate(events) {
+			if journal.ParkedAtGate(events) || runner.ParkedOnChild(events) {
 				continue
 			}
 			lastActivity := events[len(events)-1].Time
@@ -550,4 +558,14 @@ func sweepStalledRuns(
 		}
 	}
 	return boundedagg.Join(sweepErrs...)
+}
+
+// Read once for both the active execution clock and the stall/parking checks.
+func stalledExecutionClock(reader *journal.Reader, startedAt, now time.Time) ([]journal.Event, time.Duration, error) {
+	events, err := reader.Events()
+	if err != nil {
+		return nil, 0, err
+	}
+	elapsed, err := runner.RunExecutionElapsed(events, startedAt, now)
+	return events, elapsed, err
 }

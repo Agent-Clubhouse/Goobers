@@ -13,12 +13,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/apicontract/basewire"
+	"github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 )
 
 // Versioned V1 route paths.
 const (
 	// V1Prefix is the versioned root for daemon API routes.
-	V1Prefix = "/api/v1"
+	V1Prefix = basewire.V1Prefix
 
 	// DiscoveryPath is the version-independent bootstrap endpoint a remote
 	// client uses before it knows which API versions this daemon supports.
@@ -51,7 +54,7 @@ const (
 	RunEventsPath                = V1Prefix + "/runs/{run}/events"
 	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
 	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
-	RunRecoveryPath              = V1Prefix + "/runs/{run}/recovery"
+	RunRecoveryPath              = basewire.RunRecoveryPath
 	RunTranscriptPath            = V1Prefix + "/runs/{run}/transcripts/{seq}"
 	TelemetryCostsPath           = V1Prefix + "/telemetry/costs"
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
@@ -260,6 +263,29 @@ const (
 	// The route stamps request identity and the authenticated principal; body
 	// fields are data only and cannot carry execution authority.
 	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
+
+	// GaggleInteractiveCapabilitiesPath reports explicitly configured human authority.
+	// GaggleSessionsPath lists and creates shared human conversations.
+	GaggleSessionsPath  = GagglesPath + "/{gaggle}/sessions"
+	SessionPath         = GaggleSessionsPath + "/{session}"
+	SessionMessagesPath = SessionPath + "/messages"
+	SessionClosePath    = SessionPath + "/close"
+	// InteractiveRunPath inspects the explicitly authorized human surface.
+	InteractiveRunPath = RunsPath + "/{run}/interactive"
+	// ChildWorkflowMonitorPath reads one authorized run's child family.
+	ChildWorkflowMonitorPath = RunsPath + "/{run}/children"
+	// ChildPublicationCheckPath observes an already admitted child publication.
+	ChildPublicationCheckPath = RunsPath + "/{run}/child-publications/check"
+	// InteractiveRunCommandsPath accepts occurrence-bound human commands.
+	InteractiveRunCommandsPath        = RunsPath + "/{run}/interactive-commands"
+	GaggleInteractiveCapabilitiesPath = GagglesPath + "/{gaggle}/interactive-capabilities"
+
+	// ChildWorkflow paths are stage-grant-only operations scoped to one parent run.
+	ChildWorkflowValidatePath = childworkflowwire.ValidatePath
+	ChildWorkflowStartPath    = childworkflowwire.StartPath
+	ChildWorkflowStatusPath   = childworkflowwire.StatusPath
+	ChildWorkflowResolvePath  = childworkflowwire.ResolvePath
+	ChildWorkflowAccessPath   = RunsPath + "/{run}/child-workflow-access"
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.
@@ -362,13 +388,42 @@ const (
 	RouteGaggleStatePut RouteID = "gaggleStatePut"
 
 	// The cross-run journal plane (decision 005 R1, finding 002 C4).
-	RouteJournalRunPhase             RouteID = "journalRunPhase"
-	RouteJournalConflictTouches      RouteID = "journalConflictTouches"
-	RouteJournalUnpushedWork         RouteID = "journalUnpushedWork"
-	RouteJournalEscalationCandidates RouteID = "journalEscalationCandidates"
-	RouteJournalMergeAuthority       RouteID = "journalMergeAuthority"
-	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
-	RouteOperatorMessageSubmit       RouteID = "operatorMessageSubmit"
+	RouteJournalRunPhase                RouteID = "journalRunPhase"
+	RouteJournalConflictTouches         RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork            RouteID = "journalUnpushedWork"
+	RouteJournalEscalationCandidates    RouteID = "journalEscalationCandidates"
+	RouteJournalMergeAuthority          RouteID = "journalMergeAuthority"
+	RouteJournalBranchOwnership         RouteID = "journalBranchOwnership"
+	RouteOperatorMessageSubmit          RouteID = "operatorMessageSubmit"
+	RouteChildWorkflowValidate          RouteID = "childWorkflowValidate"
+	RouteChildWorkflowStart             RouteID = "childWorkflowStart"
+	RouteChildWorkflowStatus            RouteID = "childWorkflowStatus"
+	RouteChildWorkflowResolve           RouteID = "childWorkflowResolve"
+	RouteChildWorkflowAccessAcquire     RouteID = "childWorkflowAccessAcquire"
+	RouteChildWorkflowAccessRevoke      RouteID = "childWorkflowAccessRevoke"
+	RouteSessionBacklogRead             RouteID = "sessionBacklogRead"
+	RouteSessionBacklogList             RouteID = "sessionBacklogList"
+	RouteSessionBacklogEditCapabilities RouteID = "sessionBacklogEditCapabilities"
+	RouteSessionBacklogEdit             RouteID = "sessionBacklogEdit"
+	RouteSessionBacklogReceipt          RouteID = "sessionBacklogReceipt"
+	RouteSessionPRRepairInspect         RouteID = "sessionPRRepairInspect"
+	RouteSessionPRRepairRead            RouteID = "sessionPRRepairRead"
+	RouteSessionPRRepair                RouteID = "sessionPRRepair"
+	RouteSessionPRRepairReceipt         RouteID = "sessionPRRepairReceipt"
+	RouteSessionNeedsHumanInspect       RouteID = "sessionNeedsHumanInspect"
+	RouteSessionNeedsHumanResolve       RouteID = "sessionNeedsHumanResolve"
+	RouteSessionNeedsHumanReceipt       RouteID = "sessionNeedsHumanReceipt"
+	RouteSessionList                    RouteID = "sessionList"
+	RouteSessionCreate                  RouteID = "sessionCreate"
+	RouteSessionGet                     RouteID = "sessionGet"
+	RouteSessionMessages                RouteID = "sessionMessages"
+	RouteSessionMessage                 RouteID = "sessionMessage"
+	RouteSessionClose                   RouteID = "sessionClose"
+	RouteInteractiveRun                 RouteID = "interactiveRun"
+	RouteChildWorkflowMonitor           RouteID = "childWorkflowMonitor"
+	RouteChildPublicationCheck          RouteID = "childPublicationCheck"
+	RouteInteractiveRunCommand          RouteID = "interactiveRunCommand"
+	RouteGaggleInteractiveCapabilities  RouteID = "gaggleInteractiveCapabilities"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -461,6 +516,8 @@ const (
 )
 
 var v1Routes = []Route{
+	{ID: RoutePRRepairCommand, Method: http.MethodGet, Path: PRRepairCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RoutePRRepairCheck, Method: http.MethodPost, Path: PRRepairCheckPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	// Discovery is deliberately reachable before crash recovery completes:
 	// it describes the API transport from immutable build/boot metadata and
 	// the canonical route registry without reading runtime health.
@@ -620,6 +677,60 @@ var v1Routes = []Route{
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogRead, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogList, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/list_backlog_items", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchGraph, Method: http.MethodGet, Path: WorkbenchGraphPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionBacklogEditCapabilities, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_capabilities", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogEdit, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/edit_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepairInspect, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/inspect_selected_pr", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepairRead, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/read_selected_pr_file", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepair, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/repair_selected_pr", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionPRRepairReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_pr_repair_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionNeedsHumanInspect, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/inspect_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionNeedsHumanResolve, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/resolve_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionNeedsHumanReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_needs_human_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchSuggestionArtifacts, Method: http.MethodGet, Path: WorkbenchSuggestionArtifactsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchSuggestionLoad, Method: http.MethodGet, Path: WorkbenchSuggestionLoadPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchSuggestionPreview, Method: http.MethodPost, Path: WorkbenchSuggestionPreviewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchSuggestionDecide, Method: http.MethodPost, Path: WorkbenchSuggestionDecidePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchSuggestionReview, Method: http.MethodGet, Path: WorkbenchSuggestionReviewPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchProposalPreview, Method: http.MethodPost, Path: WorkbenchProposalPreviewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchProposalSubmit, Method: http.MethodPost, Path: WorkbenchProposalsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchProposal, Method: http.MethodGet, Path: WorkbenchProposalPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchProposalCheck, Method: http.MethodPost, Path: WorkbenchProposalCheckPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchProposalContinue, Method: http.MethodPost, Path: WorkbenchProposalContinuePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	{ID: RouteWorkbenchWriteCapabilities, Method: http.MethodGet, Path: WorkbenchWriteCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchPatch, Method: http.MethodPatch, Path: WorkbenchItemPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteWorkbenchCommand, Method: http.MethodGet, Path: WorkbenchCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchPRSelection, Method: http.MethodGet, Path: WorkbenchPRSelectionPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchSources, Method: http.MethodGet, Path: WorkbenchSourcesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteStartQueue, Method: http.MethodGet, Path: StartQueuePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteStartQueueItem, Method: http.MethodGet, Path: StartQueueItemPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteStartQueueCancel, Method: http.MethodPost, Path: StartQueueCancelPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteGaggleEventPublish, Method: http.MethodPost, Path: GaggleEventPublishPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteGaggleEventReceipt, Method: http.MethodGet, Path: GaggleEventReceiptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchDocuments, Method: http.MethodGet, Path: WorkbenchDocumentsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchItems, Method: http.MethodGet, Path: WorkbenchItemsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkbenchItem, Method: http.MethodGet, Path: WorkbenchItemPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionList, Method: http.MethodGet, Path: GaggleSessionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionCreate, Method: http.MethodPost, Path: GaggleSessionsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionGet, Method: http.MethodGet, Path: SessionPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionMessages, Method: http.MethodGet, Path: SessionMessagesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionMessage, Method: http.MethodPost, Path: SessionMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionClose, Method: http.MethodPost, Path: SessionClosePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteInteractiveRun, Method: http.MethodGet, Path: InteractiveRunPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteChildPublicationCheck, Method: http.MethodPost, Path: ChildPublicationCheckPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowMonitor, Method: http.MethodGet, Path: ChildWorkflowMonitorPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteInteractiveRunCommand, Method: http.MethodPost, Path: InteractiveRunCommandsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteGaggleInteractiveCapabilities, Method: http.MethodGet, Path: GaggleInteractiveCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteChildWorkflowValidate, Method: http.MethodPost, Path: ChildWorkflowValidatePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowStart, Method: http.MethodPost, Path: ChildWorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowStatus, Method: http.MethodPost, Path: ChildWorkflowStatusPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowResolve, Method: http.MethodPost, Path: ChildWorkflowResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowAccessAcquire, Method: http.MethodPost, Path: ChildWorkflowAccessPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowAccessRevoke, Method: http.MethodDelete, Path: ChildWorkflowAccessPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{

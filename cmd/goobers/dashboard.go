@@ -837,9 +837,10 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	standaloneAuthorizer := httpapi.AllowAll
 	if auth := config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
-			Issuer:     auth.OIDC.Issuer,
-			Audience:   auth.OIDC.Audience,
-			RolesClaim: auth.OIDC.RolesClaimName(),
+			Issuer:      auth.OIDC.Issuer,
+			Audience:    auth.OIDC.Audience,
+			RolesClaim:  auth.OIDC.RolesClaimName(),
+			GroupsClaim: auth.OIDC.GroupsClaim,
 			Roles: oidcauth.RoleMapping{
 				View:    auth.OIDC.Roles.View,
 				Operate: auth.OIDC.Roles.Operate,

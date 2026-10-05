@@ -115,6 +115,9 @@ func (r *Reader) Identity() (RunIdentity, error) {
 	if id.Schema != RunSchema {
 		return RunIdentity{}, unsupportedPayloadSchema("run", id.Schema, RunSchema)
 	}
+	if err := id.validateExecutionLineage(); err != nil {
+		return RunIdentity{}, err
+	}
 	return id, nil
 }
 

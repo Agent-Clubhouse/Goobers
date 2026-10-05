@@ -357,12 +357,7 @@ func daemonTriggerSweep(
 	options triggerSweepOptions,
 ) func() error {
 	return func() error {
-		var sweepErr error
-		if options == (triggerSweepOptions{}) {
-			sweepErr = sweepPendingTriggers(ctx, l.SchedulerDir(), log, sched, time.Now)
-		} else {
-			sweepErr = sweepPendingTriggersWithOptions(ctx, l.SchedulerDir(), log, sched, time.Now, options)
-		}
+		sweepErr := sweepPendingTriggersWithAdmission(ctx, l.SchedulerDir(), log, sched, time.Now, options, durableTriggers.delegatedAdmission())
 		err := errors.Join(durableTriggers.Drain(ctx), sweepErr)
 		return recordTriggerSweepProgress(heartbeat, err, time.Now())
 	}
@@ -1020,6 +1015,9 @@ func (u *upSession) configureAPI() int {
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
 	u.apiHandlerOpts = daemonReadHandlerOptions(u.l.Root, u.setup)
+	if err := u.configureInteractiveAccess(); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize interactive access", err)
+	}
 	configReader, err := newConfigAuthoringReader(u.ctx, u.l, u.setup.Config)
 	if err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize configuration source reader", err)
@@ -1059,6 +1057,11 @@ func (u *upSession) configureAPI() int {
 		return 1
 	}
 	defer func() { _ = u.durableTriggers.queue.Close() }()
+	attachChildGenerationPins(u.setup.Generations, u.durableTriggers.queue)
+	if err := u.setup.installDurableWorkflowServices(u.l, u.durableTriggers); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize durable workflow services", err)
+	}
+	defer u.setup.unregisterEventPublication()
 	defer func() { _ = u.cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
@@ -1073,8 +1076,18 @@ func (u *upSession) configureAPI() int {
 	// handing raw secret material to any local caller. Local modes never need
 	// the plane; their resolution stays in-process via buildCredentialEnv.
 	u.credentialPlane = newDaemonCredentialService(u.l, u.setup.Config, u.setup.SecretStores, u.setup.SharedRegistry, u.setup.InstanceLog).withStageGrants(u.l.Root, u.apiServer.Address(), u.setup.Config.API.TLS != nil)
+	// The startup methods tail-call through supervise/finish: this scope stays
+	// alive for the daemon session, as do the queue-close defers above.
+	defer unregisterDaemonStageGrants(u.l.Root, u.credentialPlane)
+	if err := u.credentialPlane.enableChildWorkflows(u.durableTriggers.queue, u.setup.Definitions); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize child workflow authority", err)
+	}
+	u.credentialPlane.childDispatch = u.triggerPlane
 	u.credentialPlane.Replace(credentialPlaneDefinitionsFromSet(u.setup.Definitions))
 	u.setup.CredentialPlane = u.credentialPlane
+	if err := u.credentialPlane.installQueuedChildren(u.setup, u.durableTriggers, &u.wg); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize queued child execution", err)
+	}
 	// The surrender plane (#3699) rides beside the blob store, under the same
 	// instance-local root — the "<blob-store>/surrender" convention
 	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents
@@ -1092,6 +1105,7 @@ func (u *upSession) configureAPI() int {
 		pf(u.stderr, "error: initialize surrender plane: %v\n", err)
 		return 1
 	}
+	u.credentialPlane.installChildPodFactories(u.engineClient.Temporal(), surrenderStore)
 	// recoverExpiredClaims is the daemon's single stale-claim sweep, defined
 	// once here so the claims plane's recover route (Goobers#4016) and the
 	// startup/periodic call sites below all run the SAME sweep — with the
@@ -1111,6 +1125,9 @@ func (u *upSession) configureAPI() int {
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
 	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
+	if err := u.configureInteractiveRuns(journalService); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize interactive run operations", err)
+	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	u.apiHandlerOpts = append(u.apiHandlerOpts,
 		httpapi.WithInterventions(u.interventions),
@@ -1120,9 +1137,10 @@ func (u *upSession) configureAPI() int {
 		httpapi.WithEscalationService(intervention.NewEscalationResolver(u.interventions)),
 		httpapi.WithCancelService(u.cancelPlane),
 		httpapi.WithCredentialService(u.credentialPlane),
-		httpapi.WithBlobService(u.blobStore),
+		httpapi.WithChildWorkflowService(u.credentialPlane.children.HTTPService()),
+		httpapi.WithBlobService(u.credentialPlane.childBlobPlane(u.blobStore)),
 		httpapi.WithRecoveryService(recoveryDeliveryService{layout: u.l, setup: u.setup}),
-		httpapi.WithSurrenderService(surrenderStore),
+		httpapi.WithSurrenderService(containedSurrenderPlane{SurrenderDir: surrenderStore, service: u.credentialPlane}),
 		httpapi.WithStateService(statePlane),
 		// The defect-nomination aggregate read (Goobers#4001). Wired
 		// unconditionally, like the containment below: the four aggregates
@@ -1145,7 +1163,7 @@ func (u *upSession) configureAPI() int {
 		// The journal plane (§8): remote stage pods emit their run's journal
 		// events here; the daemon's own in-process emitters use the writer
 		// directly and never pass through HTTP.
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithJournalService(u.liveJournals))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithJournalService(containedJournalPlane{JournalService: u.liveJournals, service: u.credentialPlane}))
 	}
 	if instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) {
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(u.l)))
@@ -1183,9 +1201,10 @@ func (u *upSession) activateAPI() int {
 	}
 	if auth := u.setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
-			Issuer:     auth.OIDC.Issuer,
-			Audience:   auth.OIDC.Audience,
-			RolesClaim: auth.OIDC.RolesClaimName(),
+			Issuer:      auth.OIDC.Issuer,
+			Audience:    auth.OIDC.Audience,
+			RolesClaim:  auth.OIDC.RolesClaimName(),
+			GroupsClaim: auth.OIDC.GroupsClaim,
 			Roles: oidcauth.RoleMapping{
 				View:    auth.OIDC.Roles.View,
 				Operate: auth.OIDC.Roles.Operate,
@@ -1205,7 +1224,7 @@ func (u *upSession) activateAPI() int {
 			pf(u.stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey())))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	} else if !instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) {
 		// Non-loopback with no human authenticator configured: serve the pod
@@ -1219,7 +1238,7 @@ func (u *upSession) activateAPI() int {
 			pf(u.stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey())))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(u.reads, u.apiAuthorizer, u.apiLog, u.apiHandlerOpts...)
@@ -1502,6 +1521,9 @@ func (u *upSession) startScheduler() int {
 		pf(u.stderr, "error: %v\n", err)
 		return 1
 	}
+	if err := u.restoreInteractiveSessions(); err != nil {
+		return reportDaemonStartupError(u.stderr, "restore shared session custody", err)
+	}
 	// #3806: the scheduler's run-tracking state has been reconciled from the
 	// run directories already on disk.
 	u.stateOpen.Store(true)
@@ -1686,7 +1708,7 @@ func (u *upSession) recoverRuns() int {
 	// sweeps that share the delegation ticker.
 	u.cancelSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "cancel_sweep_failed")
 	u.cancelSweep = func() error {
-		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now)
+		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now, u.cancelPlane.fenceChildren)
 	}
 	u.cancelSweepErrors.report(runStartupPhase(u.stdout, u.tracker, "cancel-request-reconcile", "", u.cancelSweep))
 

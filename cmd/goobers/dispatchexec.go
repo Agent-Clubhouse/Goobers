@@ -67,6 +67,9 @@ func runDispatchExec(_ []string, stdout, stderr io.Writer) int {
 }
 
 func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
+	if os.Getenv(dispatcher.EnvChildExecutionDigest) != "" {
+		return runChildDispatchContext(ctx, stdout, stderr)
+	}
 	runID := os.Getenv(dispatcher.EnvRunID)
 	stage := os.Getenv(dispatcher.EnvStage)
 	daemonAPI := os.Getenv(dispatcher.EnvDaemonAPI)
@@ -917,6 +920,9 @@ func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredenti
 // of either resolution; both describe the same repository credential, so the
 // stage's wins only because it was resolved first.
 func podCheckoutCredentials(ctx context.Context, stageCreds []dispatcher.MintedCredential, stageScheme string) ([]dispatcher.MintedCredential, string, error) {
+	if isolatedChildWorkspace(ctx) {
+		return nil, "", nil
+	}
 	checkoutCreds, checkoutScheme, err := resolveCheckoutCredential(ctx)
 	if err != nil {
 		return nil, "", err

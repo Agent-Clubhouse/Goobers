@@ -34,13 +34,15 @@ import (
 // Tick/signal delivery evaluates whichever are set, since nothing prevents
 // a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
-	Workflow        string
-	WorkflowVersion int
-	WorkflowDigest  string
-	GooberDigest    string
-	Gaggle          string
-	Readiness       apiv1.ReadinessConditions
-	Schedules       []Schedule
+	// ConfigGeneration is the host-captured immutable archive, never caller input.
+	ConfigGeneration string
+	Workflow         string
+	WorkflowVersion  int
+	WorkflowDigest   string
+	GooberDigest     string
+	Gaggle           string
+	Readiness        apiv1.ReadinessConditions
+	Schedules        []Schedule
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
 	ScheduleBackoffs []IdleBackoffConfig
@@ -227,27 +229,32 @@ type queueSaturationRecorder interface {
 }
 
 type runAdmission struct {
-	identity   WorkflowIdentity
-	generation uint64
-	owners     int
-	retained   bool
+	identity WorkflowIdentity
+	// executionWorkflow is a generated child name; identity remains its parent budget bucket.
+	executionWorkflow string
+	generation        uint64
+	owners            int
+	retained          bool
+	suspended         bool // durable child wait; owner remains, concurrency is released
 }
 
 // Scheduler is the embedded scheduler daemon (§7, SCH-001): it ties cron
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
-	workflows         map[WorkflowIdentity]WorkflowEntry
-	conditions        *Conditions
-	log               *journal.InstanceLog
-	now               func() time.Time
-	after             func(d time.Duration) <-chan time.Time
-	telemetry         SpanStarter
-	providerQuota     ProviderQuotaGate
-	demandPollTimeout time.Duration
-	afterTick         func(context.Context)
-	heartbeatInterval time.Duration
-	refreshHeartbeat  func(time.Time) error
+	durableScheduleDemand bool
+	workflows             map[WorkflowIdentity]WorkflowEntry
+	conditions            *Conditions
+	log                   *journal.InstanceLog
+	now                   func() time.Time
+	after                 func(d time.Duration) <-chan time.Time
+	telemetry             SpanStarter
+	providerQuota         ProviderQuotaGate
+	demandPollTimeout     time.Duration
+	afterTick             func(context.Context)
+	sourceQueue           SourceQueue
+	heartbeatInterval     time.Duration
+	refreshHeartbeat      func(time.Time) error
 	// onPollProgress, if set, is called after every individual
 	// provider-backed demand poll Tick issues while holding tickMu (#3806) —
 	// not just once when Tick itself returns. A tick with several due
@@ -274,7 +281,7 @@ type Scheduler struct {
 	// reconciledRuns identifies the pre-existing runs represented in
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
-	reconciledRuns map[string]WorkflowIdentity
+	reconciledRuns map[string]reconciledRun
 	// admittedRuns identifies live dispatches and continuations whose shared
 	// condition slot remains reserved until every owner releases it or a
 	// watchdog terminalizes the run.
@@ -530,7 +537,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		after:                   time.After,
 		demandPollTimeout:       demandPollTimeout,
 		triggers:                make(map[WorkflowIdentity]TriggerState),
-		reconciledRuns:          make(map[string]WorkflowIdentity),
+		reconciledRuns:          make(map[string]reconciledRun),
 		admittedRuns:            make(map[string]runAdmission),
 		backlogLastCheck:        make(map[WorkflowIdentity]time.Time),
 		refillLastCheck:         make(map[WorkflowIdentity]time.Time),
@@ -608,7 +615,7 @@ func (s *Scheduler) ReconcileRunDirs(runsDirs, recoveryRunDirs []string, now tim
 func (s *Scheduler) reconcileDurableState(
 	runsDirs []string,
 	active map[WorkflowIdentity]int,
-	runs map[string]WorkflowIdentity,
+	runs map[string]reconciledRun,
 	now time.Time,
 ) error {
 	s.conditions.ReconcileWorkflows(active)
@@ -721,13 +728,17 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	reconciledWorkflow, ok := s.reconciledRuns[runID]
-	if ok && reconciledWorkflow.Workflow == workflow {
+	if ok && reconciledWorkflow.identity.Workflow == sessionBudget {
+		s.mu.Unlock()
+		return
+	}
+	if ok && reconciledWorkflow.workflow == workflow {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
-	if ok && reconciledWorkflow.Workflow == workflow {
-		s.conditions.ReleaseWorkflow(reconciledWorkflow)
-		s.wakeForDemand(reconciledWorkflow)
+	if ok && reconciledWorkflow.workflow == workflow && !reconciledWorkflow.suspended {
+		s.conditions.ReleaseWorkflow(reconciledWorkflow.identity)
+		s.wakeForDemand(reconciledWorkflow.identity)
 	}
 }
 
@@ -739,11 +750,15 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	admission, admitted := s.admittedRuns[runID]
-	if admitted && admission.identity.Workflow == workflow {
+	if (admitted && admission.identity.Workflow == sessionBudget) || s.reconciledRuns[runID].identity.Workflow == sessionBudget {
+		s.mu.Unlock()
+		return
+	}
+	if admitted && admission.workflowName() == workflow {
 		delete(s.admittedRuns, runID)
 	}
 	reconciledIdentity, reconciled := s.reconciledRuns[runID]
-	if reconciled && reconciledIdentity.Workflow == workflow {
+	if reconciled && reconciledIdentity.workflow == workflow {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
@@ -751,14 +766,14 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	released := false
 	var releasedIdentity WorkflowIdentity
 	switch {
-	case admitted && admission.identity.Workflow == workflow:
+	case admitted && admission.workflowName() == workflow && !admission.suspended:
 		s.conditions.ReleaseWorkflow(admission.identity)
 		released = true
 		releasedIdentity = admission.identity
-	case reconciled && reconciledIdentity.Workflow == workflow:
-		s.conditions.ReleaseWorkflow(reconciledIdentity)
+	case reconciled && reconciledIdentity.workflow == workflow && !reconciledIdentity.suspended:
+		s.conditions.ReleaseWorkflow(reconciledIdentity.identity)
 		released = true
-		releasedIdentity = reconciledIdentity
+		releasedIdentity = reconciledIdentity.identity
 	}
 	if released {
 		s.wakeForDemand(releasedIdentity)
@@ -771,7 +786,7 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 
 	s.mu.Lock()
 	admission, admitted := s.admittedRuns[runID]
-	if !admitted || admission.identity.Workflow != workflow || admission.generation != generation {
+	if !admitted || admission.workflowName() != workflow || admission.generation != generation {
 		s.mu.Unlock()
 		return
 	}
@@ -784,8 +799,10 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
 
-	s.conditions.ReleaseWorkflow(admission.identity)
-	s.wakeForDemand(admission.identity)
+	if !admission.suspended {
+		s.conditions.ReleaseWorkflow(admission.identity)
+		s.wakeForDemand(admission.identity)
+	}
 }
 
 func (s *Scheduler) admissionOwnerRelease(runID, workflow string, generation uint64) func() {
@@ -806,7 +823,7 @@ func (s *Scheduler) RetainContinuation(runID, workflow string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	admission, admitted := s.admittedRuns[runID]
-	if !admitted || admission.identity.Workflow != workflow {
+	if !admitted || admission.workflowName() != workflow {
 		return
 	}
 	admission.retained = true
@@ -821,7 +838,7 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 
 	s.mu.Lock()
 	admission, admitted := s.admittedRuns[runID]
-	if !admitted || admission.identity.Workflow != workflow || !admission.retained {
+	if !admitted || admission.workflowName() != workflow || !admission.retained {
 		s.mu.Unlock()
 		return
 	}
@@ -834,8 +851,10 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
 
-	s.conditions.ReleaseWorkflow(admission.identity)
-	s.wakeForDemand(admission.identity)
+	if !admission.suspended {
+		s.conditions.ReleaseWorkflow(admission.identity)
+		s.wakeForDemand(admission.identity)
+	}
 }
 
 // ReserveContinuation reserves the configured workflow's concurrency slot for
@@ -854,6 +873,9 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 	case !configured:
 		s.mu.Unlock()
 		return func() {}, false, "workflow unavailable"
+	case admitted && admission.suspended:
+		s.mu.Unlock()
+		return func() {}, false, "run suspended awaiting child"
 	case admitted && admission.identity == identity:
 		admission.owners++
 		s.admittedRuns[runID] = admission
@@ -883,7 +905,7 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 
 func (s *Scheduler) wakeForDemand(identity WorkflowIdentity) {
 	s.mu.Lock()
-	pending := len(s.pendingScheduleDemand) > 0
+	pending := len(s.pendingScheduleDemand) > 0 || s.durableScheduleDemand
 	refill := false
 	if entry, ok := s.workflows[identity]; ok &&
 		entry.Readiness.DesiredConcurrentRuns > 0 &&
@@ -938,28 +960,31 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 type tickCandidate struct {
-	entry              WorkflowEntry
-	schedule           TickResult
-	scheduleRemaining  int
-	scheduleDemand     bool
-	schedulePollDue    bool
-	scheduleEnqueuedAt time.Time
-	scheduleMetricHeld int
-	backlogPollDue     bool
-	backlogRemaining   int
-	backlogEnqueuedAt  time.Time
-	backlogObserved    bool
-	backlogMetricHeld  int
-	refillRemaining    int
-	refillPollDue      bool
-	refillEligible     int
-	refillEnqueuedAt   time.Time
-	refillObserved     bool
-	refillMetricHeld   int
-	poolSkips          int
-	dispatchedThisTick bool
-	stopped            bool
-	scheduleIndexes    []int
+	demandWake          bool
+	queuedDemand        *QueuedScheduleDemand
+	scheduleDemandLease func()
+	entry               WorkflowEntry
+	schedule            TickResult
+	scheduleRemaining   int
+	scheduleDemand      bool
+	schedulePollDue     bool
+	scheduleEnqueuedAt  time.Time
+	scheduleMetricHeld  int
+	backlogPollDue      bool
+	backlogRemaining    int
+	backlogEnqueuedAt   time.Time
+	backlogObserved     bool
+	backlogMetricHeld   int
+	refillRemaining     int
+	refillPollDue       bool
+	refillEligible      int
+	refillEnqueuedAt    time.Time
+	refillObserved      bool
+	refillMetricHeld    int
+	poolSkips           int
+	dispatchedThisTick  bool
+	stopped             bool
+	scheduleIndexes     []int
 }
 
 type triggerSource uint8
@@ -1032,6 +1057,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	var evaluated []WorkflowEntry
+	defer func() { releaseScheduleDemands(allCandidates) }()
 	for _, entry := range entries {
 		if s.authCircuitOpen(entryIdentity(entry), now) {
 			continue
@@ -1054,7 +1080,11 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if pending.remaining == 0 {
 			candidate.schedule = TickResult{LastEval: now}
 		}
-		if len(entry.Schedules) > 0 {
+		if handled, advanced := s.queueConfiguredSchedule(ctx, candidate, now); handled {
+			if advanced {
+				evaluated = append(evaluated, entry)
+			}
+		} else if len(entry.Schedules) > 0 {
 			// Read, evaluate, and write the trigger state under a single lock
 			// acquisition. Tick is exported so a manual trigger and concurrent
 			// Tick calls (e.g. overlapping Run-loop iterations) can race here;
@@ -1117,6 +1147,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.evaluateRefillOpportunities(allCandidates, now)
 	s.paceQuotaResumedCandidates(allCandidates)
 	s.recordQueueSaturation(ctx, allCandidates, now)
+	s.queueDemandWorkers(ctx, allCandidates, now)
+	s.queueCountWorkers(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 || candidate.refillRemaining > 0 {
@@ -1879,6 +1911,9 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 }
 
 func (s *Scheduler) deferScheduleDemandPoll(candidate *tickCandidate) {
+	if candidate.queuedDemand != nil {
+		return
+	}
 	identity := entryIdentity(candidate.entry)
 	s.persistScheduleDemand(identity, true)
 	s.mu.Lock()
@@ -1953,6 +1988,9 @@ func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
 }
 
 func (s *Scheduler) deferScheduledDispatch(candidate *tickCandidate) {
+	if candidate.queuedDemand != nil {
+		return
+	}
 	identity := entryIdentity(candidate.entry)
 	s.persistScheduleDemand(identity, true)
 	s.mu.Lock()
@@ -2021,6 +2059,9 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	if s.applyQueuedDemand(poll, snapshot) {
+		return
+	}
 	ready := snapshot.ready
 	if poll.schedule {
 		identity := entryIdentity(poll.candidate.entry)
@@ -2502,8 +2543,11 @@ func (e *TriggerRejectedError) Transient() bool {
 	// exactly the sense above — the pod's memory frees as runs finish and the
 	// kernel reclaims, so a refused trigger is refused for capacity that is
 	// about to exist (#3960).
-	return e.Reason == ReasonMaxParallel || e.Reason == ReasonInstanceMaxParallel ||
-		strings.HasPrefix(e.Reason, ReasonMemoryPressure)
+	// Refill records its backoff context in the reason but retains the same
+	// capacity semantics when a durable start is waiting for admission.
+	reason := strings.TrimPrefix(e.Reason, refillBlockedReasonPrefix)
+	return reason == ReasonMaxParallel || reason == ReasonInstanceMaxParallel ||
+		strings.HasPrefix(reason, ReasonMemoryPressure)
 }
 
 // RecordTriggerRefusal journals a trigger rejected by an admission layer
@@ -3065,6 +3109,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		return minPoll
 	}
 	var earliest time.Time
+	if s.durableScheduleDemand {
+		earliest = now.Add(backlogPollInterval)
+	}
 	consider := func(next time.Time) {
 		if earliest.IsZero() || next.Before(earliest) {
 			earliest = next

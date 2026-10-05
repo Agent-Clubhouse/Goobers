@@ -39,7 +39,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Tracked gaggle templates](gaggle-templates.md)
 - [Guide: GitHub token scopes for V0 (local runner)](github-token-scopes.md)
 - [GitHub webhook triggers](github-webhooks.md)
-- [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)
+- [The goobers-io MCP: stage I/O and optional child workflows](goobers-io-mcp.md)
 - [Copilot launcher session contract](harness-launcher-contract.md)
 - [Identify active and historical instance roots](instance-identity.md)
 - [Choose where an instance and its config live](instance-placement.md)

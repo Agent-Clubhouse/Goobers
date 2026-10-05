@@ -26,6 +26,10 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 // snapshotted Item and workflow Definition); RepoRef is not journaled, so the
 // caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
+	// OnRecoveryOwned runs after journal and cancellation ownership are acquired,
+	// before resumed stage effects. Trusted admission may block here until its
+	// durable cancellation fence commits. An error leaves the run interrupted.
+	OnRecoveryOwned func() error
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
 	// Machine is the compiled workflow (#9) this run was walking. When nil,
@@ -121,6 +125,9 @@ type ResumeFromTerminalInput struct {
 // repeated interrupted evaluations exceed the budget, Evaluate escalates
 // without dispatching the side-effecting evaluator again (#263).
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
+	if r.cfg.stageRestartOnly != "" && r.cfg.stageRestartOnly != in.RunID {
+		return Result{}, errors.New("runner: human restart driver cannot resume another epoch")
+	}
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}
@@ -141,7 +148,13 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		in.HumanDecision = &decision
 	}
 
+	if err := r.refuseSessionResume(in.RunID); err != nil {
+		return Result{}, err
+	}
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	if err := r.refuseChildWorkflowResume(in.Machine, dir); err != nil {
+		return Result{}, err
+	}
 
 	// A fresh registrar/scrubber per resume, exactly like Start — a run's
 	// secrets have no business outliving one process's handling of it.
@@ -153,6 +166,11 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	defer func() { _ = jr.Close() }()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		if in.OnRecoveryOwned != nil {
+			if err := in.OnRecoveryOwned(); err != nil {
+				return Result{}, err
+			}
+		}
 		return r.resumeOwned(ctx, in, jr, registrar, dir)
 	})
 }
@@ -163,11 +181,17 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 // appended. The event records the human actor, prior terminal phase, target,
 // and verified workflow pin so a crash after the action can recover it exactly.
 func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalInput) (Result, error) {
+	if r.cfg.stageRestartOnly != "" || r.cfg.sessionExecution != nil {
+		return Result{}, errors.New("runner: human epoch requires a new authorized restart")
+	}
 	if !apiv1.ValidRunID(in.RunID) {
 		return Result{}, fmt.Errorf("runner: invalid run id %q", in.RunID)
 	}
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
+	}
+	if err := r.admitChildWorkflows(in.Machine); err != nil {
+		return Result{}, err
 	}
 	in.Target = strings.TrimSpace(in.Target)
 	if in.Target == "" && !in.Complete {
@@ -188,7 +212,13 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	in.Decision = strings.TrimSpace(in.Decision)
 	in.Rationale = strings.TrimSpace(in.Rationale)
 
+	if err := r.refuseSessionMutation(in.RunID); err != nil {
+		return Result{}, err
+	}
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	if err := r.verifyChildWorkflowCustody(dir); err != nil {
+		return Result{}, err
+	}
 	registrar, scrubber := journal.DefaultScrubber()
 	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
@@ -305,6 +335,8 @@ type resumeFrame struct {
 	seedEvents []journal.Event
 	segment    []journal.Event
 
+	restartCleanup     func()
+	restart            *stageRestartManifest
 	rerun              *rerunContext
 	parallelTransition *parallelResumeTransition
 	concurrentResume   bool
@@ -349,6 +381,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if res, refused, verr := r.verifyResumePin(jr, &in, rd, id); refused || verr != nil {
 		return res, verr
 	}
+	if err := r.admitChildWorkflows(in.Machine); err != nil {
+		return Result{}, err
+	}
 	if err := resetRetryBackoffOnResume(jr, events); err != nil {
 		return Result{}, fmt.Errorf("runner: clear retry backoff on resume: %w", err)
 	}
@@ -362,17 +397,12 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err := validateHumanResumeDecision(in, humanProgress); err != nil {
 		return Result{}, err
 	}
-	rerun, seedEvents, err := pendingRerun(events, in.Machine)
+	ctx, f, err := r.restoreResumeFrame(ctx, jr, rd, in, id, registrar, events, humanProgress)
 	if err != nil {
-		return Result{}, fmt.Errorf("runner: restore pending stage rerun for run %q: %w", in.RunID, err)
+		return Result{}, err
 	}
-	if rerun == nil {
-		seedEvents = events
-	}
-
-	f, err := r.newResumeFrame(ctx, jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
-	if err != nil {
-		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
+	if f.restartCleanup != nil {
+		defer f.restartCleanup()
 	}
 	ws := f.ws
 
@@ -426,7 +456,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	}
 	ws.state = startState
 	ws.resume = resume
-	ws.rerun = rerun
+	ws.rerun = f.rerun
 	if err := r.journalRecovery(jr, in, startState, resume); err != nil {
 		return Result{}, err
 	}
@@ -525,6 +555,9 @@ func (r *Runner) resumeTerminalPhase(rd *journal.Reader, jr *journal.Run, in Res
 			return res, true, err
 		}
 		res := Result{Phase: phase}
+		if err := r.retireContainedParentContributions(in.RunID, phase, jr); err != nil {
+			return res, true, err
+		}
 		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, true, err
 		}
@@ -655,7 +688,7 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 // have been resolved, so resumeOwned fills those two in.
 func (r *Runner) newResumeFrame(
 	ctx context.Context,
-	jr *journal.Run, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
+	jr *journal.Run, rd *journal.Reader, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
 ) (*resumeFrame, error) {
 	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
@@ -664,16 +697,17 @@ func (r *Runner) newResumeFrame(
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	branch := 0
-	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
+	if activeParallel != nil && !r.concurrentChildBranches(in.Machine, activeParallel.spec) && activeParallel.current() != nil {
 		branch = activeParallel.current().id
 	}
-	startIn, err := r.restoreResumeWorkspaceRevision(ctx, StartInput{
+	startIn, err := r.restoreExecutionWorkspace(ctx, rd, id, StartInput{
 		instanceID:       id.InstanceID,
 		configGeneration: id.ConfigGeneration,
 		RunID:            in.RunID,
 		Machine:          in.Machine,
 		GooberDigest:     in.GooberDigest,
 		Gaggle:           id.Gaggle,
+		Child:            id.Child,
 		Trigger:          id.Trigger,
 		RepoRef:          in.RepoRef,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
@@ -722,7 +756,7 @@ func (r *Runner) newResumeFrame(
 		segment:            segment,
 		rerun:              rerun,
 		parallelTransition: pendingParallelTransition(seedEvents, in.Machine),
-		concurrentResume:   activeParallel != nil && activeParallel.spec.MaxConcurrentBranches > 1,
+		concurrentResume:   activeParallel != nil && r.concurrentChildBranches(in.Machine, activeParallel.spec),
 		humanProgress:      humanProgress,
 		resumeTarget:       resumeTarget,
 		lastStage:          lastStage,
@@ -846,6 +880,9 @@ func (f *resumeFrame) replayGateDecision(jr *journal.Run, machine *workflow.Mach
 func (f *resumeFrame) attemptContext(machine *workflow.Machine, stage string) *resumeContext {
 	if _, isTask := machine.Task(stage); !isTask || f.concurrentResume {
 		return nil
+	}
+	if restored, ok := recoverChildTaskContext(f.segment, stage); ok {
+		return restored
 	}
 	if attempt := interruptedAttempt(f.segment, stage); attempt > 0 {
 		return &resumeContext{
@@ -998,6 +1035,7 @@ func (f *resumeFrame) seedGateBudgets(machine *workflow.Machine) {
 	ws.infraRepassAttempts = infrastructureTargetRepassSeed(f.segment)
 	ws.pollAttempts = pollingTargetSeed(f.segment)
 	ws.evidenceRejections = remediationEvidenceRejectionSeed(f.segment)
+	seedRestartGateBudgets(f, machine)
 }
 
 type humanGateProgress struct {
@@ -2187,12 +2225,13 @@ func interruptedAttemptMutated(events []journal.Event, stageName string, attempt
 }
 
 func policyAttemptsBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	yielded := childYieldedAttempts(events, stageName)
 	var attempts int32
 	for _, event := range events {
 		if event.Type != journal.EventStageStarted ||
 			event.Stage != stageName ||
 			event.Attempt >= interruptedAttempt ||
-			event.AttemptClass == journal.AttemptInfra {
+			event.AttemptClass == journal.AttemptInfra || yielded[event.Attempt] {
 			continue
 		}
 		attempts++
@@ -2235,4 +2274,32 @@ func resumeItem(rd *journal.Reader, id journal.RunIdentity) (*apiv1.BacklogItem,
 		return &item, nil
 	}
 	return nil, nil
+}
+
+// refuseChildWorkflowResume checks the supplied or pinned definition without
+// repairing the journal or claiming execution. Existing resume code retains
+// ownership of malformed/missing-journal diagnostics and terminalization.
+func (r *Runner) refuseChildWorkflowResume(machine *workflow.Machine, dir string) error {
+	if machine != nil {
+		if err := r.admitChildWorkflows(machine); err != nil {
+			return err
+		}
+		return r.verifyChildWorkflowCustody(dir)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		return nil
+	}
+	id, err := rd.Identity()
+	if err != nil {
+		return nil
+	}
+	machine, err = PinnedWorkflowMachine(rd, id)
+	if err != nil {
+		return nil
+	}
+	if err := r.admitChildWorkflows(machine); err != nil {
+		return err
+	}
+	return r.verifyChildWorkflowCustody(dir)
 }

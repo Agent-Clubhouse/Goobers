@@ -27,8 +27,9 @@
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
-| [`goobers workflow`](#goobers-workflow) | inspect workflows |
+| [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+| [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
 
 ## Advanced operator commands
 
@@ -1746,13 +1747,21 @@ the workflow through its own engine starter. The run id is the
 scheduler's, and --dedupe-key is refused, because the daemon mints a
 fresh run id per admission.
 
---direct bypasses the daemon and starts the workflow straight on
+--direct bypasses scheduler admission and queues an exact input for
 Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
 workflow and --dedupe-key. That is the only mode in which --dedupe-key
 means anything: a direct start's run id IS its dedupe unit, whereas a
 delegated dispatch dedupes DELIVERIES (by request id) and not work.
 A direct start takes no scheduler slot and fires no terminal hooks.
 --direct is implied when no daemon is running.
+
+Direct starts commit their complete input and exact frontend, namespace
+and task queue to the shared start ledger before contacting Temporal.
+Same-key retries reuse that input. Changed options or credential selectors
+refuse; no current workflow is substituted. The daemon can drain pending
+direct receipts and reconcile an uncertain reply. After any attempted
+start, missing or deleted history remains uncertain and is never resent.
+Confirmation requires the exact input and task queue in Temporal history.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
@@ -3892,12 +3901,17 @@ manual run. All other run conditions remain enforced. --force cannot be
 combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
-submits through its API automatically — dispatched through
-the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
+submits through its API automatically. Both paths durably queue a pinned
+start before normal scheduler admission. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
 escalated. The submission-only --no-wait mode exits 0 on durable API
 acceptance, before dispatch.
+Standalone and detached starts also accept --request-id for exact retries.
+They attempt only their own receipt; if capacity holds it, the command
+prints the receipt and request ID and exits nonzero. Retry the same ID or
+start `goobers up` to dispatch it. Standalone --no-wait still returns after
+run admission. A changed request under an existing ID is refused.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. When TLS publishes only a wildcard bind address, the CLI
@@ -3933,8 +3947,8 @@ and acceptance (default 30s; must be positive). A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal. For local file delegation,
---no-wait returns after dispatch, or after workflow/PR validation succeeds
-and the live daemon durably accepts a capacity-queued request.
+--no-wait returns after the live daemon durably accepts the request.
+Current capacity and targeted PR validation are checked before dispatch.
 ~~~
 
 **Examples**
@@ -4560,7 +4574,7 @@ $ goobers set-milestone --item 1227 --milestone 22
 fire an external signal to subscribed workflows
 
 ~~~text
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id key] <name> [path]
 
 Fire an external signal by name, dispatching every workflow with a
 type=signal trigger subscribed to it, through the same scheduler (run
@@ -4568,6 +4582,8 @@ conditions, instance journal, single-instance lock) a live `goobers up`
 daemon uses (default path "."). A signal may match zero, one, or many
 workflows; waits for every dispatched run to reach a terminal state or
 pause before returning (same blocking UX as `goobers run`).
+Source acceptance is durable. Reuse --request-id after an uncertain reply.
+Starts held by capacity remain queued for goobers up after this command exits.
 Exit codes after waiting: 0 = every admitted run completed (also used when
 none were admitted), 1 = any run failed/aborted or a business error, 2 =
 usage/IO error, 3 = any run escalated. Escalation takes precedence for
@@ -5427,12 +5443,12 @@ $ goobers worker --task-queue goobers-engine --drain-timeout 60s
 
 ## `goobers workflow`
 
-inspect workflows
+inspect workflows and validate child proposals
 
 ~~~text
-Usage: goobers workflow show [flags] <name> [path]
+Usage: goobers workflow <show | validate-child> [flags]
 
-Show the named workflow as a text DAG or Graphviz DOT (default path ".").
+Show a workflow DAG or validate a generated child proposal against its configured parent.
 
 Workflow
 
@@ -5456,6 +5472,32 @@ kinds, and transition targets as a text DAG or Graphviz DOT
 ~~~console
 $ goobers workflow show default-implement
 $ goobers workflow show default-implement --dot
+~~~
+
+## `goobers workflow validate-child`
+
+validate a child proposal against its configured parent
+
+~~~text
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+
+Validate one generated child Workflow against an opted-in parent stage in
+the instance's current active config/ tree (default path "."). The parent
+supplies policy; child grants are also bounded by the parent's stage capabilities.
+The proposal must pin DSL 3.1 and declare only a plain manual trigger.
+
+This is advisory current-config validation, not durable run admission. It
+does not start or queue work, resolve credentials, invoke a model, or refresh
+workflowSource. --backend selects the validation target (default runner).
+Config digests identify declarative validation inputs, not an execution archive.
+--json emits child-workflow-validation/v1 diagnostics and digests.
+Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml
 ~~~
 
 ## `goobers workspace`

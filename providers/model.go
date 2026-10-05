@@ -72,6 +72,7 @@ const (
 type WorkItemRef struct {
 	Provider ProviderKind `json:"provider"`
 	ID       string       `json:"id"`
+	StableID string       `json:"-"`
 	URL      string       `json:"url,omitempty"`
 	Type     string       `json:"type,omitempty"`
 }
@@ -84,13 +85,17 @@ type Link struct {
 
 // WorkItem is the flat scheduler-facing backlog model shared across providers.
 type WorkItem struct {
-	Provider   ProviderKind `json:"provider"`
-	ID         string       `json:"id"`
-	ExternalID string       `json:"externalId,omitempty"`
-	Revision   string       `json:"revision,omitempty"`
-	Type       string       `json:"type,omitempty"`
-	Title      string       `json:"title"`
-	Body       string       `json:"body,omitempty"`
+	Provider ProviderKind `json:"provider"`
+	ID       string       `json:"id"`
+	// StableID is the immutable native object identity. ID remains the native
+	// locator (GitHub issue number); ExternalID retains its historical meaning.
+	// Projection-only metadata is omitted from historical scheduler/journal JSON.
+	StableID   string `json:"-"`
+	ExternalID string `json:"externalId,omitempty"`
+	Revision   string `json:"revision,omitempty"`
+	Type       string `json:"type,omitempty"`
+	Title      string `json:"title"`
+	Body       string `json:"body,omitempty"`
 	// AcceptanceCriteria carries Azure Boards' dedicated acceptance criteria
 	// field separately from System.Description so agent inputs can include both.
 	AcceptanceCriteria string `json:"acceptanceCriteria,omitempty"`
@@ -109,6 +114,9 @@ type WorkItem struct {
 	StateReason string         `json:"stateReason,omitempty"`
 	Status      WorkItemStatus `json:"status,omitempty"`
 	Assignee    string         `json:"assignee,omitempty"`
+	// NativeAssignees preserves the complete native account list for source
+	// projections. Scheduler-facing Assignee retains its existing semantics.
+	NativeAssignees []string `json:"-"`
 	// AssigneeAliases lists additional identity forms for the same assignee
 	// beyond Assignee itself (#5556). GitHub and Gitea logins are already a
 	// single stable identity and leave this empty; Azure DevOps surfaces
