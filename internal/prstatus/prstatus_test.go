@@ -117,14 +117,14 @@ func TestPublishReturnsOriginalPublisherErrors(t *testing.T) {
 			calls := 0
 			publisher := testPublisher{publish: func(ctx context.Context, _ providers.PullRequestStatusRequest) (providers.PullRequestStatusResult, error) {
 				calls++
-				if test.err == context.Canceled && ctx.Err() != context.Canceled {
+				if errors.Is(test.err, context.Canceled) && !errors.Is(ctx.Err(), context.Canceled) {
 					t.Fatalf("context error = %v, want context canceled", ctx.Err())
 				}
 				return providers.PullRequestStatusResult{}, test.err
 			}}
 
 			_, err := Publish(test.ctx, publisher, providers.PullRequestStatusRequest{}, filepath.Join(t.TempDir(), "result.json"))
-			if err != test.err {
+			if !errors.Is(err, test.err) {
 				t.Fatalf("error = %v, want original error %v", err, test.err)
 			}
 			if calls != 1 {
