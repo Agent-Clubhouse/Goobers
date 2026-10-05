@@ -184,6 +184,7 @@
         "baseURLEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the endpoint URL." },
         "keyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the API key." },
         "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the model name." },
+        "publicationLeakScreen": { "type": "boolean", "default": false, "description": "Separately opts shadow mode into sending proposed public PR and nominated issue text to the decision model for advisory leak screening. Omitted means publication text is never sent." },
         "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
         "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
         "gate": {

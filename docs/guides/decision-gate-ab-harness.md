@@ -18,6 +18,17 @@ reads both arms' journals and daemon logs, prints them side by side, and
 refuses to print any percentage whose denominator is below the configured
 minimum sample size.
 
+Shadow mode can also screen model-authored pull request and nominated issue
+text for potentially non-public details immediately before publication. This
+requires the separate explicit `publicationLeakScreen: true` opt-in; enabling
+the decision gate alone never transmits publication text. The screen emits only
+`decisiongate.publication-shadow` metadata (including a content digest and the
+thresholded advisory verdict) and does not change the deterministic publication
+decision. No text is sent when `decisionGate` is absent, `off`, set to
+`enforce`, or lacks that publication opt-in. Publication enforcement must not
+be enabled until shadow counts reach the experiment's configured minimum sample
+size.
+
 > The gate-on arm assumes you have a build that actually wires
 > `decisionGate.mode: enforce` into the harness. Keep the entire experiment
 > opt-in and isolated until that build is proven for your workflow.
@@ -61,6 +72,7 @@ spurious bad-input claims:
 ```yaml
 decisionGate:
   mode: shadow
+  publicationLeakScreen: true
   baseURLEnv: DECISION_GATE_BASE_URL
   keyEnv: DECISION_GATE_API_KEY
   modelEnv: DECISION_GATE_MODEL
@@ -148,4 +160,3 @@ That is intentional:
   sample stays out of valid-versus-invalid percentages.
 
 Do not fold unknown-validity records into the valid denominator by hand.
-
