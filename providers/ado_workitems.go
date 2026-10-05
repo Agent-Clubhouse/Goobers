@@ -124,8 +124,9 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 			return nil, err
 		}
 	}
+	ctx = context.WithValue(ctx, adoListReadKey{}, true)
 	var wiql adoWIQLResponse
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &wiql); err != nil {
+	if err := p.do(ctx, http.MethodPost, endpoint, adoWIQLReadRequest{Query: query}, &wiql); err != nil {
 		return nil, err
 	}
 	refs := wiql.WorkItems
@@ -1087,6 +1088,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 	return WorkItem{
 		Provider:           ProviderADO,
 		ID:                 strconv.Itoa(item.ID),
+		StableID:           positiveNativeID(int64(item.ID)),
 		ExternalID:         strconv.Itoa(item.Rev),
 		Revision:           strconv.Itoa(item.Rev),
 		Type:               stringField(item.Fields, "System.WorkItemType"),
@@ -1098,6 +1100,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		State:              state,
 		Status:             statusFromLabels(labels, string(status)),
 		Assignee:           stringField(item.Fields, "System.AssignedTo"),
+		NativeAssignees:    adoNativeAssignees(item.Fields),
 		AssigneeAliases:    identityAliases(item.Fields, "System.AssignedTo"),
 		Links:              links,
 		Parent:             parent,

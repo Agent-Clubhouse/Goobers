@@ -1,3 +1,4 @@
+import type { PRRepairCommand } from "./prRepairTypes";
 import {
   DaemonApiError,
   RequestCancelledError,
@@ -111,6 +112,56 @@ interface FixtureRunCursor {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+
+  async listSuggestionArtifacts(): Promise<import("./types").SuggestionInventory> { throw new Error("Artifact review requires a connected daemon."); }
+  async loadSuggestions(): Promise<import("./types").SuggestionBatch> { throw new Error("Artifact review requires a connected daemon."); }
+  async previewSuggestion(): Promise<import("./types").SuggestionPreview> { throw new Error("Artifact review requires a connected daemon."); }
+  async decideSuggestion(): Promise<import("./types").SuggestionReview> { throw new Error("Artifact review requires a connected daemon."); }
+  async getSuggestionReview(): Promise<import("./types").SuggestionReview> { throw new Error("Artifact review requires a connected daemon."); }
+  async previewMetadataChange(): Promise<import("./types").MetadataPreview> { throw new Error("Source previews require a connected daemon."); }
+  async submitMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Source proposals require a connected daemon."); }
+  async getMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Proposal receipts require a connected daemon."); }
+  async checkMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Proposal checks require a connected daemon."); }
+  async continueMetadataProposal(): Promise<import("./types").MetadataProposalCommand> { throw new Error("Source proposals require a connected daemon."); }
+  async getStartQueue(gaggle: string): Promise<import("./types").StartQueuePage> { return { gaggle, items: [] }; }
+  async getStartQueueItem(): Promise<import("./types").StartQueueItem> { throw new Error("Start queue receipts require a connected daemon."); }
+  async cancelQueuedStart(_gaggle: string, _acceptance: string, _input: import("./types").StartQueueCancelInput): Promise<import("./types").StartQueueItem> { throw new Error("Start cancellation requires a connected daemon."); }
+  async getWorkbenchGraph(): Promise<import("./types").WorkbenchGraph> { throw new Error("Relationship browsing requires a connected daemon."); }
+  async getWorkbenchWriteCapabilities(_gaggle: string, _source: string, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogWriteCapabilities> { return { fields: [], relationships: [], revisionSemantics: "timestamp-preflight", maxAssignees: 10, controlLabelChanges: false }; }
+  async patchWorkbenchItem(_gaggle: string, _source: string, _item: string, _key: string, _input: import("./types").BacklogPatchInput, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogEditCommand> { throw new Error("Source editing requires a connected daemon."); }
+  async getWorkbenchCommand(_gaggle: string, _source: string, _command: string, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogEditCommand> { throw new Error("Command receipts require a connected daemon."); }
+  async getPRRepairCommand(): Promise<PRRepairCommand> { throw new Error("Repair recovery requires a connected daemon."); }
+  async checkPRRepairCommand(): Promise<PRRepairCommand> { throw new Error("Repair recovery requires a connected daemon."); }
+  async inspectPullRequest(): Promise<import("./types").SessionPRRepairInspection> { throw new Error("PR inspection requires a connected daemon."); }
+  async listWorkbenchSources(): Promise<import("./types").WorkbenchSourcePage> { return { items: [], generation: "fixture" }; }
+  async getWorkbenchDocuments(): Promise<import("./types").WorkbenchDocumentPage> { throw new Error("Document browsing requires a connected daemon."); }
+  async getWorkbenchItems(): Promise<import("./types").BacklogPage> { throw new Error("Source browsing requires a connected daemon."); }
+  async getWorkbenchItem(): Promise<import("./types").BacklogItem> { throw new Error("Source browsing requires a connected daemon."); }
+
+
+  async getInteractiveCapabilities(gaggle: string): Promise<import("./types").InteractiveCapabilities> {
+    return { gaggle, policyConfigured: false, viewer: true, operator: false, sourceWriteMode: "pull-request", actions: [] };
+  }
+  async listSessions(): Promise<import("./types").SessionPage> { return { items: [] }; }
+  async getSession(): Promise<import("./types").InteractiveSession> { throw new Error("Sessions are unavailable in the fixture portal."); }
+  async getSessionMessages(): Promise<import("./types").SessionMessagePage> { return { items: [] }; }
+  async createSession(_gaggle: string, _key: string, _input: import("./types").SessionCreateRequest): Promise<import("./types").SessionAcceptance> { throw new Error("Session commands require a connected daemon."); }
+  async sendSessionMessage(_gaggle: string, _session: string, _key: string, _input: import("./types").SessionMessageRequest): Promise<import("./types").SessionAcceptance> { throw new Error("Session commands require a connected daemon."); }
+  async closeSession(_gaggle: string, _session: string, _key: string, _input: import("./types").SessionCloseRequest): Promise<import("./types").SessionAcceptance> { throw new Error("Session commands require a connected daemon."); }
+
+ async checkChildPublication(_runId: string, _key: string, _command: import("./types").ChildPublicationCheckRequest): Promise<import("./types").ChildPublicationCheckResult> {
+  throw new Error("Publication checks are unavailable in this read-only snapshot.");
+ }
+	async getChildWorkflows(): Promise<import("./types").ChildWorkflowPage> {
+		throw new Error("Child workflow custody is unavailable in this read-only snapshot.");
+	}
+  async getInteractiveRun(): Promise<import("./types").InteractiveRunView> {
+    throw new Error("Interactive operations are unavailable in this read-only snapshot.");
+  }
+  async commandInteractiveRun(): Promise<import("./types").InteractiveRunCommandResult> {
+    throw new Error("Interactive operations are unavailable in this read-only snapshot.");
+  }
+
   constructor(private readonly fixtures: DaemonFixtures) {
     assertSupportedContractVersion(fixtures.health);
     assertSupportedContractVersion(fixtures.instance);

@@ -296,7 +296,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		RecoveryEvents:   recoveryRunEvents(l),
 		RunControls:      cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
-			exec, err := buildDeterministicExecutor(deterministicExecutorInput{
+			exec, err := buildAutomationDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
@@ -315,6 +315,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
+				ChildWorkflows: childWorkflowAccessFor(instanceRoot, reg),
 			})
 			if err != nil {
 				return nil, err

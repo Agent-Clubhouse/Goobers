@@ -47,6 +47,9 @@ func retainedExecutionGenerationPins(ctx context.Context, layout instance.Layout
 		return nil, err
 	}
 	pins := make(map[string]bool)
+	if err := retainEventGenerationPins(ctx, layout, pins); err != nil {
+		return nil, err
+	}
 	for _, root := range roots {
 		entries, err := os.ReadDir(root)
 		if err != nil {
@@ -132,6 +135,11 @@ func generationResolverFor(layout instance.Layout, retainer *configgeneration.Re
 		return nil
 	}
 	return func(ctx context.Context, identity journal.RunIdentity) (executionGenerationRuntime, error) {
+		// Generated runs require retained source plus parent-generation custody;
+		// their display names must never select a mutable catalog definition.
+		if identity.Child != nil || identity.Session != nil {
+			return executionGenerationRuntime{}, errors.New("generated child recovery requires retained proposal resolver")
+		}
 		directory, lease, err := retainer.Store.Acquire(ctx, identity.ConfigGeneration)
 		if err != nil {
 			return executionGenerationRuntime{}, err
@@ -167,14 +175,30 @@ func (r *daemonRunnerRegistry) setGenerationResolver(resolve executionGeneration
 }
 
 func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity journal.RunIdentity) (executionGenerationRuntime, error) {
+	if identity.Session != nil {
+		return executionGenerationRuntime{}, errors.New("interactive session recovery is observed through its durable conversation queue; submit another message after custody settles")
+	}
 	if r == nil {
 		return executionGenerationRuntime{}, errors.New("no registry for pinned execution generation")
 	}
 	r.mu.RLock()
 	resolve := r.resolveGeneration
+	reconcile := r.reconcileContained
+	if identity.Child != nil {
+		resolve = r.resolveChildGeneration
+	} else if runner.IsStageRestart(identity) {
+		resolve = r.resolveInteractiveGeneration
+	} else if identity.Event != nil {
+		resolve = r.resolveEventGeneration
+	}
 	r.mu.RUnlock()
 	if resolve == nil {
 		return executionGenerationRuntime{}, errors.New("no resolver for pinned execution generation")
+	}
+	if identity.Child == nil && reconcile != nil {
+		if err := reconcile(ctx, identity); err != nil {
+			return executionGenerationRuntime{}, err
+		}
 	}
 	return resolve(ctx, identity)
 }

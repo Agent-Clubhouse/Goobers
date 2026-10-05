@@ -19,6 +19,7 @@ import (
 )
 
 type stageProviderConfig struct {
+	adoSource    providers.ADOCredentialSource
 	root         string
 	repo         providers.RepositoryRef
 	readOnly     bool
@@ -474,10 +475,14 @@ func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provid
 	if err != nil {
 		return nil, err
 	}
+	configureStageADOReadCache(cfg.root, provider)
 	return provider, nil
 }
 
 func newBrokeredADOProviderForStage(cfg stageProviderConfig) (*providers.ADOProvider, error) {
+	if cfg.adoSource != nil {
+		return newADOProviderForStage(cfg.repo, cfg.adoSource)
+	}
 	token, err := stageProviderToken(cfg)
 	if err != nil {
 		return nil, err
@@ -649,3 +654,9 @@ func stageProviderStampedLogin(stamped string, repo providers.RepositoryRef) sta
 // where a malformed identity matches nothing and every trusted-comment check
 // silently reads as "not mine".
 var githubLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$`)
+
+// withStageProviderADOCredential supplies the host broker's explicit scheme;
+// contained publication must never infer it from the daemon process environment.
+func withStageProviderADOCredential(source providers.ADOCredentialSource) stageProviderOption {
+	return func(cfg *stageProviderConfig) { cfg.adoSource = source }
+}

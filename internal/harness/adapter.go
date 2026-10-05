@@ -66,6 +66,10 @@ var ErrInvalidCompletion = errors.New("harness: completion file failed validatio
 // an already-prepared workspace (worktree creation and its BaseRef/branch are
 // the runner's concern via internal/worktree, not this package's).
 type RunRequest struct {
+	// IsolatedHome is an empty launcher-owned home for interactive identity execution.
+	IsolatedHome string `json:"-"`
+	// CredentialAudiences is a trusted per-capability provider binding for split code/backlog sources.
+	CredentialAudiences map[string]apiv1.Provider `json:"-"`
 	// Mode selects the completion contract this session must satisfy.
 	Mode Mode
 	// Envelope is the invocation envelope (goal, context pointers, declared
@@ -98,6 +102,11 @@ type RunRequest struct {
 	// eligibility alone (#2774) — an adapter that never registers the server
 	// must never instruct the model to call tools that don't exist there.
 	GoobersIORegistered bool
+	// ChildWorkflows is trusted launcher access, never model/config-authored policy.
+	// It is excluded from generic request serialization and rendered prompts.
+	ChildWorkflows *mcpio.ChildWorkflowAccess `json:"-"`
+	// SessionOperations is host-bound access for one human-attributed invocation.
+	SessionOperations *mcpio.SessionOperationAccess `json:"-"`
 	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
 	MCPReadinessSink func(MCPReadiness) error
 	// Workspace is the working directory the harness runs in — normally

@@ -1,10 +1,12 @@
-# The goobers-io MCP: run identity and artifact I/O for agentic stages
+# The goobers-io MCP: stage I/O and optional child workflows
 
 `goobers-io` is a generic MCP server the harness wires into every agentic
 stage automatically. It exposes the stage's run identity and replaces "the
 model writes a file with whatever generic editing tool it reaches for, then
 reports a path it hopes is right" with a small, dedicated tool surface:
 `get_run_info`, `publish_output`, `list_inputs`, `read_input`, and `grep_input`.
+An opted-in stage can additionally receive three child workflow tools through
+trusted launcher access; see [Child workflow tools](#child-workflow-tools).
 
 ## Why it exists
 
@@ -49,7 +51,8 @@ closed when their corresponding output or input is absent.
 through the validation built for genuinely external, possibly-untrusted MCP
 servers (credential isolation, `COPILOT_HOME` scoping) — checks that are
 correct for that case and actively wrong for a server the harness
-constructs itself with no credentials of its own. The auto-wiring exists
+constructs itself. Ordinary artifact I/O needs no credentials; child workflow
+access is separately supplied by the trusted launcher. The auto-wiring exists
 specifically so no goober or workflow author ever needs to think about
 this; if a stage isn't getting the tools you expect, the fix is to check
 whether it actually has an eligible `artifactFile` input or upstream
@@ -229,23 +232,53 @@ either delete it or add the package rather than letting the warning ride.
 [Skill package format](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/shared-goobers.md#skill-package-format) for what the
 loader actually resolves and reads from it.
 
+## Child workflow tools
+
+These tools appear only when the launcher supplies a signed child-workflow
+access grant for the current stage. Declaring a tool name, changing a model
+prompt, or adding authority fields to tool arguments cannot enable them.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `validate_child_workflow` | `sourceFile` | Advisory validation diagnostics; no child is accepted. |
+| `start_child_workflow` | `sourceFile`, `invocationKey` | A durable custody receipt; a queued child has not necessarily started. |
+| `get_child_workflow` | `invocationKey` | Current custody for an invocation owned by this parent stage occurrence. |
+
+Write the generated Workflow DSL to a regular UTF-8 file inside the workspace,
+with a maximum size of 1 MiB. `sourceFile` is workspace-relative and cannot read
+`.goobers` runtime files or `.git` control files. Validation and start use the
+same daemon validation service. Start validates again: a successful advisory
+check is not an authorization receipt.
+
+Use one stable `invocationKey` for a logical child submission. Retry an uncertain
+start with that same key and unchanged source, or inspect it with
+`get_child_workflow`. A different source with the same key is a conflict. The
+key is at most 256 bytes and cannot contain control characters or whitespace
+padding. Run identity, daemon endpoint, grant, and policy are never model
+arguments.
+
+Each call is bounded by a ten-second transport deadline. Status reads do not
+hold a durable wait, retrieve result/workspace references, resolve a child, or
+merge changes. `await` and `resolve` are not advertised. This client surface
+alone does not enable execution: the daemon must wire the child service and
+the stage launcher must issue current, scoped access.
+
 ## Security notes
 
-- `goobers-io` carries no credential and needs none — it never touches
-  `internal/mcpconfig`'s credential-isolation validation, which exists for
-  genuinely external MCP servers a goober declares, not for this one.
+- Ordinary stage I/O carries no credential. Optional child access uses a signed,
+  run-bound bearer stored only in the mode-0600 runtime config under
+  `.goobers/mcp-io`. It is excluded from prompts, registration arguments, and
+  run-info responses. The daemon checks cryptography and current stage authority
+  on every call. The client refuses redirects and bounds response bytes.
 - Every path `publish_output`/`read_input`/`grep_input` touches is resolved
   and validated against the workspace root — lexical escape, a symlinked
   ancestor (existing or not-yet-existing), and an already-symlinked leaf
   are all rejected outright rather than silently followed.
-- The tools carry no elevated capability beyond ordinary file I/O scoped to
-  the stage's own workspace; granting them needs no `tools:` declaration or
-  SEC-030-style review, unlike `shell` or `github`.
+- The five ordinary tools stay scoped to stage I/O. Child tools require the
+  additional launcher grant and cannot select another run, actor, or policy.
 
-## Where this is going
+## Extension boundary
 
-This is the first, deliberately narrow generic MCP surface — fixed tool
-set, no per-workflow customization. A goober or workflow author who needs
-a different, typed tool the runner materializes for their own purpose is a
-different, larger feature than what's described here; if that's what you
-need, don't try to bend `goobers-io` to fit it — ask first.
+Child workflow operations use a fixed transport contract shared with the daemon.
+Additional lifecycle operations should appear only when their corresponding
+server routes and authority checks exist.

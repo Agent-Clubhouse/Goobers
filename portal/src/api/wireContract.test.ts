@@ -13,6 +13,27 @@ const checkedErrorEnvelope: ApiErrorEnvelope = checkedFixtures.errorEnvelope;
 describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
+      "suggestionSelection", "suggestionInventory", "suggestionBatch", "suggestionPreviewRequest", "suggestionPreview", "suggestionDecision", "suggestionReview",
+      "prRepairCommand",
+      "startQueue", "startQueueItem", "startQueueCancel",
+      "gaggleEventEnvelope", "gaggleEventReceipt",
+      "metadataChange", "metadataObjective", "metadataAlias", "metadataPreview", "metadataProposal",
+      "workbenchGraph", "workbenchDocuments", "workbenchSources", "workbenchItems", "workbenchItem",
+      "sessionCreate", "sessionInput", "sessionClose", "session", "sessions", "sessionMessages", "sessionAccepted",
+      "workbenchWriteCapabilities", "workbenchPatch", "workbenchCommand",
+      "childPublicationCheck",
+      "childPublicationResult",
+      "childWorkflowPage",
+      "interactiveRun",
+      "interactiveRunCommand",
+      "interactiveRunResult",
+      "interactiveCapabilities",
+      "childWorkflowSource",
+      "childWorkflowResolve",
+      "childWorkflowResolution",
+      "childWorkflowStatus",
+      "childWorkflowValidation",
+      "childWorkflow",
       "triggerRequest",
       "triggerResponse",
       "triggerStatus",
@@ -48,6 +69,17 @@ describe("Go daemon wire contract", () => {
       "eventInvalidation",
       "errorEnvelope",
     ]);
+    expect(checkedFixtures.workbenchGraph.edges[0].owner).toMatchObject({ kind: "manifest", sourceBindingId: "links", path: "links.yaml" });
+    expect(checkedFixtures.workbenchGraph.edges[0].to.resolved).toBe(false);
+    expect(checkedFixtures.workbenchGraph.partial).toBe(true);
+    expect(checkedFixtures.workbenchGraph).not.toHaveProperty("credentials");
+    expect(checkedFixtures.workbenchCommand).toMatchObject({ state: "unknown", receipt: { providerAcknowledged: false, observedMatches: true } });
+    expect(checkedFixtures.workbenchSources.items[0]).toHaveProperty("bindingId");
+    expect(checkedFixtures.workbenchItem.ref).toHaveProperty("sourceId");
+    expect(checkedFixtures.workbenchItems).toHaveProperty("sourceTargetDigest");
+    expect(checkedFixtures.childWorkflowValidation).toMatchObject({ valid: false, advisory: true });
+    expect(checkedFixtures.childWorkflow).toMatchObject({ state: "queued", invocationKey: "inspect-1", cancellationRequested: false });
+    expect(checkedFixtures.childWorkflow).not.toHaveProperty("source");
     expect(checkedFixtures.health.apiVersion).toBe("v1");
     expect(checkedFixtures.triggerResponse).toMatchObject({ state: "accepted", duplicate: true });
     expect(checkedFixtures.triggerResponse).not.toHaveProperty("runId");

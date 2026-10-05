@@ -69,6 +69,9 @@ type Config struct {
 	// RolesClaim names the claim carrying role values (e.g. "roles",
 	// "groups"). Empty defaults to "roles".
 	RolesClaim string
+	// GroupsClaim names the verified group-membership claim. Empty uses groups.
+	// It is independent from RolesClaim; instance roles do not imply groups.
+	GroupsClaim string
 	// Roles maps claim values onto instance roles.
 	Roles RoleMapping
 	// HTTPClient overrides the discovery/JWKS client. Nil uses a bounded
@@ -79,12 +82,13 @@ type Config struct {
 // Authenticator validates bearer tokens for one issuer. It implements
 // httpapi.Authenticator and is safe for concurrent use.
 type Authenticator struct {
-	issuer     string
-	audience   string
-	rolesClaim string
-	roles      map[string][]httpapi.Role
-	client     *http.Client
-	parser     *jwt.Parser
+	issuer      string
+	audience    string
+	rolesClaim  string
+	groupsClaim string
+	roles       map[string][]httpapi.Role
+	client      *http.Client
+	parser      *jwt.Parser
 
 	mu      sync.Mutex
 	jwksURI string
@@ -123,6 +127,13 @@ func New(cfg Config) (*Authenticator, error) {
 	if rolesClaim == "" {
 		rolesClaim = "roles"
 	}
+	if len(cfg.GroupsClaim) > 256 || strings.TrimSpace(cfg.GroupsClaim) != cfg.GroupsClaim {
+		return nil, errors.New("OIDC groups claim must be bounded unpadded text")
+	}
+	groupsClaim := cfg.GroupsClaim
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
 	roles := make(map[string][]httpapi.Role)
 	for _, group := range []struct {
 		role   httpapi.Role
@@ -160,11 +171,12 @@ func New(cfg Config) (*Authenticator, error) {
 		return nil
 	}
 	return &Authenticator{
-		issuer:     cfg.Issuer,
-		audience:   cfg.Audience,
-		rolesClaim: rolesClaim,
-		roles:      roles,
-		client:     &secureClient,
+		issuer:      cfg.Issuer,
+		audience:    cfg.Audience,
+		rolesClaim:  rolesClaim,
+		groupsClaim: groupsClaim,
+		roles:       roles,
+		client:      &secureClient,
 		parser: jwt.NewParser(
 			jwt.WithValidMethods(signingAlgorithms),
 			jwt.WithIssuer(cfg.Issuer),
@@ -199,6 +211,7 @@ func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal,
 		Issuer:  a.issuer,
 		Name:    displayName(claims),
 		Roles:   a.mapRoles(claims),
+		Groups:  verifiedGroups(claims[a.groupsClaim]),
 	}, nil
 }
 

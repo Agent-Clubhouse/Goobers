@@ -114,7 +114,7 @@ func TestBacklogParkFilterRoutingAndRefillAgree(t *testing.T) {
 			}}
 			cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "team", Name: "repo"}}}
 			routes, _, routeErr := compileRoutingScopes(localBacklogRoutingScopes(gaggle, []apiv1.Workflow{wf}))
-			counter, counterErr := buildRefillDemandCounter(cfg, gaggle, &wf, project, nil, nil, "", "", nil)
+			counter, counterErr := buildRefillDemandCounter(cfg, gaggle, &wf, project, nil, nil, "", "", nil, "generation-test")
 			if filter == "invalid" {
 				if routeErr == nil || counterErr == nil {
 					t.Fatalf("invalid filter accepted: route=%v refill=%v", routeErr, counterErr)

@@ -1,0 +1,20 @@
+.child-workflows-panel {
+  margin-block: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+}
+.child-workflows-heading,
+.child-workflows-list li > div,
+.child-workflows-panel nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.child-workflows-heading h2 { margin: 0; }
+.child-workflows-list { list-style: none; padding: 0; }
+.child-workflows-list li { border-block-start: 1px solid var(--line); padding-block: 1rem; overflow-wrap: anywhere; }
+.child-workflows-list li p { margin-block: 0.5rem; }
+.child-workflows-list li > a { display: block; margin-block-start: 0.5rem; }

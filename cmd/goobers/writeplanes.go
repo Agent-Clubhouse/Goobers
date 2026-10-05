@@ -580,6 +580,9 @@ func (s *daemonTriggerService) lifecycleContext(requestCtx context.Context) cont
 	if holder := s.dispatchCtx.Load(); holder != nil && holder.ctx != nil {
 		return holder.ctx
 	}
+	if execution, ok := requestCtx.Value(triggerExecutionContextKey{}).(context.Context); ok {
+		return execution
+	}
 	return requestCtx
 }
 

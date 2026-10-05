@@ -32,6 +32,17 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
+		if prRepairRecoveryRoute(route.ID) || eventIngressRoute(route.ID) || workbenchSuggestionRoute(route.ID) || workbenchProposalRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
+		}
+		if sessionOperationRoute(route.ID) {
+			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
+			operation["x-goobers-session-grant"] = "live-turn"
+		}
+		if childWorkflowRoute(route.ID) {
+			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
+			operation["x-goobers-stage-grant"] = "goobers-child"
+		}
 		if route.Capability != "" {
 			operation["x-goobers-capability"] = route.Capability
 		}
@@ -82,7 +93,7 @@ func openAPIParameters(route Route) []map[string]any {
 		})
 	}
 	switch route.ID {
-	case RouteGaggles, RouteGaggleGoobers, RouteGaggleWorkflows:
+	case RouteGaggles, RouteGaggleGoobers, RouteGaggleWorkflows, RouteStartQueue:
 		parameters = append(parameters,
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}},
 			map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
@@ -97,7 +108,22 @@ func openAPIParameters(route Route) []map[string]any {
 			map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
 		)
 	}
+	if route.ID == RouteGaggleEventPublish {
+		parameters = append(parameters, map[string]any{"name": EventBindingHeader, "in": "header", "required": true, "schema": sessionString(128)})
+	}
+	if route.ID == RouteStartQueue {
+		for _, parameter := range parameters {
+			if parameter["name"] == "limit" {
+				parameter["schema"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "default": 25}
+			}
+		}
+	}
 	parameters = append(parameters, openAPIServiceParameters(route.ID)...)
+	parameters = append(parameters, sessionParameters(route.ID)...)
+	parameters = append(parameters, workbenchReadParameters(route.ID)...)
+	if route.ID == RouteWorkbenchSuggestionArtifacts {
+		parameters = append(parameters, map[string]any{"name": "after", "in": "query", "schema": suggestionSequence(0)})
+	}
 	if route.ID == RouteRuns {
 		for _, name := range []string{"gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger"} {
 			parameters = append(parameters, map[string]any{
@@ -121,6 +147,9 @@ func openAPIParameters(route Route) []map[string]any {
 			"schema": map[string]any{"type": "string", "maxLength": 512},
 		})
 	}
+	if route.ID == RouteChildWorkflowMonitor {
+		parameters = append(parameters, map[string]any{"name": "after", "in": "query", "schema": map[string]any{"type": "string", "maxLength": 128}})
+	}
 	if route.ID == RouteRunRecovery || route.ID == RouteRunRecoveryPublish {
 		for _, name := range []string{"repositoryKey", "issue"} {
 			parameters = append(parameters, map[string]any{
@@ -131,6 +160,9 @@ func openAPIParameters(route Route) []map[string]any {
 	}
 	if routeRequiresIdempotency(route.ID) {
 		maxLength := 200
+		if route.ID == RouteChildWorkflowStart {
+			maxLength = MaxChildWorkflowInvocationKeyBytes
+		}
 		if route.ID == RouteTriggerIngest {
 			maxLength = 128
 		}
@@ -173,8 +205,8 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
-		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit:
+	case RouteWorkbenchProposalSubmit, RouteWorkbenchPatch, RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
+		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand, RouteChildPublicationCheck, RouteSessionCreate, RouteSessionMessage, RouteSessionClose:
 		return true
 	default:
 		return false
@@ -182,8 +214,23 @@ func routeRequiresIdempotency(id RouteID) bool {
 }
 
 func openAPIRequestBody(route Route) map[string]any {
+	if route.ID == RoutePRRepairCheck {
+		return map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": closedChildObject([]string{}, map[string]any{})}}}
+	}
+	if route.ID == RouteGaggleEventPublish {
+		return map[string]any{"required": true, "content": map[string]any{"application/cloudevents+json": map[string]any{"schema": schemaRef("GaggleEventEnvelope")}, "application/json": map[string]any{"schema": schemaRef("GaggleEventEnvelope")}}}
+	}
+	if sessionOperationRoute(route.ID) {
+		return sessionOperationBody(route.ID)
+	}
 	if route.Method == http.MethodGet || route.Method == http.MethodHead {
 		return nil
+	}
+	if workbenchSuggestionRoute(route.ID) {
+		return workbenchSuggestionRequestBody(route.ID)
+	}
+	if workbenchProposalRoute(route.ID) {
+		return workbenchProposalRequestBody(route.ID)
 	}
 	if route.ID == RouteBlobPut || route.ID == RouteRunRecoveryPublish {
 		return map[string]any{
@@ -195,12 +242,45 @@ func openAPIRequestBody(route Route) map[string]any {
 			},
 		}
 	}
+	schema := openAPIJSONRequestSchema(route.ID)
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{
+			"application/json": map[string]any{"schema": schema},
+		},
+	}
+}
+
+// openAPIJSONRequestSchema selects the JSON shape independently of media type.
+func openAPIJSONRequestSchema(id RouteID) map[string]any {
 	schema := map[string]any{"type": "object", "additionalProperties": true}
-	switch route.ID {
+	switch id {
+	case RouteStartQueueCancel:
+		schema = schemaRef("StartQueueCancelInput")
+	case RouteWorkbenchPatch:
+		schema = schemaRef("BacklogPatchInput")
+	case RouteChildWorkflowAccessAcquire, RouteChildWorkflowAccessRevoke:
+		schema = closedChildObject([]string{"contractDigest"}, map[string]any{"contractDigest": map[string]any{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}})
+	case RouteChildWorkflowValidate, RouteChildWorkflowStart:
+		schema = schemaRef("ChildWorkflowSourceRequest")
+	case RouteChildWorkflowStatus:
+		schema = schemaRef("ChildWorkflowStatusRequest")
+	case RouteChildWorkflowResolve:
+		schema = schemaRef("ChildWorkflowResolveRequest")
 	case RouteTriggerIngest:
 		schema = schemaRef("TriggerRequest")
 	case RouteCancelRun:
 		schema = schemaRef("CancelRunRequest")
+	case RouteChildPublicationCheck:
+		schema = schemaRef("ChildPublicationCheckRequest")
+	case RouteSessionCreate:
+		schema = schemaRef("SessionCreateRequest")
+	case RouteSessionMessage:
+		schema = schemaRef("SessionMessageRequest")
+	case RouteSessionClose:
+		schema = schemaRef("SessionCloseRequest")
+	case RouteInteractiveRunCommand:
+		schema = schemaRef("InteractiveRunCommand")
 	case RouteOperatorMessageSubmit:
 		schema = schemaRef("OperatorMessageSubmitRequest")
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage:
@@ -212,16 +292,29 @@ func openAPIRequestBody(route Route) map[string]any {
 	case RouteGaggleBundleImport:
 		schema = schemaRef("GaggleBundleImportRequest")
 	}
-	return map[string]any{
-		"required": true,
-		"content": map[string]any{
-			"application/json": map[string]any{"schema": schema},
-		},
-	}
+	return schema
 }
 
 func openAPIResponses(route Route) map[string]any {
+	if startQueueRoute(route.ID) {
+		return startQueueResponses(route.ID)
+	}
+	if eventIngressRoute(route.ID) {
+		return eventIngressResponses(route.ID)
+	}
+	if response := workbenchResponses(route.ID); response != nil {
+		return response
+	}
+	if sessionOperationRoute(route.ID) {
+		return sessionOperationResponses(route.ID)
+	}
+	if sessionRoute(route.ID) {
+		return sessionResponses(route)
+	}
 	switch route.ID {
+	case RouteChildWorkflowAccessAcquire:
+		return map[string]any{"200": jsonResponse("Secret delivery to an authenticated parent attempt; never cache or persist", closedChildObject([]string{"endpoint", "bearerToken"}, map[string]any{"endpoint": stringSchema(), "bearerToken": map[string]any{"type": "string", "format": "password"}})), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
+
 	case RouteOpenAPI:
 		return map[string]any{
 			"200":     metadataResponse("OpenAPI 3.1 document", "application/vnd.oai.openapi+json;version=3.1", map[string]any{"type": "object"}),
@@ -248,37 +341,7 @@ func openAPIResponses(route Route) map[string]any {
 			"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
 		}
 	}
-	successSchema := map[string]any{"type": "object", "additionalProperties": true}
-	switch route.ID {
-	case RouteDiscovery:
-		successSchema = schemaRef("DiscoveryDocument")
-	case RouteCapabilities:
-		successSchema = schemaRef("CapabilityDocument")
-	case RouteHealth:
-		successSchema = schemaRef("HealthDocument")
-	case RouteInstance:
-		successSchema = schemaRef("InstanceDocument")
-	case RouteRuns:
-		successSchema = schemaRef("RunListDocument")
-	case RouteInstanceReadiness:
-		successSchema = schemaRef("InstanceReadiness")
-	case RouteTriggerIngest:
-		successSchema = schemaRef("TriggerResponse")
-	case RouteTriggerStatus:
-		successSchema = schemaRef("TriggerStatusResponse")
-	case RouteCancelRun:
-		successSchema = schemaRef("CancelRunResult")
-	case RouteOperatorMessageSubmit:
-		successSchema = schemaRef("OperatorMessageSubmitResponse")
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
-		successSchema = schemaRef("InterventionResult")
-	case RouteWorkflowEnabled:
-		successSchema = schemaRef("WorkflowEnabledResult")
-	case RouteGaggleBundleExport:
-		successSchema = schemaRef("GaggleBundle")
-	case RouteGaggleBundleImport:
-		successSchema = schemaRef("GaggleBundleImportResult")
-	}
+	successSchema := openAPIJSONResponseSchema(route.ID)
 	successResponse := jsonResponse("Successful response", successSchema)
 	if route.ID == RouteDiscovery || route.ID == RouteCapabilities {
 		successResponse = metadataResponse("Successful response", "application/json", successSchema)
@@ -287,11 +350,53 @@ func openAPIResponses(route Route) map[string]any {
 		"200":     successResponse,
 		"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
 	}
+	if childWorkflowRoute(route.ID) {
+		if route.ID == RouteChildWorkflowStart || route.ID == RouteChildWorkflowResolve {
+			delete(responses, "200")
+			responses["202"] = jsonResponse("Durable custody accepted; execution may still be queued", successSchema)
+		}
+		return responses
+	}
 	if route.Method != http.MethodGet && route.Method != http.MethodHead {
 		responses["202"] = jsonResponse("Request accepted", successSchema)
 		responses["204"] = map[string]any{"description": "Request completed without a response body"}
 	}
 	return responses
+}
+
+func openAPIJSONResponseSchema(id RouteID) map[string]any {
+	name := map[RouteID]string{
+		RouteInteractiveRun:                "InteractiveRunView",
+		RouteChildPublicationCheck:         "ChildPublicationCheckResult",
+		RouteChildWorkflowMonitor:          "ChildWorkflowPage",
+		RouteInteractiveRunCommand:         "InteractiveRunCommandResult",
+		RouteGaggleInteractiveCapabilities: "InteractiveCapabilities",
+		RouteChildWorkflowValidate:         "ChildWorkflowValidationResponse",
+		RouteChildWorkflowStart:            "ChildWorkflowResponse",
+		RouteChildWorkflowStatus:           "ChildWorkflowResponse",
+		RouteChildWorkflowResolve:          "ChildWorkflowResolutionResponse",
+		RouteDiscovery:                     "DiscoveryDocument",
+		RouteCapabilities:                  "CapabilityDocument",
+		RouteHealth:                        "HealthDocument",
+		RouteInstance:                      "InstanceDocument",
+		RouteRuns:                          "RunListDocument",
+		RouteInstanceReadiness:             "InstanceReadiness",
+		RouteTriggerIngest:                 "TriggerResponse",
+		RouteTriggerStatus:                 "TriggerStatusResponse",
+		RouteCancelRun:                     "CancelRunResult",
+		RouteOperatorMessageSubmit:         "OperatorMessageSubmitResponse",
+		RouteApproveStage:                  "InterventionResult",
+		RouteOverrideStage:                 "InterventionResult",
+		RouteRerunStage:                    "InterventionResult",
+		RouteResolveEscalation:             "InterventionResult",
+		RouteWorkflowEnabled:               "WorkflowEnabledResult",
+		RouteGaggleBundleExport:            "GaggleBundle",
+		RouteGaggleBundleImport:            "GaggleBundleImportResult",
+	}[id]
+	if name != "" {
+		return schemaRef(name)
+	}
+	return map[string]any{"type": "object", "additionalProperties": true}
 }
 
 func jsonResponse(description string, schema map[string]any) map[string]any {
@@ -355,7 +460,7 @@ func mergeSchemaProperties(left, right map[string]any) map[string]any {
 func openAPISchemas(authenticated bool) map[string]any {
 	return mergeSchemaProperties(
 		mergeSchemaProperties(openAPIDiscoverySchemas(), openAPIRemoteReadSchemas()),
-		openAPIOperationSchemas(authenticated),
+		mergeSchemaProperties(openAPIOperationSchemas(authenticated), mergeSchemaProperties(openAPIChildWorkflowSchemas(), openAPIInteractiveSchemas())),
 	)
 }
 

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/apicontract/basewire"
 )
 
 // HTTPArchiveSource downloads recovery state using the receiving run's claims
@@ -64,7 +64,7 @@ func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issue
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		if response.StatusCode == http.StatusConflict {
-			var envelope apicontract.ErrorEnvelope
+			var envelope basewire.ErrorEnvelope
 			if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&envelope); err == nil && envelope.Error.Code == OverflowPendingCode {
 				if pending, ok := ParsePromotionState(response.Header.Get(PromotionStateHeader)); ok {
 					return pending
@@ -104,7 +104,7 @@ func (s HTTPArchiveSource) endpoint(repositoryKey, issueID string) (string, erro
 	if !runIdentity.MatchString(s.RunID) || strings.TrimSpace(s.Token) == "" || strings.ContainsAny(s.Token, "\r\n") || repositoryKey == "" || len(repositoryKey) > 4096 || issueID == "" || len(issueID) > 256 {
 		return "", fmt.Errorf("recovery download requires a run, claims bearer, repository and issue")
 	}
-	base.Path = strings.TrimRight(base.Path, "/") + strings.ReplaceAll(apicontract.RunRecoveryPath, "{run}", s.RunID)
+	base.Path = strings.TrimRight(base.Path, "/") + strings.ReplaceAll(basewire.RunRecoveryPath, "{run}", s.RunID)
 	base.RawPath = ""
 	query := url.Values{"repositoryKey": {repositoryKey}, "issue": {issueID}}
 	base.RawQuery = query.Encode()

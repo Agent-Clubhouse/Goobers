@@ -108,12 +108,12 @@ func blobGetHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFun
 			writeError(w, http.StatusInternalServerError, "blob_read_failed", "blob could not be read")
 			return
 		}
-		// Content is content-addressed and immutable: once a digest resolves,
-		// its bytes never change, so the response can be cached forever.
+		// Content identity is immutable; authorization is not. Never let a
+		// shared cache bypass the authenticated run's custody boundary.
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("ETag", `"`+digest+`"`)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(data)

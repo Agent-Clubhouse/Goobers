@@ -117,6 +117,10 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 				return
 			}
 		}
+		if err := validateContainedJournal(request, input); err != nil {
+			writeError(w, http.StatusForbidden, "contained_pod_scope", err.Error())
+			return
+		}
 		response, err := journal.Emit(request.Context(), input)
 		if err != nil {
 			writeJournalPlaneError(w, errorLog, err)

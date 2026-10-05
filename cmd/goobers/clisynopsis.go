@@ -59,7 +59,7 @@ var synopsisByID = map[string]string{
 	"approve":                "  goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]  approve a paused or escalated gate\n",
 	"override":               "  goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]  override a nondeterministic gate\n",
 	"rerun-stage":            "  goobers rerun-stage --addendum=<text> [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]  rerun a stage with an instruction addendum\n",
-	"signal":                 "  goobers signal <name> [path]  fire an external signal, dispatching every\n                                subscribed type=signal-trigger workflow\n",
+	"signal":                 "  goobers signal [--request-id key] <name> [path]  queue an external signal, dispatching every\n                                subscribed type=signal-trigger workflow\n",
 	"workflow show":          "  goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG\n",
 	"runs list":              "  goobers runs list [--api=<url>] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [path]\n                                alias for the status run table (same flags, no --watch)\n",
 	"runs du":                "  goobers runs du [--json] [path]       report per-run journal and artifact bytes\n",

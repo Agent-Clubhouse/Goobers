@@ -1768,6 +1768,8 @@ func TestRemediationCheckpointClassifiesTerminalPRPastCachedList(t *testing.T) {
 
 			const snapshotID = "tick-before-checkpoint"
 			t.Setenv(providersnapshot.EnvVar, snapshotID)
+			t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+			t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-test")
 			repo, err := providerRepo(instanceRoot)
 			if err != nil {
 				t.Fatalf("providerRepo: %v", err)

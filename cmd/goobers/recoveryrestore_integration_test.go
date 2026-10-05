@@ -64,8 +64,8 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 		// executor, not the host token named by instance.yaml.
 		t.Setenv("GOOBERS_CRED_REPO_PUSH", stageToken)
 		previousHostToken := os.Getenv("GOOBERS_GITHUB_TOKEN")
-		os.Unsetenv("GOOBERS_GITHUB_TOKEN")
-		t.Cleanup(func() { os.Setenv("GOOBERS_GITHUB_TOKEN", previousHostToken) })
+		_ = os.Unsetenv("GOOBERS_GITHUB_TOKEN")
+		t.Cleanup(func() { _ = os.Setenv("GOOBERS_GITHUB_TOKEN", previousHostToken) })
 		t.Setenv("GOOBERS_REPO_PROVIDER", "")
 		t.Setenv("GOOBERS_REPO_OWNER", "")
 		t.Setenv("GOOBERS_REPO_PROJECT", "")

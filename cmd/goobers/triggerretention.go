@@ -12,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -26,7 +27,7 @@ func openTriggerPruneGuard(layout instance.Layout, dryRun bool, now time.Time) (
 		return nil, noop, err
 	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return nil, noop, nil
+		return guardSessionJournalWithoutQueue, noop, nil
 	} else if err != nil {
 		return nil, noop, err
 	}
@@ -42,6 +43,24 @@ func openTriggerPruneGuard(layout instance.Layout, dryRun bool, now time.Time) (
 }
 
 func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Store, candidate retention.Result, now time.Time) error {
+	if err := guardParentContributionPrune(candidate); err != nil {
+		return err
+	}
+	if err := protectChildJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
+	if err := protectSessionJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
+	if err := protectSuggestionJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
+	if err := protectEventJournal(ctx, queue, candidate); err != nil {
+		return err
+	}
+	if err := markRestartSourcePruning(ctx, queue, candidate, now); err != nil {
+		return err
+	}
 	record, err := queue.ForRun(ctx, candidate.RunID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
@@ -63,12 +82,8 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 	if err != nil {
 		return err
 	}
-	var payload acceptedTriggerPayload
-	if err := json.Unmarshal(record.Payload, &payload); err != nil {
+	if err = verifyTriggerPruneIdentity(identity, record, candidate.RunID); err != nil {
 		return err
-	}
-	if identity.RunID != candidate.RunID || identity.Workflow != payload.Request.Workflow || (payload.Request.Gaggle != "" && identity.Gaggle != payload.Request.Gaggle) {
-		return fmt.Errorf("trigger custody for run %s has mismatched journal identity", candidate.RunID)
 	}
 	err = queue.Finish(ctx, record.ID, triggerqueue.Dispatched, candidate.RunID, "", now)
 	if errors.Is(err, triggerqueue.ErrTransition) {
@@ -79,4 +94,24 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 		}
 	}
 	return err
+}
+
+func verifyTriggerPruneIdentity(identity journal.RunIdentity, record triggerqueue.Record, runID string) error {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return err
+	}
+	if header.Kind == startintent.Kind {
+		return startintent.VerifyIdentity(identity, record)
+	}
+	var payload acceptedTriggerPayload
+	if err := json.Unmarshal(record.Payload, &payload); err != nil {
+		return err
+	}
+	if identity.RunID != runID || identity.Workflow != payload.Request.Workflow || (payload.Request.Gaggle != "" && identity.Gaggle != payload.Request.Gaggle) {
+		return fmt.Errorf("trigger custody for run %s has mismatched journal identity", runID)
+	}
+	return nil
 }

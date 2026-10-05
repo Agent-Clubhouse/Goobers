@@ -30,6 +30,10 @@ type Capability string
 // internal/workflow/compile.go), so a definition can never drift ahead of this
 // registry. Runner-only entries must also be excluded by StageDeclarable.
 const (
+	// EventPublish permits gaggle-local publication subject to the configured
+	// workflow/type allowlist. It carries no provider credential.
+	EventPublish Capability = "event:publish"
+
 	// RepoRead grants a read-only checkout of the target repository's per-stage
 	// worktree — no push. Added for the work-nomination workflow (issue #26):
 	// its nominator goober analyzes the codebase for gaps but writes issues
@@ -171,6 +175,7 @@ const (
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
 	return []Capability{
+		EventPublish,
 		RepoRead, RepoPush, ConfigRepoRead, ConfigRepoWrite,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRRead, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		GitHubCodeScanningRead, GitHubDependabotAlertsRead,

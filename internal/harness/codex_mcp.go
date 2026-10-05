@@ -62,8 +62,8 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 			return nil, nil, nil, fmt.Errorf("harness: codex: %w", err)
 		}
 		if ok {
-			writeCodexStdioServer(&config, goobersIOServerName, runtime.Command, runtime.Args, nil, nil)
-			overrides = appendCodexStdioOverrides(overrides, goobersIOServerName, runtime.Command, runtime.Args, nil, nil)
+			writeCodexStdioServer(&config, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools))
+			overrides = appendCodexStdioOverrides(overrides, goobersIOServerName, runtime.Command, runtime.Args, nil, childCodexTools(req, runtime.Tools))
 		}
 	}
 
@@ -187,4 +187,12 @@ func writeCodexStringArray(config *strings.Builder, name string, values []string
 		config.WriteString(tomlQuote(value))
 	}
 	config.WriteString("]\n")
+}
+
+// Preserve ordinary registration exactly; opted-in sessions pin their expanded list.
+func childCodexTools(req RunRequest, tools []string) []string {
+	if req.ChildWorkflows == nil && req.SessionOperations == nil {
+		return nil
+	}
+	return tools
 }

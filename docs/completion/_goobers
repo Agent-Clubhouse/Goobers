@@ -24,7 +24,7 @@ _goobers_completion()
             'dashboard:serve and open the local operations portal'
             'run:trigger a run manually; --force bypasses cadence budgets'
             'signal:fire an external signal to subscribed workflows'
-            'workflow:inspect workflows'
+            'workflow:inspect workflows and validate child proposals'
             'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'
             'stats:show the instance lifetime summary card'
             'cost:show bounded cost attribution by pull request or issue'
@@ -183,9 +183,13 @@ _goobers_completion()
         rerun-stage)
             flags+=(--addendum --actor --api)
             ;;
+        signal)
+            flags+=(--request-id)
+            ;;
         workflow)
             case "${words[3]:-}" in
                 show) flags+=(--dot) ;;
+                validate-child) flags+=(--gaggle --parent --stage --backend --json) ;;
             esac
             ;;
         runs)
@@ -468,7 +472,7 @@ _goobers_completion()
             ;;
         workflow)
             if (( CURRENT == 3 )); then
-                candidates=(show)
+                candidates=(show validate-child)
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then

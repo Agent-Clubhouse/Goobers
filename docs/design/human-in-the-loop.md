@@ -347,3 +347,29 @@ separate path. Tier 3 waits for cloud + identity (post-V2).
 - Do tier-2 actions need the human-gate engine (#168) fully, or a lighter "resume-from-terminal" primitive
   first? Leaning: a `resume-from-terminal` primitive is the true dependency; the human-*gate* evaluator is
   adjacent but separable.
+
+### HAW selected-PR repair provider boundary
+
+The local provider foundation supports a human-selected, same-repository GitHub
+or ADO PR. Inspection verifies native repository and PR identity, head/base
+branches and the exact head commit; forks are refused. Current `pr.repair`
+authority may cover any explicitly selected same-repository PR, including one
+created outside Goobers. The session acceptance and live host tool layers remain
+separate delivery slices.
+
+A repair is bounded to 32 regular UTF-8 file additions, edits or deletions and
+1 MiB of proposed content. Existing edits require exact prior blob IDs. The
+provider creates a descendant using GitHub `createCommitOnBranch.expectedHeadOid`
+or ADO `refUpdates.oldObjectId`; a moved head refuses the write. Each native
+mutation is attempted once, with separate read-only inspection after an uncertain
+response. Reconciliation verifies the command marker, exact parent and entire
+changed-file set. No merge, check override or source credential is delegated to
+the model.
+
+The first adapter refuses executable-file edits, binary content, symlinks and
+submodules. Existing executable files may be read or deleted; they are not
+silently rewritten with a different mode. PR-open state is checked before the
+write, while the head comparison is atomic; the provider does not atomically
+couple PR closure/merge state to the branch update. Host installation must also
+exclude active automation/worktree ownership and retain actual human selection
+and command history before exposing the repair tools.

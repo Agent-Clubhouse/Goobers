@@ -38,7 +38,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers": "true"}}},
 		}}
-		c, err := buildBacklogCounter(&instance.Config{}, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, "")
+		c, err := buildBacklogCounter(&instance.Config{}, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, "", "generation-test")
 		if err != nil {
 			t.Fatalf("buildBacklogCounter: %v", err)
 		}
@@ -55,7 +55,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
 		}}
-		c, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, "")
+		c, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, "", "generation-test")
 		if err != nil {
 			t.Fatalf("buildBacklogCounter: %v", err)
 		}
@@ -86,7 +86,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 			t.Fatalf("NewResolver: %v", err)
 		}
 		quota := localscheduler.NewProviderQuotaState()
-		c, err := buildBacklogCounter(cfg, gaggle, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota, "")
+		c, err := buildBacklogCounter(cfg, gaggle, wf, repoRef, resolver, &backlogTestRegistrar{}, "/instance/scheduler", quota, "", "generation-test")
 		if err != nil {
 			t.Fatalf("buildBacklogCounter: %v", err)
 		}
@@ -146,7 +146,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers:ready": "true"}}},
 		}}
 		siteRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "masra", Name: "site"}
-		c, err := buildBacklogCounter(multi, apiv1.Gaggle{}, wf, siteRef, nil, nil, "", nil, "")
+		c, err := buildBacklogCounter(multi, apiv1.Gaggle{}, wf, siteRef, nil, nil, "", nil, "", "generation-test")
 		if err != nil {
 			t.Fatalf("buildBacklogCounter: %v", err)
 		}
@@ -192,7 +192,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 			},
 		}
 		counter, err := buildRefillDemandCounter(
-			cfg, gaggle, wf, repoRef, nil, nil, "/instance/scheduler", "goobersbot", nil,
+			cfg, gaggle, wf, repoRef, nil, nil, "/instance/scheduler", "goobersbot", nil, "generation-test",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -243,7 +243,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 			},
 		}
 		counter := buildScheduleDemandCounter(
-			scheduleCfg, wf, repoRef, nil, nil, "/instance/scheduler", "acme", nil,
+			scheduleCfg, wf, repoRef, nil, nil, "/instance/scheduler", "acme", nil, "generation-test",
 		)
 		remediation, ok := counter.(*remediationDemandCounter)
 		if !ok {
@@ -264,7 +264,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 				LabelPredicate: `labels.size() > 0`,
 			}},
 		}}
-		if _, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, ""); err == nil {
+		if _, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, "", "generation-test"); err == nil {
 			t.Fatal("buildBacklogCounter succeeded with an unsupported predicate")
 		}
 	})
@@ -276,7 +276,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 				FieldPredicate: `fields.number == 1`,
 			}},
 		}}
-		if _, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, ""); err == nil {
+		if _, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, "", "generation-test"); err == nil {
 			t.Fatal("buildBacklogCounter succeeded with an unsupported field predicate")
 		}
 	})
@@ -638,19 +638,20 @@ func TestBacklogCounterSnapshotHitRefundsQuota(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	resetAt := now.Add(time.Hour)
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	transport := scopedStageReadTransport(func(request *http.Request) (*http.Response, error) {
 		requests++
-		w.Header().Set("X-RateLimit-Remaining", "1")
-		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
-		_, _ = w.Write([]byte(`[{"number":1,"title":"ready issue","state":"open"}]`))
-	}))
-	defer server.Close()
+		response := httptest.NewRecorder()
+		response.Header().Set("X-RateLimit-Remaining", "1")
+		response.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
+		_, _ = response.Write([]byte(`[{"number":1,"title":"ready issue","state":"open"}]`))
+		result := response.Result()
+		result.Request = request
+		return result, nil
+	})
 
 	prev := newGitHubProvider
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
-		return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
-			provider.BaseURL = server.URL
-		})...)
+		return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){providers.WithHTTPClient(transport)}, opts...)...)
 	}
 	t.Cleanup(func() { newGitHubProvider = prev })
 
@@ -662,6 +663,7 @@ func TestBacklogCounterSnapshotHitRefundsQuota(t *testing.T) {
 		resolver:     resolver,
 		reg:          &backlogTestRegistrar{},
 		schedulerDir: t.TempDir(),
+		readScope:    automationProviderReadScope("own", "generation-test"),
 		quota:        quota,
 	}
 	ctx := providersnapshot.WithID(context.Background(), "shared-tick")
@@ -747,14 +749,14 @@ func TestScheduleDemandCounterIsUnsizedOnADO(t *testing.T) {
 	}
 	probe := &counterResolverProbe{}
 	adoRef := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: "web"}
-	if counter := buildScheduleDemandCounter(cfg, wf, adoRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil); counter != nil {
+	if counter := buildScheduleDemandCounter(cfg, wf, adoRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil, "generation-test"); counter != nil {
 		t.Fatalf("ADO schedule demand counter = %T, want none so due ticks fire unsized", counter)
 	}
 	if len(probe.calls) != 0 {
 		t.Fatalf("credential resolved while wiring the ADO schedule: %v", probe.calls)
 	}
 	githubRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "api"}
-	if _, ok := buildScheduleDemandCounter(cfg, wf, githubRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil).(*remediationDemandCounter); !ok {
+	if _, ok := buildScheduleDemandCounter(cfg, wf, githubRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil, "generation-test").(*remediationDemandCounter); !ok {
 		t.Fatal("GitHub schedule demand counter was dropped; only Azure DevOps runs unsized")
 	}
 }
@@ -781,7 +783,7 @@ func TestDemandCountersKeepTheRepositoryProvider(t *testing.T) {
 			},
 		}
 		probe := &counterResolverProbe{}
-		counter := buildScheduleDemandCounter(cfg, wf, repoRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil)
+		counter := buildScheduleDemandCounter(cfg, wf, repoRef, probe, &backlogTestRegistrar{}, t.TempDir(), "acme", nil, "generation-test")
 		remediation, ok := counter.(*remediationDemandCounter)
 		if !ok {
 			t.Fatalf("counter type = %T, want *remediationDemandCounter", counter)
@@ -812,7 +814,7 @@ func TestDemandCountersKeepTheRepositoryProvider(t *testing.T) {
 				}},
 			},
 		}
-		counter, err := buildRefillDemandCounter(cfg, apiv1.Gaggle{}, wf, repoRef, &counterResolverProbe{}, &backlogTestRegistrar{}, t.TempDir(), "", nil)
+		counter, err := buildRefillDemandCounter(cfg, apiv1.Gaggle{}, wf, repoRef, &counterResolverProbe{}, &backlogTestRegistrar{}, t.TempDir(), "", nil, "generation-test")
 		if err != nil {
 			t.Fatal(err)
 		}

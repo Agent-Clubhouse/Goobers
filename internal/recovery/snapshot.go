@@ -20,6 +20,10 @@ import (
 // owning run's recorded start time), not a fresh wall-clock reading per attempt.
 // Actual archive capture/retention times are recorded separately in Record.
 func CaptureSnapshot(ctx context.Context, repository, runID string, identityTime time.Time) (string, error) {
+	return captureSnapshot(ctx, repository, runID, identityTime, nil)
+}
+
+func captureSnapshot(ctx context.Context, repository, runID string, identityTime time.Time, policy *SnapshotPolicy) (string, error) {
 	if _, err := RefForRun(runID); err != nil {
 		return "", err
 	}
@@ -51,11 +55,11 @@ func CaptureSnapshot(ctx context.Context, repository, runID string, identityTime
 	if err != nil {
 		return "", err
 	}
-	paths, err := snapshotPaths(ctx, repository, directory)
+	paths, err := snapshotPathsWithPolicy(ctx, repository, directory, policy)
 	if err != nil {
 		return "", err
 	}
-	if err := snapshotIndex(ctx, repository, environment); err != nil {
+	if err := snapshotIndexWithPolicy(ctx, repository, environment, policy); err != nil {
 		return "", err
 	}
 	selected, err := os.Stat(paths)

@@ -111,6 +111,9 @@ type Config struct {
 	// so an explicit 0 is refused rather than silently read as legacy.
 	SchemaVersion *int      `json:"schemaVersion,omitempty" yaml:"schemaVersion,omitempty"`
 	Repos         []RepoRef `json:"repos" yaml:"repos"`
+	// InteractiveCredentials are explicitly named human-operation sources.
+	// They never become automation defaults or unscoped capability grants.
+	InteractiveCredentials []InteractiveCredential `json:"interactiveCredentials,omitempty" yaml:"interactiveCredentials,omitempty"`
 	// SelfIdentity is the instance-wide provider login used when a gaggle does
 	// not declare its own identity. It is an identity value, not a credential.
 	SelfIdentity string `json:"selfIdentity,omitempty" yaml:"selfIdentity,omitempty"`
@@ -496,6 +499,9 @@ type OIDCAuthConfig struct {
 	// RolesClaim names the claim carrying role/group values (e.g. "roles",
 	// "groups"). Empty defaults to DefaultOIDCRolesClaim.
 	RolesClaim string `json:"rolesClaim,omitempty" yaml:"rolesClaim,omitempty"`
+	// GroupsClaim selects stable group identifiers for explicit gaggle human
+	// grants. Empty defaults to groups; role mapping remains independent.
+	GroupsClaim string `json:"groupsClaim,omitempty" yaml:"groupsClaim,omitempty"`
 	// Roles maps claim values onto instance roles. Deny by default: an
 	// authenticated principal whose claim values match nothing gets no role.
 	Roles OIDCRoleMapping `json:"roles" yaml:"roles"`
@@ -3154,6 +3160,9 @@ func validHeaderName(name string) bool {
 // Validate checks the OIDC issuer/audience/role-mapping shape without
 // contacting the issuer.
 func (c OIDCAuthConfig) Validate() error {
+	if len(c.GroupsClaim) > 256 || strings.TrimSpace(c.GroupsClaim) != c.GroupsClaim {
+		return fmt.Errorf("groupsClaim must be a bounded claim name without surrounding whitespace")
+	}
 	if c.Issuer == "" {
 		return fmt.Errorf("issuer is required")
 	}

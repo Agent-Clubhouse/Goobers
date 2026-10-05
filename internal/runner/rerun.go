@@ -42,11 +42,17 @@ type rerunContext struct {
 // The workflow definition remains pinned and unchanged; the operator, addendum,
 // target, and attempt are recorded before the invocation starts.
 func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, error) {
+	if r.cfg.stageRestartOnly != "" || r.cfg.sessionExecution != nil {
+		return Result{}, errors.New("runner: human epoch requires a new authorized restart")
+	}
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
+	}
+	if err := r.admitChildWorkflows(in.Machine); err != nil {
+		return Result{}, err
 	}
 	if in.Stage == "" {
 		return Result{}, fmt.Errorf("runner: Stage is required")
@@ -68,7 +74,13 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		return Result{}, err
 	}
 
+	if err := r.refuseSessionMutation(in.RunID); err != nil {
+		return Result{}, err
+	}
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	if err := r.verifyChildWorkflowCustody(dir); err != nil {
+		return Result{}, err
+	}
 	registrar, scrubber := journal.DefaultScrubber()
 	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
@@ -85,23 +97,10 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 		}
+		if err := validateStageRerunIdentity(rd, id, in); err != nil {
+			return Result{}, err
+		}
 		ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
-		phase, err := rd.Phase()
-		if err != nil {
-			return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
-		}
-		if phase != journal.PhaseEscalated {
-			return Result{}, fmt.Errorf("runner: run %q has phase %s, not escalated", in.RunID, phase)
-		}
-		if id.WorkflowDigest == "" || id.WorkflowDigest != in.Machine.Digest() {
-			return Result{}, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot rerun against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
-		}
-		if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
-			return Result{}, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
-		}
-		if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
-			return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
-		}
 		runControls, err := r.resolveRunControls(id.RunControls)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
@@ -143,18 +142,19 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Machine:          in.Machine,
 			GooberDigest:     in.GooberDigest,
 			Gaggle:           id.Gaggle,
+			Child:            id.Child,
 			Trigger:          id.Trigger,
 			RepoRef:          in.RepoRef,
 			Item:             item,
 			RunControls:      runControls,
 		}
 		branch := 0
-		if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 {
+		if activeParallel != nil && !r.concurrentChildBranches(in.Machine, activeParallel.spec) {
 			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
 				branch = owner.id
 			}
 		}
-		startIn, err = r.restoreResumeWorkspaceRevision(ctx, startIn, events, activeParallel, parallelStart, branch)
+		startIn, err = r.restoreExecutionWorkspace(ctx, rd, id, startIn, events, activeParallel, parallelStart, branch)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
 		}
@@ -419,4 +419,28 @@ func resetRerunGateSeeds(machine *workflow.Machine, rerun *rerunContext, attempt
 		delete(digests, rerun.stage)
 	}
 	return attempts
+}
+
+func validateStageRerunIdentity(rd *journal.Reader, id journal.RunIdentity, in RerunStageInput) error {
+	if IsStageRestart(id) {
+		return errors.New("runner: a human continuation requires a new authorized restart epoch; legacy rerun is unsupported")
+	}
+	phase, err := rd.Phase()
+	if err != nil {
+		return fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
+	}
+	if phase != journal.PhaseEscalated {
+		return fmt.Errorf("runner: run %q has phase %s, not escalated", in.RunID, phase)
+	}
+	if id.WorkflowDigest == "" || id.WorkflowDigest != in.Machine.Digest() {
+		return fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot rerun against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
+	}
+	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
+		return fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
+	}
+	if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
+		return fmt.Errorf("runner: invalid pinned run controls: %w", err)
+	}
+
+	return nil
 }

@@ -546,6 +546,11 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.artifactSlots.name` | 3.1 | preview | preview | v0.5.0 |
 | `task.artifactSlots.schemaPath` | 3.1 | preview | preview | v0.5.0 |
 | `task.capabilities` | 3.1 | ga | preview | dev |
+| `task.childWorkflows` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowPRPublication` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedCapabilities` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.allowedGoobers` | 3.1 | preview | preview | dev |
+| `task.childWorkflows.maxChildren` | 3.1 | preview | preview | dev |
 | `task.commitsRepo` | 3.1 | ga | preview | v0.4.0 |
 | `task.contextFrom` | 3.1 | ga | preview | dev |
 | `task.continueOnError` | 3.1 | ga | preview | dev |
@@ -652,6 +657,6 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 3.0 -> 3.1
 
-- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`
+- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`, `task.childWorkflows`, `task.childWorkflows.allowPRPublication`, `task.childWorkflows.allowedCapabilities`, `task.childWorkflows.allowedGoobers`, `task.childWorkflows.maxChildren`
 - Removed: none
 - Level changes: none

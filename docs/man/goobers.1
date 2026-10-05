@@ -73,10 +73,13 @@ validate an instance or checked-in config source tree
 print build version, commit, and date (--json for structured output)
 .TP
 \fBgoobers workflow\fR
-inspect workflows
+inspect workflows and validate child proposals
 .TP
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
+.TP
+\fBgoobers workflow validate-child\fR
+validate a child proposal against its configured parent
 .SS Advanced operator commands
 .TP
 \fBgoobers agent-kit\fR
@@ -771,5 +774,6 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
 \fBgoobers-workflow-show\fR(1),
+\fBgoobers-workflow-validate-child\fR(1),
 \fBgoobers-workspace\fR(1),
 \fBgoobers-workspace-reset\fR(1)

@@ -348,6 +348,9 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerCancelRoute(router, config.cancels, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
 	registerCredentialRefreshRoute(router, config.credentials, errorLog)
+	registerChildWorkflowRoutes(router, config.childWorkflows, errorLog)
+	registerSessionOperationRoutes(router, config.sessionOperations, errorLog)
+	registerParentAccessRoutes(router, config.credentials, errorLog)
 }
 
 func registerClaimRoute(
@@ -473,6 +476,10 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 		}
 		podScoped, ok := applyPodClaimScope(w, request, input.RunID, "list its own run's claims")
 		if !ok {
+			return
+		}
+		if err := validateContainedClaimList(request, input); err != nil {
+			writeError(w, http.StatusForbidden, "contained_pod_scope", err.Error())
 			return
 		}
 		input.PodScoped = podScoped

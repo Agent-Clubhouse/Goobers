@@ -3706,20 +3706,20 @@ func repoConfig() *instance.Config {
 func TestBuildOpenPRRefresher(t *testing.T) {
 	t.Parallel()
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil, "generation-test")
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("nil when no workflow opts into the cap", func(t *testing.T) {
 		wfs := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}}
-		r, err := buildOpenPRRefresher(repoConfig(), wfs, nil, &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), wfs, nil, &escTestRegistrar{}, nil, "", nil, "generation-test")
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("built when a repo and a capped workflow are present", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil, "generation-test")
 		if err != nil {
 			t.Fatalf("buildOpenPRRefresher: %v", err)
 		}
@@ -3774,7 +3774,7 @@ func TestBuildOpenPRRefresherRoutesPerGaggleRepo(t *testing.T) {
 	}
 
 	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
-		map[string]string{"site": "goobers-site"}, "", nil)
+		map[string]string{"site": "goobers-site"}, "", nil, "generation-test")
 	if err != nil {
 		t.Fatalf("buildOpenPRRefresher: %v", err)
 	}

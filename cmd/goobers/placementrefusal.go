@@ -140,6 +140,9 @@ func placementRefusals(
 		gaggleSpecs[set.Gaggles[i].Name] = set.Gaggles[i].Spec
 	}
 	for identity, machine := range machines {
+		if selections[identity].ContainedParent {
+			continue
+		} // full contained placement was proved by engineSelections
 		requirements, err := workflow.IsolationStagePlacements(machine.Def, gaggleSpecs[identity.Gaggle], goobers, inventory.ClassMandates, inventory.SelfExecutionDenied)
 		if err != nil {
 			// The machine compiled, so its interpreter resolves; surface the

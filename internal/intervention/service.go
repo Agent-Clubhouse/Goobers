@@ -48,6 +48,9 @@ type Execution struct {
 	Machine      *workflow.Machine
 	GooberDigest string
 	RepoRef      apiv1.RepoRef
+	// ChildRestart is host admission for a queued generated human epoch. It is
+	// never accepted from an HTTP body or used by ordinary interventions.
+	ChildRestart *ChildStageRestartAdmission
 }
 
 // RunnerRegistry is the daemon's live run-owner registry.
@@ -77,6 +80,10 @@ type Config struct {
 	Runners RunnerRegistry
 	// PinnedExecution resolves the execution generation a run is pinned to.
 	PinnedExecution func(context.Context, journal.RunIdentity) (Execution, error)
+	// PinnedInspection resolves retained child metadata without returning execution authority.
+	PinnedInspection func(context.Context, journal.RunIdentity) (Execution, error)
+	// StageRestartExecution must build a human credential-bound pinned runner.
+	StageRestartExecution func(context.Context, runner.StageRestartPlan) (Execution, error)
 	// LocateRun finds the one retained run directory for runID across the
 	// declared gaggles (and the legacy root when includeLegacy is set). gaggle
 	// is empty for a legacy run. Its error is returned to the API client
@@ -95,13 +102,15 @@ type Config struct {
 
 // Service performs operator interventions on retained runs.
 type Service struct {
-	definitions         func() Definitions
-	runnerRegistry      RunnerRegistry
-	pinnedExecution     func(context.Context, journal.RunIdentity) (Execution, error)
-	locateRun           func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
-	claims              ClaimStore
-	engineDrivenRefusal func(runID, action string) error
-	errorLog            *log.Logger
+	definitions           func() Definitions
+	runnerRegistry        RunnerRegistry
+	pinnedExecution       func(context.Context, journal.RunIdentity) (Execution, error)
+	pinnedInspection      func(context.Context, journal.RunIdentity) (Execution, error)
+	stageRestartExecution func(context.Context, runner.StageRestartPlan) (Execution, error)
+	locateRun             func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
+	claims                ClaimStore
+	engineDrivenRefusal   func(runID, action string) error
+	errorLog              *log.Logger
 	// hitl delivers operator intents to engine-driven runs (#3883). When it
 	// is nil — a daemon with no engine client — engine-driven runs keep the
 	// #3847 refusal exactly as they had it.
@@ -138,14 +147,16 @@ type resolvedInterventionRun struct {
 // New builds the intervention service over the daemon's collaborators.
 func New(cfg Config) *Service {
 	return &Service{
-		definitions:         cfg.Definitions,
-		runnerRegistry:      cfg.Runners,
-		pinnedExecution:     cfg.PinnedExecution,
-		locateRun:           cfg.LocateRun,
-		claims:              cfg.Claims,
-		engineDrivenRefusal: cfg.EngineDrivenRefusal,
-		errorLog:            cfg.ErrorLog,
-		wg:                  cfg.WaitGroup,
+		definitions:           cfg.Definitions,
+		runnerRegistry:        cfg.Runners,
+		pinnedExecution:       cfg.PinnedExecution,
+		pinnedInspection:      cfg.PinnedInspection,
+		stageRestartExecution: cfg.StageRestartExecution,
+		locateRun:             cfg.LocateRun,
+		claims:                cfg.Claims,
+		engineDrivenRefusal:   cfg.EngineDrivenRefusal,
+		errorLog:              cfg.ErrorLog,
+		wg:                    cfg.WaitGroup,
 	}
 }
 
@@ -210,6 +221,9 @@ func (s *Service) prepareIntervention(
 	}
 	if result, replayed, err := replayIntervention(resolved, replayAction, input); replayed || err != nil {
 		return resolved, &result, true, err
+	}
+	if err := checkHumanSubject(resolved, input); err != nil {
+		return resolved, &httpapi.InterventionResult{}, true, err
 	}
 	return resolved, nil, false, nil
 }
@@ -495,6 +509,13 @@ func (s *Service) denyEscalation(resolved resolvedInterventionRun, input httpapi
 		var events []journal.Event
 		if events, err = current.Events(); err == nil {
 			replayed, err = scanEscalationResolution(events, input.IdempotencyKey, fingerprint)
+			if err == nil && !replayed && input.ExpectedSubjectSequence != 0 {
+				resolved.events = events
+				resolved.phase, err = current.Phase()
+				if err == nil {
+					err = checkHumanSubject(resolved, input)
+				}
+			}
 		}
 	}
 	if err != nil {
@@ -522,8 +543,9 @@ func (s *Service) denyEscalation(resolved resolvedInterventionRun, input httpapi
 	appendErr := run.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation,
 		Runner: map[string]any{
-			"kind":           escalationResolutionMarker,
-			"resolution":     "deny",
+			"kind":       escalationResolutionMarker,
+			"resolution": "deny",
+			"stage":      input.Stage, "principalRef": input.PrincipalRef, "expectedSubjectSequence": input.ExpectedSubjectSequence,
 			"idempotencyKey": input.IdempotencyKey,
 			"fingerprint":    fingerprint,
 			"actor":          input.Actor,
@@ -541,6 +563,14 @@ func (s *Service) denyEscalation(resolved resolvedInterventionRun, input httpapi
 }
 
 func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
+	return s.resolveRun(runID, false)
+}
+
+func (s *Service) inspect(runID string) (resolvedInterventionRun, error) {
+	return s.resolveRun(runID, true)
+}
+
+func (s *Service) resolveRun(runID string, inspection bool) (resolvedInterventionRun, error) {
 	if !apiv1.ValidRunID(runID) {
 		return resolvedInterventionRun{}, interventionBadRequest("invalid_run_id", "run ID is invalid")
 	}
@@ -606,7 +636,7 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 		}
 		return s.resolveEngineDriven(runID, foundDir, identity.Gaggle, identity.Workflow, reader)
 	}
-	execution, err := s.interventionExecution(identity, definitions, fallbackRunner)
+	execution, err := s.resolveRunDefinition(identity, definitions, fallbackRunner, inspection)
 	if err != nil {
 		return resolvedInterventionRun{}, err
 	}
@@ -629,31 +659,17 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 	if identity.ConfigGeneration != "" && !owned {
 		runRunner = fallbackRunner
 	}
-	if runRunner == nil {
+	if inspection && identity.Child != nil {
+		runRunner = nil
+	}
+	if runRunner == nil && (!inspection || identity.Child == nil) {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
 			http.StatusInternalServerError, "runner_unavailable", "run owner is unavailable", nil,
 		)
 	}
-	phase, err := reader.Phase()
+	phase, events, terminalSeq, err := readInterventionRunState(reader)
 	if err != nil {
-		return resolvedInterventionRun{}, httpapi.NewInterventionError(
-			http.StatusInternalServerError, "run_read_failed", "run phase could not be read", err,
-		)
-	}
-	events, err := reader.Events()
-	if err != nil {
-		return resolvedInterventionRun{}, httpapi.NewInterventionError(
-			http.StatusInternalServerError, "run_read_failed", "run events could not be read", err,
-		)
-	}
-	terminalSeq := uint64(0)
-	if phase == journal.PhaseEscalated || phase == journal.PhaseFailed {
-		terminalSeq = latestTerminalSequence(events)
-		if terminalSeq == 0 {
-			return resolvedInterventionRun{}, httpapi.NewInterventionError(
-				http.StatusInternalServerError, "run_read_failed", "terminal run has no run.finished event", nil,
-			)
-		}
+		return resolvedInterventionRun{}, err
 	}
 	return resolvedInterventionRun{
 		runID:        runID,
@@ -766,8 +782,11 @@ func (s *Service) execute(
 			if s.wg != nil {
 				defer s.wg.Done()
 			}
-			if _, runErr := s.finishExecution(execution, lease, run); runErr != nil && s.errorLog != nil {
-				s.errorLog.Printf("%s run intervention failed after acceptance: %v", action, runErr)
+			if _, runErr := s.finishExecution(execution, lease, run); runErr != nil {
+				receiptErr := recordHumanFailure(resolved, action, input)
+				if s.errorLog != nil {
+					s.errorLog.Printf("%s run intervention failed after acceptance: %v", action, errors.Join(runErr, receiptErr))
+				}
 			}
 		}()
 		return runner.Result{}, nil
@@ -807,6 +826,10 @@ func (s *Service) finishExecution(
 }
 
 func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
+	return s.beginExecutionWithReservation(resolved, reacquireClaims, nil)
+}
+
+func (s *Service) beginExecutionWithReservation(resolved resolvedInterventionRun, reacquireClaims bool, reserve func(*localscheduler.Scheduler) (func(), error)) (*interventionExecutionLease, error) {
 	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
 	if !exclusive {
 		return nil, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
@@ -830,10 +853,10 @@ func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClai
 		)
 	}
 	lease.scheduler = scheduler
-	release, admitted, reason := scheduler.ReserveContinuation(resolved.runID, resolved.gaggle, resolved.workflow)
-	if !admitted {
+	release, err := reserveIntervention(scheduler, resolved, reserve)
+	if err != nil {
 		lease.Close()
-		return nil, interventionConflict("run_not_admitted", "run could not reacquire workflow admission: "+reason)
+		return nil, err
 	}
 	lease.releaseAdmission = release
 
@@ -845,6 +868,17 @@ func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClai
 		lease.reacquiredClaims = true
 	}
 	return lease, nil
+}
+
+func reserveIntervention(scheduler *localscheduler.Scheduler, resolved resolvedInterventionRun, reserve func(*localscheduler.Scheduler) (func(), error)) (func(), error) {
+	if reserve != nil {
+		return reserve(scheduler)
+	}
+	release, admitted, reason := scheduler.ReserveContinuation(resolved.runID, resolved.gaggle, resolved.workflow)
+	if !admitted {
+		return nil, interventionConflict("run_not_admitted", "run could not reacquire workflow admission: "+reason)
+	}
+	return release, nil
 }
 
 func (s *Service) trackActiveIntervention(runID string) (func(), bool) {
@@ -1080,16 +1114,19 @@ const interventionIdempotencyMarker = "intervention.idempotency"
 
 func interventionFingerprint(action string, input httpapi.InterventionRequest) (string, error) {
 	payload := struct {
-		Action              string `json:"action"`
-		RunID               string `json:"runId"`
-		Stage               string `json:"stage"`
-		Actor               string `json:"actor"`
-		Decision            string `json:"decision"`
-		Rationale           string `json:"rationale"`
-		InstructionAddendum string `json:"instructionAddendum"`
+		Action                  string `json:"action"`
+		RunID                   string `json:"runId"`
+		Stage                   string `json:"stage"`
+		Actor                   string `json:"actor"`
+		Decision                string `json:"decision"`
+		Rationale               string `json:"rationale"`
+		InstructionAddendum     string `json:"instructionAddendum"`
+		PrincipalRef            string `json:"principalRef,omitempty"`
+		ExpectedSubjectSequence uint64 `json:"expectedSubjectSequence,omitempty"`
 	}{
 		Action: action, RunID: input.RunID, Stage: input.Stage, Actor: input.Actor,
 		Decision: input.Decision, Rationale: input.Rationale, InstructionAddendum: input.InstructionAddendum,
+		PrincipalRef: input.PrincipalRef, ExpectedSubjectSequence: input.ExpectedSubjectSequence,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -1125,6 +1162,8 @@ func recordInterventionMarker(resolved resolvedInterventionRun, action string, i
 			"fingerprint":    fingerprint,
 			"action":         action,
 			"stage":          input.Stage,
+			"actor":          input.Actor, "principalRef": input.PrincipalRef, "rationale": input.Rationale, "decision": input.Decision,
+			"expectedSubjectSequence": input.ExpectedSubjectSequence,
 		},
 	}); err != nil {
 		return fmt.Errorf("journal intervention idempotency: %w", err)
@@ -1247,4 +1286,29 @@ func interventionExecutionError(action string, err error) error {
 		action+" failed while advancing the run",
 		err,
 	)
+}
+
+func readInterventionRunState(reader *journal.Reader) (journal.RunPhase, []journal.Event, uint64, error) {
+	phase, err := reader.Phase()
+	if err != nil {
+		return "", nil, 0, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "run phase could not be read", err,
+		)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "", nil, 0, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "run events could not be read", err,
+		)
+	}
+	terminalSeq := uint64(0)
+	if phase == journal.PhaseEscalated || phase == journal.PhaseFailed {
+		terminalSeq = latestTerminalSequence(events)
+		if terminalSeq == 0 {
+			return "", nil, 0, httpapi.NewInterventionError(
+				http.StatusInternalServerError, "run_read_failed", "terminal run has no run.finished event", nil,
+			)
+		}
+	}
+	return phase, events, terminalSeq, nil
 }

@@ -18,6 +18,54 @@ import (
 )
 
 type wireFixtures struct {
+	SuggestionSelection      SuggestionSelection       `json:"suggestionSelection"`
+	SuggestionInventory      SuggestionInventory       `json:"suggestionInventory"`
+	SuggestionBatch          SuggestionBatch           `json:"suggestionBatch"`
+	SuggestionPreviewRequest SuggestionPreviewRequest  `json:"suggestionPreviewRequest"`
+	SuggestionPreview        SuggestionPreview         `json:"suggestionPreview"`
+	SuggestionDecision       SuggestionDecisionRequest `json:"suggestionDecision"`
+	SuggestionReview         SuggestionReview          `json:"suggestionReview"`
+
+	PRRepairCommand            PRRepairCommand          `json:"prRepairCommand"`
+	StartQueue                 StartQueuePage           `json:"startQueue"`
+	StartQueueItem             StartQueueItem           `json:"startQueueItem"`
+	StartQueueCancel           StartQueueCancelInput    `json:"startQueueCancel"`
+	GaggleEventEnvelope        GaggleEventEnvelope      `json:"gaggleEventEnvelope"`
+	GaggleEventReceipt         GaggleEventReceipt       `json:"gaggleEventReceipt"`
+	MetadataChange             MetadataChangeRequest    `json:"metadataChange"`
+	MetadataObjective          MetadataChangeRequest    `json:"metadataObjective"`
+	MetadataAlias              MetadataChangeRequest    `json:"metadataAlias"`
+	MetadataPreview            MetadataPreview          `json:"metadataPreview"`
+	MetadataProposal           MetadataProposalCommand  `json:"metadataProposal"`
+	WorkbenchGraph             WorkbenchGraph           `json:"workbenchGraph"`
+	WorkbenchDocuments         WorkbenchDocumentPage    `json:"workbenchDocuments"`
+	WorkbenchSources           WorkbenchSourcePage      `json:"workbenchSources"`
+	WorkbenchItems             BacklogPage              `json:"workbenchItems"`
+	WorkbenchItem              BacklogItem              `json:"workbenchItem"`
+	SessionCreate              SessionCreateRequest     `json:"sessionCreate"`
+	SessionInput               SessionMessageRequest    `json:"sessionInput"`
+	SessionClose               SessionCloseRequest      `json:"sessionClose"`
+	Session                    InteractiveSession       `json:"session"`
+	Sessions                   SessionPage              `json:"sessions"`
+	SessionMessages            SessionMessagePage       `json:"sessionMessages"`
+	SessionAccepted            SessionAcceptance        `json:"sessionAccepted"`
+	WorkbenchWriteCapabilities BacklogWriteCapabilities `json:"workbenchWriteCapabilities"`
+	WorkbenchPatch             BacklogPatchInput        `json:"workbenchPatch"`
+	WorkbenchCommand           BacklogEditCommand       `json:"workbenchCommand"`
+
+	ChildPublicationCheck    ChildPublicationCheckRequest               `json:"childPublicationCheck"`
+	ChildPublicationResult   ChildPublicationCheckResult                `json:"childPublicationResult"`
+	ChildWorkflowPage        ChildWorkflowPage                          `json:"childWorkflowPage"`
+	InteractiveRun           InteractiveRunView                         `json:"interactiveRun"`
+	InteractiveRunCommand    InteractiveRunCommand                      `json:"interactiveRunCommand"`
+	InteractiveRunResult     InteractiveRunCommandResult                `json:"interactiveRunResult"`
+	InteractiveCapabilities  InteractiveCapabilities                    `json:"interactiveCapabilities"`
+	ChildWorkflowSource      ChildWorkflowSourceRequest                 `json:"childWorkflowSource"`
+	ChildWorkflowResolve     ChildWorkflowResolveRequest                `json:"childWorkflowResolve"`
+	ChildWorkflowResolution  ChildWorkflowResolutionResponse            `json:"childWorkflowResolution"`
+	ChildWorkflowStatus      ChildWorkflowStatusRequest                 `json:"childWorkflowStatus"`
+	ChildWorkflowValidation  ChildWorkflowValidationResponse            `json:"childWorkflowValidation"`
+	ChildWorkflow            ChildWorkflowResponse                      `json:"childWorkflow"`
 	TriggerRequest           TriggerRequest                             `json:"triggerRequest"`
 	TriggerResponse          TriggerResponse                            `json:"triggerResponse"`
 	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
@@ -58,6 +106,53 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "suggestionSelection", scriptType: "SuggestionSelection"},
+	{name: "suggestionInventory", scriptType: "SuggestionInventory"},
+	{name: "suggestionBatch", scriptType: "SuggestionBatch"},
+	{name: "suggestionPreviewRequest", scriptType: "SuggestionPreviewRequest"},
+	{name: "suggestionPreview", scriptType: "SuggestionPreview"},
+	{name: "suggestionDecision", scriptType: "SuggestionDecisionRequest"},
+	{name: "suggestionReview", scriptType: "SuggestionReview"},
+
+	{name: "prRepairCommand", scriptType: "PRRepairCommand"},
+	{name: "gaggleEventEnvelope", scriptType: "GaggleEventEnvelope"},
+	{name: "gaggleEventReceipt", scriptType: "GaggleEventReceipt"},
+	{name: "metadataChange", scriptType: "MetadataChangeRequest"},
+	{name: "metadataObjective", scriptType: "MetadataObjectiveRequest"},
+	{name: "metadataAlias", scriptType: "MetadataAliasRequest"},
+	{name: "metadataPreview", scriptType: "MetadataPreview"},
+	{name: "metadataProposal", scriptType: "MetadataProposalCommand"},
+	{name: "workbenchDocuments", scriptType: "WorkbenchDocumentPage"},
+	{name: "startQueue", scriptType: "StartQueuePage"},
+	{name: "startQueueItem", scriptType: "StartQueueItem"},
+	{name: "startQueueCancel", scriptType: "StartQueueCancelInput"},
+	{name: "workbenchGraph", scriptType: "WorkbenchGraph"},
+	{name: "workbenchWriteCapabilities", scriptType: "BacklogWriteCapabilities"},
+	{name: "workbenchPatch", scriptType: "BacklogPatchInput"},
+	{name: "workbenchCommand", scriptType: "BacklogEditCommand"},
+	{name: "workbenchSources", scriptType: "WorkbenchSourcePage"},
+	{name: "workbenchItems", scriptType: "BacklogPage"},
+	{name: "workbenchItem", scriptType: "BacklogItem"},
+	{name: "sessionCreate", scriptType: "SessionCreateRequest"},
+	{name: "sessionInput", scriptType: "SessionMessageRequest"},
+	{name: "sessionClose", scriptType: "SessionCloseRequest"},
+	{name: "session", scriptType: "InteractiveSession"},
+	{name: "sessions", scriptType: "SessionPage"},
+	{name: "sessionMessages", scriptType: "SessionMessagePage"},
+	{name: "sessionAccepted", scriptType: "SessionAcceptance"},
+	{name: "childPublicationCheck", scriptType: "ChildPublicationCheckRequest"},
+	{name: "childPublicationResult", scriptType: "ChildPublicationCheckResult"},
+	{name: "childWorkflowPage", scriptType: "ChildWorkflowPage"},
+	{name: "interactiveRun", scriptType: "InteractiveRunView"},
+	{name: "interactiveRunCommand", scriptType: "InteractiveRunCommand"},
+	{name: "interactiveRunResult", scriptType: "InteractiveRunCommandResult"},
+	{name: "interactiveCapabilities", scriptType: "InteractiveCapabilities"},
+	{name: "childWorkflowSource", scriptType: "ChildWorkflowSourceRequest"},
+	{name: "childWorkflowStatus", scriptType: "ChildWorkflowStatusRequest"},
+	{name: "childWorkflowResolve", scriptType: "ChildWorkflowResolveRequest"},
+	{name: "childWorkflowResolution", scriptType: "ChildWorkflowResolutionResponse"},
+	{name: "childWorkflowValidation", scriptType: "ChildWorkflowValidationResponse"},
+	{name: "childWorkflow", scriptType: "ChildWorkflowResponse"},
 	{name: "triggerRequest", scriptType: "TriggerRequest"},
 	{name: "triggerResponse", scriptType: "TriggerResponse"},
 	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
@@ -414,7 +509,8 @@ func newWireFixtures() wireFixtures {
 
 	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
 
-	return wireFixtures{
+	return withChildWorkflowFixtures(wireFixtures{
+		PRRepairCommand:         prRepairRecoveryFixture(timestamp),
 		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
 		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
 		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
@@ -1005,9 +1101,8 @@ func newWireFixtures() wireFixtures {
 				Message: "requested resource was not found",
 			},
 		},
-	}
+	})
 }
-
 func int64Pointer(value int64) *int64 {
 	return &value
 }
@@ -1042,4 +1137,41 @@ func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequ
 		},
 	}
 	return request, response
+}
+
+func childWorkflowWireFixture() ChildWorkflowResponse {
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	digest := "sha256:" + strings.Repeat("a", 64)
+	return ChildWorkflowResponse{ChildID: "child-1", AcceptanceID: "trigger-1", RunID: "run-1", InvocationKey: "inspect-1", Sequence: 1, State: "queued", SourceDigest: digest, CanonicalDigest: digest, ConfigDigest: digest, PolicyDigest: digest, WorkflowDigest: digest, AcceptedAt: at, UpdatedAt: at}
+}
+
+func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures = withEventIngressFixtures(fixtures)
+	fixtures = withStartQueueFixtures(fixtures)
+	fixtures = withSessionFixtures(fixtures)
+	fixtures = withWorkbenchFixtures(fixtures)
+	fixtures.WorkbenchGraph = workbenchGraphFixture()
+	fixtures = withWorkbenchWriteFixtures(fixtures)
+	fixtures = withWorkbenchProposalFixtures(fixtures)
+	fixtures = withSuggestionFixtures(fixtures)
+	fixtures.ChildPublicationCheck = ChildPublicationCheckRequest{Action: "pr", ExpectedIntentDigest: "sha256:" + strings.Repeat("a", 64)}
+	fixtures.ChildPublicationResult = ChildPublicationCheckResult{RunID: "child-run", RequestID: "human-one", Publication: ChildPublicationSummary{SourceRunID: "original-child", ExecutionEpoch: 0, Action: "pr", IntentDigest: fixtures.ChildPublicationCheck.ExpectedIntentDigest, State: "effect_pending", Head: "goobers/children/child-run", Base: "main", Commit: strings.Repeat("a", 40), NeedsHuman: true, Observation: "not_observed", CreatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}
+	fixtures.ChildWorkflowPage = ChildWorkflowPage{RunID: "parent-run", Gaggle: "web", Children: []ChildWorkflowSummary{{ChildID: "child-one", InvocationKey: "inspect", Sequence: 1, State: "queued", AcceptedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}}
+	fixtures.ChildWorkflowPage.ExecutionHistory = []ChildWorkflowExecution{{Epoch: 1, RunID: "current-child", Current: true, RunAvailable: true, State: "running", SourceRunID: "original-child", Actor: "issuer:alice", Stage: "repair", AcceptedAt: fixtures.ChildPublicationResult.Publication.CreatedAt, UpdatedAt: fixtures.ChildPublicationResult.Publication.UpdatedAt}}
+	fixtures.ChildWorkflowPage.RunID = "current-child"
+	fixtures.ChildWorkflowPage.Parent = &ChildWorkflowParent{RunID: "parent-run", Workflow: "build", InvocationKey: "inspect"}
+	fixtures.ChildWorkflowPage.Children = []ChildWorkflowSummary{}
+	fixtures.ChildWorkflowPage.PublicationRunID = "original-child"
+	fixtures.ChildWorkflowPage.Publications = []ChildPublicationSummary{fixtures.ChildPublicationResult.Publication}
+	fixtures.InteractiveRun = InteractiveRunView{RunID: "0123456789abcdef0123456789abcdef", Gaggle: "web", Phase: "running", Actions: []InteractiveRunAction{{Kind: "approve", Stage: "review", SubjectSequence: 4, Decisions: []string{"pass"}, Available: true}}, Guidance: []apiv1.OperatorMessageRecord{}, RestartReason: "Stage restart is not available."}
+	fixtures.InteractiveRunCommand = InteractiveRunCommand{Kind: "approve", Stage: "review", ExpectedSubjectSequence: 4, Decision: "pass"}
+	fixtures.InteractiveRunResult = InteractiveRunCommandResult{Status: "applied", Accepted: true, RunID: fixtures.InteractiveRun.RunID, JournalSequence: 6, Phase: "complete"}
+	fixtures.InteractiveCapabilities = InteractiveCapabilities{Gaggle: "web", PolicyConfigured: true, Viewer: true, Operator: false, SourceWriteMode: "pull-request", Actions: []InteractiveActionPermission{{Action: "backlog.read", Authorized: true, CredentialConfigured: true, ReasonCode: "operation_not_implemented"}}}
+	fixtures.ChildWorkflowSource = ChildWorkflowSourceRequest{Source: "kind: Workflow\n"}
+	fixtures.ChildWorkflowStatus = ChildWorkflowStatusRequest{InvocationKey: "inspect-1"}
+	fixtures.ChildWorkflowValidation = ChildWorkflowValidationResponse{Valid: false, Advisory: true, Diagnostics: []ChildWorkflowDiagnostic{{Code: "schema", Field: "dslVersion", Message: "explicit DSL 3.1 is required"}}}
+	fixtures.ChildWorkflow = childWorkflowWireFixture()
+	fixtures.ChildWorkflowResolve = ChildWorkflowResolveRequest{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest}
+	fixtures.ChildWorkflowResolution = ChildWorkflowResolutionResponse{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest, RequestedAt: fixtures.ChildWorkflow.AcceptedAt, RequestDigest: fixtures.ChildWorkflow.SourceDigest, PlanPublished: false}
+	return fixtures
 }

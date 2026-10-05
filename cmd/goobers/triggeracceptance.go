@@ -12,23 +12,48 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/enginestartintent"
+	"github.com/goobers/goobers/internal/eventexecution"
+	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/interactivesession"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/restartintent"
+	"github.com/goobers/goobers/internal/sessioning"
+	"github.com/goobers/goobers/internal/startcontrol"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
-	queue           *triggerqueue.Store
-	dispatch        *daemonTriggerService
-	sweepMu         sync.Mutex
-	reconcileCursor string
-	bootUncertain   map[string]bool
-	auditLog        *journal.InstanceLog
-	observe         func(context.Context, triggerqueue.Record) (bool, error)
+	startControls          *startcontrol.Coordinator
+	restarts               *restartintent.Service
+	directEngine           *enginestartintent.Service
+	directEngineCursor     string
+	ordinary               *startintent.Service
+	sessions               *interactivesession.Service
+	sessionCursor          string
+	childFamilies          *childFamilyLifecycle
+	queue                  *triggerqueue.Store
+	dispatch               *daemonTriggerService
+	sweepMu                sync.Mutex
+	reconcileCursor        string
+	pendingCursor          triggerqueue.PendingCursor
+	bootUncertain          map[string]bool
+	auditLog               *journal.InstanceLog
+	observe                func(context.Context, triggerqueue.Record) (bool, error)
+	children               childExecutionLauncher
+	observeChild           childStartObserver
+	childCursor            string
+	events                 *eventexecution.Service
+	eventPublicationCursor string
+	eventScopeCursor       string
+	eventGroupCursor       string
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a
@@ -57,7 +82,10 @@ func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTrigg
 		return nil, nil, nil, err
 	}
 	triggers.observe = acceptedTriggerObserver(layout)
+	triggers.observeChild = acceptedChildObserver(layout)
 	triggers.auditLog = auditLog
+	triggers.childFamilies = &childFamilyLifecycle{layout: layout, queue: triggers.queue, runners: runners}
+	cancels.fenceChildren = triggers.childFamilies.Fence
 	return triggers, state, cancels, nil
 }
 
@@ -88,6 +116,9 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if strings.TrimSpace(request.Workflow) == "" || (request.SourceRun != "" && request.Gaggle == "") {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "trigger must name its workflow and priority gaggle", nil)
 	}
+	if response, handled, err := s.acceptOrdinary(ctx, request); handled {
+		return response, err
+	}
 	payload, err := json.Marshal(acceptedTriggerPayload{Request: request, PodScoped: request.PodScoped, PodRunID: request.PodRunID})
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
@@ -114,11 +145,11 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 	if err != nil {
 		return httpapi.TriggerStatusResponse{}, err
 	}
-	var payload acceptedTriggerPayload
-	if err := json.Unmarshal(record.Payload, &payload); err != nil {
+	podScoped, podRunID, err := acceptedTriggerScope(record.Payload)
+	if err != nil {
 		return httpapi.TriggerStatusResponse{}, err
 	}
-	if payload.PodScoped != request.PodScoped || (request.PodScoped && payload.PodRunID != request.PodRunID) {
+	if podScoped != request.PodScoped || (request.PodScoped && podRunID != request.PodRunID) {
 		return httpapi.TriggerStatusResponse{}, missing
 	}
 	return httpapi.TriggerStatusResponse{AcceptanceID: record.ID, State: string(record.State), RunID: record.RunID, Reason: record.Reason, AcceptedAt: record.AcceptedAt}, nil
@@ -128,13 +159,35 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 // are never replayed here: crash reconciliation must prove whether a run exists
 // before releasing their custody. The request's HTTP context is never used.
 func (s *durableTriggerService) Drain(ctx context.Context) error {
-	s.sweepMu.Lock()
-	defer s.sweepMu.Unlock()
-	if s.dispatch.triggerer() == nil {
-		return nil
+	return s.drainWithin(ctx, triggerPassBudget)
+}
+
+func (s *durableTriggerService) drainWithin(ctx context.Context, budget time.Duration) error {
+	ctx, cancelPass := triggerPassContext(ctx, s.dispatch.lifecycleContext(ctx), budget)
+	defer cancelPass()
+	if err := acquireTriggerPass(ctx, &s.sweepMu); err != nil {
+		return err
 	}
-	reconcileErr := s.reconcileObserved(ctx)
-	records, err := s.queue.Pending(ctx, 100)
+	defer s.sweepMu.Unlock()
+	// Child custody shares the ordinary queue database. Retention must run
+	// even while no scheduler is attached; otherwise inactive installations
+	// retain terminal lineages and cancellation fences indefinitely.
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, 250*time.Millisecond)
+	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
+	cancelPrune()
+	eventPruneCtx, cancelEventPrune := context.WithTimeout(ctx, 50*time.Millisecond)
+	_, eventPruneErr := s.queue.PruneEvents(eventPruneCtx, s.dispatch.now(), 100)
+	cancelEventPrune()
+	pruneErr = errors.Join(pruneErr, eventPruneErr, s.pruneWorkbenchCommands(ctx))
+	if s.childFamilies != nil {
+		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
+	}
+	pruneErr = errors.Join(pruneErr, s.sweepStartControls(ctx), s.sweepEvents(ctx), s.sweepSessions(ctx), s.sweepDirectEngine(ctx))
+	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil && s.sessions == nil && s.restarts == nil {
+		return pruneErr
+	}
+	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
+	records, err := s.queue.PendingAfter(ctx, s.pendingCursor, 100)
 	if err != nil {
 		return errors.Join(reconcileErr, err)
 	}
@@ -142,14 +195,61 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.drainOne(ctx, record); err != nil {
-			return errors.Join(reconcileErr, err)
-		}
+		reconcileErr = errors.Join(reconcileErr, s.drainOne(ctx, record))
+		s.pendingCursor = triggerqueue.PendingCursor{AcceptedAt: record.AcceptedAt, ID: record.ID}
+	}
+	if len(records) < 100 {
+		s.pendingCursor = triggerqueue.PendingCursor{}
 	}
 	return reconcileErr
 }
 
 func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueue.Record) error {
+	if ready, err := s.prepareQueuedStart(ctx, record); err != nil || !ready {
+		return err
+	}
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)
+	}
+	// Generated children require their own pinned-definition launcher. Never
+	// treat a generated workflow's display name as a catalog trigger, even if
+	// an envelope also contains an ordinary request. Retain durable custody.
+	if header.Kind == enginestartintent.Kind {
+		return s.drainDirectEngine(ctx, record)
+	}
+	if header.Kind == restartintent.Kind {
+		if s.restarts == nil {
+			return nil
+		}
+		return s.restarts.Dispatch(ctx, s.dispatch.lifecycleContext(ctx), record)
+	}
+	if header.Kind == startintent.Kind {
+		return s.drainOrdinary(ctx, record)
+	}
+	if header.Kind == childworkflow.ChildStartKind {
+		return s.drainChild(ctx, record)
+	}
+	if header.Kind == sessioning.StartKind {
+		if s.sessions == nil {
+			return nil
+		}
+		return s.sessions.Dispatch(ctx, s.dispatch.lifecycleContext(ctx), record)
+	}
+	if header.Kind == eventing.StartKind {
+		if s.events == nil {
+			return nil
+		}
+		return s.events.Dispatch(ctx, s.dispatch.lifecycleContext(ctx), record)
+	}
+	if header.Kind != "" {
+		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)
+	}
+	if s.dispatch.triggerer() == nil {
+		return nil
+	}
 	var payload acceptedTriggerPayload
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)
@@ -157,7 +257,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	if err := s.auditDispatch(record, payload.Request); err != nil {
 		return err
 	}
-	if err := s.queue.BeginDispatch(ctx, record.ID); err != nil {
+	if err := s.queue.BeginDispatchAt(ctx, record.ID, s.dispatch.now()); err != nil {
 		if errors.Is(err, triggerqueue.ErrTransition) {
 			return nil
 		}
@@ -203,4 +303,23 @@ func (s *durableTriggerService) auditDispatch(record triggerqueue.Record, reques
 			"requestId": record.Key, "force": request.Force, "sourceRun": request.SourceRun,
 		},
 	})
+}
+
+func acceptedTriggerScope(raw []byte) (bool, string, error) {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return false, "", err
+	}
+	if header.Kind == restartintent.Kind {
+		return false, "", nil
+	}
+	if header.Kind == startintent.Kind {
+		e, err := startintent.Parse(raw)
+		return e.Request.PodScoped, e.Request.PodRunID, err
+	}
+	var payload acceptedTriggerPayload
+	err := json.Unmarshal(raw, &payload)
+	return payload.PodScoped, payload.PodRunID, err
 }

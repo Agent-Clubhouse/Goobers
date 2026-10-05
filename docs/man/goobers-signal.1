@@ -6,7 +6,7 @@ goobers signal \- fire an external signal to subscribed workflows
 \fBgoobers signal\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id key] <name> [path]
 
 Fire an external signal by name, dispatching every workflow with a
 type=signal trigger subscribed to it, through the same scheduler (run
@@ -14,6 +14,8 @@ conditions, instance journal, single-instance lock) a live `goobers up`
 daemon uses (default path "."). A signal may match zero, one, or many
 workflows; waits for every dispatched run to reach a terminal state or
 pause before returning (same blocking UX as `goobers run`).
+Source acceptance is durable. Reuse --request-id after an uncertain reply.
+Starts held by capacity remain queued for goobers up after this command exits.
 Exit codes after waiting: 0 = every admitted run completed (also used when
 none were admitted), 1 = any run failed/aborted or a business error, 2 =
 usage/IO error, 3 = any run escalated. Escalation takes precedence for

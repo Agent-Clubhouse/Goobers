@@ -57,3 +57,28 @@ func (l *RunRootMaintenanceLocks) Release() error {
 	l.handles = nil
 	return err
 }
+
+// TryAcquireRunRootMaintenanceLocks excludes journal moves without waiting.
+// A held root returns the platform lock error and releases all earlier roots.
+func TryAcquireRunRootMaintenanceLocks(runRoots []string) (*RunRootMaintenanceLocks, error) {
+	paths := make([]string, 0, len(runRoots))
+	seen := map[string]bool{}
+	for _, root := range runRoots {
+		root = filepath.Clean(root)
+		path := filepath.Join(filepath.Dir(root), "."+filepath.Base(root)+".maintenance.lock")
+		if !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	locks := &RunRootMaintenanceLocks{}
+	for _, path := range paths {
+		handle, err := platformlock.TryAcquire(path)
+		if err != nil {
+			return nil, errors.Join(err, locks.Release())
+		}
+		locks.handles = append(locks.handles, handle)
+	}
+	return locks, nil
+}
