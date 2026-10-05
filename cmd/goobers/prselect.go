@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -678,14 +679,27 @@ const (
 	exclusionBranchOccupied    = prqueue.BranchOccupied
 )
 
+// runningInStagePod reports whether this process is a goobers-CLI stage inside
+// a dispatcher pod. EnvPodToken is deliberately stripped from stage commands
+// (DispatcherPrivilegedEnv), so it only identifies the dispatch-exec process
+// itself; EnvPodAttempt is dispatcher-owned run identity that CLI stages keep.
+func runningInStagePod() bool {
+	return os.Getenv(dispatcher.EnvPodAttempt) != "" || os.Getenv(dispatcher.EnvPodToken) != ""
+}
+
 func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.RepositoryRef) (map[string]worktree.BranchOccupancy, error) {
 	// Stage pods use fresh clones and have neither shared host occupancies nor instance config.
-	if os.Getenv(dispatcher.EnvPodToken) != "" {
+	if runningInStagePod() {
 		return map[string]worktree.BranchOccupancy{}, nil
 	}
 	layout := layoutFor(root)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
+		// No instance config means no host-managed workcopies to inspect
+		// (a pod or scratch checkout the pod signal did not identify).
+		if errors.Is(err, fs.ErrNotExist) {
+			return map[string]worktree.BranchOccupancy{}, nil
+		}
 		return nil, err
 	}
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
