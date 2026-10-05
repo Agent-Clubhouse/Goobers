@@ -404,7 +404,7 @@ func (db *DB) RelatedPullRequests(
 	issueID string,
 ) ([]RelatedWorkItem, error) {
 	issueURL := workItemURL(provider, repository, "issue", issueID)
-	pullPrefix := workItemURL(provider, repository, "pr", "")
+	pullPrefix := relatedPullRequestPrefix(provider, repository)
 	if issueURL == "" || pullPrefix == "" {
 		return []RelatedWorkItem{}, nil
 	}
@@ -486,12 +486,33 @@ func (db *DB) RelatedPullRequests(
 	return items, nil
 }
 
+// relatedPullRequestPrefix returns the URL prefix shared by every pull request
+// that can relate to an issue in repository.
+//
+// #6797: an ADO issue's repository is project-scoped ("<org>/<project>"),
+// while its pull requests live in repository-scoped
+// "<org>/<project>/_git/<repo>/pullrequest/<id>" URLs. Building the prefix
+// with workItemURL(..., "pr", "") from the issue's repository yielded "" for
+// ADO, so an ADO issue never listed a related pull request. The ADO prefix is
+// therefore the project's "_git/" root, which covers every repository in the
+// project and nothing outside it.
+func relatedPullRequestPrefix(provider, repository string) string {
+	if !strings.EqualFold(provider, "ado") {
+		return workItemURL(provider, repository, "pr", "")
+	}
+	parts := strings.Split(strings.Trim(repository, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return "https://dev.azure.com/" + parts[0] + "/" + parts[1] + "/_git/"
+}
+
 // workItemURL builds an entity URL, or — when externalID is empty — the URL
 // PREFIX shared by every entity of that kind in that repository.
 //
-// The empty-id prefix form is load-bearing, not an accident: RelatedPullRequests
-// calls workItemURL(provider, repository, "pr", "") and uses the result as a
-// SQL LIKE prefix. Rejecting an empty id here would silently return no related
+// The empty-id prefix form is load-bearing, not an accident: for GitHub,
+// relatedPullRequestPrefix calls workItemURL(provider, repository, "pr", "")
+// and RelatedPullRequests uses the result as a SQL LIKE prefix. Rejecting an empty id here would silently return no related
 // pull requests at all, so the contract is stated rather than left implicit.
 func workItemURL(provider, repository, kind, externalID string) string {
 	if strings.TrimSpace(repository) == "" {
