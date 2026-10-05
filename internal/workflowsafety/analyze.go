@@ -88,15 +88,16 @@ type Options struct {
 }
 
 type frame struct {
-	state        string
-	path         []string
-	visited      []string
-	patch        bool
-	unknown      bool
-	codeSubject  bool
-	pr           bool
-	rebound      bool
-	localAttempt bool
+	state            string
+	path             []string
+	visited          []string
+	patch            bool
+	unknown          bool
+	codeSubject      bool
+	pr               bool
+	rebound          bool
+	reboundWorkspace bool
+	localAttempt     bool
 	// Each pending rejection is scoped to its gate, never satisfied by a
 	// publisher of another verdict.
 	pending      []pendingRejection
@@ -206,11 +207,11 @@ func (a *analyzer) walk(f frame) {
 	// Path is presentation, not state. The remaining bounded abstract state
 	// includes completed stages so a forward edge is not mistaken for a retry.
 	key, _ := json.Marshal(struct {
-		State, Feedback, LastTask, CycleStart                                             string
-		Patch, Unknown, CodeSubject, PR, Rebound, LocalAttempt, CycleChange, CycleUnknown bool
-		Pending                                                                           []pendingRejection
-		Visited                                                                           []string
-	}{f.state, f.feedback, f.lastTask, f.cycleStart, f.patch, f.unknown, f.codeSubject, f.pr, f.rebound, f.localAttempt, f.cycleChange, f.cycleUnknown, f.pending, f.visited})
+		State, Feedback, LastTask, CycleStart                                                               string
+		Patch, Unknown, CodeSubject, PR, Rebound, ReboundWorkspace, LocalAttempt, CycleChange, CycleUnknown bool
+		Pending                                                                                             []pendingRejection
+		Visited                                                                                             []string
+	}{f.state, f.feedback, f.lastTask, f.cycleStart, f.patch, f.unknown, f.codeSubject, f.pr, f.rebound, f.reboundWorkspace, f.localAttempt, f.cycleChange, f.cycleUnknown, f.pending, f.visited})
 	if a.seen[string(key)] {
 		return
 	}
@@ -310,9 +311,13 @@ func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
 	if e.SelectsPR {
 		f.pr = true
 		f.patch, f.rebound, f.localAttempt = false, false, false
+		if !e.ConditionalRebind || !preservesReboundWorkspace(t) {
+			f.reboundWorkspace = false
+		}
 	}
 	if e.Rebinds {
 		f.rebound = true
+		f.reboundWorkspace = true
 	}
 	if e.Changes {
 		f.patch = false
@@ -326,7 +331,7 @@ func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
 	if e.Patch {
 		mode := t.EffectiveWorkspace()
 		writable := mode == "" || mode == apiv1.WorkspaceRepo
-		f.patch = c.Evidence == "patch" || (writable && (!f.pr || f.rebound))
+		f.patch = c.Evidence == "patch" || (writable && (!f.pr || f.rebound || f.reboundWorkspace))
 		if !f.patch {
 			f.unknown = true
 		}
@@ -334,6 +339,11 @@ func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
 	if !e.Known && !e.Patch && t.Type == apiv1.TaskDeterministic {
 		f.patch = false
 	}
+}
+
+func preservesReboundWorkspace(t apiv1.Task) bool {
+	return t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" && t.Run.Command[1] == "gather-sibling-context" &&
+		t.InputsFrom["selectedNumber"] == "selectedNumber" && t.InputsFrom["head"] == "head" && t.InputsFrom["base"] == "base"
 }
 
 func (a *analyzer) reviewEvidence(f frame, g apiv1.Gate) bool {
