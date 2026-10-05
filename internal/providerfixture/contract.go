@@ -34,10 +34,10 @@ func checkMappedContract[T any](ctx context.Context, fixture Fixture, backend co
 		return fmt.Errorf("%w: %s: %w", ErrContractAssertion, backend.getOperation(), err)
 	}
 	if err := backend.assertIdentity(item); err != nil {
-		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+		return fmt.Errorf("%w: %v", ErrContractAssertion, err)
 	}
 	if err := backend.assertRequiredFields(item); err != nil {
-		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+		return fmt.Errorf("%w: %v", ErrContractAssertion, err)
 	}
 	found := false
 	for _, listed := range items {
@@ -46,11 +46,11 @@ func checkMappedContract[T any](ctx context.Context, fixture Fixture, backend co
 		}
 		found = true
 		if err := backend.assertConsistency(listed, item); err != nil {
-			return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+			return fmt.Errorf("%w: %v", ErrContractAssertion, err)
 		}
 	}
 	if !found {
-		return fmt.Errorf("%w: %w", ErrContractAssertion, backend.missingItemError())
+		return fmt.Errorf("%w: %v", ErrContractAssertion, backend.missingItemError())
 	}
 	if err := client.verifyConsumed(); err != nil {
 		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
