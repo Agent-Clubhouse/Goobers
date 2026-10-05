@@ -379,7 +379,7 @@ func (m *Manager) recordCleanupRetryFailure(candidate cleanupRetryCandidate, att
 			}
 			if err := writeMarker(ownershipPath, ownership); err != nil {
 				return false, fmt.Errorf(
-					"worktree: record cleanup retry failure in ownership record: %w (original cleanup error: %v)",
+					"worktree: record cleanup retry failure in ownership record: %w (original cleanup error: %w)",
 					err, attemptErr,
 				)
 			}
@@ -390,7 +390,7 @@ func (m *Manager) recordCleanupRetryFailure(candidate cleanupRetryCandidate, att
 			fmt.Errorf("worktree: record cleanup retry failure in marker: %w", err))
 	}
 	if recordErr != nil {
-		return false, fmt.Errorf("%w (original cleanup error: %v)", recordErr, attemptErr)
+		return false, fmt.Errorf("%w (original cleanup error: %w)", recordErr, attemptErr)
 	}
 	return exhausted, nil
 }
