@@ -508,7 +508,6 @@ function Overview({
                                 run,
                                 overviewRuns,
                                 failureReasons.get(run.id),
-                                overview.groups.recoveryEvidenceIncomplete?.has(run.id),
                               );
                               return (
                                 <div className="attention-run-row" key={run.id}>
@@ -1259,7 +1258,6 @@ function groupAttentionRuns(
       run,
       availableRuns,
       failureReasons.get(run.id),
-      overview.groups.recoveryEvidenceIncomplete?.has(run.id),
     );
     const category = attentionCategory(run, failureReasons, severity);
     const key = issue

@@ -625,7 +625,7 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
     ).toBe("warning");
   });
 
-  it("does not treat bounded successor history as proof that a failure is unrecovered", async () => {
+  it("keeps a non-retryable failure blocked when successor history is truncated", async () => {
     const fixtures = emptyDaemonFixtures();
     const failed = attentionRun(
       "failed-before-busy-completions",
@@ -662,16 +662,53 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
     if (!candidate) {
       throw new Error("Expected the failed run to remain in the attention group.");
     }
-    expect(overview.groups.recoveryEvidenceIncomplete?.has(failed.id)).toBe(true);
     expect(
       attentionSeverity(
         candidate,
         [...overview.groups.active, ...overview.groups.attention, ...overview.groups.recent],
-        undefined,
-        overview.groups.recoveryEvidenceIncomplete?.has(failed.id),
       ),
-    ).toBe("warning");
+    ).toBe("blocked");
   });
+
+  it.each(["running", "completed"] as const)(
+    "keeps a non-retryable failure blocked when the %s query fails",
+    async (unavailablePhase) => {
+      const fixtures = emptyDaemonFixtures();
+      const failed = attentionRun(
+        `failed-without-${unavailablePhase}`,
+        "failed",
+        new Date(NOW - 30 * 60_000).toISOString(),
+      );
+      failed.trigger.ref = "6487";
+      failed.startedAt = new Date(NOW - 60 * 60_000).toISOString();
+      failed.terminalReason = "ISSUE_OVER_SCOPE";
+      fixtures.runs = { runs: [failed] };
+      const client = new FixtureDaemonClient(fixtures);
+      const listRuns = client.listRuns.bind(client);
+      vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+        if (request?.phase === unavailablePhase) {
+          throw new Error(`${unavailablePhase} history unavailable`);
+        }
+        return listRuns(request, options);
+      });
+
+      const overview = await loadOperationalOverview(client);
+      const candidate = overview.groups.attention.find((run) => run.id === failed.id);
+
+      expect(candidate).toBeDefined();
+      if (!candidate) {
+        throw new Error("Expected the failed run to remain in the attention group.");
+      }
+      expect(overview.groups.incomplete?.phases).toContain(unavailablePhase);
+      expect(
+        attentionSeverity(candidate, [
+          ...overview.groups.active,
+          ...overview.groups.attention,
+          ...overview.groups.recent,
+        ]),
+      ).toBe("blocked");
+    },
+  );
 
   beforeEach(() => {
     vi.useFakeTimers();
