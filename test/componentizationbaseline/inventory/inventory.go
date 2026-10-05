@@ -209,16 +209,53 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 	}
 
 	symbolDomains := make(map[string][]string)
-	parsed := make(map[string]*ast.File)
-	symbolFiles := make(map[string]string)
 	fset := token.NewFileSet()
-	for _, name := range append(append([]string{}, pkg.GoFiles...), pkg.CgoFiles...) {
-		path := filepath.Join(pkg.Dir, name)
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			return packageAnalysis{}, fmt.Errorf("parse production file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
+	parsed, err := parsePackageFiles(fset, pkg.Dir, relDir, append(append([]string{}, pkg.GoFiles...), pkg.CgoFiles...), "production")
+	if err != nil {
+		return packageAnalysis{}, err
+	}
+	recordDomainSources(module.Path, pkg.ImportPath, relDir, parsed, domains, symbolDomains)
+
+	internalFiles, err := parsePackageFiles(fset, pkg.Dir, relDir, pkg.TestGoFiles, "test")
+	if err != nil {
+		return packageAnalysis{}, err
+	}
+	imports := typeImporter(fset, exports)
+	typed, err := typePackage(fset, pkg.ImportPath, parsed, internalFiles, imports)
+	if err != nil {
+		return packageAnalysis{}, fmt.Errorf("type-check package %s: %w", pkg.ImportPath, err)
+	}
+	factories := collectGlobalFactories(typed.pkg)
+	recordTypedDomains(parsed, typed)
+	for name := range factories {
+		if object := typed.pkg.Scope().Lookup(name); object != nil {
+			typed.factories[object] = name
 		}
-		parsed[name] = file
+	}
+	typed.collectCommandDispatch(parsed, internalFiles)
+
+	tests, err := analyzePackageTests(pkg, relDir, internalFiles, typed, imports, symbolDomains, factories, domains)
+	if err != nil {
+		return packageAnalysis{}, err
+	}
+	return packageAnalysis{record: record, tests: tests, symbols: symbolDomains, factories: factories}, nil
+}
+
+func parsePackageFiles(fset *token.FileSet, packageDir, relDir string, names []string, kind string) (map[string]*ast.File, error) {
+	files := make(map[string]*ast.File, len(names))
+	for _, name := range names {
+		file, err := parser.ParseFile(fset, filepath.Join(packageDir, name), nil, parser.ParseComments)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s file %s: %w", kind, filepath.ToSlash(filepath.Join(relDir, name)), err)
+		}
+		files[name] = file
+	}
+	return files, nil
+}
+
+func recordDomainSources(modulePath, importPath, relDir string, parsed map[string]*ast.File, domains map[string]*domainRecord, symbolDomains map[string][]string) {
+	symbolFiles := make(map[string]string)
+	for name, file := range parsed {
 		for _, decl := range file.Decls {
 			for _, symbol := range declarationNames(decl) {
 				symbolFiles[symbol] = name
@@ -232,7 +269,7 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 			}
 			repoPath := filepath.ToSlash(filepath.Join(relDir, name))
 			domains[domain].SourceFiles = append(domains[domain].SourceFiles, repoPath)
-			domains[domain].ReusableLocalImports = append(domains[domain].ReusableLocalImports, localImports(module.Path, file)...)
+			domains[domain].ReusableLocalImports = append(domains[domain].ReusableLocalImports, localImports(modulePath, file)...)
 			for _, decl := range file.Decls {
 				for _, symbol := range declarationNames(decl) {
 					symbolDomains[symbol] = append(symbolDomains[symbol], domain)
@@ -245,31 +282,15 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 					return true
 				}
 				if owner, exists := symbolFiles[identifier.Name]; exists && owner != name {
-					domains[domain].ExistingHelpers = append(
-						domains[domain].ExistingHelpers,
-						pkg.ImportPath+"."+identifier.Name,
-					)
+					domains[domain].ExistingHelpers = append(domains[domain].ExistingHelpers, importPath+"."+identifier.Name)
 				}
 				return true
 			})
 		}
 	}
+}
 
-	internalFiles := make(map[string]*ast.File)
-	for _, name := range pkg.TestGoFiles {
-		path := filepath.Join(pkg.Dir, name)
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			return packageAnalysis{}, fmt.Errorf("parse test file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
-		}
-		internalFiles[name] = file
-	}
-	imports := typeImporter(fset, exports)
-	typed, err := typePackage(fset, pkg.ImportPath, parsed, internalFiles, imports)
-	if err != nil {
-		return packageAnalysis{}, fmt.Errorf("type-check package %s: %w", pkg.ImportPath, err)
-	}
-	factories := collectGlobalFactories(typed.pkg)
+func recordTypedDomains(parsed map[string]*ast.File, typed typedPackage) {
 	for name, file := range parsed {
 		for domain, files := range domainFiles {
 			if !files[name] {
@@ -282,13 +303,9 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 			}
 		}
 	}
-	for name := range factories {
-		if object := typed.pkg.Scope().Lookup(name); object != nil {
-			typed.factories[object] = name
-		}
-	}
-	typed.collectCommandDispatch(parsed, internalFiles)
+}
 
+func analyzePackageTests(pkg goPackage, relDir string, internalFiles map[string]*ast.File, typed typedPackage, imports types.Importer, symbolDomains map[string][]string, factories map[string]bool, domains map[string]*domainRecord) ([]testRecord, error) {
 	var tests []testRecord
 	for _, group := range []struct {
 		files    []string
@@ -297,34 +314,21 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 		groupParsed := internalFiles
 		groupTyped := typed
 		if group.external {
-			groupParsed = make(map[string]*ast.File)
 			externalFSet := token.NewFileSet()
-			for _, name := range group.files {
-				path := filepath.Join(pkg.Dir, name)
-				file, err := parser.ParseFile(externalFSet, path, nil, parser.ParseComments)
-				if err != nil {
-					return packageAnalysis{}, fmt.Errorf("parse test file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
-				}
-				groupParsed[name] = file
+			var err error
+			groupParsed, err = parsePackageFiles(externalFSet, pkg.Dir, relDir, group.files, "test")
+			if err != nil {
+				return nil, err
 			}
 			groupTyped, err = typePackage(externalFSet, pkg.ImportPath+"_test", nil, groupParsed, imports)
 			if err != nil {
-				return packageAnalysis{}, fmt.Errorf("type-check external test package %s_test: %w", pkg.ImportPath, err)
+				return nil, fmt.Errorf("type-check external test package %s_test: %w", pkg.ImportPath, err)
 			}
-			for _, object := range groupTyped.info.Uses {
-				if object.Pkg() == nil || object.Pkg().Path() != pkg.ImportPath {
-					continue
-				}
-				groupTyped.domains[object] = append(groupTyped.domains[object], symbolDomains[object.Name()]...)
-				if factories[object.Name()] {
-					groupTyped.factories[object] = object.Name()
-				}
-			}
+			recordExternalReferences(pkg.ImportPath, groupTyped, symbolDomains, factories)
 		}
 		examples := runnableExamples(groupParsed)
 		for _, name := range group.files {
-			file := groupParsed[name]
-			for _, decl := range file.Decls {
+			for _, decl := range groupParsed[name].Decls {
 				fn, ok := decl.(*ast.FuncDecl)
 				if !ok || fn.Recv != nil {
 					continue
@@ -341,7 +345,19 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 			}
 		}
 	}
-	return packageAnalysis{record: record, tests: tests, symbols: symbolDomains, factories: factories}, nil
+	return tests, nil
+}
+
+func recordExternalReferences(importPath string, typed typedPackage, symbolDomains map[string][]string, factories map[string]bool) {
+	for _, object := range typed.info.Uses {
+		if object.Pkg() == nil || object.Pkg().Path() != importPath {
+			continue
+		}
+		typed.domains[object] = append(typed.domains[object], symbolDomains[object.Name()]...)
+		if factories[object.Name()] {
+			typed.factories[object] = object.Name()
+		}
+	}
 }
 
 func typeImporter(fset *token.FileSet, exports map[string]string) types.Importer {
