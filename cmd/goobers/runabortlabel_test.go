@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -71,18 +72,24 @@ func runAbortLabelEvents(t *testing.T, runsDir, runID string) []journal.Event {
 
 func TestLabelAbortedRunPRLabelsThePROnlyWhenAborted(t *testing.T) {
 	tests := []struct {
-		name      string
-		phase     journal.RunPhase
-		prID      string
-		wantCalls int
+		name                   string
+		phase                  journal.RunPhase
+		prID                   string
+		errorClass             telemetry.ErrorClass
+		terminalClassification journal.TerminalClassification
+		priorInfraGeneration   bool
+		wantCalls              int
 	}{
 		{name: "aborted run with a PR gets labeled", phase: journal.PhaseAborted, prID: "42", wantCalls: 1},
 		// #3490: a run that fails or escalates after opening a PR orphans it
 		// exactly as an abort does — CI may never settle green, so pr-select
 		// (which requires CheckStatePassing) can never pick it up on its own.
-		// Labeling it here on every non-completed terminal phase gives it the
-		// same reachable-exclusion disposition an abort already gets.
+		// Labeling work and policy failures here gives them the same
+		// reachable-exclusion disposition an abort already gets.
 		{name: "failed run with a PR gets labeled", phase: journal.PhaseFailed, prID: "42", wantCalls: 1},
+		{name: "infrastructure failure leaves the PR eligible", phase: journal.PhaseFailed, prID: "42", errorClass: telemetry.ErrorClassInfra, wantCalls: 0},
+		{name: "durable infrastructure terminal leaves the PR eligible", phase: journal.PhaseEscalated, prID: "42", terminalClassification: journal.TerminalInfrastructureFailure, wantCalls: 0},
+		{name: "prior infrastructure terminal does not exempt a resumed abort", phase: journal.PhaseAborted, prID: "42", priorInfraGeneration: true, wantCalls: 1},
 		{name: "escalated run with a PR gets labeled", phase: journal.PhaseEscalated, prID: "42", wantCalls: 1},
 		{name: "completed run is left alone", phase: journal.PhaseCompleted, prID: "42", wantCalls: 0},
 		{name: "aborted run without a PR has nothing to label", phase: journal.PhaseAborted, prID: "", wantCalls: 0},
@@ -90,6 +97,46 @@ func TestLabelAbortedRunPRLabelsThePROnlyWhenAborted(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			runsDir, runID, jr := newRunAbortLabelJournal(t, tc.prID)
+			if tc.priorInfraGeneration {
+				if err := jr.Append(journal.Event{
+					Type:   journal.EventRunFinished,
+					Status: string(journal.PhaseFailed),
+					TerminalCause: &journal.TerminalCause{
+						Schema:         journal.TerminalCauseSchema,
+						Phase:          journal.PhaseFailed,
+						Classification: journal.TerminalInfrastructureFailure,
+						Code:           "infra_workspace_failed",
+					},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := jr.Append(journal.Event{Type: journal.EventRunResumed}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.errorClass != "" {
+				if err := jr.Append(journal.Event{
+					Type:   journal.EventError,
+					Error:  &journal.ErrorDetail{Code: "run_failed", Message: "infrastructure failure"},
+					Runner: map[string]any{"errorClass": string(tc.errorClass)},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.terminalClassification != "" {
+				if err := jr.Append(journal.Event{
+					Type:   journal.EventRunFinished,
+					Status: string(tc.phase),
+					TerminalCause: &journal.TerminalCause{
+						Schema:         journal.TerminalCauseSchema,
+						Phase:          tc.phase,
+						Classification: tc.terminalClassification,
+						Code:           "infra_workspace_failed",
+					},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var calls int
 			var gotReq providers.UpdateWorkItemRequest
 			labelPR := func(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
