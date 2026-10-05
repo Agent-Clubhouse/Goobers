@@ -301,66 +301,22 @@ func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo Reposito
 // idempotent (Gitea's q= searches titles only, so the match is a client-side
 // body-footer scan).
 func (p *GiteaProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
-	if err := p.ready(); err != nil {
-		return WorkItem{}, err
-	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	// #5245: refuse declared graph edges before any mutation, rather than
-	// creating the item and dropping them.
-	if err := checkCreateWorkItemGraphFields(req); err != nil {
-		return WorkItem{}, err
-	}
-	itemBody := withRunIDFooter(req.Body, req.RunID)
-	var err error
-	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.RunID != "" {
-		if existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID); err != nil {
-			return WorkItem{}, err
-		} else if found {
-			return existing, nil
-		}
-	}
-	labelNames := replaceStatusLabel(req.Labels, req.Status)
-	labelIDs, err := p.giteaLabelIDs(ctx, req.Repository, labelNames)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
-	if err != nil {
-		return WorkItem{}, err
-	}
-	body := map[string]interface{}{
-		"title": req.Title,
-		"body":  itemBody,
-	}
-	if len(labelIDs) > 0 {
-		body["labels"] = labelIDs
-	}
-	if req.Assignee != "" {
-		body["assignees"] = []string{req.Assignee}
-	}
-	var issue giteaIssue
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &issue); err != nil {
-		return WorkItem{}, err
-	}
-	item := mapGiteaIssue(issue)
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, strconv.Itoa(issue.Number)),
-		URL:       item.URL,
-		Operation: "create",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(req.Title)},
-			"body":  {After: digestString(itemBody)},
+	return createRESTWorkItem(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req, restCreateWorkItemHooks[giteaIssue, []int64]{
+		ready:  p.ready,
+		labels: p.giteaLabelIDs,
+		createBody: func(req CreateWorkItemRequest, itemBody string, labelIDs []int64) interface{} {
+			body := map[string]interface{}{"title": req.Title, "body": itemBody}
+			if len(labelIDs) > 0 {
+				body["labels"] = labelIDs
+			}
+			if req.Assignee != "" {
+				body["assignees"] = []string{req.Assignee}
+			}
+			return body
 		},
+		mapIssue:    mapGiteaIssue,
+		findRunItem: p.findRunItem,
 	})
-	return item, nil
 }
 
 // findRunItem scans a recent window of issues for one whose body carries the
