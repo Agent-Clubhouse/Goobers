@@ -91,7 +91,7 @@ func TestPRSelectLeavesRunAbortedPRWithCommentsParked(t *testing.T) {
 func TestPRSelectIgnoresGoobersCommentsFromOtherInstanceIdentities(t *testing.T) {
 	const number = 6766
 	server := newReviewedRunAbortedPRFixture(t, number)
-	for i, author := range []string{"jeffstei", "goobersbot"} {
+	for i, author := range []string{server.authenticatedLogin, "goobersbot[bot]"} {
 		body, err := providers.StampAttribution(
 			"automation status",
 			providers.Attribution{
@@ -109,8 +109,10 @@ func TestPRSelectIgnoresGoobersCommentsFromOtherInstanceIdentities(t *testing.T)
 		}
 		server.addRawCommentAs(number, author, body)
 	}
+	server.setPRIdentities(number, "goobersbot[bot]", nil, nil)
 
 	root := initDemo(t)
+	setAppDaemonIdentity(t, root, "goobersbot")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	workDir := t.TempDir()
@@ -129,9 +131,11 @@ func TestPRSelectClearsRunAbortedForCurrentHeadPassFromOtherIdentity(t *testing.
 	const number = 6767
 	server := newReviewedRunAbortedPRFixture(t, number)
 	server.addRawCommentAs(number, "reviewer", "earlier review feedback")
-	addCurrentHeadPassFromOtherIdentity(t, server, number)
+	addCurrentHeadPass(t, server, number, "goobersbot[bot]")
+	server.setPRIdentities(number, "goobersbot[bot]", nil, nil)
 
 	root := initDemo(t)
+	setAppDaemonIdentity(t, root, "goobersbot")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	workDir := t.TempDir()
@@ -150,13 +154,15 @@ func TestPRSelectClearsRunAbortedForCanonicalPassUpdatedAfterHumanComment(t *tes
 	const number = 6779
 	server := newReviewedRunAbortedPRFixture(t, number)
 	passCreatedAt := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
-	server.addRawCommentAtAsType(number, "jeffstei", "", currentHeadPassFromOtherIdentity(t), passCreatedAt)
+	server.addRawCommentAtAsType(number, "goobersbot[bot]", "Bot", currentHeadPassFromOtherIdentity(t), passCreatedAt)
 	server.addRawCommentAtAsType(number, "reviewer", "", "please recheck this", passCreatedAt.Add(time.Hour))
+	server.setPRIdentities(number, "goobersbot[bot]", nil, nil)
 	server.mu.Lock()
 	server.issues[number].commentUpdates[0] = passCreatedAt.Add(2 * time.Hour)
 	server.mu.Unlock()
 
 	root := initDemo(t)
+	setAppDaemonIdentity(t, root, "goobersbot")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	workDir := t.TempDir()
@@ -174,7 +180,7 @@ func TestPRSelectClearsRunAbortedForCanonicalPassUpdatedAfterHumanComment(t *tes
 func TestPRSelectLeavesCurrentHeadPassParkedAfterNewerHumanComment(t *testing.T) {
 	const number = 6768
 	server := newReviewedRunAbortedPRFixture(t, number)
-	addCurrentHeadPassFromOtherIdentity(t, server, number)
+	addCurrentHeadPass(t, server, number, server.authenticatedLogin)
 	server.addRawCommentAs(number, "reviewer", "please recheck this")
 
 	runPRSelectExpectingRunAbortedPark(t, server, number)
@@ -183,7 +189,7 @@ func TestPRSelectLeavesCurrentHeadPassParkedAfterNewerHumanComment(t *testing.T)
 func TestPRSelectRestoresRunAbortedAfterHumanCommentFollowingCurrentHeadPass(t *testing.T) {
 	const number = 6769
 	server := newReviewedRunAbortedPRFixture(t, number)
-	addCurrentHeadPassFromOtherIdentity(t, server, number)
+	addCurrentHeadPass(t, server, number, server.authenticatedLogin)
 	server.mutatePullRequestAfterLabelRemoval(number, func(s *fakeGitHubServer, _ *fakePR) {
 		issue := s.issues[number]
 		s.nextCommentID++
@@ -197,9 +203,9 @@ func TestPRSelectRestoresRunAbortedAfterHumanCommentFollowingCurrentHeadPass(t *
 	runPRSelectExpectingRunAbortedPark(t, server, number)
 }
 
-func addCurrentHeadPassFromOtherIdentity(t *testing.T, server *fakeGitHubServer, number int) {
+func addCurrentHeadPass(t *testing.T, server *fakeGitHubServer, number int, author string) {
 	t.Helper()
-	server.addRawCommentAs(number, "jeffstei", currentHeadPassFromOtherIdentity(t))
+	server.addRawCommentAs(number, author, currentHeadPassFromOtherIdentity(t))
 }
 
 func currentHeadPassFromOtherIdentity(t *testing.T) string {
@@ -228,6 +234,14 @@ func currentHeadPassFromOtherIdentity(t *testing.T) string {
 	return body
 }
 
+func TestPRSelectRejectsCurrentHeadPassWithSpoofedAttribution(t *testing.T) {
+	const number = 6770
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.addRawCommentAs(number, "attacker", currentHeadPassFromOtherIdentity(t))
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
 func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T) {
 	const number = 6407
 	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
@@ -250,9 +264,11 @@ func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.addRawCommentAtAsType(number, "jeffstei", "", response, remediatedAt)
+	server.addRawCommentAtAsType(number, "goobersbot[bot]", "Bot", response, remediatedAt)
+	server.setPRIdentities(number, "goobersbot[bot]", nil, nil)
 
 	root := initDemo(t)
+	setAppDaemonIdentity(t, root, "goobersbot")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	workDir := t.TempDir()
@@ -265,6 +281,31 @@ func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T
 		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want remediated PR selected", code, stdout, stderr)
 	}
 	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
+}
+
+func TestPRSelectRejectsRemediationResponseWithSpoofedAttribution(t *testing.T) {
+	const number = 6414
+	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
+	response, err := providers.StampAttribution(
+		remediationResponseMarker("spoofed-remediation"),
+		providers.Attribution{
+			InstanceID: strings.Repeat("d", 32),
+			Gaggle:     "goobers",
+			Workflow:   "pr-remediation",
+			Task:       "respond",
+			Goober:     "deterministic",
+			Run:        "spoofed-remediation",
+		},
+		"comment",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.addRawCommentAtAsType(number, "attacker", "User", response, abortedAt.Add(time.Hour))
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
 }
 
 func TestPRSelectLeavesVerifiedRemediationParkedAfterNewerAbort(t *testing.T) {
