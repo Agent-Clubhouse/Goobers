@@ -249,6 +249,8 @@ type githubIssueContractBackend struct {
 	fixture Fixture
 }
 
+var _ contractBackend[providers.WorkItem] = githubIssueContractBackend{}
+
 func (b githubIssueContractBackend) provider(client HTTPClient) mappedContractProvider[providers.WorkItem] {
 	provider := providers.NewGitHubProvider(
 		"fixture-token",
@@ -316,6 +318,8 @@ func checkPullRequestContract(ctx context.Context, fixture Fixture) error {
 type githubPullRequestContractBackend struct {
 	fixture Fixture
 }
+
+var _ contractBackend[providers.PullRequestSummary] = githubPullRequestContractBackend{}
 
 func (b githubPullRequestContractBackend) provider(client HTTPClient) mappedContractProvider[providers.PullRequestSummary] {
 	provider := providers.NewGitHubProvider(

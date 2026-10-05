@@ -150,6 +150,8 @@ type adoContractBackend struct {
 	fixture Fixture
 }
 
+var _ contractBackend[providers.WorkItem] = adoContractBackend{}
+
 func (b adoContractBackend) provider(client HTTPClient) mappedContractProvider[providers.WorkItem] {
 	provider := providers.NewADOProvider(
 		b.fixture.Repository.Owner,
