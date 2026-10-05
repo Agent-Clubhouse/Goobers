@@ -252,7 +252,7 @@ func benchmark(ctx context.Context, opts options, source sourceInfo, build build
 		Packages: slices.Clone(opts.packages), Tests: slices.Clone(opts.tests),
 		BuildTarget: opts.build, Workloads: []workloadResult{},
 	}
-	baseEnv := withEnv(os.Environ(), "CGO_ENABLED", build.CGO)
+	baseEnv := withEnv(goEnv(), "CGO_ENABLED", build.CGO)
 	for _, definition := range workloads(opts, ownedRoot) {
 		if ctx.Err() != nil {
 			rep.Canceled = true
@@ -417,7 +417,7 @@ func inspectSource(ctx context.Context, checkout, revision string) (sourceInfo, 
 }
 
 func inspectBuildContext(ctx context.Context, checkout, tags, cgoOverride string) (buildContext, error) {
-	output, err := commandOutput(ctx, checkout, "go", "env", "GOVERSION", "GOOS", "GOARCH", "CGO_ENABLED")
+	output, err := commandOutputEnv(ctx, checkout, goEnv(), "go", "env", "GOVERSION", "GOOS", "GOARCH", "CGO_ENABLED")
 	if err != nil {
 		return buildContext{}, fmt.Errorf("inspect Go build context: %w", err)
 	}
@@ -442,13 +442,22 @@ func inspectBuildContext(ctx context.Context, checkout, tags, cgoOverride string
 }
 
 func commandOutput(ctx context.Context, dir, name string, args ...string) (string, error) {
+	return commandOutputEnv(ctx, dir, nil, name, args...)
+}
+
+func commandOutputEnv(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = dir
+	command.Env = env
 	output, err := command.Output()
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func goEnv() []string {
+	return withEnv(os.Environ(), "GOFLAGS", "")
 }
 
 func withEnv(env []string, key, value string) []string {

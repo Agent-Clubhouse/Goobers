@@ -45,6 +45,9 @@ configured counts are for exploratory runs only). Command failures remain in
 the report, are excluded from successful-sample statistics, and make the
 command exit nonzero after all workloads finish.
 Cancellation writes the partial report and exits nonzero.
+Ambient `GOFLAGS` is cleared for inspection and measured commands so it cannot
+silently change the documented workload; use `-tags` and `-cgo` for supported
+build-context overrides.
 
 The output follows [`schema.json`](schema.json). The tool creates one uniquely
 named workspace below `-cache-root`, removes only that workspace, and preserves

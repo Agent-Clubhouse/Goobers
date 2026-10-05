@@ -20,15 +20,21 @@ type fakeRunner struct {
 }
 
 type fakeCall struct {
-	args  []string
-	cache string
+	args       []string
+	cache      string
+	goFlags    string
+	hasGOFlags bool
 }
 
 func (runner *fakeRunner) Run(_ context.Context, _ string, args []string, _ string, env []string) commandResult {
 	call := fakeCall{args: slices.Clone(args)}
 	for _, entry := range env {
-		if len(entry) > len("GOCACHE=") && entry[:len("GOCACHE=")] == "GOCACHE=" {
+		if strings.HasPrefix(entry, "GOCACHE=") {
 			call.cache = entry[len("GOCACHE="):]
+		}
+		if strings.HasPrefix(entry, "GOFLAGS=") {
+			call.goFlags = entry[len("GOFLAGS="):]
+			call.hasGOFlags = true
 		}
 	}
 	runner.calls = append(runner.calls, call)
@@ -268,6 +274,7 @@ func TestInspectSourceRequiresPinnedRevisionAndRecordsDirtyState(t *testing.T) {
 }
 
 func TestInspectBuildContextRecordsOverrides(t *testing.T) {
+	t.Setenv("GOFLAGS", "-not-a-valid-go-flag")
 	build, err := inspectBuildContext(context.Background(), ".", "first, second", "0")
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +284,18 @@ func TestInspectBuildContextRecordsOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(build.Tags, []string{"first", "second"}) || build.CGO != "0" {
 		t.Fatalf("build overrides = tags %q, cgo %q", build.Tags, build.CGO)
+	}
+}
+
+func TestBenchmarkNeutralizesAmbientGOFLAGS(t *testing.T) {
+	t.Setenv("GOFLAGS", "-race -tags=hostile")
+	runner := &fakeRunner{}
+	benchmark(context.Background(), testOptions(), testSource(), testBuild(), t.TempDir(), runner)
+
+	for i, call := range runner.calls {
+		if !call.hasGOFlags || call.goFlags != "" {
+			t.Errorf("call %d GOFLAGS override = present %v, value %q; want present and empty", i, call.hasGOFlags, call.goFlags)
+		}
 	}
 }
 
