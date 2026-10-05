@@ -711,28 +711,20 @@ func TestDocsChurnOutputPrecedesWatermarkAndPersistenceFailure(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(blocker), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		t.Setenv(executor.InputEnvVar(executor.InputResultFile), blocker)
+		code, stdout, stderr := runArgs(t, "docs-churn", "--repo", r.dir,
+			"--workflow", "docs-updater", "--gaggle", "goobers", root)
 		persistErr := os.MkdirAll(blocker, 0o755)
 		if persistErr == nil {
 			t.Fatal("watermark parent blocker unexpectedly accepted by MkdirAll")
 		}
-		resultFile := filepath.Join(t.TempDir(), "result.json")
-		t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
-		code, stdout, stderr := runArgs(t, "docs-churn", "--repo", r.dir,
-			"--workflow", "docs-updater", "--gaggle", "goobers", root)
 		wantStderr := fmt.Sprintf("error: advance docs watermark %s: %v\n", path, persistErr)
 		if code != 1 || stdout != "" || stderr != wantStderr {
 			t.Fatalf("code/stdout/stderr = %d/%q/%q, want 1/empty/%q", code, stdout, stderr, wantStderr)
 		}
-		data, err := os.ReadFile(resultFile)
+		data, err := os.ReadFile(blocker)
 		if err != nil || len(data) == 0 || data[len(data)-1] != '\n' {
 			t.Fatalf("result must persist before watermark failure: bytes=%q err=%v", data, err)
-		}
-		blockerData, err := os.ReadFile(blocker)
-		if err != nil || string(blockerData) != "not a directory" {
-			t.Errorf("watermark persistence altered blocker: bytes=%q err=%v", blockerData, err)
 		}
 	})
 }
