@@ -6,12 +6,19 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 // TestDaemonProbeStateLivenessGraceBeforeFirstTick locks the pre-first-tick
@@ -362,5 +369,301 @@ func TestInstanceReadinessIncludesCrashResumeCandidateIdentity(t *testing.T) {
 	}
 	if candidate.Operation != "journal resume annotation" || candidate.Progress.Examined != 2 || candidate.Progress.Reattached != 1 {
 		t.Fatalf("candidate progress = %+v", candidate)
+	}
+}
+
+func TestCrashResumeBlockingCandidateSurfacesDuringLiveFinalCandidateBlock(t *testing.T) {
+	const runID = "blocked-final-run"
+	fixture := startBlockedFinalCandidateResume(t, runID)
+
+	apiReadiness := fixture.instanceReadiness(t)
+	assertBlockingCandidateReadiness(t, apiReadiness, runID)
+	assertBlockingCandidatePublicProbe(t, fixture.publicReadiness(t), runID)
+	assertBlockingCandidateCLI(t, fixture.root, runID)
+	assertBlockingCandidatePortalPayload(t, fixture.tracker, runID)
+
+	fixture.unblock(t)
+	recovered := fixture.instanceReadiness(t)
+	if !recovered.Ready || recovered.Recovery.Phase != "" || recovered.Recovery.BlockingCandidate != nil {
+		t.Fatalf("readiness after unblock = %+v, want ready with no startup blocker", recovered)
+	}
+	if public := fixture.publicReadiness(t); !public.SchedulerReady || public.Startup != nil {
+		t.Fatalf("public readiness after unblock = %+v, want scheduler-ready with no startup payload", public)
+	}
+	code, stdout, stderr := runArgs(t, "status", "--daemon", fixture.root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("status --daemon after unblock: code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if strings.Contains(stdout, "Crash recovery:") || strings.Contains(stdout, runID) {
+		t.Fatalf("status --daemon after unblock kept stale recovery data: %q", stdout)
+	}
+}
+
+type blockedFinalCandidateResumeFixture struct {
+	root        string
+	tracker     *startupPhaseTracker
+	readiness   *daemonInstanceReadinessService
+	ready       *atomic.Bool
+	resumeDone  <-chan blockedResumeResult
+	unblockOnce sync.Once
+	unblockCh   chan struct{}
+}
+
+type blockedResumeResult struct {
+	outcome resumeOutcome
+	err     error
+}
+
+func startBlockedFinalCandidateResume(t *testing.T, runID string) *blockedFinalCandidateResumeFixture {
+	t.Helper()
+	const identity = "0123456789abcdef0123456789abcdef"
+	t.Setenv("GOOBERS_API_TOKEN", "status-token")
+
+	var readiness *daemonInstanceReadinessService
+	root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case apicontract.InstanceReadinessPath:
+			status, err := readiness.InstanceReadiness(request.Context())
+			if err != nil {
+				t.Errorf("InstanceReadiness: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(status); err != nil {
+				t.Errorf("encode readiness: %v", err)
+			}
+		case apicontract.InstancePath:
+			if err := json.NewEncoder(w).Encode(readservice.Instance{
+				RootIdentity: &readservice.RootIdentity{ID: identity},
+			}); err != nil {
+				t.Errorf("encode instance: %v", err)
+			}
+		default:
+			t.Errorf("request = %s %s, want readiness or instance", request.Method, request.URL.Path)
+			http.NotFound(w, request)
+		}
+	})
+	writeFileContent(t, filepath.Join(root, instance.RootIdentityFileName), identity+"\n")
+	layout := instance.NewLayout(root)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+
+	skippedDir := filepath.Join(layout.RunsDir(), "aaa-not-a-run")
+	if err := os.MkdirAll(skippedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: runID, Gaggle: "example", Workflow: "default-implement", WorkflowVersion: 1,
+		ConfigGeneration: "blocked-generation", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(layout.RunsDir(), runID)
+
+	tracker := &startupPhaseTracker{}
+	tracker.set("crash-resume", "candidates=2")
+	tracker.setRecoveryAccumulation(2)
+	ready := &atomic.Bool{}
+	readiness = &daemonInstanceReadinessService{
+		instanceRoot: root,
+		tracker:      tracker,
+		ready:        ready.Load,
+	}
+
+	blocked := make(chan struct{})
+	resolverEntered := make(chan struct{})
+	unblock := make(chan struct{})
+	var enteredOnce sync.Once
+	registry := newDaemonRunnerRegistry()
+	registry.setGenerationResolver(func(ctx context.Context, _ journal.RunIdentity) (executionGenerationRuntime, error) {
+		enteredOnce.Do(func() { close(resolverEntered) })
+		select {
+		case <-unblock:
+			return executionGenerationRuntime{}, nil
+		case <-ctx.Done():
+			return executionGenerationRuntime{}, ctx.Err()
+		}
+	})
+	progress := func(outcome resumeOutcome) {
+		tracker.observeRecoveryProgress(outcome)
+		if outcome.Total == 2 && outcome.Examined == 2 && outcome.Blocking != nil &&
+			outcome.Blocking.Operation == "resolve execution generation" {
+			select {
+			case <-blocked:
+			default:
+				close(blocked)
+			}
+		}
+	}
+	done := make(chan blockedResumeResult, 1)
+	var resumeWG sync.WaitGroup
+	go func() {
+		outcome, err := resumeInterruptedRunsWithRunners(
+			context.Background(), layout, nil, nil, registry, nil, nil, nil, nil, nil, nil, nil, nil,
+			func(string, string) {}, &resumeWG, progress, []string{skippedDir, runDir},
+		)
+		resumeWG.Wait()
+		done <- blockedResumeResult{outcome: outcome, err: err}
+	}()
+
+	waitForSignal(t, blocked, "blocking candidate progress")
+	waitForSignal(t, resolverEntered, "generation resolver block")
+	return &blockedFinalCandidateResumeFixture{
+		root: root, tracker: tracker, readiness: readiness, ready: ready,
+		resumeDone: done, unblockCh: unblock,
+	}
+}
+
+func (f *blockedFinalCandidateResumeFixture) instanceReadiness(t *testing.T) httpapi.InstanceReadiness {
+	t.Helper()
+	status, err := f.readiness.InstanceReadiness(context.Background())
+	if err != nil {
+		t.Fatalf("InstanceReadiness: %v", err)
+	}
+	return status
+}
+
+func (f *blockedFinalCandidateResumeFixture) publicReadiness(t *testing.T) httpapi.ReadinessStatus {
+	t.Helper()
+	var listening, planeReady, configLoaded, stateOpen, sweepsStarted atomic.Bool
+	listening.Store(true)
+	planeReady.Store(true)
+	configLoaded.Store(true)
+	stateOpen.Store(true)
+	state := &daemonProbeState{
+		apiListening: &listening, planeReady: &planeReady, ready: f.ready, configLoaded: &configLoaded,
+		stateOpen: &stateOpen, resumeComplete: f.ready, sweepsStarted: &sweepsStarted, startup: f.tracker,
+		livenessTimeout: time.Minute, now: time.Now,
+	}
+	handler := httpapi.WrapWithProbes(http.NotFoundHandler(), nil, state.readiness)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, httpapi.ReadinessPath, nil))
+	var status httpapi.ReadinessStatus
+	if err := json.NewDecoder(recorder.Body).Decode(&status); err != nil {
+		t.Fatalf("decode public readiness: %v", err)
+	}
+	return status
+}
+
+func (f *blockedFinalCandidateResumeFixture) unblock(t *testing.T) {
+	t.Helper()
+	f.unblockOnce.Do(func() { close(f.unblockCh) })
+	result := waitForResumeResult(t, f.resumeDone)
+	if result.err != nil {
+		t.Fatalf("resumeInterruptedRunsWithRunners: %v", result.err)
+	}
+	if len(result.outcome.Warned) != 1 || result.outcome.Warned[0] != "blocked-final-run" || result.outcome.Blocking != nil {
+		t.Fatalf("resume outcome after unblock = %+v, want final candidate skipped and blocker cleared", result.outcome)
+	}
+	f.tracker.clear("crash-resume")
+	f.ready.Store(true)
+}
+
+func assertBlockingCandidateReadiness(t *testing.T, status httpapi.InstanceReadiness, runID string) {
+	t.Helper()
+	candidate := status.Recovery.BlockingCandidate
+	if status.Ready || status.Recovery.Phase != "crash-resume" || candidate == nil {
+		t.Fatalf("readiness = %+v, want crash-resume blocker", status)
+	}
+	if candidate.RunID != runID || candidate.Gaggle != "example" || candidate.Workflow != "default-implement" {
+		t.Fatalf("candidate identity = %+v", candidate)
+	}
+	assertBlockingCandidateProgress(t, candidate.Progress, 2, 2, 0)
+	if candidate.Disposition != "resolving-generation" || candidate.Operation != "resolve execution generation" {
+		t.Fatalf("candidate state = %+v", candidate)
+	}
+}
+
+func assertBlockingCandidatePublicProbe(t *testing.T, status httpapi.ReadinessStatus, runID string) {
+	t.Helper()
+	candidate := status.Startup.BlockingCandidate
+	if !status.Ready || status.SchedulerReady || status.Startup == nil || candidate == nil {
+		t.Fatalf("public readiness = %+v, want plane-ready scheduler-blocked startup", status)
+	}
+	if candidate.RunID != "" || candidate.Gaggle != "" || candidate.Workflow != "" {
+		t.Fatalf("public readiness leaked identity for %q: %+v", runID, candidate)
+	}
+	assertBlockingCandidateProgress(t, candidate.Progress, 2, 2, 0)
+	if candidate.Operation != "resolve execution generation" {
+		t.Fatalf("public readiness candidate = %+v, want sanitized operation", candidate)
+	}
+}
+
+func assertBlockingCandidateCLI(t *testing.T, root, runID string) {
+	t.Helper()
+	code, stdout, stderr := runArgs(t, "status", "--daemon", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("status --daemon: code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	for _, want := range []string{
+		"Startup recovery: phase=crash-resume",
+		"Crash recovery: examined=2/2",
+		"blocking run=" + runID,
+		"workflow=example/default-implement",
+		`operation="resolve execution generation"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("status --daemon output = %q, missing %q", stdout, want)
+		}
+	}
+}
+
+func assertBlockingCandidatePortalPayload(t *testing.T, tracker *startupPhaseTracker, runID string) {
+	t.Helper()
+	payload := readservice.Health{
+		APIVersion: readservice.APIVersion, SchemaVersion: readservice.SchemaVersion,
+		Ready: false, Healthy: true, Startup: readserviceStartupStatus(tracker, false),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"startup"`,
+		`"blockingCandidate"`,
+		`"runId":"` + runID + `"`,
+		`"gaggle":"example"`,
+		`"workflow":"default-implement"`,
+		`"operation":"resolve execution generation"`,
+		`"examined":2`,
+		`"total":2`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("portal health payload = %s, missing %s", body, want)
+		}
+	}
+}
+
+func assertBlockingCandidateProgress(t *testing.T, progress httpapi.RecoveryProgress, examined, total, skipped int) {
+	t.Helper()
+	if progress.Examined != examined || progress.Total != total || progress.Skipped != skipped || progress.Resumed != 0 || progress.Reattached != 0 || progress.Terminal != 0 {
+		t.Fatalf("progress = %+v, want examined=%d total=%d skipped=%d with no resumed candidates", progress, examined, total, skipped)
+	}
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func waitForResumeResult(t *testing.T, done <-chan blockedResumeResult) blockedResumeResult {
+	t.Helper()
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for resume to unblock")
+		return blockedResumeResult{}
 	}
 }
