@@ -313,12 +313,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/docchurn",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Extracted from cmd/goobers (#6726), whose Windows steps never selected these docs-churn tests; fixed-clock, scripted-Git, and filesystem contracts run on the Linux unit shards only."
-    },
-    {
       "package": "internal/dslmigrate",
       "coverage": "none",
       "category": "not-selected",
