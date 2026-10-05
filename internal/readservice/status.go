@@ -564,27 +564,36 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 		markerVerified := false
 		markerPresent := false
 		if s.sources.WorkItemLookup != nil &&
-			runs[i].Phase == journal.PhaseRunning &&
+			(runs[i].Phase == journal.PhaseRunning ||
+				runs[i].Phase == journal.PhaseFailed ||
+				runs[i].Phase == journal.PhaseEscalated) &&
 			runs[i].Operator.Issue != nil &&
 			runs[i].Operator.Issue.Number != "" {
 			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
 			if err != nil {
-				// The reader could not verify the marker; the run itself is
-				// unaffected. This belongs to the diagnostics-limitations
-				// channel, never to the run's blockers (#3346) — a
-				// credential-less `goobers status` reported two healthy runs as
-				// blocked and nearly triggered an investigation into them.
-				runs[i].Operator.Claim.ProviderMarker = "unavailable"
+				limitation := "provider work item lookup unavailable: " + err.Error()
+				if runs[i].Phase == journal.PhaseRunning {
+					// The reader could not verify the marker; the run itself is
+					// unaffected. This belongs to the diagnostics-limitations
+					// channel, never to the run's blockers (#3346) — a
+					// credential-less `goobers status` reported two healthy runs as
+					// blocked and nearly triggered an investigation into them.
+					runs[i].Operator.Claim.ProviderMarker = "unavailable"
+					limitation = "provider claim marker verification unavailable: " + err.Error()
+				}
 				runs[i].Operator.DiagnosticsLimitations = append(
 					runs[i].Operator.DiagnosticsLimitations,
-					"provider claim marker verification unavailable: "+err.Error(),
+					limitation,
 				)
 				continue
 			}
-			markerVerified = true
-			markerPresent = item.HasLabel(providers.LabelClaimed)
 			if runs[i].Operator.Issue.Title == "" {
 				runs[i].Operator.Issue.Title = item.Title
+			}
+			runs[i].Operator.Issue.Labels = append([]string(nil), item.Labels...)
+			if runs[i].Phase == journal.PhaseRunning {
+				markerVerified = true
+				markerPresent = item.HasLabel(providers.LabelClaimed)
 			}
 		}
 		if markerVerified &&

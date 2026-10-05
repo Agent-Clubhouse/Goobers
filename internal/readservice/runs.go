@@ -257,8 +257,9 @@ type OperatorRunSummary struct {
 
 // OperatorIssue identifies the claimed work item displayed in status.
 type OperatorIssue struct {
-	Number string `json:"number"`
-	Title  string `json:"title,omitempty"`
+	Number string   `json:"number"`
+	Title  string   `json:"title,omitempty"`
+	Labels []string `json:"labels,omitempty"`
 }
 
 // OperatorClaim describes the local lease and provider marker relationship.
