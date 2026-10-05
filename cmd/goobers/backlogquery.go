@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/fieldpredicate"
@@ -1171,14 +1172,14 @@ func reorderContestedBacklogItems(
 			pf(env.stderr, "warning: invalid contestedFileMinPRs %q; using %d\n", value, minPRs)
 		}
 	}
-	touches, err := openPRTouches(ctx, prProvider, env.repo, "")
+	touches, err := contention.OpenPullRequestTouches(ctx, prProvider, env.repo, "", providerBranchNamespace())
 	if err != nil {
 		pf(env.stderr, "warning: contested-file dispatch awareness unavailable (%v); using FIFO order\n", err)
 		return eligible
 	}
 	forward := eligible[:forwardCount]
 	resweep := eligible[forwardCount:]
-	reordered, deprioritized := partitionByContention(forward, touches, minPRs)
+	reordered, deprioritized := contention.StablePartition(forward, touches, minPRs)
 	if count := len(deprioritized); count > 0 && count < len(reordered) {
 		pf(env.stderr, "contested-file dispatch: deprioritized %d contested issue(s) [%s] behind %d disjoint one(s)\n",
 			count, strings.Join(deprioritized, ","), len(reordered)-count)

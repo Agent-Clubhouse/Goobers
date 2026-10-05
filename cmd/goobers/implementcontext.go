@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
@@ -119,7 +120,7 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	base := providerInput("base", providerBaseBranch())
-	openTouches, err := openPRTouches(ctx, provider, repo, base)
+	openTouches, err := contention.OpenPullRequestTouches(ctx, provider, repo, base, providerBranchNamespace())
 	if err != nil {
 		return failProviderStage(stderr, "gather implementation hot-file map", err, implementationContextResultFile)
 	}
@@ -187,7 +188,7 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func implementationContextProvider(root string, repo providers.RepositoryRef) (openPRTouchesProvider, error) {
+func implementationContextProvider(root string, repo providers.RepositoryRef) (contention.PullRequestProvider, error) {
 	provider, err := newProviderForStage(root, repo, false,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
@@ -195,7 +196,7 @@ func implementationContextProvider(root string, repo providers.RepositoryRef) (o
 	if err != nil {
 		return nil, err
 	}
-	contextProvider, ok := provider.(openPRTouchesProvider)
+	contextProvider, ok := provider.(contention.PullRequestProvider)
 	if !ok {
 		return nil, fmt.Errorf("gather-implement-context does not support repository provider %q", repo.Provider)
 	}
@@ -403,7 +404,7 @@ type implementationFileEvidence struct {
 	recentConflictRuns map[string]struct{}
 }
 
-func buildImplementationHotFileMap(openTouches []openPRTouch, recentConflicts []implementationConflictTouch, limit int) implementationHotFileMap {
+func buildImplementationHotFileMap(openTouches []contention.PullRequestTouch, recentConflicts []implementationConflictTouch, limit int) implementationHotFileMap {
 	byPath := make(map[string]*implementationFileEvidence)
 	addEvidence := func(path string) *implementationFileEvidence {
 		evidence := byPath[path]
@@ -417,8 +418,8 @@ func buildImplementationHotFileMap(openTouches []openPRTouch, recentConflicts []
 		return evidence
 	}
 	for _, touch := range openTouches {
-		seen := make(map[string]struct{}, len(touch.files))
-		for _, path := range touch.files {
+		seen := make(map[string]struct{}, len(touch.Files))
+		for _, path := range touch.Files {
 			if path == "" {
 				continue
 			}
@@ -426,7 +427,7 @@ func buildImplementationHotFileMap(openTouches []openPRTouch, recentConflicts []
 				continue
 			}
 			seen[path] = struct{}{}
-			addEvidence(path).openPullRequests[touch.number] = struct{}{}
+			addEvidence(path).openPullRequests[touch.Number] = struct{}{}
 		}
 	}
 	for _, conflict := range recentConflicts {
