@@ -68,39 +68,31 @@ func (db *DB) modelStats(ctx context.Context, req StatsRequest) ([]ModelStats, e
 		%s
 		GROUP BY smu.model
 		ORDER BY smu.model`, join, whereClause(clauses))
-	rows, err := db.readDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query model usage: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []ModelStats
-	for rows.Next() {
-		var stat ModelStats
-		if err := rows.Scan(
-			&stat.Model,
-			&stat.UsageSamples,
-			&stat.InputTokenSamples,
-			&stat.InputTokens,
-			&stat.OutputTokenSamples,
-			&stat.OutputTokens,
-			&stat.PremiumRequestSamples,
-			&stat.CopilotPremiumRequests,
-			&stat.CostSamples,
-			&stat.CostUSD,
-		); err != nil {
-			return nil, fmt.Errorf("rollup: scan model usage: %w", err)
-		}
-		stat.HasInputTokens = stat.InputTokenSamples > 0
-		stat.HasOutputTokens = stat.OutputTokenSamples > 0
-		stat.HasPremiumRequests = stat.PremiumRequestSamples > 0
-		stat.HasCost = stat.CostSamples > 0
-		out = append(out, stat)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rollup: iterate model usage: %w", err)
-	}
-	return out, nil
+	return queryRows(ctx, db.readDB(), query, args,
+		"rollup: query model usage",
+		func(rows *sql.Rows) (ModelStats, error) {
+			var stat ModelStats
+			if err := rows.Scan(
+				&stat.Model,
+				&stat.UsageSamples,
+				&stat.InputTokenSamples,
+				&stat.InputTokens,
+				&stat.OutputTokenSamples,
+				&stat.OutputTokens,
+				&stat.PremiumRequestSamples,
+				&stat.CopilotPremiumRequests,
+				&stat.CostSamples,
+				&stat.CostUSD,
+			); err != nil {
+				return ModelStats{}, fmt.Errorf("rollup: scan model usage: %w", err)
+			}
+			stat.HasInputTokens = stat.InputTokenSamples > 0
+			stat.HasOutputTokens = stat.OutputTokenSamples > 0
+			stat.HasPremiumRequests = stat.PremiumRequestSamples > 0
+			stat.HasCost = stat.CostSamples > 0
+			return stat, nil
+		},
+		"rollup: iterate model usage")
 }
 
 func (db *DB) stageDistributionAccums(ctx context.Context, req StatsRequest) (map[stageDistributionKey]*stageDistributionAccum, error) {
