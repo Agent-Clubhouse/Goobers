@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
@@ -561,6 +562,7 @@ func (r *Runner) runParallelBranch(
 	var firstClass journal.AttemptClass
 	var committedWorkOnInfra bool
 	var resumeAccounting *resumeRetryAccounting
+	var retryInstructionAddendum string
 	if boundary, ok := lastParallelBoundary(history); ok {
 		if task, isTask := in.Machine.Task(state); isTask {
 			switch {
@@ -643,6 +645,8 @@ func (r *Runner) runParallelBranch(
 				stageResult = *replayTask
 				replayTask = nil
 			} else {
+				attemptAddendum := retryInstructionAddendum
+				retryInstructionAddendum = ""
 				stageResult, produced, err = r.runTask(
 					ctx,
 					taskFrame{
@@ -654,7 +658,7 @@ func (r *Runner) runParallelBranch(
 						workspaceRevision: &in.workspaceRevision,
 						repoRef:           &in.RepoRef,
 					},
-					branch.id, startAttempt, firstClass, "",
+					branch.id, startAttempt, firstClass, attemptAddendum,
 					nil, committedWorkOnInfra, resumeAccounting,
 				)
 				startAttempt = 1
@@ -683,15 +687,14 @@ func (r *Runner) runParallelBranch(
 			} else {
 				result.completed.record(task.Name, stageResult.Outputs, stageResult.Integrity)
 			}
-			if stageResult.Status != apiv1.ResultFailure || !task.ContinueOnError {
-				if rebound := rebindWorkspaceBranch(task, stageResult, r.branchNamespaceFor(in.Gaggle)); rebound != "" {
-					workspaceBranch = rebound
-				}
-			}
-			if ctx.Err() != nil {
-				result.status = journal.BranchCancelled
-				result.paused = parallelDrainCancellation(ctx)
+			workspaceBranch = r.parallelWorkspaceBranchAfterTask(in.Gaggle, task, stageResult, workspaceBranch)
+			switch post := r.parallelPostTaskTransition(ctx, branchJournal, gateEval, visitedStages, task, stageResult, &result); post.kind {
+			case parallelPostReturn:
 				return result
+			case parallelPostRetry:
+				retryInstructionAddendum = post.addendum
+				state = post.target
+				continue
 			}
 
 			switch stageResult.Status {
@@ -905,6 +908,111 @@ func artifactPointerCount(pointers []apiv1.ContextPointer) int {
 		}
 	}
 	return count
+}
+
+func (r *Runner) parallelWorkspaceBranchAfterTask(gaggle string, task apiv1.Task, result apiv1.ResultEnvelope, current string) string {
+	if result.Status == apiv1.ResultFailure && task.ContinueOnError {
+		return current
+	}
+	if rebound := rebindWorkspaceBranch(task, result, r.branchNamespaceFor(gaggle)); rebound != "" {
+		return rebound
+	}
+	return current
+}
+
+type parallelPostTaskKind int
+
+const (
+	parallelPostContinue parallelPostTaskKind = iota
+	parallelPostReturn
+	parallelPostRetry
+)
+
+type parallelPostTaskResult struct {
+	kind     parallelPostTaskKind
+	target   string
+	addendum string
+}
+
+func (r *Runner) parallelPostTaskTransition(
+	ctx context.Context,
+	jr executionJournal,
+	eval *gate.Evaluator,
+	visitedStages map[string]bool,
+	consumer apiv1.Task,
+	stageResult apiv1.ResultEnvelope,
+	result *parallelBranchResult,
+) parallelPostTaskResult {
+	if ctx.Err() != nil {
+		result.status = journal.BranchCancelled
+		result.paused = parallelDrainCancellation(ctx)
+		return parallelPostTaskResult{kind: parallelPostReturn}
+	}
+	retry, ok := invalidHandoffRetryFromResult(stageResult)
+	if !ok {
+		return parallelPostTaskResult{}
+	}
+	target, addendum, terminal := r.parallelInvalidHandoffOutcome(jr, eval, visitedStages, consumer, stageResult, retry, result)
+	if terminal {
+		return parallelPostTaskResult{kind: parallelPostReturn}
+	}
+	return parallelPostTaskResult{kind: parallelPostRetry, target: target, addendum: addendum}
+}
+
+func (r *Runner) parallelInvalidHandoffOutcome(
+	jr executionJournal,
+	eval *gate.Evaluator,
+	visitedStages map[string]bool,
+	consumer apiv1.Task,
+	stageResult apiv1.ResultEnvelope,
+	retry invalidHandoffRetry,
+	result *parallelBranchResult,
+) (target, addendum string, terminal bool) {
+	synthetic := apiv1.Gate{
+		Name:      "handoff.validation:" + consumer.Name,
+		Evaluator: apiv1.EvaluatorAutomated,
+		Branches:  map[string]string{gate.OutcomeFail: retry.Producer},
+	}
+	budget := runcontrol.RepassBudget{
+		Attempts:                     eval.Attempts,
+		InfrastructureAttempts:       eval.InfrastructureAttempts,
+		RepassAttempts:               eval.RepassAttempts,
+		InfrastructureRepassAttempts: eval.InfrastructureRepassAttempts,
+		PollAttempts:                 eval.PollAttempts,
+	}
+	charge := budget.Charge(synthetic, gate.OutcomeFail, retry.Producer, visitedStages[retry.Producer], eval.MaxRepasses)
+	eval.Attempts = budget.Attempts
+	eval.InfrastructureAttempts = budget.InfrastructureAttempts
+	eval.RepassAttempts = budget.RepassAttempts
+	eval.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
+	eval.PollAttempts = budget.PollAttempts
+	fields := map[string]any{
+		"kind":          handoffValidationRetryAnnotationKind,
+		"consumer":      consumer.Name,
+		"producer":      retry.Producer,
+		"input":         retry.Input,
+		"target":        retry.Producer,
+		"repassAttempt": charge.Attempt,
+		"repassLimit":   charge.Bound,
+	}
+	if charge.Exceeded {
+		fields["escalated"] = true
+		fields["reason"] = charge.EscalationReason()
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: consumer.Name, Runner: fields}); err != nil {
+		result.status, result.err = journal.BranchFailed, fmt.Errorf("runner: journal invalid handoff reroute for %q: %w", consumer.Name, err)
+		return "", "", true
+	}
+	if charge.Exceeded {
+		result.failed = true
+		result.status = journal.BranchFailed
+		result.terminalTarget = workflow.TargetEscalate
+		result.terminalTask = &parallelTaskTerminal{task: consumer, result: stageResult}
+		return "", "", true
+	}
+	result.pointers = removeStageArtifactPointers(result.pointers, retry.Producer)
+	result.artifacts = artifactPointerCount(result.pointers)
+	return retry.Producer, invalidHandoffRetryAddendum(retry, charge.Attempt, charge.Bound), false
 }
 
 func completedGateRetry(result gate.Result, retryable bool) (string, bool) {

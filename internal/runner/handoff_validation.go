@@ -14,6 +14,20 @@ import (
 )
 
 const handoffValidationAnnotationKind = "handoff.validation"
+const handoffValidationRetryAnnotationKind = "handoff.validation.retry"
+
+const invalidHandoffErrorCode = "invalid_handoff"
+
+const invalidHandoffOutputKey = "invalidHandoff"
+
+type invalidHandoffRetry struct {
+	Consumer string               `json:"consumer"`
+	Producer string               `json:"producer"`
+	Input    string               `json:"input"`
+	Slot     string               `json:"slot"`
+	SchemaID string               `json:"schemaId,omitempty"`
+	Issues   []handoffcheck.Issue `json:"issues,omitempty"`
+}
 
 // HandoffSchemaLoader resolves one schemaPath from trusted configuration into a
 // compiled handoffcheck schema. Nil leaves handoff validation disabled.
@@ -27,18 +41,18 @@ type handoffBinding struct {
 	SchemaPath   string
 }
 
-func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJournal, machine *workflow.Machine, task apiv1.Task, attempt int, class journal.AttemptClass, pointers []apiv1.ContextPointer) (context.Context, error) {
+func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJournal, machine *workflow.Machine, task apiv1.Task, attempt int, class journal.AttemptClass, pointers []apiv1.ContextPointer) (context.Context, *handoffcheck.Report, error) {
 	report := buildHandoffValidationReport(ctx, jr.Dir(), handoffBindingsForContext(machine, pointers), pointers, r.cfg.HandoffSchemaLoader)
 	if report == nil {
-		return ctx, nil
+		return ctx, nil, nil
 	}
 	if err := jr.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation, Stage: task.Name, Attempt: attempt, AttemptClass: class,
 		Runner: handoffValidationRunnerFields(*report),
 	}); err != nil {
-		return ctx, fmt.Errorf("task %q: journal handoff validation: %w", task.Name, err)
+		return ctx, nil, fmt.Errorf("task %q: journal handoff validation: %w", task.Name, err)
 	}
-	return handoffcheck.WithReport(ctx, *report), nil
+	return handoffcheck.WithReport(ctx, *report), report, nil
 }
 
 func handoffBindingsForContext(machine *workflow.Machine, pointers []apiv1.ContextPointer) map[string]handoffBinding {
@@ -179,4 +193,109 @@ func handoffValidationRunnerFields(report handoffcheck.Report) map[string]any {
 		fields["error"] = report.Error
 	}
 	return fields
+}
+
+func invalidHandoffResult(task apiv1.Task, report *handoffcheck.Report, enabled bool) (apiv1.ResultEnvelope, bool) {
+	if !enabled || report == nil || report.InputValid != handoffcheck.InputValidFalse {
+		return apiv1.ResultEnvelope{}, false
+	}
+	retry, ok := invalidHandoffRetryForReport(task.Name, *report)
+	if !ok {
+		return apiv1.ResultEnvelope{}, false
+	}
+	message := invalidHandoffMessage(retry)
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Summary: message,
+		Error: &apiv1.ErrorInfo{
+			Code:      invalidHandoffErrorCode,
+			Message:   message,
+			Retryable: true,
+		},
+		Outputs: map[string]interface{}{
+			invalidHandoffOutputKey: retry,
+			handoffcheck.OutputKey:  *report,
+		},
+	}, true
+}
+
+func invalidHandoffRetryForReport(consumer string, report handoffcheck.Report) (invalidHandoffRetry, bool) {
+	for _, entry := range report.Entries {
+		if entry.Valid || entry.Producer == "" {
+			continue
+		}
+		return invalidHandoffRetry{
+			Consumer: consumer,
+			Producer: entry.Producer,
+			Input:    entry.Input,
+			Slot:     entry.Slot,
+			SchemaID: entry.SchemaID,
+			Issues:   append([]handoffcheck.Issue(nil), entry.Issues...),
+		}, true
+	}
+	return invalidHandoffRetry{}, false
+}
+
+func invalidHandoffRetryFromResult(result apiv1.ResultEnvelope) (invalidHandoffRetry, bool) {
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != invalidHandoffErrorCode {
+		return invalidHandoffRetry{}, false
+	}
+	raw, ok := result.Outputs[invalidHandoffOutputKey]
+	if !ok {
+		return invalidHandoffRetry{}, false
+	}
+	switch retry := raw.(type) {
+	case invalidHandoffRetry:
+		return retry, retry.Producer != ""
+	case map[string]interface{}:
+		return invalidHandoffRetryFromMap(retry)
+	default:
+		return invalidHandoffRetry{}, false
+	}
+}
+
+func invalidHandoffRetryFromMap(raw map[string]interface{}) (invalidHandoffRetry, bool) {
+	retry := invalidHandoffRetry{
+		Consumer: stringFromMap(raw, "consumer"),
+		Producer: stringFromMap(raw, "producer"),
+		Input:    stringFromMap(raw, "input"),
+		Slot:     stringFromMap(raw, "slot"),
+		SchemaID: stringFromMap(raw, "schemaId"),
+	}
+	return retry, retry.Producer != ""
+}
+
+func stringFromMap(raw map[string]interface{}, key string) string {
+	if value, ok := raw[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func invalidHandoffMessage(retry invalidHandoffRetry) string {
+	input := retry.Input
+	if input == "" {
+		input = retry.Producer + "." + retry.Slot
+	}
+	return fmt.Sprintf("invalid handoff %q from producer %q failed schema validation; rerouting producer for retry", input, retry.Producer)
+}
+
+func invalidHandoffRetryAddendum(retry invalidHandoffRetry, attempt, limit int) string {
+	var b strings.Builder
+	input := retry.Input
+	if input == "" {
+		input = retry.Producer + "." + retry.Slot
+	}
+	fmt.Fprintf(&b, "Your prior artifact handoff %q did not match its declared schema. This is producer retry %d of %d for that invalid handoff. Re-emit the artifact as raw JSON that satisfies the declared schema.", input, attempt, limit)
+	if retry.SchemaID != "" {
+		fmt.Fprintf(&b, " Schema: %s.", retry.SchemaID)
+	}
+	for _, issue := range retry.Issues {
+		if issue.Path != "" {
+			fmt.Fprintf(&b, " Issue at %s: %s.", issue.Path, issue.Message)
+		} else if issue.Message != "" {
+			fmt.Fprintf(&b, " Issue: %s.", issue.Message)
+		}
+	}
+	return b.String()
 }

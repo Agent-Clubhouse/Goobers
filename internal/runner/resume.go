@@ -415,6 +415,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// the walkState is built above, so they are filled in rather than rebuilt
 	// into a second StartInput (#4235).
 	ws.in.Item, ws.in.RunControls = item, runControls
+	f.seedGateBudgets(in.Machine)
 	if completedGate != nil {
 		next, res, advance, gerr := r.gateTransition(ctx, ws, *completedGate)
 		if gerr != nil {
@@ -463,7 +464,6 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return res, nil
 	}
 
-	f.seedGateBudgets(in.Machine)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -1158,6 +1158,20 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 		case journal.EventGatePaused, journal.EventGateStarted, journal.EventGateEvaluated:
 			return "", false
 		case journal.EventRunnerAnnotation:
+			if e.Runner["kind"] == handoffValidationRetryAnnotationKind && e.Stage == subjectStage {
+				if _, ok := invalidHandoffRetryFromResult(subject); !ok {
+					return "", false
+				}
+				target, ok := e.Runner["target"].(string)
+				if !ok || target == "" {
+					return "", false
+				}
+				switch target {
+				case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+					return "", false
+				}
+				return target, true
+			}
 			if e.Runner["kind"] != retryDecisionKind || e.Stage != subjectStage {
 				continue
 			}
@@ -1899,6 +1913,19 @@ func isInterruptedAttemptMarker(e journal.Event) bool {
 func gateRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			gateName := "handoff.validation:" + e.Stage
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			seed[gateName] = n
+			continue
+		}
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
@@ -1960,6 +1987,20 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 func targetRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			if n > seed[target] {
+				seed[target] = n
+			}
+			continue
+		}
 		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra || e.Verdict == gate.OutcomeTimeout {
 			continue
 		}

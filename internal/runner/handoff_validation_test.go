@@ -10,6 +10,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/handoffcheck"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const runnerHandoffSchema = `{
@@ -107,5 +110,280 @@ func TestBuildHandoffValidationReportUnknownOnLoaderError(t *testing.T) {
 	}
 	if report.InputValid != handoffcheck.InputValidUnknown || !strings.Contains(report.Error, "load schema") {
 		t.Fatalf("%+v", report)
+	}
+}
+
+func TestInvalidHandoffRerouteOffByDefault(t *testing.T) {
+	producer := &handoffSetProducer{t: t, payloads: []string{`{"verdict":"maybe"}`}}
+	consumer := &countingGoober{}
+	r, _ := handoffRerouteRunner(t, producer, consumer, false)
+
+	res, err := r.Start(context.Background(), handoffRerouteStartInput(t, "run-handoff-reroute-off"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if producer.calls != 1 || consumer.calls != 1 {
+		t.Fatalf("calls producer=%d consumer=%d, want 1/1", producer.calls, consumer.calls)
+	}
+}
+
+func TestInvalidHandoffReroutesProducerForRetry(t *testing.T) {
+	producer := &handoffSetProducer{t: t, payloads: []string{`{"verdict":"maybe"}`, `{"verdict":"pass"}`}}
+	consumer := &countingGoober{}
+	r, runsDir := handoffRerouteRunner(t, producer, consumer, true)
+
+	res, err := r.Start(context.Background(), handoffRerouteStartInput(t, "run-handoff-reroute"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	events := readHandoffRunEvents(t, runsDir, "run-handoff-reroute")
+	if producer.calls != 2 {
+		t.Fatalf("producer calls = %d, want invalid handoff to reroute producer once; annotations=%v", producer.calls, handoffAnnotations(events))
+	}
+	if consumer.calls != 1 {
+		t.Fatalf("consumer calls = %d, want consumer invoked only after valid handoff", consumer.calls)
+	}
+	if !hasHandoffRetryAnnotation(events, "consume", "produce", 1) {
+		t.Fatalf("missing invalid handoff retry annotation in events: %+v", events)
+	}
+}
+
+type handoffSetProducer struct {
+	t        *testing.T
+	rec      ArtifactRecorder
+	payloads []string
+	calls    int
+}
+
+func (p *handoffSetProducer) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	p.calls++
+	payload := p.payloads[min(p.calls-1, len(p.payloads)-1)]
+	workspace := writeManifestWorkspace(p.t, payload)
+	prepared, err := artifactset.Prepare(ctx, workspace, "manifest.json", func(_ string, data []byte) ([]byte, error) {
+		return data, nil
+	})
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	if err := prepared.Bind(env.ArtifactPublication, env.Attempt); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	artifacts, err := prepared.Publish(ctx, func(name, mediaType string, data []byte) (apiv1.ArtifactPointer, error) {
+		ref, err := p.rec.RecordArtifact(name, data)
+		if err != nil {
+			return apiv1.ArtifactPointer{}, err
+		}
+		return apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: mediaType, Integrity: ref.Integrity,
+		}, nil
+	})
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Artifacts: artifacts}, nil
+}
+
+type countingGoober struct {
+	calls int
+}
+
+func (g *countingGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.calls++
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *countingGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func handoffRerouteRunner(t *testing.T, producer *handoffSetProducer, consumer invoke.Goober, reroute bool) (*Runner, string) {
+	t.Helper()
+	r, runsDir := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		producer.rec = rec
+		return producer, nil
+	}, nil)
+	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return consumer, nil
+	}
+	r.cfg.HandoffSchemaLoader = testHandoffSchemaLoader(t)
+	r.cfg.RerouteInvalidHandoffs = reroute
+	return r, runsDir
+}
+
+func handoffRerouteStartInput(t *testing.T, runID string) StartInput {
+	t.Helper()
+	return StartInput{
+		RunID:   runID,
+		Machine: handoffRerouteMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}
+}
+
+func handoffRerouteMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "produce",
+		Tasks: []apiv1.Task{
+			{
+				Name: "produce", Type: apiv1.TaskDeterministic, Goal: "produce report",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "consume",
+				ArtifactSlots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.schema.json"}},
+			},
+			{Name: "consume", Type: apiv1.TaskAgentic, Goal: "consume report", Goober: "consumer", Next: workflow.TerminalComplete},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "handoff-reroute", Version: 1, DSLVersion: "3.1", Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile handoff reroute machine: %v", err)
+	}
+	return machine
+}
+
+func readHandoffRunEvents(t *testing.T, runsDir, runID string) []journal.Event {
+	t.Helper()
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("open run journal: %v", err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatalf("read run journal: %v", err)
+	}
+	return events
+}
+
+func hasHandoffRetryAnnotation(events []journal.Event, consumer, producer string, attempt int) bool {
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != handoffValidationRetryAnnotationKind {
+			continue
+		}
+		gotAttempt, _ := runnerInt(event.Runner["repassAttempt"])
+		if event.Stage == consumer && event.Runner["producer"] == producer && gotAttempt == attempt {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffAnnotations(events []journal.Event) []map[string]any {
+	var annotations []map[string]any
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation {
+			if kind, _ := event.Runner["kind"].(string); strings.HasPrefix(kind, "handoff.validation") {
+				annotations = append(annotations, event.Runner)
+			}
+		}
+	}
+	return annotations
+}
+
+func TestInvalidHandoffEscalatesWhenRerouteBudgetExhausts(t *testing.T) {
+	producer := &handoffSetProducer{t: t, payloads: []string{`{"verdict":"maybe"}`}}
+	consumer := &countingGoober{}
+	r, _ := handoffRerouteRunner(t, producer, consumer, true)
+
+	input := handoffRerouteStartInput(t, "run-handoff-reroute-exhausted")
+	input.RunControls = apiv1.RunControls{MaxRepasses: 1}
+	res, err := r.Start(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if producer.calls != 2 || consumer.calls != 0 {
+		t.Fatalf("calls producer=%d consumer=%d, want 2/0", producer.calls, consumer.calls)
+	}
+}
+
+func TestInvalidHandoffRetryFromResultSurvivesJSONShape(t *testing.T) {
+	result := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: invalidHandoffErrorCode},
+		Outputs: map[string]interface{}{invalidHandoffOutputKey: map[string]interface{}{
+			"consumer": "consume",
+			"producer": "produce",
+			"input":    "produce.report",
+			"slot":     "report",
+			"schemaId": "schemas/report.schema.json",
+		}},
+	}
+	retry, ok := invalidHandoffRetryFromResult(result)
+	if !ok || retry.Producer != "produce" || retry.Consumer != "consume" {
+		t.Fatalf("retry = %+v ok=%v", retry, ok)
+	}
+}
+
+func TestInvalidHandoffRetryAnnotationsSeedRepassBudget(t *testing.T) {
+	events := []journal.Event{{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "consume",
+		Runner: map[string]any{
+			"kind":          handoffValidationRetryAnnotationKind,
+			"target":        "produce",
+			"repassAttempt": 2,
+		},
+	}}
+	if got := gateRepassSeed(events)["handoff.validation:consume"]; got != 2 {
+		t.Fatalf("gate seed = %d, want 2", got)
+	}
+	if got := targetRepassSeed(events)["produce"]; got != 2 {
+		t.Fatalf("target seed = %d, want 2", got)
+	}
+}
+
+func TestInvalidHandoffRetryAnnotationIsPendingRetryTarget(t *testing.T) {
+	machine := handoffRerouteMachine(t)
+	subject := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: invalidHandoffErrorCode},
+		Outputs: map[string]interface{}{invalidHandoffOutputKey: invalidHandoffRetry{
+			Consumer: "consume",
+			Producer: "produce",
+			Input:    "produce.report",
+		}},
+	}
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "consume", Status: string(apiv1.ResultFailure)},
+		{Type: journal.EventRunnerAnnotation, Stage: "consume", Runner: map[string]any{
+			"kind":   handoffValidationRetryAnnotationKind,
+			"target": "produce",
+		}},
+	}
+	target, ok := pendingRetryTarget(events, machine, "consume", subject)
+	if !ok || target != "produce" {
+		t.Fatalf("pendingRetryTarget = %q, %v; want produce,true", target, ok)
+	}
+}
+
+func TestParallelInvalidHandoffRetryPrunesCurrentProducerPointers(t *testing.T) {
+	exec := newParallelExec(apiv1.Parallel{
+		Name: "p",
+		Branches: []apiv1.Branch{{
+			Name: "main", Start: "produce",
+		}},
+	})
+	exec.recordCurrent(nil, []apiv1.ContextPointer{
+		{Name: "produce.artifact[0]", Artifact: &apiv1.ArtifactPointer{Path: "old"}},
+		{Name: "other.artifact[0]", Artifact: &apiv1.ArtifactPointer{Path: "keep"}},
+	})
+	exec.removeCurrentStageArtifactPointers("produce")
+	got := exec.currentPointers(nil)
+	if len(got) != 1 || got[0].Name != "other.artifact[0]" {
+		t.Fatalf("pointers = %+v, want only other producer", got)
+	}
+	if current := exec.current(); current == nil || current.artifacts != 1 {
+		t.Fatalf("current artifacts = %+v, want one retained artifact", current)
 	}
 }

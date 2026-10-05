@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mutationreceipt"
@@ -516,6 +517,10 @@ type Config struct {
 	// schema-bound JSON handoffs for agentic stages. Nil preserves historical
 	// behavior.
 	HandoffSchemaLoader HandoffSchemaLoader
+	// RerouteInvalidHandoffs sends an invalid schema-bound JSON handoff back to
+	// the producer stage for a bounded retry. False preserves validation-only
+	// behavior.
+	RerouteInvalidHandoffs bool
 	// LookPathFunc resolves an executable name to a full path, exactly like
 	// exec.LookPath (#1380's ciCommand preflight — a name containing a path
 	// separator is tried directly, PATH is not consulted, matching what
@@ -2445,11 +2450,90 @@ func (r *Runner) preTaskOutcome(ctx context.Context, ws *walkState, t apiv1.Task
 		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
 		return t.Name, Result{}, true, nil, true
 	}
+	if retry, ok := invalidHandoffRetryFromResult(result); ok {
+		return r.invalidHandoffOutcome(ctx, ws, t, retry)
+	}
 	if isOutboxExportFailure(result) {
 		terminal, err := r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
 		return "", terminal, false, err, true
 	}
 	return "", Result{}, false, nil, false
+}
+
+func (r *Runner) invalidHandoffOutcome(ctx context.Context, ws *walkState, consumer apiv1.Task, retry invalidHandoffRetry) (string, Result, bool, error, bool) {
+	jr, in := ws.jr, ws.in
+	if _, ok := in.Machine.Task(retry.Producer); !ok {
+		terminal, err := r.finishStageFailure(ctx, in.RunID, jr, in.RepoRef, consumer.Name, ws.steps, &apiv1.ErrorInfo{
+			Code:    invalidHandoffErrorCode,
+			Message: fmt.Sprintf("invalid handoff producer %q is not a workflow task", retry.Producer),
+		})
+		return "", terminal, false, err, true
+	}
+	synthetic := apiv1.Gate{
+		Name:      "handoff.validation:" + consumer.Name,
+		Evaluator: apiv1.EvaluatorAutomated,
+		Branches:  map[string]string{gate.OutcomeFail: retry.Producer},
+	}
+	budget := runcontrol.RepassBudget{
+		Attempts:                     ws.gateAttempts,
+		InfrastructureAttempts:       ws.infraGateAttempts,
+		RepassAttempts:               ws.repassAttempts,
+		InfrastructureRepassAttempts: ws.infraRepassAttempts,
+		PollAttempts:                 ws.pollAttempts,
+	}
+	charge := budget.Charge(synthetic, gate.OutcomeFail, retry.Producer, ws.visitedStages[retry.Producer], int(in.RunControls.MaxRepasses))
+	ws.gateAttempts = budget.Attempts
+	ws.infraGateAttempts = budget.InfrastructureAttempts
+	ws.repassAttempts = budget.RepassAttempts
+	ws.infraRepassAttempts = budget.InfrastructureRepassAttempts
+	ws.pollAttempts = budget.PollAttempts
+	if ws.gateEval != nil {
+		ws.gateEval.Attempts = budget.Attempts
+		ws.gateEval.InfrastructureAttempts = budget.InfrastructureAttempts
+		ws.gateEval.RepassAttempts = budget.RepassAttempts
+		ws.gateEval.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
+		ws.gateEval.PollAttempts = budget.PollAttempts
+	}
+	fields := map[string]any{
+		"kind":          handoffValidationRetryAnnotationKind,
+		"consumer":      consumer.Name,
+		"producer":      retry.Producer,
+		"input":         retry.Input,
+		"target":        retry.Producer,
+		"repassAttempt": charge.Attempt,
+		"repassLimit":   charge.Bound,
+	}
+	if charge.Exceeded {
+		fields["escalated"] = true
+		fields["reason"] = charge.EscalationReason()
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: consumer.Name, Runner: fields}); err != nil {
+		terminal, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, consumer.Name, ws.steps, fmt.Errorf("runner: journal invalid handoff reroute for %q: %w", consumer.Name, err))
+		return "", terminal, false, failErr, true
+	}
+	if charge.Exceeded {
+		terminal, err := r.finish(ws.in.RunID, jr, journal.PhaseEscalated, consumer.Name, ws.steps)
+		return "", terminal, false, err, true
+	}
+	if ws.parallel == nil {
+		ws.pointers = removeStageArtifactPointers(ws.pointers, retry.Producer)
+	} else {
+		ws.parallel.removeCurrentStageArtifactPointers(retry.Producer)
+	}
+	ws.retryInstructionAddendum = invalidHandoffRetryAddendum(retry, charge.Attempt, charge.Bound)
+	return retry.Producer, Result{}, true, nil, true
+}
+
+func removeStageArtifactPointers(pointers []apiv1.ContextPointer, stage string) []apiv1.ContextPointer {
+	prefix := stage + ".artifact["
+	kept := pointers[:0]
+	for _, pointer := range pointers {
+		if strings.HasPrefix(pointer.Name, prefix) {
+			continue
+		}
+		kept = append(kept, pointer)
+	}
+	return kept
 }
 
 func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition taskTransition) (next string, res Result, advance bool, err error) {
@@ -4011,8 +4095,12 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
-		if ctx, err = r.handoffValidationContext(ctx, jr, in.Machine, t, attempt, class, env.ContextPointers); err != nil {
+		var handoffReport *handoffcheck.Report
+		if ctx, handoffReport, err = r.handoffValidationContext(ctx, jr, in.Machine, t, attempt, class, env.ContextPointers); err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
+		}
+		if result, ok := invalidHandoffResult(t, handoffReport, r.cfg.RerouteInvalidHandoffs); ok {
+			return result, nil, nil, nil
 		}
 		agentInvocation = newGooberInvocation(ag, workspace.ActivateAssetPathGuard, jr, in.RunID, t.Name, attempt, t.Goober)
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
