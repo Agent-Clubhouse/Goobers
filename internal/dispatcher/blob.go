@@ -166,22 +166,70 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 		deadline = defaultBlobRetryDeadline
 	}
 	return withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
-		request, err := c.request(ctx, http.MethodPut, digest, bytes.NewReader(data))
-		if err != nil {
-			return false, fmt.Errorf("dispatcher: put blob %s: %w", digest, err)
+		err := c.PutOnce(ctx, digest, data)
+		var status *BlobStatusError
+		if errors.As(err, &status) {
+			return retryableStatus(status.StatusCode), err
 		}
-		response, err := c.httpClient().Do(request)
-		if err != nil {
-			return true, fmt.Errorf("dispatcher: put blob %s: %w", digest, err)
-		}
-		defer func() { _ = response.Body.Close() }()
-		switch response.StatusCode {
-		case http.StatusOK, http.StatusCreated, http.StatusNoContent:
-			return false, nil
-		default:
-			return retryableStatus(response.StatusCode), fmt.Errorf("dispatcher: put blob %s: endpoint answered %s", digest, response.Status)
-		}
+		var transport *BlobTransportError
+		return errors.As(err, &transport), err
 	})
+}
+
+// BlobStatusError is a blob endpoint's non-success HTTP answer, carrying the
+// status and a bounded excerpt of the response body so callers can classify
+// "daemon not ready" (503) apart from a real refusal and show the daemon's own
+// words.
+type BlobStatusError struct {
+	Op         string
+	Digest     string
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *BlobStatusError) Error() string {
+	msg := fmt.Sprintf("dispatcher: %s blob %s: endpoint answered %s", e.Op, e.Digest, e.Status)
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	return msg
+}
+
+// BlobTransportError is a failure to get any HTTP answer (connection refused,
+// reset, timeout) — the shape of a daemon that is not listening yet.
+type BlobTransportError struct {
+	Op     string
+	Digest string
+	Err    error
+}
+
+func (e *BlobTransportError) Error() string {
+	return fmt.Sprintf("dispatcher: %s blob %s: %v", e.Op, e.Digest, e.Err)
+}
+
+func (e *BlobTransportError) Unwrap() error { return e.Err }
+
+// PutOnce makes exactly one PUT attempt with no retry, returning
+// *BlobStatusError for a non-success answer and *BlobTransportError when no
+// answer arrived. Put layers the retry loop on top of it.
+func (c *BlobClient) PutOnce(ctx context.Context, digest string, data []byte) error {
+	request, err := c.request(ctx, http.MethodPut, digest, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("dispatcher: put blob %s: %w", digest, err)
+	}
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return &BlobTransportError{Op: "put", Digest: digest, Err: err}
+	}
+	defer func() { _ = response.Body.Close() }()
+	switch response.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+		return nil
+	default:
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+		return &BlobStatusError{Op: "put", Digest: digest, StatusCode: response.StatusCode, Status: response.Status, Body: strings.TrimSpace(string(body))}
+	}
 }
 
 // Has reports digest presence via HEAD, so a caller can skip a large Get.
