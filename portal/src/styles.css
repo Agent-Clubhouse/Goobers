@@ -2477,7 +2477,7 @@ summary:focus-visible {
   border-left: 3px solid transparent;
 }
 
-.work-item-row-done {
+.work-item-grid.work-item-row-done {
   border-left: 3px solid var(--success);
 }
 
@@ -2485,7 +2485,7 @@ summary:focus-visible {
   background: var(--success-soft);
 }
 
-.work-item-row-bad-terminal {
+.work-item-grid.work-item-row-bad-terminal {
   border-left: 3px solid var(--danger);
 }
 

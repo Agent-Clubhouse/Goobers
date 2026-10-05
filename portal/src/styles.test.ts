@@ -20,14 +20,34 @@ describe("compact shell styles", () => {
   });
 
   it("reserves the work-item status gutter for every row", () => {
-    expect(styles).toMatch(
-      /\.work-item-grid\.data-row\s*\{[^}]*border-left:\s*3px solid transparent/,
-    );
-    expect(styles).toMatch(
-      /\.work-item-row-done\s*\{[^}]*border-left:\s*3px solid var\(--success\)/,
-    );
-    expect(styles).toMatch(
-      /\.work-item-row-bad-terminal\s*\{[^}]*border-left:\s*3px solid var\(--danger\)/,
-    );
+    const rules = [
+      styles.match(/\.work-item-grid\.data-row\s*\{[^}]*\}/)?.[0],
+      styles.match(/\.work-item-grid\.work-item-row-done\s*\{[^}]*\}/)?.[0],
+      styles.match(/\.work-item-grid\.work-item-row-bad-terminal\s*\{[^}]*\}/)?.[0],
+    ];
+    expect(rules).not.toContain(undefined);
+
+    const style = document.createElement("style");
+    style.textContent = rules
+      .join("\n")
+      .replace("var(--success)", "rgb(1, 2, 3)")
+      .replace("var(--danger)", "rgb(4, 5, 6)");
+    document.head.append(style);
+
+    const rows = ["", "work-item-row-done", "work-item-row-bad-terminal"].map((status) => {
+      const row = document.createElement("button");
+      row.className = `work-item-grid data-row ${status}`;
+      document.body.append(row);
+      return row;
+    });
+
+    try {
+      expect(getComputedStyle(rows[0]).borderLeftColor).toBe("rgba(0, 0, 0, 0)");
+      expect(getComputedStyle(rows[1]).borderLeftColor).toBe("rgb(1, 2, 3)");
+      expect(getComputedStyle(rows[2]).borderLeftColor).toBe("rgb(4, 5, 6)");
+    } finally {
+      rows.forEach((row) => row.remove());
+      style.remove();
+    }
   });
 });
