@@ -198,6 +198,9 @@ type Config struct {
 	ExternalTelemetryConnectors map[string]externaltelemetry.ConnectorConfig
 	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
 	TmpfsSizeLimit resource.Quantity
+	// PodEgressProxy is stamped into stage pods whose runner class carries
+	// network:allowlist (#6748); a stage's own env wins. Zero stamps nothing.
+	PodEgressProxy *instance.PodEgressProxyConfig
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.
 	DeadlineMargin time.Duration
 	// HeldPodRetention overrides DefaultHeldPodRetention; zero uses the default.
