@@ -213,7 +213,6 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 	}
 
 	symbolDomains := make(map[string][]string)
-	factories := make(map[string]bool)
 	parsed := make(map[string]*ast.File)
 	symbolFiles := make(map[string]string)
 	fset := token.NewFileSet()
@@ -270,7 +269,7 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 		internalFiles[name] = file
 	}
 	typed := typePackage(fset, pkg.ImportPath, pkg.Name, parsed, internalFiles, nil, exports)
-	factories = collectGlobalFactories(typed.pkg)
+	factories := collectGlobalFactories(typed.pkg)
 	for name, file := range parsed {
 		for domain, files := range domainFiles {
 			if !files[name] {
