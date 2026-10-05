@@ -1081,6 +1081,12 @@
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
     },
     {
+      "package": "test/componentizationbaseline/timing",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cross-platform baseline timing tool; its fake-runner unit tests run on the Linux unit shards only."
+    },
+    {
       "package": "test/ci",
       "coverage": "none",
       "category": "not-selected",
