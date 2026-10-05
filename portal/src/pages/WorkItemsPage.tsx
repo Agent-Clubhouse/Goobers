@@ -13,6 +13,7 @@ import type {
   WorkItemSummary,
 } from "../api/types";
 import { DaemonApiError, MissingCapabilityError } from "../api/errors";
+import { formatAIC } from "../aicFormat";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { PageToolbar, type ActivePageFilter } from "../components/PageToolbar";
 import { ScopeControl } from "../components/ScopeControl";
@@ -698,7 +699,7 @@ function workItemOutcomeFilter(value: string): WorkItemOutcome | undefined {
 function formatWorkItemCost(cost: WorkItemDetail["cost"]): string {
   if (!cost) return "Not attributed";
   if (cost.nanoAIU !== undefined) {
-    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(cost.nanoAIU / 1_000_000_000)} AIC`;
+    return formatAIC(cost.nanoAIU / 1_000_000_000);
   }
   return "Not measured";
 }

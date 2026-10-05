@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/intsplit"
+	"github.com/goobers/goobers/internal/presentation"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -461,5 +461,5 @@ func formatPostMergeCost(nanoAIU int64, estimated bool) string {
 }
 
 func formatNanoAIU(nanoAIU int64) string {
-	return strconv.FormatFloat(float64(nanoAIU)/1e9, 'f', 2, 64) + " AIC"
+	return presentation.FormatAIC(nanoAIU)
 }

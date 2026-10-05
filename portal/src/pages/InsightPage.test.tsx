@@ -387,10 +387,10 @@ describe("Insight page", () => {
     const pullRequestCells = within(pullRequestRow).getAllByRole("cell");
     expect(pullRequestCells[0]).toHaveTextContent("github · pull request");
     expect(pullRequestCells[1]).toHaveTextContent("core");
-    expect(pullRequestCells[2]).toHaveTextContent("2.5 AIC");
+    expect(pullRequestCells[2]).toHaveTextContent("3 AIC");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
-    expect(screen.getAllByText("2.5 AIC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3 AIC").length).toBeGreaterThan(0);
     expect(screen.getAllByText("42 AIC").length).toBeGreaterThan(0);
     expect(
       screen.getByText("Lower bound: 2 of 3 runs and 3 of 4 attempts measured."),
@@ -398,7 +398,7 @@ describe("Insight page", () => {
     expect(
       screen.getByText("Complete coverage: 2 runs and 2 attempts measured."),
     ).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.6-sol: 2.5 AIC · 3/3 attempts")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-sol: 3 AIC · 3/3 attempts")).toBeInTheDocument();
     expect(screen.getByText("claude-sonnet: 42 AIC · 2/2 attempts")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View 1 run for PR #4398" }));
     expect(screen.getByRole("dialog", { name: "PR #4398 runs" })).toBeInTheDocument();
@@ -417,7 +417,7 @@ describe("Insight page", () => {
       ),
     ).toBeInTheDocument();
     expect(within(runTable).getByText("3/3 measured")).toBeInTheDocument();
-    expect(within(runTable).getByText("2.5 AIC")).toBeInTheDocument();
+    expect(within(runTable).getByText("3 AIC")).toBeInTheDocument();
     expect(within(runTable).queryByRole("columnheader", { name: "Normalized" })).not.toBeInTheDocument();
     expect(within(runTable).getByText("Model not recorded")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close run list" }));
