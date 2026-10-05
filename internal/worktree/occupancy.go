@@ -130,7 +130,10 @@ func releasedOccupancyEntry(
 	}
 	for _, candidate := range current {
 		if sameWorktreePath(candidate.Path, entry.Path) {
-			return false, nil
+			// The directory is gone and Git itself marks the registration
+			// prunable (reaped or crashed without a prune): nothing can occupy
+			// the branch, so it must not fail occupancy discovery.
+			return candidate.Prunable, nil
 		}
 	}
 	return true, nil

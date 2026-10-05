@@ -186,3 +186,30 @@ func TestBranchOccupanciesRejectsStableMissingOwnershipRecord(t *testing.T) {
 		t.Fatalf("BranchOccupancies error = %v, want stable missing ownership record", err)
 	}
 }
+
+// A registration whose directory vanished without `git worktree prune` (reaped
+// or crashed run) is stale metadata, not an occupant. Production goobers-site
+// merge-review failed on every run with "lstat ...: no such file or directory".
+func TestBranchOccupanciesIgnoresPrunableRegistrationWithMissingDirectory(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	manager := newTestManager(t)
+	const branch = "goobers/implementation/gone-run"
+	wt, err := manager.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "implementation-stage", OwnerRunID: "implementation-run",
+		BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(wt.Path); err != nil {
+		t.Fatal(err)
+	}
+	occupancies, err := manager.BranchOccupancies(ctx, repo)
+	if err != nil {
+		t.Fatalf("BranchOccupancies with prunable registration: %v", err)
+	}
+	if _, ok := occupancies[branch]; ok {
+		t.Fatalf("prunable registration reported as occupant: %+v", occupancies[branch])
+	}
+}
