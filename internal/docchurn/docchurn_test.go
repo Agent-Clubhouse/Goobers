@@ -62,8 +62,8 @@ func TestRunUsesOverlapAndParsesGitResponses(t *testing.T) {
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	refreshedAt := now.Add(-3 * time.Hour)
 	path := filepath.Join(t.TempDir(), "watermark.json")
-	if err := writeWatermark(path, Watermark{
-		Schema: WatermarkSchemaVersion, Gaggle: "goobers", Workflow: "docs-updater",
+	if err := writeWatermark(path, docsWatermark{
+		Schema: watermarkSchemaVersion, Gaggle: "goobers", Workflow: "docs-updater",
 		SHA: "old", RefreshedAt: refreshedAt,
 	}); err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestRunUsesOverlapAndParsesGitResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var digest Digest
+	var digest docsChurnDigest
 	if err := json.Unmarshal(data, &digest); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestRunUsesOverlapAndParsesGitResponses(t *testing.T) {
 	if digest.FirstRun || digest.Base != "base" || digest.Head != "head" {
 		t.Errorf("digest window = %+v", digest)
 	}
-	if len(digest.Commits) != 1 || digest.Commits[0] != (Commit{SHA: "head", Subject: "subject", Body: "body"}) {
+	if len(digest.Commits) != 1 || digest.Commits[0] != (churnCommit{SHA: "head", Subject: "subject", Body: "body"}) {
 		t.Errorf("commits = %+v", digest.Commits)
 	}
 	if got, want := digest.ChangedFiles, []string{"docs/guide.md", "src/x.go"}; !reflect.DeepEqual(got, want) {
@@ -220,20 +220,20 @@ func TestRunPersistenceFailureFollowsSuccessfulOutput(t *testing.T) {
 }
 
 func TestWriteDigestExactStdout(t *testing.T) {
-	digest := Digest{
-		Schema:           SchemaVersion,
+	digest := docsChurnDigest{
+		Schema:           schemaVersion,
 		FirstRun:         true,
 		Since:            time.Date(2026, 10, 4, 1, 2, 3, 0, time.UTC),
 		Head:             "head-sha",
 		BufferMultiplier: 3,
 		SinceFloor:       "168h0m0s",
 		CommitCount:      1,
-		Commits:          []Commit{{SHA: "commit-sha", Subject: "subject", Body: "body"}},
+		Commits:          []churnCommit{{SHA: "commit-sha", Subject: "subject", Body: "body"}},
 		ChangedFiles:     []string{"docs/guide.md"},
 		Areas:            map[string][]string{"docs": {"docs/guide.md"}},
 		DocsRoots:        []string{"docs"},
 		DocsRootChanges:  []string{"docs/guide.md"},
-		Note:             FirstRunNote,
+		Note:             firstRunNote,
 	}
 	var stdout bytes.Buffer
 	if err := writeDigest(digest, "", &stdout); err != nil {
@@ -277,8 +277,8 @@ func TestWriteDigestExactStdout(t *testing.T) {
 
 func TestWriteWatermarkExactAtomicContents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scheduler", "docs-updater", "goobers___docs-updater.json")
-	watermark := Watermark{
-		Schema: WatermarkSchemaVersion, Gaggle: "goobers", Workflow: "docs-updater",
+	watermark := docsWatermark{
+		Schema: watermarkSchemaVersion, Gaggle: "goobers", Workflow: "docs-updater",
 		SHA: "0123456789abcdef", RefreshedAt: time.Date(2026, 10, 4, 1, 2, 3, 0, time.UTC),
 	}
 	if err := writeWatermark(path, watermark); err != nil {

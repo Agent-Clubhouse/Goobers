@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	SchemaVersion          = "goobers.dev/docs-churn/v1"
-	WatermarkSchemaVersion = "goobers.dev/docs-watermark/v1"
-	NoChurnNote            = "no code churn in the reported window"
-	FirstRunNote           = "first run: no watermark yet, bounded to the since-floor window"
+	schemaVersion          = "goobers.dev/docs-churn/v1"
+	watermarkSchemaVersion = "goobers.dev/docs-watermark/v1"
+	noChurnNote            = "no code churn in the reported window"
+	firstRunNote           = "first run: no watermark yet, bounded to the since-floor window"
 	emptyTreeObject        = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 )
 
@@ -42,7 +42,7 @@ type Options struct {
 	Stdout           io.Writer
 }
 
-type Watermark struct {
+type docsWatermark struct {
 	Schema      string    `json:"schema"`
 	Gaggle      string    `json:"gaggle,omitempty"`
 	Workflow    string    `json:"workflow"`
@@ -50,23 +50,23 @@ type Watermark struct {
 	RefreshedAt time.Time `json:"refreshedAt"`
 }
 
-type Commit struct {
+type churnCommit struct {
 	SHA     string `json:"sha"`
 	Subject string `json:"subject"`
 	Body    string `json:"body,omitempty"`
 }
 
-type Digest struct {
+type docsChurnDigest struct {
 	Schema           string              `json:"schema"`
 	FirstRun         bool                `json:"firstRun"`
 	Since            time.Time           `json:"since"`
 	Head             string              `json:"head"`
 	Base             string              `json:"base,omitempty"`
-	Watermark        *Watermark          `json:"watermark,omitempty"`
+	Watermark        *docsWatermark      `json:"watermark,omitempty"`
 	BufferMultiplier float64             `json:"bufferMultiplier"`
 	SinceFloor       string              `json:"sinceFloor"`
 	CommitCount      int                 `json:"commitCount"`
-	Commits          []Commit            `json:"commits"`
+	Commits          []churnCommit       `json:"commits"`
 	ChangedFiles     []string            `json:"changedFiles"`
 	Areas            map[string][]string `json:"areas"`
 	DocsRoots        []string            `json:"docsRoots,omitempty"`
@@ -138,8 +138,8 @@ func Run(opts Options) error {
 	if !opts.AdvanceWatermark {
 		return nil
 	}
-	if err := writeWatermark(opts.WatermarkPath, Watermark{
-		Schema:      WatermarkSchemaVersion,
+	if err := writeWatermark(opts.WatermarkPath, docsWatermark{
+		Schema:      watermarkSchemaVersion,
 		Gaggle:      opts.Gaggle,
 		Workflow:    opts.Workflow,
 		SHA:         head,
@@ -155,22 +155,22 @@ func buildDigest(
 	sinceTime time.Time,
 	head, base string,
 	hasBase bool,
-	watermark Watermark,
+	watermark docsWatermark,
 	haveWatermark bool,
 	multiplier float64,
 	floor time.Duration,
-	commits []Commit,
+	commits []churnCommit,
 	changed []string,
 	docsRoots []string,
-) Digest {
+) docsChurnDigest {
 	if commits == nil {
-		commits = []Commit{}
+		commits = []churnCommit{}
 	}
 	if changed == nil {
 		changed = []string{}
 	}
-	digest := Digest{
-		Schema:           SchemaVersion,
+	digest := docsChurnDigest{
+		Schema:           schemaVersion,
 		FirstRun:         firstRun,
 		Since:            sinceTime,
 		Head:             head,
@@ -193,17 +193,17 @@ func buildDigest(
 	switch {
 	case len(changed) == 0 && firstRun:
 		digest.NoWork = true
-		digest.Note = FirstRunNote + "; " + NoChurnNote
+		digest.Note = firstRunNote + "; " + noChurnNote
 	case len(changed) == 0:
 		digest.NoWork = true
-		digest.Note = NoChurnNote
+		digest.Note = noChurnNote
 	case firstRun:
-		digest.Note = FirstRunNote
+		digest.Note = firstRunNote
 	}
 	return digest
 }
 
-func writeDigest(digest Digest, resultFile string, stdout io.Writer) error {
+func writeDigest(digest docsChurnDigest, resultFile string, stdout io.Writer) error {
 	out, err := json.MarshalIndent(digest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode churn digest: %w", err)
@@ -251,25 +251,25 @@ func filesUnderRoots(roots, changed []string) []string {
 	return hits
 }
 
-func readWatermark(path string) (Watermark, bool, error) {
+func readWatermark(path string) (docsWatermark, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Watermark{}, false, nil
+			return docsWatermark{}, false, nil
 		}
-		return Watermark{}, false, err
+		return docsWatermark{}, false, err
 	}
-	var wm Watermark
+	var wm docsWatermark
 	if err := json.Unmarshal(data, &wm); err != nil {
-		return Watermark{}, false, fmt.Errorf("parse watermark: %w", err)
+		return docsWatermark{}, false, fmt.Errorf("parse watermark: %w", err)
 	}
 	if wm.SHA == "" || wm.RefreshedAt.IsZero() {
-		return Watermark{}, false, fmt.Errorf("watermark %s is missing sha/refreshedAt", path)
+		return docsWatermark{}, false, fmt.Errorf("watermark %s is missing sha/refreshedAt", path)
 	}
 	return wm, true, nil
 }
 
-func writeWatermark(path string, wm Watermark) error {
+func writeWatermark(path string, wm docsWatermark) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -302,7 +302,7 @@ func boundaryCommit(git Git, repo string, sinceTime time.Time) (string, bool, er
 	return sha, sha != "", nil
 }
 
-func commitsInRange(git Git, repo, base, head string) ([]Commit, error) {
+func commitsInRange(git Git, repo, base, head string) ([]churnCommit, error) {
 	const separator = "\x1e"
 	format := "%H" + separator + "%s" + separator + "%b"
 	rangeArg := base + ".." + head
@@ -313,7 +313,7 @@ func commitsInRange(git Git, repo, base, head string) ([]Commit, error) {
 	if err != nil {
 		return nil, err
 	}
-	var commits []Commit
+	var commits []churnCommit
 	for _, record := range strings.Split(out, "\x00") {
 		if strings.TrimSpace(record) == "" {
 			continue
@@ -322,7 +322,7 @@ func commitsInRange(git Git, repo, base, head string) ([]Commit, error) {
 		if len(parts) < 2 {
 			continue
 		}
-		commit := Commit{SHA: strings.TrimSpace(parts[0]), Subject: strings.TrimSpace(parts[1])}
+		commit := churnCommit{SHA: strings.TrimSpace(parts[0]), Subject: strings.TrimSpace(parts[1])}
 		if len(parts) == 3 {
 			commit.Body = strings.TrimSpace(parts[2])
 		}

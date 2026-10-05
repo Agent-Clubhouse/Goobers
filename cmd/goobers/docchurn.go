@@ -47,8 +47,6 @@ const (
 	docsChurnDefaultBuffer = 3.0
 )
 
-type docsChurnDigest = docchurn.Digest
-
 const docsChurnHelp = "Usage: goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] " +
 	"[--since <duration>] [--buffer-multiplier <float>] [--format churn-digest] [path]\n\n" +
 	"Report the code churn since docs were last refreshed for the docs-updater\n" +

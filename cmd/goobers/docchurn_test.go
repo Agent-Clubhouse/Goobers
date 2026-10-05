@@ -11,15 +11,45 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/docchurn"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/testgit"
 )
 
-type docsWatermark = docchurn.Watermark
+type docsWatermark struct {
+	Schema      string    `json:"schema"`
+	Gaggle      string    `json:"gaggle,omitempty"`
+	Workflow    string    `json:"workflow"`
+	SHA         string    `json:"sha"`
+	RefreshedAt time.Time `json:"refreshedAt"`
+}
 
-const docsWatermarkSchemaVersion = docchurn.WatermarkSchemaVersion
+const docsWatermarkSchemaVersion = "goobers.dev/docs-watermark/v1"
+
+type churnCommit struct {
+	SHA     string `json:"sha"`
+	Subject string `json:"subject"`
+	Body    string `json:"body,omitempty"`
+}
+
+type docsChurnDigest struct {
+	Schema           string              `json:"schema"`
+	FirstRun         bool                `json:"firstRun"`
+	Since            time.Time           `json:"since"`
+	Head             string              `json:"head"`
+	Base             string              `json:"base,omitempty"`
+	Watermark        *docsWatermark      `json:"watermark,omitempty"`
+	BufferMultiplier float64             `json:"bufferMultiplier"`
+	SinceFloor       string              `json:"sinceFloor"`
+	CommitCount      int                 `json:"commitCount"`
+	Commits          []churnCommit       `json:"commits"`
+	ChangedFiles     []string            `json:"changedFiles"`
+	Areas            map[string][]string `json:"areas"`
+	DocsRoots        []string            `json:"docsRoots,omitempty"`
+	DocsRootChanges  []string            `json:"docsRootChanges,omitempty"`
+	NoWork           bool                `json:"noWork,omitempty"`
+	Note             string              `json:"note,omitempty"`
+}
 
 // churnRepo is a temp git repo whose commits are stamped at controlled times so
 // the watermark + buffer window math is exercised deterministically.
