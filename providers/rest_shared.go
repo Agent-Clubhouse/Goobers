@@ -61,6 +61,14 @@ type restOpenPullRequestHooks struct {
 	isCreateRaceError func(error) bool
 }
 
+type restCreateWorkItemHooks[Issue, Labels any] struct {
+	ready       func() error
+	labels      func(context.Context, RepositoryRef, []string) (Labels, error)
+	createBody  func(CreateWorkItemRequest, string, Labels) interface{}
+	mapIssue    func(Issue) WorkItem
+	findRunItem func(context.Context, RepositoryRef, string) (WorkItem, bool, error)
+}
+
 // restWorkItemMutator adds the common issue workflow used by shared updates.
 // The HTTP details remain provider-owned. restPager reads the comment history
 // an update's operation marker is looked up in (#2657).
@@ -120,6 +128,68 @@ type restRepository struct {
 	Name    string     `json:"name"`
 	HTMLURL string     `json:"html_url"`
 	Owner   githubUser `json:"owner"`
+}
+
+type restPRProjection struct {
+	Number         int
+	Title          string
+	URL            string
+	State          string
+	Merged         bool
+	MergedAt       *time.Time
+	Mergeable      *bool
+	Draft          bool
+	Labels         []string
+	HeadBranch     string
+	HeadRepository *RepositoryRef
+	HeadSHA        string
+	BaseBranch     string
+	BaseSHA        string
+	MergeSHA       string
+	UpdatedAt      time.Time
+	Body           string
+}
+
+func pullSummaryFromProjection(pr restPRProjection, checkState CheckState) PullRequestSummary {
+	return PullRequestSummary{
+		ID:         strconv.Itoa(pr.Number),
+		Number:     pr.Number,
+		URL:        pr.URL,
+		State:      pr.State,
+		Merged:     pr.Merged || pr.MergedAt != nil,
+		Head:       pr.HeadBranch,
+		Base:       pr.BaseBranch,
+		HeadSHA:    pr.HeadSHA,
+		BaseSHA:    pr.BaseSHA,
+		MergeSHA:   pr.MergeSHA,
+		Draft:      pr.Draft,
+		Labels:     pr.Labels,
+		CheckState: checkState,
+		UpdatedAt:  pr.UpdatedAt,
+		Body:       pr.Body,
+		Integrity:  apiintegrity.Unapproved,
+	}
+}
+
+func pullPollResultFromProjection(pr restPRProjection) PullRequestPollResult {
+	return PullRequestPollResult{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          pr.Draft,
+		Labels:         pr.Labels,
+		HeadBranch:     pr.HeadBranch,
+		HeadRepository: pr.HeadRepository,
+		HeadSHA:        pr.HeadSHA,
+		BaseSHA:        pr.BaseSHA,
+		BaseBranch:     pr.BaseBranch,
+		Body:           pr.Body,
+		URL:            pr.URL,
+		Integrity:      apiintegrity.Unapproved,
+	}
 }
 
 // doStatus performs a request with the provider's transient-failure retries.
@@ -395,6 +465,57 @@ func createRESTWorkItemComment(ctx context.Context, c restMutationRecorder, kind
 	}
 	c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(repo, id), URL: comment.HTMLURL, Operation: "comment"})
 	return mapComment(comment), nil
+}
+
+func createRESTWorkItem[Issue, Labels any](ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req CreateWorkItemRequest, hooks restCreateWorkItemHooks[Issue, Labels]) (WorkItem, error) {
+	if hooks.ready != nil {
+		if err := hooks.ready(); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return WorkItem{}, err
+	}
+	if err := checkCreateWorkItemGraphFields(req); err != nil {
+		return WorkItem{}, err
+	}
+	itemBody := withRunIDFooter(req.Body, req.RunID)
+	itemBody, err := withAttribution(itemBody, attribution, "issue-create")
+	if err != nil {
+		return WorkItem{}, err
+	}
+	if req.RunID != "" {
+		if existing, found, err := hooks.findRunItem(ctx, req.Repository, req.RunID); err != nil {
+			return WorkItem{}, err
+		} else if found {
+			return existing, nil
+		}
+	}
+	labels, err := hooks.labels(ctx, req.Repository, replaceStatusLabel(req.Labels, req.Status))
+	if err != nil {
+		return WorkItem{}, err
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
+	if err != nil {
+		return WorkItem{}, err
+	}
+	var issue Issue
+	if err := c.do(ctx, http.MethodPost, endpoint, hooks.createBody(req, itemBody, labels), &issue); err != nil {
+		return WorkItem{}, err
+	}
+	item := hooks.mapIssue(issue)
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider:  kind,
+		Ref:       issueRef(req.Repository, item.ID),
+		URL:       item.URL,
+		Operation: "create",
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(req.Title)},
+			"body":  {After: digestString(itemBody)},
+		},
+	})
+	return item, nil
 }
 
 func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, kind ProviderKind, baseURL string, attribution Attribution, req ClaimWorkItemRequest) (WorkItem, error) {

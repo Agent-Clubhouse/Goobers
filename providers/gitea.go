@@ -600,30 +600,13 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	labels := giteaLabelNames(pr.Labels)
-	return PullRequestPollResult{
-		Number:           pr.Number,
-		Title:            pr.Title,
-		State:            pr.State,
-		Merged:           pr.Merged,
-		MergedAt:         pr.MergedAt,
-		Mergeable:        pr.Mergeable,
-		Draft:            isWIPTitle(pr.Title),
-		Labels:           labels,
-		HeadBranch:       pr.Head.Ref,
-		HeadRepository:   repositoryRef(ProviderGitea, pr.Head.Repo),
-		HeadSHA:          pr.Head.SHA,
-		BaseSHA:          pr.Base.SHA,
-		BaseBranch:       pr.Base.Ref,
-		Body:             pr.Body,
-		ReviewDecision:   decision,
-		RequestedChanges: requestedChanges,
-		CheckState:       checkState,
-		Checks:           checks,
-		CommentsSince:    comments,
-		URL:              pr.HTMLURL,
-		Integrity:        apiintegrity.Unapproved,
-	}, nil
+	result := pullPollResultFromProjection(giteaPRProjection(pr))
+	result.ReviewDecision = decision
+	result.RequestedChanges = requestedChanges
+	result.CheckState = checkState
+	result.Checks = checks
+	result.CommentsSince = comments
+	return result, nil
 }
 
 func isWIPTitle(title string) bool {
@@ -868,23 +851,28 @@ func (p *GiteaProvider) ListPullRequests(ctx context.Context, req ListPullReques
 // when the caller skips check-state resolution). The Gitea analog of
 // summarizePullRequest.
 func summarizeGiteaPull(pr giteaPull, checkState CheckState) PullRequestSummary {
-	return PullRequestSummary{
-		ID:         strconv.Itoa(pr.Number),
-		Number:     pr.Number,
-		URL:        pr.HTMLURL,
-		State:      pr.State,
-		Merged:     pr.Merged || pr.MergedAt != nil,
-		Head:       pr.Head.Ref,
-		Base:       pr.Base.Ref,
-		HeadSHA:    pr.Head.SHA,
-		BaseSHA:    pr.Base.SHA,
-		MergeSHA:   pr.MergeCommitSHA,
-		Draft:      isWIPTitle(pr.Title),
-		Labels:     giteaLabelNames(pr.Labels),
-		CheckState: checkState,
-		UpdatedAt:  pr.UpdatedAt,
-		Body:       pr.Body,
-		Integrity:  apiintegrity.Unapproved,
+	return pullSummaryFromProjection(giteaPRProjection(pr), checkState)
+}
+
+func giteaPRProjection(pr giteaPull) restPRProjection {
+	return restPRProjection{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		URL:            pr.HTMLURL,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          isWIPTitle(pr.Title),
+		Labels:         giteaLabelNames(pr.Labels),
+		HeadBranch:     pr.Head.Ref,
+		HeadRepository: repositoryRef(ProviderGitea, pr.Head.Repo),
+		HeadSHA:        pr.Head.SHA,
+		BaseBranch:     pr.Base.Ref,
+		BaseSHA:        pr.Base.SHA,
+		MergeSHA:       pr.MergeCommitSHA,
+		UpdatedAt:      pr.UpdatedAt,
+		Body:           pr.Body,
 	}
 }
 
