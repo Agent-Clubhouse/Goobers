@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -213,6 +216,84 @@ func TestRunDoesNotPublishPartialOutput(t *testing.T) {
 	}
 }
 
+func TestRunnableTestClassification(t *testing.T) {
+	const source = `package sample
+import "testing"
+func TestValid(t *testing.T) {}
+func TestMain(m *testing.M) {}
+func Testlower(t *testing.T) {}
+func TestWrong() {}
+func BenchmarkValid(b *testing.B) {}
+func Benchmarklower(b *testing.B) {}
+func BenchmarkWrong(t *testing.T) {}
+func Example_valid() {
+	// Output:
+}
+func Example_noOutput() {}
+func Example_BadSuffix() {
+	// Output:
+}
+func Example_wrongSignature(value string) {
+	// Output:
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "classification_test.go", source, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]*ast.File{"classification_test.go": file}
+	typed, err := typePackage(fset, "example.test/sample", nil, files, typeImporter(fset, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples := runnableExamples(files)
+	var got []string
+	for _, declaration := range file.Decls {
+		fn, ok := declaration.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if kind, ok := testKind(fn, typed.info, examples); ok {
+			got = append(got, kind+":"+fn.Name.Name)
+		}
+	}
+	want := []string{"test:TestValid", "benchmark:BenchmarkValid", "example:Example_valid"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("runnable declarations = %v, want %v", got, want)
+	}
+}
+
+func TestRunTypeCheckFailureDoesNotPublishOutput(t *testing.T) {
+	root := t.TempDir()
+	commandDir := filepath.Join(root, "cmd", "goobers")
+	if err := os.MkdirAll(commandDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commandDir, "main.go"), []byte("package main\nvar broken = missingSymbol\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	module := moduleMetadata{Path: "example.test/module", Dir: root}
+	pkg := goPackage{
+		ImportPath: "example.test/module/cmd/goobers",
+		Name:       "main",
+		Dir:        commandDir,
+		GoFiles:    []string{"main.go"},
+	}
+	runner := inventoryRunner(t, module, pkg)
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), nil, &stdout, &stderr, &runner)
+	if code != 1 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("partial output = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "type-check package example.test/module/cmd/goobers") ||
+		!strings.Contains(stderr.String(), "undefined: missingSymbol") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func fixturePackages(t *testing.T) (moduleMetadata, []goPackage, []goPackage) {
 	t.Helper()
 	root := t.TempDir()
@@ -226,17 +307,15 @@ func fixturePackages(t *testing.T) (moduleMetadata, []goPackage, []goPackage) {
 	}
 	files := map[string]string{
 		filepath.Join(commandDir, "docchurn.go"): `package main
-import (
-	"os"
-	"example.test/renamed/module/internal/shared"
-)
-var newDependency = func() int { return shared.Value }
+import "os"
+var newDependency = func() int { return 1 }
 var newLookupEnv = os.LookupEnv
 func runDocsChurn() { commonHelper() }`,
 		filepath.Join(commandDir, "contestedfiles.go"): `package main
 func partitionByContention() {}`,
 		filepath.Join(commandDir, "reportprstatus.go"): `package main
-func runReportPRStatus() {}`,
+func runReportPRStatus() {}
+func RunReportPRStatus() { runReportPRStatus() }`,
 		filepath.Join(commandDir, "helpers.go"): `package main
 func commonHelper() {}
 `,
@@ -279,10 +358,13 @@ func TestViaCommandRegistry(t *testing.T) {
 	}
 }
 func BenchmarkDocs(b *testing.B) { runDocsChurn() }
-func Example_docs() { runDocsChurn() }`,
+func Example_docs() {
+	runDocsChurn()
+	// Output:
+}`,
 		filepath.Join(commandDir, "external_test.go"): `package main_test
-import ("testing"; goobers "example.test/renamed/module/cmd/goobers")
-func TestExternal(t *testing.T) { goobers.RunReportPRStatus() }`,
+import "testing"
+func TestExternal(t *testing.T) {}`,
 		filepath.Join(sharedDir, "shared.go"):   "package shared\nconst Value = 1\n",
 		filepath.Join(testkitDir, "testkit.go"): "package testkit\n",
 	}
@@ -300,13 +382,32 @@ func TestExternal(t *testing.T) { goobers.RunReportPRStatus() }`,
 		IgnoredGoFiles: []string{"platform_windows.go"},
 		Imports:        []string{modulePath + "/internal/shared", "fmt"},
 		TestImports:    []string{"testing", modulePath + "/internal/testkit"},
-		XTestImports:   []string{"testing", modulePath + "/cmd/goobers"},
+		XTestImports:   []string{"testing"},
 	}
 	shared := goPackage{ImportPath: modulePath + "/internal/shared", Name: "shared", Dir: sharedDir, GoFiles: []string{"shared.go"}}
 	testkit := goPackage{ImportPath: modulePath + "/internal/testkit", Name: "testkit", Dir: testkitDir, GoFiles: []string{"testkit.go"}}
 	prod := []goPackage{{ImportPath: "fmt", Name: "fmt"}, shared, command}
 	test := []goPackage{testkit, command, shared, {ImportPath: "testing", Name: "testing"}}
 	return moduleMetadata{Path: modulePath, Dir: root}, prod, test
+}
+
+func inventoryRunner(t *testing.T, module moduleMetadata, pkg goPackage) scriptedRunner {
+	t.Helper()
+	moduleJSON, err := json.Marshal(module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageJSON, err := json.Marshal(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scriptedRunner{responses: []scriptedResponse{
+		{name: "go", args: "list -m -json", result: commandResult{stdout: moduleJSON}},
+		{name: "go", args: "env -json GOOS GOARCH CGO_ENABLED GOVERSION", result: commandResult{stdout: []byte(`{"GOOS":"linux","GOARCH":"amd64","CGO_ENABLED":"0","GOVERSION":"go1.test"}`)}},
+		{name: "go", args: "list -deps -export -json ./cmd/goobers", result: commandResult{stdout: packageJSON}},
+		{name: "go", args: "list -deps -test -export -json example.test/module/cmd/goobers", result: commandResult{stdout: packageJSON}},
+		{name: "git", args: "-C " + module.Dir + " rev-parse HEAD", result: commandResult{stdout: []byte("abc123\n")}},
+	}}
 }
 
 func mustJSON(t *testing.T, value string) string {
@@ -342,7 +443,7 @@ func discoveryRunner(t *testing.T, root, goos, goarch, selected, ignored string)
 		{name: "go", args: "list -m -json", result: commandResult{stdout: []byte(module)}},
 		{name: "go", args: "env -json GOOS GOARCH CGO_ENABLED GOVERSION", result: commandResult{stdout: []byte(`{"GOOS":"` + goos + `","GOARCH":"` + goarch + `","CGO_ENABLED":"0","GOVERSION":"go1.test"}`)}},
 		{name: "go", args: "list -deps -export -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
-		{name: "go", args: "list -deps -test -export -json -tags baseline ./cmd/goobers", result: commandResult{stdout: packageJSON}},
+		{name: "go", args: "list -deps -test -export -json -tags baseline example.test/module/cmd/goobers", result: commandResult{stdout: packageJSON}},
 		{name: "git", args: "-C " + root + " rev-parse HEAD", result: commandResult{stdout: []byte("abc123\n")}},
 	}}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -120,15 +121,24 @@ func (d discovery) collect(ctx context.Context, target string) (inventory, error
 		return inventory{}, err
 	}
 
-	testArgs := append([]string{"list", "-deps", "-test", "-export", "-json"}, d.tagArgs()...)
-	testArgs = append(testArgs, target)
-	testResult, err := d.invoke(ctx, "go", testArgs, env)
-	if err != nil {
-		return inventory{}, err
-	}
-	test, err := decodePackages(testResult.stdout, "test go list")
-	if err != nil {
-		return inventory{}, err
+	testRoots := localClosure(module.Path, prod)
+	var test []goPackage
+	for {
+		testArgs := append([]string{"list", "-deps", "-test", "-export", "-json"}, d.tagArgs()...)
+		testArgs = append(testArgs, testRoots...)
+		testResult, err := d.invoke(ctx, "go", testArgs, env)
+		if err != nil {
+			return inventory{}, err
+		}
+		test, err = decodePackages(testResult.stdout, "test go list")
+		if err != nil {
+			return inventory{}, err
+		}
+		nextRoots := localClosure(module.Path, test)
+		if slices.Equal(testRoots, nextRoots) {
+			break
+		}
+		testRoots = nextRoots
 	}
 
 	commitResult, err := d.invoke(ctx, "git", []string{"-C", module.Dir, "rev-parse", "HEAD"}, nil)

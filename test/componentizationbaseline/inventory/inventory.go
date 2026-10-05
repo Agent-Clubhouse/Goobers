@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"go/doc"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -13,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var domainFiles = map[string]map[string]bool{
@@ -36,19 +39,6 @@ type typedPackage struct {
 	factories      map[types.Object]string
 	commandDomains map[string][]string
 	dispatchers    map[*types.Func]bool
-}
-
-type packageImporter struct {
-	localPath string
-	local     *types.Package
-	fallback  types.Importer
-}
-
-func (i packageImporter) Import(path string) (*types.Package, error) {
-	if path == i.localPath {
-		return i.local, nil
-	}
-	return i.fallback.Import(path)
 }
 
 func buildInventory(module moduleMetadata, build goEnv, commit string, tags []string, target string, prod, test []goPackage) (inventory, error) {
@@ -130,6 +120,9 @@ func buildInventory(module moduleMetadata, build goEnv, commit string, tags []st
 func localClosure(modulePath string, packages []goPackage) []string {
 	var paths []string
 	for _, pkg := range packages {
+		if pkg.ForTest != "" {
+			continue
+		}
 		path := canonicalImportPath(pkg.ImportPath)
 		if isLocalImport(modulePath, path) && !strings.HasSuffix(path, ".test") {
 			paths = append(paths, path)
@@ -153,6 +146,9 @@ func mergeLocalPackages(modulePath string, prod, test []goPackage) []goPackage {
 	merged := make(map[string]goPackage)
 	for _, list := range [][]goPackage{test, prod} {
 		for _, pkg := range list {
+			if pkg.ForTest != "" {
+				continue
+			}
 			path := canonicalImportPath(pkg.ImportPath)
 			if !isLocalImport(modulePath, path) || pkg.Dir == "" || strings.Contains(pkg.ImportPath, " [") || strings.HasSuffix(path, ".test") {
 				continue
@@ -218,7 +214,7 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 	fset := token.NewFileSet()
 	for _, name := range append(append([]string{}, pkg.GoFiles...), pkg.CgoFiles...) {
 		path := filepath.Join(pkg.Dir, name)
-		file, err := parser.ParseFile(fset, path, nil, 0)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
 			return packageAnalysis{}, fmt.Errorf("parse production file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
 		}
@@ -262,13 +258,17 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 	internalFiles := make(map[string]*ast.File)
 	for _, name := range pkg.TestGoFiles {
 		path := filepath.Join(pkg.Dir, name)
-		file, err := parser.ParseFile(fset, path, nil, 0)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
 			return packageAnalysis{}, fmt.Errorf("parse test file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
 		}
 		internalFiles[name] = file
 	}
-	typed := typePackage(fset, pkg.ImportPath, pkg.Name, parsed, internalFiles, nil, exports)
+	imports := typeImporter(fset, exports)
+	typed, err := typePackage(fset, pkg.ImportPath, parsed, internalFiles, imports)
+	if err != nil {
+		return packageAnalysis{}, fmt.Errorf("type-check package %s: %w", pkg.ImportPath, err)
+	}
 	factories := collectGlobalFactories(typed.pkg)
 	for name, file := range parsed {
 		for domain, files := range domainFiles {
@@ -301,16 +301,27 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 			externalFSet := token.NewFileSet()
 			for _, name := range group.files {
 				path := filepath.Join(pkg.Dir, name)
-				file, err := parser.ParseFile(externalFSet, path, nil, 0)
+				file, err := parser.ParseFile(externalFSet, path, nil, parser.ParseComments)
 				if err != nil {
 					return packageAnalysis{}, fmt.Errorf("parse test file %s: %w", filepath.ToSlash(filepath.Join(relDir, name)), err)
 				}
 				groupParsed[name] = file
 			}
-			groupTyped = typePackage(externalFSet, pkg.ImportPath+"_test", pkg.Name+"_test", nil, groupParsed, typed.pkg, exports)
-			groupTyped.domains = typed.domains
-			groupTyped.factories = typed.factories
+			groupTyped, err = typePackage(externalFSet, pkg.ImportPath+"_test", nil, groupParsed, imports)
+			if err != nil {
+				return packageAnalysis{}, fmt.Errorf("type-check external test package %s_test: %w", pkg.ImportPath, err)
+			}
+			for _, object := range groupTyped.info.Uses {
+				if object.Pkg() == nil || object.Pkg().Path() != pkg.ImportPath {
+					continue
+				}
+				groupTyped.domains[object] = append(groupTyped.domains[object], symbolDomains[object.Name()]...)
+				if factories[object.Name()] {
+					groupTyped.factories[object] = object.Name()
+				}
+			}
 		}
+		examples := runnableExamples(groupParsed)
 		for _, name := range group.files {
 			file := groupParsed[name]
 			for _, decl := range file.Decls {
@@ -318,7 +329,7 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 				if !ok || fn.Recv != nil {
 					continue
 				}
-				kind, ok := testKind(fn.Name.Name)
+				kind, ok := testKind(fn, groupTyped.info, examples)
 				if !ok {
 					continue
 				}
@@ -333,30 +344,30 @@ func analyzePackage(module moduleMetadata, pkg goPackage, prodClosure, testClosu
 	return packageAnalysis{record: record, tests: tests, symbols: symbolDomains, factories: factories}, nil
 }
 
-func typePackage(fset *token.FileSet, path, name string, production, test map[string]*ast.File, local *types.Package, exports map[string]string) typedPackage {
+func typeImporter(fset *token.FileSet, exports map[string]string) types.Importer {
+	if len(exports) == 0 {
+		return importer.Default()
+	}
+	return importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		export, ok := exports[path]
+		if !ok {
+			return nil, fmt.Errorf("no export data for %s", path)
+		}
+		return os.Open(export)
+	})
+}
+
+func typePackage(fset *token.FileSet, path string, production, test map[string]*ast.File, imports types.Importer) (typedPackage, error) {
 	info := &types.Info{
 		Defs:       make(map[*ast.Ident]types.Object),
 		Uses:       make(map[*ast.Ident]types.Object),
 		Selections: make(map[*ast.SelectorExpr]*types.Selection),
 	}
 	files := sortedASTFiles(production, test)
-	fallback := types.Importer(importer.Default())
-	if len(exports) > 0 {
-		fallback = importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
-			export, ok := exports[path]
-			if !ok {
-				return nil, fmt.Errorf("no export data for %s", path)
-			}
-			return os.Open(export)
-		})
-	}
-	config := types.Config{Importer: fallback, Error: func(error) {}}
-	if local != nil {
-		config.Importer = packageImporter{localPath: local.Path(), local: local, fallback: config.Importer}
-	}
-	checked, _ := config.Check(path, fset, files, info)
-	if checked == nil {
-		checked = types.NewPackage(path, name)
+	config := types.Config{Importer: imports}
+	checked, err := config.Check(path, fset, files, info)
+	if err != nil {
+		return typedPackage{}, err
 	}
 	functions := make(map[*types.Func]*ast.FuncDecl)
 	for _, file := range files {
@@ -374,7 +385,7 @@ func typePackage(fset *token.FileSet, path, name string, production, test map[st
 		info: info, pkg: checked, functions: functions,
 		domains: make(map[types.Object][]string), factories: make(map[types.Object]string),
 		commandDomains: make(map[string][]string), dispatchers: make(map[*types.Func]bool),
-	}
+	}, nil
 }
 
 func (typed *typedPackage) collectCommandDispatch(groups ...map[string]*ast.File) {
@@ -683,13 +694,78 @@ func expressionStrings(expression ast.Expr, info *types.Info, localValues map[ty
 	return values
 }
 
-func testKind(name string) (string, bool) {
-	for _, prefix := range []struct{ prefix, kind string }{{"Test", "test"}, {"Benchmark", "benchmark"}, {"Example", "example"}} {
-		if strings.HasPrefix(name, prefix.prefix) {
-			return prefix.kind, true
-		}
+func testKind(fn *ast.FuncDecl, info *types.Info, examples map[string]bool) (string, bool) {
+	switch {
+	case fn.Name.Name != "TestMain" && validTestName(fn.Name.Name, "Test") && validTestSignature(fn, info, "T"):
+		return "test", true
+	case validTestName(fn.Name.Name, "Benchmark") && validTestSignature(fn, info, "B"):
+		return "benchmark", true
+	case examples[fn.Name.Name] && validExampleName(fn.Name.Name) && validExampleSignature(fn, info):
+		return "example", true
 	}
 	return "", false
+}
+
+func validExampleName(name string) bool {
+	suffixAt := strings.LastIndex(name, "_")
+	if suffixAt < len("Example") {
+		return true
+	}
+	suffix := name[suffixAt+1:]
+	if suffix == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(suffix)
+	return unicode.IsLower(r)
+}
+
+func validTestName(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	if len(name) == len(prefix) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(name[len(prefix):])
+	return !unicode.IsLower(r)
+}
+
+func validTestSignature(fn *ast.FuncDecl, info *types.Info, parameter string) bool {
+	object, ok := info.Defs[fn.Name].(*types.Func)
+	if !ok {
+		return false
+	}
+	signature, ok := object.Type().(*types.Signature)
+	if !ok || signature.TypeParams() != nil || signature.Variadic() ||
+		signature.Params().Len() != 1 || signature.Results().Len() != 0 {
+		return false
+	}
+	pointer, ok := signature.Params().At(0).Type().(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := pointer.Elem().(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "testing" && named.Obj().Name() == parameter
+}
+
+func validExampleSignature(fn *ast.FuncDecl, info *types.Info) bool {
+	object, ok := info.Defs[fn.Name].(*types.Func)
+	if !ok {
+		return false
+	}
+	signature, ok := object.Type().(*types.Signature)
+	return ok && signature.TypeParams() == nil && !signature.Variadic() &&
+		signature.Params().Len() == 0 && signature.Results().Len() == 0
+}
+
+func runnableExamples(files map[string]*ast.File) map[string]bool {
+	examples := make(map[string]bool)
+	for _, example := range doc.Examples(sortedASTFiles(files)...) {
+		if example.Output != "" || example.EmptyOutput {
+			examples["Example"+example.Name] = true
+		}
+	}
+	return examples
 }
 
 func localImports(modulePath string, file *ast.File) []string {
