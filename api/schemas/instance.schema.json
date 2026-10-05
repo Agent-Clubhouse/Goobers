@@ -728,6 +728,16 @@
           "type": "string",
           "examples": ["1Gi"]
         },
+        "podEgressProxy": {
+          "description": "Forward proxy stamped into stage pods whose runner class carries network:allowlist, for deterministic and agentic stages alike (HTTPS_PROXY, HTTP_PROXY, NO_PROXY and their lowercase spellings). Needed because such pods cannot dial module registries directly and a stage pod does not inherit the daemon's proxy environment. A stage's own run.env value wins.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "httpsProxy": {"description": "HTTPS proxy URL (http:// or https://, no credentials).", "type": "string", "examples": ["http://goobers-egress-proxy.goobers-system:3128"]},
+            "httpProxy": {"description": "HTTP proxy URL (http:// or https://, no credentials).", "type": "string"},
+            "noProxy": {"description": "Comma-separated hosts, domains and CIDRs that bypass the proxy; no whitespace. Include the cluster-internal service domains.", "type": "string", "examples": [".goobers-system,.svc,.cluster.local"]}
+          }
+        },
         "livenessTimeout": {
           "description": "Maximum age of the scheduler tick heartbeat before the daemon reports itself unhealthy. Empty defaults to 2 minutes; values below 2 seconds are rejected.",
           "$ref": "#/$defs/duration",

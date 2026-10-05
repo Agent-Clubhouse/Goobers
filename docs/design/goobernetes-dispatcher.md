@@ -167,6 +167,17 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
   `runner.podTmpfsSize` in `instance.yaml` (a Kubernetes quantity such as `1Gi`, validated at
   load and read by the worker's dispatcher at startup). Because the size is added to the
   memory limit, raise it only as far as real temp needs.
+- **Egress proxy for allowlisted pods:** a stage pod under `network:allowlist` cannot dial
+  module registries, and it inherits none of the daemon's `HTTPS_PROXY`; runner classes carry
+  no `env` and an agentic stage has no `run.env`. `runner.podEgressProxy`
+  (`{httpsProxy, httpProxy, noProxy}`, validated at load: http(s) URLs with a host, no embedded
+  credentials, no whitespace in `noProxy`) is stamped by the dispatcher into pods whose runner
+  class carries `network:allowlist`, under both the uppercase and lowercase spellings (curl, and
+  so git, reads only lowercase). A name the stage declares in `run.env`, or a consumer template
+  already carries, is never overridden. The names are in the `env:default-deny` allowlist and in
+  `procenv.Vars`, so they reach a deterministic stage's command and an agentic harness's tool
+  subprocesses (`go`, `git`, `npm`). Put the cluster-internal service domains in `noProxy` so
+  the daemon/blob/claims endpoints are not sent through the proxy.
 - **GOCACHE is not on the tmpfs:** operator images commonly bake `GOCACHE=/tmp/gocache`, and
   one Go build then filled the 512Mi tmpfs and starved everything else that needs temp
   (recovery custody's git directory failed with `No space left on device`). Every stage pod
