@@ -108,6 +108,100 @@ func TestRetryCleanupPendingRefusesDisagreeingOrMissingOwnership(t *testing.T) {
 	}
 }
 
+func TestRetryCleanupPendingRetiresOrphanedMarkerAfterBoundedAttempts(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		return errors.New("defer")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wt := createPendingRetryWorktree(t, ctx, m, repo, "orphaned-stage", "owner")
+	primaryPath := m.markerPath(wt.key, wt.RunID)
+	if err := os.Remove(m.ownershipPath(wt.key, filepath.Base(wt.Path))); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 1; attempt <= cleanupRetryAttemptLimit; attempt++ {
+		restarted, err := NewManager(m.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := restarted.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Attempted != 1 || len(report.Warnings) != 1 {
+			t.Fatalf("attempt %d report = %+v", attempt, report)
+		}
+		mk, err := readMarker(primaryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mk.CleanupAttempts != attempt {
+			t.Fatalf("attempt %d durable count = %d", attempt, mk.CleanupAttempts)
+		}
+		if attempt < cleanupRetryAttemptLimit && mk.Status != statusCleanupPending {
+			t.Fatalf("attempt %d status = %q, want pending", attempt, mk.Status)
+		}
+		if attempt == cleanupRetryAttemptLimit {
+			if mk.Status != statusCleanupRetained ||
+				mk.CleanupDisposition != CleanupDispositionRetryExhausted ||
+				mk.RetainedAt.IsZero() {
+				t.Fatalf("exhausted marker = %+v", mk)
+			}
+			if warning := report.Warnings[0].Err.Error(); !strings.Contains(warning, "retained for operator action") ||
+				!strings.Contains(warning, "read pending ownership record") {
+				t.Fatalf("exhausted warning = %q", warning)
+			}
+		}
+	}
+
+	report, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 0 || len(report.Warnings) != 0 {
+		t.Fatalf("retired marker remained in retry queue: %+v", report)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("retirement discarded orphaned worktree evidence: %v", err)
+	}
+}
+
+func TestRetryCleanupPendingPersistsAttemptCountToMarkerPair(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		return errors.New("still blocked")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wt := createPendingRetryWorktree(t, ctx, m, repo, "blocked-stage", "owner")
+
+	report, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 1 || len(report.Warnings) != 1 {
+		t.Fatalf("retry report = %+v", report)
+	}
+	for _, path := range []string{
+		m.markerPath(wt.key, wt.RunID),
+		m.ownershipPath(wt.key, filepath.Base(wt.Path)),
+	} {
+		mk, err := readMarker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mk.CleanupAttempts != 1 || mk.Status != statusCleanupPending {
+			t.Fatalf("retry marker %s = %+v", path, mk)
+		}
+	}
+}
+
 func TestRetryCleanupPendingRefusesNonCanonicalDurableIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
