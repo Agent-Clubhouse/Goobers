@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +199,125 @@ func TestRetryCleanupPendingPersistsAttemptCountToMarkerPair(t *testing.T) {
 		}
 		if mk.CleanupAttempts != 1 || mk.Status != statusCleanupPending {
 			t.Fatalf("retry marker %s = %+v", path, mk)
+		}
+	}
+}
+
+func TestRetryCleanupPendingRetiresSaturatedAttemptCounts(t *testing.T) {
+	for _, attempts := range []int{
+		cleanupRetryAttemptLimit,
+		cleanupRetryAttemptLimit + 1,
+		int(^uint(0) >> 1),
+	} {
+		t.Run(fmt.Sprintf("attempts-%d", attempts), func(t *testing.T) {
+			ctx := context.Background()
+			repo := newSourceRepo(t)
+			m := newTestManager(t)
+			if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+				return errors.New("defer")
+			}); err != nil {
+				t.Fatal(err)
+			}
+			wt := createPendingRetryWorktree(t, ctx, m, repo, "saturated-stage", "owner")
+			primaryPath := m.markerPath(wt.key, wt.RunID)
+			primary, err := readMarker(primaryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			primary.CleanupAttempts = attempts
+			if err := writeMarker(primaryPath, primary); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(m.ownershipPath(wt.key, filepath.Base(wt.Path))); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Attempted != 1 || len(report.Warnings) != 1 {
+				t.Fatalf("retry report = %+v", report)
+			}
+			retired, err := readMarker(primaryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retired.CleanupAttempts != cleanupRetryAttemptLimit ||
+				retired.Status != statusCleanupRetained ||
+				retired.CleanupDisposition != CleanupDispositionRetryExhausted {
+				t.Fatalf("retired marker = %+v", retired)
+			}
+		})
+	}
+}
+
+func TestRetryCleanupPendingPreservesQueueWhenOwnershipRetirementWriteFails(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		return errors.New("defer")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wt := createPendingRetryWorktree(t, ctx, m, repo, "interrupted-stage", "owner")
+	primaryPath := m.markerPath(wt.key, wt.RunID)
+	ownershipPath := m.ownershipPath(wt.key, filepath.Base(wt.Path))
+	for _, path := range []string{primaryPath, ownershipPath} {
+		mk, err := readMarker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mk.CleanupAttempts = cleanupRetryAttemptLimit - 1
+		if err := writeMarker(path, mk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blockedTempPath := ownershipPath + ".tmp"
+	if err := os.Mkdir(blockedTempPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 1 || len(report.Warnings) != 1 ||
+		!strings.Contains(report.Warnings[0].Err.Error(), "record cleanup retry failure in ownership record") {
+		t.Fatalf("interrupted retry report = %+v", report)
+	}
+	assertCleanupPendingRecords(t, m, wt.key, wt.RunID)
+	for _, path := range []string{primaryPath, ownershipPath} {
+		mk, err := readMarker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mk.CleanupAttempts != cleanupRetryAttemptLimit-1 {
+			t.Fatalf("interrupted marker %s attempts = %d", path, mk.CleanupAttempts)
+		}
+	}
+
+	if err := os.Remove(blockedTempPath); err != nil {
+		t.Fatal(err)
+	}
+	report, err = m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 1 || len(report.Warnings) != 1 ||
+		!strings.Contains(report.Warnings[0].Err.Error(), "retained for operator action") {
+		t.Fatalf("repaired retry report = %+v", report)
+	}
+	for _, path := range []string{primaryPath, ownershipPath} {
+		mk, err := readMarker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mk.CleanupAttempts != cleanupRetryAttemptLimit ||
+			mk.Status != statusCleanupRetained ||
+			mk.CleanupDisposition != CleanupDispositionRetryExhausted {
+			t.Fatalf("retired marker %s = %+v", path, mk)
 		}
 	}
 }

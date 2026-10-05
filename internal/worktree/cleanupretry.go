@@ -348,8 +348,16 @@ func (m *Manager) recordCleanupRetryFailure(candidate cleanupRetryCandidate, att
 		return false, nil
 	}
 
-	primary.CleanupAttempts++
 	exhausted := primary.CleanupAttempts >= cleanupRetryAttemptLimit
+	if exhausted {
+		primary.CleanupAttempts = cleanupRetryAttemptLimit
+	} else {
+		if primary.CleanupAttempts < 0 {
+			primary.CleanupAttempts = 0
+		}
+		primary.CleanupAttempts++
+		exhausted = primary.CleanupAttempts >= cleanupRetryAttemptLimit
+	}
 	if exhausted {
 		primary.Status = statusCleanupRetained
 		primary.RetainedAt = time.Now().UTC()
@@ -369,8 +377,10 @@ func (m *Manager) recordCleanupRetryFailure(candidate cleanupRetryCandidate, att
 				ownership.CleanupDisposition = primary.CleanupDisposition
 			}
 			if err := writeMarker(ownershipPath, ownership); err != nil {
-				recordErr = errors.Join(recordErr,
-					fmt.Errorf("worktree: record cleanup retry failure in ownership record: %w", err))
+				return false, fmt.Errorf(
+					"worktree: record cleanup retry failure in ownership record: %w (original cleanup error: %v)",
+					err, attemptErr,
+				)
 			}
 		}
 	}
