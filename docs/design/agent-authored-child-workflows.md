@@ -1,8 +1,13 @@
 # Design: Agent-authored child workflows
 
-> Status: draft — lifecycle contract and staged implementation plan
+> Status: approved — lifecycle contract and staged implementation plan
 > Area: DSL, agent tools, execution, workspaces, journal, Portal
 > Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
+
+> Design approved for incremental delivery on 2026-10-06. Implementation and
+> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
+> not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
+> remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
 Program: [Human operations and advanced workflows](hitl-advanced-workflows-program.md).
 Companions: `interactive-factory-operations.md`,

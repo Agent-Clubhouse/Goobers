@@ -68,3 +68,22 @@ func TestPinnedClaimPolicyRejectsForgedAuxiliaryIdentity(t *testing.T) {
 		}
 	}
 }
+
+// TestPinnedClaimPolicyRefusesReconcileLabelOnPlainRunID pins the daemon half
+// of the pod reservation failure (implementation-feedback / backlog-query
+// --reconcile on a stage pod): a pod is contained to its run's own plain id, so
+// the "backlog-reconcile" label, which is only valid on a synthesized
+// "<run>/backlog-reconcile/<pid>/<seq>" id, must be refused, while the run's
+// own workflow is admitted. reserveBacklogClaimReconciliation therefore files
+// plane reservations under the run's own workflow.
+func TestPinnedClaimPolicyRefusesReconcileLabelOnPlainRunID(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "local")
+	resolver := pinnedSharedClaimResolver{layout: layout}
+	key := claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	if _, err := resolver.Admission(t.Context(), key, "shared-run", "backlog-reconcile"); err == nil {
+		t.Fatal("a plain run id filed under the synthetic backlog-reconcile label was admitted")
+	}
+	if _, err := resolver.Admission(t.Context(), key, "shared-run", "claim"); err != nil {
+		t.Fatalf("the run's own workflow was refused: %v", err)
+	}
+}

@@ -23,11 +23,12 @@ const copilotControlExitDetailBytes = 4 << 10
 // the SDK talks to its authenticated loopback endpoint. The SDK never launches
 // a second process or inherits the daemon environment.
 type copilotControlProcess struct {
-	client *copilot.Client
-	cancel context.CancelFunc
-	done   <-chan struct{}
-	result ProcessResult
-	err    error
+	client  *copilot.Client
+	session *copilot.Session
+	cancel  context.CancelFunc
+	done    <-chan struct{}
+	result  ProcessResult
+	err     error
 }
 
 type copilotPortCapture struct {
@@ -99,6 +100,15 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 func (p *copilotControlProcess) close() {
 	if p.client != nil {
 		p.client.ForceStop()
+	}
+	// ForceStop forgets the client's sessions but leaves each one's event
+	// dispatch goroutine running, which pins the session, its transcript
+	// handler and the request-scoped state its handlers capture for the
+	// daemon's lifetime. Disconnect stops it; after ForceStop its detach RPC
+	// fails fast on the stopped connection and the local cleanup still runs.
+	if p.session != nil {
+		_ = p.session.Disconnect()
+		p.session = nil
 	}
 	p.cancel()
 	<-p.done // ProcessRunner joins owned descendants before returning.

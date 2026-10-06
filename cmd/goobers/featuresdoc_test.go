@@ -85,6 +85,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"GaggleSpec.DisplayName":  {"gaggle.spec.displayName"},
 		"GaggleSpec.Enabled":      {"gaggle.spec.enabled"},
 		"GaggleSpec.Cost":         {"gaggle.spec.cost.enabled"},
+		"GaggleSpec.Health":       {"gaggle.spec.health"},
 		"GaggleSpec.SelfIdentity": {"gaggle.spec.selfIdentity"},
 		"GaggleSpec.Project": {
 			"gaggle.spec.project",

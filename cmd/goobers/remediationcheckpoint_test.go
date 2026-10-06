@@ -722,7 +722,7 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 		t.Fatalf("stdout = %q, want explicit no-cause halt", stdout)
 	}
 	if len(st.comments) != 1 {
-		t.Fatalf("comments = %v, want a persisted no-cause checkpoint for independent stall detection", st.comments)
+		t.Fatalf("comments = %v, want a persisted no-cause checkpoint", st.comments)
 	}
 	state, ok := parseRemediationStateComment(st.comments[0])
 	if !ok || state.Cycles != 1 || state.LastDiffDigest == "" || state.AttemptsByCause != (remediationAttempts{}) {
@@ -734,13 +734,18 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("repeat: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "byte-identical") {
-		t.Fatalf("repeat stdout = %q, want independent same-diff escalation", stdout)
+	if !strings.Contains(stdout, "without consuming an allowance") {
+		t.Fatalf("repeat stdout = %q, want another no-cause halt without escalation", stdout)
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
-		t.Fatalf("labels = %v, want merge-escalated on repeated no-cause failure", st.labels)
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, repeated no-cause checkpoints must not escalate without a real attempt", st.labels)
+	}
+	state, ok = parseRemediationStateComment(st.comments[0])
+	if !ok || state.Cycles != 2 || state.AttemptsByCause != (remediationAttempts{}) ||
+		state.EscalationOutcome != "" || state.RemediationAttempted {
+		t.Fatalf("repeated no-cause state = %+v, ok=%v, want no escalation and no attempted cause", state, ok)
 	}
 }
 
@@ -1586,6 +1591,106 @@ func TestRemediationCheckpointRecomputesDigestWhenBaseChangesBeforePublication(t
 			state.BaseSHA, state.LastDiffDigest, advancedBaseSHA, advancedDigest,
 		)
 	}
+}
+
+func TestRemediationCheckpointUsesRebaseBaseWhenPRMetadataIsStale(t *testing.T) {
+	testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t, true)
+}
+
+func TestRemediationCheckpointUsesLiveBaseWhenRebaseBaseIsUnavailable(t *testing.T) {
+	testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t, false)
+}
+
+func testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t *testing.T, provideRebaseBase bool) {
+	const branch = "goobers/impl/remediation-364"
+	priorBaseSHA, headSHA := initRemediationCheckpointRepo(t, branch)
+	runGitT(t, ".", "checkout", "-B", branch, "origin/"+branch)
+	digest, err := diffDigest(".", priorBaseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest prior base: %v", err)
+	}
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: digest, HeadSHA: headSHA, BaseSHA: priorBaseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+
+	evaluatedBaseSHA := advanceRemediationCheckpointOriginMain(t)
+	evaluatedDigest, err := diffDigest(".", evaluatedBaseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest evaluated base: %v", err)
+	}
+	if evaluatedDigest != digest {
+		t.Fatalf("test setup digests = %q and %q, want identical patch content", digest, evaluatedDigest)
+	}
+
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: priorBaseSHA, liveBaseSHA: evaluatedBaseSHA,
+		labels: []string{needsRemediationLabel}, comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	if provideRebaseBase {
+		t.Setenv("GOOBERS_INPUT_REBASEBASESHA", evaluatedBaseSHA)
+	} else {
+		t.Setenv("GOOBERS_INPUT_REBASEBASESHA", "")
+	}
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "did-not-converge") || !strings.Contains(stdout, "recorded checkpoint") {
+		t.Fatalf("stdout = %q, want an advancing checkpoint", stdout)
+	}
+	for _, want := range []string{`prior="` + priorBaseSHA + `"`, `evaluated="` + evaluatedBaseSHA + `"`} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want base diagnostic %q", stdout, want)
+		}
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["continueRemediation"] != "true" || result["escalationOutcome"] != "" {
+		t.Fatalf("checkpoint result = %v, want advancing non-escalated result", result)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, advanced evaluated base must not be escalated", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.Cycles != 2 {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want ordinary cycle 2", state, ok)
+	}
+	if state.BaseSHA != evaluatedBaseSHA || state.LastDiffDigest != digest {
+		t.Fatalf(
+			"checkpoint base/digest = %q/%q, want evaluated base and identical digest %q/%q",
+			state.BaseSHA, state.LastDiffDigest, evaluatedBaseSHA, digest,
+		)
+	}
+}
+
+// advanceRemediationCheckpointOriginMain pushes an unrelated commit to the
+// fixture origin's main and fetches it, returning the new base tip. The
+// checkpoint diffs against the evaluated base, so a "moved base" fixture must
+// name a commit that exists rather than a placeholder SHA.
+func advanceRemediationCheckpointOriginMain(t *testing.T) string {
+	t.Helper()
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	if err := os.WriteFile(filepath.Join(concurrent, "base-advance.txt"), []byte("new base\n"), 0o644); err != nil {
+		t.Fatalf("write base advance: %v", err)
+	}
+	runGitT(t, concurrent, "add", "base-advance.txt")
+	runGitT(t, concurrent, "commit", "-m", "advance base")
+	runGitT(t, concurrent, "push", "origin", "main")
+	advanced := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+	runGitT(t, ".", "fetch", "origin", "main")
+	return advanced
 }
 
 func TestRemediationCheckpointEscalationIncludesKnownSiblingOverlaps(t *testing.T) {

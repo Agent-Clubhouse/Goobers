@@ -341,33 +341,39 @@ type TelemetryRunStats struct {
 }
 
 // TelemetryStageStats is the attempt aggregate for one stage.
+// RetryWasteTokenSamples/RetryWasteCostSamples count the superseded attempts
+// that carried usage; RetryWasteTokens/RetryWasteCostAIC sum only those, so
+// they are lower bounds whenever a sample count is below RetryWasteAttempts.
+// TelemetryUsageStats uses the same convention.
 type TelemetryStageStats struct {
-	Gaggle               string   `json:"gaggle"`
-	Workflow             string   `json:"workflow"`
-	Stage                string   `json:"stage"`
-	Branch               *int     `json:"branch,omitempty"`
-	Model                string   `json:"model,omitempty"`
-	HarnessVersion       string   `json:"harnessVersion,omitempty"`
-	TotalAttempts        int      `json:"totalAttempts"`
-	SucceededAttempts    int      `json:"succeededAttempts"`
-	FailedAttempts       int      `json:"failedAttempts"`
-	SuccessRate          *float64 `json:"successRate,omitempty"`
-	AvgDurationMs        *float64 `json:"avgDurationMs,omitempty"`
-	MinDurationMs        *int64   `json:"minDurationMs,omitempty"`
-	MaxDurationMs        *int64   `json:"maxDurationMs,omitempty"`
-	DurationSamples      int      `json:"durationSamples"`
-	P50DurationMs        *int64   `json:"p50DurationMs,omitempty"`
-	P95DurationMs        *int64   `json:"p95DurationMs,omitempty"`
-	TokenSamples         int      `json:"tokenSamples"`
-	P50Tokens            *int64   `json:"p50Tokens,omitempty"`
-	P95Tokens            *int64   `json:"p95Tokens,omitempty"`
-	CostSamples          int      `json:"costSamples"`
-	P50CostAIC           *float64 `json:"p50CostAIC,omitempty"`
-	P95CostAIC           *float64 `json:"p95CostAIC,omitempty"`
-	RetryWasteAttempts   int      `json:"retryWasteAttempts"`
-	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
-	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
-	RetryWasteCostAIC    *float64 `json:"retryWasteCostAIC,omitempty"`
+	Gaggle                 string   `json:"gaggle"`
+	Workflow               string   `json:"workflow"`
+	Stage                  string   `json:"stage"`
+	Branch                 *int     `json:"branch,omitempty"`
+	Model                  string   `json:"model,omitempty"`
+	HarnessVersion         string   `json:"harnessVersion,omitempty"`
+	TotalAttempts          int      `json:"totalAttempts"`
+	SucceededAttempts      int      `json:"succeededAttempts"`
+	FailedAttempts         int      `json:"failedAttempts"`
+	SuccessRate            *float64 `json:"successRate,omitempty"`
+	AvgDurationMs          *float64 `json:"avgDurationMs,omitempty"`
+	MinDurationMs          *int64   `json:"minDurationMs,omitempty"`
+	MaxDurationMs          *int64   `json:"maxDurationMs,omitempty"`
+	DurationSamples        int      `json:"durationSamples"`
+	P50DurationMs          *int64   `json:"p50DurationMs,omitempty"`
+	P95DurationMs          *int64   `json:"p95DurationMs,omitempty"`
+	TokenSamples           int      `json:"tokenSamples"`
+	P50Tokens              *int64   `json:"p50Tokens,omitempty"`
+	P95Tokens              *int64   `json:"p95Tokens,omitempty"`
+	CostSamples            int      `json:"costSamples"`
+	P50CostAIC             *float64 `json:"p50CostAIC,omitempty"`
+	P95CostAIC             *float64 `json:"p95CostAIC,omitempty"`
+	RetryWasteAttempts     int      `json:"retryWasteAttempts"`
+	RetryWasteTokenSamples int      `json:"retryWasteTokenSamples"`
+	RetryWasteCostSamples  int      `json:"retryWasteCostSamples"`
+	RetryWasteDurationMs   *int64   `json:"retryWasteDurationMs,omitempty"`
+	RetryWasteTokens       *int64   `json:"retryWasteTokens,omitempty"`
+	RetryWasteCostAIC      *float64 `json:"retryWasteCostAIC,omitempty"`
 	// StuckAbortedAttempts is how many of TotalAttempts belong to a run that
 	// hung and was later aborted (the watchdog's max-duration expiry),
 	// excluded from Avg/Min/MaxDurationMs and from P50/P95DurationMs —
@@ -396,6 +402,8 @@ type TelemetryUsageStats struct {
 	P50CostAIC                *float64 `json:"p50CostAIC,omitempty"`
 	P95CostAIC                *float64 `json:"p95CostAIC,omitempty"`
 	RetryWasteAttempts        int      `json:"retryWasteAttempts"`
+	RetryWasteTokenSamples    int      `json:"retryWasteTokenSamples"`
+	RetryWasteCostSamples     int      `json:"retryWasteCostSamples"`
 	RetryWasteTokens          *int64   `json:"retryWasteTokens,omitempty"`
 	RetryWasteCostAIC         *float64 `json:"retryWasteCostAIC,omitempty"`
 }
@@ -495,13 +503,66 @@ func NewTelemetry(db *rollup.DB) (*Telemetry, error) {
 	return &Telemetry{store: db}, nil
 }
 
+// projectTelemetryStage maps one rollup stage aggregate onto its wire shape,
+// leaving each measured-only field nil unless its samples were observed.
+func projectTelemetryStage(stat rollup.StageStats) TelemetryStageStats {
+	item := TelemetryStageStats{
+		Gaggle:                 stat.Gaggle,
+		Workflow:               stat.Workflow,
+		Stage:                  stat.Stage,
+		Branch:                 stat.Branch,
+		Model:                  stat.Model,
+		HarnessVersion:         stat.HarnessVersion,
+		TotalAttempts:          stat.TotalAttempts,
+		SucceededAttempts:      stat.SucceededAttempts,
+		FailedAttempts:         stat.FailedAttempts,
+		DurationSamples:        stat.DurationSamples,
+		TokenSamples:           stat.TokenSamples,
+		CostSamples:            stat.CostSamples,
+		RetryWasteAttempts:     stat.RetryWasteAttempts,
+		RetryWasteTokenSamples: stat.RetryWasteTokenSamples,
+		RetryWasteCostSamples:  stat.RetryWasteCostSamples,
+		StuckAbortedAttempts:   stat.StuckAbortedAttempts,
+	}
+	if stat.SucceededAttempts+stat.FailedAttempts > 0 {
+		item.SuccessRate = float64Pointer(stat.SuccessRate)
+	}
+	if stat.HasDuration {
+		item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
+		item.MinDurationMs = int64Pointer(stat.MinDurationMs)
+		item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
+		item.P50DurationMs = int64Pointer(stat.P50DurationMs)
+		item.P95DurationMs = int64Pointer(stat.P95DurationMs)
+	}
+	if stat.HasTokens {
+		item.P50Tokens = int64Pointer(stat.P50Tokens)
+		item.P95Tokens = int64Pointer(stat.P95Tokens)
+	}
+	if stat.HasCost {
+		item.P50CostAIC = costAICPointer(stat.P50CostUSD)
+		item.P95CostAIC = costAICPointer(stat.P95CostUSD)
+	}
+	if stat.HasRetryWasteDuration {
+		item.RetryWasteDurationMs = int64Pointer(stat.RetryWasteDurationMs)
+	}
+	if stat.HasRetryWasteTokens {
+		item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
+	}
+	if stat.HasRetryWasteCost {
+		item.RetryWasteCostAIC = costAICPointer(stat.RetryWasteCostUSD)
+	}
+	return item
+}
+
 func projectTelemetryUsage(stat rollup.UsageStats) TelemetryUsageStats {
 	item := TelemetryUsageStats{
 		Scope: stat.Scope, Gaggle: stat.Gaggle, Workflow: stat.Workflow, Stage: stat.Stage,
 		Branch: stat.Branch, Model: stat.Model, HarnessVersion: stat.HarnessVersion,
 		TotalAttempts: stat.TotalAttempts, TokenSamples: stat.TokenSamples,
 		PremiumRequestSamples: stat.PremiumRequestSamples, CostSamples: stat.CostSamples,
-		RetryWasteAttempts: stat.RetryWasteAttempts,
+		RetryWasteAttempts:     stat.RetryWasteAttempts,
+		RetryWasteTokenSamples: stat.RetryWasteTokenSamples,
+		RetryWasteCostSamples:  stat.RetryWasteCostSamples,
 	}
 	if stat.HasTokens {
 		item.P50Tokens = int64Pointer(stat.P50Tokens)
@@ -663,50 +724,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.Runs = append(result.Runs, item)
 	}
 	for _, stat := range stats.Stages {
-		item := TelemetryStageStats{
-			Gaggle:               stat.Gaggle,
-			Workflow:             stat.Workflow,
-			Stage:                stat.Stage,
-			Branch:               stat.Branch,
-			Model:                stat.Model,
-			HarnessVersion:       stat.HarnessVersion,
-			TotalAttempts:        stat.TotalAttempts,
-			SucceededAttempts:    stat.SucceededAttempts,
-			FailedAttempts:       stat.FailedAttempts,
-			DurationSamples:      stat.DurationSamples,
-			TokenSamples:         stat.TokenSamples,
-			CostSamples:          stat.CostSamples,
-			RetryWasteAttempts:   stat.RetryWasteAttempts,
-			StuckAbortedAttempts: stat.StuckAbortedAttempts,
-		}
-		if stat.SucceededAttempts+stat.FailedAttempts > 0 {
-			item.SuccessRate = float64Pointer(stat.SuccessRate)
-		}
-		if stat.HasDuration {
-			item.AvgDurationMs = float64Pointer(stat.AvgDurationMs)
-			item.MinDurationMs = int64Pointer(stat.MinDurationMs)
-			item.MaxDurationMs = int64Pointer(stat.MaxDurationMs)
-			item.P50DurationMs = int64Pointer(stat.P50DurationMs)
-			item.P95DurationMs = int64Pointer(stat.P95DurationMs)
-		}
-		if stat.HasTokens {
-			item.P50Tokens = int64Pointer(stat.P50Tokens)
-			item.P95Tokens = int64Pointer(stat.P95Tokens)
-		}
-		if stat.HasCost {
-			item.P50CostAIC = costAICPointer(stat.P50CostUSD)
-			item.P95CostAIC = costAICPointer(stat.P95CostUSD)
-		}
-		if stat.HasRetryWasteDuration {
-			item.RetryWasteDurationMs = int64Pointer(stat.RetryWasteDurationMs)
-		}
-		if stat.HasRetryWasteTokens {
-			item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
-		}
-		if stat.HasRetryWasteCost {
-			item.RetryWasteCostAIC = costAICPointer(stat.RetryWasteCostUSD)
-		}
-		result.Stages = append(result.Stages, item)
+		result.Stages = append(result.Stages, projectTelemetryStage(stat))
 	}
 	for _, stat := range stats.Usage {
 		result.Usage = append(result.Usage, projectTelemetryUsage(stat))

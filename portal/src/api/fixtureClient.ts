@@ -16,6 +16,7 @@ import type {
   GooberPage,
   Health,
   Instance,
+  InstanceReadiness,
   PageRequest,
   PortalConfig,
   RequestOptions,
@@ -47,6 +48,7 @@ import type {
 export interface DaemonFixtures {
   health: Health;
   instance: Instance;
+  readiness?: InstanceReadiness;
   gaggles: GagglePage;
   goobers?: Record<string, GooberPage>;
   workflows?: Record<string, WorkflowPage>;
@@ -99,6 +101,7 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     chatUrl: null,
     links: [],
   },
+  connectionLocality: "unknown",
   capabilities: {
     revealRun: true,
     workflowEnable: true,
@@ -108,6 +111,21 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
 interface FixtureRunCursor {
   startedAt: string;
   id: string;
+}
+
+function fixtureReadiness(fixtures: DaemonFixtures): InstanceReadiness {
+  return {
+    apiVersion: fixtures.instance.apiVersion,
+    schemaVersion: fixtures.instance.schemaVersion,
+    computerName: fixtures.instance.computerName,
+    instanceRoot: fixtures.instance.instanceRoot,
+    rootIdentity: fixtures.instance.rootIdentity,
+    ready: fixtures.instance.ready,
+    recovery: fixtures.health.startup ?? {
+      phase: fixtures.instance.ready ? "" : "starting",
+      since: fixtures.health.freshness.observedAt,
+    },
+  };
 }
 
 export class FixtureDaemonClient implements DaemonClient {
@@ -130,6 +148,10 @@ export class FixtureDaemonClient implements DaemonClient {
 
   getInstance(options?: RequestOptions): Promise<Instance> {
     return fixture(this.fixtures.instance, options);
+  }
+
+  getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness> {
+    return fixture(this.fixtures.readiness ?? fixtureReadiness(this.fixtures), options);
   }
 
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
@@ -396,6 +418,7 @@ export class FixtureDaemonClient implements DaemonClient {
       items: page.items
         .filter((item) => !request?.provider || item.provider === request.provider)
         .filter((item) => !request?.kind || item.kind === request.kind)
+        .filter((item) => !request?.gaggle || item.gaggle === request.gaggle)
         .slice(0, request?.limit ?? page.items.length),
     }));
   }

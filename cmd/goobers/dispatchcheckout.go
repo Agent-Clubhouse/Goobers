@@ -148,11 +148,17 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// is what #3763 measured: the universal idiom commits in one stage and
 	// pushes in a later one, so the common case is unpushed commits that must
 	// still reach this stage. applyStageWorkspaceDelta covers that.
-	cloneErr := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, ".")
-	if cloneErr == nil {
+	branchExists, err := remoteBranchExists(ctx, dir, gitEnv, cloneURL, branch)
+	if err != nil {
+		return fmt.Errorf("probe remote workspace branch %s: %w", branch, err)
+	}
+	if branchExists {
+		if err := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, "."); err != nil {
+			return fmt.Errorf("clone %s at workspace branch %s: %w", cloneURL, branch, err)
+		}
 		return finishWritableRepoCheckoutOnExistingBranch(ctx, dir, gitEnv, stderr, branch, base)
 	}
-	// A REBOUND branch this pod could not clone is a refusal, not a fallback
+	// A REBOUND branch this pod could not find is a refusal, not a fallback
 	// (#392). The fallback below creates the branch locally at base, which is
 	// right for the first stage of a run — the run branch legitimately does not
 	// exist yet — and catastrophically wrong for a rebound one: the branch was
@@ -164,16 +170,8 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// RequireExistingBranch, set exactly when the branch was rebound); this is
 	// that refusal on the pod substrate.
 	//
-	// The refusal WRAPS the clone's own error rather than announcing a cause it
-	// did not establish. `clone --branch <b>` fails for a missing branch, but
-	// equally for a bad credential, a DNS or TLS fault, a full disk, or a
-	// repository that is gone — and this error is what the surrendered envelope
-	// carries after the pod is disposed of, so naming "does not exist" when the
-	// truth was an expired token sends the next reader after the wrong bug.
-	// The refusal itself is unchanged and still fails closed on every one of
-	// those; only its account of why is now sourced from git.
 	if rebound != "" {
-		return fmt.Errorf("rebound workspace branch %q could not be cloned from %s; refusing to create it at base — the branch names work that already exists: %w", rebound, cloneURL, cloneErr)
+		return fmt.Errorf("rebound workspace branch %q was not found in %s; refusing to create it at base — the branch names work that already exists", rebound, cloneURL)
 	}
 	// First stage of the run: the branch does not exist yet.
 	return checkoutFallbackBranchAtBase(ctx, dir, gitEnv, stderr, branch, base, cloneURL)
@@ -517,6 +515,27 @@ func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, arg
 		return err
 	}
 	return nil
+}
+
+func remoteBranchExists(ctx context.Context, dir string, env []string, remote, branch string) (bool, error) {
+	var captured strings.Builder
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", remote, "refs/heads/"+branch)
+	cmd.Dir = dir
+	cmd.Env = composeGitEnv(dir, env)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &captured
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+		return false, nil
+	}
+	if msg := strings.TrimSpace(captured.String()); msg != "" {
+		return false, fmt.Errorf("%w: %s", err, msg)
+	}
+	return false, err
 }
 
 // gitToken picks a credential the stage already holds that can authenticate a

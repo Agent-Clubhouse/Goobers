@@ -1,14 +1,19 @@
 # Design: Source-owned backlog and objective workbench
 
-> Status: **draft** — accepted product direction, proposed contracts and delivery tasks.
+> Status: **approved** — accepted product direction, proposed contracts and delivery tasks.
 > Program: [Human interaction and advanced workflows](hitl-advanced-workflows-program.md).
 > Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
 > Area: providers, source metadata, portal
 > Delivery order: after child workflows, interactive operations, and durable start queues.
 > Task IDs: `HAW-BKL-001` through `HAW-BKL-009`; issue creation follows the merged design.
-> Related: [Interactive factory operations](interactive-factory-operations.md),
+> Related: [Interactive factory operations](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/design/interactive-factory-operations.md),
 > [Gaggle events and durable start queues](gaggle-events-and-durable-start-queues.md),
 > [Agent-authored child workflows](agent-authored-child-workflows.md).
+
+> Design approved for incremental delivery on 2026-10-06. Implementation and
+> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
+> not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
+> remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
 ## 1. Product contract
 
@@ -232,7 +237,7 @@ No progress percentage or inferred objective completion appears in V1.
 ## 7. Mutation contract
 
 Use the authenticated human command/receipt mechanism from
-[interactive operations](interactive-factory-operations.md). Each command binds the
+[interactive operations](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/design/interactive-factory-operations.md). Each command binds the
 human identity, gaggle, source, target, intent, expected revision(s), and idempotency
 key. Action discovery and server admission use the same policy; hiding a button is
 not authorization. Recheck the policy at execution, not only when rendering a form.
@@ -415,7 +420,7 @@ adapter, durable command custody, manual and session editing paths are installed
 Configured repository objective ingestion, graph projection and bounded portal
 relationship navigation are also installed. Governed repository metadata PRs,
 native relationship mutations and suggestion acceptance remain separate active
-implementation slices. See [source metadata reference](../reference/workbench-source-metadata.md).
+implementation slices. See [source metadata reference](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/reference/workbench-source-metadata.md).
 
 
 ## Selected backlog relationship reads

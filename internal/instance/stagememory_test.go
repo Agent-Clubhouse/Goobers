@@ -142,3 +142,17 @@ func TestPodLimitLessReserveWouldNotHaveStoppedTheIncident(t *testing.T) {
 			len(escaped), derived, escaped)
 	}
 }
+
+func TestResolvePodTmpfsSize(t *testing.T) {
+	if q, err := (&RunnerConfig{}).ResolvePodTmpfsSize(); err != nil || !q.IsZero() {
+		t.Fatalf("unset = %v, %v; want zero quantity", q, err)
+	}
+	if q, err := (&RunnerConfig{PodTmpfsSize: "1Gi"}).ResolvePodTmpfsSize(); err != nil || q.Value() != 1<<30 {
+		t.Fatalf("1Gi = %v, %v", q, err)
+	}
+	for _, bad := range []string{"lots", "0", "-1Gi"} {
+		if _, err := (&RunnerConfig{PodTmpfsSize: bad}).ResolvePodTmpfsSize(); err == nil {
+			t.Fatalf("podTmpfsSize %q accepted", bad)
+		}
+	}
+}

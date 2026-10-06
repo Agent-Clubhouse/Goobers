@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -173,6 +174,7 @@ func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, s
 // retained read is tried first because it is the one that also overlays a
 // renewal sidecar, which the overflow tier has no equivalent of.
 func readRecoveryEntryRecord(path string) (recovery.Record, error) {
+	readprobe.RecordRecoveryRecordRead()
 	record, err := recovery.ReadRetainedRecord(path)
 	if err == nil {
 		return record, nil

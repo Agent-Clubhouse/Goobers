@@ -13,7 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/workerblob"
 )
 
-func openWorkerBlobStore(root, directory, endpoint, dispatchNamespace string) (blobstore.Store, error) {
+func openWorkerBlobStore(root, directory, endpoint, dispatchNamespace string, probe workerblob.ProbeOptions) (blobstore.Store, error) {
 	dispatchEndpoint := ""
 	if dispatchNamespace != "" {
 		dispatchEndpoint = os.Getenv("GOOBERS_BLOB_ENDPOINT")
@@ -33,7 +33,7 @@ func openWorkerBlobStore(root, directory, endpoint, dispatchNamespace string) (b
 			source = func() (string, error) { return signer.MintWorkerBlob(owner, 2*time.Minute) }
 		}
 	}
-	return workerblob.Open(context.Background(), directory, endpoint, dispatchEndpoint, source)
+	return workerblob.Open(context.Background(), directory, endpoint, dispatchEndpoint, source, probe)
 }
 
 // stageBlobEndpoint preserves the env's stage-only meaning in directory mode.

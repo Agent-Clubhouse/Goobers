@@ -133,3 +133,9 @@
   overflow-x: auto;
   overflow-y: hidden;
 }
+
+.gaggle-goober-table th:last-child,
+.gaggle-goober-table td:last-child {
+  text-align: right;
+  white-space: nowrap;
+}

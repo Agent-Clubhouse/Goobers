@@ -10,8 +10,10 @@ import { GettingStartedPage } from "./GettingStartedPage";
 
 function guidedState(overrides: Partial<GuidedState> = {}): GuidedState {
   return {
-    version: 2,
+    version: 3,
     platform: "windows",
+    executable: "C:\\Program Files\\Goobers\\goobers.exe",
+    runtimeIdentity: "CONTOSO\\alice",
     workdir: "C:\\work",
     instancePath: "C:\\work\\tutorial-instance",
     instanceExists: false,
@@ -23,6 +25,27 @@ function guidedState(overrides: Partial<GuidedState> = {}): GuidedState {
     job: null,
     apiReady: false,
     connected: { repo: null },
+    ...overrides,
+  };
+}
+
+function completeResult(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    complete: true,
+    daemonRunning: false,
+    supervisionMode: "foreground",
+    foregroundCommand:
+      '"C:\\Program Files\\Goobers\\goobers.exe" "up" "C:\\work\\tutorial-instance"',
+    workflows: [
+      {
+        name: "implementation",
+        schedules: ["3,18,33,48 * * * *"],
+        command:
+          '"C:\\Program Files\\Goobers\\goobers.exe" "run" "implementation" "C:\\work\\tutorial-instance"',
+      },
+    ],
     ...overrides,
   };
 }
@@ -125,7 +148,26 @@ type RouteHandler = (init?: RequestInit) => { status?: number; body: unknown };
 
 function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
   const fetchFn = vi.fn(async (input: string, init?: RequestInit) => {
-    const handler = routes[input];
+    const handler =
+      routes[input] ??
+      (input === "/guided/supervision"
+        ? () => ({
+            body: {
+              scheduledTask: {
+                installed: false,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "task-install" "C:\\work\\tutorial-instance"',
+              },
+              machineService: {
+                installed: false,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "install" "--acknowledge-local-system" "C:\\work\\tutorial-instance"',
+              },
+            },
+          })
+        : undefined);
     if (!handler) {
       return new Response(JSON.stringify({ code: "not_found", message: input }), {
         status: 404,
@@ -274,7 +316,7 @@ describe("GettingStartedPage", () => {
         "/guided/state": () => ({
           body: guidedState({ instanceExists: page >= 2, connected: { repo: "acme/widgets" } }),
         }),
-        "/guided/actions/complete": () => ({ body: { complete: true } }),
+        "/guided/actions/complete": () => ({ body: completeResult() }),
       });
       const view = render(<GettingStartedPage client={client} />);
       expect(await screen.findByRole("link", { name: linkName })).toBeInTheDocument();
@@ -291,12 +333,14 @@ describe("GettingStartedPage", () => {
           "/guided/state": () => ({
             body: guidedState({ instanceExists: true, connected: { repo: "acme/widgets" } }),
           }),
-          "/guided/actions/complete": () => ({ body: { complete: true } }),
+          "/guided/actions/complete": () => ({ body: completeResult() }),
         })}
       />,
     );
 
-    expect(await screen.findByRole("heading", { name: "Finish setup" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Choose how Goobers will run" }),
+    ).toBeInTheDocument();
     for (const linkName of [
       "Learn how to customize gaggles and workflows with an agent",
       "Learn how to inspect runs, journals, claims, and workcopies",
@@ -305,8 +349,8 @@ describe("GettingStartedPage", () => {
     ]) {
       expect(await screen.findByRole("link", { name: linkName })).toBeInTheDocument();
     }
-    await user.click(screen.getByRole("button", { name: "Finish setup" }));
-    expect(await screen.findByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Apply and finish" }));
+    expect(await screen.findByRole("heading", { name: "Setup complete" })).toBeInTheDocument();
   });
 
   it("discovers the repository and submits provider-aware guided options", async () => {
@@ -361,6 +405,13 @@ describe("GettingStartedPage", () => {
     ).toBeInTheDocument();
     await user.click(screen.getByRole("radio", { name: /Only issues assigned to me/ }));
     await continueWizard(user);
+    expect(
+      screen.getByRole("heading", { name: "Configure the agent runtime" }),
+    ).toBeInTheDocument();
+    await user.type(
+      screen.getByRole("textbox", { name: "Model token environment variable" }),
+      "COPILOT_GITHUB_TOKEN",
+    );
     await continueWizard(user);
 
     expect(screen.getByRole("heading", { name: "Review and create the instance" })).toBeInTheDocument();
@@ -388,6 +439,7 @@ describe("GettingStartedPage", () => {
           githubCLIUser: "octocat",
           pullRequestTokenEnv: "GOOBERS_GITHUB_PR_TOKEN",
           repoPushTokenEnv: "GOOBERS_GITHUB_PUSH_TOKEN",
+          optionalModelTokenEnv: "COPILOT_GITHUB_TOKEN",
         },
       },
     ]);
@@ -748,7 +800,7 @@ describe("GettingStartedPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("ends after checks with a customization prompt and server shutdown", async () => {
+  it("defaults to foreground and reports operational facts without running a workflow", async () => {
     const user = userEvent.setup();
     const completeBodies: unknown[] = [];
     window.sessionStorage.setItem("goobers-wizard-path", JSON.stringify("own-repo"));
@@ -769,7 +821,7 @@ describe("GettingStartedPage", () => {
           "/guided/actions/complete": (init) => {
             completeBodies.push(parseBody(init));
             return {
-              body: { complete: true, scheduledTaskInstalled: true },
+              body: completeResult(),
             };
           },
         })}
@@ -780,26 +832,30 @@ describe("GettingStartedPage", () => {
     await user.click(screen.getByRole("button", { name: "Run checks" }));
     await screen.findByText(/All configuration, harness, and repository checks passed/);
     await continueWizard(user);
-    expect(screen.getByRole("heading", { name: "Finish setup" })).toBeInTheDocument();
     expect(
-      screen.getByRole("checkbox", {
-        name: /Start Goobers automatically when I sign in/,
-      }),
-    ).toBeChecked();
-    expect(screen.queryByText(/close this browser window/i)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Finish setup" }));
-    expect(completeBodies).toEqual([{ installScheduledTask: true }]);
-    expect(await screen.findByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
-    expect(
-      screen.getByText(/Goobers will start automatically when you sign in/),
+      screen.getByRole("heading", { name: "Choose how Goobers will run" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Run in the foreground now/ })).toBeChecked();
+    expect(screen.getByText("Harness and repository checks")).toBeInTheDocument();
+    expect(screen.getByText("Passed under CONTOSO\\alice")).toBeInTheDocument();
+    expect(screen.getAllByText("CONTOSO\\alice").length).toBeGreaterThan(0);
+    expect(screen.getByText(/task-install/i)).toBeInTheDocument();
+    expect(screen.queryByText(/close this browser window/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Apply and finish" }));
+    expect(completeBodies).toEqual([
+      { mode: "foreground", confirmLocalSystem: false },
+    ]);
+    expect(await screen.findByRole("heading", { name: "Setup complete" })).toBeInTheDocument();
+    expect(screen.getByText(/not running yet; it starts in this terminal/)).toBeInTheDocument();
+    expect(screen.getByText(/Schedule: 3,18,33,48/)).toBeInTheDocument();
+    expect(screen.getByText("No workflow was started by setup.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument();
     expect(screen.getByText(/goobers-dsl-author/)).toBeInTheDocument();
     expect(screen.getByText(/close this browser window/i)).toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
-  it("allows Windows users to finish without installing a Scheduled Task", async () => {
+  it("installs per-user auto-start only when selected", async () => {
     const user = userEvent.setup();
     const completeBodies: unknown[] = [];
     window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(9));
@@ -810,24 +866,104 @@ describe("GettingStartedPage", () => {
           "/guided/actions/complete": (init) => {
             completeBodies.push(parseBody(init));
             return {
-              body: { complete: true, scheduledTaskInstalled: false },
+              body: completeResult({
+                daemonRunning: true,
+                supervisionMode: "scheduled-task",
+                account: "CONTOSO\\alice",
+              }),
             };
           },
         })}
       />,
     );
 
-    const startAtSignIn = await screen.findByRole("checkbox", {
-      name: /Start Goobers automatically when I sign in/,
-    });
-    await user.click(startAtSignIn);
-    await user.click(screen.getByRole("button", { name: "Finish setup" }));
+    await user.click(
+      await screen.findByRole("radio", { name: /Start automatically for me/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "Apply and finish" }));
 
-    expect(completeBodies).toEqual([{ installScheduledTask: false }]);
-    expect(await screen.findByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
-    expect(
-      screen.queryByText(/Goobers will start automatically when you sign in/),
-    ).not.toBeInTheDocument();
+    expect(completeBodies).toEqual([
+      { mode: "scheduled-task", confirmLocalSystem: false },
+    ]);
+    expect(await screen.findByText(/running under CONTOSO\\alice/)).toBeInTheDocument();
+  });
+
+  it("previews start commands for installed but stopped supervisors", async () => {
+    const user = userEvent.setup();
+    const completeBodies: unknown[] = [];
+    window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(9));
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/supervision": () => ({
+            body: {
+              scheduledTask: {
+                installed: true,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "task-start" "C:\\work\\tutorial-instance"',
+              },
+              machineService: {
+                installed: true,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "start" "C:\\work\\tutorial-instance"',
+              },
+            },
+          }),
+          "/guided/actions/complete": (init) => {
+            completeBodies.push(parseBody(init));
+            return {
+              body: completeResult({
+                daemonRunning: true,
+                supervisionMode: "scheduled-task",
+              }),
+            };
+          },
+        })}
+      />,
+    );
+
+    await screen.findByText(/"task-start"/);
+    expect(screen.getByText(/"service" "start"/)).toBeInTheDocument();
+    expect(screen.queryByText(/task-install/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /Start automatically for me/ }));
+    await user.click(screen.getByRole("button", { name: "Apply and finish" }));
+    expect(completeBodies).toEqual([
+      { mode: "scheduled-task", confirmLocalSystem: false },
+    ]);
+  });
+
+  it("requires the LocalSystem warning confirmation and supports Not now", async () => {
+    const user = userEvent.setup();
+    const completeBodies: unknown[] = [];
+    window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(9));
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/complete": (init) => {
+            completeBodies.push(parseBody(init));
+            return { body: completeResult({ supervisionMode: "not-now" }) };
+          },
+        })}
+      />,
+    );
+
+    await user.click(
+      await screen.findByRole("radio", { name: /Advanced machine service/ }),
+    );
+    const finish = screen.getByRole("button", { name: "Apply and finish" });
+    expect(finish).toBeDisabled();
+    expect(screen.getByText(/LocalSystem does not inherit/)).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: /I understand this installs/ }));
+    expect(finish).toBeEnabled();
+
+    await user.click(screen.getByRole("radio", { name: /Not now/ }));
+    await user.click(finish);
+    expect(completeBodies).toEqual([{ mode: "not-now", confirmLocalSystem: true }]);
   });
 
   describe("state polling", () => {

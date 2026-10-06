@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 19 |
-| `approved` | 21 |
-| `implemented` | 28 |
+| `draft` | 14 |
+| `approved` | 24 |
+| `implemented` | 29 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **78** |
+| **Total** | **77** |
 
 ## `docs/adr/`
 
@@ -34,7 +34,7 @@ word — read the page, not this table, before depending on it.
 |---|---|---|---|---|---|---|---|
 | [Design: ADO parity on DSL 2.0 — near-term plan for v0.5.0](ado-parity-dsl-2-0.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |
 | [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | — | — | #2745 | — | — | — |
-| [Design: Agent-authored child workflows](agent-authored-child-workflows.md) | `draft` | DSL, agent tools, execution, workspaces, journal, Portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
+| [Design: Agent-authored child workflows](agent-authored-child-workflows.md) | `approved` | DSL, agent tools, execution, workspaces, journal, Portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — | — | — | — |
@@ -53,7 +53,7 @@ word — read the page, not this table, before depending on it.
 | [Design: EvalSuite — end-to-end workflow evaluation](evals-suite.md) | `historical` | — | — | — | — | — | — |
 | [External call-out stages](external-call-out-stages.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: Fleet portal and control-plane gateway](fleet-portal.md) | `draft` | — | — | — | — | — | — |
-| [Gaggle events, durable start queues, and shared provider reads](gaggle-events-and-durable-start-queues.md) | `draft` | — | — | — | — | — | — |
+| [Gaggle events, durable start queues, and shared provider reads](gaggle-events-and-durable-start-queues.md) | `approved` | — | — | — | — | — | — |
 | [Design: GitHub wiki sink for docs-updater](github-wiki-docs-sink.md) | `approved` | — | — | — | — | — | — |
 | [Goobernetes v1 — architecture](goobernetes-architecture.md) | `approved` | — | — | — | — | — | — |
 | [Goobernetes v1 — decision record](goobernetes-decisions.md) | `approved` | — | — | — | — | — | — |
@@ -61,15 +61,14 @@ word — read the page, not this table, before depending on it.
 | [Goobernetes dispatcher — the pod-per-stage substrate (infra-facing design)](goobernetes-dispatcher.md) | `draft` | — | — | — | — | — | — |
 | [Goobernetes restrictions — the effect-based isolation model](goobernetes-restrictions.md) | `approved` | — | — | #3516, #3568, #4540 | — | — | 53566d5a9 (2026-10-02) |
 | [Goobernetes smoke — the distributed-shape v1 exit](goobernetes-smoke.md) | `approved` | — | — | — | — | — | — |
-| [Human operations and advanced workflows program](hitl-advanced-workflows-program.md) | `draft` | workflows, human operations, events, provider reads, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
+| [Human operations and advanced workflows program](hitl-advanced-workflows-program.md) | `approved` | workflows, human operations, events, provider reads, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Design: Human-in-the-Loop — escalation visibility & intervention](human-in-the-loop.md) | `implemented` | — | — | #3876, #3877, #3883 | — | — | 09db115bb (2026-09-06) |
-| [Design: Interactive factory operations](interactive-factory-operations.md) | `draft` | Portal, runtime, providers, authorization | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster](k8s-infra-shape.md) | `approved` | — | — | — | — | — | — |
 | [Large-repo execution model (#2063)](large-repo-execution-model.md) | `draft` | — | — | — | — | — | — |
 | [Mixed-Platform Cloud Nodes — Windows Node Pools & Platform-Labeled Routing](mixed-platform-cloud-nodes.md) | `superseded` | — | — | #659 | — | [`goobernetes-architecture.md`](goobernetes-architecture.md) | — |
 | [Design: Multiple capability-scoped credentials (per-capability token sourcing)](multi-token-credentials.md) | `implemented` | — | — | #822, #823 | — | — | — |
 | [Design: needs-human label taxonomy — decision vs. status](needs-human-taxonomy.md) | `implemented` | — | — | #2028, #1974 | — | — | — |
-| [NetworkPolicy composition — the facts the egress model rests on](networkpolicy-composition.md) | `approved` | — | #4294 | #3568, #4294 | — | — | eedb41ea6 (2026-10-02) |
+| [NetworkPolicy composition — the facts the egress model rests on](networkpolicy-composition.md) | `implemented` | — | #4294 | #3568, #4294 | — | — | eedb41ea6 (2026-10-02) |
 | [Notification output boundary](notification-output.md) | `historical` | — | — | — | — | — | — |
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: Plan-driven dynamic fan-out](plan-driven-dynamic-fan-out.md) | `draft` | workflow DSL, runner, journal, conformance | #1310 | — | — | — | — |
@@ -79,7 +78,7 @@ word — read the page, not this table, before depending on it.
 | [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | — | — | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499 | — | — | — |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |
-| [Design: Source-owned backlog and objective workbench](source-owned-backlog-workbench.md) | `draft` | providers, source metadata, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
+| [Design: Source-owned backlog and objective workbench](source-owned-backlog-workbench.md) | `approved` | providers, source metadata, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |
 | [Decision: dedicated workflows own repository and test-suite quality](test-suite-quality-workflow.md) | `implemented` | — | — | #1568, #1489 | — | — | — |
 | [Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels](trust-boundary-hardening.md) | `approved` | — | — | — | — | — | — |

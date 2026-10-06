@@ -244,8 +244,9 @@ func TestPRCommentWatchADOSameIdentityUnmarkedCommentIsHuman(t *testing.T) {
 // marker alike — so a newer marked response suppresses older human feedback.
 func TestPRCommentWatchADOMarkedCommentIsGoobers(t *testing.T) {
 	for name, body := range map[string]string{
-		"attribution footer":            ownMarked("Addressed in the latest push."),
-		"review-thread response marker": "Addressed in `abc`.\n\n" + reviewThreadResponseMarker("run-1", "7/3"),
+		"attribution footer":                       ownMarked("Addressed in the latest push."),
+		"review-thread response marker":            "Addressed in `abc`.\n\n" + reviewThreadResponseMarker("run-1", "7/3", ""),
+		"pass-keyed review-thread response marker": "Addressed in `abc`.\n\n" + reviewThreadResponseMarker("run-1", "7/3", "0123456789abcdef"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, fake, dir := adoCommentWatchFixture(t, func(f *fakeADOCommentWatch) {

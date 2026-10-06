@@ -104,12 +104,26 @@ clearly if the dashboard is started.
 
 - **Overview**: attention-first operations view, active runs, recent outcomes,
   instance warning, and daemon freshness.
+- **Needs attention**: blocked and stalled work precedes muted FYI failures.
+  Severity uses current work-item labels and runner liveness, not just phase.
+  The list displays up to 20 runs from bounded recent candidates (including
+  up to 100 failures); when candidate pages are truncated, a warning directs
+  operators to the Runs page because additional actionable runs may exist.
 - **Workflows**: dense inventory, gaggle/goober context, and workflow detail
   with selectable stages.
 - **Runs**: status filters and run detail.
 - **Run detail**: pinned identity, synchronized execution graph, and durable
   event ledger.
 - **Theme**: independently tuned light and dark palettes.
+- **Cost chart**: total AI credits per rolling 24-hour day as bars on the left
+  axis, with P50 and P95 per-stage-attempt cost as lines on an independently scaled right axis.
+  The 24h, 7d, and 30d windows contain 1, 7, and 30 daily buckets respectively.
+  Custom hover and keyboard-focus tooltips show the day, series, and cost.
+- **Scope selection**: Cost and Insight share a searchable nested picker.
+  Select a gaggle or workflow by clicking its name; use its arrow to expand
+  workflows or stages. Run totals and measured stage attempts are reported separately.
+- **Overview**: a fixed page title with an animated loading suffix and resolved
+  operational status. Data freshness and refresh sit beside the active-run count.
 - **Co-branding**: operator-configurable name, logo, accent colors, and support
   links via `instance.yaml`.
 
@@ -117,6 +131,42 @@ Daemon fixtures cover live and terminal runs, repasses, and forward-compatible
 unknown journal events.
 
 ## Co-branding and support hooks
+
+### Shared UI conventions
+
+Use the exported primitives in `src/ui/` rather than copying page-specific
+markup: `PageHeading`/`SectionHeading`, `Action`/`ActionLink`, `ControlGroup`,
+`FilterField`/`FilterOptions`/`FilterOption`, `TabList`/`Tab`, `MetadataGrid`,
+and `DataTable`. Interactive linked lists use `DataList`/`DataRow`; both native
+tables and linked lists share the same table shell, header, and typography.
+Keep layout-specific CSS on the page, but keep font sizes, colors, and control
+treatment in the primitives and `tokens.css`.
+
+The first content block below a page heading or toolbar uses
+`--space-page-content` (1rem by default). Override this shared token for themed
+spacing rather than adding page-specific margins. Later sections retain their
+own grouping space. Fields inside `ControlGroup` have no outer padding or margin,
+so their labels and controls align without per-page offsets.
+
+At 820px and below (and on short landscape screens), navigation uses a 56px
+top bar with the current area and a menu containing every destination. The
+desktop sidebar remains unchanged; there is no intermediate navigation grid or
+bottom navigation bar. The menu keeps native dialog focus and history behavior,
+and its scrolling content is inside the rounded sheet so scrollbars cannot
+square off its corners.
+
+The type scale is page title, section title, 14px UI text, 12px dense table and
+secondary text, and 11px uppercase labels, expressed as rem-based tokens.
+Primary actions use `--accent` and `--on-accent`; links use `--accent-ink`.
+Semantic success/warning/error colors remain separate from co-brand accents.
+The primitive stylesheet is included by both Vite and the reusable package.
+
+Use `Timestamp` for visible dates and `dateTime.ts` for dates embedded in
+messages. The shared convention is English month/day/year with local time and
+seconds; precise tooltips include the timezone. Chart ticks use the same
+formatter's compact date/hour variants. Missing and invalid dates are explicit,
+and valid dates retain a machine-readable `datetime`. Do not add local
+`Intl.DateTimeFormat` or `toLocaleDateString` implementations to pages.
 
 The portal reads a `GET /api/v1/portal/config` endpoint at startup and applies
 operator-supplied identity and support links from the instance's `portal:` config

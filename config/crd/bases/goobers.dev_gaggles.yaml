@@ -276,6 +276,112 @@ spec:
                   finish normally.
                 nullable: true
                 type: boolean
+              health:
+                description: |-
+                  Health configures gaggle health observation, escalation, and the narrow
+                  set of product-authorized idempotent repairs. Omitted uses conservative
+                  defaults: observation is enabled and destructive behavior is disabled.
+                properties:
+                  enabled:
+                    description: Enabled controls periodic evaluation. Null or omitted
+                      defaults to true.
+                    nullable: true
+                    type: boolean
+                  evaluationInterval:
+                    description: EvaluationInterval is a Go duration. Omitted defaults
+                      to five minutes.
+                    type: string
+                  eventWorkflow:
+                    description: |-
+                      EventWorkflow emits filtered health transitions to a workflow. It can
+                      observe events but can never authorize or perform a repair.
+                    properties:
+                      enabled:
+                        type: boolean
+                      eventTypes:
+                        items:
+                          type: string
+                        type: array
+                      findingCodes:
+                        items:
+                          type: string
+                        type: array
+                      minimumSeverity:
+                        enum:
+                        - info
+                        - warning
+                        - error
+                        - critical
+                        type: string
+                      workflow:
+                        type: string
+                    type: object
+                  findings:
+                    additionalProperties:
+                      description: |-
+                        GaggleFindingPolicy selects handling and an optional bounded severity
+                        override for one known finding code.
+                      properties:
+                        mode:
+                          enum:
+                          - observe
+                          - repair
+                          - escalate
+                          type: string
+                        severity:
+                          enum:
+                          - info
+                          - warning
+                          - error
+                          - critical
+                          type: string
+                      required:
+                      - mode
+                      type: object
+                    description: |-
+                      Findings overrides handling for known finding codes. Unknown codes are
+                      rejected; omission retains the code's hard safety policy.
+                    type: object
+                  notifications:
+                    description: Notifications configures bounded operator notifications
+                      and escalation.
+                    properties:
+                      enabled:
+                        description: Enabled defaults to true.
+                        nullable: true
+                        type: boolean
+                      escalateAfter:
+                        description: |-
+                          EscalateAfter is a Go duration after which an unresolved finding is
+                          escalated. Omitted defaults to one hour.
+                        type: string
+                      minimumSeverity:
+                        description: MinimumSeverity suppresses lower-severity notifications.
+                        enum:
+                        - info
+                        - warning
+                        - error
+                        - critical
+                        type: string
+                    type: object
+                  thresholds:
+                    description: Thresholds bound detector windows and retained evidence.
+                    properties:
+                      evidenceRetention:
+                        type: string
+                      flappingCount:
+                        format: int32
+                        type: integer
+                      flappingWindow:
+                        type: string
+                      noProgress:
+                        type: string
+                      prolongedDegradation:
+                        type: string
+                      triggerSilence:
+                        type: string
+                    type: object
+                type: object
               isolation:
                 description: Isolation declares the per-gaggle boundary (namespace
                   + workload identity).

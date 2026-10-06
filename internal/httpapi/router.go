@@ -627,10 +627,24 @@ type handlerConfig struct {
 	workItemsAvailable      bool
 	activeClaimsAvailable   bool
 	configAuthoring         ConfigAuthoringReader
+	trustedProxies          []string
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
 type HandlerOption func(*handlerConfig) error
+
+// WithTrustedProxies allows Portal locality classification to use
+// X-Forwarded-For only when the immediate peer is in an explicit trust range.
+func WithTrustedProxies(proxies []string) HandlerOption {
+	return func(c *handlerConfig) error {
+		ranges, err := parseTrustedProxyRanges(proxies)
+		if err != nil {
+			return err
+		}
+		c.trustedProxies = ranges
+		return nil
+	}
+}
 
 // WithChangeFeedStream registers the SSE endpoint backed by the read model's
 // change feed (#1929).
@@ -962,6 +976,19 @@ func (r *Router) HandleByMethod(routeIDsByMethod map[string]apicontract.RouteID,
 	})
 }
 
+// Wire contract of the crash-recovery gate (#5019). Clients branch on the code
+// to wait out a daemon restart instead of reporting a failure (#5897), so it is
+// a stable string like the seam codes in mutability.go.
+const (
+	// CodeRecovering is the error code every route that is not recovery-safe
+	// answers with, as HTTP 503, until startup crash recovery completes.
+	CodeRecovering = "recovering"
+
+	// NotReadyRetryAfterSeconds is the Retry-After hint sent with a 503 that
+	// means only that the daemon has not finished starting yet.
+	NotReadyRetryAfterSeconds = 2
+)
+
 // serve runs the per-request pipeline shared by every registered route —
 // authenticate, authorize, admit, bound — then calls handler. Factored out of
 // Handle so HandleByMethod's multi-method dispatch reuses it exactly rather
@@ -973,7 +1000,8 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 	// reaches a handler whose subsystems have not opened yet, regardless of
 	// whether it would otherwise have authenticated.
 	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
-		writeError(w, http.StatusServiceUnavailable, "recovering", "daemon is completing crash recovery")
+		w.Header().Set(HeaderRetryAfterSeconds, strconv.Itoa(NotReadyRetryAfterSeconds))
+		writeError(w, http.StatusServiceUnavailable, CodeRecovering, "daemon is completing crash recovery")
 		return
 	}
 	principal, err := r.authenticator.Authenticate(request)
@@ -1188,6 +1216,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		portalConfig.Capabilities.RevealRun = config.runRevealer != nil
 		portalConfig.Capabilities.WorkflowEnable = config.workflowMutations != nil
+		portalConfig.ConnectionLocality = classifyConnectionLocality(request, config.trustedProxies)
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, portalConfig)
 	})

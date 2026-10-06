@@ -80,6 +80,7 @@ func (r *copilotControlledRunner) initialize(ctx context.Context, req ProcessReq
 	if err != nil {
 		return fmt.Errorf("%w: create controlled Copilot session", errRequiredMCPUnavailable)
 	}
+	process.session = session
 	r.session = sdkRequiredMCPSession{session}
 	return nil
 }

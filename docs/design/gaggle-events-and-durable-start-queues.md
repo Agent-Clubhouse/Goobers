@@ -1,9 +1,14 @@
 # Gaggle events, durable start queues, and shared provider reads
 
-Status: draft
+Status: approved
 Program: [HITL and advanced workflows](hitl-advanced-workflows-program.md)
 Baseline: `04198152b63d228a9714ae2f92a7dca079ba5213` (2026-10-03)
 Task prefix: `HAW-EVT`; task identifiers are stable planning identifiers, not GitHub issues.
+
+> Design approved for incremental delivery on 2026-10-06. Implementation and
+> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
+> not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
+> remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
 Implementation checkpoint: the local stack implements bounded receipts, pinned
 routing/debounce, host routing sweeps, archived local consumers, typed workflow
@@ -19,8 +24,8 @@ Queue inspection/cancellation/deadline policy remains implementation work. Engin
 child/human-continuation event production remain explicitly unsupported until their
 transport and ancestry contracts are implemented. Unresolved producers and starts
 retain custody; neither age nor missing journal evidence proves termination. See
-[receipt profile and limits](../reference/gaggle-event-receipts.md) and the
-[current delivery ledger](../hitl-advanced-workflows-tracking.md).
+[receipt profile and limits](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/reference/gaggle-event-receipts.md) and the
+[current delivery ledger](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/hitl-advanced-workflows-tracking.md).
 
 ## 1. Intent and confirmed boundaries
 
@@ -38,14 +43,14 @@ Durable execution intents, leases, journals, intervention decisions, and audit r
 Related designs:
 
 - [Agent-authored child workflows](agent-authored-child-workflows.md): child acceptance, lineage, waiting, and cancellation.
-- [Interactive factory operations](interactive-factory-operations.md): human identity, permissions, and portal actions.
+- [Interactive factory operations](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/design/interactive-factory-operations.md): human identity, permissions, and portal actions.
 - `source-owned-backlog-workbench.md`: portable declarations and source write-through.
 
 ## 2. Original baseline and reuse
 
 This section records the original main-branch baseline. Installed local queue,
 event and shared-read behavior is described in the delivery sections below and
-the [review ledger](../hitl-advanced-workflows-tracking.md).
+the [review ledger](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/hitl-advanced-workflows-tracking.md).
 
 `internal/triggerqueue` already durably accepts explicit trigger requests with actor/payload conflict detection.
 Its states are accepted, dispatching, dispatched, and rejected; uncertain dispatch requires reconciliation.

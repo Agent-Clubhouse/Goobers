@@ -1,9 +1,14 @@
+import { PageHeading, SectionHeading } from "../ui/Heading";
+import { formatTimestamp, formatPreciseTimestamp } from "../dateTime";
+import { Action } from "../ui/Action";
+import { Timestamp } from "../ui/Timestamp";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RunTiming } from "../components/RunTiming";
 import type {
   DaemonClient,
   MaintenanceStatus,
   RecoveryInventoryStatus,
+  StartupStatus,
   RunSummary,
 } from "../api/types";
 import { useAttentionCollapsed } from "../attentionCollapse";
@@ -14,7 +19,10 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { ScopePivot } from "../components/ScopePivot";
 import {
+  attentionSeverity,
+  attentionSeverityRank,
   incompleteRunPhasesMessage,
+  type AttentionSeverity,
   type OperationalOverview,
   useOperationalOverview,
 } from "../operationalData";
@@ -22,10 +30,11 @@ import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
-import { useFailureReasons, type FailureReasons } from "../overviewFailures";
+import type { FailureReasons } from "../overviewFailures";
 import { configurationWarningKey } from "../configurationWarnings";
 
 const attentionSelectionStorageKey = "goobers-overview-attention-selection";
+const emptyFailureReasons: FailureReasons = new Map();
 
 function readAttentionSelection(): ReadonlySet<string> {
   try {
@@ -50,19 +59,14 @@ export function OverviewPage({
   standalone: boolean;
 }) {
   const query = useOperationalOverview(client);
-  const attentionFailedIds =
-    query.state.status === "ready" || query.state.status === "stale"
-      ? query.state.data.groups.attention
-          .filter((run) => run.phase === "failed")
-          .map((run) => run.id)
-      : [];
-  const failureReasons = useFailureReasons(client, attentionFailedIds);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
+    return (
+      <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
+    );
   }
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
@@ -71,7 +75,7 @@ export function OverviewPage({
   return (
     <Overview
       configurationWarnings={configurationWarnings}
-      failureReasons={failureReasons}
+      failureReasons={query.state.data.groups.failureReasons ?? emptyFailureReasons}
       overview={query.state.data}
       retry={query.retry}
       standalone={standalone}
@@ -93,6 +97,7 @@ function Overview({
   standalone: boolean;
 }) {
   const groups = overview.groups;
+  const overviewRuns = [...groups.active, ...groups.attention, ...groups.recent];
   const inventoryLoaded =
     !overview.loadingSections?.inventory && !overview.sectionErrors?.inventory;
   const emptyInstance = inventoryLoaded && overview.gaggleCount === 0;
@@ -109,8 +114,7 @@ function Overview({
   const healthy = standalone || overview.health.healthy;
   const starting = !overview.health.ready && overview.instance.status === "starting";
   const activeConfigurationWarningCount =
-    configurationWarnings.state.status === "ready" ||
-    configurationWarnings.state.status === "stale"
+    configurationWarnings.state.status === "ready" || configurationWarnings.state.status === "stale"
       ? configurationWarnings.state.data.filter(
           (warning) =>
             !configurationWarnings.dismissedWarningKeys.has(configurationWarningKey(warning)),
@@ -119,8 +123,7 @@ function Overview({
 
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
   const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
-  const [selectedRunIds, setSelectedRunIds] =
-    useState<ReadonlySet<string>>(readAttentionSelection);
+  const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(readAttentionSelection);
   const [expandedAttentionGroups, setExpandedAttentionGroups] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -131,6 +134,23 @@ function Overview({
     () => groupAttentionRuns(activeAttention, overview, failureReasons),
     [activeAttention, failureReasons, overview],
   );
+  const attentionSections = [
+    {
+      key: "action-required",
+      label: "Action required",
+      groups: attentionGroups.filter((group) => group.severity !== "warning"),
+    },
+    {
+      key: "fyi",
+      label: "FYI failures",
+      groups: attentionGroups.filter((group) => group.severity === "warning"),
+    },
+  ]
+    .filter((section) => section.groups.length > 0)
+    .map((section) => ({
+      ...section,
+      runCount: section.groups.reduce((count, group) => count + group.runs.length, 0),
+    }));
   const activeAttentionIds = new Set(activeAttention.map((run) => run.id));
   const visibleSelectedRunIds = [...selectedRunIds].filter((runId) =>
     activeAttentionIds.has(runId),
@@ -199,118 +219,128 @@ function Overview({
 
   return (
     <div className="overview-page">
-      <header className="page-heading">
-        <div className="overview-heading-copy">
-          {overview.instance.rootIdentity?.decommissionedAt && (
-            <p role="alert">Historical root; do not use. Decommissioned {overview.instance.rootIdentity.decommissionedAt}: {overview.instance.rootIdentity.decommissionReason}</p>
-          )}
-          {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
-          {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
-          <h1>
-            {overview.loadingSections?.inventory || overview.loadingSections?.runs
-              ? (
-                <span aria-label="Loading overview" className="overview-loading-title" role="status">
-                  <span aria-hidden="true">.</span>
-                  <span aria-hidden="true">.</span>
-                  <span aria-hidden="true">.</span>
-                </span>
-              )
-              : emptyInstance
-                ? standalone
-                  ? overview.health.ready
-                    ? "Instance is ready — Healthy."
-                    : "Instance is starting."
-                  : starting
-                    ? "Daemon is starting."
-                    : !healthy
-                    ? "Daemon is unhealthy."
-                    : overview.health.ready
-                      ? "Daemon is running — Healthy."
-                      : "Daemon is starting."
-                : starting
-                  ? "Daemon is starting."
-                  : !healthy
-                  ? "Daemon is unhealthy."
-                  : activeAttention.length === 0
-                    ? standalone
-                      ? "Instance is ready — Healthy."
-                      : "Daemon is running — Healthy."
-                    : attentionHeading(activeAttention.length)}
-          </h1>
-          {emptyInstance && (
-            <p>No gaggles are configured. Add gaggle definitions to begin observing workflows and runs.</p>
-          )}
-        </div>
-      </header>
+      <PageHeading
+        title={
+          <>
+            Overview -{" "}
+            {overview.loadingSections?.inventory || overview.loadingSections?.runs ? (
+              <span aria-label="Loading overview" className="overview-loading-title" role="status">
+                <span aria-hidden="true">.</span>
+                <span aria-hidden="true">.</span>
+                <span aria-hidden="true">.</span>
+              </span>
+            ) : starting ? (
+              "Starting"
+            ) : !healthy ? (
+              "Unhealthy"
+            ) : !overview.health.ready ? (
+              "Starting"
+            ) : (
+              attentionHeading(activeAttention.length)
+            )}
+          </>
+        }
+        className=""
+        contentClassName="overview-heading-copy"
+        beforeTitle={
+          <>
+            {overview.instance.rootIdentity?.decommissionedAt && (
+              <p role="alert">
+                Historical root; do not use. Decommissioned{" "}
+                {overview.instance.rootIdentity.decommissionedAt}:{" "}
+                {overview.instance.rootIdentity.decommissionReason}
+              </p>
+            )}
+            {overview.instance.rootIdentity?.identityProblem && (
+              <p role="status">{overview.instance.rootIdentity.identityProblem}</p>
+            )}
+            {overview.instance.rootIdentity?.lifecycleProblem && (
+              <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>
+            )}
+          </>
+        }
+      >
+        {emptyInstance && (
+          <p>
+            No gaggles are configured. Add gaggle definitions to begin observing workflows and runs.
+          </p>
+        )}
+      </PageHeading>
 
       <div className="overview-notices">
-      {/* A failed health or instance refresh falls back to the previous data so
+        {/* A failed health or instance refresh falls back to the previous data so
           the page keeps rendering something, but that fallback must say it's
           stale — otherwise degraded daemon health or instance state reads as
           current with no diagnostic at all (#3659). */}
-      {(overview.sectionErrors?.health || overview.sectionErrors?.instance) && (
-        <div className="inline-empty section-error" role="alert">
-          <span>
-            {overview.sectionErrors?.health && overview.sectionErrors?.instance
-              ? "Daemon health and instance data could not be refreshed just now, so the status above may be stale."
-              : overview.sectionErrors?.health
-                ? "Daemon health could not be refreshed just now, so the status above may be stale."
-                : "Instance data could not be refreshed just now, so the status above may be stale."}
-          </span>
-          <button className="text-button" onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
-      )}
+        {(overview.sectionErrors?.health || overview.sectionErrors?.instance) && (
+          <div className="inline-empty section-error" role="alert">
+            <span>
+              {overview.sectionErrors?.health && overview.sectionErrors?.instance
+                ? "Daemon health and instance data could not be refreshed just now, so the status above may be stale."
+                : overview.sectionErrors?.health
+                  ? "Daemon health could not be refreshed just now, so the status above may be stale."
+                  : "Instance data could not be refreshed just now, so the status above may be stale."}
+            </span>
+            <Action variant="text" className="text-button" onClick={retry} type="button">
+              Retry
+            </Action>
+          </div>
+        )}
 
-      {/* A section that failed to load must say so. Without this the page would
+        {/* A section that failed to load must say so. Without this the page would
           render an empty run list identically to a genuinely idle instance,
           which is a worse failure than the blank page it replaced (#1709). */}
-      {overview.sectionErrors?.inventory && (
-        <div className="inline-empty section-error" role="alert">
-          <span>
-            The gaggle and workflow inventory could not be read just now. Inventory-backed names
-            and empty-state guidance are unavailable until it loads; daemon health, counts, and run
-            data below remain current.
-          </span>
-          <button className="text-button" onClick={retry} type="button">
-            Retry inventory
-          </button>
-        </div>
-      )}
-      {overview.sectionErrors?.runs && (
-        <div className="inline-empty section-error" role="alert">
-          <span>
-            Run activity could not be read just now, so the run groups below may be incomplete or
-            out of date. Everything else on this page is current.
-          </span>
-          <button className="text-button" onClick={retry} type="button">
-            Retry run activity
-          </button>
-        </div>
-      )}
-      {(overview.loadingSections?.inventory || overview.loadingSections?.runs) && (
-        <div className="inline-empty section-loading" role="status">
-          <span aria-hidden="true" className="loading-mark" />
-          <span>
-          {overview.loadingSections.inventory && overview.loadingSections.runs
-            ? "Loading inventory and run activity"
-            : overview.loadingSections.inventory
-              ? "Loading inventory"
-              : "Loading run activity"}
-          </span>
-        </div>
-      )}
+        {overview.sectionErrors?.inventory && (
+          <div className="inline-empty section-error" role="alert">
+            <span>
+              The gaggle and workflow inventory could not be read just now. Inventory-backed names
+              and empty-state guidance are unavailable until it loads; daemon health, counts, and
+              run data below remain current.
+            </span>
+            <Action variant="text" className="text-button" onClick={retry} type="button">
+              Retry inventory
+            </Action>
+          </div>
+        )}
+        {overview.sectionErrors?.runs && (
+          <div className="inline-empty section-error" role="alert">
+            <span>
+              Run activity could not be read just now, so the run groups below may be incomplete or
+              out of date. Everything else on this page is current.
+            </span>
+            <Action variant="text" className="text-button" onClick={retry} type="button">
+              Retry run activity
+            </Action>
+          </div>
+        )}
+        {(overview.loadingSections?.inventory || overview.loadingSections?.runs) && (
+          <div className="inline-empty section-loading" role="status">
+            <span aria-hidden="true" className="loading-mark" />
+            <span>
+              {overview.loadingSections.inventory && overview.loadingSections.runs
+                ? "Loading inventory and run activity"
+                : overview.loadingSections.inventory
+                  ? "Loading inventory"
+                  : "Loading run activity"}
+            </span>
+          </div>
+        )}
 
-      {/* A phase that failed while its siblings succeeded is the same trap one
+        {/* A phase that failed while its siblings succeeded is the same trap one
           level down: the surviving groups are real, but the failed phase's
           runs are missing and would otherwise read as "nothing happened"
           (#3658). */}
-      {!overview.sectionErrors?.runs && groups.incomplete && (
-        <p className="inline-empty" role="alert">
-          {incompleteRunPhasesMessage(groups.incomplete)}
-        </p>
-      )}
+        {!overview.sectionErrors?.runs && groups.incomplete && (
+          <p className="inline-empty" role="alert">
+            {incompleteRunPhasesMessage(groups.incomplete)}
+          </p>
+        )}
+        {groups.attentionCandidatesTruncated && (
+          <p className="inline-empty" role="alert">
+            The attention candidate window was truncated; additional actionable runs may exist.
+            Inspect the Runs page for the full list.
+          </p>
+        )}
       </div>
 
       <InstanceSummaryPanel
@@ -322,182 +352,223 @@ function Overview({
 
       {groups.attention.length > 0 && (
         <section className="content-section attention-section">
-          <div className="section-heading">
-            <h2>Needs attention</h2>
-            <div className="attention-actions">
-              {activeAttention.length > 0 && (
-                <label className="attention-select-all">
-                  <SelectionCheckbox
-                    ariaLabel="Select all visible attention runs"
-                    checked={allVisibleSelected}
-                    indeterminate={
-                      visibleSelectedRunIds.length > 0 &&
-                      visibleSelectedRunIds.length < activeAttention.length
-                    }
-                    onChange={toggleAllVisible}
-                  />
-                  Select all
-                </label>
-              )}
-              {visibleSelectedRunIds.length > 0 && (
-                <button
-                  className="text-button"
-                  onClick={() => dismissRuns(visibleSelectedRunIds)}
-                  type="button"
-                >
-                  Dismiss {visibleSelectedRunIds.length} selected
-                </button>
-              )}
-              {dismissedAttention.length > 0 && (
-                <button
-                  className="text-button"
-                  onClick={() => setShowDismissed((current) => !current)}
-                  type="button"
-                >
-                  {showDismissed ? "Hide dismissed" : `Show dismissed (${dismissedAttention.length})`}
-                </button>
-              )}
-              <span className="section-count">
-                {activeAttention.length} {activeAttention.length === 1 ? "run" : "runs"}
-              </span>
-              <button
-                aria-controls="attention-section-body"
-                aria-expanded={!attentionCollapsed}
-                className="attention-collapse-toggle"
-                onClick={() => setAttentionCollapsed(!attentionCollapsed)}
-                type="button"
-              >
-                <span className="sr-only">
-                  {attentionCollapsed ? "Expand needs attention" : "Collapse needs attention"}
-                </span>
-                <span aria-hidden="true" className="attention-collapse-chevron">
-                  <Icon name="chevron" size={14} />
-                </span>
-              </button>
-            </div>
-          </div>
+          <SectionHeading
+            title="Needs attention"
+            className=""
+            actions={
+              <>
+                <div className="attention-actions">
+                  {activeAttention.length > 0 && (
+                    <label className="attention-select-all">
+                      <SelectionCheckbox
+                        ariaLabel="Select all visible attention runs"
+                        checked={allVisibleSelected}
+                        indeterminate={
+                          visibleSelectedRunIds.length > 0 &&
+                          visibleSelectedRunIds.length < activeAttention.length
+                        }
+                        onChange={toggleAllVisible}
+                      />
+                      Select all
+                    </label>
+                  )}
+                  {visibleSelectedRunIds.length > 0 && (
+                    <Action
+                      variant="text"
+                      className="text-button"
+                      onClick={() => dismissRuns(visibleSelectedRunIds)}
+                      type="button"
+                    >
+                      Dismiss {visibleSelectedRunIds.length} selected
+                    </Action>
+                  )}
+                  {dismissedAttention.length > 0 && (
+                    <Action
+                      variant="text"
+                      className="text-button"
+                      onClick={() => setShowDismissed((current) => !current)}
+                      type="button"
+                    >
+                      {showDismissed
+                        ? "Hide dismissed"
+                        : `Show dismissed (${dismissedAttention.length})`}
+                    </Action>
+                  )}
+                  <span className="section-count">
+                    {activeAttention.length} {activeAttention.length === 1 ? "run" : "runs"}
+                  </span>
+                  <button
+                    aria-controls="attention-section-body"
+                    aria-expanded={!attentionCollapsed}
+                    className="attention-collapse-toggle"
+                    onClick={() => setAttentionCollapsed(!attentionCollapsed)}
+                    type="button"
+                  >
+                    <span className="sr-only">
+                      {attentionCollapsed ? "Expand needs attention" : "Collapse needs attention"}
+                    </span>
+                    <span aria-hidden="true" className="attention-collapse-chevron">
+                      <Icon name="chevron" size={14} />
+                    </span>
+                  </button>
+                </div>
+              </>
+            }
+          />
           <div hidden={attentionCollapsed} id="attention-section-body">
             {activeAttention.length === 0 ? (
               <p className="inline-empty">Nothing needs attention right now.</p>
             ) : (
               <div className="attention-list">
-                {attentionGroups.map((group) => {
-                  const selectedCount = group.runs.filter((run) =>
-                    selectedRunIds.has(run.id),
-                  ).length;
-                  const expanded = expandedAttentionGroups.has(group.key);
-                  return (
-                    <div className="attention-group" key={group.key}>
-                      <div className="attention-row attention-group-summary">
-                        <SelectionCheckbox
-                          ariaLabel={`Select all ${group.runs.length} runs in ${group.label}`}
-                          checked={selectedCount === group.runs.length}
-                          indeterminate={selectedCount > 0 && selectedCount < group.runs.length}
-                          onChange={() => {
-                            const shouldSelect = selectedCount !== group.runs.length;
-                            setSelectedRunIds((current) => {
-                              const next = new Set(current);
-                              for (const run of group.runs) {
-                                if (shouldSelect) {
-                                  next.add(run.id);
-                                } else {
-                                  next.delete(run.id);
-                                }
-                              }
-                              return next;
-                            });
-                          }}
-                        />
-                        <span className="attention-icon">
-                          <Icon name="alert" />
-                        </span>
-                        <span className="attention-copy">
-                          <strong title={group.label}>{group.label}</strong>
-                          <span title={group.diagnosis}>
-                            {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} ·{" "}
-                            {group.diagnosis}
-                          </span>
-                        </span>
-                        <span className="attention-meta">
-                          <span title={group.context}>{group.context}</span>
-                          <time dateTime={group.latest.lastActivityAt}>
-                            Latest {formatTimestamp(group.latest.lastActivityAt)}
-                          </time>
-                        </span>
-                        <button
-                          aria-controls={`attention-group-${group.domId}`}
-                          aria-expanded={expanded}
-                          className="attention-expand"
-                          onClick={() => toggleGroupExpanded(group.key)}
-                          type="button"
+                {attentionSections.map((section) => (
+                  <div
+                    className={`attention-severity-section attention-severity-section-${section.key}`}
+                    key={section.key}
+                  >
+                    <div className="attention-severity-heading">
+                      <strong>{section.label}</strong>
+                      <span>
+                        {section.runCount} {section.runCount === 1 ? "run" : "runs"}
+                      </span>
+                    </div>
+                    {section.groups.map((group) => {
+                      const selectedCount = group.runs.filter((run) =>
+                        selectedRunIds.has(run.id),
+                      ).length;
+                      const expanded = expandedAttentionGroups.has(group.key);
+                      return (
+                        <div
+                          className={`attention-group attention-group-${group.severity}`}
+                          key={group.key}
                         >
-                          {expanded ? "Hide runs" : "Show runs"}
-                        </button>
-                        <button
-                          aria-label={`Dismiss all runs in ${group.label}`}
-                          className="attention-dismiss"
-                          onClick={() => dismissRuns(group.runs.map((run) => run.id))}
-                          type="button"
-                        >
-                          Dismiss group
-                        </button>
-                      </div>
-                      <div
-                        className="attention-group-runs"
-                        hidden={!expanded}
-                        id={`attention-group-${group.domId}`}
-                      >
-                        {group.runs.map((run) => (
-                          <div className="attention-run-row" key={run.id}>
-                            <input
-                              aria-label={`Select run ${run.id} for bulk actions`}
-                              checked={selectedRunIds.has(run.id)}
-                              className="attention-select"
-                              onChange={() => toggleSelected(run.id)}
-                              type="checkbox"
+                          <div className="attention-row attention-group-summary">
+                            <SelectionCheckbox
+                              ariaLabel={`Select all ${group.runs.length} runs in ${group.label}`}
+                              checked={selectedCount === group.runs.length}
+                              indeterminate={selectedCount > 0 && selectedCount < group.runs.length}
+                              onChange={() => {
+                                const shouldSelect = selectedCount !== group.runs.length;
+                                setSelectedRunIds((current) => {
+                                  const next = new Set(current);
+                                  for (const run of group.runs) {
+                                    if (shouldSelect) {
+                                      next.add(run.id);
+                                    } else {
+                                      next.delete(run.id);
+                                    }
+                                  }
+                                  return next;
+                                });
+                              }}
                             />
-                            <a
-                              className="attention-run-link"
-                              href={routeHash({ page: "run", id: run.id })}
-                              title={run.id}
-                            >
-                              <strong>{run.id}</strong>
-                              <span>{attentionDiagnosis(run, failureReasons)}</span>
-                            </a>
-                            <ScopePivot
-                              label={workflowIdentity(run)}
-                              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                            />
-                            <time dateTime={run.lastActivityAt}>
-                              {formatTimestamp(run.lastActivityAt)}
-                            </time>
+                            <span className="attention-icon">
+                              <Icon name="alert" />
+                            </span>
+                            <span className="attention-copy">
+                              <strong title={group.label}>{group.label}</strong>
+                              <span
+                                className={`attention-severity-badge attention-severity-${group.severity}`}
+                              >
+                                {attentionSeverityLabel(group.severity)}
+                              </span>
+                              <span title={group.diagnosis}>
+                                {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} ·{" "}
+                                {group.diagnosis}
+                              </span>
+                            </span>
+                            <span className="attention-meta">
+                              <span title={group.context}>{group.context}</span>
+                              <Timestamp value={group.latest.lastActivityAt} prefix="Latest " />
+                            </span>
                             <button
-                              aria-label={`Dismiss run ${run.id}`}
-                              className="attention-dismiss"
-                              onClick={() => dismissRuns([run.id])}
+                              aria-controls={`attention-group-${group.domId}`}
+                              aria-expanded={expanded}
+                              className="attention-expand"
+                              onClick={() => toggleGroupExpanded(group.key)}
                               type="button"
                             >
-                              Dismiss
+                              {expanded ? "Hide runs" : "Show runs"}
+                            </button>
+                            <button
+                              aria-label={`Dismiss all runs in ${group.label}`}
+                              className="attention-dismiss"
+                              onClick={() => dismissRuns(group.runs.map((run) => run.id))}
+                              type="button"
+                            >
+                              Dismiss group
                             </button>
                           </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
+                          <div
+                            className="attention-group-runs"
+                            hidden={!expanded}
+                            id={`attention-group-${group.domId}`}
+                          >
+                            {group.runs.map((run) => {
+                              const severity = attentionSeverity(
+                                run,
+                                overviewRuns,
+                                failureReasons.get(run.id),
+                              );
+                              return (
+                                <div className="attention-run-row" key={run.id}>
+                                  <input
+                                    aria-label={`Select run ${run.id} for bulk actions`}
+                                    checked={selectedRunIds.has(run.id)}
+                                    className="attention-select"
+                                    onChange={() => toggleSelected(run.id)}
+                                    type="checkbox"
+                                  />
+                                  <a
+                                    className="attention-run-link"
+                                    href={routeHash({ page: "run", id: run.id })}
+                                    title={run.id}
+                                  >
+                                    <strong>{run.id}</strong>
+                                    <span
+                                      className={`attention-severity-badge attention-severity-${severity}`}
+                                    >
+                                      {attentionSeverityLabel(severity)}
+                                    </span>
+                                    <span>
+                                      {attentionDiagnosis(run, failureReasons, severity)}
+                                    </span>
+                                  </a>
+                                  <ScopePivot
+                                    label={workflowIdentity(run)}
+                                    scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                                  />
+                                  <Timestamp value={run.lastActivityAt} />
+                                  <button
+                                    aria-label={`Dismiss run ${run.id}`}
+                                    className="attention-dismiss"
+                                    onClick={() => dismissRuns([run.id])}
+                                    type="button"
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
             )}
             {showDismissed && dismissedAttention.length > 0 && (
               <div className="attention-dismissed-list">
                 <div className="section-heading">
                   <p className="section-kicker">Dismissed</p>
-                  <button
+                  <Action
+                    variant="text"
                     className="text-button"
                     onClick={() => restore(dismissedAttention.map((run) => run.id))}
                     type="button"
                   >
                     Restore all
-                  </button>
+                  </Action>
                 </div>
                 {dismissedAttention.map((run) => (
                   <div className="attention-row attention-row-dismissed" key={run.id}>
@@ -505,14 +576,15 @@ function Overview({
                       <strong>{runLabel(run)}</strong>
                       <span>{workflowIdentity(run)}</span>
                     </span>
-                    <button
+                    <Action
+                      variant="text"
                       aria-label={`Undo dismiss for run ${run.id}`}
                       className="text-button"
                       onClick={() => restore([run.id])}
                       type="button"
                     >
                       Undo
-                    </button>
+                    </Action>
                   </div>
                 ))}
               </div>
@@ -524,48 +596,50 @@ function Overview({
       <div className="overview-activity">
         {!inventoryLoaded ? null : emptyInstance ? (
           <section className="empty-state">
-          <img alt="" src="/goober-mascot.png" />
-          <div>
-            <h2>No gaggles configured</h2>
-            <p>
-              No configuration is available to the Portal yet. New to Goobers? The guided
-              walkthrough builds a working instance step by step.
-            </p>
-            <RecoveryCommand command="goobers init --guided" />
-          </div>
-        </section>
-      ) : emptyWorkflows ? (
-        <section className="empty-state">
-          <img alt="" src="/goober-mascot.png" />
-          <div>
-            <h2>No workflows configured</h2>
-            <p>Add a workflow definition, then validate the instance before reloading the Portal.</p>
-            <RecoveryCommand command="goobers validate <instance>" />
-          </div>
-        </section>
-      ) : emptyRuns ? (
-        <section className="empty-state">
-          <img alt="" src="/goober-mascot.png" />
-          <div>
-            <h2>No runs recorded</h2>
-            <p>Start a configured workflow to create the first run journal.</p>
-            <RecoveryCommand command="goobers run <workflow> <instance>" />
-          </div>
-        </section>
+            <img alt="" src="/goober-mascot.png" />
+            <div>
+              <h2>No gaggles configured</h2>
+              <p>
+                No configuration is available to the Portal yet. New to Goobers? The guided
+                walkthrough builds a working instance step by step.
+              </p>
+              <RecoveryCommand command="goobers init --guided" />
+            </div>
+          </section>
+        ) : emptyWorkflows ? (
+          <section className="empty-state">
+            <img alt="" src="/goober-mascot.png" />
+            <div>
+              <h2>No workflows configured</h2>
+              <p>
+                Add a workflow definition, then validate the instance before reloading the Portal.
+              </p>
+              <RecoveryCommand command="goobers validate <instance>" />
+            </div>
+          </section>
+        ) : emptyRuns ? (
+          <section className="empty-state">
+            <img alt="" src="/goober-mascot.png" />
+            <div>
+              <h2>No runs recorded</h2>
+              <p>Start a configured workflow to create the first run journal.</p>
+              <RecoveryCommand command="goobers run <workflow> <instance>" />
+            </div>
+          </section>
         ) : (
           <>
-          <RunSection
-            ariaLabel="Active runs"
-            overview={overview}
-            runs={groups.active}
-            title="Active runs"
-          />
-          <RunSection
-            ariaLabel="Recent outcomes"
-            overview={overview}
-            runs={groups.recent}
-            title="Recent outcomes"
-          />
+            <RunSection
+              ariaLabel="Active runs"
+              overview={overview}
+              runs={groups.active}
+              title="Active runs"
+            />
+            <RunSection
+              ariaLabel="Recent outcomes"
+              overview={overview}
+              runs={groups.recent}
+              title="Recent outcomes"
+            />
           </>
         )}
       </div>
@@ -611,14 +685,16 @@ function InstanceSummaryPanel({
     : starting
       ? "Daemon starting"
       : !healthy
-      ? "Daemon unhealthy"
-      : overview.health.ready
-        ? "Healthy"
-        : "Daemon starting";
+        ? "Daemon unhealthy"
+        : overview.health.ready
+          ? "Healthy"
+          : "Daemon starting";
 
   return (
     <section
-      aria-label={standalone ? "Local instance status and counts" : "Daemon connection and instance counts"}
+      aria-label={
+        standalone ? "Local instance status and counts" : "Daemon connection and instance counts"
+      }
       className="instance-summary-card"
     >
       <div className="instance-summary-row daemon-summary-row">
@@ -636,7 +712,9 @@ function InstanceSummaryPanel({
           <span className="instance-summary-copy">
             <strong>{daemonTitle}</strong>
             <span>
-              {healthy && overview.health.ready ? "Running normally" : "Operator attention required"}
+              {healthy && overview.health.ready
+                ? "Running normally"
+                : "Operator attention required"}
             </span>
             {configurationWarningCount > 0 && (
               <span className="daemon-summary-notices">
@@ -665,8 +743,22 @@ function InstanceSummaryPanel({
               {overview.instance.counts.activeRuns === 0 ? "None executing" : "Currently executing"}
             </span>
           </div>
+          <div>
+            <dt>Data freshness</dt>
+            <dd className="daemon-freshness-value">
+              {tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}
+              <button aria-label="Refresh instance status" onClick={retry} type="button">
+                <Icon name="refresh" size={18} />
+              </button>
+            </dd>
+            <span>
+              {lastTickAt ? <Timestamp value={lastTickAt} /> : "Latest scheduler tick unavailable"}
+            </span>
+          </div>
         </dl>
       </div>
+
+      {overview.health.startup && <StartupRecoverySummary startup={overview.health.startup} />}
 
       <details
         className="overview-diagnostics"
@@ -679,34 +771,12 @@ function InstanceSummaryPanel({
             <span>
               {diagnosticsRequireAttention
                 ? "Operator attention required"
-                : "Freshness, recovery, and retention"}
+                : "Recovery and retention"}
             </span>
           </span>
           <Icon name="chevron" size={14} />
         </summary>
         <div className="overview-diagnostics-content">
-          <div className="instance-summary-row overview-freshness-row">
-            <div className="instance-summary-kind">
-              <span aria-hidden="true" className="instance-summary-icon">
-                <Icon name="clock" size={20} />
-              </span>
-              <span className="instance-summary-copy">
-                <strong>Data freshness</strong>
-                <span>{lastTickAt ? formatTimestamp(lastTickAt) : "Latest scheduler tick unavailable"}</span>
-              </span>
-            </div>
-            <div className="daemon-last-checked">
-              <span>
-                <span>Last checked</span>
-                <strong>{tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}</strong>
-                {lastTickAt && <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>}
-              </span>
-              <button aria-label="Refresh instance status" onClick={retry} type="button">
-                <Icon name="refresh" size={22} />
-              </button>
-            </div>
-          </div>
-
           {recoveryInventory && <RecoveryInventorySummary inventory={recoveryInventory} />}
 
           {maintenance && <MaintenanceSummary maintenance={maintenance} />}
@@ -728,11 +798,14 @@ function InstanceSummaryPanel({
               </div>
               <div className="instance-summary-result">
                 <strong>
-                  <span aria-hidden="true" className="result-check"><Icon name="check" size={16} /></span>
+                  <span aria-hidden="true" className="result-check">
+                    <Icon name="check" size={16} />
+                  </span>
                   {telemetryRetention.enabled ? "Enabled" : "Disabled"}
                 </strong>
                 <span>
-                  {formatRetentionWindow(telemetryRetention.window)} · Max {telemetryRetention.maxRuns} runs
+                  {formatRetentionWindow(telemetryRetention.window)} · Max{" "}
+                  {telemetryRetention.maxRuns} runs
                 </span>
                 {telemetryRetention.enabled && telemetryRetention.enforceAt && (
                   <span>Enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
@@ -751,6 +824,63 @@ function InstanceSummaryPanel({
       </details>
     </section>
   );
+}
+
+function StartupRecoverySummary({ startup }: { startup: StartupStatus }) {
+  const candidate = startup.blockingCandidate;
+  const progress = candidate?.progress;
+  return (
+    <div aria-label="Startup recovery progress" className="instance-summary-row" role="status">
+      <div className="instance-summary-kind">
+        <span aria-hidden="true" className="instance-summary-icon instance-summary-icon-warning">
+          <Icon name="clock" size={24} />
+        </span>
+        <span className="instance-summary-copy">
+          <strong>Startup recovery</strong>
+          <span>
+            API plane is available; scheduler readiness is waiting on {startup.phase}
+            {startup.target ? ` (${startup.target})` : ""}.
+          </span>
+        </span>
+      </div>
+      <div className="instance-summary-result">
+        <strong>
+          {progress
+            ? `${progress.examined}/${progress.total} candidates examined`
+            : "Recovery in progress"}
+        </strong>
+        <span>
+          Elapsed {formatSeconds(startup.elapsedSeconds)} · Budget{" "}
+          {formatSeconds(startup.budgetSeconds)}
+          {startup.budgetState ? ` · ${startup.budgetState}` : ""}
+        </span>
+        {candidate ? (
+          <span>
+            Blocking{" "}
+            {candidate.runId ? `run ${candidate.runId}` : "candidate"}
+            {candidate.gaggle || candidate.workflow
+              ? ` (${candidate.gaggle ?? "-"}/${candidate.workflow ?? "-"})`
+              : ""}
+            {candidate.disposition ? ` · ${candidate.disposition}` : ""}
+            {candidate.phase ? ` · ${candidate.phase}` : ""}
+            {candidate.operation ? ` · ${candidate.operation}` : ""}
+          </span>
+        ) : startup.phase === "crash-resume" ? (
+          <span>Waiting for the resumeComplete gate after candidate classification.</span>
+        ) : null}
+        {candidate?.lastProgressAt && (
+          <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(candidate.lastProgressAt)))} ago</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatSeconds(seconds: number | undefined): string {
+  if (!Number.isFinite(seconds)) {
+    return "unavailable";
+  }
+  return formatDuration(Math.max(0, Math.round((seconds ?? 0) * 1000)));
 }
 
 /**
@@ -798,52 +928,58 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
           <span>Durable handoffs for worktree cleanup</span>
         </span>
       </div>
-      <div className="instance-summary-result">
-        <strong>
-          <span aria-hidden="true" className="result-check">
-            <Icon name={elevated ? "alert" : "check"} size={16} />
-          </span>
-          {RECOVERY_INVENTORY_HEADLINES[state]}
-          {state !== "unavailable" && (
+      <div className="instance-summary-result instance-summary-result-with-actions">
+        <div className="instance-summary-result-copy">
+          <strong>
+            <span aria-hidden="true" className="result-check">
+              <Icon name={elevated ? "alert" : "check"} size={16} />
+            </span>
+            {RECOVERY_INVENTORY_HEADLINES[state]}
+            {state !== "unavailable" && (
+              <span>
+                {" "}
+                &middot; {inventory.used}/{inventory.limit} slots
+                {percent === undefined ? "" : ` (${percent}%)`}
+              </span>
+            )}
+          </strong>
+          <span>{recoveryInventoryExplanation(inventory)}</span>
+          {inventory.overflow > 0 && (
             <span>
-              {" "}
-              &middot; {inventory.used}/{inventory.limit} slots
-              {percent === undefined ? "" : ` (${percent}%)`}
+              {inventory.overflow} {inventory.overflow === 1 ? "snapshot" : "snapshots"} held as
+              mirror refs without a bundle until capacity frees
             </span>
           )}
-        </strong>
-        <span>{recoveryInventoryExplanation(inventory)}</span>
-        {inventory.overflow > 0 && (
-          <span>
-            {inventory.overflow} {inventory.overflow === 1 ? "snapshot" : "snapshots"} held as
-            mirror refs without a bundle until capacity frees
-          </span>
-        )}
-        {inventory.unreadable > 0 && (
-          <span>
-            {inventory.unreadable} incomplete{" "}
-            {inventory.unreadable === 1 ? "reservation" : "reservations"} still occupying slots
-          </span>
-        )}
-        {inventory.earliestRetainUntil && (
-          <span>Earliest retention deadline {formatTimestamp(inventory.earliestRetainUntil)}</span>
-        )}
-        {inventory.error && <span>{inventory.error}</span>}
-        <a
-          className="instance-warning-link"
-          href={RECOVERY_INVENTORY_DOCS}
-          rel="noreferrer"
-          target="_blank"
-        >
-          Recovery capacity and operator actions
-        </a>
-        <a
-          className="instance-warning-link"
-          data-focus-restore="instance-recovery-detail"
-          href={routeHash({ page: "instance-detail", detail: "recovery" })}
-        >
-          View recovery metadata
-        </a>
+          {inventory.unreadable > 0 && (
+            <span>
+              {inventory.unreadable} incomplete{" "}
+              {inventory.unreadable === 1 ? "reservation" : "reservations"} still occupying slots
+            </span>
+          )}
+          {inventory.earliestRetainUntil && (
+            <span>
+              Earliest retention deadline {formatTimestamp(inventory.earliestRetainUntil)}
+            </span>
+          )}
+          {inventory.error && <span>{inventory.error}</span>}
+        </div>
+        <div className="instance-summary-actions">
+          <a
+            className="instance-warning-link"
+            href={RECOVERY_INVENTORY_DOCS}
+            rel="noreferrer"
+            target="_blank"
+          >
+            Recovery capacity and operator actions
+          </a>
+          <a
+            className="instance-warning-link"
+            data-focus-restore="instance-recovery-detail"
+            href={routeHash({ page: "instance-detail", detail: "recovery" })}
+          >
+            View recovery metadata
+          </a>
+        </div>
       </div>
     </div>
   );
@@ -889,12 +1025,9 @@ const RECOVERY_INVENTORY_DOCS =
 function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus }) {
   const completedAt = maintenance.lastCompletedAt;
   const state = maintenance.state;
-  const stateLabel = state === "none"
-    ? "Idle"
-    : `${state.slice(0, 1).toUpperCase()}${state.slice(1)}`;
-  const statusLabel = state === "none"
-    ? "No retention sweep running"
-    : `Retention sweep ${state}`;
+  const stateLabel =
+    state === "none" ? "Idle" : `${state.slice(0, 1).toUpperCase()}${state.slice(1)}`;
+  const statusLabel = state === "none" ? "No retention sweep running" : `Retention sweep ${state}`;
   const age = completedAt
     ? `${formatDuration(Math.max(0, Date.now() - Date.parse(completedAt)))} ago`
     : undefined;
@@ -914,39 +1047,48 @@ function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus })
           <span>Periodic cleanup of run data</span>
         </span>
       </div>
-      <div className="instance-summary-result">
-        <strong>
-          <span aria-hidden="true" className="result-check">
-            <Icon name={state === "failed" ? "alert" : "check"} size={16} />
-          </span>
-          {stateLabel}
-          {age && <span> · {age}</span>}
-        </strong>
-        {maintenance.errorSummary ? (
-          <span>
-            {`${maintenance.trigger.slice(0, 1).toUpperCase()}${maintenance.trigger.slice(1)}`} trigger ·{" "}
-            {maintenance.errorSummary}
-          </span>
-        ) : (
-          <span>
-            {`${maintenance.trigger.slice(0, 1).toUpperCase()}${maintenance.trigger.slice(1)}`} trigger ·{" "}
-            {maintenance.removed} removed · {maintenance.candidates} candidates
-          </span>
-        )}
-        {state === "none" && completedAt && (
-          <span>Last completed at {formatTimestamp(completedAt)}</span>
-        )}
-        {maintenance.currentPhase && state === "running" && <span>{maintenance.currentPhase}</span>}
-        {maintenance.lastProgressAt && state === "running" && (
-          <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago</span>
-        )}
-        <a
-          className="instance-warning-link"
-          data-focus-restore="instance-retention-detail"
-          href={routeHash({ page: "instance-detail", detail: "retention" })}
-        >
-          View retention details
-        </a>
+      <div className="instance-summary-result instance-summary-result-with-actions">
+        <div className="instance-summary-result-copy">
+          <strong>
+            <span aria-hidden="true" className="result-check">
+              <Icon name={state === "failed" ? "alert" : "check"} size={16} />
+            </span>
+            {stateLabel}
+            {age && <span> · {age}</span>}
+          </strong>
+          {maintenance.errorSummary ? (
+            <span>
+              {`${maintenance.trigger.slice(0, 1).toUpperCase()}${maintenance.trigger.slice(1)}`}{" "}
+              trigger · {maintenance.errorSummary}
+            </span>
+          ) : (
+            <span>
+              {`${maintenance.trigger.slice(0, 1).toUpperCase()}${maintenance.trigger.slice(1)}`}{" "}
+              trigger · {maintenance.removed} removed · {maintenance.candidates} candidates
+            </span>
+          )}
+          {state === "none" && completedAt && (
+            <span>Last completed at {formatTimestamp(completedAt)}</span>
+          )}
+          {maintenance.currentPhase && state === "running" && (
+            <span>{maintenance.currentPhase}</span>
+          )}
+          {maintenance.lastProgressAt && state === "running" && (
+            <span>
+              Last progress{" "}
+              {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago
+            </span>
+          )}
+        </div>
+        <div className="instance-summary-actions">
+          <a
+            className="instance-warning-link"
+            data-focus-restore="instance-retention-detail"
+            href={routeHash({ page: "instance-detail", detail: "retention" })}
+          >
+            View retention details
+          </a>
+        </div>
       </div>
     </div>
   );
@@ -971,10 +1113,15 @@ function RunSection({
   const active = title === "Active runs";
   return (
     <section className="content-section">
-      <div className="section-heading">
-        <h2>{title}</h2>
-        <span className="section-count">{runs.length}</span>
-      </div>
+      <SectionHeading
+        title={title}
+        className=""
+        actions={
+          <>
+            <span className="section-count">{runs.length}</span>
+          </>
+        }
+      />
       {runs.length === 0 ? (
         <p className="inline-empty">{active ? "No runs are active." : "No recent outcomes."}</p>
       ) : (
@@ -995,21 +1142,20 @@ function RunSection({
               label={`Open run ${run.id}`}
             >
               <span className="row-primary">
-                <span className="row-title" title={runLabel(run)}>{runLabel(run)}</span>
+                <span className="row-title" title={runLabel(run)}>
+                  {runLabel(run)}
+                </span>
                 <span className="row-subtitle" title={runContextSubtitle(run, active)}>
-                  {active && run.operator
-                    ? operatorSubtitle(run)
-                    : runContextSubtitle(run, active)}
+                  {active && run.operator ? operatorSubtitle(run) : runContextSubtitle(run, active)}
                   {!active && run.finishedAt && (
                     <>
                       {" · "}
-                      <time
+                      <Timestamp
                         aria-label={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
-                        dateTime={run.finishedAt}
+                        value={run.finishedAt}
                         title={`Completed ${formatPreciseTimestamp(run.finishedAt)}`}
-                      >
-                        Completed {formatTimestamp(run.finishedAt)}
-                      </time>
+                        prefix="Completed "
+                      />
                     </>
                   )}
                 </span>
@@ -1071,10 +1217,7 @@ function runLabel(run: RunSummary): string {
   return run.id;
 }
 
-function runContextSubtitle(
-  run: RunSummary,
-  active: boolean,
-): string {
+function runContextSubtitle(run: RunSummary, active: boolean): string {
   if (active && run.operator) {
     return operatorSubtitle(run);
   }
@@ -1092,6 +1235,8 @@ interface AttentionGroup {
   label: string;
   context: string;
   diagnosis: string;
+  severity: AttentionSeverity;
+  severitySource: RunSummary;
   latest: RunSummary;
   runs: RunSummary[];
 }
@@ -1102,15 +1247,44 @@ function groupAttentionRuns(
   failureReasons: FailureReasons,
 ): AttentionGroup[] {
   const grouped = new Map<string, AttentionGroup>();
+  const availableRuns = [
+    ...overview.groups.active,
+    ...overview.groups.attention,
+    ...overview.groups.recent,
+  ];
   for (const run of runs) {
     const issue = run.operator?.issue;
-    const category = attentionCategory(run, failureReasons);
+    const severity = attentionSeverity(
+      run,
+      availableRuns,
+      failureReasons.get(run.id),
+    );
+    const category = attentionCategory(run, failureReasons, severity);
     const key = issue
       ? `issue:${issue.number}`
       : `workflow:${run.gaggle}/${run.workflow}/${category}`;
     const existing = grouped.get(key);
     if (existing) {
       existing.runs.push(run);
+      if (Date.parse(run.lastActivityAt) > Date.parse(existing.latest.lastActivityAt)) {
+        existing.latest = run;
+      }
+      const severityRank = attentionSeverityRank(severity);
+      const existingSeverityRank = attentionSeverityRank(existing.severity);
+      if (
+        severityRank < existingSeverityRank ||
+        (severityRank === existingSeverityRank &&
+          Date.parse(run.lastActivityAt) >
+            Date.parse(existing.severitySource.lastActivityAt))
+      ) {
+        existing.label = issue
+          ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
+          : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`;
+        existing.context = workflowIdentity(run);
+        existing.diagnosis = attentionDiagnosis(run, failureReasons, severity);
+        existing.severity = severity;
+        existing.severitySource = run;
+      }
       continue;
     }
     grouped.set(key, {
@@ -1118,22 +1292,35 @@ function groupAttentionRuns(
       domId: key.replace(/[^a-zA-Z0-9_-]/g, "-"),
       label: issue
         ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
-        : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons)}`,
+        : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`,
       context: workflowIdentity(run),
-      diagnosis: attentionDiagnosis(run, failureReasons),
+      diagnosis: attentionDiagnosis(run, failureReasons, severity),
+      severity,
+      severitySource: run,
       latest: run,
       runs: [run],
     });
   }
 
-  return [...grouped.values()];
+  return [...grouped.values()].sort(
+    (left, right) =>
+      attentionSeverityRank(left.severity) - attentionSeverityRank(right.severity) ||
+      Date.parse(right.latest.lastActivityAt) - Date.parse(left.latest.lastActivityAt),
+  );
 }
 
 function workflowIdentity(run: Pick<RunSummary, "gaggle" | "workflow">): string {
   return `${run.gaggle} / ${run.workflow}`;
 }
 
-function attentionCategory(run: RunSummary, failureReasons: FailureReasons): string {
+function attentionCategory(
+  run: RunSummary,
+  failureReasons: FailureReasons,
+  severity: AttentionSeverity,
+): string {
+  if (severity === "stalled") {
+    return "stalled";
+  }
   if (run.phase === "escalated") {
     return `escalated:${run.terminalReason ?? "review"}`;
   }
@@ -1141,7 +1328,14 @@ function attentionCategory(run: RunSummary, failureReasons: FailureReasons): str
   return `failed:${reason?.code ?? run.operator?.latestError?.code ?? run.terminalReason ?? "unknown"}`;
 }
 
-function attentionCategoryLabel(run: RunSummary, failureReasons: FailureReasons): string {
+function attentionCategoryLabel(
+  run: RunSummary,
+  failureReasons: FailureReasons,
+  severity: AttentionSeverity,
+): string {
+  if (severity === "stalled") {
+    return "No recent progress";
+  }
   if (run.phase === "escalated") {
     return "Escalated for review";
   }
@@ -1149,7 +1343,14 @@ function attentionCategoryLabel(run: RunSummary, failureReasons: FailureReasons)
   return reason?.code ?? run.operator?.latestError?.code ?? "Failed";
 }
 
-function attentionDiagnosis(run: RunSummary, failureReasons: FailureReasons): string {
+function attentionDiagnosis(
+  run: RunSummary,
+  failureReasons: FailureReasons,
+  severity: AttentionSeverity,
+): string {
+  if (severity === "stalled") {
+    return "No progress beyond the runner liveness threshold.";
+  }
   if (run.phase === "escalated") {
     return run.terminalReason ?? "Escalated and needs human review.";
   }
@@ -1158,6 +1359,10 @@ function attentionDiagnosis(run: RunSummary, failureReasons: FailureReasons): st
     return `${reason.code || "failed"}${reason.message ? ` · ${reason.message}` : ""}`;
   }
   return run.terminalReason ?? "Failed and needs investigation.";
+}
+
+function attentionSeverityLabel(severity: AttentionSeverity): string {
+  return severity === "blocked" ? "Blocked" : severity === "stalled" ? "Stalled" : "Warning";
 }
 
 function SelectionCheckbox({
@@ -1221,10 +1426,14 @@ function operatorContext(run: RunSummary): string {
   }
   const details: string[] = [];
   if (operator.latestError) {
-    details.push(`Error ${operator.latestError.code}${operator.latestError.message ? `: ${operator.latestError.message}` : ""}`);
+    details.push(
+      `Error ${operator.latestError.code}${operator.latestError.message ? `: ${operator.latestError.message}` : ""}`,
+    );
   }
   if (operator.review) {
-    details.push(`Review ${operator.review.verdict}${operator.review.rationale ? `: ${operator.review.rationale}` : ""}`);
+    details.push(
+      `Review ${operator.review.verdict}${operator.review.rationale ? `: ${operator.review.rationale}` : ""}`,
+    );
   }
   if (operator.potentialBlockers.length > 0) {
     details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
@@ -1255,18 +1464,4 @@ function formatDuration(milliseconds: number): string {
     return `${hours}h ${minutes}m`;
   }
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-}
-
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function formatPreciseTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "full",
-    timeStyle: "long",
-  }).format(new Date(value));
 }

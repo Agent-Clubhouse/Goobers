@@ -1,22 +1,17 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/configboundary"
+	"github.com/goobers/goobers/internal/docchurn"
 	"github.com/goobers/goobers/internal/executor"
-	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // docs-churn is the docs-updater workflow's deterministic signal-gather stage
@@ -47,50 +42,10 @@ import (
 // advanceWatermark=false and advance it itself; that terminal stage is out of
 // scope for this foundation.
 const (
-	docsChurnSchemaVersion   = "goobers.dev/docs-churn/v1"
-	docsChurnFormat          = "churn-digest"
-	docsChurnDefaultFloor    = 168 * time.Hour
-	docsChurnDefaultBuffer   = 3.0
-	docsChurnNoChurnNote     = "no code churn in the reported window"
-	docsChurnFirstRunNote    = "first run: no watermark yet, bounded to the since-floor window"
-	docsChurnEmptyTreeObject = "4b825dc642cb6eb9a060e54bf8d69288fbee4904" // git's well-known empty tree
+	docsChurnFormat        = "churn-digest"
+	docsChurnDefaultFloor  = 168 * time.Hour
+	docsChurnDefaultBuffer = 3.0
 )
-
-// docsWatermark is the durable last-refreshed marker persisted between runs.
-type docsWatermark struct {
-	Schema      string    `json:"schema"`
-	Gaggle      string    `json:"gaggle,omitempty"`
-	Workflow    string    `json:"workflow"`
-	SHA         string    `json:"sha"`
-	RefreshedAt time.Time `json:"refreshedAt"`
-}
-
-const docsWatermarkSchemaVersion = "goobers.dev/docs-watermark/v1"
-
-type churnCommit struct {
-	SHA     string `json:"sha"`
-	Subject string `json:"subject"`
-	Body    string `json:"body,omitempty"`
-}
-
-type docsChurnDigest struct {
-	Schema           string              `json:"schema"`
-	FirstRun         bool                `json:"firstRun"`
-	Since            time.Time           `json:"since"`
-	Head             string              `json:"head"`
-	Base             string              `json:"base,omitempty"`
-	Watermark        *docsWatermark      `json:"watermark,omitempty"`
-	BufferMultiplier float64             `json:"bufferMultiplier"`
-	SinceFloor       string              `json:"sinceFloor"`
-	CommitCount      int                 `json:"commitCount"`
-	Commits          []churnCommit       `json:"commits"`
-	ChangedFiles     []string            `json:"changedFiles"`
-	Areas            map[string][]string `json:"areas"`
-	DocsRoots        []string            `json:"docsRoots,omitempty"`
-	DocsRootChanges  []string            `json:"docsRootChanges,omitempty"`
-	NoWork           bool                `json:"noWork,omitempty"`
-	Note             string              `json:"note,omitempty"`
-}
 
 const docsChurnHelp = "Usage: goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] " +
 	"[--since <duration>] [--buffer-multiplier <float>] [--format churn-digest] [path]\n\n" +
@@ -142,18 +97,30 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 	// node can tune them without a bespoke command line.
 	floor := *since
 	if v := providerInput("sinceFloor", ""); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			pf(stderr, "error: input sinceFloor must be a positive duration, got %q\n", v)
+		d, err := parseDurationInput(
+			v,
+			func(value time.Duration) bool { return value > 0 },
+			func(raw string, _ error) string {
+				return fmt.Sprintf("input sinceFloor must be a positive duration, got %q", raw)
+			},
+		)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 2
 		}
 		floor = d
 	}
 	multiplier := *bufferMultiplier
 	if v := providerInput("bufferMultiplier", ""); v != "" {
-		m, err := strconv.ParseFloat(v, 64)
-		if err != nil || m < 1 {
-			pf(stderr, "error: input bufferMultiplier must be a number >= 1, got %q\n", v)
+		m, err := parseFloatInput(
+			v,
+			func(value float64) bool { return !(value < 1) },
+			func(raw string, _ error) string {
+				return fmt.Sprintf("input bufferMultiplier must be a number >= 1, got %q", raw)
+			},
+		)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 2
 		}
 		multiplier = m
@@ -170,185 +137,29 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 
 	root := providerStageRoot(pathArg)
 	wmPath := layoutFor(root).DocsWatermarkPath(gaggle, workflow)
-	watermark, haveWatermark, err := readDocsWatermark(wmPath)
-	if err != nil {
-		pf(stderr, "error: read docs watermark %s: %v\n", wmPath, err)
-		return 1
-	}
-
-	head, err := gitRevParse(*repo, "HEAD")
-	if err != nil {
-		pf(stderr, "error: resolve HEAD in %s: %v\n", *repo, err)
-		return 1
-	}
-
-	now := time.Now().UTC()
-	firstRun := !haveWatermark
-	var sinceTime time.Time
-	if firstRun {
-		sinceTime = now.Add(-floor)
-	} else {
-		sinceLast := now.Sub(watermark.RefreshedAt)
-		if sinceLast < 0 {
-			sinceLast = 0
-		}
-		buffer := time.Duration(float64(sinceLast) * multiplier)
-		if buffer < floor {
-			buffer = floor
-		}
-		sinceTime = watermark.RefreshedAt.Add(-buffer)
-	}
-
-	base, hasBase, err := gitBoundaryCommit(*repo, sinceTime)
-	if err != nil {
-		pf(stderr, "error: locate window boundary commit in %s: %v\n", *repo, err)
-		return 1
-	}
-	diffBase := base
-	if !hasBase {
-		diffBase = docsChurnEmptyTreeObject
-	}
-
-	commits, err := gitCommitsInRange(*repo, diffBase, head)
-	if err != nil {
-		pf(stderr, "error: list commits in %s: %v\n", *repo, err)
-		return 1
-	}
-	changed, err := gitChangedFiles(*repo, diffBase, head)
-	if err != nil {
-		pf(stderr, "error: list changed files in %s: %v\n", *repo, err)
-		return 1
-	}
-
-	digest := buildDocsChurnDigest(firstRun, sinceTime, head, base, hasBase, watermark, haveWatermark,
-		multiplier, floor, commits, changed, docsRoots)
-
-	if code := writeDocsChurnDigest(digest, stdout, stderr); code != 0 {
-		return code
-	}
-
-	if advance {
-		if err := writeDocsWatermark(wmPath, docsWatermark{
-			Schema:      docsWatermarkSchemaVersion,
-			Gaggle:      gaggle,
-			Workflow:    workflow,
-			SHA:         head,
-			RefreshedAt: now,
-		}); err != nil {
-			pf(stderr, "error: advance docs watermark %s: %v\n", wmPath, err)
-			return 1
-		}
-	}
-	return 0
-}
-
-func buildDocsChurnDigest(
-	firstRun bool,
-	sinceTime time.Time,
-	head, base string,
-	hasBase bool,
-	watermark docsWatermark,
-	haveWatermark bool,
-	multiplier float64,
-	floor time.Duration,
-	commits []churnCommit,
-	changed []string,
-	docsRoots []string,
-) docsChurnDigest {
-	if commits == nil {
-		commits = []churnCommit{}
-	}
-	if changed == nil {
-		changed = []string{}
-	}
-	digest := docsChurnDigest{
-		Schema:           docsChurnSchemaVersion,
-		FirstRun:         firstRun,
-		Since:            sinceTime,
-		Head:             head,
+	err := docchurn.Run(docchurn.Options{
+		Repo:             *repo,
+		WatermarkPath:    wmPath,
+		Gaggle:           gaggle,
+		Workflow:         workflow,
+		ResultFile:       providerInput(executor.InputResultFile, ""),
+		SinceFloor:       floor,
 		BufferMultiplier: multiplier,
-		SinceFloor:       floor.String(),
-		CommitCount:      len(commits),
-		Commits:          commits,
-		ChangedFiles:     changed,
-		Areas:            groupByArea(changed),
 		DocsRoots:        docsRoots,
-		DocsRootChanges:  filesUnderRoots(docsRoots, changed),
-	}
-	if hasBase {
-		digest.Base = base
-	}
-	if haveWatermark {
-		wm := watermark
-		digest.Watermark = &wm
-	}
-	switch {
-	case len(changed) == 0 && firstRun:
-		digest.NoWork = true
-		digest.Note = docsChurnFirstRunNote + "; " + docsChurnNoChurnNote
-	case len(changed) == 0:
-		digest.NoWork = true
-		digest.Note = docsChurnNoChurnNote
-	case firstRun:
-		digest.Note = docsChurnFirstRunNote
-	}
-	return digest
-}
-
-func writeDocsChurnDigest(digest docsChurnDigest, stdout, stderr io.Writer) int {
-	out, err := json.MarshalIndent(digest, "", "  ")
+		AdvanceWatermark: advance,
+		Clock:            time.Now,
+		Git:              gitOutput,
+		Stdout:           stdout,
+	})
 	if err != nil {
-		pf(stderr, "error: encode churn digest: %v\n", err)
+		var outputErr *docchurn.StdoutError
+		if errors.As(err, &outputErr) {
+			return 2
+		}
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	out = append(out, '\n')
-	if rf := providerInput(executor.InputResultFile, ""); rf != "" {
-		if err := os.WriteFile(rf, out, 0o644); err != nil {
-			pf(stderr, "error: write result file %q: %v\n", rf, err)
-			return 1
-		}
-		return 0
-	}
-	if _, err := stdout.Write(out); err != nil {
-		return 2
-	}
 	return 0
-}
-
-// groupByArea buckets changed paths by their top-level path segment (a file at
-// the repo root is grouped under "(root)"), giving the docs goober a coarse map
-// of where the change landed without re-deriving it from the flat file list.
-func groupByArea(changed []string) map[string][]string {
-	areas := map[string][]string{}
-	for _, f := range changed {
-		clean := filepath.ToSlash(filepath.Clean(f))
-		area := "(root)"
-		if i := strings.IndexByte(clean, '/'); i > 0 {
-			area = clean[:i]
-		}
-		areas[area] = append(areas[area], f)
-	}
-	for _, files := range areas {
-		sort.Strings(files)
-	}
-	return areas
-}
-
-// filesUnderRoots returns the changed files contained within any declared docs
-// root, so the digest flags which churn already landed in documentation (vs
-// code that may have drifted its docs). Returns nil when no roots are declared.
-func filesUnderRoots(roots, changed []string) []string {
-	if len(roots) == 0 {
-		return nil
-	}
-	var hits []string
-	for _, f := range changed {
-		if configboundary.ConfineToAny(roots, []string{f}) == nil {
-			hits = append(hits, f)
-		}
-	}
-	sort.Strings(hits)
-	return hits
 }
 
 func parseDocsRoots(raw string) []string {
@@ -376,121 +187,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// --- watermark persistence -------------------------------------------------
-
-func readDocsWatermark(path string) (docsWatermark, bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return docsWatermark{}, false, nil
-		}
-		return docsWatermark{}, false, err
-	}
-	var wm docsWatermark
-	if err := json.Unmarshal(data, &wm); err != nil {
-		return docsWatermark{}, false, fmt.Errorf("parse watermark: %w", err)
-	}
-	if wm.SHA == "" || wm.RefreshedAt.IsZero() {
-		return docsWatermark{}, false, fmt.Errorf("watermark %s is missing sha/refreshedAt", path)
-	}
-	return wm, true, nil
-}
-
-func writeDocsWatermark(path string, wm docsWatermark) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(wm, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	// Write-then-rename so a crash mid-write can never leave a truncated
-	// watermark that the next run would reject and refuse to advance.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return durability.ReplaceFile(tmp, path)
-}
-
 // --- git plumbing ----------------------------------------------------------
-
-func gitRevParse(repo, rev string) (string, error) {
-	out, err := gitOutput(repo, "rev-parse", "--verify", rev+"^{commit}")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
-}
-
-// gitBoundaryCommit returns the most recent commit whose committer date is
-// strictly before sinceTime — the stable diff base at the far edge of the
-// window. hasBase is false when the window reaches back before the first commit
-// (the whole history is in range), in which case the caller diffs against the
-// empty tree instead.
-func gitBoundaryCommit(repo string, sinceTime time.Time) (string, bool, error) {
-	out, err := gitOutput(repo, "rev-list", "-1",
-		"--before="+sinceTime.UTC().Format(time.RFC3339), "HEAD")
-	if err != nil {
-		return "", false, err
-	}
-	sha := strings.TrimSpace(out)
-	if sha == "" {
-		return "", false, nil
-	}
-	return sha, true, nil
-}
-
-// gitCommitsInRange returns the commits in (base, head], newest first. base is a
-// commit SHA or git's empty-tree object (whole-history case); the empty tree is
-// not a commit, so that case lists every commit reachable from head.
-func gitCommitsInRange(repo, base, head string) ([]churnCommit, error) {
-	const sep = "\x1e" // record separator between fields
-	format := "%H" + sep + "%s" + sep + "%b"
-	rangeArg := base + ".." + head
-	if base == docsChurnEmptyTreeObject {
-		rangeArg = head
-	}
-	out, err := gitOutput(repo, "log", "-z", "--no-color", "--format="+format, rangeArg)
-	if err != nil {
-		return nil, err
-	}
-	var commits []churnCommit
-	for _, rec := range strings.Split(out, "\x00") {
-		if strings.TrimSpace(rec) == "" {
-			continue
-		}
-		parts := strings.SplitN(rec, sep, 3)
-		if len(parts) < 2 {
-			continue
-		}
-		c := churnCommit{SHA: strings.TrimSpace(parts[0]), Subject: strings.TrimSpace(parts[1])}
-		if len(parts) == 3 {
-			c.Body = strings.TrimSpace(parts[2])
-		}
-		commits = append(commits, c)
-	}
-	return commits, nil
-}
-
-// gitChangedFiles returns the repo-relative paths changed between base and head.
-// --no-renames so a file moved out of a docs root surfaces as its new path
-// rather than being hidden by rename detection, matching configboundary's diff.
-func gitChangedFiles(repo, base, head string) ([]string, error) {
-	out, err := gitOutput(repo, "diff", "--no-renames", "--name-only", base, head)
-	if err != nil {
-		return nil, err
-	}
-	var files []string
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			files = append(files, line)
-		}
-	}
-	sort.Strings(files)
-	return files, nil
-}
 
 func gitOutput(repo string, args ...string) (string, error) {
 	full := append([]string{"-C", repo}, args...)

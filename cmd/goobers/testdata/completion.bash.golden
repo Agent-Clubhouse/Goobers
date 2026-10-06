@@ -134,7 +134,7 @@ _goobers_completion()
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;
         worker)
-            flags+=" --instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --blob-probe-wait --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         config-seed)
             flags+=" --mirror --instance"
@@ -166,7 +166,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=" --api --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --api --agents --runs-only --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -291,7 +291,7 @@ _goobers_completion()
             flags+=" --gate"
             ;;
         pr-claim)
-            flags+=" --release"
+            flags+=" --release --verify-feedback --classify-feedback-repass"
             ;;
         remediation-checkpoint)
             flags+=" --budget --escalate --escalation-outcome"
@@ -301,6 +301,9 @@ _goobers_completion()
             ;;
         mcp-io)
             flags+=" --config"
+            ;;
+        advisory-pr-reset)
+            flags+=" --gaggle --owner --repo --review-type --pr"
             ;;
     esac
     if [[ "${cur}" == -* ]]; then

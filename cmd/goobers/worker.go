@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"go.temporal.io/sdk/converter"
 
@@ -161,6 +162,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "enables the dispatcher-backed stage-dispatch seam; each stage pod routes to its own gaggle's declared isolation.namespace (#4897), not to this value")
 	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
 	configHistoryDepth := fs.Int("config-history-depth", workerConfigHistoryDepth, "how many superseded config trees to retain so an in-flight run pinned to one is still served its own kit; 0 disables retention")
+	blobProbeWait := fs.Duration("blob-probe-wait", workerEnvDuration("GOOBERS_WORKER_BLOB_PROBE_WAIT", workerblob.DefaultReadyWait), "how long the startup blob-plane probe waits for a not-yet-ready daemon (503/unreachable) before exiting; real mismatches fail immediately")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -242,7 +244,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// identically whether its stage runs in this process or in a pod (#3884).
 	var seams *workerSeams
 	if *instanceRoot != "" {
-		store, berr := openWorkerBlobStore(*instanceRoot, *blobRoot, *blobEndpoint, *dispatchNamespace)
+		store, berr := openWorkerBlobStore(*instanceRoot, *blobRoot, *blobEndpoint, *dispatchNamespace, workerblob.ProbeOptions{ReadyWait: *blobProbeWait, Log: stderr})
 		if berr != nil {
 			pf(stderr, "error: %v\n", berr)
 			return 1
@@ -554,6 +556,14 @@ func claimWorkerRoot(root, owner string) (*platformlock.Handle, error) {
 func workerEnvOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// workerEnvDuration parses a Go duration from key, falling back when unset or invalid.
+func workerEnvDuration(key string, fallback time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(key)); err == nil && d > 0 {
+		return d
 	}
 	return fallback
 }

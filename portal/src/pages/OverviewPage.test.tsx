@@ -11,6 +11,54 @@ beforeEach(() => {
 });
 
 describe("overview page", () => {
+  it("keeps freshness and refresh after active runs in the top status bar", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.freshness.lastTickAgeMillis = 17_000;
+    fixtures.health.freshness.lastSchedulerTickAt = "2026-09-10T00:00:00Z";
+    const client = new FixtureDaemonClient(fixtures);
+    const refresh = vi.spyOn(client, "getHealth");
+
+    render(<App client={client} />);
+
+    const freshness = await screen.findByText("Data freshness");
+    const metrics = freshness.closest("dl");
+    expect(metrics).not.toBeNull();
+    expect(Array.from(metrics!.querySelectorAll("dt")).map((label) => label.textContent)).toEqual([
+      "Gaggles",
+      "Active runs",
+      "Data freshness",
+    ]);
+    expect(freshness.closest("details")).toBeNull();
+    expect(freshness.parentElement).toHaveTextContent("17s ago");
+    expect(freshness.parentElement!.querySelector("time")).toHaveAttribute(
+      "dateTime",
+      "2026-09-10T00:00:00Z",
+    );
+    const callsBeforeRefresh = refresh.mock.calls.length;
+    await userEvent.click(screen.getByRole("button", { name: "Refresh instance status" }));
+    expect(refresh.mock.calls.length).toBeGreaterThan(callsBeforeRefresh);
+    expect(screen.queryByText("Last checked")).not.toBeInTheDocument();
+  });
+
+  it("warns when bounded attention candidates leave additional actionable runs unseen", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const failure = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failure) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    fixtures.runs.runs = Array.from({ length: 101 }, (_, index) => ({
+      ...failure,
+      id: `failure-${index}`,
+      lastActivityAt: new Date(Date.now() - 1_000 - index).toISOString(),
+    }));
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(await screen.findByText(/attention candidate window was truncated/)).toHaveTextContent(
+      "additional actionable runs may exist. Inspect the Runs page for the full list.",
+    );
+  });
+
   it("shows durable root identity and warns for a historical root", async () => {
     const fixtures = populatedDaemonFixtures();
     fixtures.instance.computerName = "MDB5";
@@ -26,7 +74,9 @@ describe("overview page", () => {
     expect(tooltip).toHaveTextContent("0123456789abcdef0123456789abcdef");
     expect(tooltip).toHaveTextContent(fixtures.instance.instanceRoot);
     expect(tooltip).toHaveTextContent("MDB5");
-    expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent("migrated to replacement");
+    expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent(
+      "migrated to replacement",
+    );
   });
 
   it("shows the authoritative daemon binary version from health metadata", async () => {
@@ -48,7 +98,9 @@ describe("overview page", () => {
   it("renders fixture-driven attention, active, and recent run groups", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
+    ).toBeInTheDocument();
     expect(
       within(screen.getByRole("region", { name: "Active runs" })).getByRole("link", {
         name: "Open run 01JZ441DAEMONAPI",
@@ -62,7 +114,9 @@ describe("overview page", () => {
     const active = within(screen.getByRole("region", { name: "Active runs" }));
     expect(active.getByText("#3088 Operator status progress")).toBeInTheDocument();
     expect(active.getByText("core / implementation")).toBeInTheDocument();
-    expect(active.getByText("review · recent heartbeat 30s ago · claim active/verified")).toBeInTheDocument();
+    expect(
+      active.getByText("review · recent heartbeat 30s ago · claim active/verified"),
+    ).toBeInTheDocument();
     expect(active.getByText("review · PR via open-pr · finish review")).toBeInTheDocument();
     expect(
       active.getByText(
@@ -83,11 +137,15 @@ describe("overview page", () => {
       (time) => time.getAttribute("datetime") === finishedAt,
     );
     const timestamp = new Date(finishedAt);
-    const visibleTime = new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
+    const visibleTime = new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     }).format(timestamp);
-    const preciseTime = new Intl.DateTimeFormat(undefined, {
+    const preciseTime = new Intl.DateTimeFormat("en-US", {
       dateStyle: "full",
       timeStyle: "long",
     }).format(timestamp);
@@ -117,17 +175,17 @@ describe("overview page", () => {
 
     expect(await screen.findByText("#4449 Repeated implementation failure")).toBeInTheDocument();
     expect(screen.getByText(/2 runs ·/)).toBeInTheDocument();
-    expect(
-      screen.queryByText("implementation · 01JZ402DASHBOARD"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("implementation · 01JZ402DASHBOARD")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Show runs" }));
-    expect(
-      screen.getByRole("link", { name: /01JZ402DASHBOARD/ }),
-    ).toHaveAttribute("href", "#/run/01JZ402DASHBOARD");
-    expect(
-      screen.getByRole("link", { name: /01JZ400FAILED/ }),
-    ).toHaveAttribute("href", "#/run/01JZ400FAILED");
+    expect(screen.getByRole("link", { name: /01JZ402DASHBOARD/ })).toHaveAttribute(
+      "href",
+      "#/run/01JZ402DASHBOARD",
+    );
+    expect(screen.getByRole("link", { name: /01JZ400FAILED/ })).toHaveAttribute(
+      "href",
+      "#/run/01JZ400FAILED",
+    );
 
     const groupSelection = screen.getByRole("checkbox", {
       name: "Select all 2 runs in #4449 Repeated implementation failure",
@@ -138,13 +196,144 @@ describe("overview page", () => {
     expect(screen.queryByRole("button", { name: /Dismiss \d+ selected/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Dismiss run 01JZ402DASHBOARD" }));
-    expect(await screen.findByRole("heading", { name: "One run needs attention." })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", {
-      name: "Dismiss all runs in #4449 Repeated implementation failure",
-    }));
     expect(
-      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+      await screen.findByRole("heading", { name: "Overview - One run needs attention." }),
     ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Dismiss all runs in #4449 Repeated implementation failure",
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps mixed-severity issue summaries aligned with severity and latest activity", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const stalled = fixtures.runs.runs.find((run) => run.phase === "running");
+    const escalated = fixtures.runs.runs.find((run) => run.phase === "escalated");
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!stalled || !escalated || !failed) {
+      throw new Error("Populated fixtures must include running, escalated, and failed runs.");
+    }
+    const issue = { number: "6487", title: "Mixed attention history" };
+    const now = Date.now();
+    stalled.stale = true;
+    stalled.lastActivityAt = new Date(now - 2 * 60_000).toISOString();
+    stalled.operator = {
+      issue,
+      liveness: "stale",
+      trajectory: "stalled",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+    escalated.lastActivityAt = new Date(now - 3 * 60_000).toISOString();
+    escalated.terminalReason = "Provider action required.";
+    escalated.operator = {
+      issue,
+      liveness: "finished",
+      trajectory: "blocked",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+    failed.lastActivityAt = new Date(now - 60_000).toISOString();
+    failed.operator = {
+      issue,
+      liveness: "finished",
+      trajectory: "failed",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const label = await screen.findByText("#6487 Mixed attention history");
+    const group = label.closest(".attention-group");
+    if (!group) {
+      throw new Error("Mixed-severity attention group was not rendered.");
+    }
+    const summary = group.querySelector<HTMLElement>(".attention-group-summary");
+    if (!summary) {
+      throw new Error("Mixed-severity attention summary was not rendered.");
+    }
+    expect(within(summary).getByText("Blocked")).toBeVisible();
+    expect(within(summary).getByText("3 runs · Provider action required.")).toBeVisible();
+    expect(group.querySelector("time")).toHaveAttribute("datetime", failed.lastActivityAt);
+  });
+
+  it.each([
+    "goobers:needs-human",
+    "goobers:needs-remediation",
+    "goobers:blocked-on-sibling",
+  ])("classifies a terminal failed run with the %s item label as blocked", async (label) => {
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failed) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    failed.operator = {
+      issue: { number: "6487", title: "Blocked failed item", labels: [label] },
+      liveness: "finished",
+      trajectory: "terminal",
+      claim: { leaseStatus: "released", providerMarker: "not-present" },
+      potentialBlockers: [],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const issue = await screen.findByText("#6487 Blocked failed item");
+    const group = issue.closest(".attention-group");
+    if (!group) {
+      throw new Error("Blocked failed attention group was not rendered.");
+    }
+    const summary = group.querySelector<HTMLElement>(".attention-group-summary");
+    if (!summary) {
+      throw new Error("Blocked failed attention summary was not rendered.");
+    }
+    expect(within(summary).getByText("Blocked")).toBeVisible();
+  });
+
+  it("keeps stalled work visible ahead of telemetry-only FYI failures at the cap", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!failed || !running) {
+      throw new Error("Populated fixtures must include failed and running runs.");
+    }
+    const now = Date.now();
+    const failures = Array.from({ length: 21 }, (_, index) => ({
+      ...failed,
+      id: `retryable-failure-${index}`,
+      operator: undefined,
+      terminalReason: undefined,
+      lastActivityAt: new Date(now - 1_000 - index).toISOString(),
+    }));
+    const stalled = {
+      ...running,
+      id: "stalled-work",
+      operator: undefined,
+      stale: true,
+      lastActivityAt: new Date(now - 60_000).toISOString(),
+    };
+    fixtures.runs.runs = [...failures, stalled];
+    fixtures.telemetryErrors.items = failures.map((run, index) => ({
+      runId: run.id,
+      workflow: run.workflow,
+      stage: "implement",
+      attempt: 1,
+      code: "provider.rate_limit",
+      errorClass: "retryable-infrastructure",
+      message: "A retry is scheduled after the provider quota resets.",
+      occurredAt: new Date(now - 1_000 - index).toISOString(),
+    }));
+
+    const { container } = render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const fyiHeading = await screen.findByText("FYI failures");
+    expect(fyiHeading.parentElement).toHaveTextContent("19 runs");
+    expect(container.querySelectorAll(".attention-group-stalled")).toHaveLength(1);
+    expect(screen.getByText("Action required").parentElement).toHaveTextContent("1 run");
   });
 
   it("selects, deselects, dismisses, and restores all visible attention runs", async () => {
@@ -165,15 +354,19 @@ describe("overview page", () => {
     await user.click(selectAll);
     await user.click(screen.getByRole("button", { name: "Dismiss 2 selected" }));
     expect(
-      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+      await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", {
-      name: "Select all visible attention runs",
-    })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "Select all visible attention runs",
+      }),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Show dismissed (2)" }));
     await user.click(screen.getByRole("button", { name: "Restore all" }));
-    expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
+    ).toBeInTheDocument();
   });
 
   it("renders instance identity while an empty inventory is still loading", async () => {
@@ -190,17 +383,22 @@ describe("overview page", () => {
 
     render(<App client={client} />);
 
-    expect(
-      await screen.findByRole("status", { name: "Loading overview" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "Loading overview" })).toBeInTheDocument();
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading).toHaveTextContent(/^Overview - \.\.\.$/);
     expect(screen.getByText(/Loading inventory and run activity/)).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No gaggles configured" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
 
     act(() => releaseInventory());
+    expect(await screen.findByRole("heading", { name: "Overview - No runs need attention." })).toBe(
+      heading,
+    );
     expect(
       await screen.findByRole("heading", { name: "No gaggles configured" }),
     ).toBeInTheDocument();
@@ -223,7 +421,9 @@ describe("overview page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /inventory could not be read just now/i,
     );
-    expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No gaggles configured" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
 
     failInventory = false;
@@ -423,7 +623,9 @@ describe("overview recovery inventory capacity (#5343)", () => {
     expect(row).toHaveTextContent(
       "Durable handoffs, worktree cleanup and unrelated runs fail when it is full.",
     );
-    expect(within(row).getByRole("link", { name: "Recovery capacity and operator actions" })).toHaveAttribute(
+    expect(
+      within(row).getByRole("link", { name: "Recovery capacity and operator actions" }),
+    ).toHaveAttribute(
       "href",
       expect.stringContaining("retained-implementation.md#inventory-capacity"),
     );

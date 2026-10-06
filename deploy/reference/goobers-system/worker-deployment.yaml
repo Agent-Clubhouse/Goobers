@@ -103,6 +103,18 @@ spec:
           # every superseded pin immediately, or higher if you roll config
           # forward while multi-hour runs are in flight — each retained tree
           # costs one snapshot of instructions and skill files in memory.
+          # Startup blob-plane probe (#6466/#6649): with --blob-store plus
+          # --dispatch-namespace the worker PUTs a probe blob to the daemon
+          # before polling. While the daemon is still starting (503 or
+          # unreachable; a rollout takes 4-9 minutes) the worker WAITS, logging
+          # INFO progress, for up to --blob-probe-wait (env
+          # GOOBERS_WORKER_BLOB_PROBE_WAIT, default 20m) instead of
+          # crash-looping. A real failure (4xx, non-503 5xx, read-back
+          # mismatch) exits at once with WORKER_BLOB_STORE_MISMATCH and the
+          # daemon's error body. This container deliberately declares NO
+          # liveness/readiness/startup probe, so the wait is never killed by
+          # the kubelet; do not add a liveness probe that requires startup to
+          # have completed without a startupProbe that covers the wait bound.
           args:
             - "worker"
             - "--task-queue"

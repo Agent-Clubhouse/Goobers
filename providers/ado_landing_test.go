@@ -867,3 +867,24 @@ func TestADOProviderDeleteBranchLeaseLostReportsBranchTipChanged(t *testing.T) {
 		t.Fatalf("error = %v, want *BranchTipChangedError", err)
 	}
 }
+
+// TestADOCompletionMessageLeadsWithTitle pins that ADO's single
+// mergeCommitMessage field carries the pull request title as its subject line:
+// sending only the body titled every squash with the review summary.
+func TestADOCompletionMessageLeadsWithTitle(t *testing.T) {
+	for _, tc := range []struct{ title, message, want string }{
+		{"Fix parser", "Review summary.\n\nCloses #7", "Fix parser\n\nReview summary.\n\nCloses #7"},
+		{"  Fix parser  ", "  Closes #7 ", "Fix parser\n\nCloses #7"},
+		{"", "Closes #7", "Closes #7"},
+		// No body: leave the field empty so ADO keeps "Merged PR <n>: <title>".
+		{"Fix parser", "", ""},
+	} {
+		if got := adoCompletionMessage(tc.title, tc.message); got != tc.want {
+			t.Errorf("adoCompletionMessage(%q, %q) = %q, want %q", tc.title, tc.message, got, tc.want)
+		}
+	}
+	body := adoCompletionBody(MergePullRequestRequest{CommitTitle: "Fix parser", CommitMessage: "Closes #7"})
+	if got := body["completionOptions"].(adoCompletionOptions).MergeCommitMessage; got != "Fix parser\n\nCloses #7" {
+		t.Fatalf("completion body mergeCommitMessage = %q", got)
+	}
+}

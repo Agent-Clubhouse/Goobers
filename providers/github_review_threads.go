@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -158,27 +157,22 @@ func (p *GitHubProvider) listNativePullRequestReviews(ctx context.Context, repo 
 	if err != nil {
 		return nil, err
 	}
-	reviews := make([]PullRequestNativeReview, 0)
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var raw []githubNativeReview
-		if err := json.Unmarshal(page, &raw); err != nil {
-			return fmt.Errorf("decode pull request reviews page: %w", err)
-		}
-		for _, review := range raw {
-			reviews = append(reviews, PullRequestNativeReview{
-				ID:          review.ID,
-				Author:      review.User.Login,
-				State:       review.State,
-				Body:        review.Body,
-				CommitSHA:   review.CommitID,
-				SubmittedAt: review.SubmittedAt,
-				URL:         review.HTMLURL,
-				Integrity:   apiintegrity.Unapproved,
-			})
-		}
-		return nil
-	}); err != nil {
+	rawReviews, err := collectPagedJSON[githubNativeReview](ctx, p, endpoint, "decode pull request reviews page")
+	if err != nil {
 		return nil, err
+	}
+	reviews := make([]PullRequestNativeReview, 0, len(rawReviews))
+	for _, review := range rawReviews {
+		reviews = append(reviews, PullRequestNativeReview{
+			ID:          review.ID,
+			Author:      review.User.Login,
+			State:       review.State,
+			Body:        review.Body,
+			CommitSHA:   review.CommitID,
+			SubmittedAt: review.SubmittedAt,
+			URL:         review.HTMLURL,
+			Integrity:   apiintegrity.Unapproved,
+		})
 	}
 	return reviews, nil
 }
@@ -188,18 +182,7 @@ func (p *GitHubProvider) listInlinePullRequestComments(ctx context.Context, repo
 	if err != nil {
 		return nil, err
 	}
-	comments := make([]githubInlineReviewComment, 0)
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageComments []githubInlineReviewComment
-		if err := json.Unmarshal(page, &pageComments); err != nil {
-			return fmt.Errorf("decode inline review comments page: %w", err)
-		}
-		comments = append(comments, pageComments...)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return comments, nil
+	return collectPagedJSON[githubInlineReviewComment](ctx, p, endpoint, "decode inline review comments page")
 }
 
 func pullRequestInlineComments(rawComments []githubInlineReviewComment, states map[int64]githubReviewThreadState) ([]PullRequestInlineComment, error) {

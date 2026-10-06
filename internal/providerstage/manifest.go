@@ -361,7 +361,20 @@ var commands = map[string]Command{
 		ResultFile:         "selected-pr.json",
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+			required(capability.ProviderPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+		},
+	},
+	"advisory-pr-select": {
+		ResultFile:         "advisory-selection.json",
+		mutatesClaimLedger: true,
+		Capabilities: []CapabilityUse{
+			requiredExact(capability.GitHubPRRead, "the read-only pull-request credential is not injected, so advisory selection fails at runtime"),
+		},
+	},
+	"advisory-pr-publish": {
+		ResultFile: "advisory-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the pull-request write credential is not injected, so advisory publication fails at runtime"),
 		},
 	},
 	"pr-claim": {
@@ -446,6 +459,7 @@ var commands = map[string]Command{
 		},
 	},
 	"recovery-resume": {
+		ResultFile: "recovery-resume.json",
 		Capabilities: []CapabilityUse{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so recovery cannot fetch current main for restoration"),
 		},

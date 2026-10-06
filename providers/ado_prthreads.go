@@ -106,16 +106,12 @@ func (p *ADOProvider) ListPullRequestThreadComments(ctx context.Context, repo Re
 	if pullID == "" {
 		return nil, errPullIDRequired
 	}
-	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
+	threads, err := p.listADOPullRequestThreads(ctx, repo, pullID)
 	if err != nil {
 		return nil, err
 	}
-	var resp adoPullRequestThreadsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
-		return nil, err
-	}
 	comments := make([]Comment, 0)
-	for _, thread := range resp.Value {
+	for _, thread := range threads {
 		for _, comment := range thread.Comments {
 			if strings.EqualFold(comment.CommentType, "system") {
 				continue

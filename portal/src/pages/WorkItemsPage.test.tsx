@@ -102,12 +102,13 @@ describe("WorkItemsPage", () => {
     await screen.findByText("acme/app#42");
     expect(screen.getByRole("heading", { name: "Work Items", level: 1 })).toBeInTheDocument();
     expect(screen.queryByText("External activity")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Done", { selector: ".status-badge" })).toHaveLength(2);
+    expect(screen.getByText("Merged", { selector: ".work-item-identity .sr-only" })).toBeInTheDocument();
     const row = screen.getByRole("button", { name: /Open PR #42 in acme\/app/i });
     expect(row.querySelector(".data-table-primary")).toHaveAttribute("title", "acme/app#42");
     expect(row).toHaveTextContent(/Last action:\s*Comment/);
     expect(row).toHaveClass("work-item-row-done");
-    expect(row.querySelector(".work-item-status")).toHaveTextContent("Done");
+    expect(row).toHaveAttribute("data-status", "done");
+    expect(row.querySelector(".work-item-identity .sr-only")).toHaveTextContent("Merged");
     expect(row.querySelector(".work-item-mobile-context")).toHaveTextContent(
       "core / merge-review",
     );
@@ -134,10 +135,56 @@ describe("WorkItemsPage", () => {
     await screen.findByRole("button", { name: /Open PR #42 in acme\/app/i });
     expect(screen.queryByRole("button", { name: /Open issue #77 in acme\/service/i }))
       .not.toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Filter work items by gaggle" }))
-      .toHaveValue("core");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · core");
     expect(screen.getByRole("searchbox", { name: "Search work items" }))
       .toHaveValue("app#42");
+  });
+
+  it("filters the server page when the desktop gaggle selection changes", async () => {
+    const navigate = vi.fn();
+    const daemonClient = client();
+    const listWorkItems = vi.spyOn(daemonClient, "listWorkItems");
+    const view = render(
+      <WorkItemsPage
+        client={daemonClient}
+        navigate={navigate}
+        route={{ page: "work-items" }}
+        standalone={false}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /Open PR #42 in acme\/app/i });
+    await userEvent.click(screen.getByRole("button", { name: "Scope" }));
+    await userEvent.click(screen.getByRole("button", { name: "Gaggle · core" }));
+    expect(navigate).toHaveBeenCalledWith({
+      page: "work-items",
+      kind: undefined,
+      gaggle: "core",
+      outcome: undefined,
+      query: undefined,
+    });
+
+    view.rerender(
+      <WorkItemsPage
+        client={daemonClient}
+        navigate={navigate}
+        route={{ page: "work-items", gaggle: "core" }}
+        standalone={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(listWorkItems).toHaveBeenCalledWith(
+        { kind: undefined, gaggle: "core", limit: 200 },
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+    expect(await screen.findByRole("button", { name: /Open PR #42 in acme\/app/i }))
+      .toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /Open issue #77 in acme\/service/i }))
+        .not.toBeInTheDocument(),
+    );
   });
 
   it("filters work items by outcome", async () => {
@@ -179,8 +226,11 @@ describe("WorkItemsPage", () => {
       .not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /Open issue #77 in acme\/service/i }))
       .toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Status: In progress filter" }))
-      .toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Filter work items by status" })).toHaveValue("in-progress");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter work items by status" }), "");
+    expect(navigate).toHaveBeenLastCalledWith({
+      page: "work-items", kind: undefined, gaggle: undefined, outcome: undefined, query: undefined,
+    });
   });
 
   it("reports an invalid outcome route filter instead of discarding it", async () => {
@@ -203,9 +253,10 @@ describe("WorkItemsPage", () => {
   it("derives draft gaggle choices and validation from the draft work-item type", async () => {
     const navigate = vi.fn();
     const user = userEvent.setup();
-    render(
+    const daemonClient = client();
+    const view = render(
       <WorkItemsPage
-        client={client()}
+        client={daemonClient}
         navigate={navigate}
         route={{ page: "work-items", kind: "pr", gaggle: "core" }}
         standalone={false}
@@ -216,12 +267,12 @@ describe("WorkItemsPage", () => {
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "issues" }));
 
-    const gaggle = within(dialog).getByRole("combobox", {
-      name: "Draft work item gaggle filter",
-    });
-    expect(gaggle).toHaveValue("");
-    expect(within(gaggle).queryByRole("option", { name: "core" })).not.toBeInTheDocument();
-    expect(within(gaggle).getByRole("option", { name: "tools" })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Draft scope" }));
+    const choices = within(dialog).getByRole("dialog", { name: "Select scope" });
+    expect(within(choices).queryByRole("button", { name: "Gaggle · core" })).not.toBeInTheDocument();
+    expect(within(choices).getByRole("button", { name: "Gaggle · tools" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(dialog).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Apply filters" }));
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
@@ -229,7 +280,8 @@ describe("WorkItemsPage", () => {
     );
     expect(navigate).not.toHaveBeenCalled();
 
-    await user.selectOptions(gaggle, "tools");
+    await user.click(within(dialog).getByRole("button", { name: "Draft scope" }));
+    await user.click(within(dialog).getByRole("button", { name: "Gaggle · tools" }));
     await user.selectOptions(
       within(dialog).getByRole("combobox", { name: "Draft work item status filter" }),
       "in-progress",
@@ -242,18 +294,36 @@ describe("WorkItemsPage", () => {
       outcome: "in-progress",
       query: undefined,
     });
+
+    view.rerender(
+      <WorkItemsPage
+        client={daemonClient}
+        navigate={navigate}
+        route={{
+          page: "work-items",
+          kind: "issue",
+          gaggle: "tools",
+          outcome: "in-progress",
+        }}
+        standalone={false}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: /Open issue #77 in acme\/service/i }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open PR #42 in acme\/app/i }))
+      .not.toBeInTheDocument();
   });
 
-  it("keeps valid gaggle filters beyond the mixed-kind page boundary", async () => {
-    const issue = {
+  it("keeps valid gaggle filters beyond the same-kind discovery boundary", async () => {
+    const newerPullRequest = {
       provider: "github",
-      repository: "acme/service",
-      kind: "issue" as const,
-      outcome: "in-progress" as const,
+      repository: "acme/app",
+      kind: "pr" as const,
+      outcome: "done" as const,
       actionCount: 1,
-      lastOperation: "comment",
+      lastOperation: "merge",
       lastActionAt: "2026-09-01T12:00:00Z",
-      lastRunId: "run-issue",
+      lastRunId: "run-newer-pr",
     };
     const pullRequest = {
       provider: "github",
@@ -275,9 +345,9 @@ describe("WorkItemsPage", () => {
             hasMore: true,
             items: [
               ...Array.from({ length: 200 }, (_, index) => ({
-                ...issue,
+                ...newerPullRequest,
                 externalId: String(index),
-                gaggle: `issue-gaggle-${index}`,
+                gaggle: `pr-gaggle-${index}`,
               })),
               pullRequest,
             ],
@@ -292,10 +362,17 @@ describe("WorkItemsPage", () => {
     expect(await screen.findByRole("button", {
       name: /Open PR #boundary in acme\/app/i,
     })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Filter work items by gaggle" }))
-      .toHaveValue("boundary-gaggle");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · boundary-gaggle");
     expect(screen.queryByText('Invalid gaggle filter "boundary-gaggle"'))
       .not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Draft scope" }));
+    expect(within(screen.getByRole("dialog", { name: "Select scope" })).getByRole(
+      "button",
+      { name: "Gaggle · boundary-gaggle" },
+    )).toBeInTheDocument();
   });
 
   it("keeps search focus while word-wheel filtering and replaces the current URL", async () => {
@@ -403,7 +480,10 @@ describe("WorkItemsPage", () => {
       .toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open work item #7 in contoso/beta" }))
       .toBeInTheDocument();
-    expect(screen.getAllByText("ado · work item")).toHaveLength(2);
+    for (const repository of ["contoso/alpha", "contoso/beta"]) {
+      const row = screen.getByRole("button", { name: `Open work item #7 in ${repository}` });
+      expect(within(row).getByText("ado · work item", { selector: ".work-item-identity .data-table-meta" })).toBeInTheDocument();
+    }
 
     const unknown = screen.getAllByRole("button", { name: "work item #7 has no recorded repository" });
     expect(unknown).toHaveLength(2);

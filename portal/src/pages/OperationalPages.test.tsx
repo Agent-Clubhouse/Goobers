@@ -44,7 +44,7 @@ describe("operational overview", () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+      await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No gaggles are configured/)).toBeInTheDocument();
     // The guided walkthrough leads as the recommended newcomer path, with the
@@ -70,10 +70,10 @@ describe("operational overview", () => {
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon is unhealthy." }),
+      await screen.findByRole("heading", { name: "Overview - Unhealthy" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
-    expect(screen.getByText("Last checked")).toBeInTheDocument();
+    expect(screen.getByText("Data freshness")).toBeInTheDocument();
     expect(screen.getByText("3m 0s ago")).toBeInTheDocument();
   });
 
@@ -92,7 +92,7 @@ describe("operational overview", () => {
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon is starting." }),
+      await screen.findByRole("heading", { name: "Overview - Starting" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon starting")).toBeInTheDocument();
     expect(screen.queryByText("Daemon unhealthy")).not.toBeInTheDocument();
@@ -106,14 +106,14 @@ describe("operational overview", () => {
     try {
       await act(async () => vi.advanceTimersByTimeAsync(0));
       expect(
-        screen.getByRole("heading", { name: "Daemon is running — Healthy." }),
+        screen.getByRole("heading", { name: "Overview - No runs need attention." }),
       ).toBeInTheDocument();
 
       await act(async () => vi.advanceTimersByTimeAsync(60_000));
 
-      expect(screen.getByRole("heading", { name: "Daemon is unhealthy." })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Overview - Unhealthy" })).toBeInTheDocument();
       expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
-      expect(screen.getByText("Last checked")).toBeInTheDocument();
+      expect(screen.getByText("Data freshness")).toBeInTheDocument();
       expect(screen.getByText("3m 0s ago")).toBeInTheDocument();
       expect(client.healthRequests).toBe(3);
     } finally {
@@ -229,6 +229,89 @@ describe("operational overview", () => {
     expect(screen.getByText("Escalated and needs human review.")).toBeInTheDocument();
   });
 
+  it("separates action-required attention from muted FYI failures with visible severity", async () => {
+    const user = userEvent.setup();
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failed) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    failed.operator = {
+      issue: { number: "6487", title: "Realistic failed run" },
+      liveness: "finished",
+      trajectory: "failed",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      latestError: {
+        code: "provider.rate_limit",
+        message: "A retry is scheduled after the provider quota resets.",
+      },
+      review: { verdict: "needs-changes", rationale: "A prior review did not pass." },
+      potentialBlockers: [],
+    };
+    fixtures.telemetryErrors.items = fixtures.telemetryErrors.items.map((error) =>
+      error.runId === failed.id
+        ? {
+            ...error,
+            code: "provider.rate_limit",
+            errorClass: "retryable-infrastructure",
+            message: "A retry is scheduled after the provider quota resets.",
+          }
+        : error,
+    );
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+
+    const actionRequired = within(attentionSection).getByText("Action required").closest("div");
+    const fyiFailures = within(attentionSection).getByText("FYI failures").closest("div");
+    if (!actionRequired || !fyiFailures?.parentElement) {
+      throw new Error("Attention severity sections were not rendered.");
+    }
+    expect(
+      actionRequired.compareDocumentPosition(fyiFailures) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(within(attentionSection).getAllByText("Blocked")[0]).toBeVisible();
+    expect(within(attentionSection).getAllByText("Warning")[0]).toBeVisible();
+    expect(within(fyiFailures.parentElement).getByText("#6487 Realistic failed run")).toBeVisible();
+    expect(fyiFailures.parentElement).toHaveClass("attention-severity-section-fyi");
+
+    await expandAttentionRuns(user, attentionSection);
+    for (const badge of within(attentionSection).getAllByText(/^(Blocked|Warning)$/)) {
+      expect(badge).toBeVisible();
+    }
+  });
+
+  it("marks stale attention runs as stalled and orders them after blocked runs", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!running) {
+      throw new Error("Populated fixtures must include a running run.");
+    }
+    running.stale = true;
+    running.operator = undefined;
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+
+    expect(within(attentionSection).getAllByText("Stalled")[0]).toBeVisible();
+    const blocked = attentionSection.querySelector(".attention-group-blocked");
+    const stalled = attentionSection.querySelector(".attention-group-stalled");
+    if (!blocked || !stalled) {
+      throw new Error("Blocked and stalled attention groups were not rendered.");
+    }
+    expect(blocked.compareDocumentPosition(stalled) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
     const client = new FixtureDaemonClient(largeJournalFixtures({ completed: 60 }));
     const listRuns = vi.spyOn(client, "listRuns");
@@ -268,7 +351,7 @@ describe("operational overview", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
   });
 });
@@ -380,8 +463,7 @@ describe("workflow and gaggle inventory", () => {
       screen.getByRole("link", { name: "View Core product / Implementation in Runs" }),
     );
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
   });
 
   it("renders the ready-empty workflow state", async () => {
@@ -429,7 +511,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByRole("group", { name: "implementation execution graph" }),
     ).toHaveAttribute("data-preview", "true");
-    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
+    expect(screen.getByRole("button", { name: /Repository connections/ })).toHaveAttribute("aria-expanded", "true");
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
@@ -470,7 +552,7 @@ describe("workflow and gaggle inventory", () => {
 
     await user.click(pivotLink);
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+    expect(screen.getByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
     // The card's own detail link is untouched by the pivot click.
@@ -498,7 +580,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       screen.queryByRole("tablist", { name: "Core product workflows" }),
     ).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
+    expect(screen.getByRole("button", { name: /Repository connections/ })).toHaveAttribute("aria-expanded", "true");
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });

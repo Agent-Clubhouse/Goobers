@@ -20,7 +20,7 @@ func (f recoveryServiceFunc) StreamRecovery(ctx context.Context, run, key, issue
 }
 
 func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
-	for _, mode := range []string{"claims", "journal", "blob", "foreign", "view", "operate", "refused"} {
+	for _, mode := range []string{"claims", "journal", "blob", "foreign", "view", "operate", "refused", "not-found"} {
 		t.Run(mode, func(t *testing.T) {
 			principal := &Principal{Subject: "run:run-1", Issuer: PodPrincipalIssuer, Scopes: []string{ScopeClaims}}
 			want := http.StatusOK
@@ -38,6 +38,8 @@ func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
 				}
 			case "refused":
 				want = http.StatusForbidden
+			case "not-found":
+				want = http.StatusNotFound
 			}
 			called := false
 			service := recoveryServiceFunc(func(_ context.Context, run, key, issue string, out io.Writer) error {
@@ -47,6 +49,9 @@ func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
 				}
 				if mode == "refused" {
 					return errors.New("private service detail")
+				}
+				if mode == "not-found" {
+					return recovery.ErrNoMatchingSnapshot
 				}
 				_, err := io.WriteString(out, "archive")
 				return err
@@ -60,7 +65,7 @@ func TestRecoveryRouteEnforcesRunScopeAndOperateRole(t *testing.T) {
 			if response.Code != want {
 				t.Fatalf("status=%d want=%d body=%s", response.Code, want, response.Body.String())
 			}
-			if called != (want == http.StatusOK || mode == "refused") {
+			if called != (want == http.StatusOK || mode == "refused" || mode == "not-found") {
 				t.Fatalf("unauthorized service call: %t", called)
 			}
 			if want == http.StatusOK && (response.Body.String() != "archive" || response.Header().Get("Cache-Control") != "no-store") {

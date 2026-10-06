@@ -78,11 +78,12 @@ type statusProjectedFrame struct {
 }
 
 type statusRunLoader struct {
-	layout    instance.Layout
-	sources   readservice.LocalSources
-	journal   *readservice.Local
-	options   statusOptions
-	needFleet bool
+	layout             instance.Layout
+	sources            readservice.LocalSources
+	journal            *readservice.Local
+	options            statusOptions
+	needFleet          bool
+	projectionRequired bool
 
 	projected  bool
 	fleetRuns  []runSummary
@@ -117,6 +118,9 @@ func (l *statusRunLoader) Load() ([]runSummary, error) {
 			l.collection = frame.collection
 			return frame.display, nil
 		}
+	}
+	if l.projectionRequired {
+		return nil, errors.New("--runs-only requires a ready, current status projection; try again after the daemon catches up")
 	}
 	runs, err := listStatusRuns(ctx, l.journal, l.options)
 	if err != nil {

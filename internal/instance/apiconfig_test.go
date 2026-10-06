@@ -116,6 +116,16 @@ func TestValidateAPIListenFailClosedOffLoopback(t *testing.T) {
 			api:     APIConfig{Auth: &APIAuthConfig{}},
 			wantErr: "api.auth",
 		},
+		{
+			name:    "trusted proxy accepts IP and CIDR",
+			api:     APIConfig{TrustedProxies: []string{"127.0.0.1", "10.0.0.0/24"}},
+			wantErr: "",
+		},
+		{
+			name:    "trusted proxy rejects hostnames",
+			api:     APIConfig{TrustedProxies: []string{"proxy.internal"}},
+			wantErr: "api.trustedProxies",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -810,7 +810,10 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	// the read model #1933 attaches. When none could be opened (a read-only
 	// volume with no writable cache directory) there is no SSE, and the
 	// freshness surface already renders that as degraded.
-	streamOpts := []httpapi.HandlerOption{httpapi.WithTelemetryReadAvailability(telemetry != nil)}
+	streamOpts := []httpapi.HandlerOption{
+		httpapi.WithTelemetryReadAvailability(telemetry != nil),
+		httpapi.WithTrustedProxies(config.API.TrustedProxies),
+	}
 	if identity := daemonDiscoveryIdentity(layout.Root); identity.DaemonInstanceID != "" {
 		streamOpts = append(streamOpts, httpapi.WithDiscoveryIdentity(identity))
 	} else {

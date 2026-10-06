@@ -141,7 +141,7 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 }
 
 func parseWorkItemsQuery(values url.Values) (readservice.WorkItemListOptions, error) {
-	if err := validateQueryValues(values, "provider", "kind", "limit"); err != nil {
+	if err := validateQueryValues(values, "provider", "kind", "gaggle", "limit"); err != nil {
 		return readservice.WorkItemListOptions{}, err
 	}
 	limit := defaultWorkItemsPageSize
@@ -159,6 +159,7 @@ func parseWorkItemsQuery(values url.Values) (readservice.WorkItemListOptions, er
 	return readservice.WorkItemListOptions{
 		Provider: strings.TrimSpace(values.Get("provider")),
 		Kind:     kind,
+		Gaggle:   strings.TrimSpace(values.Get("gaggle")),
 		Limit:    limit,
 	}, nil
 }

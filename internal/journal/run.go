@@ -490,7 +490,7 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 			recordedSHA = event.ExternalRef.CommitSHA
 		}
 	}
-	id, err := reader.Identity()
+	id, err := continuationSourceIdentity(reader, events)
 	if err != nil {
 		return nil, fmt.Errorf("journal: read continuation source identity: %w", err)
 	}

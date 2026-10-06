@@ -2,7 +2,9 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 )
 
@@ -38,4 +40,23 @@ func walkLinkPages(ctx context.Context, sender linkPageSender, endpoint string, 
 		next = nextLink
 	}
 	return nil
+}
+
+func walkPagedJSON[T any](ctx context.Context, pager restPager, endpoint, decodeError string, onPage func([]T) error) error {
+	return pager.getAllPages(ctx, endpoint, func(page []byte) error {
+		var items []T
+		if err := json.Unmarshal(page, &items); err != nil {
+			return fmt.Errorf("%s: %w", decodeError, err)
+		}
+		return onPage(items)
+	})
+}
+
+func collectPagedJSON[T any](ctx context.Context, pager restPager, endpoint, decodeError string) ([]T, error) {
+	var all []T
+	err := walkPagedJSON(ctx, pager, endpoint, decodeError, func(items []T) error {
+		all = append(all, items...)
+		return nil
+	})
+	return all, err
 }
