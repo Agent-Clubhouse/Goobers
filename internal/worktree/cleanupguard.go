@@ -24,6 +24,10 @@ var ErrCleanupRetained = errors.New("worktree cleanup retained for operator revi
 // historical marker has no trustworthy recovery base.
 const CleanupDispositionUnknownBase = "retained-unknown-base"
 
+// CleanupDispositionRetryExhausted identifies a cleanup-pending target
+// quarantined after its prompt retry budget was exhausted.
+const CleanupDispositionRetryExhausted = "retained-retry-exhausted"
+
 // CleanupRetentionError requests a durable, non-retrying cleanup disposition.
 type CleanupRetentionError struct {
 	Disposition string
