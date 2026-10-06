@@ -282,6 +282,21 @@ Rules:
   `scheduler/events.jsonl` in the instance root (§6), under the same envelope and
   append-only rules — so the portal, telemetry, and Tutor read scheduling history
   the same way they read runs.
+- **Gaggle health is an instance projection** (contract defined by #4424; the
+  daemon controller that produces these transitions is #4425): versioned health transitions
+  (`evaluation`, finding open/update/resolve, repair start/finish, and escalation)
+  append beneath `health/events.jsonl` in the instance root. Each event carries a
+  gaggle partition key and a complete bounded, scrubbed finding snapshot. The
+  derived per-gaggle projection at `health/gaggles/<gaggle>/state.json` is replaced
+  atomically and may be discarded and rebuilt from the journal after restart.
+  Episode identity is a digest of the stable finding code and provider-neutral
+  scope; repeated observations extend one episode. Aggregate precedence is
+  `operator-required > inconsistent > stalled > degraded > recovering > healthy`.
+  Configuration omission enables observation, warning notifications, and only
+  product-allowlisted idempotent repairs; a workflow receiving health events is an
+  observer and cannot weaken this hard safety policy. The wire contract excludes
+  raw logs, environment values, credentials, and host paths and bounds all human
+  text and evidence lists (`gaggle-health-v1alpha1.schema.json`).
 - **Operator messages are reconstructable:** accepted requests, operator
   acknowledgements, and terminal delivery or rejection outcomes use versioned
   typed journal records. Requests retain their idempotency key, target, principal,

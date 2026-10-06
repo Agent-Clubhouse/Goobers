@@ -36,6 +36,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-reset`](#goobers-advisory-pr-reset) | clear one private advisory disposition by explicit operator action |
 | [`goobers agent-kit`](#goobers-agent-kit) | install, inspect, or update the release-matched agent toolkit |
 | [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
@@ -163,6 +164,8 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-publish`](#goobers-advisory-pr-publish) | publish an advisory observation or private skip (a workflow stage) |
+| [`goobers advisory-pr-select`](#goobers-advisory-pr-select) | select one open PR for a private advisory review (a workflow stage) |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
@@ -211,6 +214,54 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate-plan`](#goobers-validate-plan) | validate a decomposition plan against its selector artifact and the live parent (a workflow stage) |
+
+## `goobers advisory-pr-publish`
+
+publish an advisory observation or private skip (a workflow stage)
+
+~~~text
+Usage: goobers advisory-pr-publish [path]
+
+Publish a strict advisory reviewer artifact or record a permanent private skip. Inputs: reviewType, reviewerStage, selectionStage.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-publish
+~~~
+
+## `goobers advisory-pr-reset`
+
+clear one private advisory disposition by explicit operator action
+
+~~~text
+Usage: goobers advisory-pr-reset --gaggle NAME --owner OWNER --repo REPO --review-type TYPE --pr NUMBER [path]
+
+Explicitly clear one private advisory disposition on the local instance.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance
+~~~
+
+## `goobers advisory-pr-select`
+
+select one open PR for a private advisory review (a workflow stage)
+
+~~~text
+Usage: goobers advisory-pr-select [path]
+
+Select one open PR for a private-disposition advisory review. Input: reviewType.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-select
+~~~
 
 ## `goobers agent-kit`
 
@@ -2362,13 +2413,17 @@ add native reviews and anchored inline threads to a remediation brief (a workflo
 ~~~text
 Usage: goobers gather-review-threads [path]
 
-Read this run's latest remediation brief and replace only its
-gatherReviewThreads section with native review bodies and inline review
-comments. File, line, side, diff-hunk, resolved, and outdated metadata
-are preserved so the remediator can distinguish live feedback from stale
-threads. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
-context gathered (possibly empty), 1 = business/provider/journal error,
-2 = usage/IO error.
+Read this run's latest remediation brief and replace its gatherReviewThreads
+section with native review bodies and inline review comments, refresh its
+general PR comments from the same read, and pin all of it in an immutable
+feedbackSnapshot (goobers.dev/pr-feedback-snapshot/v1) that later stages
+compare against before acting on the feedback. File, line, side,
+diff-hunk, resolved, and outdated metadata are preserved so the remediator
+can distinguish live feedback from stale threads. A pull request that is
+no longer at this run's selected head ends the run as a stale-selection
+no-work. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
+context gathered (possibly empty) or no-work, 1 = business/provider/journal
+error, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -3040,9 +3095,11 @@ rather than a static value:
         title: prTitle
 
 Title precedence: an explicitly set non-empty title wins; otherwise the
-claimed item's title, recovered from the run journal (so it survives a
-resume or repass); otherwise the generic "Automated implementation". An
-empty value is not an override — every empty input falls back.
+claimed item's title, recovered from the run journal (or the journal
+plane in a stage pod, so it survives a resume, repass, or pod placement);
+otherwise the generic "Automated implementation" with a warning naming
+why no item title was available. An empty value is not an override — every
+empty input falls back.
 
 itemID explicitly identifies a selected backlog item when the workflow
 read it without claiming. If a claimed item also exists, the IDs must
@@ -3219,7 +3276,7 @@ $ goobers post-merge
 check PR liveness or release its remediation claim (a workflow stage)
 
 ~~~text
-Usage: goobers pr-claim [--release] [path]
+Usage: goobers pr-claim [--release] [--verify-feedback] [--classify-feedback-repass] [path]
 
 At a pr-remediation stage boundary, verify that this run's claimed pull
 request is still open and still at the exact source revision this run
@@ -3228,6 +3285,17 @@ claim and return a terminal no-work result; if it moved to a different
 head, release the claim and return a distinct stale-selection no-work
 result, so the runner stops the workflow either way. A missing or
 malformed head fails closed.
+With --verify-feedback, also re-read the PR's review threads and comments
+and compare them with the feedback snapshot this run's brief pinned; a
+difference keeps the claim and reports a typed staleInput reason
+(new_feedback, changed_feedback, missing_feedback, changed_thread_state,
+incomplete_collection, stale_head) for the workflow to route on; beside a
+stale verdict it records the workspace head as localHead.
+With --classify-feedback-repass, report feedbackNoop=true when this run
+re-gathered stale feedback and the agent's repass left the branch at the
+head the stale check recorded (already reviewed, CI-validated or
+published): the feedback is acknowledged with no change needed. No
+provider call is made.
 With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
@@ -3302,7 +3370,8 @@ defaults to goobers;
 set it to any to admit PRs outside headPrefixes as advisory-only. PRs
 may be filtered by exact author, assignee, and requestedReviewer inputs.
 PRs labeled goobers:no-merge-review are always excluded. A run-aborted
-PR is excluded unless audited recovery proves a later remediation completed.
+PR is excluded unless audited recovery proves a later remediation completed
+or a valid merge-review pass matches its current head and base.
 Before selection,
 park narrower PRs behind open PRs that clearly dominate a shared-file
 rewrite or deletion. Writes the
@@ -3648,10 +3717,14 @@ restore retained implementation into the receiving run (a workflow stage)
 Usage: goobers recovery-resume [instance]
 
 Restore the current run's single claimed issue onto freshly fetched main,
-then fast-forward its clean receiving worktree to the restored commit.
+then fast-forward its clean receiving worktree to the restored commit. A
+claim with no retained checkpoint succeeds without changing the branch.
 Requires workflow run context and repository credentials. Refuses another
-branch, changed or dirty work, and expired claims. Verified retries resume
-the prepared result; completed adoption removes its preparation branch.
+branch, changed or dirty work, and expired claims. Retained work whose base
+diverged or whose patch conflicts is skipped, and the claim starts fresh.
+Verified retries resume the prepared result; completed adoption removes its
+preparation branch. Writes recovery-resume.json with resume status and
+source-run provenance for the run journal.
 Does not push, open a PR, release the claim, or remove retained state.
 ~~~
 
@@ -3784,8 +3857,17 @@ Usage: goobers resolve-review-threads [path]
 
 Validate the implementer's threadResponses against every gathered live review
 thread, reply to each thread, resolve addressed threads after the reply is
-visible, and re-query the published PR head. Exit codes: 0 = responses
-applied and verified, 1 = business/provider error, 2 = usage/IO error.
+visible, and re-query the published PR head. Before and during publication
+the live feedback is compared with the run's recorded feedback snapshot:
+new, changed or missing feedback, or a thread whose state someone else
+changed, stops publication with a typed staleInput result the workflow
+routes back to gather-review-threads; a head that moved off the published
+SHA ends the run as no-work. The result file is a versioned publication
+receipt (goobers.dev/review-thread-publication/v1), rewritten after every
+verified reply and resolution; a retry reconciles the run's newest matching
+receipt with re-read provider state and never publishes a mutation twice.
+Exit codes: 0 = responses applied and verified, stale input reported, or
+no-work; 1 = business/provider error; 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -3929,7 +4011,8 @@ drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
 retry use the same acceptance identity. --api-timeout bounds remote validation
-and acceptance (default 30s; must be positive). A timed-out submission has
+and acceptance (default 30s; must be positive), including any wait for a
+daemon that is still starting after a restart. A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal. For local file delegation,
@@ -4667,7 +4750,7 @@ $ goobers stats --since 24h --json
 validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--api=<url>] [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--api=<url>] [--daemon | --agents | --runs-only | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
@@ -4697,6 +4780,9 @@ invoking run when it is itself a stage. It needs no credentials and makes no pro
 calls, so it is safe to run from inside a container during a deploy window. Combine it
 with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and
 --watch are refused because the probe reports only the live moment.
+With --runs-only, skip workflow health and provider-backed status queries and return
+only the bounded run table, without recovery decoration; combine it with --json and
+--limit for fast operator probes. A ready, current status projection is required.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 

@@ -34,6 +34,7 @@ type fakeIssue struct {
 	commentAuthors []string
 	commentTypes   []string
 	commentTimes   []time.Time
+	commentUpdates []time.Time
 	assignee       string
 	milestone      int
 	children       []int
@@ -89,6 +90,7 @@ type fakeReview struct {
 	body      string
 	commitSHA string
 	state     string
+	author    string
 }
 
 type fakeInlineReviewComment struct {
@@ -165,6 +167,7 @@ type fakeGitHubServer struct {
 	dependencyRequests      int
 	dependencyFailureStatus map[int]int
 	authenticatedLogin      string
+	tokenLogins             map[string]string
 	// issueEventRequests counts GET /repos/o/r/issues/events pages served, so a
 	// test can price one backlog-health cycle's full-history walk against its
 	// resumed successor (#3392).
@@ -331,7 +334,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 		securityAlertQueries:  map[string][]url.Values{},
 		securityAlertFailures: map[string]int{},
 		issueGetMutations:     map[int][]func(*fakeGitHubServer, *fakeIssue){},
-		nextPR:                1, authenticatedLogin: "goobers",
+		nextPR:                1, authenticatedLogin: "goobers", tokenLogins: map[string]string{},
 	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
@@ -590,7 +593,17 @@ func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *htt
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 		return
 	}
-	writeFakeJSON(w, map[string]string{"login": s.authenticatedLogin})
+	login := s.authenticatedLogin
+	if tokenLogin := s.tokenLogins[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]; tokenLogin != "" {
+		login = tokenLogin
+	}
+	writeFakeJSON(w, map[string]string{"login": login})
+}
+
+func (s *fakeGitHubServer) setTokenLogin(token, login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokenLogins[token] = login
 }
 
 func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) {
@@ -1135,6 +1148,9 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			if !issue.commentTimes[i].IsZero() {
 				comment["created_at"] = issue.commentTimes[i]
 			}
+			if i < len(issue.commentUpdates) && !issue.commentUpdates[i].IsZero() {
+				comment["updated_at"] = issue.commentUpdates[i]
+			}
 			out = append(out, comment)
 		}
 		s.writePaginatedJSON(w, r, out)
@@ -1162,6 +1178,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		issue.commentAuthors = append(issue.commentAuthors, s.authenticatedLogin)
 		issue.commentTypes = append(issue.commentTypes, "Bot")
 		issue.commentTimes = append(issue.commentTimes, time.Now().UTC())
+		issue.commentUpdates = append(issue.commentUpdates, time.Now().UTC())
 		writeFakeJSON(w, map[string]interface{}{"id": s.nextCommentID, "body": body.Body})
 	case len(parts) == 2 && parts[1] == "labels" && r.Method == http.MethodPost:
 		var body struct {
@@ -1255,6 +1272,9 @@ func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Requ
 				}
 				decodeFakeJSON(r, &body)
 				issue.comments[i] = body.Body
+				if i < len(issue.commentUpdates) {
+					issue.commentUpdates[i] = time.Now().UTC()
+				}
 				writeFakeJSON(w, map[string]interface{}{"id": id, "body": body.Body})
 			case http.MethodDelete:
 				issue.comments = append(issue.comments[:i], issue.comments[i+1:]...)
@@ -1262,6 +1282,9 @@ func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Requ
 				issue.commentAuthors = append(issue.commentAuthors[:i], issue.commentAuthors[i+1:]...)
 				issue.commentTypes = append(issue.commentTypes[:i], issue.commentTypes[i+1:]...)
 				issue.commentTimes = append(issue.commentTimes[:i], issue.commentTimes[i+1:]...)
+				if i < len(issue.commentUpdates) {
+					issue.commentUpdates = append(issue.commentUpdates[:i], issue.commentUpdates[i+1:]...)
+				}
 				w.WriteHeader(http.StatusNoContent)
 			default:
 				http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -1364,7 +1387,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			out = append(out, map[string]interface{}{
 				"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 				"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
-				"user": map[string]string{"login": "goobers-reviewer"},
+				"user": map[string]string{"login": review.author},
 			})
 		}
 		writeFakeJSON(w, out)
@@ -1404,13 +1427,27 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		}
 		review := fakeReview{
 			id: int64(len(pr.reviews) + 1), body: body.Body,
-			commitSHA: body.CommitID, state: state,
+			commitSHA: body.CommitID, state: state, author: s.authenticatedLogin,
 		}
 		pr.reviews = append(pr.reviews, review)
 		writeFakeJSON(w, map[string]interface{}{
 			"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
 		})
+	case len(parts) == 4 && parts[1] == "reviews" && parts[3] == "dismissals" && r.Method == http.MethodPut:
+		reviewID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			http.Error(w, "bad review id", http.StatusBadRequest)
+			return
+		}
+		for i := range pr.reviews {
+			if pr.reviews[i].id == reviewID {
+				pr.reviews[i].state = "DISMISSED"
+				writeFakeJSON(w, map[string]interface{}{"id": reviewID, "state": "DISMISSED"})
+				return
+			}
+		}
+		http.Error(w, "review not found", http.StatusNotFound)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.inlineComments))
 		for _, comment := range pr.inlineComments {
@@ -1703,6 +1740,10 @@ func (s *fakeGitHubServer) setPRMergeable(number int, mergeable bool) {
 }
 
 func (s *fakeGitHubServer) addPRReview(number int, state string) {
+	s.addPRReviewAs(number, "reviewer", state)
+}
+
+func (s *fakeGitHubServer) addPRReviewAs(number int, author, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pr := s.prs[number]
@@ -1711,6 +1752,7 @@ func (s *fakeGitHubServer) addPRReview(number int, state string) {
 		body:      "review body",
 		commitSHA: pr.headSHA,
 		state:     state,
+		author:    author,
 	})
 }
 
@@ -1789,6 +1831,7 @@ func (s *fakeGitHubServer) addRawCommentAtAsType(number int, author, authorType,
 	s.issues[number].commentAuthors = append(s.issues[number].commentAuthors, author)
 	s.issues[number].commentTypes = append(s.issues[number].commentTypes, authorType)
 	s.issues[number].commentTimes = append(s.issues[number].commentTimes, createdAt)
+	s.issues[number].commentUpdates = append(s.issues[number].commentUpdates, createdAt)
 }
 
 func (s *fakeGitHubServer) addChild(parent, child int) {

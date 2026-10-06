@@ -344,7 +344,7 @@ func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("itemID"), "3295607")
 	t.Setenv(executor.InputEnvVar("itemTitle"), "Selected canary")
 
-	id, title, ok, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	id, title, ok, _, err := openPRIssueWithFallbackReason(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
 func TestOpenPRIssueRejectsTitleWithoutIdentity(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("itemTitle"), "Ambiguous item")
 
-	_, _, _, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	_, _, _, _, err := openPRIssueWithFallbackReason(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
 	if err == nil || !strings.Contains(err.Error(), "itemTitle requires itemID") {
 		t.Fatalf("openPRIssue error = %v, want itemTitle identity error", err)
 	}
@@ -383,12 +383,43 @@ func TestOpenPRIssueAcceptsMatchingClaimedIdentity(t *testing.T) {
 	}
 	t.Setenv(executor.InputEnvVar("itemID"), "42")
 
-	id, title, ok, err := openPRIssue(root, runID)
+	id, title, ok, _, err := openPRIssueWithFallbackReason(root, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok || id != "42" || title != "Claimed title" {
 		t.Fatalf("openPRIssue = (%q, %q, %t), want matching claimed item", id, title, ok)
+	}
+}
+
+func TestOpenPRIssueRecoversClaimedIdentityFromJournalPlane(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-claimed-item-plane"
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "6566", "title": "Recover claimed item in pod"},
+	}); err != nil {
+		t.Fatalf("record claimed item: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	plane := newFileIssuesPlane(t, root)
+	plane.stampPodEnv(t, runID, "goobers")
+
+	id, title, ok, _, err := openPRIssueWithFallbackReason(t.TempDir(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || id != "6566" || title != "Recover claimed item in pod" {
+		t.Fatalf("openPRIssue over journal plane = (%q, %q, %t), want claimed item", id, title, ok)
 	}
 }
 
@@ -413,7 +444,7 @@ func TestOpenPRIssueRejectsConflictingClaimedIdentity(t *testing.T) {
 	}
 	t.Setenv(executor.InputEnvVar("itemID"), "84")
 
-	_, _, _, err = openPRIssue(root, runID)
+	_, _, _, _, err = openPRIssueWithFallbackReason(root, runID)
 	if err == nil || !strings.Contains(err.Error(), `itemID "84" conflicts with claimed item "42"`) {
 		t.Fatalf("openPRIssue error = %v, want conflicting identity error", err)
 	}
@@ -695,5 +726,19 @@ func TestOpenPRMissingRunIDFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}
+
+func TestOpenPRTitleWarnsWhenFallingBackToGenericTitle(t *testing.T) {
+	var stderr strings.Builder
+	title, _, _, haveIssue, err := openPRTitle(filepath.Join(t.TempDir(), "missing-root"), "run-no-claim", providers.RepositoryRef{}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if haveIssue || title != "Automated implementation" {
+		t.Fatalf("openPRTitle = (%q, %t), want generic title without issue", title, haveIssue)
+	}
+	if got := stderr.String(); !strings.Contains(got, `warning: using generic pull request title "Automated implementation"`) || !strings.Contains(got, "run journal") {
+		t.Fatalf("stderr = %q, want generic-title warning naming the journal failure", got)
 	}
 }

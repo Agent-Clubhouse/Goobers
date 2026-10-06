@@ -129,8 +129,14 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// Recovery is independent of stage success: a failed attempt can contain
 	// the only copy of reviewed implementation work. Surrender must follow the
 	// host's durable custody acknowledgment, even when the stage was canceled.
-	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 90*time.Second)
-	recoveryErr := publishPodRecovery(recoveryCtx, ".")
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), dispatchRecoveryCustodyTimeout())
+	recoveryErr := publishPodRecovery(recoveryCtx, ".", func(phase string, elapsed time.Duration, err error) {
+		if err != nil {
+			pf(stderr, "dispatch-exec: recovery phase %s failed after %s: %v\n", phase, elapsed.Round(time.Millisecond), err)
+			return
+		}
+		pf(stderr, "dispatch-exec: recovery phase %s completed in %s\n", phase, elapsed.Round(time.Millisecond))
+	})
 	cancelRecovery()
 	if recoveryErr != nil {
 		pf(stderr, "dispatch-exec: recovery custody: %v\n", recoveryErr)
@@ -199,6 +205,17 @@ func dispatchStageTimeout() time.Duration {
 		return declared
 	}
 	return dispatcher.DefaultStageTimeout
+}
+
+// dispatchRecoveryCustodyTimeout reads the post-stage custody budget stamped
+// by the dispatcher. Invalid or absent values keep the dispatcher default
+// rather than returning to the old narrow literal; publishPodRecovery also
+// clamps this context to the claim expiry.
+func dispatchRecoveryCustodyTimeout() time.Duration {
+	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvRecoveryCustodyTimeout)); err == nil && declared > 0 {
+		return declared
+	}
+	return dispatcher.DefaultRecoveryCustodyTimeout
 }
 
 // surrenderRetryFloor bounds how long the surrender PUT retries even for a

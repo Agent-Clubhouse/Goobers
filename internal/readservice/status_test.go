@@ -386,6 +386,9 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 			if itemID == "1" {
 				return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
 			}
+			if itemID == "4" {
+				return providers.WorkItem{Labels: []string{providers.LabelNeedsHuman}}, nil
+			}
 			return providers.WorkItem{}, nil
 		},
 	}}
@@ -412,7 +415,7 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 			},
 		},
 		{
-			ID: "historical", Gaggle: "goobers", Phase: journal.PhaseCompleted,
+			ID: "historical", Gaggle: "goobers", Phase: journal.PhaseFailed,
 			Operator: OperatorRunSummary{
 				Issue: &OperatorIssue{Number: "4"},
 				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
@@ -422,8 +425,8 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
 		t.Fatal(err)
 	}
-	if lookups != 3 {
-		t.Fatalf("provider lookups = %d, want every running claim", lookups)
+	if lookups != 4 {
+		t.Fatalf("provider lookups = %d, want every linked work item", lookups)
 	}
 	if got := runs[0].Operator.Claim; got.LeaseStatus != "active" || got.ProviderMarker != "verified" {
 		t.Fatalf("active claim = %+v", got)
@@ -436,6 +439,9 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	}
 	if got := runs[3].Operator.Claim.ProviderMarker; got != "recorded" {
 		t.Fatalf("historical provider marker = %q, want recorded history", got)
+	}
+	if got := runs[3].Operator.Issue.Labels; len(got) != 1 || got[0] != providers.LabelNeedsHuman {
+		t.Fatalf("historical issue labels = %v, want current provider labels", got)
 	}
 }
 

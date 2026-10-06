@@ -638,6 +638,20 @@ func TestCIPollConfigFromEnvelope_DefaultsFromRepoRef(t *testing.T) {
 	}
 }
 
+func TestCIPollConfigFromEnvelope_AcceptsNumericPRNumber(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs:  map[string]interface{}{InputPRNumber: float64(73)},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	if cfg.PullID != "73" {
+		t.Fatalf("PullID = %q, want 73", cfg.PullID)
+	}
+}
+
 func TestNewCIPollExecutor_RequiresPoller(t *testing.T) {
 	if _, err := NewCIPollExecutor(nil, newFakeRecorder()); err == nil {
 		t.Fatal("expected error for nil poller")
@@ -702,6 +716,50 @@ func TestCIPollConfigFromEnvelope_RetryInputsParse(t *testing.T) {
 	}
 	if cfg.RetryFailedChecksBackoff != 30*time.Second {
 		t.Fatalf("RetryFailedChecksBackoff = %s, want 30s", cfg.RetryFailedChecksBackoff)
+	}
+}
+
+func TestCIPollConfigFromEnvelope_CarryOutputs(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs: map[string]interface{}{
+			InputPRNumber:       "7",
+			InputCarryOutputs:   "remediationCauses, conflict",
+			"remediationCauses": "failing-ci",
+			"conflict":          "false",
+		},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	outcome := addCIPollCarry(ciPollOutcome(providers.CheckStatePassing, "passing", cfg.PullID), cfg)
+	if got := outcome.Outputs["remediationCauses"]; got != "failing-ci" {
+		t.Fatalf("remediationCauses = %v, want failing-ci", got)
+	}
+	if got := outcome.Outputs["conflict"]; got != "false" {
+		t.Fatalf("conflict = %v, want false", got)
+	}
+}
+
+func TestCIPollConfigFromEnvelope_CarryOutputsRejectsInvalidKeys(t *testing.T) {
+	for name, inputs := range map[string]map[string]interface{}{
+		"missing": {
+			InputPRNumber: "7", InputCarryOutputs: "remediationCauses",
+		},
+		"reserved": {
+			InputPRNumber: "7", InputCarryOutputs: OutputCIStatus,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := apiv1.InvocationEnvelope{
+				RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+				Inputs:  inputs,
+			}
+			if _, err := CIPollConfigFromEnvelope(env); err == nil {
+				t.Fatal("expected invalid carryOutputs to fail")
+			}
+		})
 	}
 }
 

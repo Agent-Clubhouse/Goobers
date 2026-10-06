@@ -27,7 +27,7 @@ import (
 
 func TestIntegrationRecoveryPublicationTakesVerifiedHostCustody(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"live", "released-during-transfer", "finished-during-transfer"} {
+	for _, mode := range []string{"live", "released-during-transfer", "finished-during-transfer", "crashed-reservation-present"} {
 		t.Run(mode, func(t *testing.T) {
 			testRecoveryPublicationCustody(t, mode)
 		})
@@ -117,6 +117,10 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 			return renewTerminalRecovery(layout, manager, runID)
 		}}
 	}
+	if mode == "crashed-reservation-present" {
+		// An earlier publish killed mid-transfer must not wedge this one.
+		seedRecoveryDebris(t, layout, "0000000000000000-deadbeef")
+	}
 	err = service.PublishRecovery(ctx, runID, repo.CanonicalKey(), "7", body)
 	if (err != nil) != release {
 		t.Fatalf("publication release=%t: %v", release, err)
@@ -150,6 +154,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	})
 	if err != nil || !found {
 		t.Fatalf("missing managed custody repository: found=%t err=%v", found, err)
+	}
+	if mode == "crashed-reservation-present" {
+		return
 	}
 	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline, source)
 }

@@ -79,6 +79,13 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"advisory-pr-reset": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle name"},
+		{name: "owner", takesArg: true, desc: "GitHub owner"},
+		{name: "repo", takesArg: true, desc: "GitHub repository"},
+		{name: "review-type", takesArg: true, desc: "Advisory review type"},
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+	},
 	"temporal codec-server": {
 		{name: "listen", takesArg: true, desc: "TLS listener address"},
 		{name: "tls-cert", takesArg: true, desc: "TLS certificate PEM file"},
@@ -334,6 +341,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
 		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
+		{name: "blob-probe-wait", takesArg: true, desc: "How long the startup blob-plane probe waits for a not-yet-ready daemon before exiting"},
 		{name: "config-history-depth", takesArg: true, desc: "How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
@@ -419,6 +427,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"status": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "agents", desc: "List in-flight agentic stages by role"},
+		{name: "runs-only", desc: "Return only the bounded run table"},
 		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
 		{name: "json", desc: "Emit JSON"},
@@ -704,6 +713,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"pr-claim": {
 		{name: "release", desc: "Release the remediation claim"},
+		{name: "verify-feedback", desc: "Also compare live PR feedback with the recorded snapshot"},
+		{name: "classify-feedback-repass", desc: "Report whether a stale-feedback repass changed nothing"},
 	},
 	"remediation-checkpoint": {
 		{name: "budget", takesArg: true, desc: "Per-PR repass-cycle budget before escalating"},

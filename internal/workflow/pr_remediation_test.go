@@ -40,6 +40,20 @@ func mergeReviewGatherHeadPrefixes(t *testing.T) string {
 // divergence-guard approach TestReferenceWorkflowsCompile takes (#124): a
 // synthetic fixture would happily keep passing while the definition the
 // dogfood instance actually runs drifted.
+// assertStaleFeedbackGate pins #6126's stale-input routing: an empty
+// staleInput continues to pass, a stale one re-enters gather-review-threads
+// (a charged repass), and only an exhausted budget parks.
+func assertStaleFeedbackGate(t *testing.T, m *Machine, name, pass string) {
+	t.Helper()
+	g, ok := m.Gate(name)
+	if !ok || g.Automated == nil || g.Automated.Check != "output-equals" ||
+		g.Automated.Params["key"] != "staleInput" || g.Automated.Params["equals"] != "" ||
+		g.Branches["pass"] != pass || g.Branches["fail"] != "gather-review-threads" ||
+		g.Branches["escalate"] != "park-stale-feedback" {
+		t.Errorf("%s = %+v, want staleInput routing pass->%s fail->gather-review-threads escalate->park-stale-feedback", name, g, pass)
+	}
+}
+
 func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	t.Helper()
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
@@ -140,8 +154,35 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("rebase-gate not found")
 	}
-	if got := rebaseGate.Branches["fail"]; got != "remediation-checkpoint" {
-		t.Errorf("rebase-gate fail -> %q, want remediation-checkpoint", got)
+	if got := rebaseGate.Branches["fail"]; got != "retry-failed-ci" {
+		t.Errorf("rebase-gate fail -> %q, want retry-failed-ci", got)
+	}
+
+	retryCI, ok := m.Task("retry-failed-ci")
+	if !ok {
+		t.Fatal("retry-failed-ci not found")
+	}
+	if retryCI.Run == nil ||
+		!reflect.DeepEqual(retryCI.Run.Command, []string{"goobers", "ci-poll"}) ||
+		retryCI.Run.Workspace != apiv1.WorkspaceScratch ||
+		retryCI.Inputs["kind"] != "ci-poll" ||
+		retryCI.Inputs["retryFailedChecksMaxAttempts"] != "1" ||
+		retryCI.Next != "remediation-checkpoint" {
+		t.Errorf("retry-failed-ci = %+v, want one bounded failed-check rerun before remediation-checkpoint", retryCI)
+	}
+	for _, output := range []string{
+		"selectedNumber", "head", "remediationCauses", "conflict", "conflictLocations",
+		"attemptedHeadSha", "rebaseBaseSha", "policyExcluded", "policyExcludedReason",
+	} {
+		if retryCI.InputsFrom[output] != output {
+			t.Errorf("retry-failed-ci inputsFrom[%q] = %q, want %q", output, retryCI.InputsFrom[output], output)
+		}
+		if !containsString(retryCI.ExpectedOutputs, output) {
+			t.Errorf("retry-failed-ci expectedOutputs = %v, missing carried %q", retryCI.ExpectedOutputs, output)
+		}
+	}
+	if retryCI.InputsFrom["prNumber"] != "selectedNumber" || !containsString(retryCI.ExpectedOutputs, "ciStatus") {
+		t.Errorf("retry-failed-ci PR/CI contract = inputsFrom %v outputs %v", retryCI.InputsFrom, retryCI.ExpectedOutputs)
 	}
 
 	checkpointGate, ok := m.Gate("checkpoint-gate")
@@ -321,10 +362,31 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		responseGate.Automated.Check != "status-equals" {
 		t.Errorf("finding-responses-gate evaluator = %+v, want automated status-equals", responseGate)
 	}
-	if responseGate.Branches["pass"] != "guard-before-review" ||
+	if responseGate.Branches["pass"] != "classify-feedback-repass" ||
 		responseGate.Branches["fail"] != "guard-before-implement" ||
 		responseGate.Branches["escalate"] != "park-invalid-finding-responses" {
-		t.Errorf("finding-responses-gate branches = %v, want pass->guard-before-review, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+		t.Errorf("finding-responses-gate branches = %v, want pass->classify-feedback-repass, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+	}
+	// #6126: a stale-feedback repass that changed nothing skips re-review
+	// (whose identical-diff guard would escalate it) and returns to the
+	// feedback-verifying guard before publication. The classifier compares
+	// the workspace head, so it must run in the PR's worktree.
+	classify, ok := m.Task("classify-feedback-repass")
+	if !ok {
+		t.Fatal("classify-feedback-repass not found")
+	}
+	if classify.Run == nil || !reflect.DeepEqual(classify.Run.Command, []string{"goobers", "pr-claim", "--classify-feedback-repass"}) ||
+		classify.Run.Workspace == apiv1.WorkspaceScratch || classify.Next != "feedback-repass-gate" ||
+		!containsString(classify.ExpectedOutputs, "feedbackNoop") {
+		t.Errorf("classify-feedback-repass = %+v, want pr-claim --classify-feedback-repass in the repo workspace, next feedback-repass-gate", classify)
+	}
+	repassGate, ok := m.Gate("feedback-repass-gate")
+	if !ok || repassGate.Automated == nil || repassGate.Automated.Check != "output-equals" ||
+		repassGate.Automated.Params["key"] != "feedbackNoop" || repassGate.Automated.Params["equals"] != "false" ||
+		repassGate.Branches["pass"] != "guard-before-review" ||
+		repassGate.Branches["fail"] != "guard-before-push" ||
+		repassGate.Branches["escalate"] != "park-stale-feedback" {
+		t.Errorf("feedback-repass-gate = %+v, want feedbackNoop=false->guard-before-review, a no-op repass->guard-before-push, escalate->park-stale-feedback", repassGate)
 	}
 	invalidResponsesPark, ok := m.Task("park-invalid-finding-responses")
 	if !ok {
@@ -421,18 +483,29 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		"guard-before-implement":     "warm-module-cache",
 		"guard-before-review":        "review",
 		"guard-before-local-ci":      "local-ci",
-		"guard-before-push":          "push-remediated",
+		"guard-before-push":          "push-feedback-gate",
 	} {
 		guard, ok := m.Task(name)
 		if !ok {
 			t.Errorf("%s not found", name)
 			continue
 		}
-		if guard.Run == nil || !reflect.DeepEqual(guard.Run.Command, []string{"goobers", "pr-claim"}) {
-			t.Errorf("%s command = %v, want PR lifecycle check", name, guard.Run)
+		wantCommand := []string{"goobers", "pr-claim"}
+		if name == "guard-before-push" {
+			// #6126: the last pre-publication guard also verifies the
+			// feedback snapshot.
+			wantCommand = append(wantCommand, "--verify-feedback")
+		}
+		if guard.Run == nil || !reflect.DeepEqual(guard.Run.Command, wantCommand) {
+			t.Errorf("%s command = %v, want %v", name, guard.Run, wantCommand)
 		}
 		if guard.Next != next {
 			t.Errorf("%s next = %q, want %q", name, guard.Next, next)
+		}
+		if name == "guard-before-push" && guard.Run != nil && guard.Run.Workspace == apiv1.WorkspaceScratch {
+			// #6126: a stale verdict records the workspace head the repass
+			// classifier compares against, so this guard needs the worktree.
+			t.Errorf("guard-before-push workspace = scratch, want the PR's worktree")
 		}
 	}
 
@@ -700,9 +773,18 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	if resolveThreads.Run == nil || !reflect.DeepEqual(resolveThreads.Run.Command, []string{"goobers", "resolve-review-threads"}) {
 		t.Errorf("resolve-review-threads command = %v", resolveThreads.Run)
 	}
-	if resolveThreads.Next != "review-threads-gate" ||
-		!containsString(resolveThreads.ExpectedOutputs, "unresolvedThreadCount") {
+	if resolveThreads.Next != "review-thread-feedback-gate" ||
+		!containsString(resolveThreads.ExpectedOutputs, "unresolvedThreadCount") ||
+		!containsString(resolveThreads.ExpectedOutputs, "staleInput") {
 		t.Errorf("resolve-review-threads routing contract = next %q outputs %v", resolveThreads.Next, resolveThreads.ExpectedOutputs)
+	}
+	assertStaleFeedbackGate(t, m, "push-feedback-gate", "push-remediated")
+	assertStaleFeedbackGate(t, m, "review-thread-feedback-gate", "review-threads-gate")
+	staleThreadsPark, ok := m.Task("park-stale-feedback")
+	if !ok || staleThreadsPark.Next != "release-escalated-claim" || staleThreadsPark.Run == nil ||
+		!containsString(staleThreadsPark.Run.Command, "--escalate") ||
+		!containsString(staleThreadsPark.Run.Command, "budget-exhausted") {
+		t.Errorf("park-stale-feedback = %+v, want a budget-exhausted escalation that releases the claim", staleThreadsPark)
 	}
 	threadGate, ok := m.Gate("review-threads-gate")
 	if !ok || threadGate.Automated == nil ||
@@ -759,6 +841,9 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	for _, output := range []string{"remediationCauses", "conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
 		if !containsString(rebase.ExpectedOutputs, output) {
 			t.Errorf("rebase-pr expectedOutputs = %v, missing %q structural-collision evidence", rebase.ExpectedOutputs, output)
+		}
+		if checkpoint.InputsFrom["ciStatus"] != "ciStatus" {
+			t.Errorf("remediation-checkpoint inputsFrom[ciStatus] = %q, want ciStatus", checkpoint.InputsFrom["ciStatus"])
 		}
 		if checkpoint.InputsFrom[output] != output {
 			t.Errorf("remediation-checkpoint inputsFrom[%q] = %q, want %q", output, checkpoint.InputsFrom[output], output)

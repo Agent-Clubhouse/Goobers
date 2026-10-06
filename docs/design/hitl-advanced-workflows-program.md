@@ -1,8 +1,13 @@
 # Human operations and advanced workflows program
 
-> Status: draft — reviewable design and implementation stack; not a release claim
+> Status: approved — program direction; implementation remains unmerged
 > Area: workflows, human operations, events, provider reads, portal
 > Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
+
+> Design approved for incremental delivery on 2026-10-06. Implementation and
+> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
+> not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
+> remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
 ## Purpose and ordering
 
@@ -39,6 +44,13 @@ The filenames above become navigable entries in the generated design index as
 those documents enter the stack. Each document owns its acceptance criteria and
 unresolved implementation choices. Agreed user decisions below are constraints,
 not questions to reopen during implementation.
+
+Authentication prerequisite within HITL:
+[fleet service authentication and delegated human access](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/design/fleet-delegated-authentication.md)
+(`HAW-AUTH-*`). Fleet mode lets an external service own sign-in and per-user gaggle
+permissions within locally enforced action and credential limits. Direct portal
+sign-in remains a separate delivery requirement. Neither is claimed complete by
+the local implementation snapshot or by design approval.
 
 ## Agreed constraints
 

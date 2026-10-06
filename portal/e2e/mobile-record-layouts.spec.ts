@@ -263,7 +263,8 @@ test("shows semantic mobile context and preserves deep links and browser Back", 
 
   await page.goto("/#/work-items");
   const workItem = page.getByRole("button", { name: /^Open PR / }).first();
-  await expect(workItem.locator(".work-item-status")).toContainText("In progress");
+  await expect(workItem).toHaveAttribute("data-status", "in-progress");
+  await expect(workItem.locator(".work-item-identity .sr-only")).toHaveText("In progress");
   await expect(workItem.locator(".work-item-mobile-context")).toContainText(
     "core / implementation",
   );
@@ -299,7 +300,8 @@ test("renders a bounded large Work Items dataset without losing the first record
     name: "Open issue #10000 in organization/repository-with-a-long-name-0",
   });
   await expect(first).toBeVisible();
-  await expect(first.locator(".work-item-status")).toContainText("In progress");
+  await expect(first).toHaveAttribute("data-status", "in-progress");
+  await expect(first.locator(".work-item-identity .sr-only")).toHaveText("In progress");
   await expect(page.getByText("Showing the 200 most recently actioned work items.")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
     .toBeLessThanOrEqual(1);

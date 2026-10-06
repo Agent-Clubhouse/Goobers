@@ -210,7 +210,8 @@ command instead. **CI:** each validation job maps to the same contract:
 | `preflight (lint · format · policy · vet · build)` | Fast source, policy, vet, build, and configuration admission gate |
 | `cmd/goobers growth ratchet` | Non-test Go line/file ceilings; run `make cmdgoobers-growth` locally |
 | `dead-code analysis` | Reachability checks for Go and portal production code |
-| `checks` | Portal, canvas-extension, generated-contract, and manifest slice of `make ci` |
+| `checks (portal UX · contracts · package)` | Portal, canvas-extension, generated-contract, embedded-asset, package, and manifest slice of `make ci` |
+| `CI scope (portal-only or full)` | Classifies the complete PR merge-base diff; uncertainty retains full CI |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
 | `lint (${{ matrix.goos }})` | `golangci-lint` across Linux, macOS, and Windows |
 | `darwin gate (build · vet)` | Linux cross-compile `go build` + `go vet` (tests included) of the whole tree for darwin/arm64 and darwin/amd64, built with cgo off as the release builds macOS binaries; the only pre-merge macOS gate |
@@ -222,9 +223,30 @@ command instead. **CI:** each validation job maps to the same contract:
 | `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned, plus the envtest control-plane gate (`KUBEBUILDER_ASSETS`) |
 | `sandbox confinement (ubuntu-latest)` | Full-tier `make sandbox-check` gate with native bubblewrap availability required; macOS Seatbelt runs nightly (see below) |
 | `linux node validation (#636/#639)` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
-| `make ci (fmt-check · vet · build · test · lint)` | Required aggregate status for all rows above; it runs no additional validation |
+| `make ci (fmt-check · vet · build · test · lint)` | Required aggregate status for the selected profile; it runs no additional validation |
 
 <!-- ci-required-jobs:end -->
+
+Pull requests changing only regular files under `portal/` use the **portal-only**
+CI profile. Preflight remains unchanged apart from testing the CI policy itself,
+and `checks` still runs every portal component and Playwright UX test, including
+the real-daemon smoke test, plus API-contract, embedded-asset, dependency-audit,
+and package verification. Browser coverage remains Chromium-only; this does not
+add screenshot-baseline visual regression tests.
+
+Only the explicitly enumerated backend jobs in `test/cipolicy` are excluded.
+Mixed changes, Go source/module files, symlinks/submodules, empty diffs, or failed
+classification retain the full profile. Rename detection is disabled for
+classification so both the deleted and added paths are checked. Merge groups,
+main pushes, and manual dispatches retain their existing full-profile validation.
+Local `make ci` still runs its complete check list.
+
+The required check name is unchanged. It rejects missing/unknown profiles and
+every failed, cancelled, or unexpectedly skipped job; only a successful
+portal-only classification permits skips for its backend-job allowlist. The
+workflow summary records the profile and excluded jobs. Reproduce classification
+with `CI_EVENT_NAME=pull_request`, `BASE_SHA` and `HEAD_SHA` set to full commit
+SHAs, then run `go run ./test/cipolicy classify`.
 
 The dedicated vulnerability, integration, sandbox, and Linux-node CI jobs invoke
 their corresponding Make targets. The vulnerability target also runs daily from

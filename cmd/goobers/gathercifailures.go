@@ -220,15 +220,48 @@ func readRemediationBriefArtifact(root, runID, stage string) (apiv1.RemediationB
 	if err != nil {
 		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact, err)
 	}
-	if err := validateRemediationBriefJSON(data); err != nil {
-		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact, err)
+	var header struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact,
+			fmt.Errorf("decode remediation brief: %w", err))
+	}
+	// A run whose gather-pr-context wrote an older wire version before this
+	// binary deployed must still resume: validate the brief against the schema
+	// of the version it declares, then migrate it to the current version.
+	schemaFile, ok := remediationBriefSchemaFile(header.Schema)
+	if !ok {
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact,
+			fmt.Errorf("remediation brief schema is %q, want one of %s",
+				header.Schema, strings.Join(apiv1.SupportedRemediationBriefVersions(), ", ")))
+	}
+	if err := validateSchemaJSON(schemaFile, data); err != nil {
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact,
+			fmt.Errorf("validate remediation brief: %w", err))
 	}
 	var brief apiv1.RemediationBrief
 	if err := json.Unmarshal(data, &brief); err != nil {
 		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact,
 			fmt.Errorf("decode remediation brief: %w", err))
 	}
-	return brief, nil
+	return apiv1.MigrateRemediationBrief(brief, header.Schema), nil
+}
+
+// remediationBriefSchemaFile maps a readable remediation-brief wire version
+// to its immutable JSON schema.
+func remediationBriefSchemaFile(version string) (string, bool) {
+	switch version {
+	case apiv1.RemediationBriefVersion:
+		return schemas.RemediationBrief, true
+	case "goobers.dev/remediation-brief/v3":
+		return schemas.RemediationBriefV3, true
+	case "goobers.dev/remediation-brief/v2":
+		return schemas.RemediationBriefV2, true
+	case "goobers.dev/remediation-brief/v1":
+		return schemas.RemediationBriefV1, true
+	}
+	return "", false
 }
 
 func writeRemediationBrief(path string, brief apiv1.RemediationBrief) error {

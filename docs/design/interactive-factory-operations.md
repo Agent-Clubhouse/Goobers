@@ -1,8 +1,13 @@
 # Design: Interactive factory operations
 
-> Status: draft — implementation contract for the human operations surface
+> Status: approved — implementation contract for the human operations surface
 > Area: Portal, runtime, providers, authorization
 > Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
+
+> Design approved for incremental delivery on 2026-10-06. Implementation and
+> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
+> not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
+> remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
 Program: [HITL and advanced workflows](hitl-advanced-workflows-program.md).
 Companions: [child workflows](agent-authored-child-workflows.md),
@@ -22,7 +27,8 @@ The same operations are available to authorized agents through typed daemon oper
 - V1 permits multiple authorized users to contribute sequentially to the same session.
   Presence, simultaneous conversation presentation, and full group-chat UX are future work.
 - An optional gaggle interactive-access block selects provider credentials, allowed
-  actions/targets, and human viewer/operator grants. Omission disables interactive writes
+  actions/targets, and direct human grants or explicitly configured fleet delegation.
+  Omission disables interactive writes
   and session creation; existing read-only monitoring remains available under its policy.
 - Provider operations use the configured gaggle interactive execution credentials.
   Goobers records the initiating human; the browser never supplies a provider token.
@@ -45,7 +51,7 @@ per-gaggle human access, sequence-bound decisions, queued stage restarts, shared
 native agent sessions, source browsing and audited manual/session field edits.
 Needs-human resolution, selected-PR repair and post-turn receipt inspection are
 also installed in the local daemon, with current source authority and bounded effects.
-See the [delivery ledger](../hitl-advanced-workflows-tracking.md). No deployed
+See the [delivery ledger](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/hitl-advanced-workflows-tracking.md). No deployed
 end-to-end qualification is claimed.
 
 | Existing seam | What ships / what this design adds |
@@ -85,9 +91,47 @@ repository/backlog as required by the workbench design, never in a private sessi
 
 ## 4. Interactive access and execution policy
 
+### 4.1 Direct and fleet authentication
+
+The proposed [fleet delegation contract](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/design/fleet-delegated-authentication.md) adds
+an explicit fleet mode: an external service owns sign-in and per-user gaggle
+permissions, while the instance enforces gaggle action/target limits and selects
+provider credentials. It preserves both the acting service and initiating human.
+Fleet grants replace duplicate local user membership only in that explicit mode;
+service-only credentials cannot satisfy a human approval. This addition is not
+implemented by the current stack. Its `HAW-AUTH-*` slices are prerequisites for
+advertising fleet writes. Direct-mode browser sign-in is also still a delivery
+gap; API token verification alone does not provide a portal login experience.
+
+
+### Review clarification: Fleet identity and provider credentials
+
+Fleet deployments keep Entra/MSAL/MISE and user membership in Fleet. The Agent
+validates Fleet delegation and forwards only allowed requests to the trusted local
+daemon. Goobers does not require a second Entra application, user directory, or
+per-user provider token for this mode. The Fleet follow-up defines the protected
+local provenance and per-gaggle capability boundary; that extension remains draft.
+
+The credential selection below answers a different question: which existing
+server-owned GitHub/ADO identity may perform an interactive provider operation?
+It is explicit opt-in for portal/agent-session writes, reusing the current secret
+resolver and permitting the same underlying credential as ordinary gaggle work.
+It does not move human login into the daemon or create a separate secret vault.
+The project owner requested this selection so interactive operations can have
+different provider authority from unattended workflow execution when desired.
+
+Existing trusted-local CLI/daemon operations, including starting configured
+workflows, are not retrofitted with fleet login by this proposal. The explicit
+local human-role examples below apply to direct authenticated deployments; Fleet
+user membership is handled through the separately specified delegated path.
+The exact fleet-to-local authorization contract still requires the review in
+[#6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) before implementation.
+
+### 4.2 Existing direct-mode policy and credentials
+
 The policy and named credential vocabulary below is implemented alongside
 bounded shared sessions using an existing configured Goober and independently
-authorized typed source operations. See [interactive access](../reference/interactive-access.md) for the current
+authorized typed source operations. See [interactive access](https://github.com/Agent-Clubhouse/Goobers/blob/fdda5e21426264e7f423ef2a4cedb01cbfdf1eee/docs/reference/interactive-access.md) for the current
 permissions route, source formats and implementation boundaries.
 
 The portal implements human-only local run inspection, occurrence-bound decisions,
@@ -124,7 +168,7 @@ Omission never silently inherits credentials or enables interaction. Cross-provi
 and backlog bindings resolve independently; missing one cannot fall back to another.
 Targets resolve to configured gaggle bindings, not arbitrary URLs submitted by a client.
 
-Human authorization and provider permission are independent checks:
+In direct mode, human authorization and provider permission are independent checks:
 `authenticated principal ∩ gaggle grant ∩ allowed action/target ∩ execution capability`.
 The provider enforces its own credential permissions as the final boundary. A powerful
 provider token does not enable actions omitted from the interactive policy.
@@ -395,7 +439,7 @@ integration gates. Source/API tests alone do not justify claiming a live provide
 | HAW-HITL-007 | Restart-stage allowance epochs and context; local conformance proves reset scope, cumulative history, interrupt settlement and provider/head checks. Depends on 001–002. |
 | HAW-HITL-008 | Temporal restart/executable continuation and occurrence-bound human gates; replay, duplicate decisions and settled execution cases pass. Depends on 007. |
 | HAW-HITL-009 | Integrate child waits and attention; parent releases its active slot while waiting, reacquires it to resume, follows accepted continuation, and reports cascading cancellation and family settlement accurately. Depends on 005/008 and child-workflow contract. |
-| HAW-HITL-010 | Portal shared sessions, attention and run/PR actions; role/capability-driven controls call common services and render acknowledgements/outcomes. Depends on 004–009. |
+| HAW-HITL-010 | Portal shared sessions, attention and run/PR actions; role/capability-driven controls call common services and render acknowledgements/outcomes. Depends on 004–009 and the selected deployment's authentication acceptance: HAW-AUTH-001–008 for fleet mode, HAW-AUTH-009 for direct browser sign-in. |
 | HAW-HITL-011 | CLI/agent-tool parity, end-to-end local/Temporal and provider fixtures; cross-surface vectors prove identical audit and authority semantics. Depends on 006–010. |
 | HAW-HITL-012 | Operator docs, migrations/rollback and release gates; generated contracts/indexes current, opt-in deployment exercised and unsupported adapter modes documented. Depends on 011. |
 

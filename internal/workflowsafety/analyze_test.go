@@ -129,6 +129,25 @@ func publicationDefinition(t testing.TB) wf.Definition {
 	return d
 }
 
+func unpushedRemediationDefinition(t testing.TB) wf.Definition {
+	t.Helper()
+	d := reviewDefinition()
+	selector := shell("gather-pr-context", "implement", "goobers", "gather-pr-context")
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+		selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+	}
+	d.Spec.Start = selector.Name
+	d.Spec.Tasks = append([]apiv1.Task{selector}, d.Spec.Tasks...)
+	d.Spec.Gates[0].Branches["fail"] = "park-escalated"
+	d.Spec.Gates[0].Branches["needs-changes"] = "park-escalated"
+	park := shell("park-escalated", wf.TargetEscalate, "goobers", "remediation-checkpoint", "--escalate")
+	park.Capabilities = []string{"github:pr:write", "repo:push"}
+	park.PolicyActions = []string{"record-remediation-checkpoint", "escalate-pr"}
+	d.Spec.Tasks = append(d.Spec.Tasks, park)
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+	return d
+}
+
 func TestSafetyPublicationIsPathAndVerdictSpecific(t *testing.T) {
 	d := publicationDefinition(t)
 	bad := assertFinding(t, compile(t, d), PublishCode, true)
@@ -147,6 +166,22 @@ func TestSafetyPublicationIsPathAndVerdictSpecific(t *testing.T) {
 
 	// A publisher can fail and still reach a park when continueOnError is set.
 	d.Spec.Tasks[2].ContinueOnError = true
+	assertFinding(t, compile(t, d), PublishCode, true)
+}
+
+func TestSafetyTerminalParkRecordsUnpushedRemediationReview(t *testing.T) {
+	d := unpushedRemediationDefinition(t)
+	assertFinding(t, compile(t, d), PublishCode, false)
+
+	d.Spec.Gates[0].Branches["fail"] = wf.TargetAbort
+	assertFinding(t, compile(t, d), PublishCode, true)
+
+	d = unpushedRemediationDefinition(t)
+	d.Spec.Tasks[2].Next = "push-remediated"
+	push := shell("push-remediated", "review", "goobers", "push-remediated")
+	push.Capabilities = []string{"github:issues:write", "github:pr:write", "repo:push"}
+	push.PolicyActions = []string{"push-pr-branch", "clear-remediation"}
+	d.Spec.Tasks = append(d.Spec.Tasks, push)
 	assertFinding(t, compile(t, d), PublishCode, true)
 }
 
@@ -204,6 +239,71 @@ func TestSafetyPatchMustBelongToSelectedSubject(t *testing.T) {
 	d.Spec.Tasks[1].Run.Command = []string{"custom-subject-patch"}
 	annotate(t, &d, Contracts{Stages: map[string]StageContract{"check": {Evidence: "patch"}}})
 	assertFinding(t, compile(t, d), EvidenceCode, false)
+}
+
+func TestSafetyConditionalRebindSeparatesManagedAndAdvisoryReview(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-sibling-context"
+	d.Spec.Tasks = []apiv1.Task{shell("gather-sibling-context", "review", "goobers", "gather-sibling-context")}
+	d.Spec.Gates[0].Branches["needs-changes"] = wf.TargetAbort
+	d.Spec.Tasks[0].InputsFrom = map[string]string{"selectedNumber": "number", "advisoryMode": "advisoryMode"}
+	d.Spec.Tasks[0].Inputs = map[string]string{"resultFile": "sibling-context.json"}
+	d.Spec.Tasks[0].PolicyActions = []string{"flag-scope-drift", "route-verdict"}
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-sibling-context", nil) {
+		d.Spec.Tasks[0].Capabilities = append(d.Spec.Tasks[0].Capabilities, string(use.Capability))
+	}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+
+	got := assertFinding(t, compile(t, d), EvidenceCode, true)
+	if len(got) != 1 {
+		t.Fatalf("conditional rebind should report only the advisory path, got %+v", got)
+	}
+	witness := strings.Join(got[0].Details.WitnessPath, " -> ")
+	if !strings.Contains(witness, "advisoryMode=true without workspaceBranch") ||
+		strings.Contains(witness, "managed subject workspaceBranch") {
+		t.Fatalf("SAF001 witness does not isolate advisory path: %+v", got[0])
+	}
+	if got[0].Details.Confidence != "high" || got[0].Details.Coverage != "modeled" {
+		t.Fatalf("advisory path should be a modeled classification, got %+v", got[0].Details)
+	}
+
+	d.Spec.Tasks[0].Run.Command = []string{"goobers", "gather-pr-context"}
+	d.Spec.Tasks[0].Capabilities = nil
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+		d.Spec.Tasks[0].Capabilities = append(d.Spec.Tasks[0].Capabilities, string(use.Capability))
+	}
+	assertFinding(t, compile(t, d), EvidenceCode, false)
+}
+
+func TestSafetyExplicitDiffAfterReboundWorkspaceSatisfiesPRReview(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		inputsFrom map[string]string
+		want       bool
+	}{
+		{"same selected PR", map[string]string{"selectedNumber": "selectedNumber", "head": "head", "base": "base"}, false},
+		{"unproven selected PR", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := reviewDefinition()
+			selector := shell("gather-pr-context", "advisory-siblings", "goobers", "gather-pr-context")
+			for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-pr-context", nil) {
+				selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+			}
+			siblings := shell("advisory-siblings", "implement", "goobers", "gather-sibling-context", "--no-verdict-cache")
+			for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("gather-sibling-context", nil) {
+				siblings.Capabilities = append(siblings.Capabilities, string(use.Capability))
+			}
+			siblings.InputsFrom = tc.inputsFrom
+			siblings.PolicyActions = []string{"flag-scope-drift", "route-verdict"}
+			d.Spec.Start = selector.Name
+			d.Spec.Tasks = append([]apiv1.Task{selector, siblings}, d.Spec.Tasks...)
+			d.Spec.Tasks[3].Run.Command = []string{"git", "diff", "main...HEAD"}
+			d.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceRepo
+			annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+			assertFinding(t, compile(t, d), EvidenceCode, tc.want)
+		})
+	}
 }
 
 func TestSafetyFeedbackUsesRuntimeContextSelection(t *testing.T) {

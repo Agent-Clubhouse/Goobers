@@ -10,8 +10,17 @@ Usage: goobers resolve-review-threads [path]
 
 Validate the implementer's threadResponses against every gathered live review
 thread, reply to each thread, resolve addressed threads after the reply is
-visible, and re-query the published PR head. Exit codes: 0 = responses
-applied and verified, 1 = business/provider error, 2 = usage/IO error.
+visible, and re-query the published PR head. Before and during publication
+the live feedback is compared with the run's recorded feedback snapshot:
+new, changed or missing feedback, or a thread whose state someone else
+changed, stops publication with a typed staleInput result the workflow
+routes back to gather-review-threads; a head that moved off the published
+SHA ends the run as no-work. The result file is a versioned publication
+receipt (goobers.dev/review-thread-publication/v1), rewritten after every
+verified reply and resolution; a retry reconciles the run's newest matching
+receipt with re-read provider state and never publishes a mutation twice.
+Exit codes: 0 = responses applied and verified, stale input reported, or
+no-work; 1 = business/provider error; 2 = usage/IO error.
 .fi
 .SH EXAMPLES
 .nf

@@ -127,17 +127,15 @@ test("renders the Workflow-detail topology with withheld graph analytics and zer
   expect(pageErrors).toEqual([]);
 });
 
-for (const [area, path, heading, location] of COMPACT_NAV_ROUTES) {
+for (const [area, path, heading] of COMPACT_NAV_ROUTES) {
   test(`keeps the ${area} primary route within a 320px viewport`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 800 });
     await page.goto(path);
 
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     const navigation = page.getByRole("navigation", { name: "Mobile primary", exact: true });
-    const active = navigation.getByRole("button", {
-      name: location === "direct" ? area : "More",
-    });
-    await expect(active).toHaveAttribute("aria-current", "page");
+    const active = navigation.getByRole("button", { name: "Open navigation menu" });
+    await expect(active).toHaveText(area);
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
       .toBeLessThanOrEqual(1);
@@ -183,12 +181,26 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
 
     await page.goto("/#/cost");
     const costHeading = page.getByRole("heading", { name: "Cost", exact: true });
-    const summary = page.locator(".usage-analytics").first();
+    const summary = page.locator(".cost-usage-summary").first();
     await expect(costHeading, `Cost title at ${layout.name}`).toBeVisible();
     await expect(summary, `Cost summary at ${layout.name}`).toBeVisible();
-    await expect(summary.getByText("Total", { exact: true })).toBeVisible();
+    await expect(summary.getByText("Total cost", { exact: true })).toBeVisible();
     await expect(summary.getByText("P50", { exact: true })).toBeVisible();
     await expect(summary.getByText("P95", { exact: true })).toBeVisible();
+    const metrics = summary.locator(".cost-usage-spend > div");
+    const boxes = await Promise.all((await metrics.all()).map((metric) => metric.boundingBox()));
+    expect(boxes).toHaveLength(4);
+    if (layout.width >= 360 && layout.width <= 760) {
+      const supporting = boxes.slice(1);
+      expect(Math.max(...supporting.map((box) => box!.y)) - Math.min(...supporting.map((box) => box!.y)))
+        .toBeLessThanOrEqual(1);
+      const values = await metrics.locator("dd").all();
+      const valueBoxes = await Promise.all(values.slice(1).map((value) => value.boundingBox()));
+      expect(Math.max(...valueBoxes.map((box) => box!.y)) - Math.min(...valueBoxes.map((box) => box!.y)))
+        .toBeLessThanOrEqual(1);
+    } else if (layout.width < 360) {
+      expect(Math.abs(boxes[2]!.y - boxes[3]!.y)).toBeLessThanOrEqual(1);
+    }
     const comparison = page.getByRole("region", { name: "Attributed costs comparison" });
     await expect(comparison).toBeVisible();
     await expect(comparison).toHaveAttribute("tabindex", "0");
@@ -196,7 +208,21 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
       comparison.getByRole("table", { name: "Attributed costs" }).getByRole("columnheader"),
     ).toHaveCount(4);
     await expect(comparison.getByText("123,456,789.12 AIC").first()).toBeAttached();
-    await expect(page.getByText("Scroll sideways to compare every cost column.")).toBeVisible();
+    await comparison.locator(".external-cost-models").first().evaluate((element) => {
+      element.setAttribute("style", "font-size: 20px");
+      element.querySelector("li")!.textContent =
+        "claude-sonnet-with-a-long-unbroken-model-identifier: 123,456 AIC · 14/14 attempts";
+    });
+    await comparison.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+    const modelList = comparison.locator(".external-cost-models").first();
+    const modelBox = await modelList.boundingBox();
+    const comparisonBox = await comparison.boundingBox();
+    expect(modelBox).not.toBeNull();
+    expect(comparisonBox).not.toBeNull();
+    expect(modelBox!.x + modelBox!.width).toBeLessThanOrEqual(comparisonBox!.x + comparisonBox!.width - 12);
+    expect(await modelList.evaluate((element) => element.scrollWidth - element.clientWidth))
+      .toBeLessThanOrEqual(1);
+    await expect(page.getByText("Scroll sideways to compare every cost column.")).toHaveCount(0);
     if (layout.width <= 430) {
       expect(
         await comparison.evaluate((element) => element.scrollWidth > element.clientWidth),
@@ -720,13 +746,13 @@ test("does not mark unrelated history after a canceled detail-link click", async
   await page.goBack();
   await expect(page).toHaveURL(/#\/overview$/);
   await page.goForward();
-  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
 });
 
 test("keeps instance details usable on desktop and at 200 percent zoom", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/#/instance/retention");
-  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
   await page.evaluate(() => {
     document.documentElement.style.zoom = "2";
   });
@@ -797,18 +823,12 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   await expect(page.getByRole("heading", { name: "Active runs" })).toBeVisible();
 
   const primary = page.getByRole("navigation", { name: "Mobile primary", exact: true });
-  for (const name of ["Overview", "Workflows", "Runs", "More"]) {
-    await expect(primary.getByRole("button", { name })).toBeVisible();
-  }
-  await expect(primary.getByRole("button", { name: "Overview" })).toHaveAttribute(
-    "aria-current",
-    "page",
-  );
-
-  const more = primary.getByRole("button", { name: "More" });
+  const more = primary.getByRole("button", { name: "Open navigation menu" });
+  await expect(more).toBeVisible();
+  await expect(more).toHaveText("Overview");
   await more.click();
   const dialog = page.getByRole("dialog", { name: "Goobers" });
-  for (const name of ["Goobers", "Work Items", "Insight", "Cost"]) {
+  for (const name of ["Overview", "Workflows", "Runs", "Goobers", "Work Items", "Insight", "Cost"]) {
     await expect(dialog.getByRole("button", { name })).toBeVisible();
   }
   await expect(page.getByRole("navigation", { name: "Gaggles" })).toBeVisible();
@@ -816,8 +836,9 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   await expect(support).toBeVisible();
   await expect(support.getByRole("link", { name: "Docs" })).toBeVisible();
 
-  const theme = page.getByRole("button", { name: "Use dark theme" });
-  for (const control of [more, theme]) {
+  await expect(dialog.getByRole("button", { name: "Use dark theme" })).toHaveCount(0);
+  const close = dialog.getByRole("button", { name: "Close portal menu" });
+  for (const control of [more, close]) {
     const box = await control.boundingBox();
     expect(box, "representative shell control should have geometry").not.toBeNull();
     expect(box!.width).toBeGreaterThanOrEqual(24);
@@ -826,7 +847,7 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
 
   await dialog.getByRole("button", { name: "Cost" }).click();
   await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
-  await expect(more).toHaveAttribute("aria-current", "page");
+  await expect(more).toHaveText("Cost");
 
   for (const control of [
     page.getByLabel("Scope"),
@@ -870,9 +891,7 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   await costPivot.click();
   await expect(page).toHaveURL(/#\/cost\?gaggle=core&workflow=implementation$/);
   await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Scope")).toHaveValue(
-    JSON.stringify(["workflow", "core", "implementation"]),
-  );
+  await expect(page.getByLabel("Scope")).toHaveText("Workflow · core / implementation");
 });
 
 test("shows one coherent polling fallback status with diagnostics out of primary copy", async ({

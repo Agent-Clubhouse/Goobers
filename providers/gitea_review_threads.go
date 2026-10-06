@@ -115,51 +115,36 @@ func (p *GiteaProvider) ListPullRequestReviewThreads(ctx context.Context, repo R
 // listGiteaPullReviews returns every native review on a pull request, following
 // page/limit pagination.
 func (p *GiteaProvider) listGiteaPullReviews(ctx context.Context, repo RepositoryRef, pullID string) ([]giteaPullReview, error) {
-	var all []giteaPullReview
-	const limit = 50
-	for page := 1; ; page++ {
-		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews")
-		if err != nil {
-			return nil, err
-		}
-		endpoint, err = addQuery(endpoint, url.Values{
-			"page":  []string{strconv.Itoa(page)},
-			"limit": []string{strconv.Itoa(limit)},
-		})
-		if err != nil {
-			return nil, err
-		}
-		var pageOut []giteaPullReview
-		if err := p.do(ctx, http.MethodGet, endpoint, nil, &pageOut); err != nil {
-			return nil, err
-		}
-		all = append(all, pageOut...)
-		if len(pageOut) < limit {
-			break
-		}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews")
+	if err != nil {
+		return nil, err
 	}
-	return all, nil
+	return collectGiteaReviewPages[giteaPullReview](ctx, p, endpoint)
 }
 
 // listGiteaPullReviewComments returns every inline comment on one review,
 // following page/limit pagination.
 func (p *GiteaProvider) listGiteaPullReviewComments(ctx context.Context, repo RepositoryRef, pullID string, reviewID int64) ([]giteaPullReviewComment, error) {
-	var all []giteaPullReviewComment
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews", strconv.FormatInt(reviewID, 10), "comments")
+	if err != nil {
+		return nil, err
+	}
+	return collectGiteaReviewPages[giteaPullReviewComment](ctx, p, endpoint)
+}
+
+func collectGiteaReviewPages[T any](ctx context.Context, p *GiteaProvider, endpoint string) ([]T, error) {
+	var all []T
 	const limit = 50
 	for page := 1; ; page++ {
-		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews", strconv.FormatInt(reviewID, 10), "comments")
-		if err != nil {
-			return nil, err
-		}
-		endpoint, err = addQuery(endpoint, url.Values{
+		pageEndpoint, err := addQuery(endpoint, url.Values{
 			"page":  []string{strconv.Itoa(page)},
 			"limit": []string{strconv.Itoa(limit)},
 		})
 		if err != nil {
 			return nil, err
 		}
-		var pageOut []giteaPullReviewComment
-		if err := p.do(ctx, http.MethodGet, endpoint, nil, &pageOut); err != nil {
+		var pageOut []T
+		if err := p.do(ctx, http.MethodGet, pageEndpoint, nil, &pageOut); err != nil {
 			return nil, err
 		}
 		all = append(all, pageOut...)

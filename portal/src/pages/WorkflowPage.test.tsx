@@ -329,7 +329,7 @@ describe("workflow detail page", () => {
 
     await waitFor(() => expect(window.location.hash).toBe("#/gaggle/core"));
     expect(
-      await screen.findByRole("heading", { name: "Workflow topology" }),
+      await screen.findByRole("heading", { name: "Workflows" }),
     ).toBeInTheDocument();
   });
 
@@ -347,7 +347,7 @@ describe("workflow detail page", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+    expect(screen.getByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
   });

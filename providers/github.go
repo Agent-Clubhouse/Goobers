@@ -559,6 +559,7 @@ type githubIssueComment struct {
 	HTMLURL   string     `json:"html_url"`
 	User      githubUser `json:"user"`
 	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 func mapGitHubIssue(issue githubIssue) WorkItem {

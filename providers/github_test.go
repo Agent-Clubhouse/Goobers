@@ -1218,7 +1218,7 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 			t.Fatalf("expected since query param")
 		}
 		writeJSON(t, w, []map[string]interface{}{
-			{"id": 1, "body": "fix this", "html_url": "https://github.com/acme/app/pull/9#comment-1", "user": map[string]string{"login": "carol"}, "created_at": "2026-07-13T00:00:00Z"},
+			{"id": 1, "body": "fix this", "html_url": "https://github.com/acme/app/pull/9#comment-1", "user": map[string]string{"login": "carol"}, "created_at": "2026-07-13T00:00:00Z", "updated_at": "2026-07-14T00:00:00Z"},
 		})
 	})
 	server := httptest.NewServer(mux)
@@ -1266,6 +1266,9 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 	if len(result.CommentsSince) != 1 || result.CommentsSince[0].Author != "carol" {
 		t.Fatalf("CommentsSince = %#v", result.CommentsSince)
+	}
+	if want := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC); !result.CommentsSince[0].UpdatedAt.Equal(want) {
+		t.Fatalf("CommentsSince[0].UpdatedAt = %v, want %v", result.CommentsSince[0].UpdatedAt, want)
 	}
 }
 

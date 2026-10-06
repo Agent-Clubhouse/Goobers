@@ -53,7 +53,9 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	want := []string{
 		"fmt-check",
+		"ci-policy",
 		"runtime-acquisitions",
+		"architecture-imports",
 		"tidy-check",
 		"no-phone-home",
 		"stage-name-lint",
@@ -73,6 +75,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-playwright-install",
 		"portal-build",
 		"portal-embed-vet",
+		"portal-embed-test",
 		"build-goobers",
 		"validate-configs",
 		"build-operator",
@@ -89,6 +92,8 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-contract-diff",
 		"portal-contract-typecheck",
 		"portal-contract-test",
+		"portal-package",
+		"portal-package-test",
 		"manifests-generate",
 		"manifests-diff",
 	}
@@ -126,6 +131,13 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
+	}
+	architectureCheck := checkByLabel(t, gotChecks, "architecture-imports")
+	wantArchitectureArgs := []string{"run", "./test/architectureimports", "-config", "test/architectureimports/rules.json"}
+	if architectureCheck.command != "custom-go" ||
+		architectureCheck.group != groupPreflight ||
+		!reflect.DeepEqual(architectureCheck.args, wantArchitectureArgs) {
+		t.Fatalf("architecture import check = %#v, want custom-go %q in %q", architectureCheck, wantArchitectureArgs, groupPreflight)
 	}
 	shippedCheck := checkByLabel(t, gotChecks, "shipped-workflows")
 	// Plain `go test`, NOT routed through test/hermetic: a linked-in-isolation
@@ -343,7 +355,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check ci-policy runtime-acquisitions architecture-imports tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet portal-embed-test shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test portal-package portal-package-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -418,6 +430,40 @@ func TestPortalEmbedVetRunsAfterBuild(t *testing.T) {
 	}
 	if want := []string{"vet", "-tags", "embed_portal", "./internal/portalassets", "./cmd/goobers"}; !reflect.DeepEqual(check.args, want) {
 		t.Errorf("portal-embed-vet args = %q, want %q", check.args, want)
+	}
+}
+
+func TestPortalAssetAndPackageVerificationRemainInChecks(t *testing.T) {
+	t.Parallel()
+	all := groupChecksOnly(mergeGateChecks(), groupChecks)
+	for _, tc := range []struct {
+		label   string
+		command string
+		args    []string
+	}{
+		{"portal-embed-test", "go", []string{"test", "-tags", "embed_portal", "-count=1", "./internal/portalassets"}},
+		{"portal-package", "npm", []string{"--prefix", "portal", "run", "package:portal"}},
+		{"portal-package-test", "npm", []string{"--prefix", "portal", "run", "test:package"}},
+	} {
+		current := checkByLabel(t, all, tc.label)
+		if current.command != tc.command || !slices.Equal(current.args, tc.args) {
+			t.Errorf("%s command=%q args=%q, want %q %q", tc.label, current.command, current.args, tc.command, tc.args)
+		}
+		if tc.command == "npm" && !current.windowsBatch {
+			t.Errorf("%s must retain the Windows npm wrapper", tc.label)
+		}
+	}
+	var labels []string
+	for _, current := range all {
+		labels = append(labels, current.label)
+	}
+	if slices.Index(labels, "portal-build") >= slices.Index(labels, "portal-embed-test") ||
+		slices.Index(labels, "portal-package") >= slices.Index(labels, "portal-package-test") {
+		t.Fatal("asset/package checks must run after their build prerequisites")
+	}
+	policy := checkByLabel(t, groupChecksOnly(mergeGateChecks(), groupPreflight), "ci-policy")
+	if !slices.Equal(policy.args, []string{"test", "./test/cipolicy", "./test/ci", "-count=1"}) {
+		t.Fatal("preflight must execute the policy and workflow regression tests even when backend unit jobs skip")
 	}
 }
 
@@ -904,6 +950,27 @@ func TestMergeEnvironmentReplacesVariables(t *testing.T) {
 	want := []string{"keep=yes", "PATH=/tools", "MIXED=new"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("mergeEnvironment() = %q, want %q", got, want)
+	}
+}
+
+func TestMergeEnvironmentKeepsAmbientGitConfig(t *testing.T) {
+	t.Parallel()
+	base := []string{
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=/workspace",
+	}
+	overrides := []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsync", "GIT_CONFIG_VALUE_0=none"}
+
+	got := mergeEnvironment(base, overrides, false)
+	want := []string{
+		"GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=/workspace",
+		"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_1=core.fsync", "GIT_CONFIG_VALUE_1=none",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeEnvironment() = %q, want %q", got, want)
+	}
+
+	if got := mergeEnvironment([]string{"PATH=/bin"}, overrides, false); !reflect.DeepEqual(got, append([]string{"PATH=/bin"}, overrides...)) {
+		t.Fatalf("no ambient git config must leave overrides untouched, got %q", got)
 	}
 }
 

@@ -145,6 +145,37 @@ func TestRecordMergeRefusalSkipsMergeReviewOptOut(t *testing.T) {
 
 }
 
+func TestRecordMergeRefusalSkipsPendingRequiredChecks(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(83, "goobers/implementation/checks-pending", "main", "sha-pending", "base1", false, nil, nil)
+	server.addIssue(83, "checks pending")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "83")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "sha-pending")
+	t.Setenv("GOOBERS_INPUT_REASON", requiredStatusPendingReason)
+	t.Setenv("GOOBERS_INPUT_DEMOTIONTHRESHOLD", "1")
+	t.Chdir(t.TempDir())
+
+	for attempt := 1; attempt <= defaultDemotionThreshold; attempt++ {
+		code, stdout, stderr := runArgs(t, "record-merge-refusal", root)
+		if code != 0 {
+			t.Fatalf("attempt %d: code = %d, stderr = %q", attempt, code, stderr)
+		}
+		if !strings.Contains(stdout, "deferring without recording demotion") {
+			t.Fatalf("attempt %d: stdout = %q, want pending-check deferral", attempt, stdout)
+		}
+	}
+
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[83].comments...)
+	labels := append([]string(nil), server.issues[83].labels...)
+	server.mu.Unlock()
+	if len(comments) != 0 || len(labels) != 0 {
+		t.Fatalf("pending checks mutated PR: comments=%v labels=%v", comments, labels)
+	}
+}
+
 // TestRecordMergeRefusalResetsOnHeadAdvance proves a refusal at a NEW head resets
 // the counter — a PR whose head advanced (a remediation push) is a genuinely
 // fresh attempt, not a continuation of the stuck run.

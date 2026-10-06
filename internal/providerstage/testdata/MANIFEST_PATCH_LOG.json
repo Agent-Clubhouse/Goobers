@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "983df6e84bbe4be6447a4dc28cd22a575b0bb839570ce3c97791594d49444bcb",
+  "snapshotSha256": "36a314b63591cc0bceff70635eb5c9fdb509f9241578143568564aad35a8b68e",
   "changes": [
     {
       "version": 1,
@@ -68,6 +68,18 @@
     {
       "version": 17,
       "description": "telemetry-query declares configrepo:write as an OPTIONAL use (TUT-A8, #1220): the Tutor live-verification holdout refresh reads PRs opened in the instance config repository with it, and leaves such holdouts pending without it. Optional is never required, so no shipped config's admission changes."
+    },
+    {
+      "version": 18,
+      "description": "Add advisory-pr-select and advisory-pr-publish as separate workflow commands (#6184). Selection requires the exact github:pr:read credential and acquires a private lease; publication requires github:pr:write and owns the only public comment path. The addition changes no existing command requirement, result file, or claim behavior, so existing workflows retain their admission contract."
+    },
+    {
+      "version": 19,
+      "description": "Give recovery-resume a typed recovery-resume.json result contract (#4418), allowing the ordinary implementation workflow to record whether it resumed retained work and the source run. The existing repo:push capability requirement is unchanged."
+    },
+    {
+      "version": 20,
+      "description": "Migrate pr-select from github:pr:write to provider:pr:write so stale run-aborted recovery authenticates with the same posting identity that publishes merge-review verdicts and remediation responses. The workflow, policy action, and shipped examples move atomically to the provider-neutral capability."
     }
   ]
 }

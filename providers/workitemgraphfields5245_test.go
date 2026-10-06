@@ -122,6 +122,14 @@ func TestCreateWorkItemRefusesGraphFieldsBeforeMutation(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name: "gitea",
+			call: func(t *testing.T, baseURL string) error {
+				p := NewGiteaProvider(baseURL, "token")
+				_, err := p.CreateWorkItem(context.Background(), req)
+				return err
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {

@@ -261,7 +261,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// reviewer-harness infrastructure failure no longer discards the run.
 	// #5558: ci-gate declares maxTimeoutPolls so pending-only CI polling has a
 	// dedicated bound separate from the failed-CI repass budget.
-	const wantDigest = "sha256:ac960dc3507b1965d48eed549bee8eda1aca0581021d5735ba603ad021e653c1"
+	// #4418: recovery-resume now runs immediately after claim and records
+	// whether this run adopted a prior terminal implementation checkpoint.
+	const wantDigest = "sha256:a614478383a7e29b8d384622e412f00001a826ed4ec26645161a56a5b9b3d936"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

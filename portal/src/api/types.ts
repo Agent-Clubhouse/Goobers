@@ -401,7 +401,7 @@ export interface Health extends ContractVersion {
   /** Present on daemons that report the local self-execution policy. */
   selfExecution?: { policy: string; observed: boolean; placements: number; refusals: number };
   definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
-  startup?: { phase: string; target?: string; since: string };
+  startup?: StartupStatus;
   build?: BuildMetadata;
   readState?: ReadState;
   ready: boolean;
@@ -415,6 +415,51 @@ export interface Health extends ContractVersion {
    */
   update?: UpdateAvailability;
   telemetryExporterHealth?: TelemetryExporterHealthStatus;
+}
+
+export interface StartupStatus {
+  phase: string;
+  target?: string;
+  since: string;
+  elapsedSeconds?: number;
+  worktreeCount?: number;
+  recoveryRunCount?: number;
+  accumulationCount?: number;
+  budgetSeconds?: number;
+  budgetUsedPercent?: number;
+  budgetState?: string;
+  blockingCandidate?: RecoveryCandidateStatus;
+}
+
+export interface RecoveryCandidateStatus {
+  progress: RecoveryProgress;
+  runId?: string;
+  gaggle?: string;
+  workflow?: string;
+  disposition?: string;
+  phase?: string;
+  operation?: string;
+  startedAt?: string;
+  lastProgressAt?: string;
+  elapsedSeconds?: number;
+  progressAgeSeconds?: number;
+}
+
+export interface RecoveryProgress {
+  total: number;
+  examined: number;
+  resumed: number;
+  reattached: number;
+  terminal: number;
+  skipped: number;
+}
+
+export interface InstanceReadiness extends ContractVersion {
+  computerName?: string;
+  instanceRoot: string;
+  rootIdentity?: Instance["rootIdentity"];
+  ready: boolean;
+  recovery: StartupStatus;
 }
 
 export interface UpdateAvailability {
@@ -995,7 +1040,7 @@ export interface LineageRun {
 }
 
 export interface OperatorRunSummary {
-  issue?: { number: string; title?: string };
+  issue?: { number: string; title?: string; labels?: string[] };
   currentStage?: string;
   lastHeartbeatAt?: string;
   heartbeatAgeMillis?: number;
@@ -1675,6 +1720,10 @@ export interface TelemetryStageStats {
   /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
+  /** Superseded attempts with usage; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteTokenSamples?: number;
+  /** Superseded attempts with cost; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteCostSamples?: number;
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
@@ -1711,6 +1760,10 @@ export interface TelemetryUsageStats {
   /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
   p95CostUSD?: number;
   retryWasteAttempts: number;
+  /** Superseded attempts with usage; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteTokenSamples?: number;
+  /** Superseded attempts with cost; absent from daemons that predate partial retry-waste coverage. */
+  retryWasteCostSamples?: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
   /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
@@ -1808,6 +1861,7 @@ export interface PortalConfig {
   brand: PortalBrand;
   theme: PortalTheme;
   support: PortalSupport;
+  connectionLocality: "local" | "remote" | "unknown";
   capabilities: {
     revealRun: boolean;
     workflowEnable: boolean;
@@ -1820,6 +1874,7 @@ export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 export interface WorkItemListOptions {
   provider?: string;
   kind?: WorkItemKind;
+  gaggle?: string;
   limit?: number;
 }
 
@@ -1893,6 +1948,7 @@ export interface DaemonClient {
     options?: RequestOptions,
   ): Promise<DaemonEventStream>;
   getHealth(options?: RequestOptions): Promise<Health>;
+  getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness>;
   getInstance(options?: RequestOptions): Promise<Instance>;
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig>;
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;
