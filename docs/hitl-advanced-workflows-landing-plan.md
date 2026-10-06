@@ -10,8 +10,8 @@ and green required CI before landing on main.
 | --- | --- |
 | [Child workflows design #6803](https://github.com/Agent-Clubhouse/Goobers/pull/6803) | Merged to main in `6c30300d4a83b198dd09c0fa919d5c85c9b2ae15`. |
 | [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Prepared against main; Jeff’s requested-changes review remains open. Resolve that review and rerun CI on the refreshed head before merge. |
-| [Events/queues design #6805](https://github.com/Agent-Clubhouse/Goobers/pull/6805) | Prepared against main with protected auto-merge enabled; full CI is running. Can land independently while HITL review is pending. |
-| [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Refresh against main after #6805; land after its own required CI. Independent of the pending HITL review. |
+| [Events/queues design #6805](https://github.com/Agent-Clubhouse/Goobers/pull/6805) | Merged to main in `1141d5db1cc5c45e6aa46f0dbfb3a3a0e5ce6f95`. |
+| [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Refreshed against main after #6805; required CI running with protected auto-merge enabled. Independent of the pending HITL review. |
 | [Implementation review #6807](https://github.com/Agent-Clubhouse/Goobers/pull/6807) | Keep as a draft reference snapshot. Extract reviewed slices; do not merge wholesale. Close as superseded only when all intended behavior is accounted for by landed work or explicit deferrals. |
 | [Fleet authentication design #6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) | Remains a separate draft requiring design acceptance. Rebase its documentation onto main after the four designs, preserving the supplied outbound-only Agent contract. Its approval is not implied by merging the four workstream designs. |
 
@@ -243,3 +243,67 @@ Completion means each accepted capability is implemented, integrated, tested and
 documented on main, with qualified deployment shapes and every snapshot item
 accounted for. It does not mean merging #6807 or preserving its original branch
 boundaries.
+
+## 7. Traceability to design tasks
+
+This mapping assigns review boundaries; it does not mark tasks implemented or
+replace their detailed acceptance criteria. An ID appearing in several slices is
+complete only when all its required evidence has landed. Keep these HAW IDs in
+PR descriptions and link actual merges back to the design ledgers.
+
+| Existing design task | Landing units |
+| --- | --- |
+| HAW-CHD-001 | C01: opt-in, schema and compiler admission |
+| HAW-CHD-002 | C01–C02: proposal validation and runtime authority |
+| HAW-CHD-003 | F02/C02: durable child admission, lineage and retention |
+| HAW-CHD-004 | C03/C06: snapshot custody and compatible execution |
+| HAW-CHD-005 | C04/C06: real agent tools, submit/await/result and durable continuation |
+| HAW-CHD-006 | C04/C06: wait-aware permits/timers and family cancellation |
+| HAW-CHD-007 | C05: result disposition and delegated publication |
+| HAW-CHD-008 | C07/H03/H07: visible lineage and common human intervention |
+| HAW-CHD-009 | C06–C07: shipped authoring skill and backend qualification |
+| HAW-HITL-001 | F03/H01/H03–H04: versioned policy, operation, session and attention contracts |
+| HAW-HITL-002 | H01 and selected authentication track: credentials and human grants |
+| HAW-HITL-003 | H04: durable session ledger and admission |
+| HAW-HITL-004 | H04: session coordinator and harness continuation |
+| HAW-HITL-005 | H03/H05/H07: canonical attention and resolution projection |
+| HAW-HITL-006 | H05/B03: typed item resolution and confirmed effects |
+| HAW-HITL-007 | H03: local stage restart and allowance epochs |
+| HAW-HITL-008 | H03/H07: Temporal continuation and occurrence-bound decisions |
+| HAW-HITL-009 | C04/H03/H07: child capacity, continuation and family settlement |
+| HAW-HITL-010 | H04/H06/H07 plus selected auth: shared Portal sessions and actions |
+| HAW-HITL-011 | H05–H07: CLI/tool parity and integrated backend/provider evidence |
+| HAW-HITL-012 | H07 and each owning slice: operator docs, migrations and release gates |
+| HAW-EVT-001 | F02/E02/E04: envelopes, scoped auth, receipts and migrations |
+| HAW-EVT-002 | F02/C02/H03/H04/E01: common start admission and all source adapters |
+| HAW-EVT-003 | E03: routing revisions and configurable debounce |
+| HAW-EVT-004 | F02/C04/E01: idempotent launch and fenced recovery |
+| HAW-EVT-005 | F02/C04/E01/E04: fair queues, capacity, cancellation and deadlines |
+| HAW-EVT-006 | E02–E03: workflow outbox and chain/fan-out limits |
+| HAW-EVT-007 | F02/E02/E04 and every store owner: pruning, pins, tombstones and inspection |
+| HAW-EVT-008 | E05: provider read coordination, visibility and stale-write fences |
+| HAW-EVT-009 | E01–E05: migration/shadow comparison, backend parity and staged rollout |
+| HAW-BKL-001 | B01: source, identity and edge contracts |
+| HAW-BKL-002 | E05/B01: bounded source ingestion on shared reads |
+| HAW-BKL-003 | B01: rebuildable graph and bounded API |
+| HAW-BKL-004 | H05/B03: native relationship contracts; reconcile existing #5245 work |
+| HAW-BKL-005 | H05/B03: authorized source edits and receipts |
+| HAW-BKL-006 | B02: browsing, objectives and navigation |
+| HAW-BKL-007 | B03–B04: editing and PR-governed repository metadata |
+| HAW-BKL-008 | B04: creation/curation suggestions and explicit acceptance |
+| HAW-BKL-009 | B05: integrated recovery and operator guide |
+| HAW-AUTH-001 | A01: separate Fleet design acceptance and configuration contract |
+| HAW-AUTH-002 | A02: typed principals and protected loopback provenance |
+| HAW-AUTH-003 | A03: production protocol fixtures and connection-bound delegation |
+| HAW-AUTH-004 | A03/F02: durable replay, admission and pruning |
+| HAW-AUTH-005 | A04/H01: Fleet policy ceiling and command authorization leases |
+| HAW-AUTH-006 | A04/H03/H04: executor enforcement, revocation and cancellation |
+| HAW-AUTH-007 | A04/H07: audit, capabilities, streams and operator guidance |
+| HAW-AUTH-008 | A04/H07: production-compatible Fleet qualification |
+| HAW-AUTH-009 | H02: separate direct browser sign-in |
+| HAW-AUTH-010 | A05: separately supported headless workload identity |
+
+Unit names in this table omit the common `LAND-` prefix. Fleet tasks remain
+conditional on acceptance of draft #6865. The current state of referenced provider
+work, including #5245, must be inspected when its slice is extracted; a reference
+is not evidence that the dependency is merged or qualified.
