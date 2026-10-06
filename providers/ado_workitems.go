@@ -965,11 +965,19 @@ func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	return result, err
 }
 
+// recordClaimAttempt records one claim or claim-release attempt receipt. It
+// carries the same constructed work-item URL as recordMutation's receipts
+// (#6796): the read model derives the item's <org>/<project> identity from it,
+// so a URL-less claim receipt split one work item into a qualified and an
+// unqualified cost aggregate.
 func (p *ADOProvider) recordClaimAttempt(ctx context.Context, req ClaimWorkItemRequest, operation, outcome, providerRunID string, err error) {
 	if p.mutationRecorder == nil {
 		return
 	}
-	ref := ExternalRef{Provider: ProviderADO, Ref: "ado#" + req.ID, RunID: req.RunID, Operation: operation, Outcome: outcome, ProviderRunID: providerRunID}
+	ref := ExternalRef{
+		Provider: ProviderADO, Ref: "ado#" + req.ID, URL: p.entityWebURL(req.Repository, "issue", req.ID),
+		RunID: req.RunID, Operation: operation, Outcome: outcome, ProviderRunID: providerRunID,
+	}
 	if err != nil {
 		ref.Outcome, ref.ErrorCode = "failure", "provider_claim_failed"
 	}

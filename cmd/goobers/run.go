@@ -100,7 +100,8 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"webhook receiver, another pod — can start a run at all. Nothing local is\n" +
 	"read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a\n" +
 	"retry use the same acceptance identity. --api-timeout bounds remote validation\n" +
-	"and acceptance (default 30s; must be positive). A timed-out submission has\n" +
+	"and acceptance (default 30s; must be positive), including any wait for a\n" +
+	"daemon that is still starting after a restart. A timed-out submission has\n" +
 	"unknown acceptance; retry the printed request ID with the same options.\n" +
 	"The command returns once the daemon accepts the trigger because\n" +
 	"a remote client cannot watch the run's journal. For local file delegation,\n" +

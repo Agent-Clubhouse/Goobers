@@ -100,6 +100,11 @@
       "sinceVersion": "v0.4.0"
     },
     {
+      "name": "gaggle.spec.health",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.isolation.identityRef",
       "stability": "ga",
       "sinceVersion": "dev"

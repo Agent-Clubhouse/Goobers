@@ -14,7 +14,7 @@ name: CI
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
-# dedicated jobs: cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
+# dedicated jobs: scope, cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
 #   windows-smoke
 #
@@ -50,7 +50,12 @@ name: CI
 # green for the required `make ci` check (the required-ci aggregator, whose NAME
 # is pinned by the branch ruleset) to pass.
 #
-# Pull requests, merge groups, and manual dispatches run that complete matrix.
+# Pull requests containing only regular portal files retain preflight and checks
+# (including all portal UX tests, real-daemon smoke, contracts, and packaging).
+# The scope job classifies the complete merge-base diff; uncertainty selects the
+# full profile. Only its explicit backend-job allowlist may skip in portal-only
+# mode, and required-ci verifies the selected profile without weakening failures.
+# Other pull requests, merge groups, and manual dispatches run the complete matrix.
 # For a frozen candidate, dispatch on a dedicated, never-updated validation
 # branch; its ref-scoped concurrency cannot be cancelled by pushes to main.
 # A push to main also validates the exact landed SHA with checks, lint, the Linux
@@ -73,7 +78,7 @@ on:
     # (`edited` without `changes.base`) changes no code and must neither cancel
     # nor shadow the in-flight run on the same SHA (#5491: 51 of 61 edit runs
     # did, Sep 2026). Such a run therefore takes its own concurrency group,
-    # skips the two root jobs (preflight, unit) so every dependent skips, and
+    # skips the two root jobs (preflight, scope) so every dependent skips, and
     # renames required-ci so its skipped check cannot stand in for the pinned
     # required `make ci` context. Design delivery re-evaluates body edits in
     # design-delivery.yml. Pinned by TestCIRunsOnBaseRetargetNotMetadataEdits.
@@ -106,6 +111,35 @@ env:
   DECLARED_APT_ARCHIVE_DIR: /tmp/goobers-declared-apt-archives
 
 jobs:
+  scope:
+    name: CI scope (portal-only or full)
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      profile: ${{ steps.classify.outputs.profile }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          # This short job must not win the shared build-cache save race.
+          cache: false
+
+      - name: Classify validation scope
+        id: classify
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: go run ./test/cipolicy classify >> "$GITHUB_OUTPUT"
+
   # DELETED in #3152's wake — e2e, envtest, and coverage were three separate
   # UNSHARDED whole-tree runs of the same suite the `unit` shards already run,
   # and together they were 47.9 of the 142.3 runner-min a PR cost and both ends
@@ -131,7 +165,8 @@ jobs:
   # Node-free admission gate. Jobs that finish well inside the long pole do not
   # acquire runners until the fast source lint, formatting, module hygiene,
   # repository policy, vet, command builds, and config validation pass. The
-  # long-pole job (`unit`) starts at once instead, because gating it put
+  # long-pole job (`unit`) waits only for the lightweight scope job, because
+  # gating it on preflight put
   # preflight's ~4.4 min on every run's critical path; on a pull
   # request a preflight failure cancels them (cancel-on-preflight-failure).
   #
@@ -182,7 +217,8 @@ jobs:
   # Compare each PR head with its merge-base; concurrent main growth is unrelated.
   cmdgoobers-growth:
     name: cmd/goobers growth ratchet
-    needs: [preflight]
+    needs: [preflight, scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -213,8 +249,8 @@ jobs:
   # runner is needed.
   deadcode:
     name: dead-code analysis
-    needs: [preflight]
-    if: ${{ github.event_name != 'push' }}
+    needs: [preflight, scope]
+    if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -248,7 +284,7 @@ jobs:
   # Preflight already owns the Node-free format, policy, vet, build, and config
   # slice, so this job does not repeat it.
   checks:
-    name: checks
+    name: checks (portal UX · contracts · package)
     needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -379,7 +415,8 @@ jobs:
 
   deploy-reference:
     name: deploy reference manifests
-    needs: [preflight]
+    needs: [preflight, scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -407,7 +444,8 @@ jobs:
   # branches).
   lint:
     name: lint (${{ matrix.goos }})
-    needs: [preflight]
+    needs: [preflight, scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
     strategy:
       fail-fast: false
       matrix:
@@ -467,7 +505,8 @@ jobs:
   # Seatbelt) runs nightly in macos-nightly.yml, off the PR critical path.
   darwin-build:
     name: darwin gate (build · vet)
-    needs: [preflight]
+    needs: [preflight, scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -539,7 +578,8 @@ jobs:
   # latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
-    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
+    needs: [scope]
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) && needs.scope.outputs.profile == 'full' }}
     # Not gated on preflight: the shards are the long pole, and waiting for
     # preflight added its ~4.4 min to every run's wall clock. A preflight
     # failure cancels the run instead (cancel-on-preflight-failure).
@@ -700,7 +740,8 @@ jobs:
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
     name: unit coverage gate (linux)
-    needs: [preflight]
+    needs: [preflight, scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -837,7 +878,8 @@ jobs:
   # it without -race. The macOS leg runs nightly in macos-nightly.yml.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
-    needs: [preflight]
+    needs: [preflight, scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
     strategy:
       fail-fast: false
       matrix:
@@ -884,8 +926,8 @@ jobs:
 
   integration:
     name: declared-dependency integration
-    needs: [preflight]
-    if: ${{ github.event_name != 'push' }}
+    needs: [preflight, scope]
+    if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1600,7 +1642,8 @@ jobs:
   # accident — is tracked separately in #2791.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
-    needs: [preflight]
+    needs: [preflight, scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -1638,6 +1681,9 @@ jobs:
 
       - name: go vet (windows/amd64)
         run: go vet ./...
+
+      - name: Windows CI scope policy
+        run: go test ./test/cipolicy -count=1
 
       # #1603: on Windows, GNU Make invokes $(shell ...) through cmd.exe, not
       # a POSIX shell — the Makefile's DATE variable used a Linux-only
@@ -1839,8 +1885,8 @@ jobs:
 
   vulnerability-scan:
     name: Go vulnerability scan
-    needs: [preflight]
-    if: ${{ github.event_name != 'push' }}
+    needs: [preflight, scope]
+    if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1879,62 +1925,33 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
       - name: Verify required gates
         env:
-          CMDGOOBERS_GROWTH_RESULT: ${{ needs.cmdgoobers-growth.result }}
-          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
-          CHECKS_RESULT: ${{ needs.checks.result }}
-          DEPLOY_REFERENCE_RESULT: ${{ needs.deploy-reference.result }}
-          LINT_RESULT: ${{ needs.lint.result }}
-          DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
-          UNIT_RESULT: ${{ needs.unit.result }}
-          UNIT_LINUX_COVERAGE_RESULT: ${{ needs.unit-linux-coverage.result }}
-          SHIPPED_RESULT: ${{ needs.shipped.result }}
-          DEADCODE_RESULT: ${{ needs.deadcode.result }}
-          WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
-          VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
-          INTEGRATION_RESULT: ${{ needs.integration.result }}
-          SANDBOX_RESULT: ${{ needs.sandbox.result }}
-          LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
-        # This `check()` is fail-closed on EVERY non-success result, `skipped`
-        # included. That property is load-bearing for the whole gate — a job
-        # that silently stops running reds the merge instead of vanishing — so
-        # do not relax the comparison to allow `skipped`.
-        run: |
-          fail=0
-          check() {
-            if [ "$2" != "success" ]; then
-              echo "::error::$1 did not pass (result: $2)"
-              fail=1
-            fi
-          }
-          check "preflight (format/policy/vet/build)" "$PREFLIGHT_RESULT"
-          check "checks (portal/extensions/generated contracts/manifests)" "$CHECKS_RESULT"
-          check "deploy reference manifests"          "$DEPLOY_REFERENCE_RESULT"
-          check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
-          check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
-          check "unit -race suite (linux shards)"    "$UNIT_RESULT"
-          check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
-          check "shipped-workflow contracts"         "$SHIPPED_RESULT"
-          check "cmd/goobers growth ratchet"         "$CMDGOOBERS_GROWTH_RESULT"
-          check "dead-code analysis"                 "$DEADCODE_RESULT"
-          check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
-          check "Go vulnerability scan"              "$VULNCHECK_RESULT"
-          # integration also carries the envtest control-plane gate, absorbed
-          # from the deleted `envtest` job.
-          check "declared-dependency + envtest integration" "$INTEGRATION_RESULT"
-          check "sandbox confinement"                "$SANDBOX_RESULT"
-          check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
-          exit "$fail"
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        # Selected jobs require success; only classified, explicitly excluded
+        # backend jobs may be skipped. Missing profiles and cancellation fail.
+        run: go run ./test/cipolicy gate
 
   sandbox:
     name: sandbox confinement (ubuntu-latest)
-    needs: [preflight]
-    if: ${{ github.event_name != 'push' }}
+    needs: [preflight, scope]
+    if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -1992,8 +2009,8 @@ jobs:
   # while the job was still excluded from required-ci's needs list.
   linux-validation:
     name: linux node validation (#636/#639)
-    needs: [preflight]
-    if: ${{ github.event_name != 'push' }}
+    needs: [preflight, scope]
+    if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -2044,6 +2061,21 @@ jobs:
   #
   # test/ci pins one canceller for every required-ci need
   # (TestCIWorkflowCancelsPullRequestRunOnFirstFailure).
+  cancel-on-scope-failure:
+    name: cancel run on failure (scope)
+    needs: [scope]
+    if: ${{ !cancelled() && needs.scope.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
   cancel-on-preflight-failure:
     name: cancel run on failure (preflight)
     needs: [preflight]
@@ -2320,7 +2352,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
+    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -2330,6 +2362,7 @@ jobs:
       - name: File or update critical main failure
         if: >-
           ${{
+            needs.scope.result == 'failure' ||
             needs.cmdgoobers-growth.result == 'failure' ||
             needs.preflight.result == 'failure' ||
             needs.checks.result == 'failure' ||
@@ -2391,6 +2424,7 @@ jobs:
       - name: Close resolved main failure
         if: >-
           ${{
+            needs.scope.result == 'success' &&
             needs.cmdgoobers-growth.result == 'success' &&
             needs.preflight.result == 'success' &&
             needs.checks.result == 'success' &&

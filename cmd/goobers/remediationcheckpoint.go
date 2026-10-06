@@ -620,7 +620,7 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 	if retry {
 		infraFailures = retryInfraFailures
 	}
-	stalled := remediationStalled(in.Prior, in.Digest, in.BaseSHA)
+	stalled := remediationAttempted(in.Prior.AttemptsByCause) && remediationStalled(in.Prior, in.Digest, in.BaseSHA)
 	exhaustedCause, exceeded := exhaustedRemediationCause(in.Prior.AttemptsByCause, in.Causes, in.Budgets)
 	structuralCollision := len(in.StructuralCollisions) > 0
 	// A concrete in-run finding always outranks the external classification:
@@ -739,6 +739,15 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 			InfrastructureFailures: infraFailures,
 		},
 	}
+}
+
+func remediationAttempted(attempts remediationAttempts) bool {
+	for _, cause := range remediationCauseOrder {
+		if attempts.forCause(cause) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // rewindOwnCheckpointWrite makes a retry of the same checkpoint attempt
@@ -1444,21 +1453,23 @@ func resolveCheckpointSelectedNumber(root string, stderr io.Writer) (int, int, b
 // Provider-specific concerns remain behind the reader, transport, and feature
 // adapters supplied by runRemediationCheckpoint.
 type remediationCheckpointRunEnv struct {
-	ctx            context.Context
-	root           string
-	repo           providers.RepositoryRef
-	reader         remediationCheckpointReader
-	transport      remediationCheckpointTransport
-	features       remediationCheckpointFeatures
-	pushToken      string
-	gitAuth        gitAuthEnvironmentResolver
-	selectedNumber int
-	base           string
-	headPrefix     string
-	prs            []providers.PullRequestSummary
-	current        *providers.PullRequestSummary
-	stdout         io.Writer
-	stderr         io.Writer
+	ctx                context.Context
+	root               string
+	repo               providers.RepositoryRef
+	reader             remediationCheckpointReader
+	transport          remediationCheckpointTransport
+	features           remediationCheckpointFeatures
+	pushToken          string
+	gitAuth            gitAuthEnvironmentResolver
+	selectedNumber     int
+	base               string
+	headPrefix         string
+	evaluatedBaseSHA   string
+	evaluatedBaseFixed bool
+	prs                []providers.PullRequestSummary
+	current            *providers.PullRequestSummary
+	stdout             io.Writer
+	stderr             io.Writer
 }
 
 func openRemediationCheckpointEnv(
@@ -1609,6 +1620,11 @@ func resolveRemediationCheckpointMode(flags remediationCheckpointFlags, features
 		pf(stderr, "error: %v\n", err)
 		return remediationCheckpointMode{}, 1, false
 	}
+	if providerInput("ciStatus", "") == string(providers.CheckStatePassing) {
+		causes = slices.DeleteFunc(causes, func(cause remediationCause) bool {
+			return cause == remediationCauseFailingCI
+		})
+	}
 	budgets, err := declaredRemediationBudgets(flags.budgetOverride)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -1644,6 +1660,41 @@ func (env *remediationCheckpointRunEnv) recordInfrastructureNoop() int {
 	}
 	pf(env.stdout, "PR #%d: rebase-pr failed on an infrastructure fault — waiting for a retry without consuming remediation budget or attributing a cause\n", env.selectedNumber)
 	return 0
+}
+
+func (env *remediationCheckpointRunEnv) resolveEvaluatedBaseSHA(mode remediationCheckpointMode) (int, bool) {
+	env.evaluatedBaseSHA = env.current.BaseSHA
+	env.evaluatedBaseFixed = false
+	if mode.forced {
+		return 0, true
+	}
+	if rebaseBaseSHA := strings.TrimSpace(providerInput("rebaseBaseSha", "")); rebaseBaseSHA != "" {
+		env.evaluatedBaseSHA = rebaseBaseSHA
+		env.evaluatedBaseFixed = true
+		return 0, true
+	}
+	if env.features.LiveBaseTip == nil {
+		return 0, true
+	}
+	liveBaseSHA, err := env.features.LiveBaseTip(env.ctx, env.base)
+	if err != nil {
+		return failProviderStage(
+			env.stderr,
+			fmt.Sprintf("resolve evaluated base branch %q tip for PR #%d", env.base, env.selectedNumber),
+			err,
+			"",
+		), false
+	}
+	if strings.TrimSpace(liveBaseSHA) == "" {
+		return failProviderStage(
+			env.stderr,
+			fmt.Sprintf("resolve evaluated base branch %q tip for PR #%d", env.base, env.selectedNumber),
+			fmt.Errorf("provider returned an empty base SHA"),
+			"",
+		), false
+	}
+	env.evaluatedBaseSHA = liveBaseSHA
+	return 0, true
 }
 
 // remediationCheckpointObservation is what one stabilized checkpoint read saw:
@@ -1723,7 +1774,7 @@ func (env *remediationCheckpointRunEnv) checkoutAndDigest(
 			return "", attemptMatchesLiveHead, 1, false
 		}
 	}
-	digest, err := diffDigest(".", env.current.BaseSHA)
+	digest, err := diffDigest(".", env.evaluatedBaseSHA)
 	if err != nil {
 		pf(env.stderr, "error: compute diff digest for PR #%d: %v\n", env.selectedNumber, err)
 		return "", attemptMatchesLiveHead, 1, false
@@ -1739,12 +1790,45 @@ func (env *remediationCheckpointRunEnv) collectStructuralCollisions() ([]structu
 	}
 	collisions, err := env.features.FindStructuralCollisions(
 		env.ctx, *env.current, env.base, env.headPrefix, conflictLocations,
-		env.pushToken, providerInput("rebaseBaseSha", ""),
+		env.pushToken, env.evaluatedBaseSHA,
 	)
 	if err != nil {
 		return nil, failProviderStage(env.stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", env.selectedNumber), err, ""), false
 	}
 	return collisions, 0, true
+}
+
+// observeOnce is stabilize's single-read path for providers whose live reads
+// do not need re-validation: one digest (unless forced) plus the comment thread.
+func (env *remediationCheckpointRunEnv) observeOnce(mode remediationCheckpointMode) (remediationCheckpointObservation, int, bool) {
+	var observation remediationCheckpointObservation
+	if !mode.forced {
+		digest, _, code, ok := env.checkoutAndDigest(mode, false, false, false)
+		if !ok {
+			return observation, code, false
+		}
+		observation.digest = digest
+	}
+	comments, err := env.transport.ListComments(env.ctx)
+	if err != nil {
+		return observation, failProviderStage(env.stderr, fmt.Sprintf("list %s on PR #%d", env.features.CommentNoun, env.selectedNumber), err, ""), false
+	}
+	observation.comments = comments
+	return observation, 0, true
+}
+
+// refreshEvaluatedBaseSHA re-resolves the live-base fallback after a stabilize
+// read and reports whether it moved. A rebase-provided base is fixed for the
+// cycle and forced checkpoints never compare digests, so neither re-resolves.
+func (env *remediationCheckpointRunEnv) refreshEvaluatedBaseSHA(mode remediationCheckpointMode) (bool, int, bool) {
+	if mode.forced || env.evaluatedBaseFixed {
+		return false, 0, true
+	}
+	previous := env.evaluatedBaseSHA
+	if code, ok := env.resolveEvaluatedBaseSHA(mode); !ok {
+		return false, code, false
+	}
+	return env.evaluatedBaseSHA != previous, 0, true
 }
 
 // stabilize reads the checkpoint's inputs (branch digest, structural
@@ -1753,26 +1837,13 @@ func (env *remediationCheckpointRunEnv) collectStructuralCollisions() ([]structu
 // with the digest actually computed for it.
 func (env *remediationCheckpointRunEnv) stabilize(mode remediationCheckpointMode) (remediationCheckpointObservation, int, bool) {
 	if !env.features.StabilizeLiveReads {
-		var observation remediationCheckpointObservation
-		if !mode.forced {
-			digest, _, code, ok := env.checkoutAndDigest(mode, false, false, false)
-			if !ok {
-				return observation, code, false
-			}
-			observation.digest = digest
-		}
-		comments, err := env.transport.ListComments(env.ctx)
-		if err != nil {
-			return observation, failProviderStage(env.stderr, fmt.Sprintf("list %s on PR #%d", env.features.CommentNoun, env.selectedNumber), err, ""), false
-		}
-		observation.comments = comments
-		return observation, 0, true
+		return env.observeOnce(mode)
 	}
 
 	const maxCheckpointRefreshes = 3
 	var observation remediationCheckpointObservation
 	forceHeadRefresh := false
-	forceBaseRefresh := false
+	forceBaseRefresh := env.evaluatedBaseSHA != env.current.BaseSHA
 	for refreshAttempt := 0; refreshAttempt < maxCheckpointRefreshes; refreshAttempt++ {
 		attemptMatchesLiveHead := false
 		if mode.conflicted && !mode.forced && mode.attemptedHeadSHA != "" {
@@ -1815,9 +1886,13 @@ func (env *remediationCheckpointRunEnv) stabilize(mode remediationCheckpointMode
 		headChanged := lateCurrent.Head != env.current.Head || lateCurrent.HeadSHA != env.current.HeadSHA
 		baseChanged := lateCurrent.Base != env.current.Base || lateCurrent.BaseSHA != env.current.BaseSHA
 		env.current = &lateCurrent
-		if !mode.forced && (headChanged || baseChanged) {
+		evaluatedBaseChanged, code, ok := env.refreshEvaluatedBaseSHA(mode)
+		if !ok {
+			return observation, code, false
+		}
+		if !mode.forced && (headChanged || baseChanged || evaluatedBaseChanged) {
 			forceHeadRefresh = headChanged
-			forceBaseRefresh = baseChanged
+			forceBaseRefresh = baseChanged || evaluatedBaseChanged || env.evaluatedBaseSHA != env.current.BaseSHA
 			continue
 		}
 		return observation, 0, true
@@ -2120,6 +2195,9 @@ func runRemediationCheckpointCore(
 		env.gitAuth = env.features.CheckoutAuth
 		env.pushToken = env.features.CheckoutToken
 	}
+	if code, ok := env.resolveEvaluatedBaseSHA(mode); !ok {
+		return code
+	}
 	observation, code, ok := env.stabilize(mode)
 	if !ok {
 		return code
@@ -2135,11 +2213,16 @@ func runRemediationCheckpointCore(
 		}
 	}
 	prior, priorCommentID, watermark := env.priorCheckpointState(observation.comments)
+	pf(
+		stdout,
+		"PR #%d checkpoint base comparison: prior=%q, evaluated=%q (PR metadata=%q)\n",
+		selectedNumber, prior.BaseSHA, env.evaluatedBaseSHA, env.current.BaseSHA,
+	)
 	externalBlockReason := env.externalRemediationBlock(mode)
 
 	decision := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
 		Prior: prior, Causes: mode.causes, Budgets: mode.budgets, Digest: observation.digest,
-		HeadSHA: env.current.HeadSHA, BaseSHA: env.current.BaseSHA, Watermark: watermark,
+		HeadSHA: env.current.HeadSHA, BaseSHA: env.evaluatedBaseSHA, Watermark: watermark,
 		Forced: mode.forced, ForcedReason: mode.reason, ForcedOutcome: mode.forcedOutcome,
 		PolicyExcluded: mode.policyExcluded, StructuralCollisions: observation.structuralCollisions,
 		StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, observation.structuralCollisions),

@@ -78,6 +78,10 @@ func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.
 				// normally completed response after partial delivery.
 				panic(http.ErrAbortHandler)
 			}
+			if errors.Is(err, recovery.ErrNoMatchingSnapshot) {
+				writeError(w, http.StatusNotFound, "recovery_not_found", "no recoverable implementation matches this claim")
+				return
+			}
 			var pending *recovery.OverflowPendingError
 			if errors.As(err, &pending) {
 				w.Header().Set(recovery.PromotionStateHeader, pending.PromotionState)

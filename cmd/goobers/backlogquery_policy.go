@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"strconv"
 )
 
 type backlogQueryPolicies struct {
@@ -16,15 +15,18 @@ type backlogQueryPolicies struct {
 
 func readBacklogQueryPolicies(mode backlogQueryMode) (backlogQueryPolicies, error) {
 	p := backlogQueryPolicies{maxItems: 1}
-	if raw := providerInput("maxItems", ""); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			return p, fmt.Errorf("invalid maxItems %q (want a positive integer)", raw)
-		}
-		p.maxItems = n
+	maxItems, err := parseIntInput(
+		providerInput("maxItems", "1"),
+		func(value int) bool { return value >= 1 },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("invalid maxItems %q (want a positive integer)", raw)
+		},
+	)
+	if err != nil {
+		return p, err
 	}
+	p.maxItems = maxItems
 	p.curation = mode == backlogQueryModeResweep || (mode == backlogQueryModeClaim && providerInput("curation", "false") == "true")
-	var err error
 	// Claim output carries staleness evidence even when a separate stage
 	// already reconciled metadata. Skipping that mutation pass must not turn
 	// the configured threshold into the zero-value "everything is stale".

@@ -49,6 +49,10 @@ func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 			schema: schemas.RemediationBrief,
 			value:  completeRemediationBrief(),
 		},
+		"review-thread-publication": {
+			schema: schemas.ReviewThreadPublication,
+			value:  completeReviewThreadPublication(),
+		},
 		// journal-event is not in schemas.Envelope (it's schemas.Journal, a
 		// distinct wire contract — ARCHITECTURE.md §4), but the same
 		// producer/schema drift this guard exists to prevent applies to it
@@ -287,6 +291,36 @@ func completeVerdict() apiv1.Verdict {
 	}
 }
 
+func completeReviewThreadPublication() apiv1.ReviewThreadPublication {
+	return apiv1.ReviewThreadPublication{
+		Schema:                 apiv1.ReviewThreadPublicationVersion,
+		Integrity:              apiv1.IntegrityUnapproved,
+		PullRequest:            "42",
+		SelectedNumber:         "42",
+		PublishedHeadSHA:       strings.Repeat("a", 40),
+		FeedbackSnapshotDigest: "sha256:" + strings.Repeat("f", 64),
+		Status:                 apiv1.ReviewThreadPublicationStale,
+		ResumedFromReceipt:     true,
+		Restoration:            apiv1.ReviewThreadRestorationUnsupported,
+		UnresolvedThreadCount:  "1",
+		StaleInput:             "stale_head",
+		StaleReasons:           []apiv1.PRFeedbackStaleReason{{Code: "stale_head", Kind: "head", ID: "head", Detail: "moved"}},
+		Threads: []apiv1.ReviewThreadReceipt{{
+			ThreadID: "T1", Disposition: "addressed", ContentDigest: "sha256:" + strings.Repeat("d", 64),
+			ReplyState: apiv1.ReviewThreadMutationVerified, ResolutionState: apiv1.ReviewThreadMutationFailed,
+			ProviderReplyID: "501", Recovery: apiv1.ReviewThreadRecoveryReceiptConfirmed, LastError: "resolve failed",
+		}},
+		NoWork:         true,
+		NoWorkReason:   "stale head",
+		Outcome:        "stale_head",
+		LiveHeadSHA:    strings.Repeat("b", 40),
+		ErrorCode:      "github_rate_limited",
+		ErrorMessage:   "rate limited",
+		ErrorRetryable: true,
+		RateLimitReset: "2026-09-30T00:00:00Z",
+	}
+}
+
 func completeRemediationBrief() apiv1.RemediationBrief {
 	return apiv1.RemediationBrief{
 		Schema:                 apiv1.RemediationBriefVersion,
@@ -401,6 +435,24 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 					Child: "ado:project:1700", Parent: "1600", Depth: 2, Reason: "access-denied", Detail: "forbidden",
 				}},
 			},
+		},
+		FeedbackSnapshot: &apiv1.PRFeedbackSnapshot{
+			Schema:      apiv1.PRFeedbackSnapshotVersion,
+			Provider:    "github",
+			Repository:  "github:example/repo",
+			PullRequest: "42",
+			HeadSHA:     strings.Repeat("a", 40),
+			CapturedAt:  "2026-09-30T00:00:00Z",
+			Complete:    true,
+			GeneralComments: []apiv1.PRFeedbackComment{{
+				ID: "7", Author: "reviewer", InReplyTo: "6", BodySHA256: strings.Repeat("b", 64),
+			}},
+			Reviews: []apiv1.PRFeedbackReview{{ID: "8", Author: "reviewer", BodySHA256: strings.Repeat("c", 64)}},
+			ReviewThreads: []apiv1.PRFeedbackThread{{
+				ThreadID: "T1", Resolved: true, Outdated: true, ContentDigest: "sha256:" + strings.Repeat("d", 64),
+				Comments: []apiv1.PRFeedbackComment{{ID: "9", Author: "reviewer", InReplyTo: "8", BodySHA256: strings.Repeat("e", 64)}},
+			}},
+			SnapshotDigest: "sha256:" + strings.Repeat("f", 64),
 		},
 	}
 }

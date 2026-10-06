@@ -1,13 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -267,7 +265,7 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	approved := result.Approved()
-	data, err := json.Marshal(fileIssuesResult{
+	value := fileIssuesResult{
 		NominationsDigest: result.Digest,
 		Created:           created,
 		Filed:             len(result.Filed),
@@ -282,14 +280,11 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		OverflowKeys:      result.Overflow,
 		Refusals:          result.Refused,
 		Annotated:         result.Annotated,
-	})
-	if err != nil {
-		pf(stderr, "error: marshal filed-nominations result: %v\n", err)
-		return 1
 	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, value, stageResultOptions{
+		MarshalLabel: "marshal filed-nominations result",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "filed %d nomination(s) (%d created, %d approved, %d unapproved), suppressed %d, %d over budget, %d refused\n",
 		len(result.Filed), created, approved, len(result.Filed)-approved, len(result.Suppressed), len(result.Overflow), len(result.Refused))
@@ -411,14 +406,10 @@ func writeFileIssuesCheck(stdout, stderr io.Writer, resultFile string, result fi
 	if result.Errors == nil {
 		result.Errors = []string{}
 	}
-	data, err := json.Marshal(result)
-	if err != nil {
-		pf(stderr, "error: marshal nomination check result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, result, stageResultOptions{
+		MarshalLabel: "marshal nomination check result",
+	}); code != 0 {
+		return code
 	}
 	if result.Valid {
 		pf(stdout, "nominations are valid: %d to file, %d suppressed, %d over budget\n", result.FiledCount, result.SuppressedCount, result.OverBudget)
@@ -445,14 +436,26 @@ func fileIssuesPolicy() (nomination.Policy, error) {
 	if policy.PartitionLabel == "" {
 		return nomination.Policy{}, errors.New("partitionLabel input is required (the instance's claim partition label, e.g. the label backlog-query's requireLabels demands)")
 	}
-	maxPerRun, err := strconv.Atoi(providerInput("maxPerRun", "3"))
-	if err != nil || maxPerRun <= 0 {
-		return nomination.Policy{}, fmt.Errorf("maxPerRun input must be a positive integer, got %q", providerInput("maxPerRun", "3"))
+	maxPerRun, err := parseIntInput(
+		providerInput("maxPerRun", "3"),
+		func(value int) bool { return value > 0 },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("maxPerRun input must be a positive integer, got %q", raw)
+		},
+	)
+	if err != nil {
+		return nomination.Policy{}, err
 	}
 	policy.MaxPerRun = maxPerRun
-	days, err := strconv.Atoi(providerInput("dedupeWindowDays", "21"))
-	if err != nil || days < 0 {
-		return nomination.Policy{}, fmt.Errorf("dedupeWindowDays input must be a non-negative integer, got %q", providerInput("dedupeWindowDays", "21"))
+	days, err := parseIntInput(
+		providerInput("dedupeWindowDays", "21"),
+		func(value int) bool { return value >= 0 },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("dedupeWindowDays input must be a non-negative integer, got %q", raw)
+		},
+	)
+	if err != nil {
+		return nomination.Policy{}, err
 	}
 	policy.DedupeWindow = time.Duration(days) * 24 * time.Hour
 	// The vocabulary is exact, not case-folded: the workflow policy table

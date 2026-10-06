@@ -22,7 +22,10 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const maxRemoteReadBody = 32 << 20
+const (
+	maxRemoteReadBody                = 32 << 20
+	maxRemoteStatusClientFilterPages = 5
+)
 
 // remoteRuns adapts the daemon's versioned read API to the same boundary used
 // by the filesystem-backed diagnostic commands. Keeping the adapter behind
@@ -415,34 +418,58 @@ func (r *remoteRuns) Instance(ctx context.Context) (readservice.Instance, error)
 	return result, r.json(ctx, apicontract.RouteInstance, nil, nil, &result)
 }
 
-func remoteStatusRuns(ctx context.Context, reads *remoteRuns) ([]runSummary, error) {
+func remoteStatusRuns(ctx context.Context, reads *remoteRuns, options statusOptions, bounded bool) ([]runSummary, error) {
 	var runs []runSummary
 	cursor := ""
+	pages := 0
+	clientFilteredPhases := len(options.phases) > 1
 	for {
+		request := readservice.RunListOptions{
+			Gaggle: options.gaggle, Workflow: options.workflow,
+			Limit: 200, Cursor: cursor, ShowNoWork: true,
+		}
+		if len(options.phases) == 1 {
+			for phase := range options.phases {
+				request.Phase = phase
+			}
+		}
+		if bounded && options.limit > 0 && !clientFilteredPhases {
+			remaining := options.limit + 1 - len(runs)
+			if remaining < request.Limit {
+				request.Limit = remaining
+			}
+		}
 		// Local status includes no-work runs (readservice status uses
 		// IncludeNoWork), so the remote table asks for them too.
-		page, err := reads.ListRuns(ctx, readservice.RunListOptions{Limit: 200, Cursor: cursor, ShowNoWork: true})
+		page, err := reads.ListRuns(ctx, request)
 		if err != nil {
 			return nil, err
 		}
+		pages++
 		for _, run := range page.Runs {
-			runs = append(runs, runSummary{EngineFallback: run.EngineFallback, RunID: run.ID, Workflow: run.Workflow, Gaggle: run.Gaggle, Phase: run.Phase, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt, Operator: run.Operator, Lineage: run.Lineage})
+			summary := runSummary{EngineFallback: run.EngineFallback, RunID: run.ID, Workflow: run.Workflow, Gaggle: run.Gaggle, Phase: run.Phase, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt, Operator: run.Operator, Lineage: run.Lineage}
+			if statusRunMatches(summary, options) {
+				runs = append(runs, summary)
+			}
 		}
-		if page.NextCursor == "" {
+		if page.NextCursor == "" || bounded && options.limit > 0 && len(runs) > options.limit {
 			return runs, nil
+		}
+		if bounded && options.limit > 0 && clientFilteredPhases && pages >= maxRemoteStatusClientFilterPages {
+			return nil, fmt.Errorf("remote multi-phase run scan exceeded %d pages; refine --gaggle, --workflow, or --phase filters", maxRemoteStatusClientFilterPages)
 		}
 		cursor = page.NextCursor
 	}
 }
 
-func runRemoteRunTable(ctx context.Context, endpoint, root string, rootExplicit, jsonOutput, watch bool, interval time.Duration, options statusOptions, stdout, stderr io.Writer) int {
+func runRemoteRunTable(ctx context.Context, endpoint, root string, rootExplicit, jsonOutput, watch, bounded bool, interval time.Duration, options statusOptions, stdout, stderr io.Writer) int {
 	reads, err := prepareRemoteReads(ctx, endpoint, root, rootExplicit, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	pf(stderr, "%s", remoteStatusOmissionNote)
-	loadRuns := func() ([]runSummary, error) { return remoteStatusRuns(ctx, reads) }
+	loadRuns := func() ([]runSummary, error) { return remoteStatusRuns(ctx, reads, options, bounded) }
 	if watch {
 		followCtx, stop := signals.SetupSignalContext()
 		defer stop()
@@ -485,7 +512,7 @@ func runRemoteRunTable(ctx context.Context, endpoint, root string, rootExplicit,
 	return 0
 }
 
-func maybeRunRemoteRunTable(api, root string, rootExplicit, supportsWatch bool, daemon, agents, watch *bool, interval *time.Duration, jsonOutput bool, options statusOptions, stdout, stderr io.Writer) (int, bool) {
+func maybeRunRemoteRunTable(api, root string, rootExplicit, supportsWatch, bounded bool, daemon, agents, watch *bool, interval *time.Duration, jsonOutput bool, options statusOptions, stdout, stderr io.Writer) (int, bool) {
 	endpoint, err := remoteDaemonAPIBase(api)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -509,7 +536,7 @@ func maybeRunRemoteRunTable(api, root string, rootExplicit, supportsWatch bool, 
 	if supportsWatch {
 		remoteWatch, remoteInterval = *watch, *interval
 	}
-	return runRemoteRunTable(context.Background(), endpoint, root, rootExplicit, jsonOutput, remoteWatch, remoteInterval, options, stdout, stderr), true
+	return runRemoteRunTable(context.Background(), endpoint, root, rootExplicit, jsonOutput, remoteWatch, bounded, remoteInterval, options, stdout, stderr), true
 }
 
 // remoteStatusOmissionNote states what `status --api` cannot show yet: the

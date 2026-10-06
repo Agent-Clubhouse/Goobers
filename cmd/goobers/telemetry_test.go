@@ -407,7 +407,8 @@ func TestTelemetryStatsJSON(t *testing.T) {
 		"gaggle", "workflow", "stage", "totalAttempts", "succeededAttempts", "failedAttempts",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 		"durationSamples", "p50DurationMs", "p95DurationMs",
-		"tokenSamples", "costSamples", "retryWasteAttempts", "stuckAbortedAttempts",
+		"tokenSamples", "costSamples", "retryWasteAttempts", "retryWasteTokenSamples",
+		"retryWasteCostSamples", "stuckAbortedAttempts",
 	)
 	assertJSONObjectKeys(t, document.Models[0],
 		"model", "usageSamples",

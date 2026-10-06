@@ -150,40 +150,17 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	labels := make([]string, 0, len(pr.Labels))
-	for _, label := range pr.Labels {
-		labels = append(labels, label.Name)
-	}
-	assignees := githubUserLogins(pr.Assignees)
-	requestedReviewers := githubUserLogins(pr.RequestedReviewers)
-
-	return PullRequestPollResult{
-		Number:             pr.Number,
-		Title:              pr.Title,
-		Author:             pr.User.Login,
-		Assignees:          assignees,
-		RequestedReviewers: requestedReviewers,
-		State:              pr.State,
-		Merged:             pr.Merged,
-		MergedAt:           pr.MergedAt,
-		Mergeable:          pr.Mergeable,
-		MergeableState:     pr.MergeableState,
-		Draft:              pr.Draft,
-		Labels:             labels,
-		HeadBranch:         pr.Head.Ref,
-		HeadRepository:     repositoryRef(ProviderGitHub, pr.Head.Repo),
-		HeadSHA:            pr.Head.SHA,
-		BaseSHA:            pr.Base.SHA,
-		BaseBranch:         pr.Base.Ref,
-		Body:               pr.Body,
-		ReviewDecision:     decision,
-		RequestedChanges:   requestedChanges,
-		CheckState:         checkState,
-		Checks:             checks,
-		CommentsSince:      comments,
-		URL:                pr.HTMLURL,
-		Integrity:          apiintegrity.Unapproved,
-	}, nil
+	result := pullPollResultFromProjection(githubPRProjection(pr))
+	result.Author = pr.User.Login
+	result.Assignees = githubUserLogins(pr.Assignees)
+	result.RequestedReviewers = githubUserLogins(pr.RequestedReviewers)
+	result.MergeableState = pr.MergeableState
+	result.ReviewDecision = decision
+	result.RequestedChanges = requestedChanges
+	result.CheckState = checkState
+	result.Checks = checks
+	result.CommentsSince = comments
+	return result, nil
 }
 
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
@@ -891,27 +868,32 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 }
 
 func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
-	labels := githubLabelNames(pr.Labels)
-	return PullRequestSummary{
-		ID:                 strconv.Itoa(pr.Number),
-		Number:             pr.Number,
-		URL:                pr.HTMLURL,
-		Author:             pr.User.Login,
-		Assignees:          githubUserLogins(pr.Assignees),
-		RequestedReviewers: githubUserLogins(pr.RequestedReviewers),
-		State:              pr.State,
-		Merged:             pr.Merged || pr.MergedAt != nil,
-		Head:               pr.Head.Ref,
-		Base:               pr.Base.Ref,
-		HeadSHA:            pr.Head.SHA,
-		BaseSHA:            pr.Base.SHA,
-		MergeSHA:           pr.MergeCommitSHA,
-		Draft:              pr.Draft,
-		Labels:             labels,
-		CheckState:         checkState,
-		UpdatedAt:          pr.UpdatedAt,
-		Body:               pr.Body,
-		Integrity:          apiintegrity.Unapproved,
+	summary := pullSummaryFromProjection(githubPRProjection(pr), checkState)
+	summary.Author = pr.User.Login
+	summary.Assignees = githubUserLogins(pr.Assignees)
+	summary.RequestedReviewers = githubUserLogins(pr.RequestedReviewers)
+	return summary
+}
+
+func githubPRProjection(pr githubPullRequestDetail) restPRProjection {
+	return restPRProjection{
+		Number:         pr.Number,
+		Title:          pr.Title,
+		URL:            pr.HTMLURL,
+		State:          pr.State,
+		Merged:         pr.Merged,
+		MergedAt:       pr.MergedAt,
+		Mergeable:      pr.Mergeable,
+		Draft:          pr.Draft,
+		Labels:         githubLabelNames(pr.Labels),
+		HeadBranch:     pr.Head.Ref,
+		HeadRepository: repositoryRef(ProviderGitHub, pr.Head.Repo),
+		HeadSHA:        pr.Head.SHA,
+		BaseBranch:     pr.Base.Ref,
+		BaseSHA:        pr.Base.SHA,
+		MergeSHA:       pr.MergeCommitSHA,
+		UpdatedAt:      pr.UpdatedAt,
+		Body:           pr.Body,
 	}
 }
 
@@ -1681,9 +1663,64 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 
 // SubmitPullRequestReview publishes a SHA-pinned native GitHub review. GitHub
 // associates the review with commit_id, allowing branch-protection
-// stale-dismissal to invalidate an approval when the pull request moves.
+// stale-dismissal to invalidate an approval when the pull request moves. A
+// later approval also dismisses this identity's superseded change requests;
+// GitHub otherwise keeps those reviews active and branch protection can block
+// a verdict that has already passed.
 func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
-	return submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
+	result, err := submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
+	if err != nil || req.Decision != ReviewDecisionApproved {
+		return result, err
+	}
+	if err := p.dismissOwnChangeRequests(ctx, req.Repository, req.PullID); err != nil {
+		return result, fmt.Errorf("dismiss superseded change requests: %w", err)
+	}
+	return result, nil
+}
+
+func (p *GitHubProvider) dismissOwnChangeRequests(ctx context.Context, repo RepositoryRef, pullID string) error {
+	reviews, err := p.listNativePullRequestReviews(ctx, repo, pullID)
+	if err != nil {
+		return err
+	}
+	hasChangeRequest := false
+	for _, review := range reviews {
+		if strings.EqualFold(review.State, "CHANGES_REQUESTED") {
+			hasChangeRequest = true
+			break
+		}
+	}
+	if !hasChangeRequest {
+		return nil
+	}
+	login, err := p.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve review author: %w", err)
+	}
+	for _, review := range reviews {
+		if !strings.EqualFold(review.State, "CHANGES_REQUESTED") || !strings.EqualFold(review.Author, login) {
+			continue
+		}
+		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews", strconv.FormatInt(review.ID, 10), "dismissals")
+		if err != nil {
+			return err
+		}
+		if err := p.do(ctx, http.MethodPut, endpoint, map[string]string{
+			"message": "Superseded by a later passing Goobers merge review.",
+		}, nil); err != nil {
+			return err
+		}
+		p.recordExternalRef(ctx, ExternalRef{
+			Provider:  ProviderGitHub,
+			Ref:       issueRef(repo, pullID),
+			URL:       review.URL,
+			Operation: "review-dismiss",
+			Fields: map[string]FieldDigest{
+				"reviewId": {After: digestString(strconv.FormatInt(review.ID, 10))},
+			},
+		})
+	}
+	return nil
 }
 
 // ListWorkItems lists GitHub issues as unified work items.

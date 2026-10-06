@@ -3,8 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import { defaultPortalConfig } from "./cobrand";
-import { bootstrapPortalTheme } from "./cobrand";
+import {
+  bootstrapPortalTheme,
+  defaultPortalConfig,
+  readCachedPortalConfig,
+  writeCachedPortalConfig,
+} from "./cobrand";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
@@ -40,7 +44,7 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
@@ -48,11 +52,56 @@ describe("portal foundation", () => {
     expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
   });
 
-  it("renders compact instance identity in the masthead", async () => {
+  it("shows crash-resume recovery when scheduler-backed routes are gated", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.ready = false;
+    fixtures.health.startup = {
+      phase: "crash-resume",
+      target: "candidates=6",
+      since: "2026-10-02T16:00:00Z",
+      elapsedSeconds: 120,
+      budgetSeconds: 60,
+      budgetState: "exceeded",
+      blockingCandidate: {
+        progress: { total: 6, examined: 6, resumed: 5, reattached: 0, terminal: 0, skipped: 0 },
+        runId: "c423d482",
+        gaggle: "goobers",
+        workflow: "implement",
+        disposition: "resolving-generation",
+        operation: "resolve execution generation",
+        lastProgressAt: "2026-10-02T16:01:50Z",
+      },
+    };
+    fixtures.readiness = {
+      apiVersion: fixtures.instance.apiVersion,
+      schemaVersion: fixtures.instance.schemaVersion,
+      computerName: fixtures.instance.computerName,
+      instanceRoot: fixtures.instance.instanceRoot,
+      rootIdentity: fixtures.instance.rootIdentity,
+      ready: false,
+      recovery: fixtures.health.startup,
+    };
+    class RecoveryClient extends FixtureDaemonClient {
+      getInstance(): Promise<never> {
+        return Promise.reject(new Error("scheduler not ready"));
+      }
+    }
+
+    render(<App client={new RecoveryClient(fixtures)} />);
+
+    expect(await screen.findByText("Startup recovery")).toBeInTheDocument();
+    expect(screen.getByText("6/6 candidates examined")).toBeInTheDocument();
+    expect(screen.getByText(/Blocking run c423d482/)).toHaveTextContent(
+      "goobers/implement",
+    );
+    expect(screen.queryByText("Couldn't load Goobers data")).not.toBeInTheDocument();
+  });
+
+  it("shows a stamped build version in the masthead", async () => {
     const fixtures = populatedDaemonFixtures();
     fixtures.instance.computerName = "CPC-JEFFS-7VMWT";
     fixtures.health.build = {
-      version: "portal-v0.2.3-34-g4267fe01",
+      version: "v0.5.0-rc.1",
       commit: "4267fe01",
       date: "2026-09-16T23:01:02.9443459-07:00",
     };
@@ -61,7 +110,7 @@ describe("portal foundation", () => {
     const context = await screen.findByLabelText("Instance context");
     expect(context).toHaveTextContent("local-dev");
     expect(context).toHaveTextContent("CPC-JEFFS-7VMWT");
-    expect(context).toHaveTextContent("dev (4267fe01)");
+    expect(within(context).getByText("v0.5.0-rc.1 (4267fe01)")).toHaveClass("topbar-build");
     const details = within(document.querySelector(".topbar") as HTMLElement).getByRole("button", {
       name: "Show portal details",
     });
@@ -69,6 +118,34 @@ describe("portal foundation", () => {
     expect(document.getElementById("portal-context-tooltip")).toHaveTextContent(
       fixtures.instance.instanceRoot,
     );
+  });
+
+  it("shows dev with the commit for an unstamped build", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.build = {
+      version: "dev",
+      commit: "4267fe01",
+      date: "2026-09-16T23:01:02.9443459-07:00",
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const context = await screen.findByLabelText("Instance context");
+    expect(within(context).getByText("dev (4267fe01)")).toHaveClass("topbar-build");
+  });
+
+  it("labels the deployment environment separately from the build version", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.environment = "staging";
+    fixtures.health.build = {
+      version: "v0.5.0-rc.1",
+      commit: "4267fe01",
+      date: "2026-09-16T23:01:02.9443459-07:00",
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const context = await screen.findByLabelText("Instance context");
+    expect(within(context).getByText("env: staging")).toHaveClass("topbar-environment");
+    expect(within(context).getByText("v0.5.0-rc.1 (4267fe01)")).toHaveClass("topbar-build");
   });
 
   it("shows detailed live transport diagnostics in a custom tooltip", async () => {
@@ -122,7 +199,13 @@ describe("portal foundation", () => {
     expect(
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
+  });
+
+  it("does not reuse a cached connection-locality verdict", () => {
+    writeCachedPortalConfig({ ...defaultPortalConfig, connectionLocality: "local" });
+
+    expect(readCachedPortalConfig()?.connectionLocality).toBe("unknown");
   });
 
   it("applies cached cobrand colors before React renders", () => {
@@ -153,7 +236,7 @@ describe("portal foundation", () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Instance is ready — Healthy." }),
+      await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     await waitFor(() =>
@@ -195,7 +278,7 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Getting Started")).not.toBeInTheDocument();
   });
@@ -268,7 +351,7 @@ describe("portal foundation", () => {
   });
 
   it.each([
-    { hash: "#/overview", heading: "2 runs need attention." },
+    { hash: "#/overview", heading: "Overview - 2 runs need attention." },
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
     { hash: "#/insight", heading: "Insight" },
@@ -319,7 +402,7 @@ describe("portal foundation", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
@@ -329,7 +412,7 @@ describe("portal foundation", () => {
 
     await user.click(screen.getByRole("button", { name: "Overview" }));
 
-    expect(screen.getByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -489,6 +490,29 @@ func offlineModuleFetchRefused(output string) bool {
 // runCommandAllowingFailure is runCommand for a command whose failure the
 // caller must classify rather than report. runCommand cannot serve: it calls
 // t.Fatalf, which ends the test before the output can be read.
+// appendGitConfig adds key=value pairs to the GIT_CONFIG_COUNT/KEY_n/VALUE_n
+// list in env after any entries already present. Assigning the variables
+// directly REPLACES that list, discarding what the host injected — in a
+// pod-placed local-ci that is the safe.directory that lets nonroot run git in a
+// root-owned /workspace, so the test fails "detected dubious ownership".
+func appendGitConfig(env []string, pairs ...string) []string {
+	count := 0
+	for _, entry := range env {
+		if name, value, _ := strings.Cut(entry, "="); name == "GIT_CONFIG_COUNT" {
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				count = n
+			}
+		}
+	}
+	result := append([]string(nil), env...)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		index := strconv.Itoa(count)
+		result = append(result, "GIT_CONFIG_KEY_"+index+"="+pairs[i], "GIT_CONFIG_VALUE_"+index+"="+pairs[i+1])
+		count++
+	}
+	return append(result, "GIT_CONFIG_COUNT="+strconv.Itoa(count))
+}
+
 func runCommandAllowingFailure(t *testing.T, directory, name string, args ...string) (string, error) {
 	t.Helper()
 	command := exec.Command(name, args...)
@@ -502,12 +526,9 @@ func runCommand(t *testing.T, directory, name string, args ...string) string {
 	command := exec.Command(name, args...)
 	if name == "git" {
 		command = testgit.Command(args...)
-		command.Env = append(command.Env,
-			"GIT_CONFIG_COUNT=2",
-			"GIT_CONFIG_KEY_0=core.autocrlf",
-			"GIT_CONFIG_VALUE_0=false",
-			"GIT_CONFIG_KEY_1=core.safecrlf",
-			"GIT_CONFIG_VALUE_1=false",
+		command.Env = appendGitConfig(command.Env,
+			"core.autocrlf", "false",
+			"core.safecrlf", "false",
 		)
 	}
 	command.Dir = directory

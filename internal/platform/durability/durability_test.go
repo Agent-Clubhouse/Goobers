@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 )
 
@@ -302,5 +303,60 @@ func TestRemoveFileDeletesAndReportsAbsence(t *testing.T) {
 	if err := RemoveFile(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("RemoveFile on an absent path = %v, want ErrNotExist — callers "+
 			"distinguish \"already consumed\" from \"could not consume\"", err)
+	}
+}
+
+func TestWriteFileAtomicBestEffortModeTolerance(t *testing.T) {
+	for _, errno := range []error{syscall.EPERM, syscall.ENOTSUP, syscall.EOPNOTSUPP} {
+		inject := WithChmod(func(string, fs.FileMode) error { return &os.PathError{Op: "chmod", Err: errno} })
+		dir := t.TempDir()
+		path := filepath.Join(dir, "f")
+		// Default (fail closed): error reported as a chmod failure, nothing published.
+		err := WriteFileAtomic(path, []byte("x"), 0o600, inject)
+		var we *AtomicWriteError
+		if !errors.As(err, &we) || we.Operation != AtomicWriteChmod {
+			t.Fatalf("%v: default err = %v, want chmod failure", errno, err)
+		}
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("%v: file published despite chmod failure", errno)
+		}
+		// Opt-in best effort: succeeds.
+		if err := WriteFileAtomic(path, []byte("x"), 0o600, inject, WithBestEffortMode()); err != nil {
+			t.Fatalf("%v: best-effort err = %v", errno, err)
+		}
+	}
+	// Other chmod errors still fail even when best effort.
+	other := WithChmod(func(string, fs.FileMode) error { return syscall.EIO })
+	err := WriteFileAtomic(filepath.Join(t.TempDir(), "f"), []byte("x"), 0o600, other, WithBestEffortMode())
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("EIO err = %v, want EIO", err)
+	}
+}
+
+func TestPublishNoClobberFallsBackWhenLinkUnsupported(t *testing.T) {
+	for _, errno := range []error{syscall.EPERM, syscall.ENOTSUP, syscall.EOPNOTSUPP} {
+		link := WithLink(func(a, b string) error { return &os.LinkError{Op: "link", Old: a, New: b, Err: errno} })
+		dir := t.TempDir()
+		path := filepath.Join(dir, "f")
+		check := WithPublishRaceCheck(func(p string) error { _, err := os.Stat(p); return err })
+		if err := WriteFileAtomic(path, []byte("first"), 0o600, check, link); err != nil {
+			t.Fatalf("%v: first: %v", errno, err)
+		}
+		if err := WriteFileAtomic(path, []byte("second"), 0o600, check, link); err != nil {
+			t.Fatalf("%v: second: %v", errno, err)
+		}
+		if got, _ := os.ReadFile(path); string(got) != "first" {
+			t.Fatalf("%v: content = %q, want first", errno, got)
+		}
+		if m, _ := filepath.Glob(filepath.Join(dir, ".f.tmp-*")); len(m) != 0 {
+			t.Fatalf("%v: temp files remain: %v", errno, m)
+		}
+	}
+	// A non-unsupported link error is not masked by the fallback.
+	boom := WithLink(func(string, string) error { return syscall.EIO })
+	err := WriteFileAtomic(filepath.Join(t.TempDir(), "f"), []byte("x"), 0o600,
+		WithPublishRaceCheck(func(string) error { return errors.New("absent") }), boom)
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("err = %v, want EIO", err)
 	}
 }

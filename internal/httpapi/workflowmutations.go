@@ -2,10 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 
@@ -88,22 +85,9 @@ func workflowEnabledHandler(service WorkflowMutationService, errorLog *log.Logge
 }
 
 func decodeWorkflowEnabledRequest(request *http.Request) (WorkflowEnabledRequest, error) {
-	defer func() { _ = request.Body.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxWorkflowMutationBody))
-	decoder.DisallowUnknownFields()
 	var input WorkflowEnabledRequest
-	if err := decoder.Decode(&input); err != nil {
-		if errors.Is(err, io.EOF) {
-			return WorkflowEnabledRequest{}, errors.New("JSON request body is required")
-		}
-		return WorkflowEnabledRequest{}, fmt.Errorf("invalid JSON request body: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return WorkflowEnabledRequest{}, errors.New("request body must contain one JSON object")
-		}
-		return WorkflowEnabledRequest{}, fmt.Errorf("invalid JSON request body: %w", err)
+	if err := decodeWriteRequestBounded(request, &input, maxWorkflowMutationBody); err != nil {
+		return WorkflowEnabledRequest{}, err
 	}
 	input.Gaggle = request.PathValue("gaggle")
 	input.Workflow = request.PathValue("workflow")

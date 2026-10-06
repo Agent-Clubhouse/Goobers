@@ -60,6 +60,25 @@ spec:
         - claim-backlog-items
       expectedOutputs:
         - claimed-item
+      next: recovery-resume
+
+    - name: recovery-resume
+      type: deterministic
+      goal: Restore and adopt compatible retained work for this claimed issue before implementation.
+      run:
+        command: ["goobers", "recovery-resume"]
+      inputs:
+        resultFile: "recovery-resume.json"
+      expectedOutputs:
+        - recovery-resume
+      capabilities:
+        - repo:push
+      policyActions:
+        - modify-repository
+      timeoutSeconds: 360
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
       next: gather-implement-context
 
     # Workflow enrichment: one bounded journal artifact carries the shipped

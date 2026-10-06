@@ -1,12 +1,10 @@
 package journalclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/daemonclient"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/planehttp"
 )
 
 // Error is a typed refusal from the daemon: the shared API error envelope's
@@ -72,18 +71,27 @@ type HTTPConfig struct {
 // HTTP is the daemon-backed backend: Reader over the run-scoped read routes,
 // CrossRun over the gaggle-scoped journal plane.
 type HTTP struct {
-	cfg HTTPConfig
+	cfg   HTTPConfig
+	plane *planehttp.Client
 }
 
 // NewHTTP constructs the plane backend, refusing an incomplete configuration
 // rather than deferring the refusal to the first call.
 func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if cfg.BaseURL == "" {
-		return nil, errors.New("journalclient: HTTP backend requires a base URL")
+	if cfg.Client == nil {
+		cfg.Client = daemonclient.NewHTTP(DefaultHTTPTimeout)
 	}
-	if strings.TrimSpace(cfg.Token) == "" && !anonymousLoopback(cfg) {
-		return nil, errors.New("journalclient: HTTP backend requires a bearer token")
+	plane, err := planehttp.New(planehttp.Config{
+		BaseURL:      cfg.BaseURL,
+		Token:        cfg.Token,
+		Client:       cfg.Client,
+		AllowNoToken: anonymousLoopback(cfg),
+		BaseURLError: errors.New("journalclient: HTTP backend requires a base URL"),
+		TokenError:   errors.New("journalclient: HTTP backend requires a bearer token"),
+	})
+	if err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(cfg.RunID) == "" {
 		return nil, errors.New("journalclient: HTTP backend requires the stage's run ID")
@@ -91,10 +99,9 @@ func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
 	if !apiv1.ValidRunID(cfg.RunID) {
 		return nil, fmt.Errorf("journalclient: %q is not a valid run id", cfg.RunID)
 	}
-	if cfg.Client == nil {
-		cfg.Client = daemonclient.NewHTTP(DefaultHTTPTimeout)
-	}
-	return &HTTP{cfg: cfg}, nil
+	cfg.BaseURL = plane.BaseURL()
+	cfg.Client = plane.HTTPClient()
+	return &HTTP{cfg: cfg, plane: plane}, nil
 }
 
 // NewHTTPFromSelection builds the backend from a Select result.
@@ -111,62 +118,45 @@ func NewHTTPFromSelection(selection Selection) (*HTTP, error) {
 func (h *HTTP) RunID() string { return h.cfg.RunID }
 
 func (h *HTTP) do(ctx context.Context, method, path string, body any, limit int64) ([]byte, http.Header, error) {
-	var reader io.Reader
+	var response *http.Response
+	var err error
 	if body != nil {
-		payload, err := json.Marshal(body)
-		if err != nil {
-			return nil, nil, fmt.Errorf("journalclient: encode request: %w", err)
+		response, err = h.plane.DoJSON(ctx, method, path, body, nil)
+	} else {
+		response, err = h.plane.DoRaw(ctx, method, path, nil, nil)
+	}
+	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "encode" {
+			return nil, nil, fmt.Errorf("journalclient: encode request: %w", requestErr.Err)
 		}
-		reader = bytes.NewReader(payload)
-	}
-	endpoint := h.cfg.BaseURL + path
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("journalclient: build request: %w", err)
-	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if h.cfg.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	}
-	response, err := h.cfg.Client.Do(request)
-	if err != nil {
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return nil, nil, fmt.Errorf("journalclient: build request: %w", requestErr.Err)
+		}
+		endpoint := h.cfg.BaseURL + path
 		return nil, nil, fmt.Errorf("journalclient: %s: %w", endpoint, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(response.Body, maxErrorBodyBytes))
+		raw, _ := planehttp.ReadBounded(response.Body, maxErrorBodyBytes)
 		return nil, nil, planeError(response.StatusCode, raw)
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, limit))
+	raw, err := planehttp.ReadBounded(response.Body, limit)
 	if err != nil {
+		endpoint := h.cfg.BaseURL + path
 		return nil, nil, fmt.Errorf("journalclient: read response from %s: %w", endpoint, err)
 	}
 	if int64(len(raw)) >= limit {
+		endpoint := h.cfg.BaseURL + path
 		return nil, nil, fmt.Errorf("journalclient: response from %s exceeds the %d byte ceiling", endpoint, limit)
 	}
 	return raw, response.Header, nil
 }
 
 func planeError(status int, raw []byte) error {
-	planeErr := &Error{Status: status}
-	var envelope struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(raw, &envelope) == nil && envelope.Error.Code != "" {
-		planeErr.Code, planeErr.Message = envelope.Error.Code, envelope.Error.Message
-	} else {
-		detail := strings.TrimSpace(string(raw))
-		if len(detail) > 400 {
-			detail = detail[:400] + "…"
-		}
-		planeErr.Code, planeErr.Message = "http_"+fmt.Sprint(status), detail
-	}
-	return planeErr
+	return planehttp.DecodeError(status, raw, func(status int, code, message string) error {
+		return &Error{Status: status, Code: code, Message: message}
+	}, planehttp.ErrorFallback{CodePrefix: "http_", DetailLimit: 400, Ellipsis: "…"})
 }
 
 func (h *HTTP) getJSON(ctx context.Context, path string, limit int64, target any) error {

@@ -203,13 +203,15 @@ type StageStats struct {
 	P95CostUSD  float64 `json:"p95CostUSD"`
 	HasCost     bool    `json:"-"`
 
-	RetryWasteAttempts    int     `json:"retryWasteAttempts"`
-	RetryWasteDurationMs  int64   `json:"retryWasteDurationMs"`
-	RetryWasteTokens      int64   `json:"retryWasteTokens"`
-	RetryWasteCostUSD     float64 `json:"retryWasteCostUSD"`
-	HasRetryWasteDuration bool    `json:"-"`
-	HasRetryWasteTokens   bool    `json:"-"`
-	HasRetryWasteCost     bool    `json:"-"`
+	RetryWasteAttempts     int     `json:"retryWasteAttempts"`
+	RetryWasteTokenSamples int     `json:"retryWasteTokenSamples"`
+	RetryWasteCostSamples  int     `json:"retryWasteCostSamples"`
+	RetryWasteDurationMs   int64   `json:"retryWasteDurationMs"`
+	RetryWasteTokens       int64   `json:"retryWasteTokens"`
+	RetryWasteCostUSD      float64 `json:"retryWasteCostUSD"`
+	HasRetryWasteDuration  bool    `json:"-"`
+	HasRetryWasteTokens    bool    `json:"-"`
+	HasRetryWasteCost      bool    `json:"-"`
 }
 
 // UsageStats is the AI usage aggregate for an instance, gaggle, workflow, or
@@ -240,11 +242,13 @@ type UsageStats struct {
 	P95CostUSD  float64 `json:"p95CostUSD"`
 	HasCost     bool    `json:"-"`
 
-	RetryWasteAttempts  int     `json:"retryWasteAttempts"`
-	RetryWasteTokens    int64   `json:"retryWasteTokens"`
-	RetryWasteCostUSD   float64 `json:"retryWasteCostUSD"`
-	HasRetryWasteTokens bool    `json:"-"`
-	HasRetryWasteCost   bool    `json:"-"`
+	RetryWasteAttempts     int     `json:"retryWasteAttempts"`
+	RetryWasteTokenSamples int     `json:"retryWasteTokenSamples"`
+	RetryWasteCostSamples  int     `json:"retryWasteCostSamples"`
+	RetryWasteTokens       int64   `json:"retryWasteTokens"`
+	RetryWasteCostUSD      float64 `json:"retryWasteCostUSD"`
+	HasRetryWasteTokens    bool    `json:"-"`
+	HasRetryWasteCost      bool    `json:"-"`
 }
 
 // ModelStats is total observed usage grouped by model. Each measure carries its
@@ -1090,19 +1094,13 @@ func (db *DB) ProviderMutationCounts(ctx context.Context, req StatsRequest) ([]P
 		GROUP BY m.provider, m.kind, m.operation
 		ORDER BY cnt DESC, m.provider, m.kind`, where)
 
-	rows, err := db.readDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query provider mutation counts: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []ProviderMutationCount
-	for rows.Next() {
-		var c ProviderMutationCount
-		if err := rows.Scan(&c.Provider, &c.Kind, &c.Operation, &c.Count); err != nil {
-			return nil, fmt.Errorf("rollup: scan provider mutation count: %w", err)
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	return queryRows(ctx, db.readDB(), query, args,
+		"rollup: query provider mutation counts",
+		func(rows *sql.Rows) (ProviderMutationCount, error) {
+			var count ProviderMutationCount
+			if err := rows.Scan(&count.Provider, &count.Kind, &count.Operation, &count.Count); err != nil {
+				return ProviderMutationCount{}, fmt.Errorf("rollup: scan provider mutation count: %w", err)
+			}
+			return count, nil
+		})
 }

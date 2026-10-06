@@ -422,8 +422,7 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 		"unit-linux-coverage", "shipped", "integration",
 		"windows-smoke", "vulnerability-scan", "sandbox", "linux-validation",
 	} {
-		section := workflowJob(workflow, job)
-		if !strings.Contains(section, "needs: [preflight]") {
+		if !slices.Contains(loadCIWorkflow(t).Jobs[job].Needs, "preflight") {
 			t.Errorf("job %q must wait for preflight admission", job)
 		}
 	}
@@ -431,8 +430,7 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 	// duration on every run's critical path. A preflight failure cancels them
 	// on pull requests instead; that canceller is what makes un-gating safe.
 	for _, job := range []string{"unit"} {
-		header := strings.SplitN(workflowJob(workflow, job), "\n    steps:", 2)[0]
-		if strings.Contains(header, "needs:") {
+		if slices.Contains(loadCIWorkflow(t).Jobs[job].Needs, "preflight") {
 			t.Errorf("long-pole job %q must not wait for preflight; it serializes preflight in front of the critical path", job)
 		}
 	}
@@ -517,10 +515,10 @@ func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
 	}
 
 	// The aggregate must read a job cancelled by a canceller as failure. Its
-	// check() is fail-closed on any non-success result, and it must still run
+	// profile policy is fail-closed on selected jobs, and it must still run
 	// after the run is cancelled, which is what always() guarantees.
 	requiredCI := workflowJob(workflow, "required-ci")
-	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' && !" + ciMetadataEdit + " }}", `if [ "$2" != "success" ]; then`} {
+	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' && !" + ciMetadataEdit + " }}", "run: go run ./test/cipolicy gate", "CI_NEEDS: ${{ toJSON(needs) }}"} {
 		if !strings.Contains(requiredCI, want) {
 			t.Errorf("required-ci must contain %q so a cancelled job reds the required check", want)
 		}
@@ -642,7 +640,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
+		"needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",

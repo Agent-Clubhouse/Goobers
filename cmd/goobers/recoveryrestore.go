@@ -84,12 +84,12 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 }
 
 func restoreIssueRecovery(ctx context.Context, layout instance.Layout, key, issue, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
-	return withIssueRecoveryRecord(ctx, layout, key, issue, func(path string) (string, error) {
+	return withIssueRecoveryRecord(ctx, layout, key, issue, func(_ recovery.Record, path string) (string, error) {
 		return restoreConfiguredRecovery(ctx, layout, path, destination, branch, registry)
 	})
 }
 
-func withIssueRecoveryRecord(ctx context.Context, layout instance.Layout, key, issue string, consume func(string) (string, error)) (string, error) {
+func withIssueRecoveryRecord(ctx context.Context, layout instance.Layout, key, issue string, consume func(recovery.Record, string) (string, error)) (string, error) {
 	if claimsPlaneSelected() {
 		return restoreDownloadedRecovery(ctx, key, issue, consume)
 	}
@@ -120,7 +120,7 @@ func withIssueRecoveryRecord(ctx context.Context, layout instance.Layout, key, i
 		if _, err := validateRecoverySelection(layout, selected, time.Now().UTC()); err != nil {
 			return err
 		}
-		commit, err = consume(selected.RecordPath)
+		commit, err = consume(selected.Record, selected.RecordPath)
 		return err
 	})
 	if err == nil && !entered {
@@ -129,16 +129,16 @@ func withIssueRecoveryRecord(ctx context.Context, layout instance.Layout, key, i
 	return commit, err
 }
 
-func restoreDownloadedRecovery(ctx context.Context, key, issue string, consume func(string) (string, error)) (string, error) {
+func restoreDownloadedRecovery(ctx context.Context, key, issue string, consume func(recovery.Record, string) (string, error)) (string, error) {
 	source := recovery.HTTPArchiveSource{
 		BaseURL: os.Getenv(claimsclient.EnvEndpoint),
 		Token:   os.Getenv(claimsclient.EnvToken),
 		RunID:   os.Getenv(claimsclient.EnvRunID),
 	}
 	var commit string
-	err := source.WithArchive(ctx, key, issue, func(_ recovery.Record, archive string) error {
+	err := source.WithArchive(ctx, key, issue, func(record recovery.Record, archive string) error {
 		var err error
-		commit, err = consume(filepath.Join(filepath.Dir(archive), recovery.RecordFileName))
+		commit, err = consume(record, filepath.Join(filepath.Dir(archive), recovery.RecordFileName))
 		return err
 	})
 	return commit, err

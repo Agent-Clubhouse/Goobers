@@ -314,32 +314,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	var timedOut, canceled bool
-	select {
-	case err = <-waitDone:
-	case <-runCtx.Done():
-		// runCtx.Done() fires both when its own timeout elapses and when the
-		// caller's ctx is canceled out from under it — distinguishing the two
-		// via context.Cause matters even though only the timeout path is
-		// reachable today (internal/runner's dispatch always uses
-		// context.WithoutCancel): a future hard-shutdown path that DOES
-		// cancel ctx must not be mislabeled as a retryable timeout (#122).
-		if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
-			timedOut = true
-		} else {
-			canceled = true
-		}
-		// Kill the whole tree, not just the direct child, so a runaway
-		// subprocess tree can't outlive the stage.
-		_ = tree.Kill()
-		select {
-		case err = <-waitDone:
-		case <-time.After(groupKillWaitDelay):
-			// A descendant escaped the group and is still holding a pipe
-			// open; give up waiting rather than hang the stage (and drain)
-			// forever — see groupKillWaitDelay's doc.
-		}
-	}
+	waitOutcome := proc.WaitOrKill(runCtx, tree, waitDone, proc.WaitOptions{KillWait: groupKillWaitDelay})
+	err = waitOutcome.Err
+	timedOut, canceled := waitOutcome.TimedOut, waitOutcome.Canceled
 
 	// Explicitly, not just on the deferred call: the terminal agent event is
 	// emitted by the caller as soon as Run returns, and a liveness mark

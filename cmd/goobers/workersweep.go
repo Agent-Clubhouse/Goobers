@@ -70,7 +70,7 @@ var dialWorkerSweepTemporal = bootstrap.DialTemporal
 // stageOrphanSweeper is the sweep half of *dispatcher.Dispatcher, named as an
 // interface so the wiring can be exercised with a fake.
 type stageOrphanSweeper interface {
-	SweepOrphans(ctx context.Context, runs dispatcher.RunStates) ([]string, error)
+	SweepOrphansWithReport(ctx context.Context, runs dispatcher.RunStates) ([]dispatcher.OrphanReap, error)
 }
 
 // temporalRunStates answers dispatcher.SweepOrphans from the engine.
@@ -202,13 +202,19 @@ func sweepWorkerStageOrphansContext(parent context.Context, sweeper stageOrphanS
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(parent, workerSweepBudget)
 	defer cancel()
-	disposed, err := sweeper.SweepOrphans(ctx, temporalRunStates{client: c})
+	reaped, err := sweeper.SweepOrphansWithReport(ctx, temporalRunStates{client: c})
 	if err != nil {
 		pf(stderr, "goobers worker: orphan sweep: %v\n", err)
 	}
-	if len(disposed) == 0 {
+	if len(reaped) == 0 {
 		pf(stdout, "goobers worker: orphan sweep: nothing settled to dispose\n")
 		return
+	}
+	disposed := make([]string, 0, len(reaped))
+	for _, reap := range reaped {
+		pf(stdout, "goobers worker: orphan sweep disposed stage pod %s/%s: %s\n",
+			reap.Namespace, reap.Pod, reap.Reason)
+		disposed = append(disposed, reap.Pod)
 	}
 	pf(stdout, "goobers worker: orphan sweep disposed %d settled stage pod(s): %s\n",
 		len(disposed), strings.Join(disposed, ", "))

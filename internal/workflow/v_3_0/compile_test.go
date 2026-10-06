@@ -1256,7 +1256,7 @@ func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
 		Type:         apiv1.TaskDeterministic,
 		Goal:         "select and classify the PR",
 		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "pr-select"}},
-		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Capabilities: []string{string(capability.ProviderPRWrite)},
 	}
 	spec := apiv1.WorkflowSpec{Gaggle: "web", Start: task.Name, Tasks: []apiv1.Task{task}}
 
@@ -1269,12 +1269,12 @@ func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
 	spec.Tasks[0].PolicyActions = []string{"flag-foundation-coupling"}
 	spec.Tasks[0].Capabilities = nil
 	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "github:pr:write", but the task does not declare it`
+	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "provider:pr:write", but the task does not declare it`
 	if err == nil || !strings.Contains(err.Error(), wantCapability) {
 		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
 	}
 
-	spec.Tasks[0].Capabilities = []string{string(capability.GitHubPRWrite)}
+	spec.Tasks[0].Capabilities = []string{string(capability.ProviderPRWrite)}
 	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("declared pr-select action and capability should compile: %v", err)
 	}

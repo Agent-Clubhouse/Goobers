@@ -528,7 +528,42 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, cos
 	if err := rows.Close(); err != nil {
 		return nil, nil, fmt.Errorf("rollup: close cost-attributed runs: %w", err)
 	}
+	for _, run := range byID {
+		foldUnqualifiedCostReferences(run.issues)
+		foldUnqualifiedCostReferences(run.prs)
+	}
 	return byID, order, nil
+}
+
+// foldUnqualifiedCostReferences merges a run's repository-less reference into
+// the run's single repository-qualified reference to the same external id.
+//
+// #6796: ADO claim and claim-release receipts were recorded without a URL, so
+// already-ingested rows carry an empty repository beside the qualified rows the
+// same run wrote for the same work item. Kept apart, they split one item into
+// two aggregates at half cost each. The fold is per run and only when exactly
+// one qualified identity exists for the id; with zero or several candidates the
+// unqualified reference stays as it is, because an identity the evidence does
+// not determine must stay unknown rather than be guessed (#5266).
+func foldUnqualifiedCostReferences(refs map[string]string) {
+	qualified := make(map[string][]string)
+	for identity := range refs {
+		repository, externalID := costReferenceParts(identity)
+		if repository != "" {
+			qualified[externalID] = append(qualified[externalID], identity)
+		}
+	}
+	for identity := range refs {
+		repository, externalID := costReferenceParts(identity)
+		if repository != "" || len(qualified[externalID]) != 1 {
+			continue
+		}
+		target := qualified[externalID][0]
+		if refs[target] == "" {
+			refs[target] = refs[identity]
+		}
+		delete(refs, identity)
+	}
 }
 
 func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {

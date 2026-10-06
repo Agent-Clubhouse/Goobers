@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,6 +125,21 @@ func planeClient(t *testing.T, server *httptest.Server) *HTTP {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func TestNewHTTPPreservesConfigurationErrors(t *testing.T) {
+	for name, test := range map[string]struct {
+		cfg  HTTPConfig
+		want string
+	}{
+		"no base url": {HTTPConfig{Token: "t", Gaggle: "g"}, "stateclient: HTTP backend requires a base URL"},
+		"no token":    {HTTPConfig{BaseURL: "http://d", Gaggle: "g"}, "stateclient: HTTP backend requires a bearer token"},
+		"no gaggle":   {HTTPConfig{BaseURL: "http://d", Token: "t"}, "stateclient: HTTP backend requires the caller's gaggle"},
+	} {
+		if _, err := NewHTTP(test.cfg); err == nil || err.Error() != test.want {
+			t.Errorf("%s: NewHTTP error = %v, want %q", name, err, test.want)
+		}
+	}
 }
 
 // TestHTTPStoreRoundTrip pins the client onto the route's contract: a 404 is
@@ -287,6 +303,7 @@ func TestHTTPStoreSurfacesForeignGaggleRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	_, err = store.Get(t.Context(), KeyBlockedRecords)
 	if err == nil {
 		t.Fatal("a foreign-gaggle read succeeded")
@@ -294,6 +311,87 @@ func TestHTTPStoreSurfacesForeignGaggleRefusals(t *testing.T) {
 	var planeErr *Error
 	if !errors.As(err, &planeErr) || planeErr.Status != http.StatusForbidden || planeErr.Code != "gaggle_mismatch" {
 		t.Fatalf("err = %v, want a typed 403 gaggle_mismatch", err)
+	}
+}
+
+func TestHTTPStoreFallbackErrorAndWriteContentType(t *testing.T) {
+	var contentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		contentType = request.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
+	}))
+	t.Cleanup(server.Close)
+	store := planeClient(t, server)
+	_, err := store.Put(t.Context(), KeyBlockedRecords, []byte(`{}`), "")
+	var planeErr *Error
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+		t.Fatalf("error = %#v", planeErr)
+	}
+	if contentType != "application/json" {
+		t.Fatalf("content type = %q", contentType)
+	}
+}
+
+func TestHTTPStoreReadResponseBodyCeiling(t *testing.T) {
+	for name, size := range map[string]int{
+		"at limit":   MaxValueBytes,
+		"over limit": MaxValueBytes + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(HeaderETag, `"etag"`)
+				_, _ = io.WriteString(w, strings.Repeat("x", size))
+			}))
+			t.Cleanup(server.Close)
+			store := planeClient(t, server)
+
+			value, err := store.Get(t.Context(), KeyBlockedRecords)
+			if size == MaxValueBytes {
+				if err != nil || len(value.Data) != MaxValueBytes {
+					t.Fatalf("Get() returned %d bytes, %v; want %d bytes", len(value.Data), err, MaxValueBytes)
+				}
+				return
+			}
+			want := "answered more than the " + strconv.Itoa(MaxValueBytes) + "-byte value limit"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Get() error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestHTTPStorePutErrorResponseBodyCeiling(t *testing.T) {
+	const limit = 4 << 20
+	envelope := `{"error":{"code":"bounded","message":"decoded"}}`
+
+	for name, padding := range map[string]int{
+		"at limit":   limit - len(envelope),
+		"over limit": limit - len(envelope) + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = io.WriteString(w, strings.Repeat(" ", padding)+envelope)
+			}))
+			t.Cleanup(server.Close)
+			store := planeClient(t, server)
+
+			_, err := store.Put(t.Context(), KeyBlockedRecords, []byte(`{}`), "")
+			var planeErr *Error
+			if !errors.As(err, &planeErr) {
+				t.Fatalf("Put() error = %v, want *Error", err)
+			}
+			if name == "at limit" {
+				if planeErr.Code != "bounded" || planeErr.Message != "decoded" {
+					t.Fatalf("Put() error = %#v, want decoded envelope at %d bytes", planeErr, limit)
+				}
+				return
+			}
+			if planeErr.Code != "http_502" {
+				t.Fatalf("Put() error = %#v, want fallback above %d bytes", planeErr, limit)
+			}
+		})
 	}
 }
 
