@@ -140,6 +140,53 @@ describe("WorkItemsPage", () => {
       .toHaveValue("app#42");
   });
 
+  it("filters the server page when the desktop gaggle selection changes", async () => {
+    const navigate = vi.fn();
+    const daemonClient = client();
+    const listWorkItems = vi.spyOn(daemonClient, "listWorkItems");
+    const view = render(
+      <WorkItemsPage
+        client={daemonClient}
+        navigate={navigate}
+        route={{ page: "work-items" }}
+        standalone={false}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /Open PR #42 in acme\/app/i });
+    await userEvent.click(screen.getByRole("button", { name: "Scope" }));
+    await userEvent.click(screen.getByRole("button", { name: "Gaggle · core" }));
+    expect(navigate).toHaveBeenCalledWith({
+      page: "work-items",
+      kind: undefined,
+      gaggle: "core",
+      outcome: undefined,
+      query: undefined,
+    });
+
+    view.rerender(
+      <WorkItemsPage
+        client={daemonClient}
+        navigate={navigate}
+        route={{ page: "work-items", gaggle: "core" }}
+        standalone={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(listWorkItems).toHaveBeenCalledWith(
+        { kind: undefined, gaggle: "core", limit: 200 },
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+    expect(await screen.findByRole("button", { name: /Open PR #42 in acme\/app/i }))
+      .toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /Open issue #77 in acme\/service/i }))
+        .not.toBeInTheDocument(),
+    );
+  });
+
   it("filters work items by outcome", async () => {
     const navigate = vi.fn();
     const daemonClient = client();
@@ -206,9 +253,10 @@ describe("WorkItemsPage", () => {
   it("derives draft gaggle choices and validation from the draft work-item type", async () => {
     const navigate = vi.fn();
     const user = userEvent.setup();
-    render(
+    const daemonClient = client();
+    const view = render(
       <WorkItemsPage
-        client={client()}
+        client={daemonClient}
         navigate={navigate}
         route={{ page: "work-items", kind: "pr", gaggle: "core" }}
         standalone={false}
@@ -246,18 +294,36 @@ describe("WorkItemsPage", () => {
       outcome: "in-progress",
       query: undefined,
     });
+
+    view.rerender(
+      <WorkItemsPage
+        client={daemonClient}
+        navigate={navigate}
+        route={{
+          page: "work-items",
+          kind: "issue",
+          gaggle: "tools",
+          outcome: "in-progress",
+        }}
+        standalone={false}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: /Open issue #77 in acme\/service/i }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open PR #42 in acme\/app/i }))
+      .not.toBeInTheDocument();
   });
 
-  it("keeps valid gaggle filters beyond the mixed-kind page boundary", async () => {
-    const issue = {
+  it("keeps valid gaggle filters beyond the same-kind discovery boundary", async () => {
+    const newerPullRequest = {
       provider: "github",
-      repository: "acme/service",
-      kind: "issue" as const,
-      outcome: "in-progress" as const,
+      repository: "acme/app",
+      kind: "pr" as const,
+      outcome: "done" as const,
       actionCount: 1,
-      lastOperation: "comment",
+      lastOperation: "merge",
       lastActionAt: "2026-09-01T12:00:00Z",
-      lastRunId: "run-issue",
+      lastRunId: "run-newer-pr",
     };
     const pullRequest = {
       provider: "github",
@@ -279,9 +345,9 @@ describe("WorkItemsPage", () => {
             hasMore: true,
             items: [
               ...Array.from({ length: 200 }, (_, index) => ({
-                ...issue,
+                ...newerPullRequest,
                 externalId: String(index),
-                gaggle: `issue-gaggle-${index}`,
+                gaggle: `pr-gaggle-${index}`,
               })),
               pullRequest,
             ],
@@ -299,6 +365,14 @@ describe("WorkItemsPage", () => {
     expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · boundary-gaggle");
     expect(screen.queryByText('Invalid gaggle filter "boundary-gaggle"'))
       .not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Draft scope" }));
+    expect(within(screen.getByRole("dialog", { name: "Select scope" })).getByRole(
+      "button",
+      { name: "Gaggle · boundary-gaggle" },
+    )).toBeInTheDocument();
   });
 
   it("keeps search focus while word-wheel filtering and replaces the current URL", async () => {

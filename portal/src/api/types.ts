@@ -1873,6 +1873,7 @@ export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 export interface WorkItemListOptions {
   provider?: string;
   kind?: WorkItemKind;
+  gaggle?: string;
   limit?: number;
 }
 

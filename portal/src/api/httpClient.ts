@@ -486,6 +486,7 @@ export class HttpDaemonClient implements DaemonClient {
       request && {
         provider: request.provider,
         kind: request.kind,
+        gaggle: request.gaggle,
         limit: request.limit,
       },
       options,

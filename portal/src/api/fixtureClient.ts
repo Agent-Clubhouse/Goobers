@@ -417,6 +417,7 @@ export class FixtureDaemonClient implements DaemonClient {
       items: page.items
         .filter((item) => !request?.provider || item.provider === request.provider)
         .filter((item) => !request?.kind || item.kind === request.kind)
+        .filter((item) => !request?.gaggle || item.gaggle === request.gaggle)
         .slice(0, request?.limit ?? page.items.length),
     }));
   }

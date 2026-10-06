@@ -44,6 +44,7 @@ func init() {
 type WorkItemQuery struct {
 	Provider string
 	Kind     string
+	Gaggle   string
 	Limit    int
 }
 
@@ -196,9 +197,15 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 		       occurred_at, run_id, gaggle, workflow, status
 		FROM ranked
 		WHERE item_rank = 1
+			AND (? = '' OR gaggle = ?)
 		ORDER BY julianday(occurred_at) DESC, occurred_at DESC, provider, kind, external_id
 		LIMIT ?`,
-		[]any{query.Provider, query.Provider, query.Kind, query.Kind, limit + 1},
+		[]any{
+			query.Provider, query.Provider,
+			query.Kind, query.Kind,
+			query.Gaggle, query.Gaggle,
+			limit + 1,
+		},
 		"rollup: query work items",
 		func(rows *sql.Rows) (WorkItem, error) {
 			var item WorkItem

@@ -96,6 +96,45 @@ func TestWorkItemsGroupsMutationsAndReturnsActionTimeline(t *testing.T) {
 	}
 }
 
+func TestWorkItemsFiltersLatestGaggleBeforePaging(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, row := range []struct {
+		runID  string
+		gaggle string
+		at     time.Time
+	}{
+		{"run-core", "core", start},
+		{"run-tools", "tools", start.Add(time.Hour)},
+	} {
+		if _, err := db.sql.Exec(`
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+			VALUES (?, 'implementation', 1, ?, 'completed', ?)`,
+			row.runID, row.gaggle, formatTime(row.at)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.sql.Exec(`
+			INSERT INTO provider_mutations
+				(run_id, seq, provider, kind, external_id, url, operation, occurred_at)
+			VALUES (?, 1, 'github', 'issue', ?, ?, 'comment', ?)`,
+			row.runID, row.gaggle,
+			"https://github.com/acme/app/issues/"+row.gaggle, formatTime(row.at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, hasMore, err := db.WorkItems(context.Background(), WorkItemQuery{
+		Gaggle: "core",
+		Limit:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore || len(items) != 1 || items[0].Gaggle != "core" {
+		t.Fatalf("items = %#v, hasMore = %v", items, hasMore)
+	}
+}
+
 // TestRelatedPullRequestsADO guards #6797: an ADO work item is project-scoped
 // (<org>/<project>) while its pull requests live in repository-scoped
 // <org>/<project>/_git/<repo> URLs, so the PR prefix must be built from the
