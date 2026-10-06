@@ -346,31 +346,34 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 	return independentPins, nil
 }
 
-func (v *Validator) checkAuthority(wf apiv1.Workflow) error {
+func (v *Validator) checkGoober(gaggle, name, stage, field string) (apiv1.GooberSpec, error) {
 	policy := v.context.ParentTask.ChildWorkflows
-	checkGoober := func(name, stage, field string) (apiv1.GooberSpec, error) {
-		g, ok := v.context.Goobers[name]
-		if !ok || !slices.Contains(policy.AllowedGoobers, name) || (g.Gaggle != "" && g.Gaggle != wf.Spec.Gaggle) {
-			return apiv1.GooberSpec{}, refusal("goober", stage, field, "Goober is not available within the pinned child grant")
-		}
-		// Copilot model authentication can also carry GitHub publication authority.
-		// A model-only declaration does not prove that this credential is isolated.
-		if (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
-			return apiv1.GooberSpec{}, refusal("credential_isolation", stage, field, "child model authentication may carry GitHub publication authority; a separate model-only authentication path is required")
-		}
-		return g, nil
+	g, ok := v.context.Goobers[name]
+	if !ok || !slices.Contains(policy.AllowedGoobers, name) || (g.Gaggle != "" && g.Gaggle != gaggle) {
+		return apiv1.GooberSpec{}, refusal("goober", stage, field, "Goober is not available within the pinned child grant")
 	}
-	checkCaps := func(grants []string, stage, field string) error {
-		for _, grant := range grants {
-			if !slices.Contains(policy.AllowedCapabilities, grant) || !slices.Contains(v.context.GrantedCapabilities, grant) {
-				return refusal("capability", stage, field, "effective capability exceeds the pinned child or enclosing grant")
-			}
-			if (!policy.AllowPRPublication || !v.context.AllowPRPublication) && publicationCapability(grant) {
-				return refusal("publication", stage, field, "publication-capable credentials require both child and enclosing publication permission")
-			}
-		}
-		return nil
+	// Copilot model authentication can also carry GitHub publication authority.
+	// A model-only declaration does not prove that this credential is isolated.
+	if (!policy.AllowPRPublication || !v.context.AllowPRPublication) && (g.Harness == "" || g.Harness == apiv1.HarnessCopilot) {
+		return apiv1.GooberSpec{}, refusal("credential_isolation", stage, field, "child model authentication may carry GitHub publication authority; a separate model-only authentication path is required")
 	}
+	return g, nil
+}
+
+func (v *Validator) checkCaps(grants []string, stage, field string) error {
+	policy := v.context.ParentTask.ChildWorkflows
+	for _, grant := range grants {
+		if !slices.Contains(policy.AllowedCapabilities, grant) || !slices.Contains(v.context.GrantedCapabilities, grant) {
+			return refusal("capability", stage, field, "effective capability exceeds the pinned child or enclosing grant")
+		}
+		if (!policy.AllowPRPublication || !v.context.AllowPRPublication) && publicationCapability(grant) {
+			return refusal("publication", stage, field, "publication-capable credentials require both child and enclosing publication permission")
+		}
+	}
+	return nil
+}
+
+func (v *Validator) checkAuthority(wf apiv1.Workflow) error {
 	for _, task := range wf.Spec.Tasks {
 		seen := make(map[string]bool)
 		for _, name := range task.ContextFrom {
@@ -386,11 +389,11 @@ func (v *Validator) checkAuthority(wf apiv1.Workflow) error {
 			return refusal("scope", task.Name, "outboxMirrorPath", "child cannot choose a host outbox path")
 		}
 		if task.Type == apiv1.TaskAgentic {
-			if _, err := checkGoober(task.Goober, task.Name, "goober"); err != nil {
+			if _, err := v.checkGoober(wf.Spec.Gaggle, task.Goober, task.Name, "goober"); err != nil {
 				return err
 			}
 		}
-		if err := checkCaps(task.Capabilities, task.Name, "capabilities"); err != nil {
+		if err := v.checkCaps(task.Capabilities, task.Name, "capabilities"); err != nil {
 			return err
 		}
 	}
@@ -398,13 +401,13 @@ func (v *Validator) checkAuthority(wf apiv1.Workflow) error {
 		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil {
 			continue
 		}
-		goober, err := checkGoober(gate.Agentic.Goober, gate.Name, "agentic.goober")
+		goober, err := v.checkGoober(wf.Spec.Gaggle, gate.Agentic.Goober, gate.Name, "agentic.goober")
 		if err != nil {
 			return err
 		}
 		// Reviewers have no stage-level grant list: the runtime uses the full
 		// pinned Goober grant, unlike agentic tasks' declared subsets.
-		if err := checkCaps(goober.Capabilities, gate.Name, "agentic.goober.capabilities"); err != nil {
+		if err := v.checkCaps(goober.Capabilities, gate.Name, "agentic.goober.capabilities"); err != nil {
 			return err
 		}
 	}
