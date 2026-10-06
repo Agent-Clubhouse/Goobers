@@ -131,12 +131,15 @@ func TestPRSelectClearsRunAbortedForCurrentHeadPassFromOtherIdentity(t *testing.
 	const number = 6767
 	server := newReviewedRunAbortedPRFixture(t, number)
 	server.addRawCommentAs(number, "reviewer", "earlier review feedback")
-	addCurrentHeadPass(t, server, number, "goobersbot[bot]")
+	addCurrentHeadPass(t, server, number, "jeffstei")
 	server.setPRIdentities(number, "goobersbot[bot]", nil, nil)
+	server.authenticatedLogin = "goobersbot[bot]"
+	server.setTokenLogin("operator-token", "jeffstei")
 
 	root := initDemo(t)
 	setAppDaemonIdentity(t, root, "goobersbot")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	providerCmdEnv(t, server, executor.CredentialEnvVar("provider:pr:write"), "merge-review-run")
+	t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "operator-token")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -264,12 +267,15 @@ func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.addRawCommentAtAsType(number, "goobersbot[bot]", "Bot", response, remediatedAt)
+	server.addRawCommentAtAsType(number, "jeffstei", "User", response, remediatedAt)
 	server.setPRIdentities(number, "goobersbot[bot]", nil, nil)
+	server.authenticatedLogin = "goobersbot[bot]"
+	server.setTokenLogin("operator-token", "jeffstei")
 
 	root := initDemo(t)
 	setAppDaemonIdentity(t, root, "goobersbot")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	providerCmdEnv(t, server, executor.CredentialEnvVar("provider:pr:write"), "merge-review-run")
+	t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "operator-token")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	workDir := t.TempDir()
 	t.Chdir(workDir)

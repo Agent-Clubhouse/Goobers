@@ -599,14 +599,14 @@ type prSelectSourceRequest struct {
 // comment, file, or branch operations.
 func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
 	if repo.Provider == providers.ProviderADO {
-		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
+		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.ProviderPRWrite))
 		if err != nil {
 			return nil, nil, err
 		}
 		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider)}, nil, nil
 	}
 
-	token, err := providerToken(capability.GitHubPRWrite)
+	token, err := providerToken(capability.ProviderPRWrite)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1565,13 +1565,15 @@ func runAbortedPRHasVerifiedRemediation(
 	if poll.ReviewDecision == providers.ReviewDecisionChangesRequested || poll.RequestedChanges > 0 {
 		return false, nil
 	}
-	author, err := provider.AuthenticatedLogin(ctx)
+	authors := runAbortedCommentAuthors{configured: configuredAuthor}
+	var err error
+	authors.authenticated, err = provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return false, err
 	}
 	responseAt := latestTrustedRemediationResponse(
 		poll.CommentsSince,
-		runAbortedCommentAuthors{authenticated: author, configured: configuredAuthor},
+		authors,
 	)
 	if responseAt.IsZero() {
 		return false, nil

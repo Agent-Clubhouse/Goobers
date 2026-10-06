@@ -34,7 +34,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"edit-issue":                    {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"escalate-pr":                   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"fan-out-remediation":           {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"flag-foundation-coupling":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"flag-foundation-coupling":      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"flag-scope-drift":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},

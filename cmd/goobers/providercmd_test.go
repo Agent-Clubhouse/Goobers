@@ -167,6 +167,7 @@ type fakeGitHubServer struct {
 	dependencyRequests      int
 	dependencyFailureStatus map[int]int
 	authenticatedLogin      string
+	tokenLogins             map[string]string
 	// issueEventRequests counts GET /repos/o/r/issues/events pages served, so a
 	// test can price one backlog-health cycle's full-history walk against its
 	// resumed successor (#3392).
@@ -333,7 +334,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 		securityAlertQueries:  map[string][]url.Values{},
 		securityAlertFailures: map[string]int{},
 		issueGetMutations:     map[int][]func(*fakeGitHubServer, *fakeIssue){},
-		nextPR:                1, authenticatedLogin: "goobers",
+		nextPR:                1, authenticatedLogin: "goobers", tokenLogins: map[string]string{},
 	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
@@ -592,7 +593,17 @@ func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *htt
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 		return
 	}
-	writeFakeJSON(w, map[string]string{"login": s.authenticatedLogin})
+	login := s.authenticatedLogin
+	if tokenLogin := s.tokenLogins[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]; tokenLogin != "" {
+		login = tokenLogin
+	}
+	writeFakeJSON(w, map[string]string{"login": login})
+}
+
+func (s *fakeGitHubServer) setTokenLogin(token, login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokenLogins[token] = login
 }
 
 func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) {

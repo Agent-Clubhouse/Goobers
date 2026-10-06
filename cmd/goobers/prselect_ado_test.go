@@ -207,8 +207,9 @@ func adoPRSelectEnv(t *testing.T, repo providers.RepositoryRef, server *httptest
 
 // TestPRSelectDispatchesADOAndSelectsPolicyGreenPR is the end-to-end acceptance
 // for pr-select's ADO branch: routed to an ADO repo, it never resolves a
-// github:pr:write token, lists the active PR, derives CheckState from the
-// approved Build policy, and selects it. headPrefixes is set to the ADO
+// provider-specific PR token, lists the active PR through provider:pr:write,
+// derives CheckState from the approved Build policy, and selects it.
+// headPrefixes is set to the ADO
 // run-branch namespace so the goobers-authored PR is recognized as own — the
 // config the merge-wiring-plan §8 advisoryMode trap requires.
 func TestPRSelectDispatchesADOAndSelectsPolicyGreenPR(t *testing.T) {
