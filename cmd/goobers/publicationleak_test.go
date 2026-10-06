@@ -5,18 +5,22 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -144,6 +148,73 @@ func TestOptedInPodPublicationScreensBeforePublishing(t *testing.T) {
 	publishedAt := sequence.Add(1)
 	if screenedAt.Load() == 0 || screenedAt.Load() >= publishedAt {
 		t.Fatalf("screened at %d, published at %d; want screening first", screenedAt.Load(), publishedAt)
+	}
+}
+
+func TestPublicationLeakScreenCredentialPlaneRoundTrip(t *testing.T) {
+	settings := &decisiongate.Settings{
+		Mode: decisiongate.ModeShadow, PublicationLeakScreen: true,
+		BaseURLEnv: "LEAK_SCREEN_URL", KeyEnv: "LEAK_SCREEN_KEY", ModelEnv: "LEAK_SCREEN_MODEL",
+		Fallback: decisiongate.FallbackAgent,
+	}
+	t.Setenv("LEAK_SCREEN_URL", "https://screen.example.test/v1")
+	t.Setenv("LEAK_SCREEN_KEY", "plane-test-key")
+	t.Setenv("LEAK_SCREEN_MODEL", "plane-test-model")
+
+	spec := credentialPlaneSpec()
+	spec.Tasks[1].Capabilities = append(spec.Tasks[1].Capabilities, string(capability.ProviderPRWrite))
+	service, _, runID := newCredentialPlaneFixture(t, compileCredentialPlaneMachine(t, spec))
+	service.config.DecisionGate = settings
+
+	registry := podauth.NewRegistry()
+	authenticator, err := podauth.NewAuthenticator(registry, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(
+		&telemetryParityReader{},
+		httpapi.RequireRoles(),
+		stdlog.New(io.Discard, "", 0),
+		httpapi.WithAuthenticator(authenticator),
+		httpapi.WithCredentialService(service),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	token, err := registry.Mint(runID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: token}
+
+	resolution, err := client.ResolveStage(
+		context.Background(),
+		runID,
+		"push-branch",
+		[]string{string(capability.ProviderPRWrite)},
+	)
+	if err != nil {
+		t.Fatalf("resolve publication capability: %v", err)
+	}
+	screen := resolution.PublicationLeakScreen
+	if screen == nil {
+		t.Fatal("opted-in publication capability did not reach CredentialResolution")
+	}
+	if !reflect.DeepEqual(screen.Settings, *settings) ||
+		screen.BaseURL != "https://screen.example.test/v1" ||
+		screen.APIKey != "plane-test-key" ||
+		screen.Model != "plane-test-model" {
+		t.Fatalf("publication screen = %+v, want configured settings, endpoint, key, and model", screen)
+	}
+
+	resolution, err = client.ResolveStage(context.Background(), runID, "push-branch", []string{"repo:push"})
+	if err != nil {
+		t.Fatalf("resolve non-publication capability: %v", err)
+	}
+	if resolution.PublicationLeakScreen != nil {
+		t.Fatalf("non-publication resolve received screen: %+v", resolution.PublicationLeakScreen)
 	}
 }
 
