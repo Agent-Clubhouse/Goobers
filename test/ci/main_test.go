@@ -55,6 +55,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"fmt-check",
 		"ci-policy",
 		"runtime-acquisitions",
+		"architecture-imports",
 		"tidy-check",
 		"no-phone-home",
 		"stage-name-lint",
@@ -130,6 +131,13 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
+	}
+	architectureCheck := checkByLabel(t, gotChecks, "architecture-imports")
+	wantArchitectureArgs := []string{"run", "./test/architectureimports", "-config", "test/architectureimports/rules.json"}
+	if architectureCheck.command != "custom-go" ||
+		architectureCheck.group != groupPreflight ||
+		!reflect.DeepEqual(architectureCheck.args, wantArchitectureArgs) {
+		t.Fatalf("architecture import check = %#v, want custom-go %q in %q", architectureCheck, wantArchitectureArgs, groupPreflight)
 	}
 	shippedCheck := checkByLabel(t, gotChecks, "shipped-workflows")
 	// Plain `go test`, NOT routed through test/hermetic: a linked-in-isolation
@@ -347,7 +355,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check ci-policy runtime-acquisitions tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet portal-embed-test shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test portal-package portal-package-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check ci-policy runtime-acquisitions architecture-imports tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet portal-embed-test shipped-workflows release-image-probes schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test portal-package portal-package-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }

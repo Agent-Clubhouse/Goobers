@@ -12,14 +12,12 @@ Run the checked-in rules from the repository root:
 go run ./test/architectureimports -config test/architectureimports/rules.json
 ```
 
-The lanes are preregistered as `pending` until their extraction PRs receive a
-terminal maintainer decision. A pending namespace is not presented as an
-existing package. The later CI integration changes an accepted lane to
-`accepted`, at which point a missing namespace or any package-discovery error
+All three lanes have accepted extraction decisions and are checked by the
+required preflight CI group. A missing namespace or any package-discovery error
 fails closed. A declined lane must name the maintainer who made that decision
-and remains visible in the configuration. If all lanes are declined, the tool
-reports real-package checking as inapplicable while its synthetic negative
-tests continue to run.
+and remains visible in the configuration. If every configured lane is declined,
+the tool reports real-package checking as inapplicable while its synthetic
+negative tests continue to run.
 
 ## Reviewed direction
 

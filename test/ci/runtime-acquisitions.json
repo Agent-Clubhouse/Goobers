@@ -124,6 +124,7 @@
       "Makefile#verify-fast::go-modules",
       "Makefile#verify-full::go-modules",
       "Makefile#vet::go-modules",
+      "architecture-imports:go-modules",
       "build-config-sync:go-modules",
       "build-goobers:go-modules",
       "ci-policy:go-modules",

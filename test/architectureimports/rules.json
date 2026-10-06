@@ -46,7 +46,7 @@
   "lanes": [
     {
       "path": "github.com/goobers/goobers/internal/docchurn",
-      "decision": "pending",
+      "decision": "accepted",
       "rationale": "The planned docs-churn domain may use only its durability and configuration boundaries; Git execution and CLI construction stay in the adapter.",
       "allowedDirect": [
         "github.com/goobers/goobers/internal/configboundary",
@@ -59,7 +59,7 @@
     },
     {
       "path": "github.com/goobers/goobers/internal/contention",
-      "decision": "pending",
+      "decision": "accepted",
       "rationale": "Contention owns provider-neutral query and ranking behavior and may reuse provider contracts without constructing a provider or runner.",
       "allowedDirect": [
         "github.com/goobers/goobers/providers"
@@ -91,7 +91,7 @@
     },
     {
       "path": "github.com/goobers/goobers/internal/prstatus",
-      "decision": "pending",
+      "decision": "accepted",
       "rationale": "PR-status owns request and result behavior and may reuse provider contracts without provider, credential, CLI, or runner construction.",
       "allowedDirect": [
         "github.com/goobers/goobers/providers"
