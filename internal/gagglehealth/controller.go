@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	defaultDetectorBudget = 10 * time.Second
+	defaultDetectorBudget   = 10 * time.Second
+	defaultEvaluationBudget = 30 * time.Second
 )
 
 // ObservationStatus keeps absence, health, findings, and uncertainty distinct.
@@ -90,8 +91,9 @@ type GaggleRegistration struct {
 
 // ControllerOptions bounds controller resource use.
 type ControllerOptions struct {
-	MaxConcurrent int
-	Clock         func() time.Time
+	MaxConcurrent    int
+	EvaluationBudget time.Duration
+	Clock            func() time.Time
 }
 
 // ControllerStatus is the stable daemon read model for controller freshness.
@@ -107,11 +109,12 @@ type ControllerStatus struct {
 
 // Controller owns daemon-local gaggle evaluation independently of workflows.
 type Controller struct {
-	store         *Store
-	source        SnapshotSource
-	now           func() time.Time
-	slots         chan struct{}
-	detectorSlots chan struct{}
+	store            *Store
+	source           SnapshotSource
+	now              func() time.Time
+	slots            chan struct{}
+	detectorSlots    chan struct{}
+	evaluationBudget time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -138,14 +141,18 @@ func NewController(store *Store, source SnapshotSource, options ControllerOption
 	if options.MaxConcurrent <= 0 {
 		options.MaxConcurrent = 2
 	}
+	if options.EvaluationBudget <= 0 {
+		options.EvaluationBudget = defaultEvaluationBudget
+	}
 	if options.Clock == nil {
 		options.Clock = time.Now
 	}
 	return &Controller{
 		store: store, source: source, now: options.Clock,
-		slots:         make(chan struct{}, options.MaxConcurrent),
-		detectorSlots: make(chan struct{}, options.MaxConcurrent),
-		loops:         make(map[string]*gaggleLoop), status: make(map[string]ControllerStatus),
+		slots:            make(chan struct{}, options.MaxConcurrent),
+		detectorSlots:    make(chan struct{}, options.MaxConcurrent),
+		evaluationBudget: options.EvaluationBudget,
+		loops:            make(map[string]*gaggleLoop), status: make(map[string]ControllerStatus),
 	}, nil
 }
 
@@ -282,6 +289,8 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 	case <-ctx.Done():
 		return
 	}
+	evaluationCtx, cancel := context.WithTimeout(ctx, c.evaluationBudget)
+	defer cancel()
 	now := c.now().UTC()
 	if !c.updateStatusIfCurrent(registration.Name, loop.generation, func(status *ControllerStatus) {
 		status.Gaggle = registration.Name
@@ -291,7 +300,7 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 		return
 	}
 	dependencies := detectorDependencies(registration.Detectors)
-	snapshot, err := c.source.Snapshot(ctx, registration.Name, dependencies)
+	snapshot, err := c.source.Snapshot(evaluationCtx, registration.Name, dependencies)
 	if err != nil {
 		evaluationErr := fmt.Errorf("snapshot: %w", err)
 		observation := c.indeterminateObservation(registration.Name, "snapshot", now, evaluationErr)
@@ -304,7 +313,7 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 	observations := []Observation{c.controllerHealthyObservation(registration.Name, "snapshot")}
 	var evaluationErrors []error
 	for _, detector := range registration.Detectors {
-		detectorCtx, cancel := context.WithTimeout(ctx, detectorBudget(detector))
+		detectorCtx, cancel := context.WithTimeout(evaluationCtx, detectorBudget(detector))
 		type result struct {
 			observations []Observation
 			err          error

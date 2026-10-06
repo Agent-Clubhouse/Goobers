@@ -117,6 +117,60 @@ func TestControllerCoalescesWakeupsAndBoundsConcurrency(t *testing.T) {
 	}
 }
 
+func TestControllerSnapshotDeadlineReleasesCapacityForOtherGaggles(t *testing.T) {
+	store := controllerStore(t)
+	started := make(chan string, 2)
+	var healthyCalls atomic.Int32
+	source := snapshotSourceFunc(func(ctx context.Context, gaggle string, _ []EvidenceDependency) (Snapshot, error) {
+		if gaggle == "healthy" {
+			healthyCalls.Add(1)
+			return Snapshot{}, nil
+		}
+		started <- gaggle
+		<-ctx.Done()
+		return Snapshot{}, ctx.Err()
+	})
+	controller, err := NewController(store, source, ControllerOptions{
+		MaxConcurrent:    2,
+		EvaluationBudget: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(context.Background(), []GaggleRegistration{
+		{Name: "blocked-alpha", Policy: fastPolicy(t)},
+		{Name: "blocked-beta", Policy: fastPolicy(t)},
+		{Name: "healthy", Policy: fastPolicy(t)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Stop()
+
+	seen := map[string]bool{}
+	deadline := time.After(3 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case gaggle := <-started:
+			seen[gaggle] = true
+		case <-deadline:
+			t.Fatal("blocked snapshots did not occupy all evaluation slots")
+		}
+	}
+	healthyBeforeDeadline := healthyCalls.Load()
+	controller.Wake("healthy")
+	eventually(t, func() bool {
+		for _, gaggle := range []string{"blocked-alpha", "blocked-beta"} {
+			snapshot, snapshotErr := store.Snapshot(gaggle)
+			status, ok := controller.Status(gaggle)
+			if snapshotErr != nil || !ok || len(snapshot.Active) != 1 || status.LastError == "" {
+				return false
+			}
+		}
+		healthy, ok := controller.Status("healthy")
+		return healthyCalls.Load() > healthyBeforeDeadline && ok && !healthy.LastSuccessfulEvaluation.IsZero()
+	})
+}
+
 func TestControllerDetectorTimeoutCancellationAndRestartDedupe(t *testing.T) {
 	root := t.TempDir()
 	store, err := OpenStore(root, fixedRetention(24*time.Hour))
