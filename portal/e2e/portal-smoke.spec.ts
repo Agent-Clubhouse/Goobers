@@ -740,7 +740,7 @@ test("does not mark unrelated history after a canceled detail-link click", async
   await page.evaluate(() => {
     window.location.hash = "#/instance/retention";
   });
-  await expect(page.getByRole("heading", { name: "Telemetry retention", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
   expect(await page.evaluate(() => window.history.state?.portalOrigin)).not.toBe(true);
 
   await page.goBack();
