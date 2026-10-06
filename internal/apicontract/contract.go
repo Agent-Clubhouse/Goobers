@@ -40,6 +40,7 @@ const (
 	GagglesPath                  = V1Prefix + "/gaggles"
 	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
 	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
+	GaggleHealthPath             = V1Prefix + "/gaggles/{gaggle}/health"
 	GaggleConnectionsPath        = V1Prefix + "/gaggles/{gaggle}/connections"
 	GaggleBundleExportPath       = V1Prefix + "/gaggles/{gaggle}/bundle"
 	GaggleBundleImportPath       = V1Prefix + "/gaggles/import"
@@ -288,6 +289,7 @@ const (
 	RouteGaggles                  RouteID = "gaggles"
 	RouteGaggleGoobers            RouteID = "gaggleGoobers"
 	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
+	RouteGaggleHealth             RouteID = "gaggleHealth"
 	RouteGaggleConnections        RouteID = "gaggleConnections"
 	RouteGaggleBundleExport       RouteID = "gaggleBundleExport"
 	RouteGaggleBundleImport       RouteID = "gaggleBundleImport"
@@ -491,6 +493,7 @@ var v1Routes = []Route{
 	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleHealth, Method: http.MethodGet, Path: GaggleHealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleBundleExport, Method: http.MethodGet, Path: GaggleBundleExportPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleBundleImport, Method: http.MethodPost, Path: GaggleBundleImportPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},

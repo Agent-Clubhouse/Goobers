@@ -103,6 +103,7 @@ type configReloader struct {
 	// digests publishes each applied digest to the config-digest plane, so a
 	// worker polling the daemon sees the tree actually in force (#4153).
 	digests         *configDigestPublisher
+	gaggleHealth    *daemonGaggleHealth
 	lastDigestError string
 	// lastRejectionMessage is set by reject() during the most recent poll
 	// call and cleared at the start of each pollOnce (#459) — it lets an
@@ -361,6 +362,11 @@ func (r *configReloader) poll(now time.Time) error {
 	r.cleanupRetries.Replace(definitions.WorktreesByGaggle, r.setup.LegacyWorktrees)
 	if r.setup.MergedPRCostReconciler != nil {
 		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
+	}
+	if r.gaggleHealth != nil {
+		if err := r.gaggleHealth.Replace(definitions.Set); err != nil {
+			return err
+		}
 	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {

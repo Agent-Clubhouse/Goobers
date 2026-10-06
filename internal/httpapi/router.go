@@ -20,6 +20,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
@@ -603,6 +604,7 @@ type handlerConfig struct {
 	runRevealer             func(context.Context, string) error
 	workflowMutations       WorkflowMutationService
 	gaggleBundles           GaggleBundleService
+	gaggleHealth            GaggleHealthService
 	claims                  ClaimService
 	triggers                TriggerService
 	escalations             EscalationService
@@ -632,6 +634,22 @@ type handlerConfig struct {
 
 // HandlerOption configures optional HTTP transport surfaces.
 type HandlerOption func(*handlerConfig) error
+
+// GaggleHealthService serves the daemon-owned durable health projection.
+type GaggleHealthService interface {
+	Health(context.Context, string) (apiv1.GaggleHealthResponse, error)
+}
+
+// WithGaggleHealth enables the gaggle-scoped health read route.
+func WithGaggleHealth(service GaggleHealthService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("http API gaggle health service is required")
+		}
+		config.gaggleHealth = service
+		return nil
+	}
+}
 
 // WithTrustedProxies allows Portal locality classification to use
 // X-Forwarded-For only when the immediate peer is in an explicit trust range.
@@ -1231,6 +1249,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
+	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)

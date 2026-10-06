@@ -97,11 +97,26 @@ func (s *Store) Append(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapsho
 	if s.lock == nil {
 		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: store is closed")
 	}
+	return s.appendLocked(event)
+}
 
-	wantSequence := uint64(1)
-	if len(s.events) != 0 {
-		wantSequence = s.events[len(s.events)-1].Sequence + 1
+// AppendNext assigns the next journal sequence and appends the event while
+// holding the store lock.
+func (s *Store) AppendNext(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapshot, error) {
+	if s == nil {
+		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: nil store")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lock == nil {
+		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: store is closed")
+	}
+	event.Sequence = uint64(len(s.events) + 1)
+	return s.appendLocked(event)
+}
+
+func (s *Store) appendLocked(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapshot, error) {
+	wantSequence := uint64(len(s.events) + 1)
 	if event.Sequence != wantSequence {
 		return apiv1.GaggleHealthSnapshot{}, fmt.Errorf("gagglehealth: event sequence %d, want %d", event.Sequence, wantSequence)
 	}
