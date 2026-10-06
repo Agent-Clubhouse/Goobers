@@ -736,26 +736,40 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
-		cohorts, err := readservice.StoredAttributionCohorts(ctx, root, creditStore, readservice.StoredAttributionQuery{
-			Gaggle: gaggle, Workflow: workflowName, Since: since,
-		})
-		if err != nil {
-			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
-		}
-		result.AttributionCohorts = cohorts
-		auditConfig, err := localFaultAuditConfig(ctx, root)
-		if err != nil {
+		if err := populateStoredAttribution(ctx, root, creditStore, gaggle, workflowName, since, &result); err != nil {
 			return candidateFindingsArtifact{}, err
 		}
-		audit, err := readservice.StoredFaultAudit(ctx, root, creditStore, readservice.StoredAttributionQuery{
-			Gaggle: gaggle, Workflow: workflowName, Since: since,
-		}, auditConfig)
-		if err != nil {
-			return candidateFindingsArtifact{}, fmt.Errorf("audit attribution fault domains: %w", err)
-		}
-		result.FaultAudit = &audit
 	}
 	return result, nil
+}
+
+func populateStoredAttribution(
+	ctx context.Context,
+	root string,
+	creditStore *readmodel.Store,
+	gaggle string,
+	workflowName string,
+	since time.Time,
+	result *candidateFindingsArtifact,
+) error {
+	query := readservice.StoredAttributionQuery{
+		Gaggle: gaggle, Workflow: workflowName, Since: since,
+	}
+	cohorts, err := readservice.StoredAttributionCohorts(ctx, root, creditStore, query)
+	if err != nil {
+		return fmt.Errorf("query attribution cohorts: %w", err)
+	}
+	result.AttributionCohorts = cohorts
+	auditConfig, err := localFaultAuditConfig(ctx, root)
+	if err != nil {
+		return err
+	}
+	audit, err := readservice.StoredFaultAudit(ctx, root, creditStore, query, auditConfig)
+	if err != nil {
+		return fmt.Errorf("audit attribution fault domains: %w", err)
+	}
+	result.FaultAudit = &audit
+	return nil
 }
 
 func localFaultAuditConfig(ctx context.Context, root string) (creditgraph.FaultAuditConfig, error) {
