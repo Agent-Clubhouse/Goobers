@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,6 +93,76 @@ func TestRemoteStatusFiltersUsingSharedRenderer(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), remoteReadTestID) || !strings.Contains(stdout.String(), "repair") {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRemoteStatusRunsOnlyBoundsDaemonPages(t *testing.T) {
+	const instanceID = "0123456789abcdef0123456789abcdef"
+	var runRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case apicontract.InstancePath:
+			_ = json.NewEncoder(w).Encode(readservice.Instance{InstanceRoot: "/srv/goobers", RootIdentity: &readservice.RootIdentity{ID: instanceID}, Ready: true})
+		case apicontract.RunsPath:
+			runRequests++
+			if got := req.URL.Query(); got.Get("limit") != "3" || got.Get("workflow") != "implementation" || got.Get("gaggle") != "goobers" || got.Get("phase") != "running" {
+				t.Errorf("query = %q, want bounded limit and status filters", got.Encode())
+			}
+			runs := make([]readservice.RunSummary, 3)
+			for i := range runs {
+				runs[i] = readservice.RunSummary{
+					ID: fmt.Sprintf("run-%d", i), Workflow: "implementation", Gaggle: "goobers",
+					Phase: journal.PhaseRunning, StartedAt: time.Date(2026, 10, 5, 12-i, 0, 0, 0, time.UTC),
+				}
+			}
+			_ = json.NewEncoder(w).Encode(readservice.RunList{Runs: runs, NextCursor: "more-history"})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runStatus([]string{"--api", server.URL, "--runs-only", "--json", "--workflow", "implementation", "--gaggle", "goobers", "--phase", "running", "--limit", "2"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	var output statusJSONOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if runRequests != 1 || len(output.Runs) != 2 {
+		t.Fatalf("run requests = %d, output runs = %d; want one request and two runs", runRequests, len(output.Runs))
+	}
+}
+
+func TestRemoteStatusRunsOnlyLimitZeroReadsAllPages(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != apicontract.RunsPath {
+			http.NotFound(w, req)
+			return
+		}
+		requests++
+		page := readservice.RunList{Runs: []readservice.RunSummary{{
+			ID: fmt.Sprintf("run-%d", requests), StartedAt: time.Date(2026, 10, 5-requests, 12, 0, 0, 0, time.UTC),
+		}}}
+		if requests == 1 {
+			page.NextCursor = "next"
+		} else if req.URL.Query().Get("cursor") != "next" {
+			t.Errorf("cursor = %q, want next", req.URL.Query().Get("cursor"))
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+
+	reads := newRemoteRuns(server.URL)
+	runs, err := remoteStatusRuns(context.Background(), reads, statusOptions{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || len(runs) != 2 {
+		t.Fatalf("requests = %d, runs = %+v; want both pages", requests, runs)
 	}
 }
 

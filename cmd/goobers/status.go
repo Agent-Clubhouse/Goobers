@@ -1342,7 +1342,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		root = fs.Arg(0)
 	}
 	fullStatus := supportsWatch && !runsOnlyMode
-	if code, handled := maybeRunRemoteRunTable(*api, root, fs.NArg() == 1, fullStatus, daemon, agents, watch, interval, *jsonOutput, statusOptions{
+	if code, handled := maybeRunRemoteRunTable(*api, root, fs.NArg() == 1, fullStatus, runsOnlyMode, daemon, agents, watch, interval, *jsonOutput, statusOptions{
 		phases: phases, workflow: *workflowFilter, gaggle: *gaggleFilter, limit: *limit,
 	}, stdout, stderr); handled {
 		return code
@@ -1680,16 +1680,8 @@ func parseStatusPhases(filter string) (map[journal.RunPhase]struct{}, error) {
 func selectStatusRuns(runs []runSummary, options statusOptions) ([]runSummary, int) {
 	filtered := make([]runSummary, 0, len(runs))
 	for _, run := range runs {
-		if options.workflow != "" && run.Workflow != options.workflow {
+		if !statusRunMatches(run, options) {
 			continue
-		}
-		if options.gaggle != "" && run.Gaggle != options.gaggle {
-			continue
-		}
-		if len(options.phases) > 0 {
-			if _, ok := options.phases[run.Phase]; !ok {
-				continue
-			}
 		}
 		filtered = append(filtered, run)
 	}
@@ -1703,6 +1695,21 @@ func selectStatusRuns(runs []runSummary, options statusOptions) ([]runSummary, i
 		return filtered[:options.limit], len(filtered) - options.limit
 	}
 	return filtered, 0
+}
+
+func statusRunMatches(run runSummary, options statusOptions) bool {
+	if options.workflow != "" && run.Workflow != options.workflow {
+		return false
+	}
+	if options.gaggle != "" && run.Gaggle != options.gaggle {
+		return false
+	}
+	if len(options.phases) > 0 {
+		if _, ok := options.phases[run.Phase]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
