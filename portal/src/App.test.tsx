@@ -3,8 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import { defaultPortalConfig } from "./cobrand";
-import { bootstrapPortalTheme } from "./cobrand";
+import {
+  bootstrapPortalTheme,
+  defaultPortalConfig,
+  readCachedPortalConfig,
+  writeCachedPortalConfig,
+} from "./cobrand";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
@@ -196,6 +200,12 @@ describe("portal foundation", () => {
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
+  });
+
+  it("does not reuse a cached connection-locality verdict", () => {
+    writeCachedPortalConfig({ ...defaultPortalConfig, connectionLocality: "local" });
+
+    expect(readCachedPortalConfig()?.connectionLocality).toBe("unknown");
   });
 
   it("applies cached cobrand colors before React renders", () => {

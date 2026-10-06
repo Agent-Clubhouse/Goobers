@@ -1163,6 +1163,7 @@ func (u *upSession) configureAPI() int {
 
 func (u *upSession) activateAPI() int {
 	var err error
+	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithTrustedProxies(u.setup.Config.API.TrustedProxies))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(u.setup.Config)

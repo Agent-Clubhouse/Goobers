@@ -486,6 +486,7 @@ func newWireFixtures() wireFixtures {
 		},
 		Instance: instanceWireFixture(warning, startedAt, finishedAt),
 		PortalConfig: readservice.PortalConfig{
+			ConnectionLocality: "local",
 			Brand: readservice.PortalBrandResponse{
 				Name:       "goobers",
 				Tagline:    "local operations",

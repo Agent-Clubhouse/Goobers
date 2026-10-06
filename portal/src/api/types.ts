@@ -1861,6 +1861,7 @@ export interface PortalConfig {
   brand: PortalBrand;
   theme: PortalTheme;
   support: PortalSupport;
+  connectionLocality: "local" | "remote" | "unknown";
   capabilities: {
     revealRun: boolean;
     workflowEnable: boolean;

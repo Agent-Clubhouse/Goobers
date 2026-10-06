@@ -285,7 +285,7 @@ func TestPortalConfigHandlerUsesSharedReadService(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
 		t.Fatal(err)
 	}
-	if reader.called != 1 || config.Brand.Name != "Acme Ops" {
+	if reader.called != 1 || config.Brand.Name != "Acme Ops" || config.ConnectionLocality != connectionLocalityRemote {
 		t.Fatalf("reader called %d times, config = %+v", reader.called, config)
 	}
 }

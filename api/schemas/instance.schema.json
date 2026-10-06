@@ -1671,6 +1671,15 @@
           "description": "host:port for the API listener. Empty defaults to 127.0.0.1:8080. A NON-loopback host is refused at load unless BOTH tls and auth are configured — fail closed, with no insecure override.",
           "examples": ["127.0.0.1:8080"]
         },
+        "trustedProxies": {
+          "type": "array",
+          "description": "IP addresses or CIDR ranges of reverse proxies trusted to supply X-Forwarded-For for Portal connection-locality classification. Untrusted forwarding headers are ignored.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [["127.0.0.1", "10.0.0.0/24"]]
+        },
         "podTokenKeyFile": {
           "type": "string",
           "minLength": 1,
