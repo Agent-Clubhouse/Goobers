@@ -599,6 +599,7 @@ summary:focus-visible {
 
 .topbar-hosted .topbar-instance-name,
 .topbar-hosted .topbar-computer-name,
+.topbar-hosted .topbar-build,
 .topbar-hosted .topbar-environment {
   min-width: 0;
   overflow: hidden;
@@ -658,6 +659,14 @@ summary:focus-visible {
 
 .topbar-context-separator {
   color: var(--muted);
+}
+
+.topbar-environment {
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: var(--font-meta);
+  padding: 2px 7px;
 }
 
 .topbar-info-wrap {

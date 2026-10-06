@@ -119,6 +119,15 @@ export function PortalShell({
       : undefined;
   const instanceIdentity = headerData?.instance;
   const build = headerData?.build;
+  const buildVersion = build?.version.trim();
+  const buildCommit =
+    build?.commit && build.commit !== "none" ? build.commit : undefined;
+  const buildIdentity =
+    buildVersion === "dev"
+      ? `dev${buildCommit ? ` (${buildCommit})` : ""}`
+      : buildVersion
+        ? `${buildVersion}${buildCommit ? ` (${buildCommit})` : ""}`
+        : buildCommit;
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
   const mobileStatus = mobileConnectionStatus(freshness);
 
@@ -236,16 +245,16 @@ export function PortalShell({
               <span className="topbar-computer-name">{instanceIdentity.computerName}</span>
             </>
           )}
-          {instanceIdentity?.environment && (
+          {buildIdentity && (
             <>
               <span aria-hidden="true" className="topbar-context-separator">
                 •
               </span>
-              <span className="topbar-environment">
-                {instanceIdentity.environment}
-                {build?.commit && build.commit !== "none" ? ` (${build.commit})` : ""}
-              </span>
+              <span className="topbar-build">{buildIdentity}</span>
             </>
+          )}
+          {instanceIdentity?.environment && (
+            <span className="topbar-environment">env: {instanceIdentity.environment}</span>
           )}
           <span className="topbar-info-wrap">
             <button
