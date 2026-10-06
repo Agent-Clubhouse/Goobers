@@ -48,6 +48,15 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
    authoritative CI signal, and a self-reported status that's wrong is a false
    green that costs a whole wasted repass. Your job is to make CI pass, not to
    assert that it will.
+   **When the diff adds a Go package with `_test.go` files under `internal/`,
+   `cmd/`, `pkg/`, or `test/`, register that package in
+   `test/ci/windows-skip-inventory.json` in the same change unless a Windows
+   gate runs the package's tests whole.** Copy the shape of an adjacent entry;
+   normally use `coverage: "none"` and `category: "not-selected"` unless the
+   gate provides partial coverage, and state which non-Windows suite runs the
+   tests. Run
+   `go test ./test/ci -run TestWindowsSkipInventoryMatchesGateSelection`.
+   This rule applies equally during implementation and PR remediation.
 6. Commit your change with a clear message. Do not push — the workflow's
    `push-branch` stage publishes the run branch to origin deterministically
    after review as a durable checkpoint. The downstream `local-ci` and
@@ -161,6 +170,10 @@ entire run:
   doubt, do less. Don't touch load-bearing contracts (the run journal event
   schema, the stage envelopes, the scheduler's claim ledger) unless the issue
   is explicitly about one of them.
+  The required `test/ci/windows-skip-inventory.json` registration for a new Go
+  package is a companion policy update and is always in scope for the change
+  that creates the package; it cannot land separately because the inventory
+  rejects entries for packages that do not yet exist.
 - You have `repo:push` only. You cannot open PRs, comment on issues, or
   read outputs other agentic stages produce beyond what's attached as
   context — if you find yourself wanting to do either, that's a sign

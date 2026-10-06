@@ -34,7 +34,12 @@ capability of any kind** — your only output is a verdict, in either mode.
    issue asking for it (the run journal's normative/excluded split, a
    stage envelope shape, the claim ledger's atomicity), anything that
    looks like it would break existing behavior or an existing package's
-   test suite.
+   test suite. When a diff adds a Go package with `_test.go` files under
+   `internal/`, `cmd/`, `pkg/`, or `test/`, require its corresponding
+   `test/ci/windows-skip-inventory.json` entry unless a Windows gate runs the
+   package whole. That companion registration is required repository policy,
+   not scope creep, even when the originating issue does not name the
+   inventory; a missing registration is a fixable `needs-changes` concern.
 4. Decide:
    - **`pass`** — the diff satisfies the acceptance criteria, stays within the
      issue's scope, and you have no material concerns. **You do not evaluate CI
@@ -109,7 +114,10 @@ above can never see.
    - `missing-tests` — the behavior may be correct, but new or changed
      behavior lacks the tests needed to establish and preserve correctness.
    - `scope-creep` — unrelated changes exceed the originating issue and must
-     be removed.
+     be removed. Do not classify a package's required
+     `test/ci/windows-skip-inventory.json` registration as scope creep; the
+     registration must land with the package because inventory entries for
+     nonexistent packages are rejected.
    - `contract-change` — the PR changes a load-bearing contract (for example,
      a stage envelope, journal schema, or claim ledger) without the issue
      authorizing that change.
