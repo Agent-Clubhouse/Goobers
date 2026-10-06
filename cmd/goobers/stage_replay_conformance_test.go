@@ -259,10 +259,10 @@ func stageReplayCases() []stageReplayCase {
 			stage: "apply-verdict", provider: providers.ProviderGitHub,
 			setup: replayApplyVerdictGitHub,
 			first: map[string]int{
-				replayGitHubCommentCreate: 1, replayGitHubLabelAdd: 1, replayGitHubReviewCreate: 1,
+				replayGitHubCommentCreate: 1, replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1, replayGitHubReviewCreate: 1,
 			},
 			replay: map[string]int{
-				replayGitHubCommentEdit: 1, replayGitHubLabelAdd: 1, replayGitHubReviewCreate: 1,
+				replayGitHubCommentEdit: 1, replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1, replayGitHubReviewCreate: 1,
 			},
 			creates: []string{replayGitHubCommentCreate},
 		},
