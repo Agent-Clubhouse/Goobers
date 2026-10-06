@@ -193,6 +193,9 @@ const (
 	// EnvStageIsCLI marks a stage whose command is the goobers CLI, so the pod
 	// keeps its run context instead of stripping it with the control plane.
 	EnvStageIsCLI = "GOOBERS_STAGE_IS_CLI"
+	// EnvPublicationLeakScreen is a daemon-resolved, explicitly opted-in model
+	// grant delivered after pod start through the credential plane.
+	EnvPublicationLeakScreen = "GOOBERS_PUBLICATION_LEAK_SCREEN"
 
 	// EnvWorkspaceDelta carries the blob digest of the git bundle holding what
 	// earlier stages of this run committed (#3763). Privileged: it names a blob
@@ -337,10 +340,12 @@ const (
 // inherited environment.
 var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivilegedEnv...), DispatcherRunIdentityEnv...), DispatcherPlaneEnv...)
 
-// DispatcherPrivilegedEnv is the half of the control plane that NO stage may
-// ever see, goobers-CLI stage included. EnvPodToken is the reason the whole
-// filter exists: it authorizes surrendering this run's results, so a stage that
-// can read it can author its own outcome. The endpoints are here because a
+// DispatcherPrivilegedEnv is the half of the inherited control plane that NO
+// stage may see, goobers-CLI stage included. A credential-plane response may
+// separately inject EnvPublicationLeakScreen into an eligible CLI child after
+// this strip. EnvPodToken is the reason the whole filter exists: it authorizes
+// surrendering this run's results, so a stage that can read it can author its
+// own outcome. The endpoints are here because a
 // stage holding them plus any token is a step from the same place, and the
 // stage-spec vars because a stage rewriting its own command/capabilities is
 // self-authorization by another name.
@@ -351,6 +356,7 @@ var DispatcherPrivilegedEnv = []string{
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
+	EnvPublicationLeakScreen,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than

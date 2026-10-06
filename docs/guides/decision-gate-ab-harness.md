@@ -27,7 +27,9 @@ thresholded advisory verdict) and does not change the deterministic publication
 decision. No text is sent when `decisionGate` is absent, `off`, set to
 `enforce`, or lacks that publication opt-in. Publication enforcement must not
 be enabled until shadow counts reach the experiment's configured minimum sample
-size.
+size. For pod-hosted provider stages, the daemon resolves this opt-in and
+delivers the model connection through the authenticated credential plane after
+pod start; the model key is never written into the pod spec.
 
 > The gate-on arm assumes you have a build that actually wires
 > `decisionGate.mode: enforce` into the harness. Keep the entire experiment
