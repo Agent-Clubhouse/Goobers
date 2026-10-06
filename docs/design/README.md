@@ -15,11 +15,11 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 14 |
-| `approved` | 23 |
+| `approved` | 24 |
 | `implemented` | 29 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **76** |
+| **Total** | **77** |
 
 ## `docs/adr/`
 
@@ -78,6 +78,7 @@ word — read the page, not this table, before depending on it.
 | [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | — | — | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499 | — | — | — |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |
+| [Design: Source-owned backlog and objective workbench](source-owned-backlog-workbench.md) | `approved` | providers, source metadata, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |
 | [Decision: dedicated workflows own repository and test-suite quality](test-suite-quality-workflow.md) | `implemented` | — | — | #1568, #1489 | — | — | — |
 | [Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels](trust-boundary-hardening.md) | `approved` | — | — | — | — | — | — |
