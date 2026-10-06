@@ -23,8 +23,16 @@
       "additionalProperties": false,
       "required": ["stageOccurrence", "attemptId"],
       "properties": {
-        "stageOccurrence": { "type": "string", "pattern": "^sta_[A-Za-z0-9_-]{43}$" },
-        "attemptId": { "type": "string", "pattern": "^sta_[A-Za-z0-9_-]{43}$" }
+        "stageOccurrence": {
+          "type": "string",
+          "pattern": "^sta_[A-Za-z0-9_-]{43}$",
+          "description": "Identity of the first committed stage start for this task visit and branch; retained across retry, recovery and human restart."
+        },
+        "attemptId": {
+          "type": "string",
+          "pattern": "^sta_[A-Za-z0-9_-]{43}$",
+          "description": "Identity bound to the current committed stage-start event; changes for each replacement dispatch without granting child authority."
+        }
       }
     },
     "artifactPublication": {
