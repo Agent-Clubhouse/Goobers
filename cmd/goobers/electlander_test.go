@@ -227,10 +227,10 @@ func TestAsymmetricFindingsDeferClusterWithoutLander(t *testing.T) {
 		siblingNumber  = 11
 		runID          = "asymmetric-lander"
 	)
-	server.addIssue(selectedNumber, "deterministic winner")
+	server.addIssue(selectedNumber, "deterministic winner", blockedOnSiblingLabel)
 	server.addIssue(siblingNumber, "blocked sibling", blockedOnSiblingLabel)
 	overlap := []fakePRFile{{path: "cmd/goobers/electlander.go", status: "modified", additions: 1}}
-	server.addOpenPR(selectedNumber, "goobers/implementation/10", "main", "head-10", "base", false, nil, overlap)
+	server.addOpenPR(selectedNumber, "goobers/implementation/10", "main", "head-10", "base", false, []string{blockedOnSiblingLabel}, overlap)
 	server.addOpenPR(siblingNumber, "goobers/implementation/11", "main", "head-11", "base", false, []string{blockedOnSiblingLabel}, overlap)
 	blockedComment, err := blockedOnSiblingComment(blockedOnSiblingState{
 		Blockers: []int{selectedNumber},

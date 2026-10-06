@@ -861,13 +861,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	var removeLabels []string
 	switch label {
 	case needsRemediationLabel:
+		removeLabels = []string{blockedOnSiblingLabel}
 		escalationSuppressedRemediation, err = verdictEscalationStillBlocks(ctx, provider, repo, current)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
 		}
 		if escalationSuppressedRemediation {
 			addLabels = nil
-			removeLabels = []string{needsRemediationLabel}
+			removeLabels = append(removeLabels, needsRemediationLabel)
 		}
 	case remediationEscalatedLabel:
 		removeLabels = []string{needsRemediationLabel}
@@ -1746,6 +1747,7 @@ func publishADONonPassVerdict(
 		addLabels = []string{remediationEscalatedLabel}
 		removeLabels = []string{needsRemediationLabel}
 	case needsRemediationLabel:
+		removeLabels = []string{blockedOnSiblingLabel}
 		// Verdict-side escalation suppression (behavior 3d): if the PR already
 		// carries an active escalation, keep it parked — clear any stale
 		// needs-remediation rather than pulling it back into the budget.
@@ -1754,7 +1756,7 @@ func publishADONonPassVerdict(
 			return failProviderStage(stderr, fmt.Sprintf("read labels for PR #%d", selectedNumber), err, resultFile)
 		}
 		if hasAnyLabel(names, []string{remediationEscalatedLabel}) {
-			removeLabels = []string{needsRemediationLabel}
+			removeLabels = append(removeLabels, needsRemediationLabel)
 		} else {
 			addLabels = []string{needsRemediationLabel}
 		}
