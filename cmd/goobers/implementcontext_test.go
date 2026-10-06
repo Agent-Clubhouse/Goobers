@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -30,9 +31,9 @@ func TestImplementationContextProviderDispatchesADOAndGitea(t *testing.T) {
 }
 
 func TestBuildImplementationHotFileMapIsBoundedAndDeterministic(t *testing.T) {
-	openTouches := []openPRTouch{
-		{number: 12, files: []string{"z.go", "shared.go", "shared.go"}},
-		{number: 10, files: []string{"a.go", "shared.go"}},
+	openTouches := []contention.PullRequestTouch{
+		{Number: 12, Files: []string{"z.go", "shared.go", "shared.go"}},
+		{Number: 10, Files: []string{"a.go", "shared.go"}},
 	}
 	conflicts := []implementationConflictTouch{
 		{runID: "run-8", files: []string{"conflicted.go", "shared.go", "shared.go"}},
@@ -59,9 +60,9 @@ func TestBuildImplementationHotFileMapIsBoundedAndDeterministic(t *testing.T) {
 }
 
 func TestBuildImplementationHotFileMapBoundsPullRequestsPerFile(t *testing.T) {
-	touches := make([]openPRTouch, maxImplementationRefsPerHotFile+3)
+	touches := make([]contention.PullRequestTouch, maxImplementationRefsPerHotFile+3)
 	for i := range touches {
-		touches[i] = openPRTouch{number: i + 1, files: []string{"shared.go"}}
+		touches[i] = contention.PullRequestTouch{Number: i + 1, Files: []string{"shared.go"}}
 	}
 	conflicts := make([]implementationConflictTouch, maxImplementationRefsPerHotFile+3)
 	for i := range conflicts {

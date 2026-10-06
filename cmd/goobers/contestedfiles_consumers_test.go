@@ -16,56 +16,8 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestOpenPRTouchesFiltersBranchNamespaceBeforeFetchingFiles(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		namespace string
-		selected  string
-	}{
-		{name: "default", selected: providers.DefaultBranchNamespace + "implementation/run-10"},
-		{name: "custom", namespace: "acme/", selected: "acme/implementation/run-10"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(executor.BranchNamespaceEnvVar, tc.namespace)
-			var requests []string
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests = append(requests, r.Method+" "+r.URL.RequestURI())
-				w.Header().Set("Content-Type", "application/json")
-				switch r.URL.Path {
-				case "/repos/acme/widgets/pulls":
-					_ = json.NewEncoder(w).Encode([]map[string]any{
-						{"number": 10, "state": "open", "head": map[string]any{"ref": tc.selected}},
-						{"number": 11, "state": "open", "head": map[string]any{"ref": "human/change"}},
-					})
-				case "/repos/acme/widgets/pulls/10/files":
-					_ = json.NewEncoder(w).Encode([]map[string]any{{"filename": "selected.go", "status": "modified"}})
-				default:
-					http.Error(w, "unexpected request", http.StatusNotFound)
-				}
-			}))
-			t.Cleanup(server.Close)
-			provider := providers.NewGitHubProvider("token", func(p *providers.GitHubProvider) {
-				p.BaseURL = server.URL
-			})
-			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
-
-			got, err := openPRTouches(t.Context(), provider, repo, "main")
-			if err != nil {
-				t.Fatalf("openPRTouches: %v", err)
-			}
-			wantTouches := []openPRTouch{{number: 10, files: []string{"selected.go"}}}
-			if !reflect.DeepEqual(got, wantTouches) {
-				t.Fatalf("touches = %+v, want %+v", got, wantTouches)
-			}
-			wantRequests := []string{
-				"GET /repos/acme/widgets/pulls?base=main&per_page=100&state=open",
-				"GET /repos/acme/widgets/pulls/10/files?per_page=100",
-			}
-			if !reflect.DeepEqual(requests, wantRequests) {
-				t.Fatalf("requests = %v, want %v", requests, wantRequests)
-			}
-		})
-	}
+func item(id, title, body string) providers.WorkItem {
+	return providers.WorkItem{ID: id, Title: title, Body: body}
 }
 
 func TestReorderContestedBacklogItemsWarnsAndRetainsFIFOOnProviderFailure(t *testing.T) {
@@ -126,6 +78,33 @@ func TestReorderContestedBacklogItemsKeepsResweepAfterForwardPartition(t *testin
 	wantWarning := "contested-file dispatch: deprioritized 1 contested issue(s) [1] behind 1 disjoint one(s)\n"
 	if stderr.String() != wantWarning {
 		t.Fatalf("stderr = %q, want %q", stderr.String(), wantWarning)
+	}
+}
+
+func TestReorderContestedBacklogItemsUsesConfiguredBranchNamespace(t *testing.T) {
+	server := newFakeGitHubServer(t, "acme", "widgets")
+	server.addOpenPR(10, "acme/implementation/run-10", "main", "head10", "base",
+		false, nil, []fakePRFile{{path: "hot.go"}})
+	server.addOpenPR(11, providers.DefaultBranchNamespace+"implementation/run-11", "main", "head11", "base",
+		false, nil, []fakePRFile{{path: "other.go"}})
+	provider := providers.NewGitHubProvider("token", func(p *providers.GitHubProvider) {
+		p.BaseURL = server.server.URL
+	})
+	var stderr bytes.Buffer
+	env := backlogQueryEnv{
+		repo:   providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"},
+		stderr: &stderr,
+	}
+	eligible := []providers.WorkItem{
+		item("1", "contested", "hot.go"),
+		item("2", "clean", "other.go"),
+	}
+	t.Setenv(executor.BranchNamespaceEnvVar, "acme")
+	t.Setenv(executor.InputEnvVar("contestedFileMinPRs"), "1")
+
+	got := reorderContestedBacklogItems(t.Context(), env, provider, eligible, len(eligible))
+	if gotIDs := []string{got[0].ID, got[1].ID}; !reflect.DeepEqual(gotIDs, []string{"2", "1"}) {
+		t.Fatalf("order = %v, want [2 1]", gotIDs)
 	}
 }
 
