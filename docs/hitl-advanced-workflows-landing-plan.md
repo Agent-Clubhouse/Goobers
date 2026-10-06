@@ -201,6 +201,25 @@ and that actual CLI caller. It must not grant credentials or start a child; runt
 admission must repeat validation later. Verify on current main that the dependency
 closure is small enough before fixing this as the first implementation PR.
 
+### First-slice dependency audit
+
+Initial inspection of the pinned snapshot identifies this extraction boundary:
+
+| Source | Treatment in the first validation PR |
+| --- | --- |
+| `cmd/goobers/childworkflow.go`, command registration/help and focused CLI tests | Real caller: offline validation only, with structured diagnostics and distinct usage/invalid exit codes. Reuse main’s harness admission. |
+| `internal/childworkflow/{cli,configured,proposal,credential_ceiling}.go` and focused tests | Extract validation portions only. Do not copy the package’s runtime, journal authority, HTTP service, workspace or submission files. |
+| `api/v1alpha1/workflow_types.go` and schema/compiler feature registration | Add bounded `ChildWorkflowPolicy`, agentic-stage opt-in and DSL constraints; regenerate corresponding outputs. DSL 3.1 already exists on main. |
+| `internal/credentials/child_ceiling.go` | Audit/split the pure validation definitions from execution enforcement. The validator consumes the publication ceiling; runtime credential filtering belongs with the first executing consumer. |
+| `internal/capability/capability.go` snapshot change | Its new `event:publish` capability belongs to the later event wave. Do not import it merely because the validator imports the existing capability package. |
+
+Keep the first command explicitly advisory: bounded bytes/states, one Workflow,
+existing Goobers, gaggle and capability ceilings, no recursion, publication limits,
+and current placement support. It must not resolve secrets or queue/launch work.
+Runtime admission revalidates the immutable run inputs; a successful offline check
+is not an authorization receipt. Confirm compilation and focused CLI behavior
+against current main during extraction before declaring this boundary ready.
+
 Then extract only the F02 storage/identity prerequisites consumed by C02 child
 admission. Follow with the actual lifecycle rather than importing all 138 changed
 triggerqueue files. If the validator's dependency closure requires an additional
