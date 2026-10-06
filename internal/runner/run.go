@@ -2298,6 +2298,13 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 			stageErrorClassKey: string(telemetry.ClassifyError(failureCode)),
 		}
 	}
+	var dispatch *dispatchTerminalError
+	if errors.As(origErr, &dispatch) {
+		if terminalRunner == nil {
+			terminalRunner = make(map[string]any)
+		}
+		terminalRunner[retryFailureClassKey] = string(dispatch.class)
+	}
 	appendErr := jr.Append(journal.Event{
 		Type:   journal.EventError,
 		Error:  journal.ErrorDetailFor("run_failed", origErr),
@@ -2305,8 +2312,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	})
 	terminalCause := newTerminalCause(journal.PhaseFailed)
 	terminalCause.Code, terminalCause.Message, terminalCause.CausalEventSeq = failureCode, message, jr.Seq()
-	var dispatch *dispatchTerminalError
-	if errors.As(origErr, &dispatch) {
+	if dispatch != nil {
 		terminalCause.SelectorKind, terminalCause.Selector = "stage", dispatch.stage
 		terminalCause.Retry = &journal.TerminalBudget{Consumed: max(0, dispatch.attempts-1), Allowed: max(0, dispatch.limit-1)}
 		if dispatch.class == journal.AttemptPolicy && dispatch.limit > 1 {
