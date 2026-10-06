@@ -363,10 +363,8 @@ func (r *configReloader) poll(now time.Time) error {
 	if r.setup.MergedPRCostReconciler != nil {
 		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
 	}
-	if r.gaggleHealth != nil {
-		if err := r.gaggleHealth.Replace(definitions.Set); err != nil {
-			return err
-		}
+	if err := r.replaceGaggleHealth(definitions.Set); err != nil {
+		return err
 	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
@@ -403,6 +401,13 @@ func (r *configReloader) poll(now time.Time) error {
 		log.Printf("config reload: record advisory warnings: %v", err)
 	}
 	return nil
+}
+
+func (r *configReloader) replaceGaggleHealth(definitions *instance.ConfigSet) error {
+	if r.gaggleHealth == nil {
+		return nil
+	}
+	return r.gaggleHealth.Replace(definitions)
 }
 
 func (r *configReloader) publishReloadStatus(now time.Time) {

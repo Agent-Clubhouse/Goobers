@@ -144,141 +144,204 @@ func (h *daemonGaggleHealth) Snapshot(ctx context.Context, gaggle string, depend
 	config := h.config
 	h.mu.RUnlock()
 
-	snapshot := gagglehealth.Snapshot{Gaggle: gaggle}
-	found := false
-	for _, configured := range definitions.Gaggles {
-		if configured.Name == gaggle {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasGaggle(definitions, gaggle) {
 		return gagglehealth.Snapshot{}, fmt.Errorf("gaggle %q is not loaded", gaggle)
 	}
-	requested := make(map[gagglehealth.EvidenceDependency]bool, len(dependencies))
-	for _, dependency := range dependencies {
-		requested[dependency] = true
+
+	builder := gaggleHealthSnapshotBuilder{
+		health: h, ctx: ctx, gaggle: gaggle, definitions: definitions, config: config,
+		snapshot: gagglehealth.Snapshot{Gaggle: gaggle},
 	}
-	var runs []readservice.RunSummary
-	if requested[gagglehealth.EvidenceRuns] || requested[gagglehealth.EvidenceClaims] ||
-		requested[gagglehealth.EvidenceRunners] || requested[gagglehealth.EvidenceWorkers] {
-		if h.reads == nil {
-			return gagglehealth.Snapshot{}, errors.New("run evidence source unavailable")
-		}
-		result, err := h.reads.ListRuns(ctx, readservice.RunListOptions{
-			Gaggle: gaggle, Limit: maxGaggleHealthSnapshotRecords, ShowNoWork: true,
-		})
+	if needsRunEvidence(dependencies) {
+		runs, err := h.readRuns(ctx, gaggle)
 		if err != nil {
-			return gagglehealth.Snapshot{}, fmt.Errorf("read run evidence: %w", err)
+			return gagglehealth.Snapshot{}, err
 		}
-		runs = result.Runs
+		builder.runs = runs
 	}
+	for _, dependency := range dependencies {
+		if err := builder.append(dependency); err != nil {
+			return gagglehealth.Snapshot{}, err
+		}
+	}
+	return builder.snapshot, nil
+}
+
+type gaggleHealthSnapshotBuilder struct {
+	health      *daemonGaggleHealth
+	ctx         context.Context
+	gaggle      string
+	definitions *instance.ConfigSet
+	config      *instance.Config
+	runs        []readservice.RunSummary
+	snapshot    gagglehealth.Snapshot
+}
+
+func hasGaggle(definitions *instance.ConfigSet, gaggle string) bool {
+	for _, configured := range definitions.Gaggles {
+		if configured.Name == gaggle {
+			return true
+		}
+	}
+	return false
+}
+
+func needsRunEvidence(dependencies []gagglehealth.EvidenceDependency) bool {
 	for _, dependency := range dependencies {
 		switch dependency {
-		case gagglehealth.EvidenceWorkflows:
-			evaluations, err := localscheduler.ReadTriggerEvaluations(instance.NewLayout(h.root).SchedulerDir())
-			if err != nil {
-				return gagglehealth.Snapshot{}, fmt.Errorf("read trigger evidence: %w", err)
-			}
-			for _, workflow := range definitions.Workflows {
-				if workflow.Spec.Gaggle == gaggle && len(snapshot.Workflows) < maxGaggleHealthSnapshotRecords {
-					state := "enabled"
-					if workflow.Spec.Enabled != nil && !*workflow.Spec.Enabled {
-						state = "disabled"
-					}
-					types := make([]string, 0, len(workflow.Spec.Triggers))
-					for _, trigger := range workflow.Spec.Triggers {
-						types = append(types, string(trigger.Type))
-					}
-					lastEval := evaluations[localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflow.Name}]
-					snapshot.Workflows = append(snapshot.Workflows, gagglehealth.RuntimeSummary{
-						ID: workflow.Name, State: state, UpdatedAt: lastEval,
-						Attributes: map[string]string{"triggers": strings.Join(types, ",")},
-					})
-				}
-			}
-			sort.Slice(snapshot.Workflows, func(i, j int) bool {
-				return snapshot.Workflows[i].ID < snapshot.Workflows[j].ID
-			})
-		case gagglehealth.EvidenceRuns:
-			for _, run := range runs {
-				summary := gagglehealth.RuntimeSummary{ID: run.ID, State: string(run.Phase), UpdatedAt: run.LastActivityAt}
-				summary.Attributes = map[string]string{"workflow": run.Workflow, "currentStage": run.CurrentStage}
-				snapshot.Runs = append(snapshot.Runs, summary)
-			}
-		case gagglehealth.EvidenceClaims:
-			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(h.root).SchedulerDir(), claimLedgerFileName))
-			if err != nil {
-				return gagglehealth.Snapshot{}, fmt.Errorf("open claim evidence: %w", err)
-			}
-			runStates := make(map[string]string, len(runs))
-			for _, run := range runs {
-				runStates[run.ID] = string(run.Phase)
-			}
-			for _, claim := range ledger.Snapshot() {
-				if claim.Gaggle == gaggle && len(snapshot.Claims) < maxGaggleHealthSnapshotRecords {
-					intervention := "none"
-					if runStates[claim.RunID] == string(journal.PhaseEscalated) {
-						intervention = "required"
-					}
-					state := "active"
-					if claim.SharedRevoked {
-						state = "revoked"
-					}
-					snapshot.Claims = append(snapshot.Claims, gagglehealth.RuntimeSummary{
-						ID: claim.ExternalID, State: state, UpdatedAt: claim.ClaimedAt,
-						Attributes: map[string]string{
-							"provider": claim.Provider, "runId": claim.RunID, "workflow": claim.Workflow,
-							"expiresAt": claim.ExpiresAt.UTC().Format(time.RFC3339Nano), "intervention": intervention,
-						},
-					})
-				}
-			}
-		case gagglehealth.EvidenceRunners:
-			if config != nil {
-				for _, runner := range config.ResolvedRunners() {
-					if len(snapshot.Runners) == maxGaggleHealthSnapshotRecords {
-						break
-					}
-					snapshot.Runners = append(snapshot.Runners, gagglehealth.RuntimeSummary{
-						ID: runner.Name, State: "available",
-						Attributes: map[string]string{
-							"host": runner.Host, "os": runnerOS(runner),
-							"capabilities": strings.Join(runner.Provides.Capabilities, ","),
-							"restrictions": strings.Join(runnerRestrictions(runner), ","),
-						},
-					})
-				}
-			}
-			if err := h.appendLivePlacements(ctx, runs, &snapshot); err != nil {
-				return gagglehealth.Snapshot{}, err
-			}
-		case gagglehealth.EvidenceReconciliation:
-			if h.reads == nil {
-				return gagglehealth.Snapshot{}, errors.New("reconciliation evidence source unavailable")
-			}
-			if reload := h.reads.DefinitionReload(); reload != nil {
-				snapshot.Reconciliation = append(snapshot.Reconciliation, gagglehealth.RuntimeSummary{
-					ID: reload.ObservedDigest, State: reload.State, UpdatedAt: reload.ObservedAt,
-				})
-			}
-		case gagglehealth.EvidenceProviders:
-			if h.quota != nil {
-				resetAt, ok := h.quota.ResetAt()
-				if !ok {
-					break
-				}
-				snapshot.Providers = append(snapshot.Providers, gagglehealth.RuntimeSummary{
-					ID: "provider-quota", State: "observed", UpdatedAt: resetAt,
-				})
-			}
-		case gagglehealth.EvidenceWorkers:
-			if err := h.appendWorkerEvidence(ctx, runs, &snapshot); err != nil {
-				return gagglehealth.Snapshot{}, err
-			}
+		case gagglehealth.EvidenceRuns, gagglehealth.EvidenceClaims,
+			gagglehealth.EvidenceRunners, gagglehealth.EvidenceWorkers:
+			return true
 		}
 	}
-	return snapshot, nil
+	return false
+}
+
+func (h *daemonGaggleHealth) readRuns(ctx context.Context, gaggle string) ([]readservice.RunSummary, error) {
+	if h.reads == nil {
+		return nil, errors.New("run evidence source unavailable")
+	}
+	result, err := h.reads.ListRuns(ctx, readservice.RunListOptions{
+		Gaggle: gaggle, Limit: maxGaggleHealthSnapshotRecords, ShowNoWork: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read run evidence: %w", err)
+	}
+	return result.Runs, nil
+}
+
+func (b *gaggleHealthSnapshotBuilder) append(dependency gagglehealth.EvidenceDependency) error {
+	switch dependency {
+	case gagglehealth.EvidenceWorkflows:
+		return b.appendWorkflows()
+	case gagglehealth.EvidenceRuns:
+		b.appendRuns()
+	case gagglehealth.EvidenceClaims:
+		return b.appendClaims()
+	case gagglehealth.EvidenceRunners:
+		return b.appendRunners()
+	case gagglehealth.EvidenceReconciliation:
+		return b.appendReconciliation()
+	case gagglehealth.EvidenceProviders:
+		b.appendProviders()
+	case gagglehealth.EvidenceWorkers:
+		return b.health.appendWorkerEvidence(b.ctx, b.runs, &b.snapshot)
+	}
+	return nil
+}
+
+func (b *gaggleHealthSnapshotBuilder) appendWorkflows() error {
+	evaluations, err := localscheduler.ReadTriggerEvaluations(instance.NewLayout(b.health.root).SchedulerDir())
+	if err != nil {
+		return fmt.Errorf("read trigger evidence: %w", err)
+	}
+	for _, workflow := range b.definitions.Workflows {
+		if workflow.Spec.Gaggle != b.gaggle || len(b.snapshot.Workflows) >= maxGaggleHealthSnapshotRecords {
+			continue
+		}
+		state := "enabled"
+		if workflow.Spec.Enabled != nil && !*workflow.Spec.Enabled {
+			state = "disabled"
+		}
+		types := make([]string, 0, len(workflow.Spec.Triggers))
+		for _, trigger := range workflow.Spec.Triggers {
+			types = append(types, string(trigger.Type))
+		}
+		lastEval := evaluations[localscheduler.WorkflowIdentity{Gaggle: b.gaggle, Workflow: workflow.Name}]
+		b.snapshot.Workflows = append(b.snapshot.Workflows, gagglehealth.RuntimeSummary{
+			ID: workflow.Name, State: state, UpdatedAt: lastEval,
+			Attributes: map[string]string{"triggers": strings.Join(types, ",")},
+		})
+	}
+	sort.Slice(b.snapshot.Workflows, func(i, j int) bool {
+		return b.snapshot.Workflows[i].ID < b.snapshot.Workflows[j].ID
+	})
+	return nil
+}
+
+func (b *gaggleHealthSnapshotBuilder) appendRuns() {
+	for _, run := range b.runs {
+		b.snapshot.Runs = append(b.snapshot.Runs, gagglehealth.RuntimeSummary{
+			ID: run.ID, State: string(run.Phase), UpdatedAt: run.LastActivityAt,
+			Attributes: map[string]string{"workflow": run.Workflow, "currentStage": run.CurrentStage},
+		})
+	}
+}
+
+func (b *gaggleHealthSnapshotBuilder) appendClaims() error {
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(b.health.root).SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		return fmt.Errorf("open claim evidence: %w", err)
+	}
+	runStates := make(map[string]string, len(b.runs))
+	for _, run := range b.runs {
+		runStates[run.ID] = string(run.Phase)
+	}
+	for _, claim := range ledger.Snapshot() {
+		if claim.Gaggle != b.gaggle || len(b.snapshot.Claims) >= maxGaggleHealthSnapshotRecords {
+			continue
+		}
+		intervention := "none"
+		if runStates[claim.RunID] == string(journal.PhaseEscalated) {
+			intervention = "required"
+		}
+		state := "active"
+		if claim.SharedRevoked {
+			state = "revoked"
+		}
+		b.snapshot.Claims = append(b.snapshot.Claims, gagglehealth.RuntimeSummary{
+			ID: claim.ExternalID, State: state, UpdatedAt: claim.ClaimedAt,
+			Attributes: map[string]string{
+				"provider": claim.Provider, "runId": claim.RunID, "workflow": claim.Workflow,
+				"expiresAt": claim.ExpiresAt.UTC().Format(time.RFC3339Nano), "intervention": intervention,
+			},
+		})
+	}
+	return nil
+}
+
+func (b *gaggleHealthSnapshotBuilder) appendRunners() error {
+	if b.config != nil {
+		for _, runner := range b.config.ResolvedRunners() {
+			if len(b.snapshot.Runners) == maxGaggleHealthSnapshotRecords {
+				break
+			}
+			b.snapshot.Runners = append(b.snapshot.Runners, gagglehealth.RuntimeSummary{
+				ID: runner.Name, State: "available",
+				Attributes: map[string]string{
+					"host": runner.Host, "os": runnerOS(runner),
+					"capabilities": strings.Join(runner.Provides.Capabilities, ","),
+					"restrictions": strings.Join(runnerRestrictions(runner), ","),
+				},
+			})
+		}
+	}
+	return b.health.appendLivePlacements(b.ctx, b.runs, &b.snapshot)
+}
+
+func (b *gaggleHealthSnapshotBuilder) appendReconciliation() error {
+	if b.health.reads == nil {
+		return errors.New("reconciliation evidence source unavailable")
+	}
+	if reload := b.health.reads.DefinitionReload(); reload != nil {
+		b.snapshot.Reconciliation = append(b.snapshot.Reconciliation, gagglehealth.RuntimeSummary{
+			ID: reload.ObservedDigest, State: reload.State, UpdatedAt: reload.ObservedAt,
+		})
+	}
+	return nil
+}
+
+func (b *gaggleHealthSnapshotBuilder) appendProviders() {
+	if b.health.quota == nil {
+		return
+	}
+	resetAt, ok := b.health.quota.ResetAt()
+	if !ok {
+		return
+	}
+	b.snapshot.Providers = append(b.snapshot.Providers, gagglehealth.RuntimeSummary{
+		ID: "provider-quota", State: "observed", UpdatedAt: resetAt,
+	})
 }
 
 func (h *daemonGaggleHealth) appendLivePlacements(ctx context.Context, runs []readservice.RunSummary, snapshot *gagglehealth.Snapshot) error {
