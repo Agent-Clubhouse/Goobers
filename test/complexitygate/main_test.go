@@ -308,11 +308,11 @@ func TestEvaluateRatchetBudget(t *testing.T) {
 func TestEvaluateBodyLengthHasNoAllowExemption(t *testing.T) {
 	t.Parallel()
 	limits := thresholds{hardCap: 40, ratchet: 25, report: 15, body: 200}
-	entryKey := key("cmd/goobers/up.go", "runUpContextWithForce")
+	entryKey := key("cmd/goobers/openpr.go", "runOpenPR")
 	base := testBaseline(t, 0, map[string]int{})
 	base.BodyLengthCap = 200
 	functions := []function{{
-		Path: "cmd/goobers/up.go", Symbol: "runUpContextWithForce", Line: 320,
+		Path: "cmd/goobers/openpr.go", Symbol: "runOpenPR", Line: 320,
 		BodyLines: 200, Allowed: true,
 	}}
 

@@ -125,6 +125,9 @@ func openPullRequestWithADOLink(
 	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
 		prReq.Body = textOnlyWorkItemLinkNote(prReq.Body, issueID)
 	}
+	if screen := publicationLeakScreenForRoot(root, nil); screen != nil {
+		screen(ctx, "pull-request", prReq.Title, prReq.Body)
+	}
 	result, err := provider.OpenPullRequest(ctx, prReq)
 	if err != nil {
 		if tutorHoldout != nil {
@@ -568,9 +571,6 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	if screen := publicationLeakScreenForRoot(root, nil); screen != nil {
-		screen(ctx, "pull-request", prReq.Title, prReq.Body)
-	}
 	result, code := openPullRequestWithADOLink(ctx, provider, workItemLinker, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
 	if code != 0 {
 		return code
