@@ -55,6 +55,13 @@ Do not replace current main's versions of shared files with snapshot copies. The
 highest-risk overlaps are daemon/runner wiring, provider interfaces, auth routing,
 recovery/worktrees, DSL feature registration, schemas and generated Portal contracts.
 
+Concrete main changes that extraction must preserve include Jeff's Portal foundation
+`08206257c` (#6704), workspace-preparation retry budgets `a8d98dfe3` (#6666),
+worktree collision handling `e8cac054d`, recovery-label cleanup `703d195dd` and
+`e74068dfc`, and semantic mutation receipts/lineage `414697166` (#6517).
+These are integration inputs, not commits to revert or replace with older snapshot
+versions. Recheck the list against main when each delivery branch is created.
+
 ## 3. Branch and review strategy
 
 1. Start each delivery train at current main, using `codex/haw-<slice>` branches.
@@ -186,10 +193,19 @@ the repository's `make ci (fmt-check · vet · build · test · lint)` merge rul
 
 ## 6. First extraction and next decisions
 
-Start with F01 and a narrowly scoped F02+C01/C02 dependency boundary: compare the
-current queue/runtime seams, identify the minimum child admission path, and open
-the first small implementation PR only after its source mapping and tests are
-concrete. Do not start by importing all 138 changed triggerqueue files.
+Start with F01 and a narrowly scoped C01: the snapshot has an advisory
+`goobers workflow validate-child` command (`cmd/goobers/childworkflow.go`) backed
+by `internal/childworkflow` proposal validation. Extract the opt-in/configuration
+shape, bounded proposal validation, current capability checks, typed diagnostics
+and that actual CLI caller. It must not grant credentials or start a child; runtime
+admission must repeat validation later. Verify on current main that the dependency
+closure is small enough before fixing this as the first implementation PR.
+
+Then extract only the F02 storage/identity prerequisites consumed by C02 child
+admission. Follow with the actual lifecycle rather than importing all 138 changed
+triggerqueue files. If the validator's dependency closure requires an additional
+shared contract slice, document it explicitly and keep a real caller in the same
+review boundary.
 
 During extraction, record for each PR: stable task IDs, snapshot commits/hunks,
 current-main equivalents, prerequisites, excluded follow-ups and acceptance proof.
