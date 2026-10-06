@@ -1486,22 +1486,26 @@ type runAbortedCommentAuthors struct {
 
 func hasNonGoobersComments(comments []providers.PullRequestComment, authors runAbortedCommentAuthors) bool {
 	for _, comment := range comments {
-		if !authors.trusts(comment.Author) {
+		if !authors.trusts(comment) {
 			return true
 		}
 	}
 	return false
 }
 
-func (a runAbortedCommentAuthors) trusts(author string) bool {
-	return isTrustedMergeReviewAuthor(author, a.authenticated) ||
-		isTrustedMergeReviewAuthor(author, a.configured)
+func (a runAbortedCommentAuthors) trusts(comment providers.PullRequestComment) bool {
+	if !isTrustedMergeReviewAuthor(comment.Author, a.authenticated) &&
+		!isTrustedMergeReviewAuthor(comment.Author, a.configured) {
+		return false
+	}
+	_, found, err := providers.ParseAttribution(comment.Body)
+	return err == nil && found
 }
 
 func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authors runAbortedCommentAuthors) bool {
 	latestPass := -1
 	for i, comment := range poll.CommentsSince {
-		if !authors.trusts(comment.Author) || !isMergeReviewStatusComment(comment.Body) {
+		if !authors.trusts(comment) || !isMergeReviewStatusComment(comment.Body) {
 			continue
 		}
 		verdict, ok := parseVerdictComment(comment.Body)
@@ -1518,7 +1522,7 @@ func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authors ru
 		return false
 	}
 	for i, comment := range poll.CommentsSince {
-		if !authors.trusts(comment.Author) &&
+		if !authors.trusts(comment) &&
 			pullRequestCommentAfter(comment, i, poll.CommentsSince[latestPass], latestPass) {
 			return false
 		}
@@ -1612,7 +1616,7 @@ func latestTrustedRemediationResponse(comments []providers.PullRequestComment, a
 	const markerPrefix = "<!-- goobers:remediation-response:"
 	var latest time.Time
 	for _, comment := range comments {
-		if !authors.trusts(comment.Author) ||
+		if !authors.trusts(comment) ||
 			!strings.HasPrefix(comment.Body, markerPrefix) ||
 			comment.CreatedAt.IsZero() {
 			continue

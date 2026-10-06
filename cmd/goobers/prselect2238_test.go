@@ -189,6 +189,27 @@ func TestPRSelectLeavesCurrentHeadPassParkedAfterNewerHumanComment(t *testing.T)
 	runPRSelectExpectingRunAbortedPark(t, server, number)
 }
 
+func TestPRSelectLeavesCurrentHeadPassParkedAfterUnattributedSharedIdentityComment(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "ordinary human comment", body: "please recheck this"},
+		{name: "malformed attribution", body: "<!-- goobers:attribution v1 invalid -->\nplease recheck this"},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			number := 6780 + i
+			server := newReviewedRunAbortedPRFixture(t, number)
+			server.authenticatedLogin = "jeffstei"
+			addCurrentHeadPass(t, server, number, "jeffstei")
+			server.addRawCommentAs(number, "jeffstei", tt.body)
+
+			runPRSelectExpectingRunAbortedPark(t, server, number)
+		})
+	}
+}
+
 func TestPRSelectRestoresRunAbortedAfterHumanCommentFollowingCurrentHeadPass(t *testing.T) {
 	const number = 6769
 	server := newReviewedRunAbortedPRFixture(t, number)
