@@ -4,7 +4,6 @@ import type {
   TelemetryCostRunAggregate,
   TelemetryCostResult,
 } from "./api/types";
-import { formatAIC } from "./aicFormat";
 
 export interface ExternalCostRow {
   key: string;
@@ -101,7 +100,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
     externalKind: aggregate.externalKind,
     externalId: aggregate.externalId,
     provider: aggregate.provider,
-    aic: formatAICAmounts(aggregate.nativeTotals, aggregate.normalizedTotals, "Unmeasured"),
+    aic: formatAIC(aggregate.nativeTotals, aggregate.normalizedTotals, "Unmeasured"),
     aicValue: findAIC(aggregate.nativeTotals, aggregate.normalizedTotals)?.value,
     coverage: coverage.lowerBound
       ? `Lower bound: ${coverage.measuredRuns} of ${coverage.totalRuns} runs and ${coverage.measuredAttempts} of ${coverage.totalAttempts} attempts measured.`
@@ -111,7 +110,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
     lowerBound: coverage.lowerBound,
     models: aggregate.models.map(
       (model) =>
-        `${model.model}: ${formatAICAmounts(model.nativeTotals, model.normalizedTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
+        `${model.model}: ${formatAIC(model.nativeTotals, model.normalizedTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
     ),
     runs: aggregate.runs,
   };
@@ -174,7 +173,7 @@ function findAIC(
   return [...native, ...normalized].find((amount) => amount.unit === "aiCredits");
 }
 
-function formatAICAmounts(
+function formatAIC(
   native: readonly TelemetryCostAmount[],
   normalized: readonly TelemetryCostAmount[],
   empty: string,
@@ -183,5 +182,9 @@ function formatAICAmounts(
   if (!amount) {
     return empty;
   }
-  return formatAIC(amount.value);
+  return `${formatAICNumber(amount.value)} AIC`;
+}
+
+function formatAICNumber(value: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
 }
