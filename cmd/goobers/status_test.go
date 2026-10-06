@@ -112,7 +112,7 @@ func TestStatusLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
 
 	readprobe.Enable()
 	t.Cleanup(readprobe.Disable)
-	code, stdout, stderr := runArgs(t, "status", "--json", "--limit", "20", root)
+	code, stdout, stderr := runArgs(t, "status", "--runs-only", "--json", "--limit", "20", root)
 	work := readprobe.Take()
 	readprobe.Disable()
 	if code != 0 {
@@ -128,7 +128,7 @@ func TestStatusLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
 		t.Fatalf("status returned %d runs, want --limit 20", len(output.Runs))
 	}
 	if work.JournalOpens != 0 {
-		t.Fatalf("status --limit 20 opened %d run journals with 1,000 projected runs, want 0", work.JournalOpens)
+		t.Fatalf("status --runs-only --limit 20 opened %d run journals with 1,000 projected runs, want 0", work.JournalOpens)
 	}
 }
 
@@ -998,6 +998,67 @@ func TestStatusDefaultsToNewestFiftyRuns(t *testing.T) {
 	}
 	if len(got.Runs) != 51 {
 		t.Fatalf("runs = %d, want all 51", len(got.Runs))
+	}
+}
+
+func TestStatusRunsOnlySkipsExpensiveStatusQueries(t *testing.T) {
+	root := initScheduledDemo(t)
+	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
+	for i := range 3 {
+		writeStatusRun(t, root, fmt.Sprintf("run-%02d", i), "implementation", "goobers", startedAt.Add(time.Duration(i)*time.Minute))
+	}
+
+	oldFleetFacts := loadStatusFleetFacts
+	oldPRLabels := loadStatusPRLabelCounts
+	oldParked := loadStatusParkedBacklog
+	oldWorkItems := newStatusWorkItemLookup
+	t.Cleanup(func() {
+		loadStatusFleetFacts = oldFleetFacts
+		loadStatusPRLabelCounts = oldPRLabels
+		loadStatusParkedBacklog = oldParked
+		newStatusWorkItemLookup = oldWorkItems
+	})
+	loadStatusFleetFacts = func(context.Context, *readservice.Local) ([]readservice.StatusFleetFact, error) {
+		t.Fatal("--runs-only queried fleet facts")
+		return nil, nil
+	}
+	loadStatusPRLabelCounts = func(context.Context, *instance.Config) (statusPRLabelCounts, error) {
+		t.Fatal("--runs-only queried PR labels")
+		return statusPRLabelCounts{}, nil
+	}
+	loadStatusParkedBacklog = func(context.Context, *instance.Config) (statusParkedBacklog, error) {
+		t.Fatal("--runs-only queried parked backlog")
+		return statusParkedBacklog{}, nil
+	}
+	newStatusWorkItemLookup = func(string, *instance.ConfigSet) readservice.WorkItemLookup {
+		t.Fatal("--runs-only configured provider work-item lookups")
+		return nil
+	}
+
+	code, stdout, stderr := runArgs(t, "status", "--runs-only", "--json", "--limit=2", root)
+	if code != 0 {
+		t.Fatalf("status --runs-only: code = %d, stderr = %q", code, stderr)
+	}
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 2 || got.Runs[0].RunID != "run-02" || got.Runs[1].RunID != "run-01" {
+		t.Fatalf("runs = %+v, want newest two runs", got.Runs)
+	}
+	if got.Summary != nil || got.Root != nil || got.ParkedBacklog != nil || got.BaselineBlockers != nil {
+		t.Fatalf("runs-only output included full status fields: %+v", got)
+	}
+}
+
+func TestStatusRunsOnlyRejectsFullStatusModes(t *testing.T) {
+	for _, flag := range []string{"--all", "--daemon", "--agents", "--watch"} {
+		t.Run(flag, func(t *testing.T) {
+			code, _, stderr := runArgs(t, "status", "--runs-only", flag)
+			if code != 2 || !strings.Contains(stderr, "--runs-only cannot be combined") {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+		})
 	}
 }
 

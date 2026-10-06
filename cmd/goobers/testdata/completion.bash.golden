@@ -166,7 +166,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=" --api --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --api --agents --runs-only --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
