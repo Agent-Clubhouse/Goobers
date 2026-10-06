@@ -110,36 +110,16 @@ func TestCostCommandSupportsIssueAndSummaryHumanOutput(t *testing.T) {
 			wantFragments := []string{
 				"COST ATTRIBUTION",
 				"PR #90 (github)",
-				"Native: 3 AI credits",
+				"Native: 2.5000 AI credits",
 				"Normalized estimate: $0.0250 estimated",
 				"Coverage: lower bound; 1/2 runs, 2/3 attempts measured",
-				"Model gpt-5.6-sol: 3 AI credits; 2/2 attempts measured",
-				"Run run-1 (2026-09-07T00:02:03Z): 3 AI credits; 2/2 attempts measured",
+				"Model gpt-5.6-sol: 2.5000 AI credits; 2/2 attempts measured",
+				"Run run-1 (2026-09-07T00:02:03Z): 2.5000 AI credits; 2/2 attempts measured",
 			}
 			for _, fragment := range wantFragments {
 				if !strings.Contains(stdout.String(), fragment) {
 					t.Fatalf("stdout %q does not contain %q", stdout.String(), fragment)
 				}
-			}
-		})
-	}
-}
-
-func TestFormatCostAmountsRoundsAICreditsToWholeNumbers(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		value float64
-		want  string
-	}{
-		{name: "fraction rounds down", value: 12.49, want: "12 AI credits"},
-		{name: "half rounds up", value: 12.5, want: "13 AI credits"},
-		{name: "zero", value: 0, want: "0 AI credits"},
-		{name: "large value", value: 9_000_000_000.4, want: "9000000000 AI credits"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			amounts := []readservice.TelemetryCostAmount{{Unit: "aiCredits", Value: test.value}}
-			if got := formatCostAmounts(amounts, "unmeasured"); got != test.want {
-				t.Fatalf("formatCostAmounts(%v) = %q, want %q", test.value, got, test.want)
 			}
 		})
 	}

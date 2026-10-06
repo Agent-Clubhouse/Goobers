@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -242,7 +241,7 @@ func formatCostAmounts(amounts []readservice.TelemetryCostAmount, empty string) 
 		case "usd":
 			value = "$" + strconv.FormatFloat(amount.Value, 'f', 4, 64)
 		case "aiCredits":
-			value = strconv.FormatFloat(math.Round(amount.Value), 'f', 0, 64) + " AI credits"
+			value = strconv.FormatFloat(amount.Value, 'f', 4, 64) + " AI credits"
 		case "premiumRequests":
 			value = strconv.FormatFloat(amount.Value, 'f', 4, 64) + " premium requests"
 		default:
