@@ -9,9 +9,9 @@ and green required CI before landing on main.
 | Review artifact | Intended disposition |
 | --- | --- |
 | [Child workflows design #6803](https://github.com/Agent-Clubhouse/Goobers/pull/6803) | Merged to main in `6c30300d4a83b198dd09c0fa919d5c85c9b2ae15`. |
-| [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Prepared against main; Jeff’s requested-changes review remains open. Resolve that review and rerun CI on the refreshed head before merge. |
+| [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Refreshed against main after the other three designs merged; Jeff’s requested-changes review remains open. Auto-merge is off; review resolution and passing CI on the refreshed head are required. |
 | [Events/queues design #6805](https://github.com/Agent-Clubhouse/Goobers/pull/6805) | Merged to main in `1141d5db1cc5c45e6aa46f0dbfb3a3a0e5ce6f95`. |
-| [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Refreshed against main after #6805; required CI running with protected auto-merge enabled. Independent of the pending HITL review. |
+| [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Merged to main in `24481a5c9c59bf26f8d6800ad801ada6e5a10b10`. |
 | [Implementation review #6807](https://github.com/Agent-Clubhouse/Goobers/pull/6807) | Keep as a draft reference snapshot. Extract reviewed slices; do not merge wholesale. Close as superseded only when all intended behavior is accounted for by landed work or explicit deferrals. |
 | [Fleet authentication design #6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) | Remains a separate draft requiring design acceptance. Rebase its documentation onto main after the four designs, preserving the supplied outbound-only Agent contract. Its approval is not implied by merging the four workstream designs. |
 
@@ -82,8 +82,8 @@ versions. Recheck the list against main when each delivery branch is created.
    workflow, a later description-only edit creates a skipped check suite that can
    leave the required aggregate marked “expected” despite a successful full run.
    Observed on #6806: rerunning the older aggregate alone did not release the
-   rule. Reopening the unchanged PR starts a fresh full run; preserve protection
-   and verify GitHub actually merged it. Do not edit metadata again while waiting.
+   rule. Reopening the unchanged PR and passing a fresh full run restored normal
+   protected auto-merge. Do not edit metadata again while waiting.
 
 A typical code PR should fit one behavior and one failure/recovery story. Aim for
 hundreds of handwritten production lines where practical; separate generated/test
