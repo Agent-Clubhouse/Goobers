@@ -29,23 +29,17 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// instructionsPath resolves a goober's Instructions field to an absolute
-// file path. Instructions is documented as "relative to the goober
-// definition directory" (api/v1alpha1.GooberSpec), which config-as-code
-// objects don't retain after instance.LoadConfigDir flattens them into a
-// ConfigSet — but every shipped config (internal/instance/starter,
-// config-examples/, reference-workflows/) lays goobers out at the same fixed path, so
-// that layout convention is reproduced here rather than widening ConfigSet's
-// shape for this one field.
+// gooberDefinitionDir is the conventional, name-derived directory of a goober
+// definition. It is only the fallback for callers holding no loaded ConfigSet:
+// resolvedGooberDefinitionDir prefers the parsed definition file's own
+// directory, which validation also resolves instructions and assets against,
+// so a goober directory not named after metadata.name behaves the same at
+// runtime (#6611).
 func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
 	if spec.Gaggle == "" {
 		return filepath.Join(filepath.Dir(configDir), "goobers", gooberName)
 	}
 	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
-}
-
-func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string) string {
-	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
 func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(context.Context, string) error {
@@ -92,6 +86,7 @@ type runnerCompositionInput struct {
 	ExecutionFence           executionFenceStart
 	Layout                   instance.Layout
 	Config                   *instance.Config
+	Definitions              *instance.ConfigSet
 	Goobers                  map[string]apiv1.GooberSpec
 	InstructionsByGoober     map[string]string
 	SkillPackages            map[string][]workflow.SkillFile
@@ -250,7 +245,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		if _, ok := input.InstructionsByGoober[name]; !ok {
 			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
-		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
+		assets, err := gooberassets.Load(filepath.Join(resolvedGooberDefinitionDir(l.ConfigDir(), input.Definitions, spec, name), gooberassets.SourceDir))
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
 		}

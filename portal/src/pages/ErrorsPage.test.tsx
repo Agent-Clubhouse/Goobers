@@ -88,27 +88,26 @@ function manyErrors(count: number): TelemetryError[] {
 function errorLinks(): HTMLElement[] {
   return within(
     screen.getByRole("region", { name: "Matching error history" }),
-  ).getAllByRole("link");
+  ).getAllByRole("link", { name: /^Open run .* occurrence from/ });
 }
 
 describe("errors history pagination under live events", () => {
-  it("groups repeated actionable failures and expands their occurrences", async () => {
+  it("groups repeated actionable failures and always shows their occurrences without an eyebrow", async () => {
     const fixtures = populatedDaemonFixtures();
     const repeated = manyErrors(3).map((item) => ({
       ...item,
       message: "Harness exited before producing a result envelope.",
     }));
     fixtures.telemetryErrors = { items: repeated };
-    const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     const history = await screen.findByRole("region", { name: "Matching error history" });
     expect(within(history).getAllByRole("article")).toHaveLength(1);
     expect(within(history).getByText("3 occurrences loaded")).toBeInTheDocument();
 
-    await user.click(
-      within(history).getByRole("button", { name: "Show 3 individual occurrences" }),
-    );
+    expect(screen.queryByText("Telemetry", { exact: true })).not.toBeInTheDocument();
+    expect(within(history).queryByRole("button", { name: /individual occurrences/ }))
+      .not.toBeInTheDocument();
     expect(
       within(history).getByRole("list", { name: "Individual occurrences for harness.crash" }),
     ).toBeInTheDocument();

@@ -202,7 +202,29 @@ type conflictArtifact struct {
 	ConflictingFiles []string `json:"conflictingFiles"`
 }
 
-// ConflictTouches implements CrossRun over the gaggle's run directories.
+// journalClockSlack absorbs skew between an event's recorded time and the
+// filesystem's modification time of the file it was appended to.
+const journalClockSlack = time.Minute
+
+// journalQuiescentBefore reports that a run's journal was last appended to
+// before since, so none of its events can fall inside the window. It costs one
+// stat and is what lets a cross-run scan over a large retained history skip
+// out-of-window runs without opening (and, for OpenRead, schema-checking) their
+// journals. Conservative: a zero since or any stat failure never prunes.
+func journalQuiescentBefore(runDir string, since time.Time) bool {
+	if since.IsZero() {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		return false
+	}
+	return info.ModTime().Before(since.Add(-journalClockSlack))
+}
+
+// ConflictTouches implements CrossRun over the gaggle's run directories. Runs
+// whose journal went quiet before req.Since are pruned by a stat before any
+// journal is opened.
 func (f *FileCrossRun) ConflictTouches(ctx context.Context, req ConflictTouchRequest) ([]ConflictTouch, error) {
 	layout := f.scoped(req.Gaggle)
 	runDirs, err := layout.RunDirs()
@@ -223,6 +245,9 @@ func (f *FileCrossRun) ConflictTouches(ctx context.Context, req ConflictTouchReq
 				return nil, err
 			}
 			if !entry.IsDir() {
+				continue
+			}
+			if journalQuiescentBefore(filepath.Join(runsDir, entry.Name()), req.Since) {
 				continue
 			}
 			reader, err := journal.OpenRead(filepath.Join(runsDir, entry.Name()))
@@ -442,6 +467,9 @@ func (f *FileCrossRun) UnpushedWork(ctx context.Context, req UnpushedWorkRequest
 				return nil, err
 			}
 			if !entry.IsDir() || entry.Name() == req.RunID {
+				continue
+			}
+			if journalQuiescentBefore(filepath.Join(runsDir, entry.Name()), req.Since) {
 				continue
 			}
 			candidate := f.unpushedWorkFromRun(filepath.Join(runsDir, entry.Name()), req.ItemIDs, req.Since, limit)

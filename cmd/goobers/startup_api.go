@@ -6,10 +6,24 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+// daemonStartingMessage is the body of every reply served before startup
+// installs the full API. The CLI recognizes it as "not ready yet" (#5897), so
+// both sides use this constant; older daemons send the same text.
+const daemonStartingMessage = "daemon is starting"
+
+// serveDaemonStarting answers a request that arrives before the full API is
+// installed: HTTP 503 with a Retry-After hint, because the condition clears on
+// its own once startup finishes.
+func serveDaemonStarting(response http.ResponseWriter, _ *http.Request) {
+	response.Header().Set(httpapi.HeaderRetryAfterSeconds, strconv.Itoa(httpapi.NotReadyRetryAfterSeconds))
+	http.Error(response, daemonStartingMessage, http.StatusServiceUnavailable)
+}
 
 func startStartupAPI(
 	config *instance.Config,
@@ -20,9 +34,7 @@ func startStartupAPI(
 ) (*httpapi.SwitchHandler, *httpapi.Server, *log.Logger, error) {
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	startingHandler := httpapi.WrapWithProbes(
-		http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-			http.Error(response, "daemon is starting", http.StatusServiceUnavailable)
-		}),
+		http.HandlerFunc(serveDaemonStarting),
 		probes.liveness,
 		probes.readiness,
 	)

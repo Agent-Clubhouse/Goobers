@@ -134,6 +134,71 @@ func TestWalkLinkPagesStopsAndPropagatesErrors(t *testing.T) {
 	})
 }
 
+func TestGitHubPagingListWorkItemsStopsEarlyAndPreservesDecodeError(t *testing.T) {
+	t.Run("stops before next page", func(t *testing.T) {
+		var calls int32
+		p, repo := paginationProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&calls, 1)
+			w.Header().Set("Link", `<http://`+r.Host+`/items?page=2>; rel="next"`)
+			_, _ = w.Write([]byte(`[{"id":1,"number":1,"title":"first","state":"open"}]`))
+		}))
+
+		items, err := p.ListWorkItems(context.Background(), ListWorkItemsRequest{
+			Repository: repo,
+			Limit:      1,
+		})
+		if err != nil {
+			t.Fatalf("ListWorkItems: %v", err)
+		}
+		if len(items) != 1 || items[0].ID != "1" {
+			t.Fatalf("items = %#v, want issue 1", items)
+		}
+		if got := atomic.LoadInt32(&calls); got != 1 {
+			t.Fatalf("requests = %d, want 1", got)
+		}
+	})
+
+	t.Run("decode prefix", func(t *testing.T) {
+		p, repo := paginationProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`not-json`))
+		}))
+		_, err := p.ListWorkItems(context.Background(), ListWorkItemsRequest{
+			Repository: repo,
+			Limit:      1,
+		})
+		if err == nil || !strings.HasPrefix(err.Error(), "decode issues page: ") {
+			t.Fatalf("error = %v, want decode issues page prefix", err)
+		}
+	})
+}
+
+func TestGitHubPagingPullRequestFilesAppendsPagesAndPreservesDecodeError(t *testing.T) {
+	t.Run("appends pages in order", func(t *testing.T) {
+		page1 := mustJSON(t, []map[string]interface{}{{"filename": "first.go"}})
+		page2 := mustJSON(t, []map[string]interface{}{{"filename": "second.go"}})
+		p, repo := paginationProvider(t, paginatedJSON(t, [][]byte{page1, page2}))
+
+		files, err := p.PullRequestFiles(context.Background(), repo, "7")
+		if err != nil {
+			t.Fatalf("PullRequestFiles: %v", err)
+		}
+		if len(files) != 2 || files[0].Path != "first.go" || files[1].Path != "second.go" {
+			t.Fatalf("files = %#v, want first.go then second.go", files)
+		}
+	})
+
+	t.Run("decode prefix", func(t *testing.T) {
+		p, repo := paginationProvider(t, paginatedJSON(t, [][]byte{
+			mustJSON(t, []map[string]interface{}{{"filename": "first.go"}}),
+			[]byte(`not-json`),
+		}))
+		_, err := p.PullRequestFiles(context.Background(), repo, "7")
+		if err == nil || !strings.HasPrefix(err.Error(), "decode pull files page: ") {
+			t.Fatalf("error = %v, want decode pull files page prefix", err)
+		}
+	})
+}
+
 // paginatedJSON serves pages[page-1] for ?page=N, setting a Link rel="next"
 // header (pointing back at this same test server) until the last page — exactly
 // what GitHub's REST API does. Each element of pages is a marshaled JSON body.

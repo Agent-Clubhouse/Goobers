@@ -291,3 +291,48 @@ github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired unti
 github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
+
+# #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
+# capture activation before all three approved slices land. Remove on activation.
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01
+
+# #4424 defines the gaggle-health contract, persistence and rebuild rules only;
+# the daemon evaluation controller that consumes them is #4425. Remove on wiring.
+github.com/goobers/goobers/internal/gagglehealth.AggregateState # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.EpisodeKey # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.ExtendEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.OpenStore # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.RebuildWithRetention # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.ResolvePolicy # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Store.Append # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Store.Close # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Store.Snapshot # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Store.eventsPath # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Store.project # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Store.rebuildAllLocked # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.Store.writeSnapshot # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.ValidateFinding # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.appendEvent # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.applyReplayEvent # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.containsControl # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.containsRootedPath # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.openStore # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.readEvents # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.rootedPath # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.stateRank # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validDigest # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateFindingClassification # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateFindingEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateFindingEvidence # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateFindingRepair # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateFindingText # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateIdentifier # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateIdentity # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateRedactedText # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateRepairDisposition # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateReplayEvent # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateStoreGaggle # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+github.com/goobers/goobers/internal/gagglehealth.validateTransition # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.

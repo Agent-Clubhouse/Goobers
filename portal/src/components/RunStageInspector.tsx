@@ -10,12 +10,7 @@ import type {
   WorkflowGraphNode,
 } from "../api/types";
 import { newestFirst } from "../chronology";
-import {
-  eventHeading,
-  eventSummary,
-  formatDuration,
-  isTranscriptEvent,
-} from "../runDetailData";
+import { eventHeading, eventSummary, formatDuration, isTranscriptEvent } from "../runDetailData";
 import {
   isEmptyTurn,
   parseTranscript,
@@ -124,9 +119,8 @@ function repassDecision(
   }
   const previousFinishedSeq = Math.max(
     0,
-    ...(previousVisit?.attempts.map(
-      (attempt) => attempt.finishedSeq ?? attempt.startedSeq ?? 0,
-    ) ?? []),
+    ...(previousVisit?.attempts.map((attempt) => attempt.finishedSeq ?? attempt.startedSeq ?? 0) ??
+      []),
   );
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
@@ -265,10 +259,7 @@ export function RunStageInspector({
     visible.find((attempt) => attempt.id === selectedId) ?? visible[visible.length - 1];
   const selectedVisitIndex = visits.findIndex((visit) => visit.ordinal === selected?.visit);
   const selectedVisit = visits[selectedVisitIndex];
-  const displayedAttempts = newestFirst(
-    selectedVisit?.attempts ?? [],
-    (attempt) => attempt.number,
-  );
+  const displayedAttempts = newestFirst(selectedVisit?.attempts ?? [], (attempt) => attempt.number);
   const decision = selectedVisit
     ? repassDecision(events, node.id, selectedVisit, visits[selectedVisitIndex - 1])
     : undefined;
@@ -300,9 +291,7 @@ export function RunStageInspector({
       moveVisitSelection((index + 1) % displayedVisits.length);
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
       event.preventDefault();
-      moveVisitSelection(
-        (index - 1 + displayedVisits.length) % displayedVisits.length,
-      );
+      moveVisitSelection((index - 1 + displayedVisits.length) % displayedVisits.length);
     }
   };
 
@@ -435,15 +424,11 @@ export function RunStageInspector({
                 )}
                 {decision && (
                   <div className="repass-context">
-                    <span>
-                      Repass decision · Sequence {decision.seq}
-                    </span>
+                    <span>Repass decision · Sequence {decision.seq}</span>
                     <strong>{eventSummary(decision)}</strong>
                   </div>
                 )}
-                {selected && (
-                  <AttemptDetail attempt={selected} client={client} runId={runId} />
-                )}
+                {selected && <AttemptDetail attempt={selected} client={client} runId={runId} />}
               </>
             ))}
         </>
@@ -617,7 +602,8 @@ function usageSummary(usage: TranscriptUsage): string {
   const parts: string[] = [];
   if (usage.inputTokens !== undefined) parts.push(`${formatTokens(usage.inputTokens)} in`);
   if (usage.outputTokens !== undefined) parts.push(`${formatTokens(usage.outputTokens)} out`);
-  if (usage.reasoningTokens !== undefined) parts.push(`${formatTokens(usage.reasoningTokens)} reasoning`);
+  if (usage.reasoningTokens !== undefined)
+    parts.push(`${formatTokens(usage.reasoningTokens)} reasoning`);
   if (usage.requests !== undefined) parts.push(`${formatTokens(usage.requests)} requests`);
   return parts.join(" · ");
 }
@@ -638,7 +624,8 @@ export function TranscriptView({ text }: { text: string }) {
   const parsed = parseTranscript(text);
   const turns = parsed.turns.filter((turn) => !isEmptyTurn(turn));
   const matches = transcriptSearchMatches(turns, query);
-  const matching = query.trim() === "" ? turns : turns.filter((turn) => matches.includes(turn.index));
+  const matching =
+    query.trim() === "" ? turns : turns.filter((turn) => matches.includes(turn.index));
   const visible = expanded ? matching : matching.slice(0, TRANSCRIPT_WINDOW);
   const hidden = matching.length - visible.length;
 
@@ -686,7 +673,8 @@ export function TranscriptView({ text }: { text: string }) {
       )}
       {parsed.malformedLines > 0 && (
         <p className="transcript-malformed" role="status">
-          {parsed.malformedLines} line{parsed.malformedLines === 1 ? "" : "s"} could not be parsed and
+          {parsed.malformedLines} line{parsed.malformedLines === 1 ? "" : "s"} could not be parsed
+          and
           {parsed.malformedLines === 1 ? " is" : " are"} shown verbatim.
         </p>
       )}
@@ -722,10 +710,10 @@ function TranscriptTurnRow({ turn }: { turn: TranscriptTurn }) {
     <li className={`transcript-turn transcript-turn-${turn.role}`}>
       <div className="transcript-turn-heading">
         <span className="transcript-role">{label}</span>
-        {turn.toolCall?.name && <span className="transcript-tool-name mono">{turn.toolCall.name}</span>}
-        {turn.toolCall?.success === false && (
-          <span className="transcript-tool-failed">failed</span>
+        {turn.toolCall?.name && (
+          <span className="transcript-tool-name mono">{turn.toolCall.name}</span>
         )}
+        {turn.toolCall?.success === false && <span className="transcript-tool-failed">failed</span>}
         {turn.truncated && <span className="transcript-tool-failed">truncated</span>}
       </div>
 
@@ -801,29 +789,49 @@ function AttemptDetail({
         <span className={`attempt-state attempt-${status}`}>{status}</span>
         <span className="run-duration">{formatDuration(attempt.durationMillis)}</span>
         <span>{attemptLabel(attempt)}</span>
-        {attempt.model && <span>Model <code>{attempt.model}</code></span>}
+        {attempt.model && (
+          <span>
+            Model <code>{attempt.model}</code>
+          </span>
+        )}
       </div>
       {attempt.placement && (
         <div aria-label="Attempt placement" className="attempt-summary-row">
-          <span>Runner <code>{attempt.placement.runner}</code></span>
+          <span>
+            Runner <code>{attempt.placement.runner}</code>
+          </span>
           {/* node is a real cluster node; host is the executing process's own
               hostname, which inside a pod is the pod name. Show the node when
               some authority declared one, and otherwise the honest host —
               never one labelled as the other. */}
           {attempt.placement.node ? (
-            <span>Node <code>{attempt.placement.node}</code></span>
-          ) : (
-            attempt.placement.host && <span>Host <code>{attempt.placement.host}</code></span>
-          )}
-          {attempt.placement.os && <span>OS <code>{attempt.placement.os}</code></span>}
-          {attempt.placement.image && (
-            <span>Image <code>{attempt.placement.image}</code></span>
-          )}
-          {attempt.placement.pod && <span>Pod <code>{attempt.placement.pod}</code></span>}
-          {queueWaitMillis(attempt.placement) !== undefined && (
             <span>
-              Queue wait {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}
+              Node <code>{attempt.placement.node}</code>
             </span>
+          ) : (
+            attempt.placement.host && (
+              <span>
+                Host <code>{attempt.placement.host}</code>
+              </span>
+            )
+          )}
+          {attempt.placement.os && (
+            <span>
+              OS <code>{attempt.placement.os}</code>
+            </span>
+          )}
+          {attempt.placement.image && (
+            <span>
+              Image <code>{attempt.placement.image}</code>
+            </span>
+          )}
+          {attempt.placement.pod && (
+            <span>
+              Pod <code>{attempt.placement.pod}</code>
+            </span>
+          )}
+          {queueWaitMillis(attempt.placement) !== undefined && (
+            <span>Queue wait {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}</span>
           )}
         </div>
       )}
@@ -846,26 +854,21 @@ function AttemptDetail({
       {outputs.length > 0 && (
         <details className="definition-disclosure" open>
           <summary>Outputs</summary>
-          <div className="output-table-wrap">
-            <table aria-label="Attempt outputs" className="output-table">
-              <thead>
-                <tr>
-                  <th scope="col">Name</th>
-                  <th scope="col">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {outputs.map(([key, value]) => (
-                  <tr key={key}>
-                    <th scope="row">{key}</th>
-                    <td>
-                      <code>{typeof value === "string" ? value : JSON.stringify(value)}</code>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            ariaLabel="Attempt outputs"
+            className="output-table"
+            shellClassName="output-table-wrap"
+            columns={["Name", "Value"]}
+          >
+            {outputs.map(([key, value]) => (
+              <tr key={key}>
+                <th scope="row">{key}</th>
+                <td>
+                  <code>{typeof value === "string" ? value : JSON.stringify(value)}</code>
+                </td>
+              </tr>
+            ))}
+          </DataTable>
         </details>
       )}
       <div className="artifact-heading">
@@ -876,18 +879,16 @@ function AttemptDetail({
         <p className="empty-detail">No artifacts recorded.</p>
       ) : (
         <div className="artifact-list">
-          {newestFirst(attempt.artifacts, (artifact) => artifact.recordedSeq).map(
-            (artifact) => (
-              <ArtifactRow
-                artifact={artifact}
-                attemptNumber={attempt.number}
-                attemptVisit={attempt.visit}
-                client={client}
-                key={artifact.digest}
-                runId={runId}
-              />
-            ),
-          )}
+          {newestFirst(attempt.artifacts, (artifact) => artifact.recordedSeq).map((artifact) => (
+            <ArtifactRow
+              artifact={artifact}
+              attemptNumber={attempt.number}
+              attemptVisit={attempt.visit}
+              client={client}
+              key={artifact.digest}
+              runId={runId}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -1025,3 +1026,4 @@ function ArtifactRow({
     </article>
   );
 }
+import { DataTable } from "../ui/DataTable";

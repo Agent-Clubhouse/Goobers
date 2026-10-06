@@ -171,6 +171,7 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 		Liveness:          "no-heartbeat",
 		PullRequest:       facts.PullRequest,
 		PROpenerStage:     facts.PROpenerStage,
+		ResumedFromRunID:  facts.ResumedFromRunID,
 		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
 		LatestError:       facts.LatestError,
 		PotentialBlockers: []string{},

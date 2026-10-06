@@ -898,10 +898,30 @@
           "$ref": "#/$defs/duration",
           "examples": ["25m"]
         },
+        "recoveryCustodyTimeout": {
+          "description": "Post-stage recovery custody deadline for Kubernetes stage pods, as a Go duration. Unset keeps the built-in 10 minutes. This budget covers resolving/fetching the recovery base, excluding stage artifacts, scanning git status/diff, snapshotting, bundling, uploading, and host-side import acknowledgement before the pod surrenders. It is still clamped by the issue claim expiry; size it above the slowest expected dirty-worktree scan and archive publication on your runner storage.",
+          "$ref": "#/$defs/duration",
+          "examples": ["10m", "30m"]
+        },
         "stageMemoryLimit": {
           "description": "Memory ONE stage subprocess may use, as a Kubernetes quantity. Stage subprocesses share the daemon's own memory cgroup, so without a bound a single heavy stage can get the control-plane daemon OOM-killed and take every in-flight run with it (#4070); the admission-side memory gate cannot prevent this, because it refuses to START runs while the cgroup is hot and the killing allocation is a stage already running. There is deliberately NO default: the obvious one (pod limit less a daemon reserve) does not survive the recorded incidents, where children of 5.07 and 7.4 GiB killed a 10Gi pod in company with page cache, the daemon, and concurrent sibling stages. Unset, stages run unbounded and the daemon says so at every start. Enforced through a child cgroup where the memory controller is delegated to child cgroups, otherwise through RLIMIT_AS — which bounds ADDRESS SPACE rather than resident memory, so verify a value against a real stage. A breach fails the stage with stage_memory_exceeded rather than killing the daemon.",
           "type": "string",
           "examples": ["8Gi", "4Gi"]
+        },
+        "podTmpfsSize": {
+          "description": "Size of the memory-backed /tmp tmpfs on a Linux stage pod whose runner class carries tmp:ephemeral, as a Kubernetes quantity. Unset keeps the dispatcher default of 512Mi. The size is added to the container memory limit, so raise it only as far as the stages' real temp needs. Go build caches (GOCACHE) are placed on disk-backed pod storage, not here.",
+          "type": "string",
+          "examples": ["1Gi"]
+        },
+        "podEgressProxy": {
+          "description": "Forward proxy stamped into stage pods whose runner class carries network:allowlist, for deterministic and agentic stages alike (HTTPS_PROXY, HTTP_PROXY, NO_PROXY and their lowercase spellings). Needed because such pods cannot dial module registries directly and a stage pod does not inherit the daemon's proxy environment. A stage's own run.env value wins.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "httpsProxy": {"description": "HTTPS proxy URL (http:// or https://, no credentials).", "type": "string", "examples": ["http://goobers-egress-proxy.goobers-system:3128"]},
+            "httpProxy": {"description": "HTTP proxy URL (http:// or https://, no credentials).", "type": "string"},
+            "noProxy": {"description": "Comma-separated hosts, domains and CIDRs that bypass the proxy; no whitespace. Include the cluster-internal service domains.", "type": "string", "examples": [".goobers-system,.svc,.cluster.local"]}
+          }
         },
         "livenessTimeout": {
           "description": "Maximum age of the scheduler tick heartbeat before the daemon reports itself unhealthy. Empty defaults to 2 minutes; values below 2 seconds are rejected.",
@@ -1650,6 +1670,15 @@
           "minLength": 1,
           "description": "host:port for the API listener. Empty defaults to 127.0.0.1:8080. A NON-loopback host is refused at load unless BOTH tls and auth are configured — fail closed, with no insecure override.",
           "examples": ["127.0.0.1:8080"]
+        },
+        "trustedProxies": {
+          "type": "array",
+          "description": "IP addresses or CIDR ranges of reverse proxies trusted to supply X-Forwarded-For for Portal connection-locality classification. Untrusted forwarding headers are ignored.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [["127.0.0.1", "10.0.0.0/24"]]
         },
         "podTokenKeyFile": {
           "type": "string",

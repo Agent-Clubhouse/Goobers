@@ -539,6 +539,11 @@ func (in *GaggleSpec) DeepCopyInto(out *GaggleSpec) {
 		*out = new(RunControls)
 		**out = **in
 	}
+	if in.Health != nil {
+		in, out := &in.Health, &out.Health
+		*out = new(GaggleHealthPolicy)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Sandbox != nil {
 		in, out := &in.Sandbox, &out.Sandbox
 		*out = new(GaggleSandbox)
@@ -1877,6 +1882,199 @@ func (in *WorkflowSpec) DeepCopy() *WorkflowSpec {
 		return nil
 	}
 	out := new(WorkflowSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *GaggleFindingPolicy) DeepCopyInto(out *GaggleFindingPolicy) { *out = *in }
+func (in *GaggleFindingPolicy) DeepCopy() *GaggleFindingPolicy {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleFindingPolicy)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthEvent) DeepCopyInto(out *GaggleHealthEvent) {
+	*out = *in
+	if in.Finding != nil {
+		out.Finding = new(GaggleHealthFinding)
+		in.Finding.DeepCopyInto(out.Finding)
+	}
+}
+func (in *GaggleHealthEvent) DeepCopy() *GaggleHealthEvent {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthEvent)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthEventWorkflow) DeepCopyInto(out *GaggleHealthEventWorkflow) {
+	*out = *in
+	if in.EventTypes != nil {
+		out.EventTypes = append([]string(nil), in.EventTypes...)
+	}
+	if in.FindingCodes != nil {
+		out.FindingCodes = append([]string(nil), in.FindingCodes...)
+	}
+}
+func (in *GaggleHealthEventWorkflow) DeepCopy() *GaggleHealthEventWorkflow {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthEventWorkflow)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthEvidence) DeepCopyInto(out *GaggleHealthEvidence) { *out = *in }
+func (in *GaggleHealthEvidence) DeepCopy() *GaggleHealthEvidence {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthEvidence)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthFinding) DeepCopyInto(out *GaggleHealthFinding) {
+	*out = *in
+	if in.Evidence != nil {
+		out.Evidence = append([]GaggleHealthEvidence(nil), in.Evidence...)
+	}
+	in.Repair.DeepCopyInto(&out.Repair)
+	if in.ResolvedAt != nil {
+		value := *in.ResolvedAt
+		out.ResolvedAt = &value
+	}
+	if in.ResolutionEvidence != nil {
+		out.ResolutionEvidence = append([]GaggleHealthEvidence(nil), in.ResolutionEvidence...)
+	}
+}
+func (in *GaggleHealthFinding) DeepCopy() *GaggleHealthFinding {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthFinding)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthIdentity) DeepCopyInto(out *GaggleHealthIdentity) { *out = *in }
+func (in *GaggleHealthIdentity) DeepCopy() *GaggleHealthIdentity {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthIdentity)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthNotifications) DeepCopyInto(out *GaggleHealthNotifications) {
+	*out = *in
+	if in.Enabled != nil {
+		out.Enabled = new(bool)
+		*out.Enabled = *in.Enabled
+	}
+}
+func (in *GaggleHealthNotifications) DeepCopy() *GaggleHealthNotifications {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthNotifications)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthPolicy) DeepCopyInto(out *GaggleHealthPolicy) {
+	*out = *in
+	if in.Enabled != nil {
+		out.Enabled = new(bool)
+		*out.Enabled = *in.Enabled
+	}
+	if in.Thresholds != nil {
+		out.Thresholds = new(GaggleHealthThresholds)
+		*out.Thresholds = *in.Thresholds
+	}
+	if in.Findings != nil {
+		out.Findings = make(map[string]GaggleFindingPolicy, len(in.Findings))
+		for key, value := range in.Findings {
+			out.Findings[key] = value
+		}
+	}
+	if in.Notifications != nil {
+		out.Notifications = new(GaggleHealthNotifications)
+		in.Notifications.DeepCopyInto(out.Notifications)
+	}
+	if in.EventWorkflow != nil {
+		out.EventWorkflow = new(GaggleHealthEventWorkflow)
+		in.EventWorkflow.DeepCopyInto(out.EventWorkflow)
+	}
+}
+func (in *GaggleHealthPolicy) DeepCopy() *GaggleHealthPolicy {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthPolicy)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthRepair) DeepCopyInto(out *GaggleHealthRepair) {
+	*out = *in
+	if in.AttemptedAt != nil {
+		value := *in.AttemptedAt
+		out.AttemptedAt = &value
+	}
+	if in.CompletedAt != nil {
+		value := *in.CompletedAt
+		out.CompletedAt = &value
+	}
+}
+func (in *GaggleHealthRepair) DeepCopy() *GaggleHealthRepair {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthRepair)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthResponse) DeepCopyInto(out *GaggleHealthResponse) {
+	*out = *in
+	in.Health.DeepCopyInto(&out.Health)
+}
+func (in *GaggleHealthResponse) DeepCopy() *GaggleHealthResponse {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthResponse)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthSnapshot) DeepCopyInto(out *GaggleHealthSnapshot) {
+	*out = *in
+	if in.Active != nil {
+		out.Active = make([]GaggleHealthFinding, len(in.Active))
+		for i := range in.Active {
+			in.Active[i].DeepCopyInto(&out.Active[i])
+		}
+	}
+	if in.History != nil {
+		out.History = make([]GaggleHealthFinding, len(in.History))
+		for i := range in.History {
+			in.History[i].DeepCopyInto(&out.History[i])
+		}
+	}
+}
+func (in *GaggleHealthSnapshot) DeepCopy() *GaggleHealthSnapshot {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthSnapshot)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *GaggleHealthThresholds) DeepCopyInto(out *GaggleHealthThresholds) { *out = *in }
+func (in *GaggleHealthThresholds) DeepCopy() *GaggleHealthThresholds {
+	if in == nil {
+		return nil
+	}
+	out := new(GaggleHealthThresholds)
 	in.DeepCopyInto(out)
 	return out
 }

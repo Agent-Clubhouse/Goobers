@@ -255,8 +255,8 @@ func TestMergePRDispatchesToADOAndLandsWithoutVerdictComment(t *testing.T) {
 	if opts == nil {
 		t.Fatalf("PATCH body = %+v, want completionOptions", body)
 	}
-	if got := opts["mergeCommitMessage"]; got != "Closes #1456" {
-		t.Fatalf("mergeCommitMessage = %q, want %q", got, "Closes #1456")
+	if want := "Wire ADO merge dispatch\n\nCloses #1456"; opts["mergeCommitMessage"] != want {
+		t.Fatalf("mergeCommitMessage = %q, want %q", opts["mergeCommitMessage"], want)
 	}
 	if got := opts["mergeStrategy"]; got != "squash" {
 		t.Fatalf("mergeStrategy = %q, want squash", got)
@@ -686,7 +686,9 @@ func TestMergePRADORecoversVerdictForCommitMessage(t *testing.T) {
 	if opts == nil {
 		t.Fatalf("PATCH body = %+v, want completionOptions", body)
 	}
-	want := "Merge wiring is correct.\n\nEvery conjunct is re-polled under the lock.\n\nCloses #1456\n\nReviewed-by: " + adoMergePRAuthor
+	// ADO has one message field and its first line is the commit subject, so
+	// the pull request title leads and the verdict follows as the body.
+	want := "Wire ADO merge dispatch\n\nMerge wiring is correct.\n\nEvery conjunct is re-polled under the lock.\n\nCloses #1456\n\nReviewed-by: " + adoMergePRAuthor
 	if got := opts["mergeCommitMessage"]; got != want {
 		t.Fatalf("mergeCommitMessage = %q, want %q", got, want)
 	}
@@ -718,7 +720,7 @@ func TestMergePRADOStaleThreadVerdictFallsBackToPRFields(t *testing.T) {
 	}
 	body, _ := state.patchBody.Load().(map[string]interface{})
 	opts, _ := body["completionOptions"].(map[string]interface{})
-	if got := opts["mergeCommitMessage"]; got != "Closes #1456" {
-		t.Fatalf("mergeCommitMessage = %q, want the non-verdict fallback %q", got, "Closes #1456")
+	if want := "Wire ADO merge dispatch\n\nCloses #1456"; opts["mergeCommitMessage"] != want {
+		t.Fatalf("mergeCommitMessage = %q, want the non-verdict fallback %q", opts["mergeCommitMessage"], want)
 	}
 }

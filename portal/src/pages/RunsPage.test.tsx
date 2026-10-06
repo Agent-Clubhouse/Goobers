@@ -47,7 +47,7 @@ describe("runs history page", () => {
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "active" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "All runs" })).toHaveAttribute("aria-pressed", "true");
   }, 10_000);
 
   it("maps filter chips onto server-side phase requests", async () => {
@@ -96,19 +96,18 @@ describe("runs history page", () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     await screen.findByRole("heading", { name: "Runs" });
-    await user.selectOptions(screen.getByLabelText("Filter by gaggle"), "core");
+    await user.click(screen.getByRole("button", { name: "Scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · core" }));
     expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
 
-    await user.selectOptions(
-      screen.getByLabelText("Filter by workflow"),
-      JSON.stringify(["core", "implementation"]),
-    );
+    await user.click(screen.getByRole("button", { name: "Scope" }));
+    await user.click(screen.getByRole("button", { name: "Workflow · core / implementation" }));
     expect(window.location.hash).toBe(
       "#/runs?gaggle=core&workflow=implementation&status=all",
     );
 
     await user.click(screen.getByRole("button", { name: "active" }));
-    expect(window.location.hash).toBe("#/runs?gaggle=core&workflow=implementation");
+    expect(window.location.hash).toBe("#/runs?gaggle=core&workflow=implementation&status=active");
   });
 
   it("identifies runs by their work item while retaining the run ID", async () => {
@@ -178,7 +177,8 @@ describe("runs history page", () => {
 
     const trigger = await screen.findByRole("button", { name: "Filters" });
     await user.click(trigger);
-    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "core");
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · core" }));
     await user.keyboard("{Escape}");
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -186,15 +186,15 @@ describe("runs history page", () => {
     expect(trigger).toHaveFocus();
 
     await user.click(trigger);
-    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "core");
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · core" }));
     await user.click(screen.getByRole("button", { name: "Apply filters" }));
 
     expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
-    expect(await screen.findByRole("button", { name: "Remove Gaggle: core filter" }))
-      .toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · core");
   });
 
-  it("applies advanced sheet filters and exposes each one as a removable chip", async () => {
+  it("applies advanced sheet filters and edits or clears them through their controls", async () => {
     window.location.hash = "#/runs?status=all";
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
@@ -214,23 +214,29 @@ describe("runs history page", () => {
       "&window=24h&status=all",
     );
     expect(await screen.findByLabelText("7 active filters")).toBeInTheDocument();
-    for (const label of [
-      "Status: all",
-      "Stage: review",
-      "Outcome: Failure",
-      "Population: Attempts",
-      "Since: 2026-07-18T00:00:00Z",
-      "Until: 2026-07-19T00:00:00Z",
-      "Time window: Last 24 hours",
-    ]) {
-      expect(await screen.findByRole("button", { name: `Remove ${label} filter` }))
-        .toBeInTheDocument();
-    }
+    expect(screen.queryByRole("button", { name: /^Remove .* filter$/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    expect(screen.getByLabelText("Draft stage filter")).toHaveValue("review");
+    expect(screen.getByLabelText("Draft outcome filter")).toHaveValue("failure");
+    expect(screen.getByLabelText("Draft population filter")).toHaveValue("attempts");
+    expect(screen.getByLabelText("Draft since filter")).toHaveValue("2026-07-18T00:00:00Z");
+    expect(screen.getByLabelText("Draft until filter")).toHaveValue("2026-07-19T00:00:00Z");
+    expect(screen.getByLabelText("Draft time window filter")).toHaveValue("24h");
+    await user.clear(screen.getByLabelText("Draft stage filter"));
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+    await waitFor(() => expect(window.location.hash).not.toContain("stage=review"));
+    expect(window.location.hash).toContain("outcome=failure");
 
-    await user.click(screen.getByRole("button", { name: "Remove Stage: review filter" }));
-    expect(window.location.hash).not.toContain("stage=review");
-    await user.click(screen.getByRole("button", { name: "Reset filters" }));
-    expect(window.location.hash).toBe("#/runs");
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const dialog = screen.getByRole("dialog", { name: "Filters" });
+    await user.click(within(dialog).getByRole("button", { name: "All runs" }));
+    await user.selectOptions(screen.getByLabelText("Draft outcome filter"), "");
+    await user.selectOptions(screen.getByLabelText("Draft population filter"), "");
+    await user.clear(screen.getByLabelText("Draft since filter"));
+    await user.clear(screen.getByLabelText("Draft until filter"));
+    await user.selectOptions(screen.getByLabelText("Draft time window filter"), "");
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/runs"));
   });
 
   it("keeps invalid-route sheet edits isolated when canceled", async () => {
@@ -254,11 +260,11 @@ describe("runs history page", () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     await user.click(await screen.findByRole("button", { name: "Filters" }));
-    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "tools");
-    await user.selectOptions(
-      screen.getByLabelText("Draft workflow filter"),
-      JSON.stringify(["tools", "implementation"]),
-    );
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Gaggle · tools" }));
+    expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
+    await user.click(screen.getByRole("button", { name: "Draft scope" }));
+    await user.click(screen.getByRole("button", { name: "Workflow · tools / implementation" }));
     await user.click(screen.getByRole("button", { name: "Apply filters" }));
 
     expect(window.location.hash).toBe(
@@ -397,19 +403,17 @@ describe("runs history page", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(await screen.findByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
 
-    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+    expect(await screen.findByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
-    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
-    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
+    expect(await screen.findByRole("button", { name: "Scope" })).toHaveTextContent("Workflow · core / implementation");
   });
 
   it("surfaces a daemon error with an explicit reconnect affordance", async () => {

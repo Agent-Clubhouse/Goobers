@@ -491,13 +491,27 @@ func adoCompletionBody(req MergePullRequestRequest) map[string]interface{} {
 		"completionOptions": adoCompletionOptions{
 			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
 			DeleteSourceBranch: req.DeleteSourceBranch,
-			MergeCommitMessage: req.CommitMessage,
+			MergeCommitMessage: adoCompletionMessage(req.CommitTitle, req.CommitMessage),
 		},
 	}
 	if req.ExpectedHeadSHA != "" {
 		body["lastMergeSourceCommit"] = adoCommitRef{CommitID: req.ExpectedHeadSHA}
 	}
 	return body
+}
+
+// adoCompletionMessage folds the commit title into ADO's single
+// mergeCommitMessage field. ADO has no separate title: the first line of the
+// message becomes the commit subject, so sending only the body made every
+// Goobers squash on ADO titled with the review summary instead of the pull
+// request title. With no body, the field stays empty and ADO keeps its own
+// default ("Merged PR <n>: <title>").
+func adoCompletionMessage(title, message string) string {
+	title, message = strings.TrimSpace(title), strings.TrimSpace(message)
+	if message == "" || title == "" {
+		return message
+	}
+	return title + "\n\n" + message
 }
 
 // adoCompletionError maps ADO's completion refusals onto typed errors

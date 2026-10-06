@@ -199,6 +199,26 @@ func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
 	}
 }
 
+func TestValidateSourceTreeLoadsInstructionsFromGooberSourceDirectory(t *testing.T) {
+	root := t.TempDir()
+	if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+		t.Fatal(err)
+	}
+	canonicalDir := filepath.Join(root, "gaggles", "example", "goobers", "implementer")
+	sourceDir := filepath.Join(root, "gaggles", "example", "goobers", "deps-coder")
+	if err := os.Rename(canonicalDir, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", "--source-tree", "--instance", filepath.Join(root, instance.GuidedSourceInstanceFile), root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("validate source tree code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "OK: instance.yaml valid; config/ valid") {
+		t.Fatalf("validate stdout missing success message:\n%s", stdout)
+	}
+}
+
 func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 	for _, sourceTree := range []bool{false, true} {
 		name := "instance"

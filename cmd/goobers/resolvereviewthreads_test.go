@@ -82,7 +82,7 @@ func assertAttributedReviewThreadReply(t *testing.T, threadID, body string) {
 }
 
 func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
-	rendered := renderReviewThreadReply("run-1", "sha", reviewThreadDisposition{ThreadID: "T1", Disposition: "addressed", Detail: "done"})
+	rendered := renderReviewThreadReply("run-1", "p1", "sha", reviewThreadDisposition{ThreadID: "T1", Disposition: "addressed", Detail: "done"})
 	attributed := rendered + "\n\n<!-- goobers:attribution v1 e30= -->\nPosted by **Goobers** | `goobers/pr-remediation`"
 	for _, tc := range []struct {
 		name     string
@@ -93,13 +93,17 @@ func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
 		{"CRLF-normalised reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "\n", "\r\n")}}, true},
 		{"reply on another thread", []providers.PullRequestInlineComment{{ThreadID: "T2", Body: attributed}}, false},
 		{"another run's reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "run-1", "run-0")}}, false},
-		{"marker quoted mid-line", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "see " + reviewThreadResponseMarker("run-1", "T1") + " above"}}, false},
+		{"marker quoted mid-line", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "see " + reviewThreadResponseMarker("run-1", "T1", "p1") + " above"}}, false},
+		// #6131: a reply to an earlier publication pass's feedback snapshot,
+		// or the snapshot-less marker, is not this pass's reply.
+		{"earlier pass's reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, ":T1:p1 -->", ":T1:p0 -->")}}, false},
+		{"snapshot-less marker", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: reviewThreadResponseMarker("run-1", "T1", "")}}, false},
 		{"reviewer comment only", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "finding"}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			snapshot := providers.PullRequestReviewThreads{InlineComments: tc.comments}
-			if got := reviewThreadHasReply(snapshot, "run-1", "T1"); got != tc.want {
-				t.Fatalf("reviewThreadHasReply = %v, want %v", got, tc.want)
+			if _, got := reviewThreadReplyID(snapshot, "run-1", "T1", "p1"); got != tc.want {
+				t.Fatalf("reviewThreadReplyID found = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -381,10 +385,18 @@ func TestResolveReviewThreadsRefusesWhenPublishedHeadMoved(t *testing.T) {
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
 	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
-	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	t.Chdir(dir)
 
-	if code, _, stderr := runArgs(t, "resolve-review-threads", root); code == 0 {
-		t.Fatalf("resolve-review-threads succeeded after head drift; stderr=%q", stderr)
+	// #6126/#6128: a head that moved off the published SHA ends the run as a
+	// typed stale-head no-work — nothing published, never a provider failure.
+	code, stdout, stderr := runArgs(t, "resolve-review-threads", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q; want a typed no-work", code, stdout, stderr)
+	}
+	result := readJSONResult(t, filepath.Join(dir, resolveReviewThreadsResultFile))
+	if result["noWork"] != true || result[staleInputOutput] != staleReasonHead || result["liveHeadSha"] != "advanced-sha" {
+		t.Fatalf("result = %v, want a stale-head no-work", result)
 	}
 	if reviewThreadsAccessed {
 		t.Fatal("review threads were accessed after head drift")

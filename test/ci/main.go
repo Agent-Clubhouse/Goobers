@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -426,8 +427,11 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			expectEmpty: true,
 			group:       groupChecks,
 		},
+		// CI policy tests remain required even when backend unit jobs skip.
+		{label: "ci-policy", command: tools.goCommand, args: []string{"test", "./test/cipolicy", "./test/ci", "-count=1"}, group: groupPreflight},
 		// Discover undeclared downloads before the long unit/browser suites.
 		{label: "runtime-acquisitions", command: tools.goCommand, args: []string{"test", "./test/ci", "-run", "Test.*Acquisition", "-count=1"}, group: groupPreflight},
+		{label: "architecture-imports", command: tools.goCommand, args: []string{"run", "./test/architectureimports", "-config", "test/architectureimports/rules.json"}, group: groupPreflight},
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
@@ -621,6 +625,20 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			label:        "portal-contract-test",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "run", "test:contract"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-package",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "package:portal"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-package-test",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "test:package"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},
@@ -904,6 +922,12 @@ func portalPreparationChecks(tools toolchain) []check {
 			args:    []string{"vet", "-tags", "embed_portal", "./internal/portalassets", "./cmd/goobers"},
 			group:   groupChecks,
 		},
+		{
+			label:   "portal-embed-test",
+			command: tools.goCommand,
+			args:    []string{"test", "-tags", "embed_portal", "-count=1", "./internal/portalassets"},
+			group:   groupChecks,
+		},
 	}
 }
 
@@ -1018,7 +1042,60 @@ func golangciCacheEnvironment() []string {
 	return []string{"GOLANGCI_LINT_CACHE=" + cache}
 }
 
+// appendGitConfigOverrides re-bases a check's GIT_CONFIG_COUNT/KEY_n/VALUE_n
+// overrides after any git config the ambient environment already injected.
+//
+// Those variables are one indexed list, not independent names, so overriding
+// them by name (core.fsync=none at index 0) silently deletes whatever the host
+// put there. A pod-placed local-ci is the case that matters: its /workspace
+// emptyDir is root-owned, the dispatcher grants nonroot access with
+// safe.directory in GIT_CONFIG_*, and replacing the list made every git call in
+// the test tier (and go build's VCS stamping) fail "detected dubious
+// ownership" — 40+ tests and release-image-probes.
+func appendGitConfigOverrides(base, overrides []string) []string {
+	var baseCount int
+	for _, variable := range base {
+		if environmentName(variable) == "GIT_CONFIG_COUNT" {
+			value := strings.TrimPrefix(variable, "GIT_CONFIG_COUNT=")
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				baseCount = n
+			}
+		}
+	}
+	overrideCount := -1
+	for _, override := range overrides {
+		if environmentName(override) == "GIT_CONFIG_COUNT" {
+			if n, err := strconv.Atoi(strings.TrimPrefix(override, "GIT_CONFIG_COUNT=")); err == nil {
+				overrideCount = n
+			}
+		}
+	}
+	if baseCount == 0 || overrideCount < 0 {
+		return overrides
+	}
+	result := make([]string, 0, len(overrides))
+	for _, override := range overrides {
+		name, value, _ := strings.Cut(override, "=")
+		switch {
+		case name == "GIT_CONFIG_COUNT":
+			result = append(result, "GIT_CONFIG_COUNT="+strconv.Itoa(baseCount+overrideCount))
+		case strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_"):
+			prefix := name[:strings.LastIndexByte(name, '_')+1]
+			index, err := strconv.Atoi(name[len(prefix):])
+			if err != nil {
+				result = append(result, override)
+				continue
+			}
+			result = append(result, prefix+strconv.Itoa(baseCount+index)+"="+value)
+		default:
+			result = append(result, override)
+		}
+	}
+	return result
+}
+
 func mergeEnvironment(base, overrides []string, caseInsensitive bool) []string {
+	overrides = appendGitConfigOverrides(base, overrides)
 	result := make([]string, 0, len(base)+len(overrides))
 	for _, variable := range base {
 		name := environmentName(variable)

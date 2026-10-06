@@ -195,6 +195,37 @@ export const goWireFixtures = {
       "watching": true,
       "state": "rejected"
     },
+    "startup": {
+      "phase": "crash-resume",
+      "target": "candidates=6",
+      "since": "2026-07-18T12:32:56Z",
+      "elapsedSeconds": 120,
+      "worktreeCount": 1,
+      "recoveryRunCount": 6,
+      "accumulationCount": 7,
+      "budgetSeconds": 60,
+      "budgetUsedPercent": 200,
+      "budgetState": "exceeded",
+      "blockingCandidate": {
+        "progress": {
+          "total": 6,
+          "examined": 6,
+          "resumed": 5,
+          "reattached": 0,
+          "terminal": 0,
+          "skipped": 0
+        },
+        "runId": "0123456789abcdef0123456789abcdef",
+        "gaggle": "goobers",
+        "workflow": "implement",
+        "disposition": "resolving-generation",
+        "operation": "resolve execution generation",
+        "startedAt": "2026-07-18T12:32:56Z",
+        "lastProgressAt": "2026-07-18T12:34:56Z",
+        "elapsedSeconds": 120,
+        "progressAgeSeconds": 5
+      }
+    },
     "update": {
       "available": true,
       "latestVersion": "v1.3.0",
@@ -462,7 +493,8 @@ export const goWireFixtures = {
     "capabilities": {
       "revealRun": false,
       "workflowEnable": false
-    }
+    },
+    "connectionLocality": "local"
   },
   "gaggles": {
     "items": [
@@ -875,7 +907,10 @@ export const goWireFixtures = {
         "operator": {
           "issue": {
             "number": "673",
-            "title": "Improve operator status"
+            "title": "Improve operator status",
+            "labels": [
+              "goobers:needs-human"
+            ]
           },
           "currentStage": "review",
           "liveness": "terminal",
@@ -967,7 +1002,10 @@ export const goWireFixtures = {
     "operator": {
       "issue": {
         "number": "673",
-        "title": "Improve operator status"
+        "title": "Improve operator status",
+        "labels": [
+          "goobers:needs-human"
+        ]
       },
       "currentStage": "review",
       "liveness": "terminal",
@@ -1473,6 +1511,8 @@ export const goWireFixtures = {
         "p50CostAIC": 125,
         "p95CostAIC": 250,
         "retryWasteAttempts": 1,
+        "retryWasteTokenSamples": 1,
+        "retryWasteCostSamples": 1,
         "retryWasteDurationMs": 100000,
         "retryWasteTokens": 12000,
         "retryWasteCostAIC": 75,
@@ -1496,6 +1536,8 @@ export const goWireFixtures = {
         "p50CostAIC": 125,
         "p95CostAIC": 250,
         "retryWasteAttempts": 1,
+        "retryWasteTokenSamples": 1,
+        "retryWasteCostSamples": 1,
         "retryWasteTokens": 12000,
         "retryWasteCostAIC": 75
       }

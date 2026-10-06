@@ -61,7 +61,10 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	if err := recoveryGit(ctx, repository, io.Discard, "cat-file", "-e", currentMain+"^{commit}"); err != nil {
 		return "", fmt.Errorf("current main commit is unavailable: %w", err)
 	}
-	directory, err := os.MkdirTemp("", "goobers-recovery-restore-*")
+	if err := recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", record.BaseSHA, currentMain); err != nil {
+		return "", fmt.Errorf("retained checkpoint is stale: its base is not an ancestor of current main: %w", ErrIncompatibleSnapshot)
+	}
+	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-restore-*")
 	if err != nil {
 		return "", err
 	}
@@ -105,7 +108,7 @@ func applyRetainedPatch(ctx context.Context, repository, directory string, envir
 	}
 	if err := recoveryGitIO(ctx, repository, io.Discard, file, environment,
 		"apply", "--cached", "--3way", "--binary", "--whitespace=nowarn", "-"); err != nil {
-		return fmt.Errorf("retained patch cannot be applied cleanly to current main: %w", err)
+		return fmt.Errorf("retained patch cannot be applied cleanly to current main: %w: %w", ErrIncompatibleSnapshot, err)
 	}
 	return nil
 }

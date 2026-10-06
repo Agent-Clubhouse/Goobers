@@ -4,6 +4,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 )
 
 // PinnedWorkflowGraphInputName is the immutable input snapshot containing the
@@ -120,6 +121,10 @@ type RunIdentity struct {
 	Trigger Trigger `json:"trigger"`
 	// Inputs are the content-digested input snapshots pinned at run start.
 	Inputs []InputRef `json:"inputs,omitempty"`
+	// MutationHistory freezes inherited intent/completion evidence. It is metadata
+	// only: no provider operation is skipped on its authority.
+	MutationHistory []mutationreceipt.Receipt `json:"mutationHistory,omitempty"`
+
 	// ContinuedFromRunID links this run to the terminal run it continues.
 	ContinuedFromRunID string `json:"continuedFromRunId,omitempty"`
 	// SourceTerminalSeq is the terminal event generation selected by the

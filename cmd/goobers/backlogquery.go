@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/fieldpredicate"
@@ -1171,14 +1172,14 @@ func reorderContestedBacklogItems(
 			pf(env.stderr, "warning: invalid contestedFileMinPRs %q; using %d\n", value, minPRs)
 		}
 	}
-	touches, err := openPRTouches(ctx, prProvider, env.repo, "")
+	touches, err := contention.OpenPullRequestTouches(ctx, prProvider, env.repo, "", providerBranchNamespace())
 	if err != nil {
 		pf(env.stderr, "warning: contested-file dispatch awareness unavailable (%v); using FIFO order\n", err)
 		return eligible
 	}
 	forward := eligible[:forwardCount]
 	resweep := eligible[forwardCount:]
-	reordered, deprioritized := partitionByContention(forward, touches, minPRs)
+	reordered, deprioritized := contention.StablePartition(forward, touches, minPRs)
 	if count := len(deprioritized); count > 0 && count < len(reordered) {
 		pf(env.stderr, "contested-file dispatch: deprioritized %d contested issue(s) [%s] behind %d disjoint one(s)\n",
 			count, strings.Join(deprioritized, ","), len(reordered)-count)
@@ -2664,34 +2665,27 @@ func backlogReconcileNotApplicable(env backlogQueryEnv) bool {
 // telemetry rollup records no corrections for the cycle.
 func writeBacklogReconciliationNotApplicable(provider providers.ProviderKind, stdout, stderr io.Writer) int {
 	reason := fmt.Sprintf("backlog metadata reconciliation is not applicable on %s: skipped", provider)
-	data, err := json.Marshal(map[string]any{
+	value := map[string]any{
 		"reconciled":    0,
 		"notApplicable": "true",
 		"reason":        reason,
-	})
-	if err != nil {
-		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
-		return 1
 	}
 	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, value, stageResultOptions{
+		MarshalLabel: "marshal backlog reconciliation",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "%s\n", reason)
 	return 0
 }
 
 func writeBacklogReconciliationResult(result backlogReconciliationResult, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(result)
-	if err != nil {
-		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, result, stageResultOptions{
+		MarshalLabel: "marshal backlog reconciliation",
+	}); code != 0 {
+		return code
 	}
 	if result.Scan.WorkRemaining {
 		pf(stdout, "reconciled %d backlog item(s); reconciliation scan incomplete after %d item(s), work remains\n",
@@ -3542,18 +3536,15 @@ func writeNoWorkResult(stdout, stderr io.Writer, reason string) int {
 	// carry stage stdout — it is where an agent transcript or a provider
 	// string can quote a secret — so a reason that exists only there is
 	// unreachable to the operator debugging a no-work cycle from a bundle.
-	data, err := json.Marshal(map[string]interface{}{
+	value := map[string]interface{}{
 		"claimed":             false,
 		executor.OutputNoWork: true,
 		"noWorkReason":        reason,
-	})
-	if err != nil {
-		pf(stderr, "error: marshal no-work result: %v\n", err)
-		return 1
 	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, value, stageResultOptions{
+		MarshalLabel: "marshal no-work result",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "no work: %s\n", reason)
 	return 0

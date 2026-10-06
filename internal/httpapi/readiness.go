@@ -45,15 +45,16 @@ type InstanceReadiness struct {
 // at 80% and "exceeded" at 100%, giving operators the same signal the startup
 // watchdog uses instead of a separate hand-tuned threshold.
 type InstanceRecoveryPhase struct {
-	Phase             string  `json:"phase"`
-	Target            string  `json:"target,omitempty"`
-	ElapsedSeconds    float64 `json:"elapsedSeconds"`
-	WorktreeCount     int     `json:"worktreeCount"`
-	RecoveryRunCount  int     `json:"recoveryRunCount"`
-	AccumulationCount int     `json:"accumulationCount"`
-	BudgetSeconds     float64 `json:"budgetSeconds"`
-	BudgetUsedPercent float64 `json:"budgetUsedPercent"`
-	BudgetState       string  `json:"budgetState"`
+	Phase             string                   `json:"phase"`
+	Target            string                   `json:"target,omitempty"`
+	ElapsedSeconds    float64                  `json:"elapsedSeconds"`
+	WorktreeCount     int                      `json:"worktreeCount"`
+	RecoveryRunCount  int                      `json:"recoveryRunCount"`
+	AccumulationCount int                      `json:"accumulationCount"`
+	BudgetSeconds     float64                  `json:"budgetSeconds"`
+	BudgetUsedPercent float64                  `json:"budgetUsedPercent"`
+	BudgetState       string                   `json:"budgetState"`
+	BlockingCandidate *RecoveryCandidateStatus `json:"blockingCandidate,omitempty"`
 }
 
 func registerInstanceReadinessRoute(router *Router, svc InstanceReadinessService, errorLog *log.Logger, discovery *discoveryState) {

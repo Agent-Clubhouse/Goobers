@@ -520,8 +520,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 				TokenSamples: 2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 				CostSamples: 2, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
 				RetryWasteAttempts: 1, RetryWasteDurationMs: 10, HasRetryWasteDuration: true,
-				RetryWasteTokens: 100, HasRetryWasteTokens: true,
-				RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
+				RetryWasteTokenSamples: 1, RetryWasteTokens: 100, HasRetryWasteTokens: true,
+				RetryWasteCostSamples: 1, RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
 			},
 			{Gaggle: "core", Workflow: "running", Stage: "active", TotalAttempts: 1},
 		},
@@ -531,8 +531,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 			TokenSamples:  2, P50Tokens: 100, P95Tokens: 200, HasTokens: true,
 			PremiumRequestSamples: 2, P50CopilotPremiumRequests: 0, P95CopilotPremiumRequests: 1, HasPremiumRequests: true,
 			CostSamples: 2, CostUSD: 1.5, P50CostUSD: 0.5, P95CostUSD: 1, HasCost: true,
-			RetryWasteAttempts: 1, RetryWasteTokens: 100, HasRetryWasteTokens: true,
-			RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
+			RetryWasteAttempts: 1, RetryWasteTokenSamples: 1, RetryWasteTokens: 100, HasRetryWasteTokens: true,
+			RetryWasteCostSamples: 1, RetryWasteCostUSD: 0.5, HasRetryWasteCost: true,
 		}},
 		Models: []rollup.ModelStats{{
 			Model: "gpt-5.4", UsageSamples: 1,
@@ -600,6 +600,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		done.P95Tokens == nil || *done.P95Tokens != 200 ||
 		done.P50CostAIC == nil || *done.P50CostAIC != 50 ||
 		done.RetryWasteDurationMs == nil || *done.RetryWasteDurationMs != 10 ||
+		done.RetryWasteTokenSamples != 1 || done.RetryWasteCostSamples != 1 ||
 		done.RetryWasteTokens == nil || *done.RetryWasteTokens != 100 ||
 		done.RetryWasteCostAIC == nil || *done.RetryWasteCostAIC != 50 {
 		t.Fatalf("projected stage distributions = %+v", done)
@@ -615,6 +616,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		got.Usage[0].P50CopilotPremiumRequests == nil || *got.Usage[0].P50CopilotPremiumRequests != 0 ||
 		got.Usage[0].P95CopilotPremiumRequests == nil || *got.Usage[0].P95CopilotPremiumRequests != 1 ||
 		got.Usage[0].CostAIC == nil || *got.Usage[0].CostAIC != 150 ||
+		got.Usage[0].RetryWasteTokenSamples != 1 || got.Usage[0].RetryWasteCostSamples != 1 ||
 		got.Usage[0].RetryWasteCostAIC == nil || *got.Usage[0].RetryWasteCostAIC != 50 {
 		t.Fatalf("projected scope usage = %+v", got.Usage)
 	}

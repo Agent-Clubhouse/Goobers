@@ -217,6 +217,34 @@ func TestUsageRollupDisambiguatesOverlappingRepassSpanByFirstBranchStart(t *test
 	}
 }
 
+func TestUsageRollupDisambiguatesRepeatedRemediateCITraversals(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "implementation", "remediate-ci", fixtureStart,
+		usageAttemptFixture{number: 1, duration: 10 * time.Millisecond, status: "failure",
+			spanEndDelay: 100 * time.Millisecond,
+			metrics:      map[string]float64{telemetry.AttrGenAIUsageInputTokens: 5}},
+		usageAttemptFixture{number: 1, duration: 10 * time.Millisecond, status: "success",
+			metrics: map[string]float64{telemetry.AttrGenAIUsageInputTokens: 15}})
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), dir); err != nil {
+		t.Fatalf("IngestRun repeated remediate-ci: %v", err)
+	}
+
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
+	if err != nil {
+		t.Fatalf("StageAttempts: %v", err)
+	}
+	if len(attempts) != 2 ||
+		attempts[0].Traversal != 1 || attempts[0].Attempt != 1 ||
+		attempts[0].InputTokens == nil || *attempts[0].InputTokens != 5 ||
+		attempts[1].Traversal != 2 || attempts[1].Attempt != 1 ||
+		attempts[1].InputTokens == nil || *attempts[1].InputTokens != 15 {
+		t.Fatalf("remediate-ci attempts = %#v, want distinct traversals with attributed usage", attempts)
+	}
+}
+
 func TestTrendStatsUsesOnlyFinalTraversal(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
@@ -551,8 +579,11 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		t.Fatalf("gaggle cost rollup = %#v", gaggleUsage)
 	}
 	if workflowUsage.RetryWasteAttempts != 3 ||
-		workflowUsage.HasRetryWasteTokens || workflowUsage.HasRetryWasteCost {
-		t.Fatalf("partial workflow retry usage became a total: %#v", workflowUsage)
+		workflowUsage.RetryWasteTokenSamples != 2 || !workflowUsage.HasRetryWasteTokens ||
+		workflowUsage.RetryWasteTokens != 45 ||
+		workflowUsage.RetryWasteCostSamples != 2 || !workflowUsage.HasRetryWasteCost ||
+		workflowUsage.RetryWasteCostUSD != 2.5 {
+		t.Fatalf("partial workflow retry usage = %#v", workflowUsage)
 	}
 
 	agent := byStage["agent"]
@@ -568,8 +599,11 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	if agent.RetryWasteAttempts != 2 || !agent.HasRetryWasteDuration || agent.RetryWasteDurationMs != 60 {
 		t.Fatalf("agent retry waste = %#v", agent)
 	}
-	if agent.HasRetryWasteTokens || agent.HasRetryWasteCost {
-		t.Fatalf("partial retry usage became a total: %#v", agent)
+	if agent.RetryWasteTokenSamples != 1 || !agent.HasRetryWasteTokens ||
+		agent.RetryWasteTokens != 40 ||
+		agent.RetryWasteCostSamples != 1 || !agent.HasRetryWasteCost ||
+		agent.RetryWasteCostUSD != 2 {
+		t.Fatalf("partial retry usage = %#v", agent)
 	}
 
 	retried := byStage["fully-retried"]

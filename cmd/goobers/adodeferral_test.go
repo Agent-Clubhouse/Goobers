@@ -16,10 +16,11 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestADODeferralPublishesHoldAndPreservesEvidence(t *testing.T) {
+func TestADODeferralWithoutSiblingPublishesRemediationAndPreservesEvidence(t *testing.T) {
 	for _, reason := range []apiv1.VerdictReasonCode{apiv1.VerdictReasonOrdering, apiv1.VerdictReasonNoLander} {
 		t.Run(string(reason), func(t *testing.T) {
 			var label, state, comment string
+			removedSiblingHold := false
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/pullrequests/359/iterations"):
@@ -29,9 +30,15 @@ func TestADODeferralPublishesHoldAndPreservesEvidence(t *testing.T) {
 					_ = json.NewDecoder(r.Body).Decode(&body)
 					state = body.State
 					_, _ = w.Write([]byte(`{"id":7}`))
+				case strings.HasSuffix(r.URL.Path, "/labels/sibling-hold"):
+					if r.Method != http.MethodDelete {
+						t.Errorf("sibling hold request method = %s, want DELETE", r.Method)
+					}
+					removedSiblingHold = true
+					w.WriteHeader(http.StatusOK)
 				case strings.HasSuffix(r.URL.Path, "/labels"):
 					if r.Method == http.MethodGet {
-						_, _ = w.Write([]byte(`{"value":[]}`))
+						_, _ = w.Write([]byte(`{"value":[{"id":"sibling-hold","name":"` + blockedOnSiblingLabel + `"}]}`))
 						return
 					}
 					var body struct{ Name string }
@@ -63,8 +70,11 @@ func TestADODeferralPublishesHoldAndPreservesEvidence(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("code=%d stderr=%s", code, stderr.String())
 			}
-			if label != blockedOnSiblingLabel || state != "failed" {
+			if label != needsRemediationLabel || state != "failed" {
 				t.Fatalf("label=%q state=%q", label, state)
+			}
+			if !removedSiblingHold {
+				t.Fatal("stale blocked-on-sibling label was not removed")
 			}
 			got, ok := parseVerdictComment(comment)
 			if !ok || !reflect.DeepEqual(got, verdict) {

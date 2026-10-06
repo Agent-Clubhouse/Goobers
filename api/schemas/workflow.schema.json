@@ -366,6 +366,7 @@
               "close-issues",
               "close-pr",
               "comment-on-issue",
+              "comment-on-pr-advisory",
               "create-issue",
               "delete-branch",
               "demote-pr",

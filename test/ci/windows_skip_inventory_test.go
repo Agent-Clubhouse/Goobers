@@ -170,8 +170,8 @@ func windowsGateTestInvocations(t *testing.T, workflow ciWorkflow) []windowsTest
 		t.Fatal("ci.yml must keep a windows-smoke job on windows-latest; update the Windows skip inventory test if the gate moved")
 	}
 	var invocations []windowsTestInvocation
-	if job.If != "" || job.ContinueOnError {
-		t.Fatal("windows-smoke must run unconditionally for its selection to count as Windows coverage")
+	if job.If != ciFullGate || !slices.Contains(job.Needs, "scope") || job.ContinueOnError {
+		t.Fatal("windows-smoke must run for the full profile for its selection to count as Windows coverage")
 	}
 	for _, step := range job.Steps {
 		stepInvocations := parseGoTestInvocations(step.Run)

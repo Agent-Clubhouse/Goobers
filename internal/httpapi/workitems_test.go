@@ -24,11 +24,12 @@ func TestWorkItemRoutesListAndDrillIntoActions(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, WorkItemsPath+"?kind=pr&provider=github&limit=25", nil))
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, WorkItemsPath+"?kind=pr&provider=github&gaggle=core&limit=25", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %q", list.Code, list.Body.String())
 	}
-	if reader.workItemsReq.Kind != "pr" || reader.workItemsReq.Provider != "github" || reader.workItemsReq.Limit != 25 {
+	if reader.workItemsReq.Kind != "pr" || reader.workItemsReq.Provider != "github" ||
+		reader.workItemsReq.Gaggle != "core" || reader.workItemsReq.Limit != 25 {
 		t.Fatalf("list request = %#v", reader.workItemsReq)
 	}
 

@@ -220,6 +220,21 @@ func TestSummaryIsOneLineNamingTheGap(t *testing.T) {
 			t.Errorf("unknown summary %q lacks %q", unknown, want)
 		}
 	}
+
+	notApplicable := Summary("stage pod", Verify(dirs, nil, false, errors.New(DefenderNotApplicableMessage)))
+	if strings.Contains(notApplicable, "could not read Microsoft Defender exclusions") {
+		t.Errorf("not-applicable summary looks like a failure: %q", notApplicable)
+	}
+	for _, want := range []string{"not applicable:", `C:\workspace (stage workspace mount`, `C:\Users\ContainerUser\AppData\Local\Temp (`} {
+		if !strings.Contains(notApplicable, want) {
+			t.Errorf("not-applicable summary %q lacks %q", notApplicable, want)
+		}
+	}
+
+	cmdletMissing := Summary("stage pod", Verify(dirs, nil, false, errors.New("Get-MpPreference: exit status 1: Get-MpPreference : The term 'Get-MpPreference' is not recognized as the name of a cmdlet")))
+	if strings.Contains(cmdletMissing, "could not read Microsoft Defender exclusions") || strings.Contains(cmdletMissing, "The term") {
+		t.Errorf("cmdlet-missing summary was not collapsed to a not-applicable note: %q", cmdletMissing)
+	}
 }
 
 // TestStagePodQueryIsBoundedTighterThanTheDaemons: a stage pod pays the
@@ -262,5 +277,16 @@ func TestParseDefenderOutputRejectsPermissionSentinel(t *testing.T) {
 	}
 	if want := []string{`C:\instance`, `D:\workcopies`}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("parseDefenderOutput = %q, want %q", got, want)
+	}
+}
+
+func TestDefenderCmdletUnavailableIsNotApplicable(t *testing.T) {
+	for _, detail := range []string{
+		"Get-MpPreference : The term 'Get-MpPreference' is not recognized as the name of a cmdlet",
+		"not applicable: Microsoft Defender PowerShell cmdlet Get-MpPreference is unavailable",
+	} {
+		if _, err := parseDefenderOutput([]byte(detail)); err == nil || err.Error() != DefenderNotApplicableMessage {
+			t.Fatalf("parseDefenderOutput(%q) error = %v, want %q", detail, err, DefenderNotApplicableMessage)
+		}
 	}
 }

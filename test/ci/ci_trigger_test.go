@@ -13,9 +13,11 @@ import (
 // with itself about which edits re-run CI (#6360, #5491).
 const ciMetadataEdit = "(github.event.action == 'edited' && !github.event.changes.base)"
 
-// ciCodeGate is the `if:` on ci.yml's root jobs (preflight, unit). Every other
-// validation job needs one of them, so a false gate skips the whole run.
+// ciCodeGate is the `if:` on ci.yml's root jobs (preflight, scope). A false
+// gate skips the whole run; unit additionally requires the full profile.
 const ciCodeGate = "${{ !" + ciMetadataEdit + " }}"
+
+const ciFullGate = "${{ needs.scope.outputs.profile == 'full' }}"
 
 const pinnedRequiredCheck = "make ci (fmt-check · vet · build · test · lint)"
 
@@ -76,10 +78,13 @@ func TestCIRunsOnBaseRetargetNotMetadataEdits(t *testing.T) {
 	if !slices.Contains(types, "edited") {
 		t.Fatalf("pull_request types %v must include edited so a base retarget re-runs CI", types)
 	}
-	for _, root := range []string{"preflight", "unit"} {
+	for _, root := range []string{"preflight", "scope"} {
 		if got := w.Jobs[root].If; got != ciCodeGate {
 			t.Errorf("root job %s if = %q, want %q", root, got, ciCodeGate)
 		}
+	}
+	if got, want := w.Jobs["unit"].If, "${{ !"+ciMetadataEdit+" && needs.scope.outputs.profile == 'full' }}"; got != want {
+		t.Errorf("unit if = %q, want %q", got, want)
 	}
 
 	const runID = "4242"
@@ -138,6 +143,11 @@ func requiredCIDisplayName(t *testing.T, w ciWorkflow) string {
 // is implicitly `success() && ...`.
 func simulateCIJobs(t *testing.T, w ciWorkflow, ctx map[string]any) map[string]bool {
 	t.Helper()
+	return simulateCIJobsWithProfile(t, w, ctx, "full")
+}
+
+func simulateCIJobsWithProfile(t *testing.T, w ciWorkflow, ctx map[string]any, profile string) map[string]bool {
+	t.Helper()
 	ran := map[string]bool{}
 	var visit func(id string) bool
 	visit = func(id string) bool {
@@ -153,7 +163,11 @@ func simulateCIJobs(t *testing.T, w ciWorkflow, ctx map[string]any) map[string]b
 				result = "success"
 			}
 			allOK = allOK && result == "success"
-			needs[dep] = map[string]any{"result": result, "outputs": map[string]any{}}
+			outputs := map[string]any{}
+			if dep == "scope" && result == "success" {
+				outputs["profile"] = profile
+			}
+			needs[dep] = map[string]any{"result": result, "outputs": outputs}
 		}
 		cond := strings.TrimSpace(job.If)
 		cond = strings.TrimSuffix(strings.TrimPrefix(cond, "${{"), "}}")
@@ -172,6 +186,73 @@ func simulateCIJobs(t *testing.T, w ciWorkflow, ctx map[string]any) map[string]b
 		visit(id)
 	}
 	return ran
+}
+
+func TestCIScopePreservesPortalUXAndSelectsOnlyBackendSkips(t *testing.T) {
+	t.Parallel()
+	w := loadCIWorkflow(t)
+	for _, action := range []string{"opened", "synchronize", "reopened", "edited"} {
+		event := map[string]any{"action": action}
+		if action == "edited" {
+			event["changes"] = map[string]any{"base": map[string]any{"ref": map[string]any{"from": "release"}}}
+		}
+		ctx := map[string]any{"github": map[string]any{"event_name": "pull_request", "event": event}}
+		for _, profile := range []string{"full", "portal-only", ""} {
+			ran := simulateCIJobsWithProfile(t, w, ctx, profile)
+			for _, id := range w.Jobs["required-ci"].Needs {
+				want := profile == "full" || id == "scope" || id == "preflight" || id == "checks"
+				if ran[id] != want {
+					t.Errorf("%s/%s: job %s ran=%v, want %v", action, profile, id, ran[id], want)
+				}
+			}
+			if !ran["required-ci"] {
+				t.Errorf("%s/%s: aggregate must run even when dependencies skip", action, profile)
+			}
+		}
+	}
+	checks := w.Jobs["checks"]
+	if checks.If != "" || checks.ContinueOnError {
+		t.Fatal("portal checks must run unconditionally after preflight")
+	}
+	step := checks.step(t, "fmt · tidy · no-phone-home · vet · build · portal")
+	if step.Run != "go run ./test/ci group checks" || step.If != "" || step.ContinueOnError {
+		t.Fatal("both profiles must run the same complete portal check group")
+	}
+	all := groupChecksOnly(mergeGateChecks(), groupChecks)
+	for _, label := range []string{
+		"portal-build", "portal-audit", "portal-test", "portal-e2e",
+		"portal-contract-generate", "portal-contract-diff", "portal-contract-test",
+		"portal-embed-vet", "portal-embed-test", "portal-package", "portal-package-test",
+	} {
+		checkByLabel(t, all, label)
+	}
+}
+
+func TestCIScopeUsesCompleteDiffAndDoesNotSavePartialCaches(t *testing.T) {
+	t.Parallel()
+	w := loadCIWorkflow(t)
+	scope := w.Jobs["scope"]
+	checkout := scope.stepUsing(t, "actions/checkout@")
+	if checkout.with("fetch-depth") != "0" || checkout.with("ref") != "" {
+		t.Fatal("scope must inspect the event checkout with complete git history")
+	}
+	setup := scope.stepUsing(t, "actions/setup-go@")
+	if setup.with("cache") != "false" {
+		t.Fatal("scope must not publish an incomplete shared Go build cache")
+	}
+	step := scope.step(t, "Classify validation scope")
+	if step.Run != `go run ./test/cipolicy classify >> "$GITHUB_OUTPUT"` ||
+		step.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" ||
+		step.Env["BASE_SHA"] != "${{ github.event.pull_request.base.sha }}" ||
+		step.Env["HEAD_SHA"] != "${{ github.event.pull_request.head.sha }}" ||
+		step.If != "" || step.ContinueOnError {
+		t.Fatal("scope must invoke the classifier with exact event/base/head inputs")
+	}
+	gate := w.Jobs["required-ci"].step(t, "Verify required gates")
+	if gate.Run != "go run ./test/cipolicy gate" || gate.Env["CI_NEEDS"] != "${{ toJSON(needs) }}" ||
+		gate.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" || gate.If != "" || gate.ContinueOnError {
+		t.Fatal("aggregate must verify every dependency result with the event-aware policy")
+	}
 }
 
 func hasStatusFunction(cond string) bool {

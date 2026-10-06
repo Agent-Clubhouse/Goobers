@@ -186,7 +186,7 @@ func TestLoadPRExpectedRevision(t *testing.T) {
 		{name: "own rebase push advances the expectation", seed: func(r *revisionRun) {
 			r.selectHead("77", revisionSelectedSHA)
 			r.rebasePush(revisionSelectedSHA, revisionPublishedSHA)
-		}, wantHead: revisionPublishedSHA, wantSource: prRevisionSourcePublication},
+		}, wantHead: revisionPublishedSHA, wantSource: prRevisionSourceRebase},
 		// rebase-pr leases against the head IT checked out: a human push after
 		// selection would be rebased and published under that lease, so it
 		// must not be adopted.

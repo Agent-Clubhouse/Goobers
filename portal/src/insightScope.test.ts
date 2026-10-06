@@ -55,6 +55,8 @@ describe("Insight scope", () => {
       premiumRequestSamples: 0,
       costSamples: 0,
       retryWasteAttempts: 0,
+      retryWasteTokenSamples: 0,
+      retryWasteCostSamples: 0,
     };
 
     const state = deriveInsightCostTrendState(workflow, {

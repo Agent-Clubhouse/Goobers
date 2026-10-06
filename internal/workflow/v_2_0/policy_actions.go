@@ -34,7 +34,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"edit-issue":                    {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"escalate-pr":                   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"fan-out-remediation":           {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"flag-foundation-coupling":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"flag-foundation-coupling":      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"flag-scope-drift":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
@@ -43,6 +43,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"open-or-update-config-pr":      {requiredCapabilities: []capability.Capability{capability.ConfigRepoWrite}},
 	"push-config-repo-branch":       {requiredCapabilities: []capability.Capability{capability.ConfigRepoWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
+	"comment-on-pr-advisory":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"rebase-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -75,6 +76,7 @@ var configRepoCommandPolicyActions = map[string][]string{
 }
 
 var commandPolicyActions = map[string][]string{
+	"advisory-pr-publish":    {"comment-on-pr-advisory"},
 	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
 	"cancel-pending-ci":      {"cancel-pending-ci"},

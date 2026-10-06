@@ -18,9 +18,9 @@ func TestCIWindowsJournalOTLPCoverage(t *testing.T) {
 	workflow := loadCIWorkflow(t)
 	job := workflow.Jobs["windows-smoke"]
 	step := job.step(t, "Windows journal OTLP export")
-	if job.RunsOn != "windows-latest" || job.If != "" || job.ContinueOnError ||
+	if job.RunsOn != "windows-latest" || job.If != ciFullGate || !slices.Contains(job.Needs, "scope") || job.ContinueOnError ||
 		step.If != "" || step.ContinueOnError || !slices.Contains(workflow.Jobs["required-ci"].Needs, "windows-smoke") {
-		t.Fatal("journal export must run unconditionally in the required Windows gate")
+		t.Fatal("journal export must run unconditionally in the full-profile required Windows gate")
 	}
 	required := journalOTLPTestInventory(t)
 	if err := journalOTLPSelectionError(step.Run, required); err != nil {
@@ -153,11 +153,12 @@ func TestCILinuxJournalOTLPRaceCoverage(t *testing.T) {
 	workflow := loadCIWorkflow(t)
 	job := workflow.Jobs["unit"]
 	step := job.step(t, "Unit suite (-race, shard ${{ matrix.shard }})")
-	// ciCodeGate skips only title/body-edit runs, which validate nothing
-	// (TestCIRunsOnBaseRetargetNotMetadataEdits); every code event runs it.
-	if job.RunsOn != "ubuntu-latest" || (job.If != "" && job.If != ciCodeGate) || job.ContinueOnError ||
+	// Portal-only PRs skip backend race shards, but every full-profile code
+	// event retains the complete journal race selection.
+	unitGate := "${{ !" + ciMetadataEdit + " && needs.scope.outputs.profile == 'full' }}"
+	if job.RunsOn != "ubuntu-latest" || job.If != unitGate || !slices.Contains(job.Needs, "scope") || job.ContinueOnError ||
 		step.If != "" || step.ContinueOnError || !slices.Contains(workflow.Jobs["required-ci"].Needs, "unit") {
-		t.Fatal("Linux race shards must remain an unconditional required gate")
+		t.Fatal("Linux race shards must remain a full-profile required gate")
 	}
 	if step.Run != "go run ./test/ci group unit" || step.Env["GOOBERS_CI_SHARD"] != "${{ matrix.shard }}" {
 		t.Fatal("Linux race job must run the real unit group with its shard matrix")

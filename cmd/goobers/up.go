@@ -964,18 +964,7 @@ func (u *upSession) startServices() int {
 		return 1
 	}
 	u.reads.AttachStartupStatus(func() *readservice.StartupStatus {
-		if u.ready.Load() {
-			return nil
-		}
-		phase, target, since := u.tracker.snapshot()
-		if phase == "" {
-			return nil
-		}
-		return &readservice.StartupStatus{
-			Phase:  phase,
-			Target: target,
-			Since:  since,
-		}
+		return readserviceStartupStatus(u.tracker, u.ready.Load())
 	})
 	attachFreshnessSignals(u.reads, u.setup)
 	if *u.disableReadModelReads {
@@ -1174,6 +1163,7 @@ func (u *upSession) configureAPI() int {
 
 func (u *upSession) activateAPI() int {
 	var err error
+	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithTrustedProxies(u.setup.Config.API.TrustedProxies))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(u.setup.Config)

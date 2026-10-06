@@ -182,6 +182,9 @@ func TestManagerCreateRefusesKeptSameRunBranchOccupant(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `status "kept"`) {
 		t.Fatalf("Create with kept occupant error = %v, want kept refusal", err)
 	}
+	if IsRetryableProvisionError(err) {
+		t.Fatalf("Create with kept occupant error classified retryable: %v", err)
+	}
 	if got, err := os.ReadFile(filepath.Join(first.Path, "kept.txt")); err != nil || string(got) != "preserve\n" {
 		t.Fatalf("kept occupant changed: %q, %v", got, err)
 	}

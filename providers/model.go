@@ -744,6 +744,7 @@ type PullRequestComment struct {
 	Body      string             `json:"body,omitempty"`
 	URL       string             `json:"url,omitempty"`
 	CreatedAt time.Time          `json:"createdAt"`
+	UpdatedAt time.Time          `json:"updatedAt,omitempty"`
 	Integrity apiintegrity.Grade `json:"integrity,omitempty"`
 }
 

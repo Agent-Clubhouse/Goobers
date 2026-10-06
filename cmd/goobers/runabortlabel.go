@@ -11,6 +11,8 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -21,10 +23,12 @@ import (
 // unlabeled, and its CI may never settle to green (a run terminated mid
 // ci-poll, for instance), which makes it invisible to pr-select's normal
 // selection (prselect.go requires CheckStatePassing) with no other path back
-// into any lane. Stamping this label on every non-completed terminal phase
-// (aborted, failed, escalated) gives that PR the one disposition every other
-// terminal state already has: visibly excluded rather than silently
-// unowned. pr-select excludes it (prselect.go, the same mechanism as
+// into any lane. Stamping this label on non-completed work or policy outcomes
+// gives that PR the one disposition every other terminal state already has:
+// visibly excluded rather than silently unowned. Infrastructure failures are
+// excluded from the marker because the reviewed PR remains valid and must stay
+// eligible for a later merge-review run. pr-select excludes marked PRs
+// (prselect.go, the same mechanism as
 // noMergeReviewLabel) and merge-pr independently refuses to merge a PR
 // carrying it (mergepr.go), even with a green verdict and passing CI —
 // defense in depth so a bypass of selection can't bypass the block too.
@@ -136,7 +140,8 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 }
 
 // labelAbortedRunPR stamps abortedRunLabel on the PR this run opened, if any,
-// when the run ends on any terminal phase other than PhaseCompleted (#2238,
+// when the run ends on a non-infrastructure terminal phase other than
+// PhaseCompleted (#2238,
 // widened by #3490 to cover PhaseFailed and PhaseEscalated alongside the
 // original PhaseAborted — a run that fails or escalates after open-pr orphans
 // its PR exactly as an abort does). Called on every terminal run
@@ -168,6 +173,9 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate t
 	events, err := rd.Events()
 	if err != nil {
 		return fmt.Errorf("read terminal run events for run-abort label: %w", err)
+	}
+	if terminalFailureWasInfrastructure(events) {
+		return nil
 	}
 
 	var pr *journal.ExternalRef
@@ -202,6 +210,26 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate t
 		Repository: repo, ID: pr.ID, AddLabels: []string{abortedRunLabel},
 	})
 	return appendRunAbortLabelResult(annotate, pr, labelErr)
+}
+
+func terminalFailureWasInfrastructure(events []journal.Event) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		switch ev.Type {
+		case journal.EventRunResumed, journal.EventGateOverridden, journal.EventStageRerunRequested:
+			return false
+		}
+		if ev.Type == journal.EventRunFinished && ev.TerminalCause != nil {
+			return ev.TerminalCause.Classification == journal.TerminalInfrastructureFailure
+		}
+		if ev.Type != journal.EventError || ev.Error == nil || ev.Error.Code != "run_failed" {
+			continue
+		}
+		class, _ := ev.Runner["errorClass"].(string)
+		retryClass, _ := ev.Runner[runner.RetryFailureClassKey].(string)
+		return retryClass == string(journal.AttemptInfra) || telemetry.ErrorClass(class).InfraFault()
+	}
+	return false
 }
 
 func appendRunAbortLabelResult(annotate terminalAnnotator, pr *journal.ExternalRef, labelErr error) error {
