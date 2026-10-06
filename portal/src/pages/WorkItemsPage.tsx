@@ -106,7 +106,9 @@ function WorkItemListView({
       { signal: controller.signal },
     );
     const page =
-      kind === "pr"
+      gaggle
+        ? client.listWorkItems({ kind, gaggle, limit: 200 }, { signal: controller.signal })
+        : kind === "pr"
         ? pullRequests
         : kind === "issue"
           ? issues
@@ -127,7 +129,7 @@ function WorkItemListView({
     return () => controller.abort();
   };
 
-  useEffect(load, [client, kind]);
+  useEffect(load, [client, gaggle, kind]);
   useEffect(() => setSearchQuery(query ?? ""), [query]);
   useEffect(() => setDraft({ kind, gaggle, outcome }), [kind, gaggle, outcome]);
 
