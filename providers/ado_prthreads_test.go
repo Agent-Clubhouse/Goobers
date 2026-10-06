@@ -96,24 +96,37 @@ func TestADOProviderListPullRequestThreadComments(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/threads", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
-		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
-			{
-				"id": 7,
-				"comments": []map[string]interface{}{
-					{"id": 1, "content": "verdict", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "reviewer-guid"}, "publishedDate": "2026-08-08T10:00:00Z"},
-					{"id": 2, "content": "finding history", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "other-reviewer-guid"}, "publishedDate": "2026-08-08T10:05:00Z"},
+		switch r.URL.Query().Get("continuationToken") {
+		case "":
+			w.Header().Set("x-ms-continuationtoken", "page-2")
+			writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
+				{
+					"id": 7,
+					"comments": []map[string]interface{}{
+						{"id": 1, "content": "verdict", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "reviewer-guid"}, "publishedDate": "2026-08-08T10:00:00Z"},
+						{"id": 2, "content": "finding history", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "other-reviewer-guid"}, "publishedDate": "2026-08-08T10:05:00Z"},
+					},
 				},
-			},
-			{
-				// A system thread (vote/status/ref event) must be skipped.
-				"id":       8,
-				"comments": []map[string]interface{}{{"id": 3, "content": "Goobers Bot voted -10", "commentType": "system", "author": map[string]string{"displayName": "system"}}},
-			},
-			{
-				"id":       9,
-				"comments": []map[string]interface{}{{"id": 4, "content": "sticky remediation-state head=abc123", "commentType": "text", "author": map[string]string{"displayName": "Checkpoint"}}},
-			},
-		}})
+				{
+					// A system thread (vote/status/ref event) must be skipped.
+					"id":       8,
+					"comments": []map[string]interface{}{{"id": 3, "content": "Goobers Bot voted -10", "commentType": "system", "author": map[string]string{"displayName": "system"}}},
+				},
+				{
+					"id":       9,
+					"comments": []map[string]interface{}{{"id": 4, "content": "sticky remediation-state head=abc123", "commentType": "text", "author": map[string]string{"displayName": "Checkpoint"}}},
+				},
+			}})
+		case "page-2":
+			writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
+				{
+					"id":       10,
+					"comments": []map[string]interface{}{{"id": 5, "content": "latest remediation handoff head=def456", "commentType": "text", "author": map[string]string{"displayName": "Checkpoint"}}},
+				},
+			}})
+		default:
+			t.Fatalf("unexpected continuation token %q", r.URL.Query().Get("continuationToken"))
+		}
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -127,15 +140,15 @@ func TestADOProviderListPullRequestThreadComments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPullRequestThreadComments returned error: %v", err)
 	}
-	if len(comments) != 3 {
-		t.Fatalf("len(comments) = %d, want 3 (system thread skipped): %#v", len(comments), comments)
+	if len(comments) != 4 {
+		t.Fatalf("len(comments) = %d, want 4 (system thread skipped): %#v", len(comments), comments)
 	}
-	wantIDs := []string{"42/7/1", "42/7/2", "42/9/4"}
-	wantBodies := []string{"verdict", "finding history", "sticky remediation-state head=abc123"}
-	wantAuthors := []string{"Reviewer", "Reviewer", "Checkpoint"}
+	wantIDs := []string{"42/7/1", "42/7/2", "42/9/4", "42/10/5"}
+	wantBodies := []string{"verdict", "finding history", "sticky remediation-state head=abc123", "latest remediation handoff head=def456"}
+	wantAuthors := []string{"Reviewer", "Reviewer", "Checkpoint", "Checkpoint"}
 	// Two authors share a display name; author.id keeps them apart (ADO-N5).
 	// A comment without an author id maps to an empty AuthorID.
-	wantAuthorIDs := []string{"reviewer-guid", "other-reviewer-guid", ""}
+	wantAuthorIDs := []string{"reviewer-guid", "other-reviewer-guid", "", ""}
 	for i, c := range comments {
 		if c.ID != wantIDs[i] {
 			t.Fatalf("comments[%d].ID = %q, want %q", i, c.ID, wantIDs[i])
