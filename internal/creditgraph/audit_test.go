@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -38,52 +39,114 @@ func TestAuditFaultDomainsClassifiesSharedRuntimeOnce(t *testing.T) {
 }
 
 func TestAuditFaultDomainsShadowReportsRealAttributorMisroutesWithoutChangingFindings(t *testing.T) {
-	const (
-		runtimeText = "The failure was caused by the harness or environment that ran the shared runtime process."
-		routingText = "The model that ran the stage followed the workflow routing instructions to the wrong destination."
-	)
+	wantSummaries := map[FailureClass]string{
+		ClassEnvironment:      "the stage recorded an error status, which the harness or environment raises rather than an agent decision",
+		ClassRouting:          "the model that ran is not the model the subagent requested",
+		ClassWeakInstructions: "the stage's subagents recorded no tool call and produced no evidence",
+	}
 	var observations []AttributionObservation
 	for i, workflow := range []string{"implementation", "review", "release"} {
-		observations = append(observations,
-			auditObservation("runtime-"+workflow, workflow, "runtime-v"+string(rune('1'+i)), "execute", runtimeText, ClassEnvironment, 0.9, "stage:execute"),
-			auditObservation("routing-"+workflow, workflow, "routing-v"+string(rune('1'+i)), "route", routingText, ClassRouting, 0.9, "stage:route"),
-		)
+		version := "v" + string(rune('1'+i))
+		for _, class := range []FailureClass{ClassEnvironment, ClassRouting, ClassWeakInstructions} {
+			observation := realAttributorObservation(t, string(class)+"-"+workflow, workflow, version, class)
+			cause := causeOfClass(t, observation.Attribution, class)
+			if cause.Summary != wantSummaries[class] {
+				t.Fatalf("%s attributor summary = %q, want %q", class, cause.Summary, wantSummaries[class])
+			}
+			observations = append(observations, observation)
+		}
 	}
 	quality := 0.75
 	advisor := faultDomainAdvisorFunc(func(_ context.Context, text string) (FaultDomainAdvice, error) {
 		switch {
-		case strings.Contains(text, "harness or environment"):
+		case strings.Contains(text, wantSummaries[ClassEnvironment]):
 			return FaultDomainAdvice{Domain: FaultDomainProductRuntime, Confidence: 0.94, Quality: &quality, QualityConfidence: 0.88}, nil
-		case strings.Contains(text, "model that ran"):
+		case strings.Contains(text, wantSummaries[ClassRouting]):
 			return FaultDomainAdvice{Domain: FaultDomainWorkflow, Confidence: 0.91, Quality: &quality, QualityConfidence: 0.86}, nil
+		case strings.Contains(text, wantSummaries[ClassWeakInstructions]):
+			return FaultDomainAdvice{Domain: FaultDomainWorkflow, Confidence: 0.89, Quality: &quality, QualityConfidence: 0.84}, nil
 		default:
 			return FaultDomainAdvice{Domain: FaultDomainUnknown}, nil
 		}
 	})
 
 	report := AuditFaultDomains(observations, FaultAuditConfig{SampleFloor: 3, Advisory: advisor})
-	if len(report.ExternalFindings) != 2 {
+	if len(report.ExternalFindings) != 2 || len(report.UnknownFindings) != 1 {
 		t.Fatalf("findings changed in shadow mode: %+v", report)
 	}
-	if report.Shadow == nil || report.Shadow.Agreements != 0 || report.Shadow.Disagreements != 2 ||
-		report.Shadow.Uncertain != 0 || len(report.Shadow.Comparisons) != 2 {
-		t.Fatalf("shadow report = %+v, want two disagreements", report.Shadow)
+	if report.Shadow == nil || report.Shadow.Agreements != 0 || report.Shadow.Disagreements != 3 ||
+		report.Shadow.Uncertain != 0 || len(report.Shadow.Comparisons) != 3 {
+		t.Fatalf("shadow report = %+v, want three real-output disagreements", report.Shadow)
 	}
-	got := map[FaultDomain]FaultDomainShadowComparison{}
+	got := map[string]FaultDomainShadowComparison{}
 	for _, comparison := range report.Shadow.Comparisons {
-		got[comparison.AdvisoryDomain] = comparison
-		if comparison.KeywordDomain != FaultDomainExternal || comparison.Agreement ||
-			comparison.AttributorQuality == nil || *comparison.AttributorQuality != quality {
-			t.Fatalf("comparison = %+v, want unchanged external keyword result and advisory quality", comparison)
+		key := string(comparison.KeywordDomain) + "/" + string(comparison.AdvisoryDomain)
+		got[key] = comparison
+		if comparison.AttributorQuality == nil || *comparison.AttributorQuality != quality {
+			t.Fatalf("comparison = %+v, want advisory quality", comparison)
 		}
 	}
-	if got[FaultDomainProductRuntime].Confidence != 0.94 || got[FaultDomainWorkflow].Confidence != 0.91 {
-		t.Fatalf("comparisons = %+v, want product and workflow advisory domains", report.Shadow.Comparisons)
+	runtimeKey := string(FaultDomainExternal) + "/" + string(FaultDomainProductRuntime)
+	if runtime := got[runtimeKey]; runtime.Confidence != 0.94 || runtime.Agreement {
+		t.Fatalf("runtime comparison = %+v, want external/product-runtime disagreement", runtime)
+	}
+	routingKey := string(FaultDomainExternal) + "/" + string(FaultDomainWorkflow)
+	if routing := got[routingKey]; routing.Confidence != 0.91 || routing.Agreement {
+		t.Fatalf("routing comparison = %+v, want external/workflow disagreement", routing)
+	}
+	instructionsKey := string(FaultDomainUnknown) + "/" + string(FaultDomainWorkflow)
+	if instructions := got[instructionsKey]; instructions.Confidence != 0.89 || instructions.Agreement {
+		t.Fatalf("instructions comparison = %+v, want mixed-or-unknown/workflow disagreement", instructions)
 	}
 
 	off := AuditFaultDomains(observations, FaultAuditConfig{SampleFloor: 3})
-	if off.Shadow != nil || !reflect.DeepEqual(off.ExternalFindings, report.ExternalFindings) {
+	if off.Shadow != nil ||
+		!reflect.DeepEqual(off.ExternalFindings, report.ExternalFindings) ||
+		!reflect.DeepEqual(off.UnknownFindings, report.UnknownFindings) {
 		t.Fatalf("off-by-default report changed: off=%+v shadow=%+v", off, report)
+	}
+}
+
+func realAttributorObservation(t *testing.T, runID, workflow, version string, class FailureClass) AttributionObservation {
+	t.Helper()
+	finishedStatus := "failure"
+	agent := agentEvent("root", "", "implement", "gpt-5", journal.AgentFailed)
+	events := []journal.Event{
+		{Seq: 1, Type: journal.EventRunStarted},
+		{Seq: 2, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		agent,
+	}
+	switch class {
+	case ClassEnvironment:
+		finishedStatus = "error"
+		events = append(events, journal.Event{
+			Seq: 3, Type: journal.EventArtifactRecorded, Stage: "implement", Attempt: 1,
+			Name: "diff", Ref: &journal.Ref{Digest: "sha256:diff"}, Integrity: apiv1.IntegrityUnapproved,
+		})
+	case ClassRouting:
+		events[2] = routedAgentEvent("root", "implement", "gpt-5", "gpt-4.1", 12)
+		events = append(events, journal.Event{
+			Seq: 3, Type: journal.EventArtifactRecorded, Stage: "implement", Attempt: 1,
+			Name: "diff", Ref: &journal.Ref{Digest: "sha256:diff"}, Integrity: apiv1.IntegrityUnapproved,
+		})
+	case ClassWeakInstructions:
+	default:
+		t.Fatalf("unsupported real attributor class %q", class)
+	}
+	events = append(events,
+		journal.Event{Seq: 4, Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: finishedStatus},
+		journal.Event{Seq: 5, Type: journal.EventRunFinished, Status: "failed"},
+	)
+	attribution := attributeGraph(t, Input{RunID: runID, Workflow: workflow, Events: events})
+	cause := causeOfClass(t, attribution, class)
+	return AttributionObservation{
+		RunID: runID, Workflow: workflow, WorkflowDigest: version, GooberDigest: "goober",
+		EffectiveVersion: version, Workload: "issue", Status: RecordComplete,
+		RunPhase: journal.PhaseCompleted, Environments: []string{"windows"}, Attribution: attribution,
+		Evidence: []AttributionEvidenceLink{{
+			RunID: runID, NodeID: cause.NodeID, Stage: cause.Stage, Source: string(cause.Class), Detail: cause.Summary,
+			JournalSequence: 5, JournalPath: "gaggles/core/runs/" + runID + "/events.jsonl",
+		}},
 	}
 }
 
