@@ -381,7 +381,7 @@
     "mutatesClaimLedger": true,
     "capabilities": [
       {
-        "capability": "github:pr:write",
+        "capability": "provider:pr:write",
         "consequence": "the capability-scoped credential is not injected, so pull-request selection fails at runtime"
       }
     ]

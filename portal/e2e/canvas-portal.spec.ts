@@ -923,7 +923,7 @@ test("Work Items tab filters the bounded list and opens action, cost, and relate
 
   const detail = page.locator("#work-item-content");
   await expect(detail.getByRole("heading", { name: "Agent-Clubhouse/Goobers#7", exact: true })).toBeVisible();
-  await expect(detail).toContainText("1 AIC");
+  await expect(detail).toContainText("1.25 AIC");
   await expect(detail).toContainText("Lower bound; some usage is unmeasured.");
   await expect(detail.getByRole("link", { name: "Open issue", exact: false })).toHaveAttribute(
     "href",

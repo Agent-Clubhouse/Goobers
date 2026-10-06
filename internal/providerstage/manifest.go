@@ -361,7 +361,7 @@ var commands = map[string]Command{
 		ResultFile:         "selected-pr.json",
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+			required(capability.ProviderPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},
 	},
 	"advisory-pr-select": {

@@ -382,7 +382,7 @@ func pullRequestComments(ctx context.Context, c restPager, baseURL string, repo 
 		for _, comment := range raw {
 			comments = append(comments, PullRequestComment{
 				ID: comment.ID, Author: comment.User.Login, Body: comment.Body, URL: comment.HTMLURL,
-				CreatedAt: comment.CreatedAt, Integrity: apiintegrity.Unapproved,
+				CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt, Integrity: apiintegrity.Unapproved,
 			})
 		}
 		return nil

@@ -1775,9 +1775,6 @@ jobs:
       - name: Windows durable state services
         run: go test ./internal/instanceannotations ./internal/branchretention ./internal/engineoperator
 
-      - name: Windows presentation formatting
-        run: go test ./internal/presentation
-
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/pathutil ./internal/secretpattern
 

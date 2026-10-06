@@ -4577,6 +4577,7 @@ func TestRunnerBoundsPersistentInfrastructureFailures(t *testing.T) {
 		t.Fatal(readErr)
 	}
 	var starts, attemptErrors int
+	var terminalRetryClass string
 	for _, event := range events {
 		if event.Type == journal.EventStageStarted {
 			starts++
@@ -4587,9 +4588,15 @@ func TestRunnerBoundsPersistentInfrastructureFailures(t *testing.T) {
 				t.Fatalf("journaled attempt error %q does not preserve cause %q", event.Error.Message, cause)
 			}
 		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "run_failed" {
+			terminalRetryClass, _ = event.Runner[retryFailureClassKey].(string)
+		}
 	}
 	if starts != 2 || attemptErrors != 2 {
 		t.Fatalf("stage.started=%d executor_error=%d, want every one of 2 attempts journaled", starts, attemptErrors)
+	}
+	if terminalRetryClass != string(journal.AttemptInfra) {
+		t.Fatalf("terminal retry failure class = %q, want %q", terminalRetryClass, journal.AttemptInfra)
 	}
 }
 

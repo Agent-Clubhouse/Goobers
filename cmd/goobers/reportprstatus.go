@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/json"
+	"errors"
 	"flag"
-	"fmt"
 	"io"
-	"os"
-	"strconv"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/prstatus"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -94,15 +92,15 @@ func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	result, err := publisher.PublishPullRequestStatus(ctx, req)
-	if err != nil {
-		return failProviderStage(stderr, "publish pull request status", err, "status-result.json")
-	}
-
 	resultFile := providerInput("resultFile", "status-result.json")
-	if err := writeReportPRStatusResult(resultFile, result.ID, prNumber, req.Genre, req.Name, string(state)); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	result, err := prstatus.Publish(ctx, publisher, req, resultFile)
+	if err != nil {
+		var writeErr *prstatus.ResultWriteError
+		if errors.As(err, &writeErr) {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return failProviderStage(stderr, "publish pull request status", err, "status-result.json")
 	}
 
 	pf(stdout, "published pr #%s status %s/%s = %s (id %d)\n", prNumber, req.Genre, req.Name, state, result.ID)
@@ -114,35 +112,5 @@ func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
 // verbs (succeeded/failed/pending) and the internal CheckState names so a
 // workflow author can use either.
 func parseStatusState(v string) (providers.CheckState, error) {
-	switch v {
-	case "succeeded", "success", "passing":
-		return providers.CheckStatePassing, nil
-	case "failed", "failure", "failing":
-		return providers.CheckStateFailing, nil
-	case "pending", "":
-		return providers.CheckStatePending, nil
-	default:
-		return "", fmt.Errorf("unknown status state %q (want succeeded|failed|pending)", v)
-	}
-}
-
-func writeReportPRStatusResult(resultFile string, id int, prNumber, genre, name, state string) error {
-	out := map[string]string{
-		"statusId":    strconv.Itoa(id),
-		"statusGenre": genre,
-		"statusName":  name,
-		"state":       state,
-		// Re-emit prNumber so a single-hop inputsFrom on the immediately
-		// following stage (ci-poll) can thread it through this stage — outputs
-		// resolve against the preceding task only.
-		"prNumber": prNumber,
-	}
-	data, err := json.Marshal(out)
-	if err != nil {
-		return fmt.Errorf("marshal status result: %w", err)
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", resultFile, err)
-	}
-	return nil
+	return prstatus.ParseState(v)
 }
