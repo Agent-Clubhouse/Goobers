@@ -120,15 +120,17 @@ func TestControllerCoalescesWakeupsAndBoundsConcurrency(t *testing.T) {
 func TestControllerSnapshotDeadlineReleasesCapacityForOtherGaggles(t *testing.T) {
 	store := controllerStore(t)
 	started := make(chan string, 2)
-	var healthyCalls atomic.Int32
-	source := snapshotSourceFunc(func(ctx context.Context, gaggle string, _ []EvidenceDependency) (Snapshot, error) {
+	block := make(chan struct{})
+	var blockedCalls, healthyCalls atomic.Int32
+	source := snapshotSourceFunc(func(_ context.Context, gaggle string, _ []EvidenceDependency) (Snapshot, error) {
 		if gaggle == "healthy" {
 			healthyCalls.Add(1)
 			return Snapshot{}, nil
 		}
+		blockedCalls.Add(1)
 		started <- gaggle
-		<-ctx.Done()
-		return Snapshot{}, ctx.Err()
+		<-block
+		return Snapshot{}, nil
 	})
 	controller, err := NewController(store, source, ControllerOptions{
 		MaxConcurrent:    2,
@@ -145,6 +147,7 @@ func TestControllerSnapshotDeadlineReleasesCapacityForOtherGaggles(t *testing.T)
 		t.Fatal(err)
 	}
 	defer controller.Stop()
+	defer close(block)
 
 	seen := map[string]bool{}
 	deadline := time.After(3 * time.Second)
@@ -169,6 +172,14 @@ func TestControllerSnapshotDeadlineReleasesCapacityForOtherGaggles(t *testing.T)
 		healthy, ok := controller.Status("healthy")
 		return healthyCalls.Load() > healthyBeforeDeadline && ok && !healthy.LastSuccessfulEvaluation.IsZero()
 	})
+	for range 100 {
+		controller.Wake("blocked-alpha")
+		controller.Wake("blocked-beta")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if blockedCalls.Load() != 2 {
+		t.Fatalf("uncooperative snapshot calls = %d, want 2", blockedCalls.Load())
+	}
 }
 
 func TestControllerDetectorTimeoutCancellationAndRestartDedupe(t *testing.T) {

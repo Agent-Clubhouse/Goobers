@@ -124,6 +124,9 @@ type Controller struct {
 	status     map[string]ControllerStatus
 	generation uint64
 	wg         sync.WaitGroup
+
+	snapshotMu       sync.Mutex
+	snapshotsRunning map[string]struct{}
 }
 
 type gaggleLoop struct {
@@ -153,6 +156,7 @@ func NewController(store *Store, source SnapshotSource, options ControllerOption
 		detectorSlots:    make(chan struct{}, options.MaxConcurrent),
 		evaluationBudget: options.EvaluationBudget,
 		loops:            make(map[string]*gaggleLoop), status: make(map[string]ControllerStatus),
+		snapshotsRunning: make(map[string]struct{}),
 	}, nil
 }
 
@@ -300,7 +304,7 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 		return
 	}
 	dependencies := detectorDependencies(registration.Detectors)
-	snapshot, err := c.source.Snapshot(evaluationCtx, registration.Name, dependencies)
+	snapshot, err := c.snapshot(evaluationCtx, registration.Name, dependencies)
 	if err != nil {
 		evaluationErr := fmt.Errorf("snapshot: %w", err)
 		observation := c.indeterminateObservation(registration.Name, "snapshot", now, evaluationErr)
@@ -365,6 +369,36 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 		}
 	}
 	c.finalizeIfCurrent(registration, loop.generation, now, errors.Join(evaluationErrors...), observations)
+}
+
+func (c *Controller) snapshot(ctx context.Context, gaggle string, dependencies []EvidenceDependency) (Snapshot, error) {
+	c.snapshotMu.Lock()
+	if _, running := c.snapshotsRunning[gaggle]; running {
+		c.snapshotMu.Unlock()
+		return Snapshot{}, errors.New("snapshot acquisition already in progress")
+	}
+	c.snapshotsRunning[gaggle] = struct{}{}
+	c.snapshotMu.Unlock()
+
+	type result struct {
+		snapshot Snapshot
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		snapshot, err := c.source.Snapshot(ctx, gaggle, dependencies)
+		c.snapshotMu.Lock()
+		delete(c.snapshotsRunning, gaggle)
+		c.snapshotMu.Unlock()
+		resultCh <- result{snapshot: snapshot, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result.snapshot, result.err
+	case <-ctx.Done():
+		return Snapshot{}, ctx.Err()
+	}
 }
 
 func (c *Controller) finalizeIfCurrent(registration GaggleRegistration, generation uint64, at time.Time, evaluationErr error, observations []Observation) {
