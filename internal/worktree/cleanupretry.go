@@ -59,6 +59,8 @@ type cleanupRetryCandidate struct {
 	markerPath string
 }
 
+const cleanupRetryAttemptLimit = 5
+
 // RetryCleanupPending promptly retries worktrees that Remove durably marked
 // cleanup-pending. The two marker copies are the queue: no scheduler-local
 // state is needed, so a daemon restart cannot lose an outstanding retry.
@@ -270,6 +272,24 @@ func (m *Manager) retryCleanupPendingOne(ctx context.Context, candidate cleanupR
 	lock.Lock()
 	defer lock.Unlock()
 
+	removed, err := m.retryCleanupPendingOneLocked(ctx, candidate)
+	if err == nil || errors.Is(err, ErrCleanupRetained) {
+		return removed, err
+	}
+	exhausted, recordErr := m.recordCleanupRetryFailure(candidate, err)
+	if recordErr != nil {
+		return nil, errors.Join(err, recordErr)
+	}
+	if exhausted {
+		return nil, fmt.Errorf(
+			"worktree: cleanup retry exhausted after %d attempts; target retained for operator action: %w",
+			cleanupRetryAttemptLimit, err,
+		)
+	}
+	return nil, err
+}
+
+func (m *Manager) retryCleanupPendingOneLocked(ctx context.Context, candidate cleanupRetryCandidate) (*ReapResult, error) {
 	primary, err := readMarker(candidate.markerPath)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -298,6 +318,7 @@ func (m *Manager) retryCleanupPendingOne(ctx context.Context, candidate cleanupR
 		primary.Status = statusCleanupRetained
 		primary.RetainedAt = ownership.RetainedAt
 		primary.CleanupDisposition = ownership.CleanupDisposition
+		primary.CleanupAttempts = ownership.CleanupAttempts
 		if err := writeMarker(candidate.markerPath, primary); err != nil {
 			return nil, fmt.Errorf("worktree: repair cleanup retention marker: %w", err)
 		}
@@ -314,6 +335,64 @@ func (m *Manager) retryCleanupPendingOne(ctx context.Context, candidate cleanupR
 		return nil, fmt.Errorf("worktree: retry pending run %s: %w", primary.RunID, err)
 	}
 	return &ReapResult{RunID: primary.RunID, Path: path, Reason: ReapReasonCleanupPending}, nil
+}
+
+func (m *Manager) recordCleanupRetryFailure(candidate cleanupRetryCandidate, attemptErr error) (bool, error) {
+	primary, err := readMarker(candidate.markerPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("worktree: record cleanup retry failure: %w", err)
+	}
+	if primary.Status != statusCleanupPending {
+		return false, nil
+	}
+
+	exhausted := primary.CleanupAttempts >= cleanupRetryAttemptLimit
+	if exhausted {
+		primary.CleanupAttempts = cleanupRetryAttemptLimit
+	} else {
+		if primary.CleanupAttempts < 0 {
+			primary.CleanupAttempts = 0
+		}
+		primary.CleanupAttempts++
+		exhausted = primary.CleanupAttempts >= cleanupRetryAttemptLimit
+	}
+	if exhausted {
+		primary.Status = statusCleanupRetained
+		primary.RetainedAt = time.Now().UTC()
+		primary.CleanupDisposition = CleanupDispositionRetryExhausted
+	}
+
+	var recordErr error
+	if directory, directoryErr := primary.directoryName(); directoryErr == nil {
+		ownershipPath := m.ownershipPath(candidate.key, directory)
+		ownership, ownershipErr := readMarker(ownershipPath)
+		if ownershipErr == nil && ownership.Status == statusCleanupPending &&
+			sameWorkspaceIdentity(primary, ownership) {
+			ownership.CleanupAttempts = primary.CleanupAttempts
+			if exhausted {
+				ownership.Status = primary.Status
+				ownership.RetainedAt = primary.RetainedAt
+				ownership.CleanupDisposition = primary.CleanupDisposition
+			}
+			if err := writeMarker(ownershipPath, ownership); err != nil {
+				return false, fmt.Errorf(
+					"worktree: record cleanup retry failure in ownership record: %w (original cleanup error: %w)",
+					err, attemptErr,
+				)
+			}
+		}
+	}
+	if err := writeMarker(candidate.markerPath, primary); err != nil {
+		recordErr = errors.Join(recordErr,
+			fmt.Errorf("worktree: record cleanup retry failure in marker: %w", err))
+	}
+	if recordErr != nil {
+		return false, fmt.Errorf("%w (original cleanup error: %w)", recordErr, attemptErr)
+	}
+	return exhausted, nil
 }
 
 // validCleanupRetryIdentity rejects legacy or synthetic marker shapes before

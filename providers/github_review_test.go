@@ -34,8 +34,15 @@ func TestGitHubSubmitPullRequestReview(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotBody map[string]string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost || r.URL.Path != "/repos/acme/web/pulls/42/reviews" {
-					t.Fatalf("request = %s %s, want POST /repos/acme/web/pulls/42/reviews", r.Method, r.URL.Path)
+				if r.URL.Path != "/repos/acme/web/pulls/42/reviews" {
+					t.Fatalf("request = %s %s, want /repos/acme/web/pulls/42/reviews", r.Method, r.URL.Path)
+				}
+				if r.Method == http.MethodGet {
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
+				if r.Method != http.MethodPost {
+					t.Fatalf("request = %s %s, want POST or GET reviews", r.Method, r.URL.Path)
 				}
 				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 					t.Fatalf("decode body: %v", err)
@@ -76,6 +83,57 @@ func TestGitHubSubmitPullRequestReview(t *testing.T) {
 				t.Fatalf("recorded refs = %+v, want one review mutation", recorder.refs)
 			}
 		})
+	}
+}
+
+func TestGitHubApprovalDismissesOnlyOwnChangeRequests(t *testing.T) {
+	var dismissed []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/web/pulls/42/reviews":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 9, "html_url": "https://example/review/9",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/web/pulls/42/reviews":
+			_, _ = w.Write([]byte(`[
+				{"id":7,"state":"CHANGES_REQUESTED","user":{"login":"goobers-reviewer"},"html_url":"https://example/review/7"},
+				{"id":8,"state":"CHANGES_REQUESTED","user":{"login":"human-reviewer"},"html_url":"https://example/review/8"},
+				{"id":9,"state":"APPROVED","user":{"login":"goobers-reviewer"},"html_url":"https://example/review/9"}
+			]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
+			_, _ = w.Write([]byte(`{"login":"goobers-reviewer"}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/repos/acme/web/pulls/42/reviews/7/dismissals":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode dismissal: %v", err)
+			}
+			dismissed = append(dismissed, body["message"])
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	recorder := &reviewMutationRecorder{}
+	provider := NewGitHubProvider("token",
+		func(p *GitHubProvider) { p.BaseURL = server.URL },
+		WithMutationRecorder(recorder),
+	)
+	if _, err := provider.SubmitPullRequestReview(context.Background(), PullRequestReviewRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "web"},
+		PullID:     "42",
+		CommitSHA:  "head-sha",
+		Decision:   ReviewDecisionApproved,
+		Body:       "resolved",
+	}); err != nil {
+		t.Fatalf("SubmitPullRequestReview: %v", err)
+	}
+	if len(dismissed) != 1 || dismissed[0] == "" {
+		t.Fatalf("dismissals = %v, want one own-review dismissal with a reason", dismissed)
+	}
+	if len(recorder.refs) != 2 || recorder.refs[1].Operation != "review-dismiss" {
+		t.Fatalf("recorded refs = %+v, want review followed by review-dismiss", recorder.refs)
 	}
 }
 

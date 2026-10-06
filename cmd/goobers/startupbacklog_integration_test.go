@@ -144,6 +144,9 @@ func TestIntegrationStartupWithLargeTerminalCleanupBacklog(t *testing.T) {
 		if calls-before > terminalCleanupRetryBatch {
 			t.Fatalf("pass %d attempted %d, limit %d", pass, calls-before, terminalCleanupRetryBatch)
 		}
+		if len(attempts) == population {
+			break
+		}
 	}
 	for i := 0; i < population; i++ {
 		if attempts[fmt.Sprintf("pending-%04d", i)] == 0 {

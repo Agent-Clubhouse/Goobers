@@ -313,6 +313,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/docchurn",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/dslmigrate",
       "coverage": "none",
       "category": "not-selected",
@@ -1094,6 +1100,12 @@
     },
     {
       "package": "test/componentizationbaseline/inventory",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "test/componentizationbaseline/timing",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."

@@ -63,6 +63,7 @@ type marker struct {
 	JournalMissingSince time.Time `json:"journal_missing_since,omitempty"`
 	Status              status    `json:"status"`
 	CleanupDisposition  string    `json:"cleanup_disposition,omitempty"`
+	CleanupAttempts     int       `json:"cleanup_attempts,omitempty"`
 	SizeBytes           *int64    `json:"size_bytes,omitempty"`
 }
 

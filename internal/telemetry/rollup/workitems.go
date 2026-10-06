@@ -92,7 +92,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 	if limit <= 0 || limit > MaxWorkItemActions {
 		limit = MaxWorkItemActions
 	}
-	rows, err := db.readDB().QueryContext(ctx, `
+	items, err := queryRows(ctx, db.readDB(), `
 		WITH normalized AS (
 			SELECT
 				pm.*,
@@ -198,43 +198,42 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 		WHERE item_rank = 1
 		ORDER BY julianday(occurred_at) DESC, occurred_at DESC, provider, kind, external_id
 		LIMIT ?`,
-		query.Provider, query.Provider, query.Kind, query.Kind, limit+1)
+		[]any{query.Provider, query.Provider, query.Kind, query.Kind, limit + 1},
+		"rollup: query work items",
+		func(rows *sql.Rows) (WorkItem, error) {
+			var item WorkItem
+			var isDone bool
+			var occurredAt sql.NullString
+			if err := rows.Scan(
+				&item.Provider,
+				&item.Kind,
+				&item.ExternalID,
+				&item.URL,
+				&item.ActionCount,
+				&isDone,
+				&item.LastOperation,
+				&occurredAt,
+				&item.LastRunID,
+				&item.Gaggle,
+				&item.Workflow,
+				&item.RunStatus,
+			); err != nil {
+				return WorkItem{}, fmt.Errorf("rollup: scan work item: %w", err)
+			}
+			var err error
+			if item.LastActionAt, err = parseTime(occurredAt); err != nil {
+				return WorkItem{}, err
+			}
+			item.Outcome = workItemOutcome(isDone, item.RunStatus)
+			item.Repository = workItemRepository(item.Provider, item.URL)
+			return item, nil
+		},
+		"rollup: iterate work items")
 	if err != nil {
-		return nil, false, fmt.Errorf("rollup: query work items: %w", err)
+		return nil, false, err
 	}
-	defer func() { _ = rows.Close() }()
-
-	items := make([]WorkItem, 0, limit)
-	for rows.Next() {
-		var item WorkItem
-		var isDone bool
-		var occurredAt sql.NullString
-		if err := rows.Scan(
-			&item.Provider,
-			&item.Kind,
-			&item.ExternalID,
-			&item.URL,
-			&item.ActionCount,
-			&isDone,
-			&item.LastOperation,
-			&occurredAt,
-			&item.LastRunID,
-			&item.Gaggle,
-			&item.Workflow,
-			&item.RunStatus,
-		); err != nil {
-			return nil, false, fmt.Errorf("rollup: scan work item: %w", err)
-		}
-		var err error
-		if item.LastActionAt, err = parseTime(occurredAt); err != nil {
-			return nil, false, err
-		}
-		item.Outcome = workItemOutcome(isDone, item.RunStatus)
-		item.Repository = workItemRepository(item.Provider, item.URL)
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("rollup: iterate work items: %w", err)
+	if items == nil {
+		items = make([]WorkItem, 0, limit)
 	}
 	hasMore := len(items) > limit
 	if hasMore {
@@ -262,7 +261,7 @@ func (db *DB) WorkItemActions(
 		args = append(args, itemURL, repository)
 	}
 	args = append(args, MaxWorkItemActions+1)
-	rows, err := db.readDB().QueryContext(ctx, `
+	actions, err := queryRows(ctx, db.readDB(), `
 		WITH normalized AS (
 			SELECT
 				pm.*,
@@ -347,37 +346,36 @@ func (db *DB) WorkItemActions(
 		WHERE `+where+`
 		ORDER BY julianday(pm.occurred_at) DESC, pm.occurred_at DESC, pm.run_id DESC, pm.seq DESC
 		LIMIT ?`,
-		args...)
+		args,
+		"rollup: query work item actions",
+		func(rows *sql.Rows) (WorkItemAction, error) {
+			var action WorkItemAction
+			var occurredAt sql.NullString
+			if err := rows.Scan(
+				&action.RunID,
+				&action.Seq,
+				&action.URL,
+				&action.Outcome,
+				&action.Operation,
+				&occurredAt,
+				&action.Gaggle,
+				&action.Workflow,
+				&action.RunStatus,
+			); err != nil {
+				return WorkItemAction{}, fmt.Errorf("rollup: scan work item action: %w", err)
+			}
+			var err error
+			if action.OccurredAt, err = parseTime(occurredAt); err != nil {
+				return WorkItemAction{}, err
+			}
+			return action, nil
+		},
+		"rollup: iterate work item actions")
 	if err != nil {
-		return nil, false, fmt.Errorf("rollup: query work item actions: %w", err)
+		return nil, false, err
 	}
-	defer func() { _ = rows.Close() }()
-
-	actions := make([]WorkItemAction, 0, MaxWorkItemActions)
-	for rows.Next() {
-		var action WorkItemAction
-		var occurredAt sql.NullString
-		if err := rows.Scan(
-			&action.RunID,
-			&action.Seq,
-			&action.URL,
-			&action.Outcome,
-			&action.Operation,
-			&occurredAt,
-			&action.Gaggle,
-			&action.Workflow,
-			&action.RunStatus,
-		); err != nil {
-			return nil, false, fmt.Errorf("rollup: scan work item action: %w", err)
-		}
-		var err error
-		if action.OccurredAt, err = parseTime(occurredAt); err != nil {
-			return nil, false, err
-		}
-		actions = append(actions, action)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("rollup: iterate work item actions: %w", err)
+	if actions == nil {
+		actions = make([]WorkItemAction, 0, MaxWorkItemActions)
 	}
 	hasMore := len(actions) > MaxWorkItemActions
 	if hasMore {
@@ -406,7 +404,7 @@ func (db *DB) RelatedPullRequests(
 	issueID string,
 ) ([]RelatedWorkItem, error) {
 	issueURL := workItemURL(provider, repository, "issue", issueID)
-	pullPrefix := workItemURL(provider, repository, "pr", "")
+	pullPrefix := relatedPullRequestPrefix(provider, repository)
 	if issueURL == "" || pullPrefix == "" {
 		return []RelatedWorkItem{}, nil
 	}
@@ -488,12 +486,33 @@ func (db *DB) RelatedPullRequests(
 	return items, nil
 }
 
+// relatedPullRequestPrefix returns the URL prefix shared by every pull request
+// that can relate to an issue in repository.
+//
+// #6797: an ADO issue's repository is project-scoped ("<org>/<project>"),
+// while its pull requests live in repository-scoped
+// "<org>/<project>/_git/<repo>/pullrequest/<id>" URLs. Building the prefix
+// with workItemURL(..., "pr", "") from the issue's repository yielded "" for
+// ADO, so an ADO issue never listed a related pull request. The ADO prefix is
+// therefore the project's "_git/" root, which covers every repository in the
+// project and nothing outside it.
+func relatedPullRequestPrefix(provider, repository string) string {
+	if !strings.EqualFold(provider, "ado") {
+		return workItemURL(provider, repository, "pr", "")
+	}
+	parts := strings.Split(strings.Trim(repository, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return "https://dev.azure.com/" + parts[0] + "/" + parts[1] + "/_git/"
+}
+
 // workItemURL builds an entity URL, or — when externalID is empty — the URL
 // PREFIX shared by every entity of that kind in that repository.
 //
-// The empty-id prefix form is load-bearing, not an accident: RelatedPullRequests
-// calls workItemURL(provider, repository, "pr", "") and uses the result as a
-// SQL LIKE prefix. Rejecting an empty id here would silently return no related
+// The empty-id prefix form is load-bearing, not an accident: for GitHub,
+// relatedPullRequestPrefix calls workItemURL(provider, repository, "pr", "")
+// and RelatedPullRequests uses the result as a SQL LIKE prefix. Rejecting an empty id here would silently return no related
 // pull requests at all, so the contract is stated rather than left implicit.
 func workItemURL(provider, repository, kind, externalID string) string {
 	if strings.TrimSpace(repository) == "" {
