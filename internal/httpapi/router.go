@@ -627,10 +627,24 @@ type handlerConfig struct {
 	workItemsAvailable      bool
 	activeClaimsAvailable   bool
 	configAuthoring         ConfigAuthoringReader
+	trustedProxies          []string
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
 type HandlerOption func(*handlerConfig) error
+
+// WithTrustedProxies allows Portal locality classification to use
+// X-Forwarded-For only when the immediate peer is in an explicit trust range.
+func WithTrustedProxies(proxies []string) HandlerOption {
+	return func(c *handlerConfig) error {
+		ranges, err := parseTrustedProxyRanges(proxies)
+		if err != nil {
+			return err
+		}
+		c.trustedProxies = ranges
+		return nil
+	}
+}
 
 // WithChangeFeedStream registers the SSE endpoint backed by the read model's
 // change feed (#1929).
@@ -1202,6 +1216,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		portalConfig.Capabilities.RevealRun = config.runRevealer != nil
 		portalConfig.Capabilities.WorkflowEnable = config.workflowMutations != nil
+		portalConfig.ConnectionLocality = classifyConnectionLocality(request, config.trustedProxies)
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, portalConfig)
 	})

@@ -101,6 +101,7 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     chatUrl: null,
     links: [],
   },
+  connectionLocality: "unknown",
   capabilities: {
     revealRun: true,
     workflowEnable: true,

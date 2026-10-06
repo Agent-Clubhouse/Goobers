@@ -493,7 +493,8 @@ export const goWireFixtures = {
     "capabilities": {
       "revealRun": false,
       "workflowEnable": false
-    }
+    },
+    "connectionLocality": "local"
   },
   "gaggles": {
     "items": [

@@ -99,6 +99,17 @@ func (c APIConfig) validate(address string) error {
 			return fmt.Errorf("api.auth.oidc: %w", err)
 		}
 	}
+	for _, trustedProxy := range c.TrustedProxies {
+		value := strings.TrimSpace(trustedProxy)
+		if value == "" {
+			return fmt.Errorf("api.trustedProxies: entries must be non-empty IP addresses or CIDR ranges")
+		}
+		if net.ParseIP(value) == nil {
+			if _, _, err := net.ParseCIDR(value); err != nil {
+				return fmt.Errorf("api.trustedProxies: %q must be an IP address or CIDR range", trustedProxy)
+			}
+		}
+	}
 	// Off-loopback requires ENCRYPTION unconditionally, and an AUTHENTICATOR —
 	// but OIDC is not the only way to have one. Since #3702 a daemon with no
 	// human API surface serves the pod plane behind podauth chained in front of
