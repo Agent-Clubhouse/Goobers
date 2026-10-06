@@ -48,8 +48,8 @@ func (t Threshold) validate() error {
 // live in instance configuration rather than code.
 type Config struct {
 	Thresholds map[string]Threshold `json:"thresholds" yaml:"thresholds"`
-	// MinConfidence, when above zero, downgrades choice answers below it to
-	// Uncertain.
+	// MinConfidence downgrades choice and score answers below it to Uncertain.
+	// Settings.Resolve defaults zero to DefaultChoiceMinConfidence.
 	MinConfidence float64 `json:"minConfidence" yaml:"minConfidence"`
 	// MaxConcurrent bounds in-flight decider calls. Zero means 4.
 	MaxConcurrent int `json:"maxConcurrent" yaml:"maxConcurrent"`
@@ -83,6 +83,7 @@ type Outcome struct {
 	Decision    Decision
 	Probability float64 // yes-probability for noul
 	Choice      string  // top option for choice
+	Score       *float64
 	Confidence  float64
 	Cached      bool
 }
@@ -186,6 +187,85 @@ func (g *Gate) JudgeNoul(ctx context.Context, name string, state any, q decider.
 	}
 	g.store(digest, o)
 	return g.finish(name, digest, o, nil, start)
+}
+
+// JudgeChoice asks a multiple-choice question. A response below MinConfidence
+// has an empty Choice, leaving the caller's deterministic fallback in control.
+func (g *Gate) JudgeChoice(ctx context.Context, name string, state any, q decider.Question) (Outcome, error) {
+	start := g.now()
+	if q.Type != decider.KindChoice {
+		return g.finish(name, "", Outcome{Name: name}, fmt.Errorf("decisiongate: %q is not a choice question", name), start)
+	}
+	return g.judgeTyped(ctx, name, state, q, start, func(answer decider.Answer) (Outcome, error) {
+		if answer.Choice == "" || answer.Confidence == nil {
+			return Outcome{Name: name}, fmt.Errorf("decisiongate: no choice answer for %q", name)
+		}
+		outcome := Outcome{Name: name, Choice: answer.Choice, Confidence: *answer.Confidence}
+		if g.cfg.MinConfidence > 0 && outcome.Confidence < g.cfg.MinConfidence {
+			outcome.Choice = ""
+		}
+		return outcome, nil
+	})
+}
+
+// JudgeScore asks an ordered-score question. A response below MinConfidence
+// has a nil Score, leaving the caller's deterministic fallback in control.
+func (g *Gate) JudgeScore(ctx context.Context, name string, state any, q decider.Question) (Outcome, error) {
+	start := g.now()
+	if q.Type != decider.KindScore {
+		return g.finish(name, "", Outcome{Name: name}, fmt.Errorf("decisiongate: %q is not a score question", name), start)
+	}
+	return g.judgeTyped(ctx, name, state, q, start, func(answer decider.Answer) (Outcome, error) {
+		if answer.Score == nil || answer.Confidence == nil {
+			return Outcome{Name: name}, fmt.Errorf("decisiongate: no score answer for %q", name)
+		}
+		score := *answer.Score
+		outcome := Outcome{Name: name, Score: &score, Confidence: *answer.Confidence}
+		if g.cfg.MinConfidence > 0 && outcome.Confidence < g.cfg.MinConfidence {
+			outcome.Score = nil
+		}
+		return outcome, nil
+	})
+}
+
+func (g *Gate) judgeTyped(
+	ctx context.Context,
+	name string,
+	state any,
+	q decider.Question,
+	start time.Time,
+	decode func(decider.Answer) (Outcome, error),
+) (Outcome, error) {
+	digest, err := digestOf(name, state, q)
+	if err != nil {
+		return g.finish(name, "", Outcome{Name: name}, err, start)
+	}
+	if outcome, hit := g.lookup(digest); hit {
+		outcome.Cached = true
+		return g.finish(name, digest, outcome, nil, start)
+	}
+	select {
+	case g.sem <- struct{}{}:
+		defer func() { <-g.sem }()
+	case <-ctx.Done():
+		return g.finish(name, digest, Outcome{Name: name}, ctx.Err(), start)
+	}
+	cctx, cancel := context.WithTimeout(ctx, g.cfg.CallTimeout)
+	defer cancel()
+	response, err := g.d.Decide(cctx, decider.Request{State: state, Questions: map[string]decider.Question{name: q}})
+	if err != nil {
+		return g.finish(name, digest, Outcome{Name: name}, err, start)
+	}
+	answer, ok := response.Answers[name]
+	if !ok {
+		return g.finish(name, digest, Outcome{Name: name}, fmt.Errorf("decisiongate: no answer for %q", name), start)
+	}
+	outcome, err := decode(answer)
+	if err != nil {
+		return g.finish(name, digest, outcome, err, start)
+	}
+	g.store(digest, outcome)
+	return g.finish(name, digest, outcome, nil, start)
 }
 
 func (g *Gate) finish(name, digest string, o Outcome, err error, start time.Time) (Outcome, error) {

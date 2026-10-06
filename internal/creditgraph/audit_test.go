@@ -1,12 +1,20 @@
 package creditgraph
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 )
+
+type faultDomainAdvisorFunc func(context.Context, string) (FaultDomainAdvice, error)
+
+func (f faultDomainAdvisorFunc) ClassifyFaultDomain(ctx context.Context, text string) (FaultDomainAdvice, error) {
+	return f(ctx, text)
+}
 
 func TestAuditFaultDomainsClassifiesSharedRuntimeOnce(t *testing.T) {
 	var observations []AttributionObservation
@@ -26,6 +34,56 @@ func TestAuditFaultDomainsClassifiesSharedRuntimeOnce(t *testing.T) {
 	}
 	if finding.RecommendedOwner != "Goobers product reliability" || finding.Confidence < 0.8 {
 		t.Fatalf("routing = %+v, want high-confidence product reliability", finding)
+	}
+}
+
+func TestAuditFaultDomainsShadowReportsRealAttributorMisroutesWithoutChangingFindings(t *testing.T) {
+	const (
+		runtimeText = "The failure was caused by the harness or environment that ran the shared runtime process."
+		routingText = "The model that ran the stage followed the workflow routing instructions to the wrong destination."
+	)
+	var observations []AttributionObservation
+	for i, workflow := range []string{"implementation", "review", "release"} {
+		observations = append(observations,
+			auditObservation("runtime-"+workflow, workflow, "runtime-v"+string(rune('1'+i)), "execute", runtimeText, ClassEnvironment, 0.9, "stage:execute"),
+			auditObservation("routing-"+workflow, workflow, "routing-v"+string(rune('1'+i)), "route", routingText, ClassRouting, 0.9, "stage:route"),
+		)
+	}
+	quality := 0.75
+	advisor := faultDomainAdvisorFunc(func(_ context.Context, text string) (FaultDomainAdvice, error) {
+		switch {
+		case strings.Contains(text, "harness or environment"):
+			return FaultDomainAdvice{Domain: FaultDomainProductRuntime, Confidence: 0.94, Quality: &quality, QualityConfidence: 0.88}, nil
+		case strings.Contains(text, "model that ran"):
+			return FaultDomainAdvice{Domain: FaultDomainWorkflow, Confidence: 0.91, Quality: &quality, QualityConfidence: 0.86}, nil
+		default:
+			return FaultDomainAdvice{Domain: FaultDomainUnknown}, nil
+		}
+	})
+
+	report := AuditFaultDomains(observations, FaultAuditConfig{SampleFloor: 3, Advisory: advisor})
+	if len(report.ExternalFindings) != 2 {
+		t.Fatalf("findings changed in shadow mode: %+v", report)
+	}
+	if report.Shadow == nil || report.Shadow.Agreements != 0 || report.Shadow.Disagreements != 2 ||
+		report.Shadow.Uncertain != 0 || len(report.Shadow.Comparisons) != 2 {
+		t.Fatalf("shadow report = %+v, want two disagreements", report.Shadow)
+	}
+	got := map[FaultDomain]FaultDomainShadowComparison{}
+	for _, comparison := range report.Shadow.Comparisons {
+		got[comparison.AdvisoryDomain] = comparison
+		if comparison.KeywordDomain != FaultDomainExternal || comparison.Agreement ||
+			comparison.AttributorQuality == nil || *comparison.AttributorQuality != quality {
+			t.Fatalf("comparison = %+v, want unchanged external keyword result and advisory quality", comparison)
+		}
+	}
+	if got[FaultDomainProductRuntime].Confidence != 0.94 || got[FaultDomainWorkflow].Confidence != 0.91 {
+		t.Fatalf("comparisons = %+v, want product and workflow advisory domains", report.Shadow.Comparisons)
+	}
+
+	off := AuditFaultDomains(observations, FaultAuditConfig{SampleFloor: 3})
+	if off.Shadow != nil || !reflect.DeepEqual(off.ExternalFindings, report.ExternalFindings) {
+		t.Fatalf("off-by-default report changed: off=%+v shadow=%+v", off, report)
 	}
 }
 

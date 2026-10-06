@@ -391,6 +391,41 @@
         "truncated": {
           "type": "boolean",
           "description": "True when the configured finding budget omitted additional signatures."
+        },
+        "faultDomainShadow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["comparisons", "agreements", "disagreements", "uncertain"],
+          "description": "Opt-in advisory comparison; deterministic findings and routing remain unchanged.",
+          "properties": {
+            "comparisons": {
+              "type": "array",
+              "description": "Per-finding advisory comparisons in stable finding order.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["findingId", "signature", "failureClasses", "stages", "workflows", "keywordDomain", "advisoryDomain", "agreement"],
+                "properties": {
+                  "findingId": { "type": "string", "description": "Stable identifier of the deterministic finding being compared." },
+                  "signature": { "type": "string", "description": "Normalized deterministic signature of the compared finding." },
+                  "failureClasses": { "type": "array", "description": "Failure classes retained by code as facts, not sent to the model.", "items": { "type": "string" } },
+                  "stages": { "type": "array", "description": "Stages retained by code as facts, not sent to the model.", "items": { "type": "string" } },
+                  "workflows": { "type": "array", "description": "Workflows retained by code as facts, not sent to the model.", "items": { "type": "string" } },
+                  "keywordDomain": { "type": "string", "enum": ["goobers-product-runtime", "harness-model-provider-environment", "workflow-definition", "mixed-or-unknown"], "description": "The deterministic keyword classifier result that still governs the finding." },
+                  "advisoryDomain": { "type": "string", "enum": ["goobers-product-runtime", "harness-model-provider-environment", "workflow-definition", "mixed-or-unknown"], "description": "The thresholded decision-gate result, or mixed-or-unknown when uncertain." },
+                  "agreement": { "type": "boolean", "description": "Whether a certain advisory domain equals the keyword domain." },
+                  "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Decision-gate confidence for the advisory domain." },
+                  "attributorQuality": { "type": "number", "minimum": 0, "maximum": 1, "description": "Normalized advisory score for causal specificity of the attributor prose." },
+                  "qualityConfidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Decision-gate confidence for the quality score." },
+                  "error": { "type": "string", "description": "Advisory call failure; deterministic classification remains available." }
+                }
+              }
+            },
+            "agreements": { "type": "integer", "minimum": 0, "description": "Count of certain advisory domains matching keyword domains." },
+            "disagreements": { "type": "integer", "minimum": 0, "description": "Count of certain advisory domains differing from keyword domains." },
+            "uncertain": { "type": "integer", "minimum": 0, "description": "Count of advisory classifications below threshold or unavailable." },
+            "error": { "type": "string", "description": "Configuration error that disabled all advisory calls for this report." }
+          }
         }
       }
     },

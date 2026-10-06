@@ -12,6 +12,10 @@ import (
 	"github.com/goobers/goobers/internal/decider"
 )
 
+// DefaultChoiceMinConfidence keeps advisory choice and score answers from
+// being treated as certain when an opted-in instance omits a threshold.
+const DefaultChoiceMinConfidence = 0.8
+
 // Mode is how an opted-in decision is used.
 type Mode string
 
@@ -115,6 +119,9 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	}
 	if _, ok := cfg.Thresholds[ClaimQuestion]; !ok {
 		cfg.Thresholds[ClaimQuestion] = DefaultClaimThreshold
+	}
+	if cfg.MinConfidence == 0 {
+		cfg.MinConfidence = DefaultChoiceMinConfidence
 	}
 	if cfg.CallTimeout == 0 {
 		cfg.CallTimeout = 5 * time.Second

@@ -1075,7 +1075,11 @@ func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req Telemetr
 		return err
 	}
 	result.AttributionCohorts = cohorts
-	audit, err := PreviewStoredFaultAudit(ctx, s.sources.Layout.Root, s.sources.ReadModel, query, creditgraph.FaultAuditConfig{})
+	auditConfig := creditgraph.FaultAuditConfig{}
+	if s.sources.Config != nil {
+		auditConfig = DecisionGateFaultAuditConfig(ctx, s.sources.Config.DecisionGate)
+	}
+	audit, err := PreviewStoredFaultAudit(ctx, s.sources.Layout.Root, s.sources.ReadModel, query, auditConfig)
 	if err != nil {
 		return err
 	}

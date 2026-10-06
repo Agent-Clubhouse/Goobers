@@ -57,6 +57,7 @@ func decodeCandidateFindings(t *testing.T, stdout string) candidateFindingsArtif
 
 func TestDefectAggregateResponsePreservesFaultAudit(t *testing.T) {
 	now := time.Date(2026, time.September, 25, 7, 0, 0, 0, time.UTC)
+	quality := 0.75
 	audit := &creditgraph.FaultAuditReport{
 		Schema: creditgraph.FaultAuditSchemaVersion, Mode: "report-only",
 		Since: now.Add(-time.Hour), Until: now, ObservationsScanned: 3,
@@ -72,6 +73,17 @@ func TestDefectAggregateResponsePreservesFaultAudit(t *testing.T) {
 			Verification: creditgraph.VerificationPending,
 		}},
 		Suppressed: 1, Truncated: true,
+		Shadow: &creditgraph.FaultDomainShadowReport{
+			Comparisons: []creditgraph.FaultDomainShadowComparison{{
+				FindingID: "backprop-00000000000000000000", Signature: "runtime-failure",
+				FailureClasses: []string{"environment"}, Stages: []string{"implement"},
+				Workflows:      []string{"implementation"},
+				KeywordDomain:  creditgraph.FaultDomainExternal,
+				AdvisoryDomain: creditgraph.FaultDomainProductRuntime,
+				Confidence:     0.92, AttributorQuality: &quality, QualityConfidence: 0.88,
+			}},
+			Disagreements: 1,
+		},
 	}
 
 	wire := defectAggregateResponse(candidateFindingsArtifact{FaultAudit: audit})

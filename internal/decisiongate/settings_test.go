@@ -112,6 +112,9 @@ func TestResolveDefaultsClaimThreshold(t *testing.T) {
 	if got := g.cfg.Thresholds[ClaimQuestion]; got != DefaultClaimThreshold {
 		t.Fatalf("claim threshold = %+v, want default", got)
 	}
+	if g.cfg.MinConfidence != DefaultChoiceMinConfidence {
+		t.Fatalf("minimum choice confidence = %v, want %v", g.cfg.MinConfidence, DefaultChoiceMinConfidence)
+	}
 	if s.Gate.Thresholds != nil {
 		t.Fatal("Resolve must not mutate the caller's settings")
 	}

@@ -264,19 +264,45 @@ type FaultFinding struct {
 	Verification       string                    `json:"verification"`
 }
 
+// FaultDomainShadowComparison is one advisory-versus-keyword classification.
+type FaultDomainShadowComparison struct {
+	FindingID         string   `json:"findingId"`
+	Signature         string   `json:"signature"`
+	FailureClasses    []string `json:"failureClasses"`
+	Stages            []string `json:"stages"`
+	Workflows         []string `json:"workflows"`
+	KeywordDomain     string   `json:"keywordDomain"`
+	AdvisoryDomain    string   `json:"advisoryDomain"`
+	Agreement         bool     `json:"agreement"`
+	Confidence        float64  `json:"confidence,omitempty"`
+	AttributorQuality *float64 `json:"attributorQuality,omitempty"`
+	QualityConfidence float64  `json:"qualityConfidence,omitempty"`
+	Error             string   `json:"error,omitempty"`
+}
+
+// FaultDomainShadowReport summarizes advisory agreement without changing findings.
+type FaultDomainShadowReport struct {
+	Comparisons   []FaultDomainShadowComparison `json:"comparisons"`
+	Agreements    int                           `json:"agreements"`
+	Disagreements int                           `json:"disagreements"`
+	Uncertain     int                           `json:"uncertain"`
+	Error         string                        `json:"error,omitempty"`
+}
+
 // FaultAuditReport groups fault findings by ownership boundary.
 type FaultAuditReport struct {
-	Schema              string         `json:"schema"`
-	Mode                string         `json:"mode"`
-	Since               time.Time      `json:"since"`
-	Until               time.Time      `json:"until"`
-	ObservationsScanned int            `json:"observationsScanned"`
-	ProductFindings     []FaultFinding `json:"productReliabilityFindings,omitempty"`
-	ExternalFindings    []FaultFinding `json:"externalFindings,omitempty"`
-	WorkflowFindings    []FaultFinding `json:"workflowFindings,omitempty"`
-	UnknownFindings     []FaultFinding `json:"mixedOrUnknownFindings,omitempty"`
-	Suppressed          int            `json:"suppressed"`
-	Truncated           bool           `json:"truncated,omitempty"`
+	Schema              string                   `json:"schema"`
+	Mode                string                   `json:"mode"`
+	Since               time.Time                `json:"since"`
+	Until               time.Time                `json:"until"`
+	ObservationsScanned int                      `json:"observationsScanned"`
+	ProductFindings     []FaultFinding           `json:"productReliabilityFindings,omitempty"`
+	ExternalFindings    []FaultFinding           `json:"externalFindings,omitempty"`
+	WorkflowFindings    []FaultFinding           `json:"workflowFindings,omitempty"`
+	UnknownFindings     []FaultFinding           `json:"mixedOrUnknownFindings,omitempty"`
+	Suppressed          int                      `json:"suppressed"`
+	Truncated           bool                     `json:"truncated,omitempty"`
+	Shadow              *FaultDomainShadowReport `json:"faultDomainShadow,omitempty"`
 }
 
 // DefectAggregateResponse is the plane's answer.

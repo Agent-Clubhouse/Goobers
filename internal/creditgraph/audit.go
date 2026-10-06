@@ -1,6 +1,7 @@
 package creditgraph
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"regexp"
@@ -56,6 +57,52 @@ type FaultAuditConfig struct {
 	PreviousReports      map[string]time.Time
 	FixesAppliedAt       map[string]time.Time
 	BaselineObservations map[string][]AttributionObservation
+	// Advisory is consulted only to populate Shadow; it never changes Domain,
+	// routing, cooldown, or verification.
+	Advisory        FaultDomainAdvisor
+	AdvisoryError   string
+	AdvisoryContext context.Context
+}
+
+// FaultDomainAdvice is a model's advisory judgment of attributor prose.
+type FaultDomainAdvice struct {
+	Domain            FaultDomain
+	Confidence        float64
+	Quality           *float64
+	QualityConfidence float64
+}
+
+// FaultDomainAdvisor judges only free-text causes. Deterministic finding facts
+// remain in AuditFaultDomains and are not supplied through this interface.
+type FaultDomainAdvisor interface {
+	ClassifyFaultDomain(context.Context, string) (FaultDomainAdvice, error)
+}
+
+// FaultDomainShadowComparison contrasts one advisory judgment with the
+// unchanged keyword classifier.
+type FaultDomainShadowComparison struct {
+	FindingID         string      `json:"findingId"`
+	Signature         string      `json:"signature"`
+	FailureClasses    []string    `json:"failureClasses"`
+	Stages            []string    `json:"stages"`
+	Workflows         []string    `json:"workflows"`
+	KeywordDomain     FaultDomain `json:"keywordDomain"`
+	AdvisoryDomain    FaultDomain `json:"advisoryDomain"`
+	Agreement         bool        `json:"agreement"`
+	Confidence        float64     `json:"confidence,omitempty"`
+	AttributorQuality *float64    `json:"attributorQuality,omitempty"`
+	QualityConfidence float64     `json:"qualityConfidence,omitempty"`
+	Error             string      `json:"error,omitempty"`
+}
+
+// FaultDomainShadowReport is present only when advisory classification was
+// explicitly enabled.
+type FaultDomainShadowReport struct {
+	Comparisons   []FaultDomainShadowComparison `json:"comparisons"`
+	Agreements    int                           `json:"agreements"`
+	Disagreements int                           `json:"disagreements"`
+	Uncertain     int                           `json:"uncertain"`
+	Error         string                        `json:"error,omitempty"`
 }
 
 // FaultFinding describes one evidence-backed failure signature and its likely owner.
@@ -92,6 +139,7 @@ type FaultAuditReport struct {
 	Suppressed           int                                 `json:"suppressed"`
 	Truncated            bool                                `json:"truncated,omitempty"`
 	BaselineObservations map[string][]AttributionObservation `json:"-"`
+	Shadow               *FaultDomainShadowReport            `json:"faultDomainShadow,omitempty"`
 }
 
 type faultSignal struct {
@@ -110,6 +158,12 @@ func AuditFaultDomains(observations []AttributionObservation, config FaultAuditC
 	report := FaultAuditReport{
 		Schema: FaultAuditSchemaVersion, Mode: "report-only",
 		Since: config.Since, Until: config.Until,
+	}
+	if config.Advisory != nil || config.AdvisoryError != "" {
+		report.Shadow = &FaultDomainShadowReport{
+			Comparisons: []FaultDomainShadowComparison{},
+			Error:       config.AdvisoryError,
+		}
 	}
 	selected := selectAuditObservations(observations, config)
 	report.ObservationsScanned = len(selected)
@@ -155,6 +209,18 @@ func AuditFaultDomains(observations []AttributionObservation, config FaultAuditC
 			report.Truncated = true
 			continue
 		}
+		if report.Shadow != nil && config.Advisory != nil {
+			comparison := shadowFaultDomainComparison(config.AdvisoryContext, config.Advisory, finding, groups[signature])
+			report.Shadow.Comparisons = append(report.Shadow.Comparisons, comparison)
+			switch {
+			case comparison.AdvisoryDomain == FaultDomainUnknown:
+				report.Shadow.Uncertain++
+			case comparison.Agreement:
+				report.Shadow.Agreements++
+			default:
+				report.Shadow.Disagreements++
+			}
+		}
 		if report.BaselineObservations == nil {
 			report.BaselineObservations = map[string][]AttributionObservation{}
 		}
@@ -173,6 +239,54 @@ func AuditFaultDomains(observations []AttributionObservation, config FaultAuditC
 		}
 	}
 	return report
+}
+
+func shadowFaultDomainComparison(
+	ctx context.Context,
+	advisor FaultDomainAdvisor,
+	finding FaultFinding,
+	signals []faultSignal,
+) FaultDomainShadowComparison {
+	classes := map[string]bool{}
+	stages := map[string]bool{}
+	texts := map[string]bool{}
+	for _, signal := range signals {
+		classes[string(signal.cause.Class)] = true
+		if signal.cause.Stage != "" {
+			stages[signal.cause.Stage] = true
+		}
+		if text := strings.TrimSpace(signal.cause.Summary); text != "" {
+			texts[text] = true
+		}
+		for _, evidence := range signal.cause.Evidence {
+			if text := strings.TrimSpace(evidence); text != "" {
+				texts[text] = true
+			}
+		}
+	}
+	comparison := FaultDomainShadowComparison{
+		FindingID: finding.ID, Signature: finding.Signature,
+		FailureClasses: sortedSet(classes, 0), Stages: sortedSet(stages, 0),
+		Workflows: finding.Workflows, KeywordDomain: finding.Domain,
+		AdvisoryDomain: FaultDomainUnknown,
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	advice, err := advisor.ClassifyFaultDomain(ctx, strings.Join(sortedSet(texts, 0), "\n"))
+	switch advice.Domain {
+	case FaultDomainProductRuntime, FaultDomainExternal, FaultDomainWorkflow:
+		comparison.AdvisoryDomain = advice.Domain
+	}
+	comparison.Confidence = advice.Confidence
+	comparison.AttributorQuality = advice.Quality
+	comparison.QualityConfidence = advice.QualityConfidence
+	comparison.Agreement = comparison.AdvisoryDomain != FaultDomainUnknown &&
+		comparison.AdvisoryDomain == comparison.KeywordDomain
+	if err != nil {
+		comparison.Error = err.Error()
+	}
+	return comparison
 }
 
 func normalizeAuditConfig(config FaultAuditConfig) FaultAuditConfig {

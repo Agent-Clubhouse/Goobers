@@ -253,7 +253,30 @@ func wireFaultAuditReport(report *creditgraph.FaultAuditReport) *telemetryclient
 		UnknownFindings:     wireFaultFindings(report.UnknownFindings),
 		Suppressed:          report.Suppressed,
 		Truncated:           report.Truncated,
+		Shadow:              wireFaultDomainShadow(report.Shadow),
 	}
+}
+
+func wireFaultDomainShadow(report *creditgraph.FaultDomainShadowReport) *telemetryclient.FaultDomainShadowReport {
+	if report == nil {
+		return nil
+	}
+	result := &telemetryclient.FaultDomainShadowReport{
+		Comparisons: make([]telemetryclient.FaultDomainShadowComparison, 0, len(report.Comparisons)),
+		Agreements:  report.Agreements, Disagreements: report.Disagreements,
+		Uncertain: report.Uncertain, Error: report.Error,
+	}
+	for _, comparison := range report.Comparisons {
+		result.Comparisons = append(result.Comparisons, telemetryclient.FaultDomainShadowComparison{
+			FindingID: comparison.FindingID, Signature: comparison.Signature,
+			FailureClasses: comparison.FailureClasses, Stages: comparison.Stages,
+			Workflows: comparison.Workflows, KeywordDomain: string(comparison.KeywordDomain),
+			AdvisoryDomain: string(comparison.AdvisoryDomain), Agreement: comparison.Agreement,
+			Confidence: comparison.Confidence, AttributorQuality: comparison.AttributorQuality,
+			QualityConfidence: comparison.QualityConfidence, Error: comparison.Error,
+		})
+	}
+	return result
 }
 
 func wireFaultFindings(findings []creditgraph.FaultFinding) []telemetryclient.FaultFinding {

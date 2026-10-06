@@ -14,12 +14,34 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
 )
+
+// DecisionGateFaultAuditConfig enables the Backprop classifier only for an
+// explicit shadow-mode opt-in. Resolution failures are carried in the report
+// instead of changing or failing deterministic findings.
+func DecisionGateFaultAuditConfig(
+	ctx context.Context,
+	settings *decisiongate.Settings,
+) creditgraph.FaultAuditConfig {
+	config := creditgraph.FaultAuditConfig{}
+	if settings == nil || settings.EffectiveMode() != decisiongate.ModeShadow {
+		return config
+	}
+	config.AdvisoryContext = ctx
+	gate, err := settings.Resolve(nil, nil)
+	if err != nil {
+		config.AdvisoryError = err.Error()
+		return config
+	}
+	config.Advisory = faultDomainAdvisor{gate: gate}
+	return config
+}
 
 const (
 	attributionListPageSize        = 200

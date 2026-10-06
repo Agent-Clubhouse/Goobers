@@ -12,12 +12,13 @@ import (
 )
 
 type fake struct {
-	yes   float64
-	err   error
-	calls atomic.Int32
-	delay time.Duration
-	live  atomic.Int32
-	peak  atomic.Int32
+	yes    float64
+	answer *decider.Answer
+	err    error
+	calls  atomic.Int32
+	delay  time.Duration
+	live   atomic.Int32
+	peak   atomic.Int32
 }
 
 func (f *fake) Decide(ctx context.Context, r decider.Request) (decider.Response, error) {
@@ -36,10 +37,35 @@ func (f *fake) Decide(ctx context.Context, r decider.Request) (decider.Response,
 	}
 	out := decider.Response{Answers: map[string]decider.Answer{}}
 	for id := range r.Questions {
+		if f.answer != nil {
+			out.Answers[id] = *f.answer
+			continue
+		}
 		y := f.yes
 		out.Answers[id] = decider.Answer{Type: decider.KindNoul, Yes: &y}
 	}
 	return out, nil
+}
+
+func TestChoiceAndScoreConfidenceThreshold(t *testing.T) {
+	confidence := 0.9
+	choice := decider.Answer{Type: decider.KindChoice, Choice: "workflow", Confidence: &confidence}
+	g, _ := New(&fake{answer: &choice}, Config{MinConfidence: 0.8}, nil)
+	outcome, err := g.JudgeChoice(context.Background(), "domain", "text", decider.Choice("classify", map[string]any{
+		"product": nil, "workflow": nil,
+	}))
+	if err != nil || outcome.Choice != "workflow" || outcome.Confidence != confidence {
+		t.Fatalf("choice outcome = %+v, err = %v", outcome, err)
+	}
+
+	confidence = 0.4
+	score := 2.5
+	scored := decider.Answer{Type: decider.KindScore, Score: &score, Confidence: &confidence}
+	g, _ = New(&fake{answer: &scored}, Config{MinConfidence: 0.8}, nil)
+	outcome, err = g.JudgeScore(context.Background(), "quality", "text", decider.Score("score", []any{"bad", "ok", "good", "great"}))
+	if err != nil || outcome.Score != nil || outcome.Confidence != confidence {
+		t.Fatalf("score outcome = %+v, err = %v", outcome, err)
+	}
 }
 
 func cfg() Config {

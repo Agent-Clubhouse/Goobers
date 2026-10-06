@@ -743,15 +743,37 @@ func detectCandidateFindingsWithCausalCredit(
 			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
 		}
 		result.AttributionCohorts = cohorts
+		auditConfig, err := localFaultAuditConfig(ctx, root)
+		if err != nil {
+			return candidateFindingsArtifact{}, err
+		}
 		audit, err := readservice.StoredFaultAudit(ctx, root, creditStore, readservice.StoredAttributionQuery{
 			Gaggle: gaggle, Workflow: workflowName, Since: since,
-		}, creditgraph.FaultAuditConfig{})
+		}, auditConfig)
 		if err != nil {
 			return candidateFindingsArtifact{}, fmt.Errorf("audit attribution fault domains: %w", err)
 		}
 		result.FaultAudit = &audit
 	}
 	return result, nil
+}
+
+func localFaultAuditConfig(ctx context.Context, root string) (creditgraph.FaultAuditConfig, error) {
+	if strings.TrimSpace(root) == "" {
+		return creditgraph.FaultAuditConfig{}, nil
+	}
+	path := layoutFor(root).ConfigFile()
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return creditgraph.FaultAuditConfig{}, nil
+		}
+		return creditgraph.FaultAuditConfig{}, fmt.Errorf("inspect decision-gate configuration: %w", err)
+	}
+	config, err := instance.LoadConfig(path)
+	if err != nil {
+		return creditgraph.FaultAuditConfig{}, fmt.Errorf("load decision-gate configuration: %w", err)
+	}
+	return readservice.DecisionGateFaultAuditConfig(ctx, config.DecisionGate), nil
 }
 
 func candidateWorkflowGraph(root, gaggle, workflowName string) (*workflow.Graph, error) {
@@ -1055,7 +1077,30 @@ func faultAuditReportFromPlane(report *telemetryclient.FaultAuditReport) *credit
 		UnknownFindings:     faultFindingsFromPlane(report.UnknownFindings),
 		Suppressed:          report.Suppressed,
 		Truncated:           report.Truncated,
+		Shadow:              faultDomainShadowFromPlane(report.Shadow),
 	}
+}
+
+func faultDomainShadowFromPlane(report *telemetryclient.FaultDomainShadowReport) *creditgraph.FaultDomainShadowReport {
+	if report == nil {
+		return nil
+	}
+	result := &creditgraph.FaultDomainShadowReport{
+		Comparisons: make([]creditgraph.FaultDomainShadowComparison, 0, len(report.Comparisons)),
+		Agreements:  report.Agreements, Disagreements: report.Disagreements,
+		Uncertain: report.Uncertain, Error: report.Error,
+	}
+	for _, comparison := range report.Comparisons {
+		result.Comparisons = append(result.Comparisons, creditgraph.FaultDomainShadowComparison{
+			FindingID: comparison.FindingID, Signature: comparison.Signature,
+			FailureClasses: comparison.FailureClasses, Stages: comparison.Stages,
+			Workflows: comparison.Workflows, KeywordDomain: creditgraph.FaultDomain(comparison.KeywordDomain),
+			AdvisoryDomain: creditgraph.FaultDomain(comparison.AdvisoryDomain), Agreement: comparison.Agreement,
+			Confidence: comparison.Confidence, AttributorQuality: comparison.AttributorQuality,
+			QualityConfidence: comparison.QualityConfidence, Error: comparison.Error,
+		})
+	}
+	return result
 }
 
 func faultFindingsFromPlane(findings []telemetryclient.FaultFinding) []creditgraph.FaultFinding {
