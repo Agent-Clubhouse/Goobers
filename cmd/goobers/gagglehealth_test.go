@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
