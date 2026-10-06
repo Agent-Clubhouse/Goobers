@@ -59,7 +59,7 @@ spec:
         selfIdentity: ""
         resultFile: "selected-pr.json"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - flag-foundation-coupling
       expectedOutputs:

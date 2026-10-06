@@ -12,14 +12,31 @@ Run the checked-in rules from the repository root:
 go run ./test/architectureimports -config test/architectureimports/rules.json
 ```
 
-The lanes are preregistered as `pending` until their extraction PRs receive a
-terminal maintainer decision. A pending namespace is not presented as an
-existing package. The later CI integration changes an accepted lane to
-`accepted`, at which point a missing namespace or any package-discovery error
+All three lanes have accepted extraction decisions and are checked by the
+required preflight CI group. A missing namespace or any package-discovery error
 fails closed. A declined lane must name the maintainer who made that decision
-and remains visible in the configuration. If all lanes are declined, the tool
-reports real-package checking as inapplicable while its synthetic negative
-tests continue to run.
+and remains visible in the configuration. If every configured lane is declined,
+the tool reports real-package checking as inapplicable while its synthetic
+negative tests continue to run.
+
+## Integration coverage evidence
+
+A fresh, uncached atomic coverage run on the integrated tree was recorded on
+2026-10-06 with:
+
+```text
+go test -count=1 -covermode=atomic ./internal/docchurn ./internal/contention ./internal/prstatus
+```
+
+| Accepted library | Statement coverage |
+|---|---:|
+| `internal/docchurn` | 89.7% |
+| `internal/contention` | 100.0% |
+| `internal/prstatus` | 85.0% |
+
+These separate pilot measurements are evidence only. The required whole-tree
+coverage job continues to own the aggregate 70% threshold and its existing
+exclusions; no per-package floor is introduced here.
 
 ## Reviewed direction
 

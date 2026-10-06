@@ -1861,6 +1861,7 @@ export interface PortalConfig {
   brand: PortalBrand;
   theme: PortalTheme;
   support: PortalSupport;
+  connectionLocality: "local" | "remote" | "unknown";
   capabilities: {
     revealRun: boolean;
     workflowEnable: boolean;
@@ -1873,6 +1874,7 @@ export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 export interface WorkItemListOptions {
   provider?: string;
   kind?: WorkItemKind;
+  gaggle?: string;
   limit?: number;
 }
 

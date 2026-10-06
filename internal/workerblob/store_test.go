@@ -3,6 +3,7 @@ package workerblob
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,15 +83,19 @@ func TestProbeWaitsThroughConnectionRefused(t *testing.T) {
 
 func TestProbeNotReadyBoundExpires(t *testing.T) {
 	local, _ := blobstore.NewDir(t.TempDir())
-	remote := probePutterFunc(func(ctx context.Context, _ string, _ []byte) error {
-		<-ctx.Done()
-		return &dispatcher.BlobTransportError{Op: "put", Err: ctx.Err()}
+	var calls atomic.Int32
+	remote := probePutterFunc(func(context.Context, string, []byte) error {
+		calls.Add(1)
+		return &dispatcher.BlobTransportError{Op: "put", Err: errors.New("connection refused")}
 	})
 	opts := fastProbe
 	opts.ReadyWait = 50 * time.Millisecond
 	err := VerifyShared(context.Background(), local, remote, opts)
 	if err == nil || !strings.Contains(err.Error(), "WORKER_DAEMON_NOT_READY") || strings.Contains(err.Error(), "WORKER_BLOB_STORE_MISMATCH") {
-		t.Fatalf("an unanswered probe canceled at the readiness bound must be not-ready: %v", err)
+		t.Fatalf("an unanswered probe that outlasts the readiness bound must be not-ready: %v", err)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("expected at least one unanswered probe")
 	}
 }
 

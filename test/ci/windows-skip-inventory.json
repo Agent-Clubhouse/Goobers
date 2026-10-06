@@ -229,6 +229,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/contention",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/credentialoverride",
       "coverage": "none",
       "category": "not-selected",
@@ -683,6 +689,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/prstatus",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Provider forwarding and result persistence contracts run on the Linux unit shards only."
     },
     {
       "package": "internal/pushrejection",

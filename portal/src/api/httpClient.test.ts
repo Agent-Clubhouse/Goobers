@@ -178,6 +178,20 @@ describe("HttpDaemonClient", () => {
     );
   });
 
+  it("sends the gaggle filter when listing work items", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ items: [], hasMore: false }),
+    );
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    await client.listWorkItems({ kind: "issue", gaggle: "core tools", limit: 25 });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/v1/work-items?kind=issue&gaggle=core+tools&limit=25",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("reports request status and endpoint to enabled portal diagnostics", async () => {
     const finish = vi.fn();
     const startRequest = vi.fn(() => ({ finish }));

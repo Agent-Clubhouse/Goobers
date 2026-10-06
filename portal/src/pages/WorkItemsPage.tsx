@@ -13,7 +13,6 @@ import type {
   WorkItemSummary,
 } from "../api/types";
 import { DaemonApiError, MissingCapabilityError } from "../api/errors";
-import { formatAIC } from "../aicFormat";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { PageToolbar, type ActivePageFilter } from "../components/PageToolbar";
 import { ScopeControl } from "../components/ScopeControl";
@@ -107,7 +106,9 @@ function WorkItemListView({
       { signal: controller.signal },
     );
     const page =
-      kind === "pr"
+      gaggle
+        ? client.listWorkItems({ kind, gaggle, limit: 200 }, { signal: controller.signal })
+        : kind === "pr"
         ? pullRequests
         : kind === "issue"
           ? issues
@@ -118,7 +119,7 @@ function WorkItemListView({
           status: "ready",
           data: {
             page: data,
-            filterItems: [...pullRequestData.items, ...issueData.items],
+            filterItems: [...pullRequestData.items, ...issueData.items, ...data.items],
           },
         }),
       (error: Error) => {
@@ -128,7 +129,7 @@ function WorkItemListView({
     return () => controller.abort();
   };
 
-  useEffect(load, [client, kind]);
+  useEffect(load, [client, gaggle, kind]);
   useEffect(() => setSearchQuery(query ?? ""), [query]);
   useEffect(() => setDraft({ kind, gaggle, outcome }), [kind, gaggle, outcome]);
 
@@ -699,7 +700,7 @@ function workItemOutcomeFilter(value: string): WorkItemOutcome | undefined {
 function formatWorkItemCost(cost: WorkItemDetail["cost"]): string {
   if (!cost) return "Not attributed";
   if (cost.nanoAIU !== undefined) {
-    return formatAIC(cost.nanoAIU / 1_000_000_000);
+    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(cost.nanoAIU / 1_000_000_000)} AIC`;
   }
   return "Not measured";
 }

@@ -73,7 +73,8 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
 	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
 	"PRs labeled goobers:no-merge-review are always excluded. A run-aborted\n" +
-	"PR is excluded unless audited recovery proves a later remediation completed.\n" +
+	"PR is excluded unless audited recovery proves a later remediation completed\n" +
+	"or a valid merge-review pass matches its current head and base.\n" +
 	"Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
@@ -232,7 +233,7 @@ func runPRSelectCore(
 			continue
 		}
 		if hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
-			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr)
+			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr, expectedAuthorLogin)
 			if err != nil {
 				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
 			}
@@ -599,14 +600,14 @@ type prSelectSourceRequest struct {
 // comment, file, or branch operations.
 func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
 	if repo.Provider == providers.ProviderADO {
-		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
+		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.ProviderPRWrite))
 		if err != nil {
 			return nil, nil, err
 		}
 		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider)}, nil, nil
 	}
 
-	token, err := providerToken(capability.GitHubPRWrite)
+	token, err := providerToken(capability.ProviderPRWrite)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1335,6 +1336,7 @@ func clearStaleRunAbortedPR(
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pr providers.PullRequestSummary,
+	configuredAuthor string,
 ) (providers.PullRequestSummary, bool, error) {
 	if provider == nil || !hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
 		return pr, false, nil
@@ -1360,12 +1362,30 @@ func clearStaleRunAbortedPR(
 	if poll.Mergeable == nil || !*poll.Mergeable {
 		return pr, false, nil
 	}
-	if len(poll.CommentsSince) != 0 {
-		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+	recovery := runAbortedRecoveryUnreviewed
+	authors := runAbortedCommentAuthors{configured: configuredAuthor}
+	if len(poll.CommentsSince) > 0 {
+		authors.authenticated, err = provider.AuthenticatedLogin(ctx)
+		if err != nil {
+			return pr, false, nil
+		}
+	}
+	switch {
+	case runAbortedPRHasCurrentPass(poll, authors):
+		recovery = runAbortedRecoveryPassed
+	case !latestTrustedRemediationResponse(poll.CommentsSince, authors).IsZero():
+		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll, configuredAuthor)
 		if err != nil || !recovered {
 			return pr, false, nil
 		}
-	} else {
+		recovery = runAbortedRecoveryRemediated
+	case hasNonGoobersComments(poll.CommentsSince, authors):
+		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll, configuredAuthor)
+		if err != nil || !recovered {
+			return pr, false, nil
+		}
+		recovery = runAbortedRecoveryRemediated
+	default:
 		if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll); err != nil || reviewed {
 			return pr, false, nil
 		}
@@ -1378,7 +1398,7 @@ func clearStaleRunAbortedPR(
 		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
 	}
 	refreshed.Labels = removeLabel(refreshed.Labels, abortedRunLabel)
-	verified, safe, err := verifyClearedRunAbortedPR(ctx, provider, repo, pullID, refreshed, len(poll.CommentsSince) != 0)
+	verified, safe, err := verifyClearedRunAbortedPR(ctx, provider, repo, pullID, refreshed, recovery, configuredAuthor)
 	if err == nil && safe {
 		return verified, true, nil
 	}
@@ -1402,13 +1422,22 @@ type runAbortedLabelHistoryProvider interface {
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
 }
 
+type runAbortedRecovery int
+
+const (
+	runAbortedRecoveryUnreviewed runAbortedRecovery = iota
+	runAbortedRecoveryRemediated
+	runAbortedRecoveryPassed
+)
+
 func verifyClearedRunAbortedPR(
 	ctx context.Context,
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pullID string,
 	pr providers.PullRequestSummary,
-	reviewedRemediation bool,
+	recovery runAbortedRecovery,
+	configuredAuthor string,
 ) (providers.PullRequestSummary, bool, error) {
 	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
 		Repository: repo,
@@ -1430,15 +1459,94 @@ func verifyClearedRunAbortedPR(
 		}) {
 		return refreshed, false, nil
 	}
-	if reviewedRemediation {
-		safe, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+	if recovery == runAbortedRecoveryRemediated {
+		safe, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll, configuredAuthor)
 		return refreshed, safe, err
 	}
-	if len(poll.CommentsSince) != 0 {
+	authors := runAbortedCommentAuthors{configured: configuredAuthor}
+	if len(poll.CommentsSince) > 0 {
+		authors.authenticated, err = provider.AuthenticatedLogin(ctx)
+		if err != nil {
+			return refreshed, false, err
+		}
+	}
+	if recovery == runAbortedRecoveryPassed {
+		return refreshed, runAbortedPRHasCurrentPass(poll, authors), nil
+	}
+	if hasNonGoobersComments(poll.CommentsSince, authors) {
 		return refreshed, false, nil
 	}
 	reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll)
 	return refreshed, !reviewed && err == nil, err
+}
+
+type runAbortedCommentAuthors struct {
+	authenticated string
+	configured    string
+}
+
+func hasNonGoobersComments(comments []providers.PullRequestComment, authors runAbortedCommentAuthors) bool {
+	for _, comment := range comments {
+		if !authors.trusts(comment) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a runAbortedCommentAuthors) trusts(comment providers.PullRequestComment) bool {
+	if !isTrustedMergeReviewAuthor(comment.Author, a.authenticated) &&
+		!isTrustedMergeReviewAuthor(comment.Author, a.configured) {
+		return false
+	}
+	_, found, err := providers.ParseAttribution(comment.Body)
+	return err == nil && found
+}
+
+func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authors runAbortedCommentAuthors) bool {
+	latestVerdict := -1
+	var verdict apiv1.Verdict
+	for i, comment := range poll.CommentsSince {
+		if !authors.trusts(comment) || !isMergeReviewStatusComment(comment.Body) {
+			continue
+		}
+		parsed, ok := parseVerdictComment(comment.Body)
+		if ok && (latestVerdict == -1 || pullRequestCommentAfter(comment, i, poll.CommentsSince[latestVerdict], latestVerdict)) {
+			latestVerdict = i
+			verdict = parsed
+		}
+	}
+	if latestVerdict == -1 ||
+		verdict.Decision != apiv1.VerdictPass ||
+		verdict.HeadSHA == "" || verdict.HeadSHA != poll.HeadSHA ||
+		verdict.BaseSHA == "" || verdict.BaseSHA != poll.BaseSHA {
+		return false
+	}
+	for i, comment := range poll.CommentsSince {
+		if !authors.trusts(comment) &&
+			pullRequestCommentAfter(comment, i, poll.CommentsSince[latestVerdict], latestVerdict) {
+			return false
+		}
+	}
+	return true
+}
+
+func pullRequestCommentAfter(a providers.PullRequestComment, aIndex int, b providers.PullRequestComment, bIndex int) bool {
+	aTime := a.UpdatedAt
+	if aTime.IsZero() {
+		aTime = a.CreatedAt
+	}
+	bTime := b.UpdatedAt
+	if bTime.IsZero() {
+		bTime = b.CreatedAt
+	}
+	if !aTime.IsZero() && !bTime.IsZero() && !aTime.Equal(bTime) {
+		return aTime.After(bTime)
+	}
+	if a.ID != 0 && b.ID != 0 && a.ID != b.ID {
+		return a.ID > b.ID
+	}
+	return aIndex > bIndex
 }
 
 func runAbortedPRHasVerifiedRemediation(
@@ -1448,6 +1556,7 @@ func runAbortedPRHasVerifiedRemediation(
 	pullID string,
 	labels []string,
 	poll providers.PullRequestPollResult,
+	configuredAuthor string,
 ) (bool, error) {
 	if hasAnyLabel(labels, []string{
 		noMergeReviewLabel,
@@ -1461,11 +1570,16 @@ func runAbortedPRHasVerifiedRemediation(
 	if poll.ReviewDecision == providers.ReviewDecisionChangesRequested || poll.RequestedChanges > 0 {
 		return false, nil
 	}
-	author, err := provider.AuthenticatedLogin(ctx)
+	authors := runAbortedCommentAuthors{configured: configuredAuthor}
+	var err error
+	authors.authenticated, err = provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return false, err
 	}
-	responseAt := latestTrustedRemediationResponse(poll.CommentsSince, author)
+	responseAt := latestTrustedRemediationResponse(
+		poll.CommentsSince,
+		authors,
+	)
 	if responseAt.IsZero() {
 		return false, nil
 	}
@@ -1499,11 +1613,11 @@ func runAbortedPRHasVerifiedRemediation(
 	return countLiveUnresolvedReviewThreads(threads) == 0, nil
 }
 
-func latestTrustedRemediationResponse(comments []providers.PullRequestComment, author string) time.Time {
+func latestTrustedRemediationResponse(comments []providers.PullRequestComment, authors runAbortedCommentAuthors) time.Time {
 	const markerPrefix = "<!-- goobers:remediation-response:"
 	var latest time.Time
 	for _, comment := range comments {
-		if !strings.EqualFold(comment.Author, author) ||
+		if !authors.trusts(comment) ||
 			!strings.HasPrefix(comment.Body, markerPrefix) ||
 			comment.CreatedAt.IsZero() {
 			continue

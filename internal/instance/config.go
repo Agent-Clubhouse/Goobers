@@ -469,6 +469,9 @@ type APIConfig struct {
 	// Auth replaces the tier-1 null authenticator (SEC-043). Required for a
 	// non-loopback listen address.
 	Auth *APIAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+	// TrustedProxies lists IP addresses or CIDR ranges whose X-Forwarded-For
+	// metadata may describe the browser connection seen by the Portal.
+	TrustedProxies []string `json:"trustedProxies,omitempty" yaml:"trustedProxies,omitempty"`
 	// PodTokenKeyFile is a path to shared key material for STATELESS pod
 	// tokens (Goobers#3701). Set it when the mode-3 dispatcher runs in a
 	// different process from the daemon — the split `goobers up` /

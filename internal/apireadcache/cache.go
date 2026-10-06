@@ -362,9 +362,9 @@ func isProviderListRequest(req *http.Request) bool {
 
 // apiReadCacheKey scopes an entry to its resource URL AND the credential's
 // identity, via a non-reversible fingerprint of the Authorization header. Two
-// stages on the same token (pr-select + gather-pr-context are both
-// github:pr:write) share entries — collapsing their redundant PR listings — but
-// a token with different read visibility can never replay another's body.
+// stages share entries only when they present the same token, while separately
+// scoped credentials with different read visibility cannot replay each other's
+// bodies.
 func apiReadCacheKey(req *http.Request) string {
 	sum := sha256.Sum256([]byte(req.Header.Get("Authorization")))
 	return hex.EncodeToString(sum[:8]) + "\x00" + req.URL.String()

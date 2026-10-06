@@ -3,8 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import { defaultPortalConfig } from "./cobrand";
-import { bootstrapPortalTheme } from "./cobrand";
+import {
+  bootstrapPortalTheme,
+  defaultPortalConfig,
+  readCachedPortalConfig,
+  writeCachedPortalConfig,
+} from "./cobrand";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
@@ -93,11 +97,11 @@ describe("portal foundation", () => {
     expect(screen.queryByText("Couldn't load Goobers data")).not.toBeInTheDocument();
   });
 
-  it("renders compact instance identity in the masthead", async () => {
+  it("shows a stamped build version in the masthead", async () => {
     const fixtures = populatedDaemonFixtures();
     fixtures.instance.computerName = "CPC-JEFFS-7VMWT";
     fixtures.health.build = {
-      version: "portal-v0.2.3-34-g4267fe01",
+      version: "v0.5.0-rc.1",
       commit: "4267fe01",
       date: "2026-09-16T23:01:02.9443459-07:00",
     };
@@ -106,7 +110,7 @@ describe("portal foundation", () => {
     const context = await screen.findByLabelText("Instance context");
     expect(context).toHaveTextContent("local-dev");
     expect(context).toHaveTextContent("CPC-JEFFS-7VMWT");
-    expect(context).toHaveTextContent("dev (4267fe01)");
+    expect(within(context).getByText("v0.5.0-rc.1 (4267fe01)")).toHaveClass("topbar-build");
     const details = within(document.querySelector(".topbar") as HTMLElement).getByRole("button", {
       name: "Show portal details",
     });
@@ -114,6 +118,34 @@ describe("portal foundation", () => {
     expect(document.getElementById("portal-context-tooltip")).toHaveTextContent(
       fixtures.instance.instanceRoot,
     );
+  });
+
+  it("shows dev with the commit for an unstamped build", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.build = {
+      version: "dev",
+      commit: "4267fe01",
+      date: "2026-09-16T23:01:02.9443459-07:00",
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const context = await screen.findByLabelText("Instance context");
+    expect(within(context).getByText("dev (4267fe01)")).toHaveClass("topbar-build");
+  });
+
+  it("labels the deployment environment separately from the build version", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.environment = "staging";
+    fixtures.health.build = {
+      version: "v0.5.0-rc.1",
+      commit: "4267fe01",
+      date: "2026-09-16T23:01:02.9443459-07:00",
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const context = await screen.findByLabelText("Instance context");
+    expect(within(context).getByText("env: staging")).toHaveClass("topbar-environment");
+    expect(within(context).getByText("v0.5.0-rc.1 (4267fe01)")).toHaveClass("topbar-build");
   });
 
   it("shows detailed live transport diagnostics in a custom tooltip", async () => {
@@ -168,6 +200,12 @@ describe("portal foundation", () => {
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
+  });
+
+  it("does not reuse a cached connection-locality verdict", () => {
+    writeCachedPortalConfig({ ...defaultPortalConfig, connectionLocality: "local" });
+
+    expect(readCachedPortalConfig()?.connectionLocality).toBe("unknown");
   });
 
   it("applies cached cobrand colors before React renders", () => {

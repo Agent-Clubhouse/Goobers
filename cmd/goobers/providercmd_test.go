@@ -34,6 +34,7 @@ type fakeIssue struct {
 	commentAuthors []string
 	commentTypes   []string
 	commentTimes   []time.Time
+	commentUpdates []time.Time
 	assignee       string
 	milestone      int
 	children       []int
@@ -166,6 +167,7 @@ type fakeGitHubServer struct {
 	dependencyRequests      int
 	dependencyFailureStatus map[int]int
 	authenticatedLogin      string
+	tokenLogins             map[string]string
 	// issueEventRequests counts GET /repos/o/r/issues/events pages served, so a
 	// test can price one backlog-health cycle's full-history walk against its
 	// resumed successor (#3392).
@@ -332,7 +334,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 		securityAlertQueries:  map[string][]url.Values{},
 		securityAlertFailures: map[string]int{},
 		issueGetMutations:     map[int][]func(*fakeGitHubServer, *fakeIssue){},
-		nextPR:                1, authenticatedLogin: "goobers",
+		nextPR:                1, authenticatedLogin: "goobers", tokenLogins: map[string]string{},
 	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
@@ -591,7 +593,17 @@ func (s *fakeGitHubServer) handleAuthenticatedUser(w http.ResponseWriter, r *htt
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 		return
 	}
-	writeFakeJSON(w, map[string]string{"login": s.authenticatedLogin})
+	login := s.authenticatedLogin
+	if tokenLogin := s.tokenLogins[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]; tokenLogin != "" {
+		login = tokenLogin
+	}
+	writeFakeJSON(w, map[string]string{"login": login})
+}
+
+func (s *fakeGitHubServer) setTokenLogin(token, login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokenLogins[token] = login
 }
 
 func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) {
@@ -1136,6 +1148,9 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			if !issue.commentTimes[i].IsZero() {
 				comment["created_at"] = issue.commentTimes[i]
 			}
+			if i < len(issue.commentUpdates) && !issue.commentUpdates[i].IsZero() {
+				comment["updated_at"] = issue.commentUpdates[i]
+			}
 			out = append(out, comment)
 		}
 		s.writePaginatedJSON(w, r, out)
@@ -1163,6 +1178,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		issue.commentAuthors = append(issue.commentAuthors, s.authenticatedLogin)
 		issue.commentTypes = append(issue.commentTypes, "Bot")
 		issue.commentTimes = append(issue.commentTimes, time.Now().UTC())
+		issue.commentUpdates = append(issue.commentUpdates, time.Now().UTC())
 		writeFakeJSON(w, map[string]interface{}{"id": s.nextCommentID, "body": body.Body})
 	case len(parts) == 2 && parts[1] == "labels" && r.Method == http.MethodPost:
 		var body struct {
@@ -1256,6 +1272,9 @@ func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Requ
 				}
 				decodeFakeJSON(r, &body)
 				issue.comments[i] = body.Body
+				if i < len(issue.commentUpdates) {
+					issue.commentUpdates[i] = time.Now().UTC()
+				}
 				writeFakeJSON(w, map[string]interface{}{"id": id, "body": body.Body})
 			case http.MethodDelete:
 				issue.comments = append(issue.comments[:i], issue.comments[i+1:]...)
@@ -1263,6 +1282,9 @@ func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Requ
 				issue.commentAuthors = append(issue.commentAuthors[:i], issue.commentAuthors[i+1:]...)
 				issue.commentTypes = append(issue.commentTypes[:i], issue.commentTypes[i+1:]...)
 				issue.commentTimes = append(issue.commentTimes[:i], issue.commentTimes[i+1:]...)
+				if i < len(issue.commentUpdates) {
+					issue.commentUpdates = append(issue.commentUpdates[:i], issue.commentUpdates[i+1:]...)
+				}
 				w.WriteHeader(http.StatusNoContent)
 			default:
 				http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -1809,6 +1831,7 @@ func (s *fakeGitHubServer) addRawCommentAtAsType(number int, author, authorType,
 	s.issues[number].commentAuthors = append(s.issues[number].commentAuthors, author)
 	s.issues[number].commentTypes = append(s.issues[number].commentTypes, authorType)
 	s.issues[number].commentTimes = append(s.issues[number].commentTimes, createdAt)
+	s.issues[number].commentUpdates = append(s.issues[number].commentUpdates, createdAt)
 }
 
 func (s *fakeGitHubServer) addChild(parent, child int) {

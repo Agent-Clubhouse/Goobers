@@ -277,6 +277,20 @@ and internal read failures, uses this envelope. `code` is stable for adapters;
 select another numeric port or loopback address; wildcard and non-loopback
 listeners are rejected during instance configuration validation.
 
+`GET /api/v1/portal/config` reports `connectionLocality` as `local`, `remote`,
+or `unknown`, using only daemon-observed connection data. A direct peer is
+local only when its IP is loopback; every other valid peer IP is remote.
+Missing or malformed connection data is unknown. `X-Forwarded-For` is ignored
+unless the immediate peer matches an IP address or CIDR in
+`api.trustedProxies`. For a trusted chain, the daemon scans right-to-left past
+trusted hops and classifies the first untrusted address (or the leftmost
+address when every hop is trusted); any malformed address makes the result
+unknown. This makes untrusted spoofed headers inert. A tunnel or port forward
+without trusted forwarding metadata is classified by its observed endpoint,
+so a loopback-terminating tunnel is local in this connection sense, not proof
+that the browser's physical host is local. A trusted proxy that omits client
+metadata yields unknown.
+
 Minimum read surfaces:
 
 - `GET /api/v1/health`
