@@ -24,6 +24,7 @@ journey and its enabled backends are qualified.
 | Slice | Scope included in this slice | Remaining boundary |
 | --- | --- | --- |
 | LAND-C01 / HAW-CHD-001 and validation portion of HAW-CHD-002 | Preview DSL 3.1 opt-in, bounded proposal checks and `goobers workflow validate-child` against the configured parent; typed diagnostics, policy identity and publication ceilings | Validation is advisory. Runtime admission, credentials, child starts, durable waits and workspace handoff are not enabled; both runtimes explicitly refuse opted-in execution. |
+| LAND-C02a / identity prerequisite of HAW-CHD-003 | Journal-bound stage occurrence and attempt identities, carried through the runner invocation and agent dispatch kit; retries/recovery retain an occurrence, revisits and parallel branches get distinct occurrences | Identity alone grants no child authority. Public runtime entry points continue to refuse child-enabled execution until admission, custody and launch wiring are qualified. Temporal projection ordinals are never presented as committed journal identities. |
 
 The later implementation notes in this document remain evidence from the reference
 snapshot; they are not a claim that those later slices have landed on main.

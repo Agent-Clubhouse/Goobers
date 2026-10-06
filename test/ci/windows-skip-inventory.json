@@ -20,9 +20,9 @@
     },
     {
       "package": "api/validate",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child-workflow origin schema validation runs in the Windows child stage identities step; other schema tests remain in the Linux unit shards."
     },
     {
       "package": "cmd/config-sync",
@@ -62,9 +62,9 @@
     },
     {
       "package": "internal/agentickit",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child-workflow origin round-trip and credential-free dispatch-kit validation run in the Windows child stage identities step; remaining kit tests run on Linux."
     },
     {
       "package": "internal/apicontract",
