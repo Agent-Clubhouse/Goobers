@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,12 @@ type gatePreparationStartResult struct {
 	err    error
 }
 
+type blockingBranchReviewer struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 func (*gatePreparationRetryReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
@@ -34,7 +41,21 @@ func (r *gatePreparationRetryReviewer) Review(context.Context, apiv1.InvocationE
 	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 }
 
-func TestGatePreparationRetriesBranchOccupancyWithinGateBudget(t *testing.T) {
+func (*blockingBranchReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (r *blockingBranchReviewer) Review(ctx context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	r.once.Do(func() { close(r.entered) })
+	select {
+	case <-r.release:
+		return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+	case <-ctx.Done():
+		return apiv1.Verdict{}, ctx.Err()
+	}
+}
+
+func TestGatePreparationRetriesBranchOccupancyWithoutConsumingGateBudget(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -42,7 +63,7 @@ func TestGatePreparationRetriesBranchOccupancyWithinGateBudget(t *testing.T) {
 		Gates: []apiv1.Gate{{
 			Name:      "review",
 			Evaluator: apiv1.EvaluatorAgentic,
-			Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Retry: &apiv1.RetryPolicy{MaxAttempts: 2}},
+			Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Retry: &apiv1.RetryPolicy{MaxAttempts: 1}},
 			Branches:  map[string]string{"pass": workflow.TerminalComplete, "needs-changes": "review", "fail": workflow.TargetAbort},
 		}},
 	}
@@ -74,11 +95,7 @@ func TestGatePreparationRetriesBranchOccupancyWithinGateBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The gate declares no backoffSeconds, like the shipped review gates: the
-	// preparation retry must still wait (the floor) rather than re-hit the
-	// occupant immediately. Shortened from GatePreparationRetryFloor so the
-	// test releases the occupant inside the wait without sleeping a minute.
-	runner.gatePrepRetryFloor = 3 * time.Second
+	runner.gatePrepRetryFloor = 100 * time.Millisecond
 
 	done := make(chan gatePreparationStartResult, 1)
 	go func() {
@@ -92,7 +109,7 @@ func TestGatePreparationRetriesBranchOccupancyWithinGateBudget(t *testing.T) {
 		done <- gatePreparationStartResult{result: result, err: err}
 	}()
 
-	waitForGatePreparationRetryEvent(t, runsDir, runID, done)
+	waitForPreparationRetryEvent(t, runsDir, runID, "review", done)
 	if err := occupant.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
 		t.Fatalf("release branch occupant: %v", err)
 	}
@@ -106,6 +123,87 @@ func TestGatePreparationRetriesBranchOccupancyWithinGateBudget(t *testing.T) {
 	if got := reviewer.calls.Load(); got != 1 {
 		t.Fatalf("reviewer calls = %d, want one successful evaluation after preparation retry", got)
 	}
+}
+
+func TestImplementationCloseOutWaitsForMergeReviewOnSameBranch(t *testing.T) {
+	const (
+		mergeRunID          = "merge-review-run"
+		implementationRunID = "implementation-run"
+	)
+	mergeMachine := compileBranchCollisionMachine(t, "merge-review", true)
+	implementationMachine := compileBranchCollisionMachine(t, "implementation", false)
+
+	instanceRoot := t.TempDir()
+	runsDir := filepath.Join(instanceRoot, "runs")
+	repo := newRebindFixtureRepo(t)
+	worktrees, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer := &blockingBranchReviewer{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	mergeRunner, err := New(Config{
+		RunsDir:      runsDir,
+		Worktrees:    worktrees,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return repo, nil },
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+				mergeRunID + ":select-pr": {
+					status:  apiv1.ResultSuccess,
+					outputs: map[string]interface{}{WorkspaceBranchOutput: rebindBranch},
+				},
+			}}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementationRunner, err := New(Config{
+		RunsDir:      runsDir,
+		Worktrees:    worktrees,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return repo, nil },
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+				implementationRunID + ":select-pr": {
+					status:  apiv1.ResultSuccess,
+					outputs: map[string]interface{}{WorkspaceBranchOutput: rebindBranch},
+				},
+				implementationRunID + ":close-out": {status: apiv1.ResultSuccess},
+			}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementationRunner.gatePrepRetryFloor = 100 * time.Millisecond
+
+	repoRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+	mergeDone := startRunner(t, mergeRunner, StartInput{
+		RunID: mergeRunID, Machine: mergeMachine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule}, RepoRef: repoRef,
+	})
+	select {
+	case <-reviewer.entered:
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("merge-review did not acquire the PR branch")
+	}
+
+	implementationDone := startRunner(t, implementationRunner, StartInput{
+		RunID: implementationRunID, Machine: implementationMachine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repoRef,
+	})
+	waitForPreparationRetryEvent(t, runsDir, implementationRunID, "close-out", implementationDone)
+	close(reviewer.release)
+
+	assertCompletedRun(t, "merge-review", mergeDone)
+	assertCompletedRun(t, "implementation", implementationDone)
+	assertNoWorkspaceFailure(t, runsDir, mergeRunID)
+	assertNoWorkspaceFailure(t, runsDir, implementationRunID)
 }
 
 func TestGatePreparationFailuresConsumeEvaluatorRetryBudget(t *testing.T) {
@@ -126,7 +224,81 @@ func TestGatePreparationFailuresConsumeEvaluatorRetryBudget(t *testing.T) {
 	}
 }
 
-func waitForGatePreparationRetryEvent(t *testing.T, runsDir, runID string, done <-chan gatePreparationStartResult) {
+func compileBranchCollisionMachine(t *testing.T, name string, withReview bool) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "select-pr",
+		Tasks: []apiv1.Task{{
+			Name: "select-pr", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+		}},
+	}
+	if withReview {
+		spec.Tasks[0].Next = "review"
+		spec.Gates = []apiv1.Gate{{
+			Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+			Agentic:  &apiv1.AgenticGate{Goober: "reviewer", Retry: &apiv1.RetryPolicy{MaxAttempts: 2}},
+			Branches: map[string]string{"pass": workflow.TerminalComplete, "needs-changes": workflow.TargetAbort, "fail": workflow.TargetAbort},
+		}}
+	} else {
+		spec.Tasks[0].Next = "close-out"
+		spec.Tasks = append(spec.Tasks, apiv1.Task{
+			Name: "close-out", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+		})
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: name, Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return machine
+}
+
+func startRunner(t *testing.T, runner *Runner, in StartInput) <-chan gatePreparationStartResult {
+	t.Helper()
+	done := make(chan gatePreparationStartResult, 1)
+	go func() {
+		result, err := runner.Start(context.Background(), in)
+		done <- gatePreparationStartResult{result: result, err: err}
+	}()
+	return done
+}
+
+func assertCompletedRun(t *testing.T, name string, done <-chan gatePreparationStartResult) {
+	t.Helper()
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			t.Fatalf("%s Start: %v", name, outcome.err)
+		}
+		if outcome.result.Phase != journal.PhaseCompleted {
+			t.Fatalf("%s phase = %q, want completed", name, outcome.result.Phase)
+		}
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatalf("%s did not complete", name)
+	}
+}
+
+func assertNoWorkspaceFailure(t *testing.T, runsDir, runID string) {
+	t.Helper()
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Runner[stageErrorCodeKey] == errCodeInfraWorkspace {
+			t.Fatalf("run %q recorded %s during branch contention", runID, errCodeInfraWorkspace)
+		}
+	}
+}
+
+func waitForPreparationRetryEvent(t *testing.T, runsDir, runID, stage string, done <-chan gatePreparationStartResult) {
 	t.Helper()
 	deadline := time.Now().Add(runnerTestWaitTimeout)
 	for time.Now().Before(deadline) {
@@ -143,7 +315,7 @@ func waitForGatePreparationRetryEvent(t *testing.T, runsDir, runID string, done 
 			}
 			for _, event := range events {
 				if event.Type == journal.EventRunnerAnnotation &&
-					event.Stage == "review" &&
+					event.Stage == stage &&
 					event.Runner["kind"] == journal.RetryBackoffKind {
 					return
 				}

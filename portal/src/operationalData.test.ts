@@ -4,6 +4,7 @@ import type { RunSummary, UpdateModel } from "./api/types";
 import { DATA_CACHE_TTL_MS, SessionDataCache } from "./dataCache";
 import {
   INVENTORY_CACHE_TTL_MS,
+  attentionSeverity,
   incompleteRunPhasesMessage,
   loadOperationalOverview,
   loadOperationalSnapshot,
@@ -223,6 +224,26 @@ describe("loadOperationalOverview", () => {
     );
     // No request paginates the journal.
     expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
+  });
+
+  it.each(["scheduler", "runner"])("moves %s-stale running work into needs attention", async (source) => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!running) {
+      throw new Error("Populated fixtures must include a running run.");
+    }
+    running.stale = source === "scheduler";
+    if (source === "runner") {
+      if (!running.operator) {
+        throw new Error("Populated running fixture must include operator status.");
+      }
+      running.operator.liveness = "stale";
+    }
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.active.map((run) => run.id)).not.toContain(running.id);
+    expect(overview.groups.attention.map((run) => run.id)).toContain(running.id);
   });
 
   it("reuses cached inventory when only the run model is invalidated (DASH-13)", async () => {
@@ -539,6 +560,156 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
     };
   }
 
+  it.each(["running", "completed"] as const)(
+    "classifies a failed item as FYI when a newer attempt is %s",
+    (phase) => {
+      const failed = attentionRun("failed-attempt", "failed", "2026-08-01T10:00:00Z");
+      failed.trigger.ref = "6487";
+      failed.startedAt = "2026-08-01T09:00:00Z";
+      failed.terminalReason = "ISSUE_OVER_SCOPE";
+      const later: RunSummary = {
+        ...attentionRun(
+          "later-attempt",
+          phase === "running" ? "failed" : "escalated",
+          "2026-08-01T11:00:00Z",
+        ),
+        phase,
+        terminal: phase === "completed",
+        trigger: { kind: "item", ref: "6487" },
+        startedAt: "2026-08-01T10:30:00Z",
+        finishedAt: phase === "completed" ? "2026-08-01T11:00:00Z" : undefined,
+      };
+
+      expect(attentionSeverity(failed, [failed, later])).toBe("warning");
+    },
+  );
+
+  it("keeps an unrecovered non-retryable failure action-required", () => {
+    const failed = attentionRun("unrecovered", "failed", "2026-08-01T10:00:00Z");
+    failed.trigger.ref = "6487";
+    failed.terminalReason = "ISSUE_OVER_SCOPE";
+
+    expect(
+      attentionSeverity(failed, [failed], {
+        code: "ISSUE_OVER_SCOPE",
+        errorClass: "item-judgment",
+        message: "The item needs decomposition.",
+      }),
+    ).toBe("blocked");
+  });
+
+  it.each(["non-retryable", "not retryable"])(
+    "keeps an unrecovered failure described as %s action-required",
+    (description) => {
+      const failed = attentionRun("unrecovered", "failed", "2026-08-01T10:00:00Z");
+
+      expect(
+        attentionSeverity(failed, [failed], {
+          code: "provider.failure",
+          errorClass: "infrastructure",
+          message: `This failure is ${description}.`,
+        }),
+      ).toBe("blocked");
+    },
+  );
+
+  it("classifies an explicitly self-healing failure reason as FYI", () => {
+    const failed = attentionRun("retryable", "failed", "2026-08-01T10:00:00Z");
+
+    expect(
+      attentionSeverity(failed, [failed], {
+        code: "provider.rate_limit",
+        errorClass: "retryable-infrastructure",
+        message: "A retry is scheduled after the provider quota resets.",
+      }),
+    ).toBe("warning");
+  });
+
+  it("keeps a non-retryable failure blocked when successor history is truncated", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const failed = attentionRun(
+      "failed-before-busy-completions",
+      "failed",
+      new Date(NOW - 30 * 60_000).toISOString(),
+    );
+    failed.trigger.ref = "6487";
+    failed.startedAt = new Date(NOW - 60 * 60_000).toISOString();
+    failed.terminalReason = "ISSUE_OVER_SCOPE";
+    const recovered: RunSummary = {
+      ...attentionRun(
+        "successful-successor",
+        "failed",
+        new Date(NOW - 20 * 60_000).toISOString(),
+      ),
+      phase: "completed",
+      trigger: { kind: "item", ref: "6487" },
+      startedAt: new Date(NOW - 25 * 60_000).toISOString(),
+    };
+    const unrelated = Array.from({ length: 21 }, (_, index): RunSummary => {
+      const finishedAt = new Date(NOW - index * 30_000).toISOString();
+      return {
+        ...attentionRun(`unrelated-completion-${index}`, "failed", finishedAt),
+        phase: "completed",
+        startedAt: new Date(Date.parse(finishedAt) - 10_000).toISOString(),
+      };
+    });
+    fixtures.runs = { runs: [failed, recovered, ...unrelated] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+    const candidate = overview.groups.attention.find((run) => run.id === failed.id);
+
+    expect(candidate).toBeDefined();
+    if (!candidate) {
+      throw new Error("Expected the failed run to remain in the attention group.");
+    }
+    expect(
+      attentionSeverity(
+        candidate,
+        [...overview.groups.active, ...overview.groups.attention, ...overview.groups.recent],
+      ),
+    ).toBe("blocked");
+  });
+
+  it.each(["running", "completed"] as const)(
+    "keeps a non-retryable failure blocked when the %s query fails",
+    async (unavailablePhase) => {
+      const fixtures = emptyDaemonFixtures();
+      const failed = attentionRun(
+        `failed-without-${unavailablePhase}`,
+        "failed",
+        new Date(NOW - 30 * 60_000).toISOString(),
+      );
+      failed.trigger.ref = "6487";
+      failed.startedAt = new Date(NOW - 60 * 60_000).toISOString();
+      failed.terminalReason = "ISSUE_OVER_SCOPE";
+      fixtures.runs = { runs: [failed] };
+      const client = new FixtureDaemonClient(fixtures);
+      const listRuns = client.listRuns.bind(client);
+      vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+        if (request?.phase === unavailablePhase) {
+          throw new Error(`${unavailablePhase} history unavailable`);
+        }
+        return listRuns(request, options);
+      });
+
+      const overview = await loadOperationalOverview(client);
+      const candidate = overview.groups.attention.find((run) => run.id === failed.id);
+
+      expect(candidate).toBeDefined();
+      if (!candidate) {
+        throw new Error("Expected the failed run to remain in the attention group.");
+      }
+      expect(overview.groups.incomplete?.phases).toContain(unavailablePhase);
+      expect(
+        attentionSeverity(candidate, [
+          ...overview.groups.active,
+          ...overview.groups.attention,
+          ...overview.groups.recent,
+        ]),
+      ).toBe("blocked");
+    },
+  );
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -546,6 +717,43 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("keeps blocked and stalled runs ahead of newer warnings when attention is capped", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const baseTime = NOW - 60_000;
+    const failures = Array.from({ length: 20 }, (_, index) =>
+      ({
+        ...attentionRun(
+          `01JZWARNING${String(index).padStart(2, "0")}`,
+          "failed",
+          new Date(baseTime - index * 1_000).toISOString(),
+        ),
+        terminalReason: "retryable provider.rate_limit",
+      }),
+    );
+    const escalation = attentionRun(
+      "01JZBLOCKED",
+      "escalated",
+      new Date(baseTime - 30_000).toISOString(),
+    );
+    const stalled: RunSummary = {
+      ...attentionRun("01JZSTALLED", "failed", new Date(baseTime - 40_000).toISOString()),
+      phase: "running",
+      terminal: false,
+      stale: true,
+      finishedAt: undefined,
+    };
+    fixtures.runs = { runs: [...failures, escalation, stalled] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention).toHaveLength(20);
+    expect(overview.groups.attention.slice(0, 2).map((run) => run.id)).toEqual([
+      "01JZBLOCKED",
+      "01JZSTALLED",
+    ]);
+    expect(overview.groups.attention.map((run) => run.id)).not.toContain("01JZWARNING18");
   });
 
   it("keeps a run whose last activity is just under the 24h boundary", async () => {
@@ -556,6 +764,62 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
     const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
 
     expect(overview.groups.attention.map((run) => run.id)).toEqual(["01JZ000JUSTUNDER"]);
+  });
+
+  it.each(["goobers:needs-human", "goobers:needs-remediation", "goobers:blocked-on-sibling"])(
+    "keeps an older %s failure ahead of warnings and newer stalled work",
+    async (label) => {
+      const fixtures = emptyDaemonFixtures();
+      const warnings = Array.from({ length: 25 }, (_, index) =>
+        ({
+          ...attentionRun(
+            `warning-${index}`,
+            "failed",
+            new Date(NOW - 1_000 - index).toISOString(),
+          ),
+          terminalReason: "retryable provider.rate_limit",
+        }),
+      );
+      const blocked = attentionRun("blocked-failure", "failed", new Date(NOW - 60_000).toISOString());
+      blocked.operator = {
+        issue: { number: "6487", labels: [label] },
+        liveness: "terminal",
+        trajectory: "terminal",
+        claim: { leaseStatus: "none", providerMarker: "recorded" },
+        potentialBlockers: [],
+      };
+      const stalled = Array.from({ length: 20 }, (_, index): RunSummary => ({
+        ...attentionRun(`stalled-${index}`, "failed", new Date(NOW - 2_000 - index).toISOString()),
+        phase: "running",
+        terminal: false,
+        stale: true,
+      }));
+      fixtures.runs = { runs: [...warnings, blocked, ...stalled] };
+
+      const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+      expect(overview.groups.attention).toHaveLength(20);
+      expect(overview.groups.attention[0].id).toBe(blocked.id);
+      expect(overview.groups.attention.slice(1).every((run) => run.stale)).toBe(true);
+    },
+  );
+
+  it("reports a truncated candidate window without paginating or discarding available runs", async () => {
+    const fixtures = emptyDaemonFixtures();
+    fixtures.runs = {
+      runs: Array.from({ length: 101 }, (_, index) =>
+        attentionRun(`failure-${index}`, "failed", new Date(NOW - 1_000 - index).toISOString()),
+      ),
+    };
+    const client = new FixtureDaemonClient(fixtures);
+    const listRuns = vi.spyOn(client, "listRuns");
+
+    const overview = await loadOperationalOverview(client);
+
+    expect(overview.groups.attention).toHaveLength(20);
+    expect(overview.groups.attentionCandidatesTruncated).toBe(true);
+    expect(listRuns).toHaveBeenCalledTimes(5);
+    expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
   });
 
   it("ages out a run whose last activity is just over the 24h boundary", async () => {
