@@ -73,7 +73,8 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
 	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
 	"PRs labeled goobers:no-merge-review are always excluded. A run-aborted\n" +
-	"PR is excluded unless audited recovery proves a later remediation completed.\n" +
+	"PR is excluded unless audited recovery proves a later remediation completed\n" +
+	"or a valid merge-review pass matches its current head and base.\n" +
 	"Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
