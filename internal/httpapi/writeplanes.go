@@ -216,7 +216,10 @@ type TriggerService interface {
 	Trigger(ctx context.Context, request TriggerRequest) (TriggerResponse, error)
 }
 
+// WorkflowStartRequest is the operator-facing, revision-pinned start request.
 type WorkflowStartRequest = apicontract.WorkflowStartRequest
+
+// WorkflowStartResponse identifies the durably minted operator run.
 type WorkflowStartResponse = apicontract.WorkflowStartResponse
 
 // WorkflowStartService synchronously admits an operator's revision-pinned run.
