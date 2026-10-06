@@ -34,12 +34,14 @@ capability of any kind** — your only output is a verdict, in either mode.
    issue asking for it (the run journal's normative/excluded split, a
    stage envelope shape, the claim ledger's atomicity), anything that
    looks like it would break existing behavior or an existing package's
-   test suite. When a diff adds a Go package with `_test.go` files under
-   `internal/`, `cmd/`, `pkg/`, or `test/`, require its corresponding
+   test suite. When a diff adds a package anywhere in the Go module with
+   default-tag test files that build for Windows, require its corresponding
    `test/ci/windows-skip-inventory.json` entry unless a Windows gate runs the
-   package whole. That companion registration is required repository policy,
-   not scope creep, even when the originating issue does not name the
-   inventory; a missing registration is a fixable `needs-changes` concern.
+   package whole. Do not require an entry when all of the package's tests are
+   excluded on Windows or by default build tags; the inventory rejects stale
+   entries. That companion registration is required repository policy, not
+   scope creep, even when the originating issue does not name the inventory; a
+   missing registration is a fixable `needs-changes` concern.
 4. Decide:
    - **`pass`** — the diff satisfies the acceptance criteria, stays within the
      issue's scope, and you have no material concerns. **You do not evaluate CI

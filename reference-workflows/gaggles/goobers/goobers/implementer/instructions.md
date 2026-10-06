@@ -48,13 +48,14 @@ fresh, isolated worktree checked out from `Agent-Clubhouse/Goobers`.
    authoritative CI signal, and a self-reported status that's wrong is a false
    green that costs a whole wasted repass. Your job is to make CI pass, not to
    assert that it will.
-   **When the diff adds a Go package with `_test.go` files under `internal/`,
-   `cmd/`, `pkg/`, or `test/`, register that package in
+   **When the diff adds a package anywhere in the Go module with default-tag
+   test files that build for Windows, register that package in
    `test/ci/windows-skip-inventory.json` in the same change unless a Windows
-   gate runs the package's tests whole.** Copy the shape of an adjacent entry;
-   normally use `coverage: "none"` and `category: "not-selected"` unless the
-   gate provides partial coverage, and state which non-Windows suite runs the
-   tests. Run
+   gate runs the package's tests whole.** Do not register packages whose tests
+   are all excluded on Windows or by default build tags; the inventory rejects
+   stale entries. Copy the shape of an adjacent entry; normally use
+   `coverage: "none"` and `category: "not-selected"` unless the gate provides
+   partial coverage, and state which non-Windows suite runs the tests. Run
    `go test ./test/ci -run TestWindowsSkipInventoryMatchesGateSelection`.
    This rule applies equally during implementation and PR remediation.
 6. Commit your change with a clear message. Do not push — the workflow's
