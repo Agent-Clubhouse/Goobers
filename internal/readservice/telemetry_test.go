@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -279,6 +282,90 @@ func TestLocalTelemetryAttributionReturnsEnrolledRunRecords(t *testing.T) {
 	}
 	if len(result.Cohorts) != 0 {
 		t.Fatalf("attribution cohorts = %+v, want failed record excluded", result.Cohorts)
+	}
+}
+
+func TestLocalTelemetryAttributionAppliesConfiguredFaultDomainShadow(t *testing.T) {
+	settings := faultDomainShadowSettings(t)
+	observation := creditgraph.AttributionObservation{
+		RunID: "supplied", Workflow: "implementation", EffectiveVersion: "v1",
+		Status: creditgraph.RecordComplete, RunPhase: journal.PhaseCompleted,
+		Attribution: creditgraph.Attribution{Causes: []creditgraph.CauseFinding{{
+			NodeID: "stage", Stage: "implement", Class: creditgraph.ClassWeakInstructions,
+			Confidence: 0.9, Summary: "workflow instructions failed",
+		}}},
+		Evidence: []creditgraph.AttributionEvidenceLink{{
+			RunID: "supplied", NodeID: "stage", Stage: "implement",
+			Source: string(creditgraph.ClassWeakInstructions), JournalSequence: 1, JournalPath: "events.jsonl",
+		}},
+	}
+	service := &Local{
+		sources:   LocalSources{Config: &instance.Config{DecisionGate: settings}},
+		telemetry: &Telemetry{},
+	}
+	supplied, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{
+		Observations: []creditgraph.AttributionObservation{observation},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFaultDomainShadow(t, supplied.Audit)
+
+	root := t.TempDir()
+	writeAuditRecord(t, root, "stored", "v1", true)
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{terminalAuditRow("stored", time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))},
+	}}}
+	service.sources = LocalSources{
+		Layout: instance.NewLayout(root), Config: &instance.Config{DecisionGate: settings}, ReadModel: reader,
+	}
+	stored, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{
+		Since: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFaultDomainShadow(t, stored.Audit)
+
+	service.sources = LocalSources{Config: &instance.Config{}}
+	off, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{
+		Observations: []creditgraph.AttributionObservation{observation},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.Audit.Shadow != nil {
+		t.Fatalf("off-by-default fault-domain shadow = %+v, want nil", off.Audit.Shadow)
+	}
+}
+
+func faultDomainShadowSettings(t *testing.T) *decisiongate.Settings {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"fixture","answers":{
+			"backprop-fault-domain":{"type":"choice","choice":"workflow-definition","probabilities":{"goobers-product-runtime":0.02,"workflow-definition":0.94,"harness-model-provider-environment":0.02,"mixed-or-unknown":0.02},"confidence":0.94},
+			"backprop-attributor-quality":{"type":"score","score":2.4,"probabilities":{"0":0.02,"1":0.08,"2":0.4,"3":0.5},"confidence":0.9}
+		}}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GOOBERS_TEST_DECISION_URL", server.URL)
+	t.Setenv("GOOBERS_TEST_DECISION_KEY", "test-key")
+	t.Setenv("GOOBERS_TEST_DECISION_MODEL", "fixture")
+	return &decisiongate.Settings{
+		Mode: decisiongate.ModeShadow, Fallback: decisiongate.FallbackAgent,
+		BaseURLEnv: "GOOBERS_TEST_DECISION_URL", KeyEnv: "GOOBERS_TEST_DECISION_KEY",
+		ModelEnv: "GOOBERS_TEST_DECISION_MODEL",
+	}
+}
+
+func assertFaultDomainShadow(t *testing.T, audit creditgraph.FaultAuditReport) {
+	t.Helper()
+	if audit.Shadow == nil || audit.Shadow.Error != "" || len(audit.Shadow.Comparisons) != 1 {
+		t.Fatalf("fault-domain shadow = %+v, want one configured comparison", audit.Shadow)
+	}
+	if got := audit.Shadow.Comparisons[0].AdvisoryDomain; got != creditgraph.FaultDomainWorkflow {
+		t.Fatalf("advisory domain = %q, want %q", got, creditgraph.FaultDomainWorkflow)
 	}
 }
 

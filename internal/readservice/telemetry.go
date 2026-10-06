@@ -174,6 +174,12 @@ func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributi
 	if s == nil || s.telemetry == nil {
 		return TelemetryAttributionResult{}, ErrTelemetryUnavailable
 	}
+	auditConfig := creditgraph.FaultAuditConfig{Since: req.Since, Until: req.Until}
+	if s.sources.Config != nil {
+		auditConfig = DecisionGateFaultAuditConfig(ctx, s.sources.Config.DecisionGate)
+		auditConfig.Since = req.Since
+		auditConfig.Until = req.Until
+	}
 	if len(req.Observations) == 0 && s.sources.ReadModel != nil {
 		records, err := storedAttributionObservations(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
 			Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
@@ -184,14 +190,13 @@ func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributi
 		return TelemetryAttributionResult{
 			Records: records,
 			Cohorts: AggregateAttributionObservations(records),
-			Audit: creditgraph.AuditFaultDomains(records, creditgraph.FaultAuditConfig{
-				Since: req.Since, Until: req.Until,
-			}),
+			Audit:   creditgraph.AuditFaultDomains(records, auditConfig),
 		}, nil
 	}
 	result, err := s.telemetry.TelemetryAttribution(ctx, req)
 	if err == nil {
 		result.Records = req.Observations
+		result.Audit = creditgraph.AuditFaultDomains(req.Observations, auditConfig)
 	}
 	return result, err
 }
