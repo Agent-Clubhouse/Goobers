@@ -78,6 +78,12 @@ versions. Recheck the list against main when each delivery branch is created.
 6. Regenerate schema/CRD/deepcopy/API/Portal/CLI outputs from the extracted source
    in each PR. Preserve current main's features and do not carry checkpoint-specific
    generated outputs or growth justifications blindly into a new merge base.
+7. Finalize the PR description before the last validation run. In the current CI
+   workflow, a later description-only edit creates a skipped check suite that can
+   leave the required aggregate marked “expected” despite a successful full run.
+   Observed on #6806: rerunning the older aggregate alone did not release the
+   rule. Reopening the unchanged PR starts a fresh full run; preserve protection
+   and verify GitHub actually merged it. Do not edit metadata again while waiting.
 
 A typical code PR should fit one behavior and one failure/recovery story. Aim for
 hundreds of handwritten production lines where practical; separate generated/test
