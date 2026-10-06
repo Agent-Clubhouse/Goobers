@@ -21,6 +21,7 @@ var bodyLengthSeedCeilings = map[string]int{
 	"cmd/goobers/status.go\trunRunTable":                               381,
 	"cmd/goobers/telemetryquery.go\trunTelemetryQuery":                 206,
 	"cmd/goobers/trace.go\trunTraceWithFactories":                      223,
+	"cmd/goobers/up.go\trunUpContextWithForce":                         1640,
 	"cmd/goobers/validate.go\trunValidateConfig":                       269,
 	"cmd/goobers/worker.go\trunWorker":                                 257,
 	"internal/apicontract/wire.go\tnewWireFixtures":                    769,
