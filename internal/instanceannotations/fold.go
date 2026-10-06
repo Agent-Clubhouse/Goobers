@@ -22,6 +22,10 @@ type Fold struct {
 	itemRepos      map[string]ItemRepository
 	itemReposByRun map[string]map[string]ItemRepository
 	worktreeStates map[string]string
+	// abandonments holds every operator recovery-abandoned record, the only
+	// events recovery.ExplicitlyAbandoned consults, so the recovery capacity
+	// reading can mark them without re-reading the whole instance log.
+	abandonments []journal.Event
 }
 
 var folds sync.Map // scheduler directory -> *Fold
@@ -75,6 +79,7 @@ func (f *Fold) reset(state journal.InstanceLogState) {
 	f.itemRepos = nil
 	f.itemReposByRun = nil
 	f.worktreeStates = nil
+	f.abandonments = nil
 }
 
 func (f *Fold) apply(events []journal.Event) {
@@ -84,6 +89,9 @@ func (f *Fold) apply(events []journal.Event) {
 		}
 		if event.Type != journal.EventRunnerAnnotation {
 			continue
+		}
+		if event.Runner["operation"] == "recovery-abandoned" {
+			f.abandonments = append(f.abandonments, event)
 		}
 		switch event.Runner["annotation"] {
 		case ItemRepositoryAnnotation:
@@ -149,6 +157,16 @@ func (f *Fold) WorktreeState(schedulerDir, runID, worktreeID string) (string, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.worktreeStates[runID+"\x00"+worktreeID], nil
+}
+
+// RecoveryAbandonments returns every operator recovery-abandoned record.
+func (f *Fold) RecoveryAbandonments(schedulerDir string) ([]journal.Event, error) {
+	if err := f.refresh(schedulerDir); err != nil {
+		return nil, fmt.Errorf("read instance log for recovery abandonments: %w", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]journal.Event(nil), f.abandonments...), nil
 }
 
 // ItemRepositories returns the permissive latest-write view for requested items.

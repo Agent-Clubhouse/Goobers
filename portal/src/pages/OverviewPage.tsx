@@ -8,6 +8,7 @@ import type {
   DaemonClient,
   MaintenanceStatus,
   RecoveryInventoryStatus,
+  RecoveryReclaimHold,
   StartupStatus,
   RunSummary,
 } from "../api/types";
@@ -962,16 +963,9 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
             </span>
           )}
           {inventory.error && <span>{inventory.error}</span>}
+          {elevated && <RecoveryReclaimGuidance inventory={inventory} />}
         </div>
         <div className="instance-summary-actions">
-          <a
-            className="instance-warning-link"
-            href={RECOVERY_INVENTORY_DOCS}
-            rel="noreferrer"
-            target="_blank"
-          >
-            Recovery capacity and operator actions
-          </a>
           <a
             className="instance-warning-link"
             data-focus-restore="instance-recovery-detail"
@@ -982,6 +976,79 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * What to run when the inventory is filling (#5343 follow-up). Commands, not
+ * controls: abandoning a snapshot discards retained work, so it stays a
+ * deliberate operator decision taken at a terminal, but the operator no
+ * longer has to reconstruct run ids, refs and digests from a guide.
+ */
+function RecoveryReclaimGuidance({ inventory }: { inventory: RecoveryInventoryStatus }) {
+  const candidates = inventory.reclaimCandidates ?? [];
+  const total = inventory.reclaimCandidatesTotal ?? candidates.length;
+  return (
+    <div className="recovery-reclaim">
+      {inventory.reclaimHold && <RecoveryReclaimHoldNotice hold={inventory.reclaimHold} />}
+      {candidates.length > 0 ? (
+        <>
+          <span>
+            {total > candidates.length
+              ? `Oldest ${candidates.length} of ${total} snapshots from finished runs. Restore what you still want, abandon the rest.`
+              : "Snapshots from finished runs. Restore what you still want, abandon the rest."}
+          </span>
+          <ul className="recovery-reclaim-list">
+            {candidates.map((candidate) => (
+              <li aria-label={`Recovery snapshot ${candidate.runId}`} key={`${candidate.runId}\u0000${candidate.ref}`}>
+                <span className="recovery-reclaim-run">
+                  <a href={routeHash({ page: "run", id: candidate.runId })}>{candidate.runId}</a>
+                  {" "}&middot; {candidate.phase} &middot; retained until {formatTimestamp(candidate.retainUntil)}
+                </span>
+                <RecoveryCommand command={candidate.inspectCommand} label="Inspect:" />
+                {candidate.restoreCommand && (
+                  <RecoveryCommand command={candidate.restoreCommand} label="Restore:" />
+                )}
+                {candidate.abandonCommand ? (
+                  <RecoveryCommand command={candidate.abandonCommand} label="Abandon:" />
+                ) : (
+                  candidate.abandoned && <span>Abandoned; waiting for the next retention pass to free its slot.</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <span>No snapshot belongs to a finished run yet, so none can be abandoned. Slots free as runs finish.</span>
+      )}
+      {inventory.statusCommand && (
+        <RecoveryCommand command={inventory.statusCommand} label="List all:" />
+      )}
+    </div>
+  );
+}
+
+function RecoveryReclaimHoldNotice({ hold }: { hold: RecoveryReclaimHold }) {
+  const reason =
+    hold.reason === "disabled"
+      ? "Retention is disabled"
+      : hold.reason === "dry-run"
+        ? "Retention is in dry-run mode"
+        : hold.until
+          ? `Retention is in its first-enable grace window until ${formatTimestamp(hold.until)}`
+          : "Retention will hold deletions for a 7-day first-enable grace window";
+  return (
+    <span className="recovery-reclaim-hold">
+      {reason}, so abandoned snapshots free no slots. Set <code>{hold.setting}</code>
+      {hold.configFile ? (
+        <>
+          {" "}in <code>{hold.configFile}</code>
+        </>
+      ) : (
+        " in instance.yaml"
+      )}{" "}
+      to release it.
+    </span>
   );
 }
 
@@ -1013,14 +1080,6 @@ const RECOVERY_INVENTORY_HEADLINES: Record<RecoveryInventoryStatus["state"], str
   unavailable: "Not measured",
   warning: "Filling up",
 };
-
-/**
- * Operator actions live in the guide rather than in the portal: reclaiming a
- * slot means abandoning a retained implementation or changing retention
- * policy, neither of which is safe to offer as a one-click control.
- */
-const RECOVERY_INVENTORY_DOCS =
-  "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/retained-implementation.md#inventory-capacity";
 
 function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus }) {
   const completedAt = maintenance.lastCompletedAt;

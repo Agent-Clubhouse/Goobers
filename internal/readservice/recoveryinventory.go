@@ -71,6 +71,69 @@ type RecoveryInventoryStatus struct {
 	// "unavailable" cannot tell a locked inventory from a corrupt record.
 	Error      string    `json:"error,omitempty"`
 	ObservedAt time.Time `json:"observedAt"`
+	// ReclaimCandidates are the oldest slot-holding snapshots an operator can
+	// act on (terminal owning run), each carrying the exact commands to
+	// inspect, restore or abandon it. Populated only for warning and
+	// exhausted readings and bounded by RecoveryReclaimCandidateLimit.
+	// Commands, not controls: abandoning discards work and stays a deliberate
+	// operator decision made at a terminal.
+	ReclaimCandidates []RecoveryReclaimCandidate `json:"reclaimCandidates,omitempty"`
+	// ReclaimCandidatesTotal counts every actionable snapshot, of which
+	// ReclaimCandidates is the oldest bounded prefix.
+	ReclaimCandidatesTotal int `json:"reclaimCandidatesTotal,omitempty"`
+	// ReclaimHold explains why retention is not currently retiring
+	// abandoned or expired snapshots, when it is not. An abandoned snapshot
+	// frees its slot only when a retention pass deletes it.
+	ReclaimHold *RecoveryReclaimHold `json:"reclaimHold,omitempty"`
+	// StatusCommand lists every retained snapshot per run, for an elevated
+	// reading whose slots no command above can free.
+	StatusCommand string `json:"statusCommand,omitempty"`
+}
+
+// RecoveryReclaimCandidateLimit bounds ReclaimCandidates so the read model
+// stays small on an inventory holding thousands of entries.
+const RecoveryReclaimCandidateLimit = 10
+
+// RecoveryReclaimCandidate is one bundled snapshot occupying an inventory slot
+// whose owning run is terminal, so recovery-abandon and recovery-restore both
+// accept it.
+type RecoveryReclaimCandidate struct {
+	RunID         string    `json:"runId"`
+	Phase         string    `json:"phase"`
+	Ref           string    `json:"ref"`
+	PatchDigest   string    `json:"patchDigest"`
+	RepositoryKey string    `json:"repositoryKey"`
+	CreatedAt     time.Time `json:"createdAt"`
+	RetainUntil   time.Time `json:"retainUntil"`
+	// Abandoned means an operator already abandoned this exact snapshot; it
+	// is waiting for a retention pass to delete it, so no abandon command is
+	// offered again.
+	Abandoned      bool   `json:"abandoned,omitempty"`
+	InspectCommand string `json:"inspectCommand"`
+	// RestoreCommand is omitted once RetainUntil has passed: restore refuses
+	// expired records.
+	RestoreCommand string `json:"restoreCommand,omitempty"`
+	AbandonCommand string `json:"abandonCommand,omitempty"`
+}
+
+// Retention hold reasons. Each one stops a retention pass from deleting an
+// abandoned or expired snapshot, so abandoning frees nothing until it clears.
+const (
+	RecoveryReclaimHoldDisabled = "disabled"
+	RecoveryReclaimHoldDryRun   = "dry-run"
+	RecoveryReclaimHoldGrace    = "grace"
+)
+
+// RecoveryReclaimHold names the retention setting holding reclamation and the
+// change in instance.yaml that releases it.
+type RecoveryReclaimHold struct {
+	Reason string `json:"reason"`
+	// Until is when the first-enable grace window ends. Absent for a grace
+	// window that has not started: it starts at the first pass that finds a
+	// candidate and then holds deletion for a week.
+	Until      *time.Time `json:"until,omitempty"`
+	Setting    string     `json:"setting"`
+	ConfigFile string     `json:"configFile,omitempty"`
 }
 
 // ClassifyRecoveryInventory names the occupancy state for used slots against

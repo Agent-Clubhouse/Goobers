@@ -1771,6 +1771,37 @@ summary:focus-visible {
   user-select: all;
 }
 
+.recovery-reclaim {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.recovery-reclaim-list {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recovery-reclaim-list li {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.recovery-reclaim-list .recovery-action {
+  margin-top: 4px;
+}
+
+.recovery-reclaim-list .recovery-action code {
+  overflow-wrap: anywhere;
+}
+
+.recovery-reclaim-hold code {
+  font-size: 12px;
+}
+
 .gaggle-section {
   border-top: 1px solid var(--line-strong);
   margin-top: 28px;

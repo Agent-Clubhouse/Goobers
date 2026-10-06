@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -73,13 +74,16 @@ type recoveryInventoryGate struct {
 	cfg     *instance.Config
 	now     func() time.Time
 	current atomic.Pointer[readservice.RecoveryInventoryStatus]
+	phases  recoveryRunPhaseCache
+	// goos selects the shell the generated operator commands are quoted for.
+	goos string
 }
 
 func newRecoveryInventoryGate(layout instance.Layout, cfg *instance.Config, now func() time.Time) *recoveryInventoryGate {
 	if now == nil {
 		now = time.Now
 	}
-	return &recoveryInventoryGate{layout: layout, cfg: cfg, now: now}
+	return &recoveryInventoryGate{layout: layout, cfg: cfg, now: now, goos: runtime.GOOS}
 }
 
 // Stats returns the last sample, or nil before the first one completes.
@@ -139,6 +143,9 @@ func (g *recoveryInventoryGate) observe(ctx context.Context) *readservice.Recove
 	status.State = readservice.ClassifyRecoveryInventory(status.Used, limit, overflow)
 	if earliest, ok := earliestRetainUntil(entries); ok {
 		status.EarliestRetainUntil = &earliest
+	}
+	if status.State == readservice.RecoveryInventoryWarning || status.State == readservice.RecoveryInventoryExhausted {
+		attachRecoveryReclaimGuidance(g.layout, g.cfg, &g.phases, status, entries, status.ObservedAt, g.goos)
 	}
 	return status
 }

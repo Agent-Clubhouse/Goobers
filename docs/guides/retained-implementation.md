@@ -242,7 +242,31 @@ That classification appears in three places: the instance read model
 renders as a card carrying occupancy, the effective limit, the earliest
 retention deadline and elevated styling for warning and exhaustion); the
 periodic service-health record in the instance log; and a deduplicated warning
-in the instance log. The warning is journalled once when occupancy crosses into
+in the instance log.
+
+A warning or exhausted reading also carries the commands that act on it, so
+the Overview card shows commands to copy and run instead of a link to this
+guide. `reclaimCandidates` lists the oldest bundled snapshots whose owning run
+is terminal — the only ones `recovery-abandon` and `recovery-restore` accept —
+bounded to ten, with `reclaimCandidatesTotal` counting all of them. Each one
+carries an `inspectCommand` (`goobers trace --summary`), a `restoreCommand`
+while its retention deadline has not passed (run it from a checkout of the
+snapshot's repository; it creates a new `recovered/<run>` branch), and an
+`abandonCommand` with the exact run, ref and confirmed digest, which is
+omitted once the snapshot has been abandoned and is waiting to be deleted.
+Overflow entries are not listed: they hold no slot. `statusCommand` lists
+every retained snapshot per run. The commands are quoted for the daemon
+host's shell (PowerShell on Windows, POSIX `sh` elsewhere) and are never run
+by the portal: abandoning discards work and stays an operator decision.
+
+Abandoning a snapshot frees its slot only when a retention pass deletes it,
+so `reclaimHold` names the setting that is stopping that pass, if any:
+`retention.enabled: false`, `retention.dryRun: true`, or the first-enable
+grace window (with `until` once it has started; set
+`retention.firstEnable: immediate` to skip it). The card shows the
+`instance.yaml` change that releases the hold.
+
+The warning is journalled once when occupancy crosses into
 `warning` (`recovery_inventory_high_water`) and once when it crosses into
 `exhausted` (`recovery_inventory_exhausted`), never per sample. It is re-armed
 only by dropping back below the threshold — and, once overflow has been
