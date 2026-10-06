@@ -1663,9 +1663,64 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 
 // SubmitPullRequestReview publishes a SHA-pinned native GitHub review. GitHub
 // associates the review with commit_id, allowing branch-protection
-// stale-dismissal to invalidate an approval when the pull request moves.
+// stale-dismissal to invalidate an approval when the pull request moves. A
+// later approval also dismisses this identity's superseded change requests;
+// GitHub otherwise keeps those reviews active and branch protection can block
+// a verdict that has already passed.
 func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
-	return submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
+	result, err := submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
+	if err != nil || req.Decision != ReviewDecisionApproved {
+		return result, err
+	}
+	if err := p.dismissOwnChangeRequests(ctx, req.Repository, req.PullID); err != nil {
+		return result, fmt.Errorf("dismiss superseded change requests: %w", err)
+	}
+	return result, nil
+}
+
+func (p *GitHubProvider) dismissOwnChangeRequests(ctx context.Context, repo RepositoryRef, pullID string) error {
+	reviews, err := p.listNativePullRequestReviews(ctx, repo, pullID)
+	if err != nil {
+		return err
+	}
+	hasChangeRequest := false
+	for _, review := range reviews {
+		if strings.EqualFold(review.State, "CHANGES_REQUESTED") {
+			hasChangeRequest = true
+			break
+		}
+	}
+	if !hasChangeRequest {
+		return nil
+	}
+	login, err := p.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve review author: %w", err)
+	}
+	for _, review := range reviews {
+		if !strings.EqualFold(review.State, "CHANGES_REQUESTED") || !strings.EqualFold(review.Author, login) {
+			continue
+		}
+		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "reviews", strconv.FormatInt(review.ID, 10), "dismissals")
+		if err != nil {
+			return err
+		}
+		if err := p.do(ctx, http.MethodPut, endpoint, map[string]string{
+			"message": "Superseded by a later passing Goobers merge review.",
+		}, nil); err != nil {
+			return err
+		}
+		p.recordExternalRef(ctx, ExternalRef{
+			Provider:  ProviderGitHub,
+			Ref:       issueRef(repo, pullID),
+			URL:       review.URL,
+			Operation: "review-dismiss",
+			Fields: map[string]FieldDigest{
+				"reviewId": {After: digestString(strconv.FormatInt(review.ID, 10))},
+			},
+		})
+	}
+	return nil
 }
 
 // ListWorkItems lists GitHub issues as unified work items.
