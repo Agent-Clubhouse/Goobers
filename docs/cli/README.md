@@ -4780,7 +4780,8 @@ calls, so it is safe to run from inside a container during a deploy window. Comb
 with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and
 --watch are refused because the probe reports only the live moment.
 With --runs-only, skip workflow health and provider-backed status queries and return
-only the bounded run table; combine it with --json and --limit for fast operator probes.
+only the bounded run table, without recovery decoration; combine it with --json and
+--limit for fast operator probes. A ready, current status projection is required.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 

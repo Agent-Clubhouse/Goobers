@@ -1207,7 +1207,8 @@ const statusHelp = "Usage: goobers status [--api=<url>] [--daemon | --agents | -
 	"with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and\n" +
 	"--watch are refused because the probe reports only the live moment.\n" +
 	"With --runs-only, skip workflow health and provider-backed status queries and return\n" +
-	"only the bounded run table; combine it with --json and --limit for fast operator probes.\n" +
+	"only the bounded run table, without recovery decoration; combine it with --json and\n" +
+	"--limit for fast operator probes. A ready, current status projection is required.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
 const runsListHelp = "Usage: goobers runs list [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
@@ -1465,6 +1466,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 
 	runLoader := &statusRunLoader{
 		layout: l, sources: sources, journal: reads, options: options, needFleet: fullStatus && !agentsMode,
+		projectionRequired: runsOnlyMode,
 	}
 	loadRuns := runLoader.Load
 	loadFleetSummary := newStatusFleetSummaryLoader(l, runLoader, statusLocation)
@@ -1648,7 +1650,10 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			ParkedBacklog:           parked,
 			BaselineBlockers:        baselineBlockers,
 			Collection:              runLoader.collectionStatus(),
-			Runs:                    statusRecoverySummaries(l, runs, now),
+			Runs:                    statusJSONSummaries(runs),
+		}
+		if !runsOnlyMode {
+			output.Runs = statusRecoverySummaries(l, runs, now)
 		}
 		return writeStatusJSON(stdout, stderr, output)
 	}
@@ -1663,7 +1668,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	pf(stdout, "%s", statusText)
 	renderStatus(stdout, runs, now)
-	printStatusRecovery(stdout, l, runs, now)
+	if !runsOnlyMode {
+		printStatusRecovery(stdout, l, runs, now)
+	}
 	renderOlderRunsHint(stdout, olderRuns)
 	return 0
 }

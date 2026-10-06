@@ -55,6 +55,7 @@ var (
 	instanceTailBytes   atomic.Uint64
 	instanceTailRecords atomic.Uint64
 	runPhaseBytes       atomic.Uint64
+	recoveryRecordReads atomic.Uint64
 )
 
 // Snapshot is a point-in-time reading of the counters.
@@ -101,6 +102,9 @@ type Snapshot struct {
 	// still running, and "opened a journal" alone cannot tell that apart from
 	// reading its last kilobyte. Opens stay flat either way — only bytes move.
 	RunPhaseBytes uint64 `json:"runPhaseBytes"`
+	// RecoveryRecordReads counts recovery metadata records opened through the
+	// shared retained/overflow reader.
+	RecoveryRecordReads uint64 `json:"recoveryRecordReads"`
 }
 
 // Enable turns recording on and zeroes the counters, so a caller measuring a
@@ -125,6 +129,7 @@ func Reset() {
 	instanceTailBytes.Store(0)
 	instanceTailRecords.Store(0)
 	runPhaseBytes.Store(0)
+	recoveryRecordReads.Store(0)
 }
 
 // Take returns the current counter values.
@@ -139,6 +144,7 @@ func Take() Snapshot {
 		InstanceTailBytes:   instanceTailBytes.Load(),
 		InstanceTailRecords: instanceTailRecords.Load(),
 		RunPhaseBytes:       runPhaseBytes.Load(),
+		RecoveryRecordReads: recoveryRecordReads.Load(),
 	}
 }
 
@@ -156,6 +162,7 @@ func (s Snapshot) Sub(earlier Snapshot) Snapshot {
 		InstanceTailBytes:   s.InstanceTailBytes - earlier.InstanceTailBytes,
 		InstanceTailRecords: s.InstanceTailRecords - earlier.InstanceTailRecords,
 		RunPhaseBytes:       s.RunPhaseBytes - earlier.RunPhaseBytes,
+		RecoveryRecordReads: s.RecoveryRecordReads - earlier.RecoveryRecordReads,
 	}
 }
 
@@ -172,6 +179,13 @@ func Enabled() bool { return enabled.Load() }
 func RecordRunPhaseBytes(bytesRead int) {
 	if bytesRead > 0 && enabled.Load() {
 		runPhaseBytes.Add(uint64(bytesRead))
+	}
+}
+
+// RecordRecoveryRecordRead records one recovery metadata record read.
+func RecordRecoveryRecordRead() {
+	if enabled.Load() {
+		recoveryRecordReads.Add(1)
 	}
 }
 

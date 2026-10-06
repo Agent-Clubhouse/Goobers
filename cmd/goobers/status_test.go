@@ -286,6 +286,17 @@ func TestStatusFallsBackWhenProjectionIsNotAuthoritative(t *testing.T) {
 			if work.JournalOpens == 0 {
 				t.Fatal("status did not use authoritative journal fallback")
 			}
+
+			readprobe.Enable()
+			code, stdout, stderr = runArgs(t, "status", "--runs-only", "--json", "--limit", "1", root)
+			work = readprobe.Take()
+			readprobe.Disable()
+			if code != 2 || stdout != "" || !strings.Contains(stderr, "requires a ready, current status projection") {
+				t.Fatalf("runs-only projection failure: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if work.JournalOpens != 0 {
+				t.Fatalf("runs-only projection failure opened %d run journals, want 0", work.JournalOpens)
+			}
 		})
 	}
 }
@@ -342,6 +353,18 @@ func TestStatusFrameRejectsTransientIntakeMutation(t *testing.T) {
 	if loader.projected || len(runs) != 1 || runs[0].RunID != "journal-run" ||
 		len(loader.fleetRuns) != 1 || loader.fleetRuns[0].RunID != "journal-run" {
 		t.Fatalf("unstable frame projected=%v display=%v fleet=%v", loader.projected, runs, loader.fleetRuns)
+	}
+
+	loader.projectionRequired = true
+	readprobe.Enable()
+	_, err = loader.Load()
+	work := readprobe.Take()
+	readprobe.Disable()
+	if err == nil || !strings.Contains(err.Error(), "requires a ready, current status projection") {
+		t.Fatalf("runs-only unstable frame error = %v", err)
+	}
+	if work.JournalOpens != 0 {
+		t.Fatalf("runs-only unstable frame opened %d run journals, want 0", work.JournalOpens)
 	}
 }
 
@@ -1003,10 +1026,37 @@ func TestStatusDefaultsToNewestFiftyRuns(t *testing.T) {
 
 func TestStatusRunsOnlySkipsExpensiveStatusQueries(t *testing.T) {
 	root := initScheduledDemo(t)
+	layout := instance.NewLayout(root)
 	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
-	for i := range 3 {
-		writeStatusRun(t, root, fmt.Sprintf("run-%02d", i), "implementation", "goobers", startedAt.Add(time.Duration(i)*time.Minute))
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
 	}
+	for i := range 100 {
+		at := startedAt.Add(time.Duration(i) * time.Minute)
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+			RunID: fmt.Sprintf("capacity-%03d", i), Workflow: "implementation", Gaggle: "goobers",
+			Phase: journal.PhaseCompleted, Terminal: true, StartedAt: at, LastActivity: at, LastSeq: 1,
+		}}); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watermarks.Close(); err != nil {
+		t.Fatal(err)
+	}
+	seedRecoveryRecords(t, layout, 0, 100)
 
 	oldFleetFacts := loadStatusFleetFacts
 	oldPRLabels := loadStatusPRLabelCounts
@@ -1035,19 +1085,44 @@ func TestStatusRunsOnlySkipsExpensiveStatusQueries(t *testing.T) {
 		return nil
 	}
 
-	code, stdout, stderr := runArgs(t, "status", "--runs-only", "--json", "--limit=2", root)
-	if code != 0 {
-		t.Fatalf("status --runs-only: code = %d, stderr = %q", code, stderr)
-	}
-	var got statusJSONOutput
-	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
-		t.Fatalf("status JSON = %q: %v", stdout, err)
-	}
-	if len(got.Runs) != 2 || got.Runs[0].RunID != "run-02" || got.Runs[1].RunID != "run-01" {
-		t.Fatalf("runs = %+v, want newest two runs", got.Runs)
-	}
-	if got.Summary != nil || got.Root != nil || got.ParkedBacklog != nil || got.BaselineBlockers != nil {
-		t.Fatalf("runs-only output included full status fields: %+v", got)
+	for _, jsonMode := range []bool{false, true} {
+		name := "text"
+		args := []string{"status", "--runs-only", "--limit=2", root}
+		if jsonMode {
+			name = "json"
+			args = []string{"status", "--runs-only", "--json", "--limit=2", root}
+		}
+		t.Run(name, func(t *testing.T) {
+			readprobe.Enable()
+			code, stdout, stderr := runArgs(t, args...)
+			work := readprobe.Take()
+			readprobe.Disable()
+			if code != 0 {
+				t.Fatalf("status --runs-only: code = %d, stderr = %q", code, stderr)
+			}
+			if work.JournalOpens != 0 || work.RecoveryRecordReads != 0 {
+				t.Fatalf("bounded work = %+v, want no journal or recovery record reads", work)
+			}
+			if !jsonMode {
+				if !strings.Contains(stdout, "capacity-099") || !strings.Contains(stdout, "capacity-098") {
+					t.Fatalf("status text omitted newest runs: %q", stdout)
+				}
+				return
+			}
+			var got statusJSONOutput
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatalf("status JSON = %q: %v", stdout, err)
+			}
+			if len(got.Runs) != 2 || got.Runs[0].RunID != "capacity-099" || got.Runs[1].RunID != "capacity-098" {
+				t.Fatalf("runs = %+v, want newest two runs", got.Runs)
+			}
+			if got.Runs[0].Recovery != nil || got.Runs[1].Recovery != nil {
+				t.Fatalf("runs-only output included recovery decoration: %+v", got.Runs)
+			}
+			if got.Summary != nil || got.Root != nil || got.ParkedBacklog != nil || got.BaselineBlockers != nil {
+				t.Fatalf("runs-only output included full status fields: %+v", got)
+			}
+		})
 	}
 }
 
