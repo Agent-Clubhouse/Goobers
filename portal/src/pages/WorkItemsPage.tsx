@@ -119,7 +119,7 @@ function WorkItemListView({
           status: "ready",
           data: {
             page: data,
-            filterItems: [...pullRequestData.items, ...issueData.items],
+            filterItems: [...pullRequestData.items, ...issueData.items, ...data.items],
           },
         }),
       (error: Error) => {

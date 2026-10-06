@@ -314,16 +314,16 @@ describe("WorkItemsPage", () => {
       .not.toBeInTheDocument();
   });
 
-  it("keeps valid gaggle filters beyond the mixed-kind page boundary", async () => {
-    const issue = {
+  it("keeps valid gaggle filters beyond the same-kind discovery boundary", async () => {
+    const newerPullRequest = {
       provider: "github",
-      repository: "acme/service",
-      kind: "issue" as const,
-      outcome: "in-progress" as const,
+      repository: "acme/app",
+      kind: "pr" as const,
+      outcome: "done" as const,
       actionCount: 1,
-      lastOperation: "comment",
+      lastOperation: "merge",
       lastActionAt: "2026-09-01T12:00:00Z",
-      lastRunId: "run-issue",
+      lastRunId: "run-newer-pr",
     };
     const pullRequest = {
       provider: "github",
@@ -345,9 +345,9 @@ describe("WorkItemsPage", () => {
             hasMore: true,
             items: [
               ...Array.from({ length: 200 }, (_, index) => ({
-                ...issue,
+                ...newerPullRequest,
                 externalId: String(index),
-                gaggle: `issue-gaggle-${index}`,
+                gaggle: `pr-gaggle-${index}`,
               })),
               pullRequest,
             ],
@@ -365,6 +365,14 @@ describe("WorkItemsPage", () => {
     expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Gaggle · boundary-gaggle");
     expect(screen.queryByText('Invalid gaggle filter "boundary-gaggle"'))
       .not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Draft scope" }));
+    expect(within(screen.getByRole("dialog", { name: "Select scope" })).getByRole(
+      "button",
+      { name: "Gaggle · boundary-gaggle" },
+    )).toBeInTheDocument();
   });
 
   it("keeps search focus while word-wheel filtering and replaces the current URL", async () => {
