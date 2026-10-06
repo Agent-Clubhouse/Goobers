@@ -283,6 +283,12 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
 			"policyExcluded": "false", "policyExcludedReason": "",
 		}},
+		runID + ":retry-failed-ci": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			"ciStatus": "passing", "selectedNumber": "77", "head": rebindBranch,
+			"remediationCauses": "substantive",
+			"conflict":          "false", "conflictLocations": "[]", "attemptedHeadSha": "deadbeef", "rebaseBaseSha": "base-sha",
+			"policyExcluded": "false", "policyExcludedReason": "",
+		}},
 		runID + ":remediation-checkpoint": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"continueRemediation": "true", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
@@ -412,6 +418,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"gather-ci-failures",
 		"gather-sibling-context",
 		"rebase-pr",
+		"retry-failed-ci",
 		"remediation-checkpoint",
 		"guard-before-agent-context",
 		"gather-review-threads",

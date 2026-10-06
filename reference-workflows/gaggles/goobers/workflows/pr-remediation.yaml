@@ -284,6 +284,48 @@ spec:
         - policyExcludedReason
       next: rebase-gate
 
+    # A failing cloud check may be unrelated to this PR or already tracked as
+    # a flake. Retry the failed jobs once before charging or comparing a
+    # remediation attempt. The poll carries rebase-pr's explicit handoff
+    # through unchanged so remediation-checkpoint can still classify a
+    # persistent failure without weakening the workflow's data-flow contract.
+    - name: retry-failed-ci
+      type: deterministic
+      goal: Rerun failed CI jobs once and wait for their replacement result before remediation convergence accounting.
+      run:
+        command: ["goobers", "ci-poll"]
+        workspace: scratch
+      inputs:
+        kind: "ci-poll"
+        retryFailedChecksMaxAttempts: "1"
+        retryFailedChecksBackoffSeconds: "30s"
+        carryOutputs: "selectedNumber,head,remediationCauses,conflict,conflictLocations,attemptedHeadSha,rebaseBaseSha,policyExcluded,policyExcludedReason"
+      inputsFrom:
+        prNumber: selectedNumber
+        selectedNumber: selectedNumber
+        head: head
+        remediationCauses: remediationCauses
+        conflict: conflict
+        conflictLocations: conflictLocations
+        attemptedHeadSha: attemptedHeadSha
+        rebaseBaseSha: rebaseBaseSha
+        policyExcluded: policyExcluded
+        policyExcludedReason: policyExcludedReason
+      capabilities:
+        - provider:pr:write
+      expectedOutputs:
+        - ciStatus
+        - selectedNumber
+        - head
+        - remediationCauses
+        - conflict
+        - conflictLocations
+        - attemptedHeadSha
+        - rebaseBaseSha
+        - policyExcluded
+        - policyExcludedReason
+      next: remediation-checkpoint
+
     # D4/D5 loop-control (issue #364, design doc §6): runs only when
     # rebase-pr couldn't finish the PR itself this cycle (rebase-gate's
     # "fail" branch — conflict or a substantive finding). Checks out the
@@ -321,6 +363,7 @@ spec:
         # the normal budget/no-progress checks, since no agent ever ran.
         policyExcluded: policyExcluded
         policyExcludedReason: policyExcludedReason
+        ciStatus: ciStatus
       inputs:
         resultFile: "checkpoint-result.json"
         # #953: each cause owns an independent allowance. Two conflict
@@ -955,7 +998,7 @@ spec:
           equals: "false"
       branches:
         pass: release-claim
-        fail: remediation-checkpoint
+        fail: retry-failed-ci
 
     # Loop-control decision (#392): remediation-checkpoint runs BEFORE the
     # agentic chain so an exhausted cause budget or a no-progress repeat escalates

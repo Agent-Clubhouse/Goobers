@@ -154,8 +154,35 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("rebase-gate not found")
 	}
-	if got := rebaseGate.Branches["fail"]; got != "remediation-checkpoint" {
-		t.Errorf("rebase-gate fail -> %q, want remediation-checkpoint", got)
+	if got := rebaseGate.Branches["fail"]; got != "retry-failed-ci" {
+		t.Errorf("rebase-gate fail -> %q, want retry-failed-ci", got)
+	}
+
+	retryCI, ok := m.Task("retry-failed-ci")
+	if !ok {
+		t.Fatal("retry-failed-ci not found")
+	}
+	if retryCI.Run == nil ||
+		!reflect.DeepEqual(retryCI.Run.Command, []string{"goobers", "ci-poll"}) ||
+		retryCI.Run.Workspace != apiv1.WorkspaceScratch ||
+		retryCI.Inputs["kind"] != "ci-poll" ||
+		retryCI.Inputs["retryFailedChecksMaxAttempts"] != "1" ||
+		retryCI.Next != "remediation-checkpoint" {
+		t.Errorf("retry-failed-ci = %+v, want one bounded failed-check rerun before remediation-checkpoint", retryCI)
+	}
+	for _, output := range []string{
+		"selectedNumber", "head", "remediationCauses", "conflict", "conflictLocations",
+		"attemptedHeadSha", "rebaseBaseSha", "policyExcluded", "policyExcludedReason",
+	} {
+		if retryCI.InputsFrom[output] != output {
+			t.Errorf("retry-failed-ci inputsFrom[%q] = %q, want %q", output, retryCI.InputsFrom[output], output)
+		}
+		if !containsString(retryCI.ExpectedOutputs, output) {
+			t.Errorf("retry-failed-ci expectedOutputs = %v, missing carried %q", retryCI.ExpectedOutputs, output)
+		}
+	}
+	if retryCI.InputsFrom["prNumber"] != "selectedNumber" || !containsString(retryCI.ExpectedOutputs, "ciStatus") {
+		t.Errorf("retry-failed-ci PR/CI contract = inputsFrom %v outputs %v", retryCI.InputsFrom, retryCI.ExpectedOutputs)
 	}
 
 	checkpointGate, ok := m.Gate("checkpoint-gate")
@@ -814,6 +841,9 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	for _, output := range []string{"remediationCauses", "conflict", "conflictLocations", "attemptedHeadSha", "rebaseBaseSha"} {
 		if !containsString(rebase.ExpectedOutputs, output) {
 			t.Errorf("rebase-pr expectedOutputs = %v, missing %q structural-collision evidence", rebase.ExpectedOutputs, output)
+		}
+		if checkpoint.InputsFrom["ciStatus"] != "ciStatus" {
+			t.Errorf("remediation-checkpoint inputsFrom[ciStatus] = %q, want ciStatus", checkpoint.InputsFrom["ciStatus"])
 		}
 		if checkpoint.InputsFrom[output] != output {
 			t.Errorf("remediation-checkpoint inputsFrom[%q] = %q, want %q", output, checkpoint.InputsFrom[output], output)

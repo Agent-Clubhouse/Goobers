@@ -620,7 +620,7 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 	if retry {
 		infraFailures = retryInfraFailures
 	}
-	stalled := remediationStalled(in.Prior, in.Digest, in.BaseSHA)
+	stalled := remediationAttempted(in.Prior.AttemptsByCause) && remediationStalled(in.Prior, in.Digest, in.BaseSHA)
 	exhaustedCause, exceeded := exhaustedRemediationCause(in.Prior.AttemptsByCause, in.Causes, in.Budgets)
 	structuralCollision := len(in.StructuralCollisions) > 0
 	// A concrete in-run finding always outranks the external classification:
@@ -739,6 +739,15 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 			InfrastructureFailures: infraFailures,
 		},
 	}
+}
+
+func remediationAttempted(attempts remediationAttempts) bool {
+	for _, cause := range remediationCauseOrder {
+		if attempts.forCause(cause) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // rewindOwnCheckpointWrite makes a retry of the same checkpoint attempt
@@ -1610,6 +1619,11 @@ func resolveRemediationCheckpointMode(flags remediationCheckpointFlags, features
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return remediationCheckpointMode{}, 1, false
+	}
+	if providerInput("ciStatus", "") == string(providers.CheckStatePassing) {
+		causes = slices.DeleteFunc(causes, func(cause remediationCause) bool {
+			return cause == remediationCauseFailingCI
+		})
 	}
 	budgets, err := declaredRemediationBudgets(flags.budgetOverride)
 	if err != nil {

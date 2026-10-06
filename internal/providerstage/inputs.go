@@ -210,7 +210,7 @@ var inputSchemas = map[string][]Input{
 		stringsIn("reason", "selectedHeadSha"), integersIn("demotionThreshold", "selectedNumber"), durationsIn("timeout"),
 	),
 	"remediation-checkpoint": schema(
-		stringsIn("attemptedHeadSha", "base", "conflictLocations", "headPrefix", "policyExcludedReason", "rebaseBaseSha", "remediationCauses", "selectedNumber"),
+		stringsIn("attemptedHeadSha", "base", "ciStatus", "conflictLocations", "headPrefix", "policyExcludedReason", "rebaseBaseSha", "remediationCauses", "selectedNumber"),
 		// #2737: each per-cause budget defaults to 2 when unset; validate
 		// warns so the remediation allowance stays an explicit choice.
 		// --budget overrides every budget; --escalate parks the PR before

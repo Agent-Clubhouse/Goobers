@@ -722,7 +722,7 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 		t.Fatalf("stdout = %q, want explicit no-cause halt", stdout)
 	}
 	if len(st.comments) != 1 {
-		t.Fatalf("comments = %v, want a persisted no-cause checkpoint for independent stall detection", st.comments)
+		t.Fatalf("comments = %v, want a persisted no-cause checkpoint", st.comments)
 	}
 	state, ok := parseRemediationStateComment(st.comments[0])
 	if !ok || state.Cycles != 1 || state.LastDiffDigest == "" || state.AttemptsByCause != (remediationAttempts{}) {
@@ -734,13 +734,18 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("repeat: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "byte-identical") {
-		t.Fatalf("repeat stdout = %q, want independent same-diff escalation", stdout)
+	if !strings.Contains(stdout, "without consuming an allowance") {
+		t.Fatalf("repeat stdout = %q, want another no-cause halt without escalation", stdout)
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
-		t.Fatalf("labels = %v, want merge-escalated on repeated no-cause failure", st.labels)
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, repeated no-cause checkpoints must not escalate without a real attempt", st.labels)
+	}
+	state, ok = parseRemediationStateComment(st.comments[0])
+	if !ok || state.Cycles != 2 || state.AttemptsByCause != (remediationAttempts{}) ||
+		state.EscalationOutcome != "" || state.RemediationAttempted {
+		t.Fatalf("repeated no-cause state = %+v, ok=%v, want no escalation and no attempted cause", state, ok)
 	}
 }
 
