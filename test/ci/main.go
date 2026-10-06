@@ -431,6 +431,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "ci-policy", command: tools.goCommand, args: []string{"test", "./test/cipolicy", "./test/ci", "-count=1"}, group: groupPreflight},
 		// Discover undeclared downloads before the long unit/browser suites.
 		{label: "runtime-acquisitions", command: tools.goCommand, args: []string{"test", "./test/ci", "-run", "Test.*Acquisition", "-count=1"}, group: groupPreflight},
+		{label: "architecture-imports", command: tools.goCommand, args: []string{"run", "./test/architectureimports", "-config", "test/architectureimports/rules.json"}, group: groupPreflight},
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
