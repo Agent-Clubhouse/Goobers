@@ -676,6 +676,48 @@ spec:
                       items:
                         type: string
                       type: array
+                    childWorkflows:
+                      description: |-
+                        ChildWorkflows opts an agentic task into bounded child-workflow proposals.
+                        Available only in DSL 3.1; omission disables child tools.
+                      properties:
+                        allowPRPublication:
+                          description: |-
+                            AllowPRPublication permits a submission to request PR publication.
+                            False by default; true cannot widen the enclosing publication policy.
+                          type: boolean
+                        allowedCapabilities:
+                          description: |-
+                            AllowedCapabilities limits child grants to registered stage capabilities.
+                            Omitted or empty grants none; actual grants still intersect enclosing policy.
+                          items:
+                            type: string
+                          maxItems: 128
+                          type: array
+                          x-kubernetes-list-type: set
+                        allowedGoobers:
+                          description: AllowedGoobers names existing Goobers in the
+                            workflow's pinned gaggle.
+                          items:
+                            maxLength: 128
+                            minLength: 1
+                            type: string
+                          maxItems: 128
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        maxChildren:
+                          default: 4
+                          description: |-
+                            MaxChildren limits sequential child invocations per stage occurrence.
+                            Omitted uses four; the hard ceiling is 32. Only one child may be unfinished.
+                          format: int32
+                          maximum: 32
+                          minimum: 1
+                          type: integer
+                      required:
+                      - allowedGoobers
+                      type: object
                     commitsRepo:
                       description: |-
                         CommitsRepo declares that this deterministic stage's script/command
@@ -1256,6 +1298,9 @@ spec:
                   - name
                   - type
                   type: object
+                  x-kubernetes-validations:
+                  - message: childWorkflows requires type=agentic
+                    rule: '!has(self.childWorkflows) || self.type == ''agentic'''
                 maxItems: 128
                 type: array
               triggers:
@@ -1408,6 +1453,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: childWorkflows requires dslVersion 3.1
+          rule: '!has(self.spec.tasks) || !self.spec.tasks.exists(t, has(t.childWorkflows))
+            || (has(self.dslVersion) && self.dslVersion == ''3.1'')'
     served: true
     storage: true
     subresources:

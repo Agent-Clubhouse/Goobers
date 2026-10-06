@@ -1755,6 +1755,9 @@ jobs:
       - name: Windows credential files
         run: go test ./internal/credentials ./internal/fleet
 
+      - name: Windows child proposal validation
+        run: go test ./internal/childworkflow -count=1
+
       - name: Windows Azure CLI credential diagnostics
         env:
           TESTDEP_STRICT: '1'
@@ -1867,7 +1870,7 @@ jobs:
       # Credential-plane alias tests drive actual runtime migration and Windows
       # directory junction/SameFile behavior; cross-compilation cannot cover it.
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
+        run: go test ./cmd/goobers -run 'TestWorkflowValidateChild|TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers

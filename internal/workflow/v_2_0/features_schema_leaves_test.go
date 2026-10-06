@@ -30,6 +30,12 @@ var authorSchemaFiles = map[string]string{
 // TestEmbeddedSchemaLeavesMapToFeatureRegistry; entries that become
 // registered (or leave the schemas) fail it too.
 var schemaLeafExceptions = map[string]string{
+	// DSL 3.1-only policy; the version router rejects it for this interpreter.
+	"workflow.spec.tasks.childWorkflows.allowedGoobers":      "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedCapabilities": "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.maxChildren":         "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowPRPublication":  "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+
 	// Publication policy belongs to the binary, not this frozen interpreter.
 	// The public registry and TestCostPublicationFeatureIsIndependentOfWorkflowPin
 	// cover its registration and availability across supported workflow pins.
