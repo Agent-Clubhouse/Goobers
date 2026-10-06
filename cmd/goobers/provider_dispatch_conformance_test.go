@@ -581,9 +581,10 @@ type adoStageCredentialCase struct {
 }
 
 var (
-	credPRWrite     = string(capability.GitHubPRWrite)
-	credIssuesWrite = string(capability.GitHubIssuesWrite)
-	credIssuesRead  = string(capability.GitHubIssuesRead)
+	credPRWrite         = string(capability.GitHubPRWrite)
+	credProviderPRWrite = string(capability.ProviderPRWrite)
+	credIssuesWrite     = string(capability.GitHubIssuesWrite)
+	credIssuesRead      = string(capability.GitHubIssuesRead)
 )
 
 // adoStageCredentialCases is the table TestADOStageProvidersConsumeTheDeclaredCapability
@@ -601,7 +602,7 @@ var adoStageCredentialCases = []adoStageCredentialCase{
 	{command: "open-pr", want: []string{string(capability.ProviderPRWrite)}},
 	{command: "post-merge", inputs: map[string]string{"pullNumber": "77"}, want: []string{credPRWrite, credIssuesWrite}},
 	{command: "pr-comment-watch", want: []string{credPRWrite}},
-	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credPRWrite}},
+	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credProviderPRWrite}},
 	{command: "push-remediated", want: []string{credPRWrite}},
 	{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{credPRWrite}},
 	// reconcile-branches builds its provider before it refuses Azure DevOps,
@@ -715,8 +716,9 @@ func TestADOStageConsumesDeclaredCapabilityCredential(t *testing.T) {
 // Azure DevOps path builds its own providers (merge review and PR
 // remediation). Each must build every ADO provider from the delivered value of
 // a capability its manifest row names, and exactly the capabilities listed:
-// pull-request work on the project provider from github:pr:write (or
-// provider:pr:write), backlog work items from github:issues:*.
+// pull-request work on the project provider from the manifest-declared
+// github:pr:write or provider:pr:write capability, backlog work items from
+// github:issues:*.
 //
 // merge-pr and merge-queue-poll land with github:pr:merge, or with
 // ado:pr:complete when it was delivered, as it is here

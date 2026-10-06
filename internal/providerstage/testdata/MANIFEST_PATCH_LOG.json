@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "01e89043628d3ee769fbd773eff1c97a18a3d6be98b830c37e0d762d9c9a2e32",
+  "snapshotSha256": "36a314b63591cc0bceff70635eb5c9fdb509f9241578143568564aad35a8b68e",
   "changes": [
     {
       "version": 1,
@@ -76,6 +76,10 @@
     {
       "version": 19,
       "description": "Give recovery-resume a typed recovery-resume.json result contract (#4418), allowing the ordinary implementation workflow to record whether it resumed retained work and the source run. The existing repo:push capability requirement is unchanged."
+    },
+    {
+      "version": 20,
+      "description": "Migrate pr-select from github:pr:write to provider:pr:write so stale run-aborted recovery authenticates with the same posting identity that publishes merge-review verdicts and remediation responses. The workflow, policy action, and shipped examples move atomically to the provider-neutral capability."
     }
   ]
 }
