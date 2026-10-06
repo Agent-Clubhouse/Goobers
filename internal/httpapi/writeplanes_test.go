@@ -238,6 +238,7 @@ func writePlanePaths() []string {
 		apicontract.ClaimSettlePath,
 		apicontract.ClaimListPath,
 		apicontract.TriggerIngestPath,
+		apicontract.WorkflowStartPath,
 		"/api/v1/runs/run-1/escalation/resolve",
 	}
 }
@@ -253,6 +254,7 @@ func TestWritePlaneRoutesAreInTheContract(t *testing.T) {
 		apicontract.RouteClaimSettle,
 		apicontract.RouteClaimList,
 		apicontract.RouteTriggerIngest,
+		apicontract.RouteWorkflowStart,
 		apicontract.RouteResolveEscalation,
 		apicontract.RouteCancelRun,
 	} {
@@ -280,10 +282,12 @@ func TestWritePlaneRoutesAreInTheContract(t *testing.T) {
 func TestWritePlanesRequireAuthenticationOffLoopback(t *testing.T) {
 	claims := &fakeClaimService{}
 	triggers := &fakeTriggerService{}
+	starts := &fakeWorkflowStartService{}
 	escalations := &fakeEscalationService{}
 	authenticator := &fakeAuthenticator{err: context.DeadlineExceeded}
 	handler := writePlaneHandler(t, authenticator, RequireRoles(),
-		WithClaimService(claims), WithTriggerService(triggers), WithEscalationService(escalations))
+		WithClaimService(claims), WithTriggerService(triggers), WithWorkflowStartService(starts),
+		WithEscalationService(escalations))
 
 	for _, path := range writePlanePaths() {
 		// Unauthenticated: 401.
@@ -304,9 +308,9 @@ func TestWritePlanesRequireAuthenticationOffLoopback(t *testing.T) {
 			t.Errorf("%s viewer status = %d, want 403", path, response.Code)
 		}
 	}
-	if len(claims.requests)+len(triggers.requests)+len(escalations.inputs) != 0 {
-		t.Fatalf("refused requests reached a service: claims=%d triggers=%d escalations=%d",
-			len(claims.requests), len(triggers.requests), len(escalations.inputs))
+	if len(claims.requests)+len(triggers.requests)+len(starts.requests)+len(escalations.inputs) != 0 {
+		t.Fatalf("refused requests reached a service: claims=%d triggers=%d starts=%d escalations=%d",
+			len(claims.requests), len(triggers.requests), len(starts.requests), len(escalations.inputs))
 	}
 }
 
