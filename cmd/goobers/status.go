@@ -1298,12 +1298,8 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	// line — all daemon/process runtime state, not part of `runs list`'s
 	// plain, scriptable run table.
 	supportsWatch := command == "status"
-	var watch *bool
+	var watch, daemon, agents, runsOnly, all *bool
 	var interval *time.Duration
-	var daemon *bool
-	var agents *bool
-	var runsOnly *bool
-	var all *bool
 	if supportsWatch {
 		watch = fs.Bool("watch", false, "refresh the status board until interrupted")
 		interval = fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
@@ -1318,11 +1314,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	showAllWorkflows := statusOptionalBool(all)
 	limitSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "limit" {
-			limitSet = true
-		}
-	})
+	fs.Visit(func(f *flag.Flag) { limitSet = limitSet || f.Name == "limit" })
 	if *limit < 0 {
 		pf(stderr, "error: --limit must be non-negative\n")
 		return 2
