@@ -427,6 +427,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"status": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "agents", desc: "List in-flight agentic stages by role"},
+		{name: "runs-only", desc: "Return only the bounded run table"},
 		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
 		{name: "json", desc: "Emit JSON"},
