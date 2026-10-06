@@ -89,6 +89,7 @@ type fakeReview struct {
 	body      string
 	commitSHA string
 	state     string
+	author    string
 }
 
 type fakeInlineReviewComment struct {
@@ -1364,7 +1365,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			out = append(out, map[string]interface{}{
 				"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 				"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
-				"user": map[string]string{"login": "goobers-reviewer"},
+				"user": map[string]string{"login": review.author},
 			})
 		}
 		writeFakeJSON(w, out)
@@ -1404,13 +1405,27 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		}
 		review := fakeReview{
 			id: int64(len(pr.reviews) + 1), body: body.Body,
-			commitSHA: body.CommitID, state: state,
+			commitSHA: body.CommitID, state: state, author: s.authenticatedLogin,
 		}
 		pr.reviews = append(pr.reviews, review)
 		writeFakeJSON(w, map[string]interface{}{
 			"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
 		})
+	case len(parts) == 4 && parts[1] == "reviews" && parts[3] == "dismissals" && r.Method == http.MethodPut:
+		reviewID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			http.Error(w, "bad review id", http.StatusBadRequest)
+			return
+		}
+		for i := range pr.reviews {
+			if pr.reviews[i].id == reviewID {
+				pr.reviews[i].state = "DISMISSED"
+				writeFakeJSON(w, map[string]interface{}{"id": reviewID, "state": "DISMISSED"})
+				return
+			}
+		}
+		http.Error(w, "review not found", http.StatusNotFound)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.inlineComments))
 		for _, comment := range pr.inlineComments {
@@ -1703,6 +1718,10 @@ func (s *fakeGitHubServer) setPRMergeable(number int, mergeable bool) {
 }
 
 func (s *fakeGitHubServer) addPRReview(number int, state string) {
+	s.addPRReviewAs(number, "reviewer", state)
+}
+
+func (s *fakeGitHubServer) addPRReviewAs(number int, author, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pr := s.prs[number]
@@ -1711,6 +1730,7 @@ func (s *fakeGitHubServer) addPRReview(number int, state string) {
 		body:      "review body",
 		commitSHA: pr.headSHA,
 		state:     state,
+		author:    author,
 	})
 }
 
