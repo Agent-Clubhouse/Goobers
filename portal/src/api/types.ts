@@ -1040,7 +1040,7 @@ export interface LineageRun {
 }
 
 export interface OperatorRunSummary {
-  issue?: { number: string; title?: string };
+  issue?: { number: string; title?: string; labels?: string[] };
   currentStage?: string;
   lastHeartbeatAt?: string;
   heartbeatAgeMillis?: number;

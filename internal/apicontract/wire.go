@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
 
 type wireFixtures struct {
@@ -386,7 +387,7 @@ func newWireFixtures() wireFixtures {
 			HistoricalRepassCount: 2,
 		},
 		Operator: readservice.OperatorRunSummary{
-			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
+			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
 			CurrentStage:      "review",
 			Liveness:          "terminal",
 			Trajectory:        "terminal",

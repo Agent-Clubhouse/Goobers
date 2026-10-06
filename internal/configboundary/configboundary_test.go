@@ -189,6 +189,29 @@ func TestConfineToAnyEmptyChangeSetIsAllowed(t *testing.T) {
 	}
 }
 
+func TestPathWithinAnyRootMatchesAnyRoot(t *testing.T) {
+	roots := []string{"docs", "README.md"}
+	if err := pathWithinAnyRoot(roots, "README.md"); err != nil {
+		t.Fatalf("pathWithinAnyRoot(%v, README.md) = %v; want nil", roots, err)
+	}
+}
+
+func TestPathWithinAnyRootReturnsMatchingRootError(t *testing.T) {
+	roots := []string{"docs", "README.md"}
+	path := "internal/runner/run.go"
+	_, want := matchingRoot(roots, path)
+	got := pathWithinAnyRoot(roots, path)
+	if got == nil {
+		t.Fatalf("pathWithinAnyRoot(%v, %q) = nil; want error", roots, path)
+	}
+	if !errors.Is(got, ErrOutsideConfigRoot) {
+		t.Errorf("pathWithinAnyRoot(%v, %q) = %v; want ErrOutsideConfigRoot", roots, path, got)
+	}
+	if got.Error() != want.Error() {
+		t.Errorf("pathWithinAnyRoot(%v, %q) error = %q, matchingRoot error = %q", roots, path, got, want)
+	}
+}
+
 // TestConfineExclusiveAcceptsSingleRootChangeSet: a change set entirely within
 // one declared root passes and reports that root, regardless of which root it
 // is — the Tutor's TUT-A5 per-target-action boundary (#1217).
