@@ -189,6 +189,25 @@ func TestPRSelectLeavesCurrentHeadPassParkedAfterNewerHumanComment(t *testing.T)
 	runPRSelectExpectingRunAbortedPark(t, server, number)
 }
 
+func TestPRSelectLeavesCurrentHeadPassParkedAfterNewerTrustedNonPass(t *testing.T) {
+	poll := providers.PullRequestPollResult{
+		HeadSHA: "green-head",
+		BaseSHA: "main-base",
+		CommentsSince: []providers.PullRequestComment{
+			{ID: 1, Author: "jeffstei", Body: attributedVerdictComment(t, apiv1.VerdictPass)},
+			{ID: 2, Author: "goobersbot[bot]", Body: attributedVerdictComment(t, apiv1.VerdictNeedsChanges)},
+		},
+	}
+	authors := runAbortedCommentAuthors{
+		authenticated: "jeffstei",
+		configured:    "goobersbot",
+	}
+
+	if runAbortedPRHasCurrentPass(poll, authors) {
+		t.Fatal("older pass authorized recovery after a newer trusted needs-changes verdict")
+	}
+}
+
 func TestPRSelectLeavesCurrentHeadPassParkedAfterUnattributedSharedIdentityComment(t *testing.T) {
 	tests := []struct {
 		name string
@@ -234,14 +253,19 @@ func addCurrentHeadPass(t *testing.T, server *fakeGitHubServer, number int, auth
 
 func currentHeadPassFromOtherIdentity(t *testing.T) string {
 	t.Helper()
-	pass := renderVerdictComment(apiv1.Verdict{
-		Decision: apiv1.VerdictPass,
+	return attributedVerdictComment(t, apiv1.VerdictPass)
+}
+
+func attributedVerdictComment(t *testing.T, decision apiv1.VerdictDecision) string {
+	t.Helper()
+	verdict := renderVerdictComment(apiv1.Verdict{
+		Decision: decision,
 		Summary:  "verified",
 		HeadSHA:  "green-head",
 		BaseSHA:  "main-base",
 	})
 	body, err := providers.StampAttribution(
-		pass,
+		verdict,
 		providers.Attribution{
 			InstanceID: strings.Repeat("b", 32),
 			Gaggle:     "goobers",

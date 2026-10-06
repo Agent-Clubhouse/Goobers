@@ -1504,27 +1504,27 @@ func (a runAbortedCommentAuthors) trusts(comment providers.PullRequestComment) b
 }
 
 func runAbortedPRHasCurrentPass(poll providers.PullRequestPollResult, authors runAbortedCommentAuthors) bool {
-	latestPass := -1
+	latestVerdict := -1
+	var verdict apiv1.Verdict
 	for i, comment := range poll.CommentsSince {
 		if !authors.trusts(comment) || !isMergeReviewStatusComment(comment.Body) {
 			continue
 		}
-		verdict, ok := parseVerdictComment(comment.Body)
-		if ok &&
-			verdict.Decision == apiv1.VerdictPass &&
-			verdict.HeadSHA != "" && verdict.HeadSHA == poll.HeadSHA &&
-			verdict.BaseSHA != "" && verdict.BaseSHA == poll.BaseSHA {
-			if latestPass == -1 || pullRequestCommentAfter(comment, i, poll.CommentsSince[latestPass], latestPass) {
-				latestPass = i
-			}
+		parsed, ok := parseVerdictComment(comment.Body)
+		if ok && (latestVerdict == -1 || pullRequestCommentAfter(comment, i, poll.CommentsSince[latestVerdict], latestVerdict)) {
+			latestVerdict = i
+			verdict = parsed
 		}
 	}
-	if latestPass == -1 {
+	if latestVerdict == -1 ||
+		verdict.Decision != apiv1.VerdictPass ||
+		verdict.HeadSHA == "" || verdict.HeadSHA != poll.HeadSHA ||
+		verdict.BaseSHA == "" || verdict.BaseSHA != poll.BaseSHA {
 		return false
 	}
 	for i, comment := range poll.CommentsSince {
 		if !authors.trusts(comment) &&
-			pullRequestCommentAfter(comment, i, poll.CommentsSince[latestPass], latestPass) {
+			pullRequestCommentAfter(comment, i, poll.CommentsSince[latestVerdict], latestVerdict) {
 			return false
 		}
 	}
