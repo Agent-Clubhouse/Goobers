@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 )
 
@@ -21,10 +22,10 @@ func parseTrustedProxyRanges(values []string) ([]string, error) {
 			return nil, fmt.Errorf("http api trusted proxy entries must be non-empty IP addresses or CIDR ranges")
 		}
 		if ip := net.ParseIP(value); ip != nil {
-			if ip.To4() != nil {
-				value += "/32"
+			if ipv4 := ip.To4(); ipv4 != nil {
+				value = ipv4.String() + "/32"
 			} else {
-				value += "/128"
+				value = ip.String() + "/128"
 			}
 		}
 		if _, _, err := net.ParseCIDR(value); err != nil {
@@ -78,12 +79,12 @@ func classifyConnectionLocality(request *http.Request, trustedProxyRanges []stri
 }
 
 func remoteAddressIP(address string) (net.IP, bool) {
-	host, _, err := net.SplitHostPort(address)
+	peer, err := netip.ParseAddrPort(address)
 	if err != nil {
 		return nil, false
 	}
-	ip := net.ParseIP(host)
-	return ip, ip != nil
+	ip := peer.Addr().WithZone("")
+	return net.IP(ip.AsSlice()), true
 }
 
 func addressInRanges(ip net.IP, ranges []string) (bool, bool) {

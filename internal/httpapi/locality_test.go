@@ -16,6 +16,7 @@ func TestClassifyConnectionLocality(t *testing.T) {
 		{name: "direct local", remoteAddr: "127.0.0.1:8080", want: connectionLocalityLocal},
 		{name: "direct IPv6 local", remoteAddr: "[::1]:8080", want: connectionLocalityLocal},
 		{name: "direct remote", remoteAddr: "198.51.100.20:443", want: connectionLocalityRemote},
+		{name: "direct scoped IPv6 remote", remoteAddr: "[fe80::1%eth0]:443", want: connectionLocalityRemote},
 		{
 			name:       "trusted proxy reports local client",
 			remoteAddr: "10.0.0.8:443",
@@ -38,6 +39,20 @@ func TestClassifyConnectionLocality(t *testing.T) {
 			want:       connectionLocalityRemote,
 		},
 		{
+			name:       "IPv4-mapped exact trusted proxy reports local client",
+			remoteAddr: "10.0.0.8:443",
+			forwarded:  "127.0.0.1",
+			proxies:    []string{"::ffff:10.0.0.8"},
+			want:       connectionLocalityLocal,
+		},
+		{
+			name:       "IPv4-mapped exact proxy does not trust another peer",
+			remoteAddr: "10.0.0.9:443",
+			forwarded:  "127.0.0.1",
+			proxies:    []string{"::ffff:10.0.0.8"},
+			want:       connectionLocalityRemote,
+		},
+		{
 			name:       "trusted proxy malformed metadata",
 			remoteAddr: "10.0.0.8:443",
 			forwarded:  "not-an-ip",
@@ -52,6 +67,7 @@ func TestClassifyConnectionLocality(t *testing.T) {
 		},
 		{name: "unavailable peer", want: connectionLocalityUnknown},
 		{name: "malformed peer", remoteAddr: "198.51.100.20", want: connectionLocalityUnknown},
+		{name: "malformed scoped IPv6 peer", remoteAddr: "[fe80::1%]:443", want: connectionLocalityUnknown},
 	}
 
 	for _, test := range tests {
