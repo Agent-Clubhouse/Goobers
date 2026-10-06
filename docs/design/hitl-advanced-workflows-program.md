@@ -40,6 +40,13 @@ those documents enter the stack. Each document owns its acceptance criteria and
 unresolved implementation choices. Agreed user decisions below are constraints,
 not questions to reopen during implementation.
 
+Authentication prerequisite within HITL:
+[fleet service authentication and delegated human access](fleet-delegated-authentication.md)
+(`HAW-AUTH-*`). Fleet mode lets an external service own sign-in and per-user gaggle
+permissions within locally enforced action and credential limits. Direct portal
+sign-in remains a separate delivery requirement. Neither is claimed complete by
+the local implementation snapshot or by design approval.
+
 ## Agreed constraints
 
 - Gaggle is the v1 isolation boundary for humans, conversations, children,

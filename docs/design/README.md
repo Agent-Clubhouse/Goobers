@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 19 |
+| `draft` | 20 |
 | `approved` | 21 |
 | `implemented` | 28 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **78** |
+| **Total** | **79** |
 
 ## `docs/adr/`
 
@@ -52,6 +52,7 @@ word — read the page, not this table, before depending on it.
 | [Design: EvalSuite CI gating, baseline management & alerting](evals-ci-gating.md) | `historical` | — | — | — | — | — | — |
 | [Design: EvalSuite — end-to-end workflow evaluation](evals-suite.md) | `historical` | — | — | — | — | — | — |
 | [External call-out stages](external-call-out-stages.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
+| [Design: Fleet service authentication and delegated human access](fleet-delegated-authentication.md) | `draft` | fleet, authentication, authorization, HITL, audit | — | — | — | — | fa34a754148ea3076bfd04fe4976a5a461b063f2 (2026-10-06) |
 | [Design: Fleet portal and control-plane gateway](fleet-portal.md) | `draft` | — | — | — | — | — | — |
 | [Gaggle events, durable start queues, and shared provider reads](gaggle-events-and-durable-start-queues.md) | `draft` | — | — | — | — | — | — |
 | [Design: GitHub wiki sink for docs-updater](github-wiki-docs-sink.md) | `approved` | — | — | — | — | — | — |

@@ -37,6 +37,22 @@ and full CI/live backend qualification remain review and delivery gates.
 
 ## Review branches
 
+### Authentication design follow-up
+
+The [fleet delegation design](design/fleet-delegated-authentication.md) adds
+`HAW-AUTH-001`–`HAW-AUTH-009` as planned work within HITL. It defines external
+ownership of human login/membership, trusted app-to-app requests, delegated-human
+attribution, local gaggle ceilings, replay protection and authorization renewal.
+This follow-up is design-only; fleet write delegation and direct browser sign-in
+are not delivered by the implementation checkpoint below.
+
+Branch: `codex/haw-fleet-delegation-design`, based on the published implementation
+review branch `codex/haw-review-05-implementation` (#6807). This dependency keeps
+the review delta limited to documentation; auth implementation should be split
+into the listed delivery tasks after design approval.
+
+### Historical implementation checkpoints
+
 All work is unmerged. The integration branch is `codex/hitl-advanced-workflows`,
 forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 

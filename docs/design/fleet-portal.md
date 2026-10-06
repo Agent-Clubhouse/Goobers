@@ -73,8 +73,11 @@ That origin hosts:
 - the event or connection endpoint used by enrolled instances.
 
 The fleet URI is a deployment identity, not merely a convenient link. Instances pin
-the fleet identity discovered at this URI and use it as the audience for fleet-issued
-credentials.
+the fleet identity discovered at this URI. Credentials presented to the fleet target
+its audience; request delegations presented to an instance target that instance's
+distinct audience, as specified by the
+[fleet authentication contract](fleet-delegated-authentication.md). Enrollment
+credentials and delegated operation credentials are not interchangeable.
 
 ### 2.2 A gateway, not a second configuration system
 
@@ -219,6 +222,11 @@ unambiguous and that the proxied instance API remains versioned independently fr
 fleet API.
 
 ### 5.2 Request envelope
+
+The proposed [fleet authentication contract](fleet-delegated-authentication.md)
+specifies the versioned delegation, service-only versus delegated-human identity,
+per-gaggle authority limits, replay handling and durable authorization renewal for
+HITL writes. It extends this section and section 7; those additions are not shipped.
 
 The fleet portal MUST NOT turn a user request into an anonymous trusted backend call.
 Every proxied request carries a signed, short-lived delegation envelope containing at
@@ -395,6 +403,13 @@ For each request, the fleet portal:
 
 The instance independently validates the delegation and applies local restrictions.
 A deny at either layer denies the request.
+
+For the proposed HITL write surface, fleet policy resolves per-user gaggle access
+inside those fleet/group/instance bounds. The instance retains a per-gaggle action
+and target ceiling and its provider credential bindings. Explicit fleet mode avoids
+duplicating every user's membership locally; app-only actions remain distinguishable
+from delegated human decisions. See the
+[detailed authentication contract](fleet-delegated-authentication.md).
 
 ## 8. Data boundaries
 
