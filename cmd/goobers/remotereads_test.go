@@ -166,6 +166,40 @@ func TestRemoteStatusRunsOnlyLimitZeroReadsAllPages(t *testing.T) {
 	}
 }
 
+func TestRemoteStatusRunsOnlyBoundsSparseMultiPhasePages(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		query := req.URL.Query()
+		if query.Get("phase") != "" || query.Get("limit") != "200" {
+			t.Errorf("query = %q, want an unfiltered full page", query.Encode())
+		}
+		_ = json.NewEncoder(w).Encode(readservice.RunList{
+			Runs: []readservice.RunSummary{{
+				ID: fmt.Sprintf("run-%d", requests), Phase: journal.PhaseCompleted,
+				StartedAt: time.Date(2026, 10, 5-requests, 12, 0, 0, 0, time.UTC),
+			}},
+			NextCursor: fmt.Sprintf("page-%d", requests+1),
+		})
+	}))
+	defer server.Close()
+
+	options := statusOptions{
+		limit: 2,
+		phases: map[journal.RunPhase]struct{}{
+			journal.PhaseRunning:   {},
+			journal.PhaseEscalated: {},
+		},
+	}
+	_, err := remoteStatusRuns(context.Background(), newRemoteRuns(server.URL), options, true)
+	if err == nil || !strings.Contains(err.Error(), "remote multi-phase run scan exceeded") {
+		t.Fatalf("err = %v, want bounded multi-phase scan error", err)
+	}
+	if requests != maxRemoteStatusClientFilterPages {
+		t.Fatalf("requests = %d, want %d", requests, maxRemoteStatusClientFilterPages)
+	}
+}
+
 func TestRemoteRunsDirectVerbUsesRunTable(t *testing.T) {
 	server := remoteReadTestServer(t, remoteReadTestID)
 	defer server.Close()

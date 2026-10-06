@@ -22,7 +22,10 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const maxRemoteReadBody = 32 << 20
+const (
+	maxRemoteReadBody                = 32 << 20
+	maxRemoteStatusClientFilterPages = 5
+)
 
 // remoteRuns adapts the daemon's versioned read API to the same boundary used
 // by the filesystem-backed diagnostic commands. Keeping the adapter behind
@@ -418,6 +421,8 @@ func (r *remoteRuns) Instance(ctx context.Context) (readservice.Instance, error)
 func remoteStatusRuns(ctx context.Context, reads *remoteRuns, options statusOptions, bounded bool) ([]runSummary, error) {
 	var runs []runSummary
 	cursor := ""
+	pages := 0
+	clientFilteredPhases := len(options.phases) > 1
 	for {
 		request := readservice.RunListOptions{
 			Gaggle: options.gaggle, Workflow: options.workflow,
@@ -428,7 +433,7 @@ func remoteStatusRuns(ctx context.Context, reads *remoteRuns, options statusOpti
 				request.Phase = phase
 			}
 		}
-		if bounded && options.limit > 0 {
+		if bounded && options.limit > 0 && !clientFilteredPhases {
 			remaining := options.limit + 1 - len(runs)
 			if remaining < request.Limit {
 				request.Limit = remaining
@@ -440,6 +445,7 @@ func remoteStatusRuns(ctx context.Context, reads *remoteRuns, options statusOpti
 		if err != nil {
 			return nil, err
 		}
+		pages++
 		for _, run := range page.Runs {
 			summary := runSummary{EngineFallback: run.EngineFallback, RunID: run.ID, Workflow: run.Workflow, Gaggle: run.Gaggle, Phase: run.Phase, StartedAt: run.StartedAt, LastActivityAt: run.LastActivityAt, Operator: run.Operator, Lineage: run.Lineage}
 			if statusRunMatches(summary, options) {
@@ -448,6 +454,9 @@ func remoteStatusRuns(ctx context.Context, reads *remoteRuns, options statusOpti
 		}
 		if page.NextCursor == "" || bounded && options.limit > 0 && len(runs) > options.limit {
 			return runs, nil
+		}
+		if bounded && options.limit > 0 && clientFilteredPhases && pages >= maxRemoteStatusClientFilterPages {
+			return nil, fmt.Errorf("remote multi-phase run scan exceeded %d pages; refine --gaggle, --workflow, or --phase filters", maxRemoteStatusClientFilterPages)
 		}
 		cursor = page.NextCursor
 	}
