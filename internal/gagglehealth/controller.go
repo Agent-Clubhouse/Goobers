@@ -42,7 +42,7 @@ const (
 type Snapshot struct {
 	Gaggle         string
 	CapturedAt     time.Time
-	Workflows      []string
+	Workflows      []RuntimeSummary
 	Runs           []RuntimeSummary
 	Claims         []RuntimeSummary
 	Runners        []RuntimeSummary
@@ -53,9 +53,10 @@ type Snapshot struct {
 
 // RuntimeSummary is a provider-neutral bounded state record.
 type RuntimeSummary struct {
-	ID        string
-	State     string
-	UpdatedAt time.Time
+	ID         string
+	State      string
+	UpdatedAt  time.Time
+	Attributes map[string]string
 }
 
 // SnapshotSource builds snapshots through daemon-owned supported seams.
@@ -340,6 +341,8 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 		for _, observation := range results {
 			if err := validateObservation(observation); err != nil {
 				evaluationErrors = append(evaluationErrors, fmt.Errorf("%s: %w", detector.Name(), err))
+				observations = append(observations, c.indeterminateObservation(registration.Name, detector.Name(), now, err))
+				indeterminate = true
 				continue
 			}
 			if observation.Status == ObservationIndeterminate {

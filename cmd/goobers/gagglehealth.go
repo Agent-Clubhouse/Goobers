@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,13 +23,20 @@ import (
 
 const maxGaggleHealthSnapshotRecords = 100
 
+type gaggleHealthEvidenceReader interface {
+	ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error)
+	GetRun(context.Context, string) (readservice.RunDetail, error)
+	StageAttempts(context.Context, string, string) (readservice.AttemptList, error)
+	DefinitionReload() *readservice.DefinitionReloadStatus
+}
+
 type daemonGaggleHealth struct {
 	mu          sync.RWMutex
 	root        string
 	config      *instance.Config
 	definitions *instance.ConfigSet
 	retentions  map[string]time.Duration
-	reads       *readservice.Local
+	reads       gaggleHealthEvidenceReader
 	quota       *localscheduler.ProviderQuotaState
 	instanceLog *journal.InstanceLog
 	store       *gagglehealth.Store
@@ -54,6 +64,7 @@ func startDaemonGaggleHealth(ctx context.Context, root string, setup *schedulerS
 	}
 	health.store = store
 	health.controller = controller
+	store.SetAppendObserver(health.observeHealthTransition)
 	if err := controller.Start(watchCtx, health.registrations(setup.Definitions)); err != nil {
 		_ = store.Close()
 		cancel()
@@ -89,6 +100,7 @@ func (h *daemonGaggleHealth) Close() error {
 		return nil
 	}
 	h.instanceLog.SetAppendObserver(nil)
+	h.store.SetAppendObserver(nil)
 	h.cancel()
 	h.wg.Wait()
 	h.controller.Stop()
@@ -143,43 +155,82 @@ func (h *daemonGaggleHealth) Snapshot(ctx context.Context, gaggle string, depend
 	if !found {
 		return gagglehealth.Snapshot{}, fmt.Errorf("gaggle %q is not loaded", gaggle)
 	}
+	requested := make(map[gagglehealth.EvidenceDependency]bool, len(dependencies))
+	for _, dependency := range dependencies {
+		requested[dependency] = true
+	}
+	var runs []readservice.RunSummary
+	if requested[gagglehealth.EvidenceRuns] || requested[gagglehealth.EvidenceClaims] ||
+		requested[gagglehealth.EvidenceRunners] || requested[gagglehealth.EvidenceWorkers] {
+		if h.reads == nil {
+			return gagglehealth.Snapshot{}, errors.New("run evidence source unavailable")
+		}
+		result, err := h.reads.ListRuns(ctx, readservice.RunListOptions{
+			Gaggle: gaggle, Limit: maxGaggleHealthSnapshotRecords, ShowNoWork: true,
+		})
+		if err != nil {
+			return gagglehealth.Snapshot{}, fmt.Errorf("read run evidence: %w", err)
+		}
+		runs = result.Runs
+	}
 	for _, dependency := range dependencies {
 		switch dependency {
 		case gagglehealth.EvidenceWorkflows:
+			evaluations, err := localscheduler.ReadTriggerEvaluations(instance.NewLayout(h.root).SchedulerDir())
+			if err != nil {
+				return gagglehealth.Snapshot{}, fmt.Errorf("read trigger evidence: %w", err)
+			}
 			for _, workflow := range definitions.Workflows {
 				if workflow.Spec.Gaggle == gaggle && len(snapshot.Workflows) < maxGaggleHealthSnapshotRecords {
-					snapshot.Workflows = append(snapshot.Workflows, workflow.Name)
+					state := "enabled"
+					if workflow.Spec.Enabled != nil && !*workflow.Spec.Enabled {
+						state = "disabled"
+					}
+					types := make([]string, 0, len(workflow.Spec.Triggers))
+					for _, trigger := range workflow.Spec.Triggers {
+						types = append(types, string(trigger.Type))
+					}
+					lastEval := evaluations[localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflow.Name}]
+					snapshot.Workflows = append(snapshot.Workflows, gagglehealth.RuntimeSummary{
+						ID: workflow.Name, State: state, UpdatedAt: lastEval,
+						Attributes: map[string]string{"triggers": strings.Join(types, ",")},
+					})
 				}
 			}
-			sort.Strings(snapshot.Workflows)
-		case gagglehealth.EvidenceRuns, gagglehealth.EvidenceWorkers:
-			if h.reads == nil {
-				return gagglehealth.Snapshot{}, errors.New("run evidence source unavailable")
-			}
-			runs, err := h.reads.ListRuns(ctx, readservice.RunListOptions{
-				Gaggle: gaggle, Limit: maxGaggleHealthSnapshotRecords, ShowNoWork: true,
+			sort.Slice(snapshot.Workflows, func(i, j int) bool {
+				return snapshot.Workflows[i].ID < snapshot.Workflows[j].ID
 			})
-			if err != nil {
-				return gagglehealth.Snapshot{}, fmt.Errorf("read %s evidence: %w", dependency, err)
-			}
-			for _, run := range runs.Runs {
+		case gagglehealth.EvidenceRuns:
+			for _, run := range runs {
 				summary := gagglehealth.RuntimeSummary{ID: run.ID, State: string(run.Phase), UpdatedAt: run.LastActivityAt}
-				if dependency == gagglehealth.EvidenceRuns {
-					snapshot.Runs = append(snapshot.Runs, summary)
-				} else {
-					summary.State = fmt.Sprintf("%s:%s", run.Phase, run.CurrentStage)
-					snapshot.Workers = append(snapshot.Workers, summary)
-				}
+				summary.Attributes = map[string]string{"workflow": run.Workflow, "currentStage": run.CurrentStage}
+				snapshot.Runs = append(snapshot.Runs, summary)
 			}
 		case gagglehealth.EvidenceClaims:
 			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instance.NewLayout(h.root).SchedulerDir(), claimLedgerFileName))
 			if err != nil {
 				return gagglehealth.Snapshot{}, fmt.Errorf("open claim evidence: %w", err)
 			}
+			runStates := make(map[string]string, len(runs))
+			for _, run := range runs {
+				runStates[run.ID] = string(run.Phase)
+			}
 			for _, claim := range ledger.Snapshot() {
 				if claim.Gaggle == gaggle && len(snapshot.Claims) < maxGaggleHealthSnapshotRecords {
+					intervention := "none"
+					if runStates[claim.RunID] == string(journal.PhaseEscalated) {
+						intervention = "required"
+					}
+					state := "active"
+					if claim.SharedRevoked {
+						state = "revoked"
+					}
 					snapshot.Claims = append(snapshot.Claims, gagglehealth.RuntimeSummary{
-						ID: claim.ExternalID, State: "active", UpdatedAt: claim.ClaimedAt,
+						ID: claim.ExternalID, State: state, UpdatedAt: claim.ClaimedAt,
+						Attributes: map[string]string{
+							"provider": claim.Provider, "runId": claim.RunID, "workflow": claim.Workflow,
+							"expiresAt": claim.ExpiresAt.UTC().Format(time.RFC3339Nano), "intervention": intervention,
+						},
 					})
 				}
 			}
@@ -190,9 +241,17 @@ func (h *daemonGaggleHealth) Snapshot(ctx context.Context, gaggle string, depend
 						break
 					}
 					snapshot.Runners = append(snapshot.Runners, gagglehealth.RuntimeSummary{
-						ID: runner.Name, State: runner.Host, UpdatedAt: time.Time{},
+						ID: runner.Name, State: "available",
+						Attributes: map[string]string{
+							"host": runner.Host, "os": runnerOS(runner),
+							"capabilities": strings.Join(runner.Provides.Capabilities, ","),
+							"restrictions": strings.Join(runnerRestrictions(runner), ","),
+						},
 					})
 				}
+			}
+			if err := h.appendLivePlacements(ctx, runs, &snapshot); err != nil {
+				return gagglehealth.Snapshot{}, err
 			}
 		case gagglehealth.EvidenceReconciliation:
 			if h.reads == nil {
@@ -213,9 +272,126 @@ func (h *daemonGaggleHealth) Snapshot(ctx context.Context, gaggle string, depend
 					ID: "provider-quota", State: "observed", UpdatedAt: resetAt,
 				})
 			}
+		case gagglehealth.EvidenceWorkers:
+			if err := h.appendWorkerEvidence(ctx, runs, &snapshot); err != nil {
+				return gagglehealth.Snapshot{}, err
+			}
 		}
 	}
 	return snapshot, nil
+}
+
+func (h *daemonGaggleHealth) appendLivePlacements(ctx context.Context, runs []readservice.RunSummary, snapshot *gagglehealth.Snapshot) error {
+	for _, run := range runs {
+		for _, active := range run.ActiveStages {
+			if len(snapshot.Runners) >= maxGaggleHealthSnapshotRecords {
+				return nil
+			}
+			if active.Kind != "stage" {
+				continue
+			}
+			attempts, err := h.reads.StageAttempts(ctx, run.ID, active.Name)
+			if err != nil {
+				return fmt.Errorf("read runner placement for %s/%s: %w", run.ID, active.Name, err)
+			}
+			for i := len(attempts.Attempts) - 1; i >= 0; i-- {
+				attempt := attempts.Attempts[i]
+				if attempt.Number != active.Attempt || attempt.Placement == nil {
+					continue
+				}
+				placement := attempt.Placement
+				snapshot.Runners = append(snapshot.Runners, gagglehealth.RuntimeSummary{
+					ID:    fmt.Sprintf("%s/%s/%d", run.ID, active.Name, active.Attempt),
+					State: "placed", UpdatedAt: timeValue(attempt.StartedAt),
+					Attributes: map[string]string{
+						"runner": placement.Runner, "node": placement.Node, "host": placement.Host,
+						"os": placement.OS, "worker": placement.Worker, "image": placement.Image, "pod": placement.Pod,
+					},
+				})
+				break
+			}
+		}
+	}
+	return nil
+}
+
+func (h *daemonGaggleHealth) appendWorkerEvidence(ctx context.Context, runs []readservice.RunSummary, snapshot *gagglehealth.Snapshot) error {
+	for _, run := range runs {
+		if len(snapshot.Workers) >= maxGaggleHealthSnapshotRecords {
+			return nil
+		}
+		detail, err := h.reads.GetRun(ctx, run.ID)
+		if err != nil {
+			return fmt.Errorf("read worker evidence for %s: %w", run.ID, err)
+		}
+		if detail.Lineage != nil && detail.Lineage.WorkspaceBranch != "" {
+			snapshot.Workers = append(snapshot.Workers, gagglehealth.RuntimeSummary{
+				ID: run.ID + "/worktree", State: "present", UpdatedAt: run.LastActivityAt,
+				Attributes: map[string]string{
+					"branch": detail.Lineage.WorkspaceBranch, "sha": detail.Lineage.WorkspaceBranchSHA,
+				},
+			})
+		}
+		appendAgentEvidence(snapshot, detail.AgentProgress)
+	}
+	return nil
+}
+
+func appendAgentEvidence(snapshot *gagglehealth.Snapshot, agents []readservice.AgentProgressSummary) {
+	for _, agent := range agents {
+		if len(snapshot.Workers) >= maxGaggleHealthSnapshotRecords {
+			return
+		}
+		if agent.Worker {
+			state := ""
+			updatedAt := time.Time{}
+			if agent.Current != nil {
+				state = string(agent.Current.Lifecycle)
+				if state == "" {
+					state = string(agent.Current.Kind)
+				}
+				updatedAt = agent.Current.UpdatedAt
+			}
+			snapshot.Workers = append(snapshot.Workers, gagglehealth.RuntimeSummary{
+				ID:    fmt.Sprintf("%s/%s/%s/%d", agent.RunID, agent.Stage, agent.AgentID, agent.Attempt),
+				State: state, UpdatedAt: updatedAt,
+				Attributes: map[string]string{"role": agent.Role, "fidelity": agent.Fidelity, "degraded": strconv.FormatBool(agent.Degraded)},
+			})
+		}
+		appendAgentEvidence(snapshot, agent.Children)
+	}
+}
+
+func runnerRestrictions(runner instance.RunnerEntry) []string {
+	restrictions := make([]string, len(runner.Restrictions))
+	for i, restriction := range runner.Restrictions {
+		restrictions[i] = string(restriction)
+	}
+	return restrictions
+}
+
+func runnerOS(runner instance.RunnerEntry) string {
+	if runner.Provides.OS == "" && runner.Host == instance.RunnerHostSelfName {
+		return runtime.GOOS
+	}
+	return string(runner.Provides.OS)
+}
+
+func timeValue(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return *value
+}
+
+func (h *daemonGaggleHealth) observeHealthTransition(event apiv1.GaggleHealthEvent) {
+	if event.Type != apiv1.GaggleHealthRepairStartedEvent && event.Type != apiv1.GaggleHealthRepairFinishedEvent {
+		return
+	}
+	if h.controller == nil {
+		return
+	}
+	h.controller.Wake(event.Gaggle)
 }
 
 func (h *daemonGaggleHealth) watchChanges(ctx context.Context, feed *readmodel.Feed) {

@@ -197,6 +197,43 @@ func TestControllerResolvesSnapshotFailureAfterRecovery(t *testing.T) {
 	})
 }
 
+func TestControllerMalformedObservationDegradesUntilRecovery(t *testing.T) {
+	store := controllerStore(t)
+	var malformed atomic.Bool
+	malformed.Store(true)
+	detector := detectorFunc{name: "malformed", run: func(context.Context, Snapshot, apiv1.GaggleHealthPolicy) ([]Observation, error) {
+		if malformed.Load() {
+			return []Observation{{Status: ObservationHealthy}}, nil
+		}
+		return nil, nil
+	}}
+	source := snapshotSourceFunc(func(context.Context, string, []EvidenceDependency) (Snapshot, error) {
+		return Snapshot{}, nil
+	})
+	controller, err := NewController(store, source, ControllerOptions{MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(context.Background(), []GaggleRegistration{{
+		Name: "alpha", Policy: fastPolicy(t), Detectors: []Detector{detector},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Stop()
+	eventually(t, func() bool {
+		snapshot, snapshotErr := store.Snapshot("alpha")
+		status, _ := controller.Status("alpha")
+		return snapshotErr == nil && len(snapshot.Active) == 1 && status.LastError != ""
+	})
+	malformed.Store(false)
+	controller.Wake("alpha")
+	eventually(t, func() bool {
+		snapshot, snapshotErr := store.Snapshot("alpha")
+		status, _ := controller.Status("alpha")
+		return snapshotErr == nil && len(snapshot.Active) == 0 && status.LastError == ""
+	})
+}
+
 func TestControllerBoundsUncooperativeDetectorAndDisablesCleanly(t *testing.T) {
 	store := controllerStore(t)
 	block := make(chan struct{})
