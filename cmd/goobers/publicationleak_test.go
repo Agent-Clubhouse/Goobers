@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,18 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
+
+type publicationObservingClient struct {
+	base      providers.HTTPClient
+	published func(*http.Request)
+}
+
+func (c publicationObservingClient) Do(r *http.Request) (*http.Response, error) {
+	c.published(r)
+	return c.base.Do(r)
+}
 
 func TestPublicationLeakScreenRequiresExplicitShadowOptIn(t *testing.T) {
 	var calls atomic.Int32
@@ -133,4 +145,119 @@ func TestOptedInPodPublicationScreensBeforePublishing(t *testing.T) {
 	if screenedAt.Load() == 0 || screenedAt.Load() >= publishedAt {
 		t.Fatalf("screened at %d, published at %d; want screening first", screenedAt.Load(), publishedAt)
 	}
+}
+
+func TestPodPublicationCommandsScreenBeforeProviderWrite(t *testing.T) {
+	for _, command := range []string{"open-pr", "file-issues"} {
+		for _, optedIn := range []bool{false, true} {
+			name := "unopted"
+			if optedIn {
+				name = "opted-in"
+			}
+			t.Run(command+"/"+name, func(t *testing.T) {
+				var sequence atomic.Int32
+				var screenedAt atomic.Int32
+				var publishedAt atomic.Int32
+				var modelPayload atomic.Value
+				model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					payload, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Errorf("read model request: %v", err)
+					}
+					modelPayload.Store(string(payload))
+					screenedAt.Store(sequence.Add(1))
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"answers": map[string]any{
+							decisiongate.PublicationLeakQuestion: map[string]any{"type": "noul", "noul": 0.95},
+						},
+					})
+				}))
+				t.Cleanup(model.Close)
+				setPodPublicationLeakScreen(t, model.URL, optedIn)
+
+				var publishPath string
+				var wantPayload string
+				switch command {
+				case "open-pr":
+					root := initDemo(t)
+					server := newFakeGitHubServer(t, "your-org", "your-repo")
+					providerCmdEnv(t, server, capability.CredentialEnvVar(string(capability.ProviderPRWrite)), "publication-screen-run")
+					publishPath = "/pulls"
+					wantPayload = `"kind":"pull-request"`
+					observePublicationWrite(t, publishPath, &sequence, &publishedAt)
+					t.Chdir(t.TempDir())
+					if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+						t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+					}
+				case "file-issues":
+					fixture := newFileIssuesFixture(t)
+					nomination := lowRisk("publication-screen")
+					fixture.writeArtifact(nomination)
+					publishPath = "/issues"
+					wantPayload = `"kind":"issue"`
+					observePublicationWrite(t, publishPath, &sequence, &publishedAt)
+					fixture.mustRun()
+				}
+
+				if publishedAt.Load() == 0 {
+					t.Fatalf("%s did not reach provider write %s", command, publishPath)
+				}
+				if !optedIn {
+					if screenedAt.Load() != 0 {
+						t.Fatalf("unopted %s sent publication text to the model", command)
+					}
+					return
+				}
+				if screenedAt.Load() != 1 || publishedAt.Load() != 2 {
+					t.Fatalf("%s screened at %d and published at %d; want 1 then 2", command, screenedAt.Load(), publishedAt.Load())
+				}
+				payload, _ := modelPayload.Load().(string)
+				if !strings.Contains(payload, wantPayload) {
+					t.Fatalf("%s model request did not contain publication kind %s: %s", command, wantPayload, payload)
+				}
+			})
+		}
+	}
+}
+
+func setPodPublicationLeakScreen(t *testing.T, modelURL string, optedIn bool) {
+	t.Helper()
+	t.Setenv(dispatcher.EnvPodAttempt, "1")
+	t.Setenv(dispatcher.EnvPublicationLeakScreen, "")
+	if !optedIn {
+		return
+	}
+	delivery := dispatcher.PublicationLeakScreen{
+		Settings: decisiongate.Settings{
+			Mode: decisiongate.ModeShadow, PublicationLeakScreen: true,
+			BaseURLEnv: "LEAK_SCREEN_URL", KeyEnv: "LEAK_SCREEN_KEY", ModelEnv: "LEAK_SCREEN_MODEL",
+			Fallback: decisiongate.FallbackAgent,
+		},
+		BaseURL: modelURL,
+		APIKey:  "pod-test-key",
+		Model:   "pod-test-model",
+	}
+	encoded, err := json.Marshal(delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(dispatcher.EnvPublicationLeakScreen, string(encoded))
+}
+
+func observePublicationWrite(t *testing.T, path string, sequence, publishedAt *atomic.Int32) {
+	t.Helper()
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		provider := baseFactory(token, opts...)
+		provider.Client = publicationObservingClient{
+			base: provider.Client,
+			published: func(r *http.Request) {
+				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, path) {
+					publishedAt.Store(sequence.Add(1))
+				}
+			},
+		}
+		return provider
+	}
+	t.Cleanup(func() { newGitHubProvider = baseFactory })
 }
