@@ -47,8 +47,8 @@ type canonicalFinding struct {
 // pr-remediation, fail -> a human must look (§4 D2: fail is never burned on
 // remediation budget, unlike needs-changes).
 //
-// needs-changes gets one further split (#747): when the findings carry a
-// cross-PR-ordering ask and no real defect, the PR isn't broken — it's waiting
+// needs-changes and defer get one further split (#747): when the findings carry
+// a cross-PR-ordering ask and no real defect, the PR isn't broken — it's waiting
 // on a sibling. Routing that to needs-remediation hands pr-remediation a defect
 // that doesn't exist; it reproduces the identical diff, checkpoints
 // byte-identical, and escalates (the stuck-loop pattern this issue exists to
@@ -77,8 +77,6 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 		return "goobers:merge-ready"
 	case apiv1.VerdictFail, apiv1.VerdictEscalate:
 		return "goobers:merge-escalated"
-	case apiv1.VerdictDefer:
-		return blockedOnSiblingLabel
 	default:
 		if sequencingOnly(findings) {
 			return blockedOnSiblingLabel
@@ -863,13 +861,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	var removeLabels []string
 	switch label {
 	case needsRemediationLabel:
+		removeLabels = []string{blockedOnSiblingLabel}
 		escalationSuppressedRemediation, err = verdictEscalationStillBlocks(ctx, provider, repo, current)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
 		}
 		if escalationSuppressedRemediation {
 			addLabels = nil
-			removeLabels = []string{needsRemediationLabel}
+			removeLabels = append(removeLabels, needsRemediationLabel)
 		}
 	case remediationEscalatedLabel:
 		removeLabels = []string{needsRemediationLabel}
@@ -1748,6 +1747,7 @@ func publishADONonPassVerdict(
 		addLabels = []string{remediationEscalatedLabel}
 		removeLabels = []string{needsRemediationLabel}
 	case needsRemediationLabel:
+		removeLabels = []string{blockedOnSiblingLabel}
 		// Verdict-side escalation suppression (behavior 3d): if the PR already
 		// carries an active escalation, keep it parked — clear any stale
 		// needs-remediation rather than pulling it back into the budget.
@@ -1756,7 +1756,7 @@ func publishADONonPassVerdict(
 			return failProviderStage(stderr, fmt.Sprintf("read labels for PR #%d", selectedNumber), err, resultFile)
 		}
 		if hasAnyLabel(names, []string{remediationEscalatedLabel}) {
-			removeLabels = []string{needsRemediationLabel}
+			removeLabels = append(removeLabels, needsRemediationLabel)
 		} else {
 			addLabels = []string{needsRemediationLabel}
 		}
