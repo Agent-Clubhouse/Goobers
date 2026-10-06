@@ -242,107 +242,141 @@ func CheckContract(ctx context.Context, fixture Fixture) error {
 }
 
 func checkIssueContract(ctx context.Context, fixture Fixture) error {
-	client := &replayClient{exchanges: fixture.Exchanges, used: make([]bool, len(fixture.Exchanges))}
+	return checkMappedContract(ctx, fixture, githubIssueContractBackend{fixture: fixture})
+}
+
+type githubIssueContractBackend struct {
+	fixture Fixture
+}
+
+var _ contractBackend[providers.WorkItem] = githubIssueContractBackend{}
+
+func (b githubIssueContractBackend) provider(client HTTPClient) mappedContractProvider[providers.WorkItem] {
 	provider := providers.NewGitHubProvider(
 		"fixture-token",
 		func(p *providers.GitHubProvider) { p.BaseURL = "https://fixture.invalid" },
 		providers.WithHTTPClient(client),
 		providers.WithMaxTransientRetries(0),
 	)
-	repo := providers.RepositoryRef{Owner: fixture.Repository.Owner, Name: fixture.Repository.Name}
-	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  repo,
-		State:       "open",
-		OldestFirst: true,
-		Limit:       100,
-		Page:        1,
-	})
-	if err != nil {
-		return fmt.Errorf("%w: ListWorkItems: %w", ErrContractAssertion, err)
+	repo := providers.RepositoryRef{Owner: b.fixture.Repository.Owner, Name: b.fixture.Repository.Name}
+	return mappedContractProvider[providers.WorkItem]{
+		list: func(ctx context.Context) ([]providers.WorkItem, error) {
+			return provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+				Repository:  repo,
+				State:       "open",
+				OldestFirst: true,
+				Limit:       100,
+				Page:        1,
+			})
+		},
+		get: func(ctx context.Context) (providers.WorkItem, error) {
+			return provider.GetWorkItem(ctx, repo, b.fixture.Issue)
+		},
 	}
-	item, err := provider.GetWorkItem(ctx, repo, fixture.Issue)
-	if err != nil {
-		return fmt.Errorf("%w: GetWorkItem: %w", ErrContractAssertion, err)
-	}
+}
+
+func (b githubIssueContractBackend) targetID() string                    { return b.fixture.Issue }
+func (githubIssueContractBackend) listOperation() string                 { return "ListWorkItems" }
+func (githubIssueContractBackend) getOperation() string                  { return "GetWorkItem" }
+func (githubIssueContractBackend) itemID(item providers.WorkItem) string { return item.ID }
+
+func (b githubIssueContractBackend) assertIdentity(item providers.WorkItem) error {
 	if item.Provider != providers.ProviderGitHub {
-		return fmt.Errorf("%w: provider = %q, want %q", ErrContractAssertion, item.Provider, providers.ProviderGitHub)
+		return fmt.Errorf("provider = %q, want %q", item.Provider, providers.ProviderGitHub)
 	}
-	if item.Type != "issue" || item.ID != fixture.Issue {
-		return fmt.Errorf("%w: mapped item identity = %s/%s, want issue/%s", ErrContractAssertion, item.Type, item.ID, fixture.Issue)
-	}
-	if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.URL) == "" {
-		return fmt.Errorf("%w: mapped issue must have a title and URL", ErrContractAssertion)
-	}
-	if item.CreatedAt == nil || item.UpdatedAt == nil {
-		return fmt.Errorf("%w: mapped issue must preserve created_at and updated_at", ErrContractAssertion)
-	}
-	found := false
-	for _, listed := range items {
-		if listed.ID != fixture.Issue {
-			continue
-		}
-		found = true
-		if listed.Title != item.Title || listed.State != item.State || listed.URL != item.URL {
-			return fmt.Errorf("%w: list/get mappings disagree for issue %s", ErrContractAssertion, fixture.Issue)
-		}
-	}
-	if !found {
-		return fmt.Errorf("%w: ListWorkItems did not return fixture issue %s", ErrContractAssertion, fixture.Issue)
-	}
-	if err := client.verifyConsumed(); err != nil {
-		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+	if item.Type != "issue" || item.ID != b.fixture.Issue {
+		return fmt.Errorf("mapped item identity = %s/%s, want issue/%s", item.Type, item.ID, b.fixture.Issue)
 	}
 	return nil
 }
 
+func (githubIssueContractBackend) assertRequiredFields(item providers.WorkItem) error {
+	if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.URL) == "" {
+		return fmt.Errorf("mapped issue must have a title and URL")
+	}
+	if item.CreatedAt == nil || item.UpdatedAt == nil {
+		return fmt.Errorf("mapped issue must preserve created_at and updated_at")
+	}
+	return nil
+}
+
+func (b githubIssueContractBackend) assertConsistency(listed, item providers.WorkItem) error {
+	if listed.Title != item.Title || listed.State != item.State || listed.URL != item.URL {
+		return fmt.Errorf("list/get mappings disagree for issue %s", b.fixture.Issue)
+	}
+	return nil
+}
+
+func (b githubIssueContractBackend) missingItemError() error {
+	return fmt.Errorf("ListWorkItems did not return fixture issue %s", b.fixture.Issue)
+}
+
 func checkPullRequestContract(ctx context.Context, fixture Fixture) error {
-	client := &replayClient{exchanges: fixture.Exchanges, used: make([]bool, len(fixture.Exchanges))}
+	return checkMappedContract(ctx, fixture, githubPullRequestContractBackend{fixture: fixture})
+}
+
+type githubPullRequestContractBackend struct {
+	fixture Fixture
+}
+
+var _ contractBackend[providers.PullRequestSummary] = githubPullRequestContractBackend{}
+
+func (b githubPullRequestContractBackend) provider(client HTTPClient) mappedContractProvider[providers.PullRequestSummary] {
 	provider := providers.NewGitHubProvider(
 		"fixture-token",
 		func(p *providers.GitHubProvider) { p.BaseURL = "https://fixture.invalid" },
 		providers.WithHTTPClient(client),
 		providers.WithMaxTransientRetries(0),
 	)
-	repo := providers.RepositoryRef{Owner: fixture.Repository.Owner, Name: fixture.Repository.Name}
-	items, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository:     repo,
-		SkipCheckState: true,
-	})
-	if err != nil {
-		return fmt.Errorf("%w: ListPullRequests: %w", ErrContractAssertion, err)
+	repo := providers.RepositoryRef{Owner: b.fixture.Repository.Owner, Name: b.fixture.Repository.Name}
+	return mappedContractProvider[providers.PullRequestSummary]{
+		list: func(ctx context.Context) ([]providers.PullRequestSummary, error) {
+			return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+				Repository:     repo,
+				SkipCheckState: true,
+			})
+		},
+		get: func(ctx context.Context) (providers.PullRequestSummary, error) {
+			return provider.GetPullRequest(ctx, repo, b.fixture.PullRequest)
+		},
 	}
-	item, err := provider.GetPullRequest(ctx, repo, fixture.PullRequest)
-	if err != nil {
-		return fmt.Errorf("%w: GetPullRequest: %w", ErrContractAssertion, err)
-	}
-	if item.ID != fixture.PullRequest || item.Number <= 0 {
-		return fmt.Errorf("%w: mapped pull request identity = %s/%d, want %s", ErrContractAssertion, item.ID, item.Number, fixture.PullRequest)
-	}
-	if strings.TrimSpace(item.URL) == "" || strings.TrimSpace(item.Head) == "" || strings.TrimSpace(item.Base) == "" {
-		return fmt.Errorf("%w: mapped pull request must have a URL, head, and base", ErrContractAssertion)
-	}
-	if strings.TrimSpace(item.Author) == "" || len(item.Assignees) == 0 || len(item.RequestedReviewers) == 0 {
-		return fmt.Errorf("%w: mapped pull request must preserve creator, assignees, and requested reviewers", ErrContractAssertion)
-	}
-	found := false
-	for _, listed := range items {
-		if listed.ID != fixture.PullRequest {
-			continue
-		}
-		found = true
-		if listed.URL != item.URL || listed.State != item.State || listed.Author != item.Author ||
-			!slices.Equal(listed.Assignees, item.Assignees) ||
-			!slices.Equal(listed.RequestedReviewers, item.RequestedReviewers) {
-			return fmt.Errorf("%w: list/get mappings disagree for pull request %s", ErrContractAssertion, fixture.PullRequest)
-		}
-	}
-	if !found {
-		return fmt.Errorf("%w: ListPullRequests did not return fixture pull request %s", ErrContractAssertion, fixture.PullRequest)
-	}
-	if err := client.verifyConsumed(); err != nil {
-		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+}
+
+func (b githubPullRequestContractBackend) targetID() string    { return b.fixture.PullRequest }
+func (githubPullRequestContractBackend) listOperation() string { return "ListPullRequests" }
+func (githubPullRequestContractBackend) getOperation() string  { return "GetPullRequest" }
+func (githubPullRequestContractBackend) itemID(item providers.PullRequestSummary) string {
+	return item.ID
+}
+
+func (b githubPullRequestContractBackend) assertIdentity(item providers.PullRequestSummary) error {
+	if item.ID != b.fixture.PullRequest || item.Number <= 0 {
+		return fmt.Errorf("mapped pull request identity = %s/%d, want %s", item.ID, item.Number, b.fixture.PullRequest)
 	}
 	return nil
+}
+
+func (githubPullRequestContractBackend) assertRequiredFields(item providers.PullRequestSummary) error {
+	if strings.TrimSpace(item.URL) == "" || strings.TrimSpace(item.Head) == "" || strings.TrimSpace(item.Base) == "" {
+		return fmt.Errorf("mapped pull request must have a URL, head, and base")
+	}
+	if strings.TrimSpace(item.Author) == "" || len(item.Assignees) == 0 || len(item.RequestedReviewers) == 0 {
+		return fmt.Errorf("mapped pull request must preserve creator, assignees, and requested reviewers")
+	}
+	return nil
+}
+
+func (b githubPullRequestContractBackend) assertConsistency(listed, item providers.PullRequestSummary) error {
+	if listed.URL != item.URL || listed.State != item.State || listed.Author != item.Author ||
+		!slices.Equal(listed.Assignees, item.Assignees) ||
+		!slices.Equal(listed.RequestedReviewers, item.RequestedReviewers) {
+		return fmt.Errorf("list/get mappings disagree for pull request %s", b.fixture.PullRequest)
+	}
+	return nil
+}
+
+func (b githubPullRequestContractBackend) missingItemError() error {
+	return fmt.Errorf("ListPullRequests did not return fixture pull request %s", b.fixture.PullRequest)
 }
 
 // CheckDrift reports whether two normalized fixtures differ materially.
