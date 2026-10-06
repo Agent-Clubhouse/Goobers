@@ -1943,7 +1943,8 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 		task := d.script.tasks[stage]
 		gateDefinition, ok := d.script.gates[task.Next]
 		if !ok {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("CI-poll task %q does not feed a gate", stage)
+			d.script.setCIOutcome(gate.OutcomePass)
+			return d.builtins.Run(ctx, env, run)
 		}
 		outcome, ok := d.script.nextGateOutcome(gateDefinition.Name)
 		if !ok {

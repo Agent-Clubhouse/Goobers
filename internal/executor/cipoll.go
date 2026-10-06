@@ -227,7 +227,7 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 	cfg := CIPollConfig{
 		Owner:          stringInput(env, InputPROwner),
 		Repo:           stringInput(env, InputPRRepo),
-		PullID:         stringInput(env, InputPRNumber),
+		PullID:         scalarStringInput(env, InputPRNumber),
 		HumanPolicyIDs: stringSliceInput(env, InputHumanPolicyIDs),
 	}
 	if cfg.Owner == "" {
@@ -277,6 +277,21 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 		}
 	}
 	return cfg, nil
+}
+
+func scalarStringInput(env apiv1.InvocationEnvelope, key string) string {
+	v, ok := env.Inputs[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	case fmt.Stringer:
+		return t.String()
+	default:
+		return fmt.Sprint(t)
+	}
 }
 
 // stringSliceInput reads key as a list of strings, accepting either a YAML list

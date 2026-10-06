@@ -638,6 +638,20 @@ func TestCIPollConfigFromEnvelope_DefaultsFromRepoRef(t *testing.T) {
 	}
 }
 
+func TestCIPollConfigFromEnvelope_AcceptsNumericPRNumber(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs:  map[string]interface{}{InputPRNumber: float64(73)},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	if cfg.PullID != "73" {
+		t.Fatalf("PullID = %q, want 73", cfg.PullID)
+	}
+}
+
 func TestNewCIPollExecutor_RequiresPoller(t *testing.T) {
 	if _, err := NewCIPollExecutor(nil, newFakeRecorder()); err == nil {
 		t.Fatal("expected error for nil poller")
