@@ -22,7 +22,8 @@ The same operations are available to authorized agents through typed daemon oper
 - V1 permits multiple authorized users to contribute sequentially to the same session.
   Presence, simultaneous conversation presentation, and full group-chat UX are future work.
 - An optional gaggle interactive-access block selects provider credentials, allowed
-  actions/targets, and human viewer/operator grants. Omission disables interactive writes
+  actions/targets, and direct human grants or explicitly configured fleet delegation.
+  Omission disables interactive writes
   and session creation; existing read-only monitoring remains available under its policy.
 - Provider operations use the configured gaggle interactive execution credentials.
   Goobers records the initiating human; the browser never supplies a provider token.
@@ -85,6 +86,20 @@ repository/backlog as required by the workbench design, never in a private sessi
 
 ## 4. Interactive access and execution policy
 
+### 4.1 Direct and fleet authentication
+
+The proposed [fleet delegation contract](fleet-delegated-authentication.md) adds
+an explicit fleet mode: an external service owns sign-in and per-user gaggle
+permissions, while the instance enforces gaggle action/target limits and selects
+provider credentials. It preserves both the acting service and initiating human.
+Fleet grants replace duplicate local user membership only in that explicit mode;
+service-only credentials cannot satisfy a human approval. This addition is not
+implemented by the current stack. Its `HAW-AUTH-*` slices are prerequisites for
+advertising fleet writes. Direct-mode browser sign-in is also still a delivery
+gap; API token verification alone does not provide a portal login experience.
+
+### 4.2 Existing direct-mode policy and credentials
+
 The policy and named credential vocabulary below is implemented alongside
 bounded shared sessions using an existing configured Goober and independently
 authorized typed source operations. See [interactive access](../reference/interactive-access.md) for the current
@@ -124,7 +139,7 @@ Omission never silently inherits credentials or enables interaction. Cross-provi
 and backlog bindings resolve independently; missing one cannot fall back to another.
 Targets resolve to configured gaggle bindings, not arbitrary URLs submitted by a client.
 
-Human authorization and provider permission are independent checks:
+In direct mode, human authorization and provider permission are independent checks:
 `authenticated principal ∩ gaggle grant ∩ allowed action/target ∩ execution capability`.
 The provider enforces its own credential permissions as the final boundary. A powerful
 provider token does not enable actions omitted from the interactive policy.
@@ -395,7 +410,7 @@ integration gates. Source/API tests alone do not justify claiming a live provide
 | HAW-HITL-007 | Restart-stage allowance epochs and context; local conformance proves reset scope, cumulative history, interrupt settlement and provider/head checks. Depends on 001–002. |
 | HAW-HITL-008 | Temporal restart/executable continuation and occurrence-bound human gates; replay, duplicate decisions and settled execution cases pass. Depends on 007. |
 | HAW-HITL-009 | Integrate child waits and attention; parent releases its active slot while waiting, reacquires it to resume, follows accepted continuation, and reports cascading cancellation and family settlement accurately. Depends on 005/008 and child-workflow contract. |
-| HAW-HITL-010 | Portal shared sessions, attention and run/PR actions; role/capability-driven controls call common services and render acknowledgements/outcomes. Depends on 004–009. |
+| HAW-HITL-010 | Portal shared sessions, attention and run/PR actions; role/capability-driven controls call common services and render acknowledgements/outcomes. Depends on 004–009 and the selected deployment's authentication acceptance: HAW-AUTH-001–008 for fleet mode, HAW-AUTH-009 for direct browser sign-in. |
 | HAW-HITL-011 | CLI/agent-tool parity, end-to-end local/Temporal and provider fixtures; cross-surface vectors prove identical audit and authority semantics. Depends on 006–010. |
 | HAW-HITL-012 | Operator docs, migrations/rollback and release gates; generated contracts/indexes current, opt-in deployment exercised and unsupported adapter modes documented. Depends on 011. |
 

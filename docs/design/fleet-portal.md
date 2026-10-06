@@ -73,8 +73,11 @@ That origin hosts:
 - the event or connection endpoint used by enrolled instances.
 
 The fleet URI is a deployment identity, not merely a convenient link. Instances pin
-the fleet identity discovered at this URI and use it as the audience for fleet-issued
-credentials.
+the fleet identity discovered at this URI. Credentials presented to the fleet target
+its audience; request delegations presented to an instance target that instance's
+distinct audience, as specified by the
+[fleet authentication contract](fleet-delegated-authentication.md). Enrollment
+credentials and delegated operation credentials are not interchangeable.
 
 ### 2.2 A gateway, not a second configuration system
 
@@ -220,6 +223,11 @@ fleet API.
 
 ### 5.2 Request envelope
 
+The proposed [fleet authentication contract](fleet-delegated-authentication.md)
+specifies the versioned delegation, service-only versus delegated-human identity,
+per-gaggle authority limits, replay handling and durable authorization renewal for
+HITL writes. It extends this section and section 7; those additions are not shipped.
+
 The fleet portal MUST NOT turn a user request into an anonymous trusted backend call.
 Every proxied request carries a signed, short-lived delegation envelope containing at
 least:
@@ -258,6 +266,12 @@ instance.
 
 ## 6. Enrollment and registration
 
+The production Fleet/Agent contract supplied by the project owner on 2026-10-06
+refines the older generic transport proposal below. Its detailed integration
+baseline is [fleet authentication, section 4](fleet-delegated-authentication.md#4-production-fleetagent-integration-baseline).
+Enrollment/runtime currently use delegated Entra identity; headless workload
+identity requires an explicitly supported additional flow.
+
 ### 6.1 Discovery
 
 The fleet URI exposes an unauthenticated metadata document:
@@ -281,52 +295,42 @@ It does not expose fleet groups, users, instances, run data, or policy.
 
 ### 6.2 Enrollment flow
 
-The initial explicit flow is:
-
-1. A fleet or group administrator creates a single-use, short-lived enrollment grant
-   bound to a fleet group and an allowed initial capability set.
-2. An instance administrator runs a command such as:
-
-   ```text
-   goobers fleet join \
-     --url https://goobers.example.com \
-     --enrollment-token-file <protected-file>
-   ```
-
-3. The instance retrieves discovery metadata and displays the canonical fleet identity,
-   target group, requested data scopes, requested command capabilities, and certificate
-   or key fingerprint.
-4. After explicit confirmation, the instance proves possession of its locally generated
-   key and redeems the enrollment grant.
-5. The fleet returns the assigned instance registration and a renewable,
-   instance-scoped credential.
-6. The instance pins the fleet ID, canonical URI, and signing-key authority, then opens
-   the outbound channel.
-
-Managed environments MAY replace the enrollment grant with workload-identity
-attestation, but the resulting registration has the same scope and audit record.
-
-Enrollment grants are secret, single-use, expire quickly, and never appear in
-`instance.yaml`, command history, logs, or the config repository. The fleet URI and
-non-secret instance registration ID MAY be configuration.
+Enrollment is one-time: discover `/.well-known/goobers-fleet`, authenticate the
+enrolling user with Entra, generate a local P-256 Agent keypair, and prove private
+key possession during registration. Persist registration IDs, Fleet signing public
+key, Agent private key and authentication state in protected durable storage.
+Reconnection reuses registration; tokens/private keys never enter source control,
+logs or model context. Do not replace the supported delegated flow with arbitrary
+service credentials. Workload-identity enrollment/runtime is a separately gated
+future capability (HAW-AUTH-010).
 
 ### 6.3 Connection
 
-The instance maintains an outbound mTLS HTTP/2, WebSocket, or equivalent
-application-layer channel to the fleet. The transport remains an implementation
-decision, but it MUST provide:
+The cloud Agent is outbound-only. Permit TCP 443 to the Fleet HTTPS origin,
+Microsoft Entra endpoints and the Fleet-returned Azure Web PubSub `wss://` URL.
+Expose no inbound Fleet port. The Agent and daemon share a host/pod network
+namespace; allowed requests are forwarded to literal loopback HTTP, by default
+`http://127.0.0.1:8085`. That port must not be publicly published.
 
-- mutual peer authentication;
-- connection and request-level identity;
-- multiplexed live requests and event publication;
-- bounded queues and backpressure;
-- heartbeat and last-seen semantics;
-- credential rotation without re-enrollment;
-- reconnect with bounded exponential backoff; and
-- clean revocation behavior.
+At runtime the Agent obtains an Entra bearer and posts to
+`/api/fleet/v2/agents/{instanceId}/negotiate`. Fleet returns a temporary Web PubSub
+access URL, currently valid for up to one hour. The Agent opens the reliable
+WebSocket, signs Fleet's challenge with its registered P-256 private key and waits
+for `ready` before dispatch. Each request carries a Fleet-signed delegation bound
+to the instance, registration, exact connection, route, request ID, expiry and
+replay protections; verify it before loopback forwarding.
 
-The fleet never instructs an instance to open an arbitrary URL or proxy an arbitrary
-destination. Routing is limited to the registered instance product API.
+Use the Web PubSub reliable protocol for keepalive/reconnect/resume. After handshake,
+post authenticated presence to `/api/fleet/v2/agents/{instanceId}/presence` every
+30 seconds; Fleet expires presence after 90 seconds. If resume yields a different
+transport connection, discard the old session and negotiate/challenge again.
+`401/403/404` ends the session; `409` means superseded and requires re-establishment.
+
+Fleet may fence/revoke the connection and send cancellation frames. Report
+cancellation confirmed only when Agent/daemon evidence says the work stopped;
+socket closure or presence expiry alone is not that evidence. Persist/reconcile
+uncertain operation outcomes across reconnection. The new HITL adapter additionally
+needs protected Agent-to-daemon provenance and local gaggle policy enforcement.
 
 ### 6.4 Leave, move, and revoke
 
@@ -395,6 +399,13 @@ For each request, the fleet portal:
 
 The instance independently validates the delegation and applies local restrictions.
 A deny at either layer denies the request.
+
+For the proposed HITL write surface, fleet policy resolves per-user gaggle access
+inside those fleet/group/instance bounds. The instance retains a per-gaggle action
+and target ceiling and its provider credential bindings. Explicit fleet mode avoids
+duplicating every user's membership locally; app-only actions remain distinguishable
+from delegated human decisions. See the
+[detailed authentication contract](fleet-delegated-authentication.md).
 
 ## 8. Data boundaries
 
