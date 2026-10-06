@@ -8,10 +8,10 @@ and green required CI before landing on main.
 
 | Review artifact | Intended disposition |
 | --- | --- |
-| [Child workflows design #6803](https://github.com/Agent-Clubhouse/Goobers/pull/6803) | Land the approved design/program first. |
-| [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Land the approved design after #6803. |
-| [Events/queues design #6805](https://github.com/Agent-Clubhouse/Goobers/pull/6805) | Land the approved design after #6804. |
-| [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Land the approved design after #6805. |
+| [Child workflows design #6803](https://github.com/Agent-Clubhouse/Goobers/pull/6803) | Merged to main in `6c30300d4a83b198dd09c0fa919d5c85c9b2ae15`. |
+| [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Prepared against main; Jeff’s requested-changes review remains open. Resolve that review and rerun CI on the refreshed head before merge. |
+| [Events/queues design #6805](https://github.com/Agent-Clubhouse/Goobers/pull/6805) | Prepared against main with protected auto-merge enabled; full CI is running. Can land independently while HITL review is pending. |
+| [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Refresh against main after #6805; land after its own required CI. Independent of the pending HITL review. |
 | [Implementation review #6807](https://github.com/Agent-Clubhouse/Goobers/pull/6807) | Keep as a draft reference snapshot. Extract reviewed slices; do not merge wholesale. Close as superseded only when all intended behavior is accounted for by landed work or explicit deferrals. |
 | [Fleet authentication design #6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) | Remains a separate draft requiring design acceptance. Rebase its documentation onto main after the four designs, preserving the supplied outbound-only Agent contract. Its approval is not implied by merging the four workstream designs. |
 
