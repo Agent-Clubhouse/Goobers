@@ -17,12 +17,12 @@
       "additionalProperties": false,
       "required": ["freshAt", "nextEvaluation", "activeFindingCount", "evaluating"],
       "properties": {
-        "freshAt": { "type": "string", "format": "date-time" },
-        "lastSuccessfulEvaluation": { "type": "string", "format": "date-time" },
-        "lastError": { "type": "string", "maxLength": 512 },
-        "nextEvaluation": { "type": "string", "format": "date-time" },
-        "activeFindingCount": { "type": "integer", "minimum": 0 },
-        "evaluating": { "type": "boolean" }
+        "freshAt": { "type": "string", "format": "date-time", "description": "Time the controller status was last refreshed." },
+        "lastSuccessfulEvaluation": { "type": "string", "format": "date-time", "description": "Time the most recent successful evaluation completed." },
+        "lastError": { "type": "string", "maxLength": 512, "description": "Bounded error from the most recent unsuccessful evaluation." },
+        "nextEvaluation": { "type": "string", "format": "date-time", "description": "Scheduled time of the next periodic evaluation." },
+        "activeFindingCount": { "type": "integer", "minimum": 0, "description": "Number of unresolved findings in the current projection." },
+        "evaluating": { "type": "boolean", "description": "Whether an evaluation is currently in progress." }
       }
     },
     "state": {
