@@ -167,6 +167,36 @@ func TestControllerDetectorTimeoutCancellationAndRestartDedupe(t *testing.T) {
 	}
 }
 
+func TestControllerResolvesSnapshotFailureAfterRecovery(t *testing.T) {
+	store := controllerStore(t)
+	var fail atomic.Bool
+	fail.Store(true)
+	source := snapshotSourceFunc(func(context.Context, string, []EvidenceDependency) (Snapshot, error) {
+		if fail.Load() {
+			return Snapshot{}, errors.New("snapshot unavailable")
+		}
+		return Snapshot{}, nil
+	})
+	controller, err := NewController(store, source, ControllerOptions{MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(context.Background(), []GaggleRegistration{{Name: "alpha", Policy: fastPolicy(t)}}); err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Stop()
+	eventually(t, func() bool {
+		snapshot, snapshotErr := store.Snapshot("alpha")
+		return snapshotErr == nil && len(snapshot.Active) == 1
+	})
+	fail.Store(false)
+	controller.Wake("alpha")
+	eventually(t, func() bool {
+		snapshot, snapshotErr := store.Snapshot("alpha")
+		return snapshotErr == nil && len(snapshot.Active) == 0 && len(snapshot.History) == 1
+	})
+}
+
 func TestControllerBoundsUncooperativeDetectorAndDisablesCleanly(t *testing.T) {
 	store := controllerStore(t)
 	block := make(chan struct{})
@@ -192,6 +222,11 @@ func TestControllerBoundsUncooperativeDetectorAndDisablesCleanly(t *testing.T) {
 	for range 100 {
 		controller.Wake("alpha")
 	}
+	for range 20 {
+		if err := controller.Reload([]GaggleRegistration{{Name: "alpha", Policy: policy, Detectors: []Detector{detector}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	time.Sleep(50 * time.Millisecond)
 	if calls.Load() != 1 {
 		t.Fatalf("uncooperative detector calls = %d, want 1", calls.Load())
@@ -216,7 +251,7 @@ func TestControllerReloadRetiresAndReplacesAtomically(t *testing.T) {
 	oldDetector := detectorFunc{name: "old", run: func(context.Context, Snapshot, apiv1.GaggleHealthPolicy) ([]Observation, error) {
 		oldCalls.Add(1)
 		once.Do(func() { <-blockOld })
-		return nil, nil
+		return []Observation{controllerFinding(t, "alpha", "old-policy")}, nil
 	}}
 	newDetector := detectorFunc{name: "new", run: func(context.Context, Snapshot, apiv1.GaggleHealthPolicy) ([]Observation, error) {
 		newCalls.Add(1)
@@ -240,7 +275,37 @@ func TestControllerReloadRetiresAndReplacesAtomically(t *testing.T) {
 		_, beta := controller.Status("beta")
 		return newCalls.Load() > 0 && beta
 	})
+	snapshot, err := store.Snapshot("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Active) != 0 {
+		t.Fatalf("retired generation published findings: %+v", snapshot.Active)
+	}
 	controller.Stop()
+}
+
+func controllerFinding(t *testing.T, gaggle, worker string) Observation {
+	t.Helper()
+	identity := apiv1.GaggleHealthIdentity{Gaggle: gaggle, Worker: worker}
+	key, err := EpisodeKey(FindingControllerDegraded, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Observation{Status: ObservationFinding, Finding: &apiv1.GaggleHealthFinding{
+		SchemaVersion: apiv1.GaggleHealthSchemaVersion,
+		Code:          FindingControllerDegraded,
+		Severity:      apiv1.GaggleHealthSeverityError,
+		Contribution:  apiv1.GaggleHealthDegraded,
+		Identity:      identity,
+		EpisodeKey:    key,
+		Summary:       "old policy finding",
+		Confidence:    1,
+		Repair: apiv1.GaggleHealthRepair{
+			Disposition: apiv1.GaggleHealthRepairNotAttempted,
+			FollowUp:    apiv1.GaggleHealthFollowUpNone,
+		},
+	}}
 }
 
 func controllerStore(t *testing.T) *Store {

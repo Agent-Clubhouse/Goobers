@@ -17,6 +17,36 @@ type instanceDropCounter struct{ count atomic.Uint64 }
 
 func (c *instanceDropCounter) InstanceJournalAppendDropped() { c.count.Add(1) }
 
+func TestInstanceLogAppendObserverFollowsDurableTransitions(t *testing.T) {
+	log, _, err := OpenInstanceLog(filepath.Join(t.TempDir(), "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	var observed atomic.Int32
+	log.SetAppendObserver(func(event Event) {
+		observed.Add(1)
+	})
+	transitions := []Event{
+		{Type: EventTriggerFired, Workflow: "implement"},
+		{Type: EventClaimAcquired, Name: "issue-1"},
+		{Type: EventRunStarted, RunID: testIdentity().RunID},
+		{Type: EventWorkerConfigDivergence, Name: "worker-1"},
+	}
+	for _, transition := range transitions {
+		if err := log.Append(transition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log.SetAppendObserver(nil)
+	if err := log.Append(Event{Type: EventClaimAcquired, Name: "issue-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := observed.Load(); got != int32(len(transitions)) {
+		t.Fatalf("observer calls = %d, want %d", got, len(transitions))
+	}
+}
+
 func TestInstanceLogBestEffortAppendCountsAndObservesFailures(t *testing.T) {
 	observer := &instanceDropCounter{}
 	log, _, err := OpenInstanceLog(filepath.Join(t.TempDir(), "scheduler"), WithInstanceAppendDropObserver(observer))

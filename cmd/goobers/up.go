@@ -968,7 +968,7 @@ func (u *upSession) startServices() int {
 		return readserviceStartupStatus(u.tracker, u.ready.Load())
 	})
 	attachFreshnessSignals(u.reads, u.setup)
-	u.gaggleHealth, err = startDaemonGaggleHealth(u.ctx, u.root, u.setup.Definitions)
+	u.gaggleHealth, err = startDaemonGaggleHealth(u.ctx, u.root, u.setup, u.reads)
 	if err != nil {
 		pf(u.stderr, "error: initialize gaggle health controller: %v\n", err)
 		return 1

@@ -106,10 +106,11 @@ type ControllerStatus struct {
 
 // Controller owns daemon-local gaggle evaluation independently of workflows.
 type Controller struct {
-	store  *Store
-	source SnapshotSource
-	now    func() time.Time
-	slots  chan struct{}
+	store         *Store
+	source        SnapshotSource
+	now           func() time.Time
+	slots         chan struct{}
+	detectorSlots chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -118,7 +119,6 @@ type Controller struct {
 	loops      map[string]*gaggleLoop
 	status     map[string]ControllerStatus
 	generation uint64
-	detectors  sync.Map
 	wg         sync.WaitGroup
 }
 
@@ -142,8 +142,9 @@ func NewController(store *Store, source SnapshotSource, options ControllerOption
 	}
 	return &Controller{
 		store: store, source: source, now: options.Clock,
-		slots: make(chan struct{}, options.MaxConcurrent),
-		loops: make(map[string]*gaggleLoop), status: make(map[string]ControllerStatus),
+		slots:         make(chan struct{}, options.MaxConcurrent),
+		detectorSlots: make(chan struct{}, options.MaxConcurrent),
+		loops:         make(map[string]*gaggleLoop), status: make(map[string]ControllerStatus),
 	}, nil
 }
 
@@ -218,6 +219,22 @@ func (c *Controller) Wake(gaggle string) {
 	}
 }
 
+// WakeAll coalesces a daemon transition that may affect more than one gaggle.
+func (c *Controller) WakeAll() {
+	c.mu.RLock()
+	loops := make([]*gaggleLoop, 0, len(c.loops))
+	for _, loop := range c.loops {
+		loops = append(loops, loop)
+	}
+	c.mu.RUnlock()
+	for _, loop := range loops {
+		select {
+		case loop.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // Status returns a copy of one gaggle's queryable controller state.
 func (c *Controller) Status(gaggle string) (ControllerStatus, bool) {
 	c.mu.RLock()
@@ -265,27 +282,25 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 		return
 	}
 	now := c.now().UTC()
-	c.updateStatus(registration.Name, func(status *ControllerStatus) {
+	if !c.updateStatusIfCurrent(registration.Name, loop.generation, func(status *ControllerStatus) {
 		status.Gaggle = registration.Name
 		status.Evaluating = true
 		status.FreshAt = now
-	})
+	}) {
+		return
+	}
 	dependencies := detectorDependencies(registration.Detectors)
 	snapshot, err := c.source.Snapshot(ctx, registration.Name, dependencies)
 	if err != nil {
-		if !c.isCurrent(registration.Name, loop.generation) {
-			return
-		}
 		evaluationErr := fmt.Errorf("snapshot: %w", err)
 		observation := c.indeterminateObservation(registration.Name, "snapshot", now, evaluationErr)
-		applyErr := c.applyIfCurrent(registration.Name, loop.generation, now, []Observation{observation})
-		c.finishEvaluation(registration, now, errors.Join(evaluationErr, applyErr), nil)
+		c.finalizeIfCurrent(registration, loop.generation, now, evaluationErr, []Observation{observation})
 		return
 	}
 	snapshot.Gaggle = registration.Name
 	snapshot.CapturedAt = now
 
-	var observations []Observation
+	observations := []Observation{c.controllerHealthyObservation(registration.Name, "snapshot")}
 	var evaluationErrors []error
 	for _, detector := range registration.Detectors {
 		detectorCtx, cancel := context.WithTimeout(ctx, detectorBudget(detector))
@@ -294,19 +309,16 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 			err          error
 		}
 		resultCh := make(chan result, 1)
-		gateKey := fmt.Sprintf("%d/%s/%s", loop.generation, registration.Name, detector.Name())
-		gateValue, _ := c.detectors.LoadOrStore(gateKey, make(chan struct{}, 1))
-		gate := gateValue.(chan struct{})
 		select {
-		case gate <- struct{}{}:
+		case c.detectorSlots <- struct{}{}:
 		default:
-			evaluationErrors = append(evaluationErrors, fmt.Errorf("%s: previous evaluation is still running", detector.Name()))
-			observations = append(observations, c.indeterminateObservation(registration.Name, detector.Name(), now, errors.New("previous evaluation is still running")))
+			evaluationErrors = append(evaluationErrors, fmt.Errorf("%s: detector execution capacity exhausted", detector.Name()))
+			observations = append(observations, c.indeterminateObservation(registration.Name, detector.Name(), now, errors.New("detector execution capacity exhausted")))
 			cancel()
 			continue
 		}
 		go func() {
-			defer func() { <-gate }()
+			defer func() { <-c.detectorSlots }()
 			results, detectorErr := detector.Evaluate(detectorCtx, snapshot, registration.Policy)
 			resultCh <- result{observations: results, err: detectorErr}
 		}()
@@ -340,30 +352,20 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 			observations = append(observations, c.controllerHealthyObservation(registration.Name, detector.Name()))
 		}
 	}
-	if err := c.applyIfCurrent(registration.Name, loop.generation, now, observations); err != nil {
-		evaluationErrors = append(evaluationErrors, err)
-	}
-	if !c.isCurrent(registration.Name, loop.generation) {
+	c.finalizeIfCurrent(registration, loop.generation, now, errors.Join(evaluationErrors...), observations)
+}
+
+func (c *Controller) finalizeIfCurrent(registration GaggleRegistration, generation uint64, at time.Time, evaluationErr error, observations []Observation) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	loop := c.loops[registration.Name]
+	if loop == nil || loop.generation != generation {
 		return
 	}
-	c.finishEvaluation(registration, now, errors.Join(evaluationErrors...), observations)
-}
-
-func (c *Controller) applyIfCurrent(gaggle string, generation uint64, now time.Time, observations []Observation) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	loop := c.loops[gaggle]
-	if loop == nil || loop.generation != generation {
-		return nil
+	if err := c.applyObservations(registration.Name, at, observations); err != nil {
+		evaluationErr = errors.Join(evaluationErr, err)
 	}
-	return c.applyObservations(gaggle, now, observations)
-}
-
-func (c *Controller) isCurrent(gaggle string, generation uint64) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	loop := c.loops[gaggle]
-	return loop != nil && loop.generation == generation
+	c.finishEvaluationLocked(registration, at, evaluationErr)
 }
 
 func (c *Controller) controllerHealthyObservation(gaggle, detector string) Observation {
@@ -447,7 +449,7 @@ func (c *Controller) applyObservations(gaggle string, now time.Time, observation
 	return nil
 }
 
-func (c *Controller) finishEvaluation(registration GaggleRegistration, at time.Time, evaluationErr error, _ []Observation) {
+func (c *Controller) finishEvaluationLocked(registration GaggleRegistration, at time.Time, evaluationErr error) {
 	_, appendErr := c.store.AppendNext(apiv1.GaggleHealthEvent{
 		SchemaVersion: apiv1.GaggleHealthSchemaVersion,
 		OccurredAt:    at, Type: apiv1.GaggleHealthEvaluated, Gaggle: registration.Name,
@@ -460,26 +462,31 @@ func (c *Controller) finishEvaluation(registration GaggleRegistration, at time.T
 		evaluationErr = errors.Join(evaluationErr, snapshotErr)
 	}
 	interval, _ := time.ParseDuration(registration.Policy.EvaluationInterval)
-	c.updateStatus(registration.Name, func(status *ControllerStatus) {
-		status.Evaluating = false
-		status.FreshAt = at
-		status.NextEvaluation = at.Add(interval)
-		status.ActiveFindings = len(snapshot.Active)
-		if evaluationErr == nil {
-			status.LastSuccessfulEvaluation = at
-			status.LastError = ""
-		} else {
-			status.LastError = boundedDetail(evaluationErr.Error())
-		}
-	})
+	status := c.status[registration.Name]
+	status.Evaluating = false
+	status.FreshAt = at
+	status.NextEvaluation = at.Add(interval)
+	status.ActiveFindings = len(snapshot.Active)
+	if evaluationErr == nil {
+		status.LastSuccessfulEvaluation = at
+		status.LastError = ""
+	} else {
+		status.LastError = boundedDetail(evaluationErr.Error())
+	}
+	c.status[registration.Name] = status
 }
 
-func (c *Controller) updateStatus(gaggle string, update func(*ControllerStatus)) {
+func (c *Controller) updateStatusIfCurrent(gaggle string, generation uint64, update func(*ControllerStatus)) bool {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	loop := c.loops[gaggle]
+	if loop == nil || loop.generation != generation {
+		return false
+	}
 	status := c.status[gaggle]
 	update(&status)
 	c.status[gaggle] = status
-	c.mu.Unlock()
+	return true
 }
 
 func validateRegistration(registration GaggleRegistration) error {
