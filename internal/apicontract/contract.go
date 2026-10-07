@@ -470,6 +470,32 @@ const (
 	// bound it; the journalclient round-trip timeout must stay above it
 	// (journalclient.DefaultHTTPTimeout, pinned by test).
 	JournalScanBudget = 60 * time.Second
+	// RecoveryArchiveMaxBytes is the largest verified recovery archive the
+	// publish route carries. The pod-side publisher, the daemon's upload cap
+	// and the download client all derive from this one size.
+	RecoveryArchiveMaxBytes int64 = 512 << 20
+	// RecoveryPublishMinThroughput is the slowest sustained rate, in bytes per
+	// second, at which a maximum-size archive must still land. The daemon
+	// stores archives on a network share (Azure Files over CIFS in production),
+	// where a workspace archive (a full checkout plus .git) writes at low
+	// single-digit MiB/s, so this is deliberately conservative.
+	RecoveryPublishMinThroughput int64 = 2 << 20
+	// RecoveryPublishOverhead is the fixed allowance on top of the transfer for
+	// the server's verification pass, fsync and durable-custody rename.
+	RecoveryPublishOverhead = 60 * time.Second
+	// RecoveryPublishBudget covers POST /v1/runs/{run}/recovery: transfer of a
+	// maximum-size archive at the minimum throughput (512 MiB / 2 MiB/s =
+	// 256s) plus the fixed overhead, 316s in all. It was BlobBudget (60s)
+	// which, with the 5s write-deadline margin, cut every real workspace
+	// upload at 65s. It exceeds BlobBudget on purpose; the stage-pod publisher
+	// is the only caller, never the portal.
+	RecoveryPublishBudget = time.Duration(RecoveryArchiveMaxBytes/RecoveryPublishMinThroughput)*time.Second + RecoveryPublishOverhead
+	// RecoveryDownloadBudget covers GET /v1/runs/{run}/recovery, which streams
+	// the same maximum-size archive back to a resuming run. It is derived the
+	// same way as the publish budget (size cap at the minimum throughput plus
+	// the fixed overhead) rather than borrowing BlobBudget, which cannot carry
+	// a full workspace archive from a network share.
+	RecoveryDownloadBudget = RecoveryPublishBudget
 )
 
 var v1Routes = []Route{
@@ -514,8 +540,8 @@ var v1Routes = []Route{
 	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
-	{ID: RouteRunRecovery, Method: http.MethodGet, Path: RunRecoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
-	{ID: RouteRunRecoveryPublish, Method: http.MethodPost, Path: RunRecoveryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: BlobBudget},
+	{ID: RouteRunRecovery, Method: http.MethodGet, Path: RunRecoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: RecoveryDownloadBudget},
+	{ID: RouteRunRecoveryPublish, Method: http.MethodPost, Path: RunRecoveryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: RecoveryPublishBudget},
 	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteTelemetryCosts, Method: http.MethodGet, Path: TelemetryCostsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/recovery"
 )
 
 // TestBudgetExceededIsA503NotA500 pins the mapping correction.
@@ -133,5 +134,39 @@ func TestBudgetDeadlineReachesTheHandler(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the request context never expired")
+	}
+}
+
+// TestRecoveryPublishClientOutlastsServerCutoff pins the client/server timeout
+// relationship for recovery uploads: the server cuts the request at budget plus
+// the write-deadline margin, and the pod-side publisher must outlast that, or
+// the client reports an opaque transport failure instead of the server's answer.
+func TestRecoveryPublishClientOutlastsServerCutoff(t *testing.T) {
+	budget, ok := routeBudget(apicontract.RouteRunRecoveryPublish)
+	if !ok {
+		t.Fatal("recovery publish route has no budget")
+	}
+	if budget != apicontract.RecoveryPublishBudget {
+		t.Fatalf("budget = %s, want %s", budget, apicontract.RecoveryPublishBudget)
+	}
+	if cutoff := budget + writeDeadlineMargin; recovery.PublishTimeout <= cutoff {
+		t.Fatalf("recovery.PublishTimeout %s must exceed the server cutoff %s", recovery.PublishTimeout, cutoff)
+	}
+	// A maximum-size archive at the minimum throughput must fit the budget.
+	transfer := time.Duration(apicontract.RecoveryArchiveMaxBytes/apicontract.RecoveryPublishMinThroughput) * time.Second
+	if budget <= transfer {
+		t.Fatalf("budget %s cannot carry a maximum archive (%s transfer)", budget, transfer)
+	}
+}
+
+// TestRecoveryDownloadClientOutlastsServerCutoff mirrors the publish test for
+// the resume path.
+func TestRecoveryDownloadClientOutlastsServerCutoff(t *testing.T) {
+	budget, ok := routeBudget(apicontract.RouteRunRecovery)
+	if !ok || budget != apicontract.RecoveryDownloadBudget {
+		t.Fatalf("budget = %s (found %v), want %s", budget, ok, apicontract.RecoveryDownloadBudget)
+	}
+	if cutoff := budget + writeDeadlineMargin; recovery.DownloadTimeout <= cutoff {
+		t.Fatalf("recovery.DownloadTimeout %s must exceed the server cutoff %s", recovery.DownloadTimeout, cutoff)
 	}
 }
