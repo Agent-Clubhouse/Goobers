@@ -89,6 +89,18 @@ type EscalationCandidate struct {
 	ParentID       string
 }
 
+// EscalationReads is the narrow run-read surface FindEscalationCandidates needs:
+// list the escalated runs, read one run's escalation cause, and read one run's
+// events. It is deliberately smaller than readservice.OfflineRuns so a caller
+// that holds a live, read-model-backed reader (the daemon) can supply it
+// without being forced through the offline journal scan. OfflineRuns and
+// *readservice.Local both satisfy it.
+type EscalationReads interface {
+	ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error)
+	GetRun(context.Context, string) (readservice.RunDetail, error)
+	RunEvents(context.Context, string) (readservice.EventList, error)
+}
+
 // FindEscalationCandidates scans every escalated run's current, unrecovered
 // terminal segment (readservice.OfflineRuns already derives that segment the
 // same way the run-operator surfaces do — see EscalationCause/currentLifecycleRecords)
@@ -110,7 +122,7 @@ type EscalationCandidate struct {
 // A run that later resumed and completed does not appear here at all: ListRuns
 // filters on the run's CURRENT phase, which a completed resume reports as
 // PhaseCompleted, not PhaseEscalated.
-func FindEscalationCandidates(ctx context.Context, reads readservice.OfflineRuns) ([]EscalationCandidate, error) {
+func FindEscalationCandidates(ctx context.Context, reads EscalationReads) ([]EscalationCandidate, error) {
 	runs, err := listEscalatedRuns(ctx, reads)
 	if err != nil {
 		return nil, err
@@ -175,7 +187,7 @@ type escalationScanResult struct {
 }
 
 // scanEscalatedRun applies the qualification rules to one escalated run.
-func scanEscalatedRun(ctx context.Context, reads readservice.OfflineRuns, run readservice.RunSummary) escalationScanResult {
+func scanEscalatedRun(ctx context.Context, reads EscalationReads, run readservice.RunSummary) escalationScanResult {
 	if err := ctx.Err(); err != nil {
 		return escalationScanResult{err: err}
 	}
@@ -214,7 +226,7 @@ func scanEscalatedRun(ctx context.Context, reads readservice.OfflineRuns, run re
 	}}
 }
 
-func listEscalatedRuns(ctx context.Context, reads readservice.OfflineRuns) ([]readservice.RunSummary, error) {
+func listEscalatedRuns(ctx context.Context, reads EscalationReads) ([]readservice.RunSummary, error) {
 	var runs []readservice.RunSummary
 	cursor := ""
 	for {
