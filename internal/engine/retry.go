@@ -164,6 +164,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 							Base:      activityResult.WorkspaceDeltaBase,
 							Tip:       activityResult.WorkspaceDeltaTip,
 							Unchanged: activityResult.WorkspaceDeltaUnchanged,
+
+							PushedBranches: pushedBranches(activityResult.Mutations),
 						}
 					}
 					return res, nil
