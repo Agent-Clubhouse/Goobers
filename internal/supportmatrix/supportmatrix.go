@@ -194,10 +194,13 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 			{Level: LevelPreview, SinceVersion: "v0.4.0"},
 		},
 	},
+	// DSL 3.1 landed on main after the v0.5.0 release branch was cut (#6133,
+	// 2026-09-30); v0.5.0 shipped without it. Its preview entry therefore
+	// targets NextPlannedRelease, the first release line that will carry it.
 	V31DSLVersion: {
 		Level: LevelPreview,
 		History: []SupportTransition{
-			{Level: LevelPreview, SinceVersion: "v0.5.0"},
+			{Level: LevelPreview, SinceVersion: "v0.6.0"},
 		},
 	},
 })
