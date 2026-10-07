@@ -41,7 +41,7 @@ func submissionFixture(t *testing.T) (*SubmissionService, *submissionAuthority, 
 	authority := Authority{
 		Origin: Origin{GrantID: "grant-1", Gaggle: "web", RunID: "0123456789abcdef0123456789abcdef", StageOccurrence: "plan/branch-0/visit-1", AttemptID: "attempt-1", ConfigDigest: input.ConfigDigest, PolicyDigest: proposal.PolicyDigest},
 		Actor:  "run:0123456789abcdef0123456789abcdef", Admission: input,
-		ConfigGeneration: digest([]byte("archive")), ParentWorkflowDigest: digest([]byte("parent")), ParentGooberDigest: digest([]byte("parent goober")),
+		ConfigGeneration: digest([]byte("archive")), ParentWorkflow: "parent", ParentWorkflowDigest: digest([]byte("parent")), ParentGooberDigest: digest([]byte("parent goober")),
 	}
 	resolver := &submissionAuthority{current: authority}
 	path := filepath.Join(t.TempDir(), "accepted.db")

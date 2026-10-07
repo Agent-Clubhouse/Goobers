@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 )
 
 // Versioned V1 route paths.
@@ -262,9 +264,9 @@ const (
 	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
 
 	// ChildWorkflow paths are stage-grant-only operations scoped to one parent run.
-	ChildWorkflowValidatePath = RunsPath + "/{run}/child-workflows/validate"
-	ChildWorkflowStartPath    = RunsPath + "/{run}/child-workflows/start"
-	ChildWorkflowStatusPath   = RunsPath + "/{run}/child-workflows/status"
+	ChildWorkflowValidatePath = childworkflowwire.ValidatePath
+	ChildWorkflowStartPath    = childworkflowwire.StartPath
+	ChildWorkflowStatusPath   = childworkflowwire.StatusPath
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.

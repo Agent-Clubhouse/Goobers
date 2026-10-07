@@ -33,6 +33,67 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "child": {
+      "description": "Immutable same-gaggle generated child lineage and exact queue proposal reference.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gaggle",
+        "parentRunId",
+        "parentWorkflow",
+        "stageOccurrence",
+        "invocationKey",
+        "acceptanceId",
+        "sourceDigest",
+        "envelopeDigest"
+      ],
+      "properties": {
+        "gaggle": {
+          "description": "Gaggle shared by the parent and generated child; cross-gaggle lineage is forbidden.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stageOccurrence": {
+          "description": "Durable parent task occurrence, including its branch and loop visit, retained across replacement attempts.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "invocationKey": {
+          "description": "Parent-chosen idempotency key for this child invocation within the stage occurrence.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parentWorkflow": {
+          "description": "Configured parent workflow whose limits and accounting own this generated child.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parentRunId": {
+          "description": "Exact parent run that originated this child invocation.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "acceptanceId": {
+          "description": "Durable start receipt retaining the accepted child proposal and execution custody.",
+          "type": "string",
+          "pattern": "^trigger-[0-9a-f]{32}$"
+        },
+        "sourceDigest": {
+          "description": "SHA-256 digest of the exact accepted Workflow source bytes.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "envelopeDigest": {
+          "description": "SHA-256 digest of the accepted start envelope binding source, policy and execution pins.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
     "continuedFromRunId": {
       "description": "The terminal source run this continuation was created from.",
       "type": "string",

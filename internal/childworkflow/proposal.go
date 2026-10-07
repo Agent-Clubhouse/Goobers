@@ -181,14 +181,20 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 	if err != nil {
 		return nil, err
 	}
+	return &Proposal{Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
+		ConfigDigest: v.context.ConfigDigest, PolicyDigest: v.PolicyDigest(), Workflow: wf, Machine: machine, Placements: pins}, nil
+}
+
+// PolicyDigest identifies pinned policy, enclosing publication permission and
+// the existing Goober definitions. It grants no authority by itself.
+func (v *Validator) PolicyDigest() string {
 	policyBytes, _ := json.Marshal(struct {
 		Policy      *apiv1.ChildWorkflowPolicy
 		Grants      []string
 		Publication bool
 		Goobers     map[string]apiv1.GooberSpec
 	}{v.context.ParentTask.ChildWorkflows, v.context.GrantedCapabilities, v.context.AllowPRPublication, v.context.Goobers})
-	return &Proposal{Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
-		ConfigDigest: v.context.ConfigDigest, PolicyDigest: digest(policyBytes), Workflow: wf, Machine: machine, Placements: pins}, nil
+	return digest(policyBytes)
 }
 
 func (v *Validator) parseProposal(source []byte) (apiv1.Workflow, []byte, error) {

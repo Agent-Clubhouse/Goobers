@@ -196,6 +196,7 @@ type Executor struct {
 	transcriptLimit int64
 	sandboxEnforced bool
 	observer        Observer
+	childAccess     ChildWorkflowAccessProvider
 	newSandbox      func() (sandbox.Sandbox, error)
 
 	guardedCredentialFiles bool
@@ -585,6 +586,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
 		}
 	}
+	childAccess, closeChildAccess, err := e.prepareChildWorkflowAccess(ctx, env)
+	if err != nil {
+		return Outcome{}, nil, nil, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, closeChildAccess()) }()
 	skills, skillsErr := e.prepareSkills(ctx, env.Workspace)
 	if skillsErr != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize skills: %w", skillsErr)
@@ -595,7 +601,6 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
 	var creds *credentials.Set
-	var err error
 	if envEffectivePolicy != nil {
 		creds, err = e.injector.MaterializeRestricted(ctx, envEffectivePolicy.PlatformPolicy.Credentials)
 	} else {
@@ -641,6 +646,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Attempt:                  int(env.Attempt),
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
+		ChildWorkflows:           childAccess,
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {

@@ -46,29 +46,11 @@ func collectGoobersIOReceipts(req RunRequest, selfBin string) ([]mcpio.InputInsp
 // goobersIOTools are goobers-io's own tool names, as the server itself
 // reports them in its tools/list response — used for the per-server "tools"
 // field inside the --additional-mcp-config registration. They carry no
-// privileged capability or credential access, so auto-granting them needs no
+// privileged capability or credential access. The separate optional child
+// tools require trusted launcher access. Auto-granting ordinary tools needs no
 // per-goober tools: declaration — unlike shell/github, there is no SEC-030
 // reason to gate them behind explicit opt-in.
 var goobersIOTools = []string{"get_run_info", "publish_output", "list_inputs", "read_input", "grep_input"}
-
-// goobersIOAvailableToolNames returns goobersIOTools prefixed the way
-// Copilot's own --available-tools allowlist expects an external server's
-// tools to be named (<serverName>-<toolName>) — the same convention
-// copilotToolGroups["github"] already uses for the built-in GitHub server
-// (github-mcp-server-issue_write, etc.). Confirmed live: the bare names
-// alone do not resolve against a restrictive --available-tools= for an
-// externally-registered server — Copilot silently drops them, leaving zero
-// goobers-io tools reachable, even though the same bare names are exactly
-// right for the per-server "tools" field in the MCP registration itself.
-// These are two different fields with two different naming conventions;
-// conflating them is what broke this the first time.
-func goobersIOAvailableToolNames() []string {
-	out := make([]string, len(goobersIOTools))
-	for i, name := range goobersIOTools {
-		out[i] = goobersIOServerName + "-" + name
-	}
-	return out
-}
 
 // autoGoobersIOEligible reports whether this invocation has a run identity for
 // goobers-io to expose. Valid agentic invocations always do; artifact and
@@ -91,7 +73,7 @@ func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return req
 	}
-	req.Tools = appendMissing(req.Tools, goobersIOAvailableToolNames()...)
+	req.Tools = appendMissing(req.Tools, prefixedGoobersIOTools(req, goobersIOServerName+"-")...)
 	req.GoobersIORegistered = true
 	return req
 }
@@ -170,6 +152,7 @@ func goobersIOPromptSection(req RunRequest) string {
 	if len(req.ContextPaths) > 0 {
 		b.WriteString("Use `list_inputs`, `grep_input`, and `read_input` to examine the upstream content listed under Context above, instead of opening those files directly. Prefer `grep_input` to search a large input, or `read_input` with a line range around a match, rather than reading a large input in one call.\n\n")
 	}
+	writeChildWorkflowPrompt(&b, req)
 	return b.String()
 }
 

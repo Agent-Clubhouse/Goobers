@@ -172,6 +172,19 @@ func (s *Store) RevokeChildAuthority(ctx context.Context, grant ChildAuthority) 
 	return err
 }
 
+// RevokeChildGaggleAuthorities invalidates existing tool credentials before a
+// changed gaggle policy is published. The caller must fence concurrent grant
+// issuance across revocation and publication. Accepted children retain custody
+// and are checked against current execution authority separately. This update
+// is bounded by MaxChildAuthorities and creates no additional retained state.
+func (s *Store) RevokeChildGaggleAuthorities(ctx context.Context, gaggle string) error {
+	if !validChildText(gaggle, 128, true) {
+		return ErrChildAuthorityChanged
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE child_authorities SET revoked=1 WHERE gaggle=? AND revoked=0`, gaggle)
+	return err
+}
+
 // CheckChildAuthority verifies an active binding. Acceptance repeats this check
 // inside the start transaction, so a revoked/replaced attempt cannot race a start.
 func (s *Store) CheckChildAuthority(ctx context.Context, grant ChildAuthority, now time.Time) error {

@@ -109,6 +109,9 @@ type RunIdentity struct {
 	ConfigGeneration string `json:"configGeneration,omitempty"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
+	// Child identifies a generated child admitted through durable start custody.
+	// Nil preserves the identity and behavior of ordinary and historical runs.
+	Child *ChildLineage `json:"child,omitempty"`
 	// Driver names the component walking this run's stages. Empty — the only
 	// value any run.yaml written before this field existed can carry — means
 	// the daemon's in-process runner, so every existing journal keeps both
