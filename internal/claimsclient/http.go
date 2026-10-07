@@ -144,9 +144,13 @@ func newHTTP(cfg HTTPConfig, anonymous bool) (*HTTP, error) {
 	return &HTTP{cfg: cfg, plane: plane}, nil
 }
 
-func (h *HTTP) post(ctx context.Context, path string, body, target any) error {
+// post sends one claims-plane call. replaySafe is the route's declaration that
+// replaying it after an ambiguous transport failure (stream reset, EOF) cannot
+// change the outcome; see the per-route notes at each call site. Calls refused
+// before a handler ran (admission, recovery) are always replayed.
+func (h *HTTP) post(ctx context.Context, path string, body, target any, replaySafe bool) error {
 	endpoint := h.cfg.BaseURL + path
-	response, err := h.plane.DoJSON(ctx, http.MethodPost, path, body, nil)
+	response, err := h.plane.DoJSONRetrying(ctx, http.MethodPost, path, body, nil, replaySafe)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "encode" {
@@ -196,11 +200,13 @@ func (h *HTTP) ClaimScoped(ctx context.Context, key Key, runID, workflow string,
 	if err != nil {
 		return false, "", err
 	}
+	// Replay-safe: a same-run re-claim is the ledger's idempotent renew, and a
+	// claim held by another run is refused identically however often it is asked.
 	var response claimResponse
 	if err := h.post(ctx, apicontract.ClaimAcquirePath, claimRequest{
 		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID,
 		RunID: runID, Workflow: workflow, LeaseSeconds: seconds,
-	}, &response); err != nil {
+	}, &response, true); err != nil {
 		return false, "", err
 	}
 	if !response.Ok {
@@ -216,11 +222,13 @@ func (h *HTTP) renew(ctx context.Context, key Key, runID, workflow string, lease
 	if err != nil {
 		return false, err
 	}
+	// Replay-safe: renew extends the run's own lease to now+lease, so a replay
+	// only moves the expiry forward again; a lost lease answers ok=false.
 	var response claimResponse
 	if err := h.post(ctx, apicontract.ClaimRenewPath, claimRequest{
 		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID,
 		RunID: runID, Workflow: workflow, LeaseSeconds: seconds,
-	}, &response); err != nil {
+	}, &response, true); err != nil {
 		return false, err
 	}
 	return response.Ok, nil
@@ -231,16 +239,21 @@ func (h *HTTP) ReleaseScoped(ctx context.Context, key Key, runID string) error {
 	if err := scopedKey(key); err != nil {
 		return err
 	}
+	// Replay-safe: release of a claim not held, or held by another run, is a
+	// no-op in the ledger, so a replay cannot release a later holder's claim.
 	var response claimResponse
 	return h.post(ctx, apicontract.ClaimReleasePath, claimRequest{
 		Gaggle: key.Gaggle, Provider: key.Provider, ItemID: key.ExternalID, RunID: runID,
-	}, &response)
+	}, &response, true)
 }
 
 // ReleaseAllForRun implements Ledger over claims/release with itemId omitted.
 func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string) ([]Entry, error) {
+	// Not replay-safe after an ambiguous failure: the reply lists what THIS call
+	// released, and a replay of a call that did commit answers an empty list.
+	// It is still retried when the daemon refused it before a handler ran.
 	var response claimResponse
-	if err := h.post(ctx, apicontract.ClaimReleasePath, claimRequest{RunID: runID}, &response); err != nil {
+	if err := h.post(ctx, apicontract.ClaimReleasePath, claimRequest{RunID: runID}, &response, false); err != nil {
 		return nil, err
 	}
 	return response.Released, nil
@@ -249,7 +262,7 @@ func (h *HTTP) ReleaseAllForRun(ctx context.Context, runID string) ([]Entry, err
 // ForRunAll implements Ledger over claims/list scope=run.
 func (h *HTTP) ForRunAll(ctx context.Context, runID string) ([]Entry, error) {
 	var response claimListResponse
-	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: runID, Scope: scopeRun}, &response); err != nil {
+	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: runID, Scope: scopeRun}, &response, true); err != nil {
 		return nil, err
 	}
 	return response.Entries, nil
@@ -265,7 +278,7 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 	var response claimListResponse
 	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{
 		Gaggle: gaggle, Provider: provider, RunID: h.cfg.RunID, Scope: scopeNamespace, IncludeHistory: true,
-	}, &response); err != nil {
+	}, &response, true); err != nil {
 		return Listing{}, err
 	}
 	return Listing{Entries: response.Entries, History: response.History}, nil
@@ -277,7 +290,7 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 func (h *HTTP) ExecutionSnapshot(ctx context.Context) (string, Listing, error) {
 	var response claimListResponse
 	started := time.Now()
-	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: h.cfg.RunID, Scope: scopeRun, IncludeHistory: true, Execution: true}, &response); err != nil {
+	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: h.cfg.RunID, Scope: scopeRun, IncludeHistory: true, Execution: true}, &response, true); err != nil {
 		return "", Listing{}, err
 	}
 	if response.ClaimVisibility != "local" && response.ClaimVisibility != "shared" {
@@ -419,8 +432,10 @@ func (h *HTTP) ContainedRunID() string { return h.cfg.RunID }
 // RecoverStale implements StaleRecoverer over claims/recover: the daemon runs
 // its own sweep and answers with what it released.
 func (h *HTTP) RecoverStale(ctx context.Context) ([]Entry, error) {
+	// Replay-safe: the sweep releases whatever is stale at the time it runs, and
+	// RecoverStale callers act on no individual entry of the reply.
 	var response claimRecoverResponse
-	if err := h.post(ctx, apicontract.ClaimRecoverPath, claimRecoverRequest{RunID: h.cfg.RunID}, &response); err != nil {
+	if err := h.post(ctx, apicontract.ClaimRecoverPath, claimRecoverRequest{RunID: h.cfg.RunID}, &response, true); err != nil {
 		return nil, err
 	}
 	return response.Released, nil

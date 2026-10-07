@@ -31,11 +31,14 @@ func (h *HTTP) RecordClaimVerification(ctx context.Context, entry Entry, observa
 	if err := scopedKey(KeyForEntry(entry)); err != nil {
 		return false, err
 	}
+	// Not replay-safe after an ambiguous failure: the ledger only accepts an
+	// observation newer than the recorded one, so a replay of a call that did
+	// commit answers ok=false. Retried only when refused before a handler ran.
 	var response claimResponse
 	err := h.post(ctx, apicontract.ClaimVerifyPath, claimVerificationRequest{
 		RunID: h.cfg.RunID, Gaggle: entry.Gaggle, Provider: entry.Provider,
 		ItemID: entry.ExternalID, OwnerRunID: entry.RunID, ClaimedAt: entry.ClaimedAt, Observation: observation,
-	}, &response)
+	}, &response, false)
 	return response.Ok, err
 }
 

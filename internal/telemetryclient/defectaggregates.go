@@ -530,7 +530,7 @@ func (h *HTTP) DefectAggregates(ctx context.Context, req DefectAggregateRequest)
 	// the caller's context can still impose a shorter deadline.
 	client := *h.cfg.Client
 	client.Timeout = DefectAggregateTimeout
-	response, err := h.plane.WithHTTPClient(&client).DoRaw(ctx, http.MethodGet, path, nil, headers)
+	response, err := h.plane.WithHTTPClient(&client).DoRetrying(ctx, http.MethodGet, path, nil, headers, true)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "build" {
