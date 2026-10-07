@@ -495,6 +495,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// applies from the NEXT stage on, and this stage's commits were made
 			// on the branch it was handed.
 			continuity = recordPublication(ctx, t, published, continuity, workspaceBranch, rec)
+			continuity = retirePushedDeltas(ctx, continuity, published, t.Name, workspaceBranch, rec.branchRef.ID)
 			if res.Status == apiv1.ResultFailure && t.ContinueOnError {
 				// Outputs from a tolerated failure are discarded so downstream
 				// stages cannot consume partial results (Task.ContinueOnError,
