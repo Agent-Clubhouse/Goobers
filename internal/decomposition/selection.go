@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -135,9 +134,7 @@ func FindEscalationCandidates(ctx context.Context, reads EscalationReads) ([]Esc
 	// a slice indexed by list position and are folded back in list order, so
 	// the candidate set, its pre-sort order and the first error reported are
 	// exactly what the sequential scan produced.
-	scanCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	results := make([]escalationScanResult, len(runs))
+	pool := newEscalationScanPool(len(runs))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	workers := escalationScanWorkers
@@ -149,10 +146,7 @@ func FindEscalationCandidates(ctx context.Context, reads EscalationReads) ([]Esc
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				results[i] = scanEscalatedRun(scanCtx, reads, runs[i])
-				if results[i].err != nil {
-					cancel()
-				}
+				pool.scan(ctx, reads, runs, i)
 			}
 		}()
 	}
@@ -162,26 +156,11 @@ func FindEscalationCandidates(ctx context.Context, reads EscalationReads) ([]Esc
 	close(jobs)
 	wg.Wait()
 
+	results := pool.results
+	if pool.failed < len(results) {
+		return nil, results[pool.failed].err
+	}
 	candidates := make([]EscalationCandidate, 0, len(runs))
-	// An error that is only this scan's own cancel (a sibling failed and the
-	// pool was cancelled) must not mask the real failure, whatever its list
-	// position. Report the first genuine error; fall back to the first of any.
-	var firstErr error
-	for i := range results {
-		err := results[i].err
-		if err == nil {
-			continue
-		}
-		if firstErr == nil {
-			firstErr = err
-		}
-		if !errors.Is(err, context.Canceled) || ctx.Err() != nil {
-			return nil, err
-		}
-	}
-	if firstErr != nil {
-		return nil, firstErr
-	}
 	for i := range results {
 		if results[i].candidate != nil {
 			candidates = append(candidates, *results[i].candidate)
@@ -201,6 +180,58 @@ const escalationScanWorkers = 8
 type escalationScanResult struct {
 	candidate *EscalationCandidate
 	err       error
+}
+
+// escalationScanPool tracks one pooled scan so its outcome matches the
+// sequential scan exactly. failed is the lowest list index whose scan
+// returned an error. A failure only cancels (in flight) or skips (not yet
+// started) runs at higher list indices, never lower ones, so every run before
+// the final failed index is read to completion and the error at that index
+// is the one the sequential scan would have returned first.
+type escalationScanPool struct {
+	results  []escalationScanResult
+	mu       sync.Mutex
+	failed   int
+	inflight map[int]context.CancelFunc
+}
+
+func newEscalationScanPool(n int) *escalationScanPool {
+	return &escalationScanPool{
+		results:  make([]escalationScanResult, n),
+		failed:   n,
+		inflight: map[int]context.CancelFunc{},
+	}
+}
+
+// scan reads run i unless an earlier run already failed.
+func (p *escalationScanPool) scan(ctx context.Context, reads EscalationReads, runs []readservice.RunSummary, i int) {
+	p.mu.Lock()
+	if i > p.failed {
+		p.mu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	p.inflight[i] = cancel
+	p.mu.Unlock()
+
+	result := scanEscalatedRun(runCtx, reads, runs[i])
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.inflight, i)
+	cancel()
+	p.results[i] = result
+	// A run cancelled by this pool always sits above failed, so it can never
+	// lower it: only a genuine error (or the caller's own cancellation) can.
+	if result.err == nil || i >= p.failed {
+		return
+	}
+	p.failed = i
+	for j, cancelRun := range p.inflight {
+		if j > i {
+			cancelRun()
+		}
+	}
 }
 
 // scanEscalatedRun applies the qualification rules to one escalated run.
