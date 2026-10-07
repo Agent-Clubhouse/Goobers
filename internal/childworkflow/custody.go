@@ -1,6 +1,7 @@
 package childworkflow
 
 import (
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -13,6 +14,15 @@ func ValidateRetainedCustody(a Authority, e ChildStartEnvelope, child triggerque
 	}
 	if e.SourceDigest != child.ProposalDigest || e.SourceDigest != source.Digest || e.SourceDigest != digest(source.Source) {
 		return ErrSubmissionInvalid
+	}
+	return nil
+}
+
+// CheckDispositionAuthority preserves parent workspace write restrictions.
+// Discard consumes owned custody only; it never retracts a published PR.
+func CheckDispositionAuthority(a Authority, action string) error {
+	if action != "discard" && (a.Admission.WorkspaceMutationDenied || a.Admission.ParentTask.Workspace == apiv1.WorkspaceRepoReadOnly) {
+		return ErrAuthorityUnavailable
 	}
 	return nil
 }

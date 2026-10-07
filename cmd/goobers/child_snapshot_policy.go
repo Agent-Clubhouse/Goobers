@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,11 +13,26 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
-func (h *daemonChildHandoff) yieldedWorkspace(service *daemonCredentialService, custody runner.ChildWorkspaceCustody, repoURL string) (childworkflow.YieldedWorkspace, error) {
-	policy, err := childSnapshotPolicy(custody.Path, h.layout.Root, service.config)
-	return childworkflow.YieldedWorkspace{Path: custody.Path, RepoURL: repoURL, RepositoryKey: childRepoKey(custody.RepoRef), Policy: policy}, err
+func (h *daemonChildHandoff) yieldedWorkspace(ctx context.Context, service *daemonCredentialService, coordinator *childworkflow.WorkspaceCoordinator, child triggerqueue.ChildRecord, action string, custody runner.ChildWorkspaceCustody, repoURL string) (childworkflow.YieldedWorkspace, error) {
+	parent := childworkflow.YieldedWorkspace{Path: custody.Path, RepoURL: repoURL, RepositoryKey: childRepoKey(custody.RepoRef)}
+	if action == "wait" {
+		policy, err := childSnapshotPolicy(custody.Path, h.layout.Root, service.config)
+		parent.Policy = policy
+		return parent, err
+	}
+	result, err := coordinator.ReadResult(ctx, child, repoURL)
+	if err != nil || result.Snapshot == nil {
+		return parent, err
+	}
+	fork, err := coordinator.RetainedFork(ctx, child, repoURL)
+	if err != nil {
+		return parent, err
+	}
+	parent.RepositoryKey, parent.Policy = fork.Record.RepositoryKey, fork.Policy
+	return parent, nil
 }
 
 // Configured file credentials (including tagged private keys/wrapping stores)

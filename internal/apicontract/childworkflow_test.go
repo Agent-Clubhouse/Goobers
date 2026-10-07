@@ -32,7 +32,7 @@ func TestChildWorkflowContractClosedAndGrantRequired(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatal(err)
 		}
-		for _, id := range []RouteID{RouteChildWorkflowValidate, RouteChildWorkflowStart, RouteChildWorkflowStatus} {
+		for _, id := range []RouteID{RouteChildWorkflowValidate, RouteChildWorkflowStart, RouteChildWorkflowStatus, RouteChildWorkflowResolve} {
 			route, ok := V1Route(id)
 			if !ok || route.Method != http.MethodPost || route.Cost != CostMutation || route.ActionClass != ActionWorkflowExecution || route.Budget != MutationBudget || InitiallyRemoteInvocable(id) {
 				t.Fatalf("route=%+v", route)
@@ -51,7 +51,7 @@ func TestChildWorkflowContractClosedAndGrantRequired(t *testing.T) {
 				t.Fatalf("%s key=%t", id, hasKey)
 			}
 			code := "200"
-			if id == RouteChildWorkflowStart {
+			if id == RouteChildWorkflowStart || id == RouteChildWorkflowResolve {
 				code = "202"
 			}
 			if operation.Responses[code] == nil || operation.Responses["204"] != nil {
@@ -86,7 +86,7 @@ func TestChildWorkflowWireMatchesClosedSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixtures := newWireFixtures()
-	for name, value := range map[string]any{"ChildWorkflowSourceRequest": fixtures.ChildWorkflowSource, "ChildWorkflowStatusRequest": fixtures.ChildWorkflowStatus, "ChildWorkflowValidationResponse": fixtures.ChildWorkflowValidation, "ChildWorkflowResponse": fixtures.ChildWorkflow} {
+	for name, value := range map[string]any{"ChildWorkflowSourceRequest": fixtures.ChildWorkflowSource, "ChildWorkflowStatusRequest": fixtures.ChildWorkflowStatus, "ChildWorkflowValidationResponse": fixtures.ChildWorkflowValidation, "ChildWorkflowResponse": fixtures.ChildWorkflow, "ChildWorkflowResolveRequest": fixtures.ChildWorkflowResolve, "ChildWorkflowResolutionResponse": fixtures.ChildWorkflowResolution} {
 		compiler := jsonschema.NewCompiler()
 		if err := compiler.AddResource("fixture.json", bytes.NewReader(raw)); err != nil {
 			t.Fatal(err)

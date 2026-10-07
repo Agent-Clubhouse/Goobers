@@ -17,6 +17,12 @@ type ChildWorkflowValidationResponse = childworkflowwire.ChildWorkflowValidation
 // ChildWorkflowResponse reports durable custody independently of execution.
 type ChildWorkflowResponse = childworkflowwire.ChildWorkflowResponse
 
+// ChildWorkflowResolveRequest chooses one exact child result disposition.
+type ChildWorkflowResolveRequest = childworkflowwire.ChildWorkflowResolveRequest
+
+// ChildWorkflowResolutionResponse separates accepted intent from application.
+type ChildWorkflowResolutionResponse = childworkflowwire.ChildWorkflowResolutionResponse
+
 // MaxChildWorkflowSourceBytes caps source bytes in every transport.
 const MaxChildWorkflowSourceBytes = childworkflowwire.MaxChildWorkflowSourceBytes
 

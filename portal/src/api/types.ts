@@ -2035,6 +2035,24 @@ export interface ChildWorkflowStatusRequest {
   invocationKey: string;
 }
 
+export interface ChildWorkflowResolveRequest {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  expectedRequestDigest?: string;
+}
+
+export interface ChildWorkflowResolutionResponse {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  requestedAt: string;
+  requestDigest: string;
+  planPublished: boolean;
+  applied: boolean;
+  appliedAt?: string;
+}
+
 export interface ChildWorkflowDiagnostic {
   code: string;
   stage?: string;
@@ -2055,6 +2073,7 @@ export interface ChildWorkflowValidationResponse {
 
 /** Acceptance reports custody, not that execution has begun. */
 export interface ChildWorkflowResponse {
+  acknowledged: boolean;
   childId: string;
   acceptanceId: string;
   runId: string;
@@ -2070,6 +2089,7 @@ export interface ChildWorkflowResponse {
   cancellationRequested: boolean;
   resultRef?: string;
   workspaceRef?: string;
+  disposition?: ChildWorkflowResolutionResponse;
   acceptedAt: string;
   updatedAt: string;
 }

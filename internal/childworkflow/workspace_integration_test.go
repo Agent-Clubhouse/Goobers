@@ -138,7 +138,7 @@ func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T)
 	childSnapshotWrite(t, adopted.Path, ".goobers/token", "must remain private")
 	childWorkspace := yielded
 	childWorkspace.Path = adopted.Path
-	terminal := TerminalResultInput{State: triggerqueue.ChildCompleted, FinishedAt: submission.Child.AcceptedAt.Add(time.Hour), Summary: "Updated implementation", References: []string{"artifact:summary"}}
+	terminal := TerminalResultInput{State: triggerqueue.ChildCompleted, FinishedAt: submission.Child.AcceptedAt.Add(time.Minute), Summary: "Updated implementation", References: []string{"artifact:summary"}}
 	result, err := coordinator.CaptureResult(t.Context(), submission.Child, &childWorkspace, terminal)
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +169,50 @@ func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T)
 	}
 	if got := childSnapshotGit(t, parent, "diff", "--name-only", admission.ForkSHA, result.Snapshot.Record.SnapshotSHA); !strings.Contains(got, "main.txt") || !strings.Contains(got, "later.txt") {
 		t.Fatalf("result delta lost commits or dirty work: %s", got)
+	}
+	if err := service.Queue.BeginDispatch(t.Context(), submission.Child.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Queue.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildRunning}, submission.Child.AcceptedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Queue.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildRunning, State: triggerqueue.ChildCompleted, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, terminal.FinishedAt); err != nil {
+		t.Fatal(err)
+	}
+	service.Now = func() time.Time { return terminal.FinishedAt.Add(time.Second) }
+	request, err := service.RequestDisposition(t.Context(), authority.current.Origin, "child", "replace", result.ResultRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Plan) != 0 || !request.AppliedAt.IsZero() {
+		t.Fatal("request applied live harness state")
+	}
+	if _, err := service.Submit(t.Context(), authority.current.Origin, SubmissionRequest{InvocationKey: "next", Source: []byte(validProposal)}); !errors.Is(err, triggerqueue.ErrChildSlotOccupied) {
+		t.Fatal("request released slot before application", err)
+	}
+	if _, err := coordinator.ApplyDisposition(t.Context(), submission.Child, &yielded, service.now()); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(parent, "main.txt")); string(data) != "child progress" {
+		t.Fatal("child committed result not applied to parent")
+	}
+	if data, _ := os.ReadFile(filepath.Join(parent, "later.txt")); string(data) != "uncommitted child work" {
+		t.Fatal("child dirty result not applied to parent")
+	}
+	if data, _ := os.ReadFile(filepath.Join(parent, "auth/token")); string(data) != "secret credential" {
+		t.Fatal("application changed excluded parent credential")
+	}
+	// A lost response after applied acknowledgement cannot recapture or reapply
+	// child state over progress made by the resumed parent.
+	childSnapshotWrite(t, parent, "later.txt", "new parent continuation work")
+	if _, err := coordinator.ApplyDisposition(t.Context(), submission.Child, &yielded, service.now()); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(parent, "later.txt")); string(data) != "new parent continuation work" {
+		t.Fatal("applied retry overwrote continued parent")
+	}
+	if _, err := service.Submit(t.Context(), authority.current.Origin, SubmissionRequest{InvocationKey: "next", Source: []byte(validProposal)}); err != nil {
+		t.Fatal("applied disposition failed to release slot", err)
 	}
 	if _, err := submissionDB(t, databasePath).Exec(`DELETE FROM child_snapshots`); err != nil {
 		t.Fatal(err)

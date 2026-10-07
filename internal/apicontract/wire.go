@@ -20,6 +20,8 @@ import (
 
 type wireFixtures struct {
 	ChildWorkflowSource      ChildWorkflowSourceRequest                 `json:"childWorkflowSource"`
+	ChildWorkflowResolve     ChildWorkflowResolveRequest                `json:"childWorkflowResolve"`
+	ChildWorkflowResolution  ChildWorkflowResolutionResponse            `json:"childWorkflowResolution"`
 	ChildWorkflowStatus      ChildWorkflowStatusRequest                 `json:"childWorkflowStatus"`
 	ChildWorkflowValidation  ChildWorkflowValidationResponse            `json:"childWorkflowValidation"`
 	ChildWorkflow            ChildWorkflowResponse                      `json:"childWorkflow"`
@@ -65,6 +67,8 @@ var wireFixtureTypes = []struct {
 }{
 	{name: "childWorkflowSource", scriptType: "ChildWorkflowSourceRequest"},
 	{name: "childWorkflowStatus", scriptType: "ChildWorkflowStatusRequest"},
+	{name: "childWorkflowResolve", scriptType: "ChildWorkflowResolveRequest"},
+	{name: "childWorkflowResolution", scriptType: "ChildWorkflowResolutionResponse"},
 	{name: "childWorkflowValidation", scriptType: "ChildWorkflowValidationResponse"},
 	{name: "childWorkflow", scriptType: "ChildWorkflowResponse"},
 	{name: "triggerRequest", scriptType: "TriggerRequest"},
@@ -1090,5 +1094,7 @@ func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
 	fixtures.ChildWorkflowStatus = ChildWorkflowStatusRequest{InvocationKey: "inspect-1"}
 	fixtures.ChildWorkflowValidation = ChildWorkflowValidationResponse{Valid: false, Advisory: true, Diagnostics: []ChildWorkflowDiagnostic{{Code: "schema", Field: "dslVersion", Message: "explicit DSL 3.1 is required"}}}
 	fixtures.ChildWorkflow = childWorkflowWireFixture()
+	fixtures.ChildWorkflowResolve = ChildWorkflowResolveRequest{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest}
+	fixtures.ChildWorkflowResolution = ChildWorkflowResolutionResponse{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest, RequestedAt: fixtures.ChildWorkflow.AcceptedAt, RequestDigest: fixtures.ChildWorkflow.SourceDigest, PlanPublished: false}
 	return fixtures
 }
