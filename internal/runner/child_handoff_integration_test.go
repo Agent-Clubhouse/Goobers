@@ -108,6 +108,7 @@ func (f *childHandoffFixture) Resume(context.Context) error {
 }
 
 func TestIntegrationChildWaitRetainsParentWorkspaceAndRetryAllowance(t *testing.T) {
+	testdep.Require(t, "git")
 	r, run, frame, f, fork := prepareChildWaitRuntime(t)
 	done := make(chan error, 1)
 	go func() { _, _, err := r.runTask(t.Context(), frame, 0, 1, "", "", nil, false, nil); done <- err }()
@@ -183,6 +184,7 @@ func prepareChildWaitRuntime(t *testing.T) (*Runner, *journal.Run, taskFrame, *c
 }
 
 func TestIntegrationChildWaitRecoversBeforeAndAfterContinuedMarker(t *testing.T) {
+	testdep.Require(t, "git")
 	for _, continued := range []bool{false, true} {
 		name := "parked"
 		if continued {

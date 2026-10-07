@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/platform/secfile"
 )
 
 func childHarnessRequest(t *testing.T) RunRequest {
@@ -93,8 +94,7 @@ func TestChildWorkflowRuntimeRegistrationKeepsGrantPrivate(t *testing.T) {
 				t.Fatal("registration argv exposes access")
 			}
 			configPath := filepath.Join(req.Workspace, filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
-			info, err := os.Stat(configPath)
-			if err != nil || info.Mode().Perm() != 0o600 {
+			if err := secfile.VerifyPrivate(configPath); err != nil {
 				t.Fatalf("private runtime config err=%v", err)
 			}
 			cfg, err := mcpio.LoadConfig(configPath)

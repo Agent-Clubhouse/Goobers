@@ -4,6 +4,7 @@ package executor
 
 import (
 	"errors"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,7 @@ import (
 )
 
 func TestIntegrationChildShellNormalReturnJoinsBackgroundWorkspaceWriter(t *testing.T) {
+	testdep.Require(t, "sh")
 	executor, _ := newTestExecutor(t, nil)
 	env := baseEnvelope(t)
 	ctx, proof := invoke.WithWorkspaceQuiescence(t.Context())
