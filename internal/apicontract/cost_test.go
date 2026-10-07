@@ -61,6 +61,11 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		if route.ID == RouteCredentialResolve || route.ID == RouteCredentialRefresh {
 			continue
 		}
+		// The escalation-candidates scan is a stage-pod read over many
+		// per-run journals; see TestJournalScanBudget.
+		if route.ID == RouteJournalEscalationCandidates {
+			continue
+		}
 		// Defect nomination is a stage-pod read with its own five-minute
 		// client deadline, not a Portal request with a ten-second abort.
 		if route.ID == RouteTelemetryDefectAggregates {
@@ -234,6 +239,27 @@ func TestCredentialResolveBudget(t *testing.T) {
 	}
 	if route.Budget != CredentialResolveBudget {
 		t.Errorf("credentialResolve budget = %s, want CredentialResolveBudget (%s)", route.Budget, CredentialResolveBudget)
+	}
+}
+
+// TestJournalScanBudget pins the escalation-candidates route's scan budget:
+// above the 8s mutation/bounded budget it used to inherit (which 503'd the
+// production scan every time), still mutation-admitted like its journal-plane
+// siblings, and not a blob-sized allowance.
+func TestJournalScanBudget(t *testing.T) {
+	route, ok := V1Route(RouteJournalEscalationCandidates)
+	if !ok {
+		t.Fatal("journal escalation-candidates route is not in the V1 contract")
+	}
+	if route.Budget != JournalScanBudget {
+		t.Errorf("budget = %s, want JournalScanBudget (%s)", route.Budget, JournalScanBudget)
+	}
+	if route.Cost != CostMutation || route.ActionClass != ActionWorkflowExecution {
+		t.Errorf("route is %s/%s, want mutation/workflow-execution admission like its siblings", route.Cost, route.ActionClass)
+	}
+	if JournalScanBudget <= MutationBudget || JournalScanBudget > BlobBudget {
+		t.Errorf("JournalScanBudget %s must exceed MutationBudget %s and not exceed BlobBudget %s",
+			JournalScanBudget, MutationBudget, BlobBudget)
 	}
 }
 

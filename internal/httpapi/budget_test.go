@@ -92,6 +92,7 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteCredentialRefresh &&
 				route.ID != apicontract.RouteBlobGet &&
 				route.ID != apicontract.RouteTelemetryDefectAggregates &&
+				route.ID != apicontract.RouteJournalEscalationCandidates &&
 				route.ID != apicontract.RouteRunRecovery &&
 				route.ID != apicontract.RouteRunRecoveryPublish &&
 				budget >= clientAbortBackstop {

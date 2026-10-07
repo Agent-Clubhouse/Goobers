@@ -31,9 +31,9 @@ func (e *Error) Error() string {
 }
 
 // DefaultHTTPTimeout bounds one round trip. The daemon's own budget on the
-// same-run read routes is 8s (apicontract.BoundedBudget) and 60s on the
-// artifact route (BlobBudget); this contains the larger of the two plus
-// margin, so a client timeout is never the first thing to fire.
+// same-run read routes is 8s (apicontract.BoundedBudget), 60s on the
+// artifact route (BlobBudget) and on the cross-run scan route
+// (JournalScanBudget); this contains the largest plus margin, so a client timeout is never the first thing to fire.
 const DefaultHTTPTimeout = 90 * time.Second
 
 // MaxEventListBytes bounds one Events() response. A run journal's scrubbed
