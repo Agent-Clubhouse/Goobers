@@ -9,6 +9,9 @@ import (
 // WaitOptions controls process-tree cleanup after ctx ends.
 type WaitOptions struct {
 	KillWait time.Duration
+	// StopTree replaces Kill when the owner must retain termination evidence
+	// before descendants can be orphaned. Nil preserves ordinary cleanup.
+	StopTree func() error
 	// BeforeKill may request diagnostics before the tree is force-killed. If
 	// it consumes wait, it reports waited so WaitOrKill does not wait twice.
 	BeforeKill func(timedOut bool) (waited bool, err error)
@@ -41,7 +44,11 @@ func WaitOrKill(ctx context.Context, tree *Tree, wait <-chan error, opts WaitOpt
 	if opts.BeforeKill != nil {
 		waited, outcome.Err = opts.BeforeKill(outcome.TimedOut)
 	}
-	_ = tree.Kill()
+	stop := opts.StopTree
+	if stop == nil {
+		stop = tree.Kill
+	}
+	_ = stop()
 	if waited {
 		return outcome
 	}

@@ -950,6 +950,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
+	stopWriters, joinedWriters := invoke.TrackWorkspaceProcess(runCtx, tree, groupKillWaitDelay)
+	defer joinedWriters()
 	defer e.observeExecutionDeadline(runCtx, env)()
 	// Released only after the stage is fully accounted for: the bound's own
 	// record of whether it fired (the child cgroup's memory.events) has to
@@ -981,6 +983,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 
 	waitOutcome := proc.WaitOrKill(runCtx, tree, waitDone, proc.WaitOptions{
 		KillWait: groupKillWaitDelay,
+		StopTree: stopWriters,
 		BeforeKill: func(timedOut bool) (bool, error) {
 			if !timedOut {
 				return false, nil

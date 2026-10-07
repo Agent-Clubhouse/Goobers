@@ -60,6 +60,8 @@ func (r *Runner) prepareChildWorkspaceStart(ctx context.Context, in *StartInput,
 	if err != nil {
 		return err
 	}
+	inputs[childWriterPolicyInput] = []byte(childWriterPolicy)
+	integrity[childWriterPolicyInput] = apiv1.IntegrityTrusted
 	inputs[ChildWorkspaceInputName] = data
 	integrity[ChildWorkspaceInputName] = apiv1.IntegrityTrusted
 	return nil
@@ -196,6 +198,13 @@ func (r *Runner) restoreChildWorkspace(ctx context.Context, reader *journal.Read
 	}
 	if admission == nil {
 		return nil
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	if err := VerifyChildWorkspaceQuiescence(reader, id, events); err != nil {
+		return err
 	}
 	if in.workspaceRevision != nil {
 		return fmt.Errorf("runner: child history changed its admitted workspace revision")

@@ -131,6 +131,11 @@ func NewCIPollKindExecutor(executor *CIPollExecutor) KindExecutor {
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	// This adapter performs synchronous provider requests and journal writes;
+	// it launches no process with access to the child repository.
+	if done := invoke.RegisterWorkspaceWriter(ctx); done != nil {
+		defer done(nil)
+	}
 	required := string(capability.ProviderPRWrite)
 	if !slices.Contains(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindCIPoll, required)

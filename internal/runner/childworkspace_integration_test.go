@@ -24,7 +24,10 @@ type childWorkspaceAgent struct {
 	invoke func(apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error)
 }
 
-func (g childWorkspaceAgent) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+func (g childWorkspaceAgent) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	if done := invoke.RegisterWorkspaceWriter(ctx); done != nil {
+		defer done(nil) // this fixture only writes synchronously in the host
+	}
 	return g.invoke(env)
 }
 func (childWorkspaceAgent) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
@@ -165,6 +168,13 @@ func TestIntegrationChildWorkspaceRunnerAdoptsAndRetainsRetryEdits(t *testing.T)
 	}
 	id, err := rd.Identity()
 	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyChildWorkspaceQuiescence(rd, id, events); err != nil {
 		t.Fatal(err)
 	}
 	admission, err := PinnedChildWorkspaceAdmission(rd, id)
