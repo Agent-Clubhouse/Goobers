@@ -2624,11 +2624,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	var gaggle *apiv1.Gaggle
-	if g, ok := ix.gaggles[w.Spec.Gaggle]; ok {
-		gaggle = &g
-	}
-	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w, gaggle)
+	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w, ix.gaggleRef(w.Spec.Gaggle))
 	// A stage's own subprocess can carry a longer wall-clock ceiling than the
 	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
 	// under a 25-minute stage timeout. Warning, not error: detection only
@@ -2644,6 +2640,14 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+// gaggleRef returns the named gaggle, or nil when the config does not declare it.
+func (ix *index) gaggleRef(name string) *apiv1.Gaggle {
+	if g, ok := ix.gaggles[name]; ok {
+		return &g
+	}
+	return nil
 }
 
 func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file string, w apiv1.Workflow, gaggle *apiv1.Gaggle) {
