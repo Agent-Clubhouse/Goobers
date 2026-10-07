@@ -159,6 +159,9 @@ func (r *Runner) prepareTaskResult(
 	attempt int,
 	class journal.AttemptClass,
 ) error {
+	if err := validateChildWorkspaceResult(*in, *result); err != nil {
+		return err
+	}
 	if err := workspacerevision.NormalizeResult(result, task.Type == apiv1.TaskDeterministic); err != nil {
 		return recordWorkspaceRevisionRejection(jr, task.Name, attempt, class, err)
 	}

@@ -379,7 +379,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		seedEvents = events
 	}
 
-	f, err := r.newResumeFrame(ctx, jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	f, err := r.newResumeFrame(ctx, jr, rd, in, id, registrar, events, seedEvents, rerun, humanProgress)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
 	}
@@ -664,7 +664,7 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 // have been resolved, so resumeOwned fills those two in.
 func (r *Runner) newResumeFrame(
 	ctx context.Context,
-	jr *journal.Run, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
+	jr *journal.Run, rd *journal.Reader, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
 ) (*resumeFrame, error) {
 	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
@@ -676,7 +676,7 @@ func (r *Runner) newResumeFrame(
 	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
 		branch = activeParallel.current().id
 	}
-	startIn, err := r.restoreResumeWorkspaceRevision(ctx, StartInput{
+	startIn, err := r.restoreExecutionWorkspace(ctx, rd, id, StartInput{
 		instanceID:       id.InstanceID,
 		configGeneration: id.ConfigGeneration,
 		RunID:            in.RunID,

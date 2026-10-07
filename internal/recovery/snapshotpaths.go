@@ -34,7 +34,7 @@ func (w *snapshotPathBudgetWriter) Write(data []byte) (int, error) {
 // core.excludesFile are authoritative. Capture uses private Git metadata to
 // suppress conversions, so asking that private directory to select untracked
 // files would lose these ignore rules and could archive private local outputs.
-func snapshotPaths(ctx context.Context, repository, directory string) (string, error) {
+func snapshotPathsWithPolicy(ctx context.Context, repository, directory string, policy *SnapshotPolicy) (string, error) {
 	path := filepath.Join(directory, "capture-paths")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -46,7 +46,11 @@ func snapshotPaths(ctx context.Context, repository, directory string) (string, e
 	if err := recoveryGit(ctx, repository, writer, "ls-files", "--others", "--exclude-standard", "-z"); err != nil {
 		return "", fmt.Errorf("select recovery snapshot paths: %w", err)
 	}
-	if err := writeExistingSnapshotPaths(repository, selected.Bytes(), file); err != nil {
+	filtered, err := filterSnapshotPaths(selected.Bytes(), policy)
+	if err != nil {
+		return "", err
+	}
+	if err := writeExistingSnapshotPaths(repository, filtered, file); err != nil {
 		return "", err
 	}
 	if err := file.Close(); err != nil {

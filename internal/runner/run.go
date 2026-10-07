@@ -912,6 +912,9 @@ type StartInput struct {
 	Gaggle string
 	// Child is immutable generated-run provenance, verified before journal creation.
 	Child *journal.ChildLineage
+	// ChildWorkspace selects a launcher-provisioned managed fork. It is
+	// trusted admission metadata, never a workflow input or arbitrary path.
+	ChildWorkspace *ChildWorkspaceAdmission
 	// Trigger is what started the run (manual/schedule/signal/item).
 	Trigger journal.Trigger
 	// RepoRef is the target repository every stage worktree branches from.
@@ -939,6 +942,7 @@ type StartInput struct {
 	RequiredCapabilities []string
 	pinnedWorkspace      *worktree.Worktree
 	pinnedStage          *sync.Mutex
+	childWorkspace       *childRunWorkspace
 	workspaceRevision    *apiv1.WorkspaceRevision
 	configuredRepoRef    *apiv1.RepoRef
 }
@@ -1038,6 +1042,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	inputIntegrity := map[string]apiv1.Integrity{
 		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
 		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}
+	if err := r.prepareChildWorkspaceStart(ctx, &in, inputs, inputIntegrity); err != nil {
+		return Result{}, err
 	}
 	graph, err := json.Marshal(in.Machine.Graph())
 	if err != nil {

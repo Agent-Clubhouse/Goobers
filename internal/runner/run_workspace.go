@@ -32,6 +32,8 @@ type stageWorkspace struct {
 	// treating a pruned path as unexpectedly deleted.
 	sparse  []string
 	release func()
+	// retainedChild verifies custody instead of deleting the shared child fork.
+	retainedChild func(context.Context) error
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -139,6 +141,9 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 		}
 	}
 	if w.worktree != nil {
+		if w.retainedChild != nil {
+			return errors.Join(firstErr, w.retainedChild(ctx))
+		}
 		if err := w.worktree.Remove(ctx, worktree.RemoveOptions{}); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -206,6 +211,9 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
+	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
+		return r.createChildStageWorkspace(ctx, in, mode, syncBase, workspaceBranch)
+	}
 	if err := selectedWorkspaceUnsupported(in, mode); err != nil {
 		return nil, err
 	}
@@ -390,6 +398,11 @@ func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase
 }
 
 func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
+	if in.Child != nil {
+		// Child admission owns its separate managed fork. Pure scratch child
+		// machines need no project lease either.
+		return nil, nil
+	}
 	if !r.cfg.PinnedWorkspace {
 		return nil, nil
 	}
