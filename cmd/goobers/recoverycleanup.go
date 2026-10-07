@@ -92,6 +92,9 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
+	if gone, err := recovery.SettleGoneCleanupTarget(ctx, manager, target, request, publication); gone || err != nil {
+		return err
+	}
 	if terminal {
 		disposable, err := recoveryCleanupRepositorylessDisposable(target.Path)
 		if err != nil {
@@ -175,6 +178,11 @@ func recoveryCleanupHistoricalTarget(ctx context.Context, layout instance.Layout
 	request, err := recoveryCleanupRequest(layout, cfg, cleanupRoot, manager, key, target.Path, target.OwnerRunID, captureAt, publication)
 	if err != nil {
 		return retainUnknownBase(err)
+	}
+	if gone, err := recovery.SettleGoneCleanupTarget(ctx, manager, target, request, publication); err != nil {
+		return retainUnknownBase(err)
+	} else if gone {
+		return nil
 	}
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return retainUnknownBase(fmt.Errorf("abandoned recovery preparation could not be retained: %w", err))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -151,6 +152,23 @@ type CleanupTarget struct {
 	// Empty values identify legacy metadata and must not be guessed.
 	RepositoryDigest string
 	CreatedAt        time.Time
+}
+
+// LinkedWorktreeRepository returns the shared repository holding the refs of
+// the linked run worktree at path, or false when path is not a run worktree
+// directory of this manager. A linked worktree's branches live in that shared
+// repository, so they outlive the checkout directory itself (#5383).
+func (m *Manager) LinkedWorktreeRepository(path string) (string, bool) {
+	rel, err := filepath.Rel(m.Root, path)
+	if err != nil {
+		return "", false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) != 3 || parts[1] != "runs" || !validRunID(parts[0]) || !validRunID(parts[2]) ||
+		filepath.Join(m.runsDirForKey(parts[0]), parts[2]) != filepath.Clean(path) {
+		return "", false
+	}
+	return m.repoDirForKey(parts[0]), true
 }
 
 func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRunID string) error {
