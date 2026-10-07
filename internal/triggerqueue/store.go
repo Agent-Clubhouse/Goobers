@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`, childSchema, childAuthoritySchema, childProposalSchema}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -161,6 +161,9 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	}
 	if count >= MaxRecords {
 		return Record{}, false, ErrFull
+	}
+	if err := childByteCapacity(ctx, tx, len(payload)+len(actor)+len(key)); err != nil {
+		return Record{}, false, err
 	}
 	r = Record{ID: fmt.Sprintf("trigger-%x", randomID()), Key: key, Actor: actor, Payload: append([]byte(nil), payload...), State: Accepted, AcceptedAt: now.UTC()}
 	_, err = tx.ExecContext(ctx, "INSERT INTO triggers (id,key,actor,payload,state,accepted_ns) VALUES (?,?,?,?,?,?)", r.ID, r.Key, r.Actor, r.Payload, r.State, now.UnixNano())

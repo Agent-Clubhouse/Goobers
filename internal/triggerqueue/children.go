@@ -274,7 +274,7 @@ func (s *Store) AcceptChild(ctx context.Context, req ChildAcceptance, now time.T
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ChildRecord{}, false, err
 	}
-	if err = childIntakeCapacity(ctx, tx, identity.Gaggle, req.proposalBytes()); err != nil {
+	if err = childIntakeCapacity(ctx, tx, identity.Gaggle, req.proposalBytes()+childStorageReservation(req)); err != nil {
 		return ChildRecord{}, false, err
 	}
 	sequence, err := reserveChildOccurrence(ctx, tx, identity, req.MaxChildren, now)
@@ -299,6 +299,9 @@ func (s *Store) AcceptChild(ctx context.Context, req ChildAcceptance, now time.T
 		return ChildRecord{}, false, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO child_lineages(gaggle,parent_run,occurrence,invocation_key,sequence,child_id,acceptance_id,start_key,actor_digest,payload_digest,state,accepted_ns,updated_ns,proposal_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, identity.Gaggle, identity.ParentRunID, identity.StageOccurrence, identity.InvocationKey, sequence, "child-"+runID, acceptanceID, startKey, childDigest([]byte(req.Actor)), childDigest(req.Payload), ChildQueued, now.UnixNano(), now.UnixNano(), proposalDigest); err != nil {
+		return ChildRecord{}, false, err
+	}
+	if err := reserveChildStorage(ctx, tx, identity, childStorageReservation(req)); err != nil {
 		return ChildRecord{}, false, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE child_occurrences SET accepted_count=accepted_count+1 WHERE gaggle=? AND parent_run=? AND occurrence=?`, identity.Gaggle, identity.ParentRunID, identity.StageOccurrence); err != nil {
@@ -361,6 +364,14 @@ func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposa
 	if starts >= MaxRecords || lineages >= MaxChildLineages || tombstones >= MaxChildTombstones {
 		return ErrFull
 	}
+	return childByteCapacity(ctx, tx, proposalBytes)
+}
+
+func childByteCapacity(ctx context.Context, tx *sql.Tx, additionalBytes int) error {
+	var reserved int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(reserved_bytes),0) FROM child_lineages WHERE tombstoned_ns IS NULL AND acknowledged_ns IS NULL`).Scan(&reserved); err != nil {
+		return err
+	}
 	var pages, freePages, pageSize int64
 	if err := tx.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pages); err != nil {
 		return err
@@ -373,7 +384,7 @@ func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposa
 	}
 	// The existing database has a 256 MiB hard ceiling. Preserve 20% for
 	// transitions, cancellation and maintenance; do not add a second reserve.
-	if (pages-freePages)*pageSize+int64(proposalBytes)+MaxPayloadBytes+32*1024 > childStoreByteCeiling*4/5 {
+	if (pages-freePages)*pageSize+reserved+int64(additionalBytes)+MaxPayloadBytes+32*1024 > childStoreByteCeiling*4/5 {
 		return ErrFull
 	}
 	return nil
