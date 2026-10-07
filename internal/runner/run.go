@@ -1013,6 +1013,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
+	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+		return Result{}, err
+	}
 	effectiveControls, err := r.resolveRunControls(&in.RunControls)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: resolve run controls: %w", err)
@@ -1453,6 +1456,9 @@ func (r *Runner) newWalkGateEvaluator(ws *walkState) *gate.Evaluator {
 // gateDiffDigests likewise seeded so non-convergence detection continues
 // (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
+	if err := workflow.RefuseChildWorkflowExecution(ws.in.Machine.Def.Spec); err != nil {
+		return Result{}, err
+	}
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
 	// #2971: a subject parked on a shared baseline failure cannot un-park
 	// itself, so every run on the repository checks whether the base has moved

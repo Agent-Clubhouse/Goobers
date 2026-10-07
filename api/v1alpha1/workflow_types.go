@@ -204,8 +204,54 @@ const (
 	TaskOnTimeoutSalvage = "salvage"
 )
 
+// ChildWorkflowPolicy constrains child-workflow proposals from an agentic task.
+// The allowlists are ceilings, not independent credential grants. Execution is
+// refused until the child lifecycle is implemented on the selected backend.
+type ChildWorkflowPolicy struct {
+	// AllowedGoobers names existing Goobers in the workflow's pinned gaggle.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=128
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=128
+	// +listType=set
+	AllowedGoobers []string `json:"allowedGoobers" yaml:"allowedGoobers"`
+	// AllowedCapabilities limits child grants to registered stage capabilities.
+	// Omitted or empty grants none; actual grants still intersect enclosing policy.
+	// +kubebuilder:validation:MaxItems=128
+	// +listType=set
+	// +optional
+	AllowedCapabilities []string `json:"allowedCapabilities,omitempty" yaml:"allowedCapabilities,omitempty"`
+	// MaxChildren limits sequential child invocations per stage occurrence.
+	// Omitted uses four; the hard ceiling is 32. Only one child may be unfinished.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=32
+	// +kubebuilder:default=4
+	// +optional
+	MaxChildren int32 `json:"maxChildren,omitempty" yaml:"maxChildren,omitempty"`
+	// AllowPRPublication permits a submission to request PR publication.
+	// False by default; true cannot widen the enclosing publication policy.
+	// +optional
+	AllowPRPublication bool `json:"allowPRPublication,omitempty" yaml:"allowPRPublication,omitempty"`
+}
+
+const (
+	// DefaultMaxChildWorkflows limits sequential children when the policy omits a limit.
+	DefaultMaxChildWorkflows int32 = 4
+	// MaxChildWorkflows is the hard ceiling for one parent stage occurrence.
+	MaxChildWorkflows int32 = 32
+)
+
+// EffectiveMaxChildren resolves omission without changing the authored policy.
+func (p ChildWorkflowPolicy) EffectiveMaxChildren() int32 {
+	if p.MaxChildren == 0 {
+		return DefaultMaxChildWorkflows
+	}
+	return p.MaxChildren
+}
+
 // Task is a state in the workflow's state machine — the smallest unit of work the
 // engine tracks. It is exactly one of deterministic or agentic (TSK-002).
+// +kubebuilder:validation:XValidation:rule="!has(self.childWorkflows) || self.type == 'agentic'",message="childWorkflows requires type=agentic"
 type Task struct {
 	// Name uniquely identifies this state within the workflow.
 	// +kubebuilder:validation:Required
@@ -220,6 +266,10 @@ type Task struct {
 	// type=agentic; must be empty when type=deterministic (TSK-010).
 	// +optional
 	Goober string `json:"goober,omitempty" yaml:"goober,omitempty"`
+	// ChildWorkflows opts an agentic task into bounded child-workflow proposals.
+	// Available only in DSL 3.1; omission disables child tools.
+	// +optional
+	ChildWorkflows *ChildWorkflowPolicy `json:"childWorkflows,omitempty" yaml:"childWorkflows,omitempty"`
 	// Experiment routes this task across two or three declared safety arms.
 	// Variants overlay task inputs; selection and outcomes are journaled by the
 	// runner and promotion remains an external approval decision.
@@ -1096,6 +1146,7 @@ type WorkflowRequirements struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.tasks) || !self.spec.tasks.exists(t, has(t.childWorkflows)) || (has(self.dslVersion) && self.dslVersion == '3.1')",message="childWorkflows requires dslVersion 3.1"
 // +kubebuilder:resource:shortName=wf
 // +kubebuilder:subresource:status
 
