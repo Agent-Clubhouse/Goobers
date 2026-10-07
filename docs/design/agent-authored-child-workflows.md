@@ -4,8 +4,8 @@
 > Area: DSL, agent tools, execution, workspaces, journal, Portal
 > Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
 
-> Design approved for incremental delivery on 2026-10-06. Implementation and
-> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
+> Design approved for incremental delivery on 2026-10-06. The incremental delivery
+> ledger records landed slices. Later implementation notes describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
 > not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
 > remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
@@ -23,7 +23,7 @@ journey and its enabled backends are qualified.
 
 | Slice | Scope included in this slice | Remaining boundary |
 | --- | --- | --- |
-| [LAND-C01 / #6880](https://github.com/Agent-Clubhouse/Goobers/pull/6880) / HAW-CHD-001 and validation portion of HAW-CHD-002 | Preview DSL 3.1 opt-in, bounded proposal checks and `goobers workflow validate-child` against the configured parent; typed diagnostics, policy identity and publication ceilings | Validation is advisory. Runtime admission, credentials, child starts, durable waits and workspace handoff are not enabled; both runtimes explicitly refuse opted-in execution. |
+| [LAND-C01 / #6880](https://github.com/Agent-Clubhouse/Goobers/pull/6880) / HAW-CHD-001 and validation portion of HAW-CHD-002 | **Merged in #6880** (`7ba3f512c15c3c509ab62a962b4f532dc74ebc18`). Preview DSL 3.1 opt-in, bounded proposal checks and `goobers workflow validate-child` against the configured parent; typed diagnostics, policy identity and publication ceilings | Validation is advisory. Runtime admission, credentials, child starts, durable waits and workspace handoff are not enabled; both runtimes explicitly refuse opted-in execution. |
 | [LAND-C02a / #6881](https://github.com/Agent-Clubhouse/Goobers/pull/6881) / identity prerequisite of HAW-CHD-003 | Journal-bound stage occurrence and attempt identities, carried through the runner invocation and agent dispatch kit; retries/recovery retain an occurrence, revisits and parallel branches get distinct occurrences | Identity alone grants no child authority. Public runtime entry points continue to refuse child-enabled execution until admission, custody and launch wiring are qualified. Temporal projection ordinals are never presented as committed journal identities. |
 | [LAND-C02b / #6882](https://github.com/Agent-Clubhouse/Goobers/pull/6882) / admission portion of HAW-CHD-002–003 | Stage-bound grants, exact retained proposals, transactional lineage/receipt acceptance, bounded retention and completion reservation, HTTP/MCP adapters, policy reload fencing | Internal admission only. Public child execution remains refused; no workspace capture, launcher, durable wait or result disposition is enabled. See the [admission boundary](../guides/child-workflow-admission.md). |
 

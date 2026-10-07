@@ -937,6 +937,12 @@
       "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
     },
     {
+      "package": "internal/truncate",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/tutorguard",
       "coverage": "none",
       "category": "not-selected",

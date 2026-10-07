@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/truncate"
 )
 
 const (
@@ -324,10 +325,7 @@ func compactEvent(event journal.Event) journal.Event {
 
 func boundedString(value string) string {
 	const limit = 1024
-	if len(value) <= limit {
-		return value
-	}
-	return value[:limit] + "..."
+	return truncate.Bytes(value, limit, "...")
 }
 
 func projectEvents(events []journal.Event) []journal.Event {
