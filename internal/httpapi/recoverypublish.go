@@ -5,6 +5,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+
+	"github.com/goobers/goobers/internal/apicontract"
 )
 
 // RecoveryPublisher authenticates the current issue claim before reading the
@@ -15,7 +17,7 @@ type RecoveryPublisher interface {
 	PublishRecovery(context.Context, string, string, string, io.Reader) error
 }
 
-const maxRecoveryUploadBytes int64 = (512 << 20) + (16 << 10) + 4
+const maxRecoveryUploadBytes int64 = apicontract.RecoveryArchiveMaxBytes + (16 << 10) + 4
 
 func recoveryPublishHandler(service RecoveryService, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {

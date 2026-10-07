@@ -80,7 +80,8 @@
         "acceptanceId": {
           "description": "Durable start receipt retaining the accepted child proposal and execution custody.",
           "type": "string",
-          "pattern": "^trigger-[0-9a-f]{32}$"
+          "pattern": "^trigger-[0-9a-f]{32}$",
+          "examples": ["trigger-0123456789abcdef0123456789abcdef"]
         },
         "sourceDigest": {
           "description": "SHA-256 digest of the exact accepted Workflow source bytes.",

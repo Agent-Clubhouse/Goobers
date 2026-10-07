@@ -343,9 +343,10 @@ const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>]
 	"In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +\n" +
 	"GOOBERS_GAGGLE) the query is answered by the daemon's bounded\n" +
 	"defect-aggregate plane instead of a local rollup file. That plane serves\n" +
-	"only --aggregate stage-failure-rate, error-signature, gate-noise and\n" +
-	"credit-assignment with --format candidate-findings, error signatures are\n" +
-	"normalized by the daemon before they cross, and the read is contained to\n" +
+	"only --aggregate stage-failure-rate, error-signature, gate-noise,\n" +
+	"credit-assignment and ci-check-failure with --format candidate-findings,\n" +
+	"error signatures are normalized by the daemon before they cross, and the\n" +
+	"read is contained to\n" +
 	"the stage's own gaggle. Anything outside that — another --format, another\n" +
 	"aggregate, --learning-action, a path argument, or a threshold governing an\n" +
 	"unserved family — is refused rather than answered narrowly. Off the plane,\n" +
@@ -869,7 +870,7 @@ type telemetryQueryPlaneRequest struct {
 // The artifact it writes is the same document the local path writes, through
 // the same writer and against the same schema. The two differences are the
 // ones the ruling asks for: error-signature subjects arrive normalized, and
-// anything outside the admitted four families is refused here rather than
+// anything outside the admitted families is refused here rather than
 // silently omitted from the answer.
 func runTelemetryQueryOverPlane(
 	client *telemetryclient.HTTP,
@@ -955,9 +956,6 @@ func telemetryQueryPlaneAggregates(request telemetryQueryPlaneRequest) ([]teleme
 func telemetryQueryUnexpressibleThresholds(thresholds rollup.Thresholds) []string {
 	defaults := rollup.DefaultThresholds()
 	var unexpressible []string
-	if thresholds.MinCICheckFailureRuns != defaults.MinCICheckFailureRuns {
-		unexpressible = append(unexpressible, "min-ci-check-failure-runs")
-	}
 	if thresholds.MinLearningEpisodeRuns != defaults.MinLearningEpisodeRuns {
 		unexpressible = append(unexpressible, "min-learning-episode-runs")
 	}
@@ -979,6 +977,7 @@ func telemetryQueryPlaneThresholds(thresholds rollup.Thresholds) telemetryclient
 		MaxFlaggedRuns:         thresholds.MaxFlaggedRuns,
 		MinCreditRuns:          thresholds.MinCreditRuns,
 		MinCreditFailureShare:  thresholds.MinCreditFailureShare,
+		MinCICheckFailureRuns:  thresholds.MinCICheckFailureRuns,
 	}
 }
 
