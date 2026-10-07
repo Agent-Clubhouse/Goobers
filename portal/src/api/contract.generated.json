@@ -284,7 +284,7 @@
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 60000,
+      "budgetMs": 316000,
       "streaming": false,
       "recoverySafe": false
     },

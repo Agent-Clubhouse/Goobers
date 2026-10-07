@@ -74,7 +74,7 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		// Worker recovery uploads stream a bounded binary archive; they do
 		// not use the Portal's JSON client or its ten-second abort.
 		if route.ID == RouteRunRecoveryPublish {
-			if route.Budget != BlobBudget || route.Cost != CostMutation {
+			if route.Budget != RecoveryPublishBudget || route.Cost != CostMutation {
 				t.Error("recovery upload lost its transfer budget or mutation admission")
 			}
 			continue
@@ -303,4 +303,28 @@ func TestBlobBudgetsExceedTheClientAbort(t *testing.T) {
 	t.Logf("known mismatch: blob routes budget %s against a %s client abort; the trailing %s "+
 		"is unreachable until the portal gains a per-request timeout for downloads",
 		BlobBudget, clientAbort, BlobBudget-clientAbort)
+}
+
+// TestRecoveryPublishBudgetCarriesAMaximumArchive pins that the recovery upload
+// route's budget is derived from the archive size cap and the minimum
+// throughput, not borrowed from the blob budget that cut every real upload at
+// 65s (blob budget plus write-deadline margin).
+func TestRecoveryPublishBudgetCarriesAMaximumArchive(t *testing.T) {
+	route, ok := V1Route(RouteRunRecoveryPublish)
+	if !ok {
+		t.Fatal("recovery publish route missing")
+	}
+	if route.Budget != RecoveryPublishBudget {
+		t.Fatalf("budget = %s, want %s", route.Budget, RecoveryPublishBudget)
+	}
+	transfer := time.Duration(RecoveryArchiveMaxBytes/RecoveryPublishMinThroughput) * time.Second
+	if RecoveryPublishBudget != transfer+RecoveryPublishOverhead {
+		t.Fatalf("budget %s is not transfer %s + overhead %s", RecoveryPublishBudget, transfer, RecoveryPublishOverhead)
+	}
+	if RecoveryPublishBudget <= BlobBudget {
+		t.Fatalf("budget %s must exceed the blob budget %s that truncated uploads", RecoveryPublishBudget, BlobBudget)
+	}
+	if got, want := RecoveryPublishBudget, 316*time.Second; got != want {
+		t.Fatalf("budget = %s, want %s", got, want)
+	}
 }
