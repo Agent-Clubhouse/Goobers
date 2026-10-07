@@ -458,6 +458,17 @@ const (
 	// (cost_test.go clientAbort) does not bound it — the pod-side consumer
 	// owns its own retry-on-infra-budget discipline (DS7/#3361).
 	CredentialResolveBudget = 45 * time.Second
+	// JournalScanBudget covers the journal plane's cross-run scans that walk
+	// many per-run journals rather than answer one indexed question — today
+	// the decomposition escalation-candidates scan, which reads GetRun (and
+	// RunEvents for stage escalations) for every escalated run in the gaggle.
+	// On the production instance that is hundreds of runs on a CIFS share
+	// where each per-run read costs tens of milliseconds or more, so the scan
+	// cannot fit MutationBudget's 8s (#4342 follow-up). The route is called by
+	// stage pods, never the portal, so the portal's 10s client abort does not
+	// bound it; the journalclient round-trip timeout must stay above it
+	// (journalclient.DefaultHTTPTimeout, pinned by test).
+	JournalScanBudget = 60 * time.Second
 )
 
 var v1Routes = []Route{
@@ -616,7 +627,7 @@ var v1Routes = []Route{
 	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: JournalScanBudget},
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},

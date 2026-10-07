@@ -116,8 +116,13 @@ func TestRunJournalReadRoutesAreInTheContract(t *testing.T) {
 		if route.Method != http.MethodPost {
 			t.Errorf("route %s method = %s, want POST", id, route.Method)
 		}
-		if route.Cost != apicontract.CostMutation || route.Budget != apicontract.MutationBudget {
-			t.Errorf("route %s cost/budget = %s/%s, want mutation discipline", id, route.Cost, route.Budget)
+		wantBudget := apicontract.MutationBudget
+		if id == apicontract.RouteJournalEscalationCandidates {
+			// Cross-run scan over every escalated run's journal (#4342).
+			wantBudget = apicontract.JournalScanBudget
+		}
+		if route.Cost != apicontract.CostMutation || route.Budget != wantBudget {
+			t.Errorf("route %s cost/budget = %s/%s, want mutation admission with budget %s", id, route.Cost, route.Budget, wantBudget)
 		}
 	}
 }
