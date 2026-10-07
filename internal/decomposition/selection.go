@@ -175,7 +175,7 @@ func FindEscalationCandidates(ctx context.Context, reads EscalationReads) ([]Esc
 		if firstErr == nil {
 			firstErr = err
 		}
-		if !(errors.Is(err, context.Canceled) && ctx.Err() == nil) {
+		if !errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return nil, err
 		}
 	}
