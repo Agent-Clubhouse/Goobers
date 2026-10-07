@@ -37,8 +37,8 @@ func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issue
 	if consume == nil {
 		return fmt.Errorf("recovery download requires a consumer")
 	}
-	// Longer than the server's 60-second blob budget, including body streaming.
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	// Longer than the route's server cutoff, including body streaming.
+	ctx, cancel := context.WithTimeout(ctx, DownloadTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

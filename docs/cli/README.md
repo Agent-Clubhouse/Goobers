@@ -5073,9 +5073,10 @@ verified when the workflow is absent from the live reconciled config.
 In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +
 GOOBERS_GAGGLE) the query is answered by the daemon's bounded
 defect-aggregate plane instead of a local rollup file. That plane serves
-only --aggregate stage-failure-rate, error-signature, gate-noise and
-credit-assignment with --format candidate-findings, error signatures are
-normalized by the daemon before they cross, and the read is contained to
+only --aggregate stage-failure-rate, error-signature, gate-noise,
+credit-assignment and ci-check-failure with --format candidate-findings,
+error signatures are normalized by the daemon before they cross, and the
+read is contained to
 the stage's own gaggle. Anything outside that — another --format, another
 aggregate, --learning-action, a path argument, or a threshold governing an
 unserved family — is refused rather than answered narrowly. Off the plane,

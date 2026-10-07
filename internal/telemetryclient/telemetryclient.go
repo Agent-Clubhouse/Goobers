@@ -11,7 +11,7 @@
 // Scope is deliberately narrow. This client reads DERIVED, low-sensitivity
 // projections only: the implementation-outcome evidence
 // `backlog-health --feedback` needs, and — since Goobers#4001, the blocker-1
-// half of #3996 — the four fixed defect-nomination aggregates
+// half of #3996 — the fixed defect-nomination aggregates
 // `telemetry-query` needs (defectaggregates.go). Neither read exposes the
 // telemetry database, a query, a path, or a connector, and error signatures
 // are NORMALIZED by the daemon before they cross.
@@ -262,7 +262,7 @@ func (h *HTTP) ImplementationOutcomes(ctx context.Context, since time.Time) ([]I
 	path := apicontract.TelemetryImplementationOutcomesPath + "?" + query.Encode()
 	headers := make(http.Header)
 	headers.Set("Accept", "application/json")
-	response, err := h.plane.DoRaw(ctx, http.MethodGet, path, nil, headers)
+	response, err := h.plane.DoRetrying(ctx, http.MethodGet, path, nil, headers, true)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "build" {

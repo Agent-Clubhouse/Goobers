@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/engineoperator"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -45,6 +46,10 @@ type daemonRunJournalService struct {
 	operatorMessages engineoperator.Service
 	layout           instance.Layout
 	log              *journal.InstanceLog
+	// reads is the daemon's live, read-model-backed run reader. The
+	// escalation-candidates route answers from it, never from an offline
+	// journal scan (#6889 follow-up).
+	reads decomposition.EscalationReads
 }
 
 func newDaemonRunJournalService(layout instance.Layout, log *journal.InstanceLog) *daemonRunJournalService {
@@ -155,17 +160,19 @@ func (s *daemonRunJournalService) UnpushedWork(ctx context.Context, request jour
 // EscalationCandidates answers the gaggle's outstanding decomposition
 // escalation candidates (#4342): the same
 // decomposition.FindEscalationCandidates scan select-source ran directly off
-// disk before this route existed, run here over the SAME FileCrossRun this
-// service backs every other cross-run question with — so a pod and a
-// self-runner select-source can never see a different candidate set.
+// disk before this route existed — so a pod and a self-runner select-source
+// see the same candidate set. It reads the daemon's live read model (read.db),
+// not FileCrossRun's offline scan of every run journal on disk.
 func (s *daemonRunJournalService) EscalationCandidates(ctx context.Context, request journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error) {
 	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
 		return journalclient.EscalationCandidatesResponse{}, gaggleMismatch("a decomposition escalation-candidates read")
 	}
-	candidates, err := s.crossRun().EscalationCandidates(ctx, journalclient.EscalationCandidatesRequest{
-		RunID:  request.RunID,
-		Gaggle: request.Gaggle,
-	})
+	if s.reads == nil {
+		return journalclient.EscalationCandidatesResponse{}, errors.New("escalation candidates: the daemon's live read model is not attached")
+	}
+	// The daemon's live read model lists the escalated runs by an indexed phase
+	// query; the offline journal scan (FileCrossRun) is never used here.
+	candidates, err := journalclient.EscalationCandidatesFromReads(ctx, s.reads, request.Gaggle)
 	if err != nil {
 		return journalclient.EscalationCandidatesResponse{}, err
 	}

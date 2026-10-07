@@ -230,6 +230,42 @@ func inputsFromError(
 	completed stageOutputs,
 	qualified bool,
 ) error {
+	err := inputsFromMissError(taskName, inputKey, value, upstream, completed, qualified)
+	if cause := upstreamFailureCause(upstream); cause != "" {
+		return fmt.Errorf("%w; the preceding stage had FAILED (%s), which is why it produced no such output", err, cause)
+	}
+	return err
+}
+
+// upstreamFailureCause names why the preceding stage failed, or "" when it did
+// not. A failed stage whose Next is a gate still advances (the gate branches on
+// the honest failed status), so a consumer past that gate can find its input
+// missing because of the failure, not because the stage forgot to emit it
+// (#6890). Without this the run's only diagnostic names a missing output and
+// the provider error that caused it is buried in an earlier stage.
+func upstreamFailureCause(upstream apiv1.ResultEnvelope) string {
+	if upstream.Status != apiv1.ResultFailure {
+		return ""
+	}
+	if upstream.Error == nil || upstream.Error.Message == "" {
+		return "no error detail"
+	}
+	message := upstream.Error.Message
+	if len(message) > 300 {
+		message = message[:300] + "…"
+	}
+	if upstream.Error.Code != "" {
+		return upstream.Error.Code + ": " + message
+	}
+	return message
+}
+
+func inputsFromMissError(
+	taskName, inputKey, value string,
+	upstream apiv1.ResultEnvelope,
+	completed stageOutputs,
+	qualified bool,
+) error {
 	if stage, key, ok := splitQualified(value); ok && qualified {
 		if produced, seen := completed[stage]; seen {
 			return fmt.Errorf("task %q: inputsFrom %q: stage %q produced no output %q (it emitted: %s)",

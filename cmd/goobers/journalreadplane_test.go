@@ -300,6 +300,7 @@ func TestDaemonEscalationCandidatesStaysInsideTheGaggle(t *testing.T) {
 	seedEscalatedRun(t, layout, "other-gaggle", "escalated-theirs", "999")
 
 	service := newDaemonRunJournalService(layout, nil)
+	service.reads = liveEscalationReads(t, layout)
 	response, err := service.EscalationCandidates(context.Background(), journalclient.EscalationCandidatesRequest{
 		RunID: "asking-run", Gaggle: crossRunTestGaggle,
 	})
