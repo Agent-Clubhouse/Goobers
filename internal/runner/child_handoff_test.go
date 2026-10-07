@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -56,7 +57,7 @@ func TestChildWaitMarkerRejectsForgedOccurrenceAndSibling(t *testing.T) {
 	reader, _ := journal.OpenRead(run.Dir())
 	events, _ := reader.Events()
 	record := childWaitRecord{Version: 1, ParentRunID: frame.in.RunID, Request: ChildHandoffRequest{Gaggle: "web", ParentRunID: "origin-run", RequestID: journal.Digest([]byte("wait")), Action: "wait", ChildRunID: "child-run", AcceptanceID: "trigger-child-run", InvocationKey: "child", SourceDigest: journal.Digest([]byte("source")), Origin: *frame.childOrigin}}
-	for _, field := range []string{"occurrence", "branch", "run"} {
+	for _, field := range []string{"occurrence", "branch", "run", "source-uppercase", "source-traversal", "request-short"} {
 		t.Run(field, func(t *testing.T) {
 			changed := record
 			if field == "occurrence" {
@@ -64,6 +65,14 @@ func TestChildWaitMarkerRejectsForgedOccurrenceAndSibling(t *testing.T) {
 			}
 			if field == "run" {
 				changed.ParentRunID = "wrong-run"
+			}
+			switch field {
+			case "source-uppercase":
+				changed.Request.SourceDigest = "sha256:" + strings.Repeat("A", 64)
+			case "source-traversal":
+				changed.Request.SourceDigest = "sha256:" + strings.Repeat("a", 61) + "/.."
+			case "request-short":
+				changed.Request.RequestID = "sha256:abc"
 			}
 			event, err := childWaitEvent(frame.t.Name, 1, "", changed)
 			if err != nil {

@@ -3,9 +3,9 @@ package journal
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/blobstore"
 )
 
 // ChildWaitKind marks durable host custody independent of runner implementation.
@@ -32,7 +32,7 @@ type ChildHandoffRequest struct {
 
 // Validate binds the receipt to a trusted current stage occurrence.
 func (r ChildHandoffRequest) Validate(origin *apiv1.ChildWorkflowOrigin) error {
-	if origin == nil || r.Origin != *origin || r.Gaggle == "" || len(r.Gaggle) > 128 || !apiv1.ValidRunID(r.ParentRunID) || len(r.ParentRunID) > 256 || !blobstore.ValidDigest(r.RequestID) || !blobstore.ValidDigest(r.SourceDigest) || !apiv1.ValidRunID(r.ChildRunID) || len(r.ChildRunID) > 256 || r.AcceptanceID != "trigger-"+r.ChildRunID || r.InvocationKey == "" || len(r.InvocationKey) > 256 {
+	if origin == nil || r.Origin != *origin || r.Gaggle == "" || len(r.Gaggle) > 128 || !apiv1.ValidRunID(r.ParentRunID) || len(r.ParentRunID) > 256 || !validChildDigest(r.RequestID) || !validChildDigest(r.SourceDigest) || !apiv1.ValidRunID(r.ChildRunID) || len(r.ChildRunID) > 256 || r.AcceptanceID != "trigger-"+r.ChildRunID || r.InvocationKey == "" || len(r.InvocationKey) > 256 {
 		return fmt.Errorf("runner: child handoff receipt does not match the active invocation")
 	}
 	switch r.Action {
@@ -41,6 +41,13 @@ func (r ChildHandoffRequest) Validate(origin *apiv1.ChildWorkflowOrigin) error {
 	default:
 		return fmt.Errorf("runner: unsupported child handoff action")
 	}
+}
+
+// Keep journal validation independent of the blob storage implementation while
+// preserving canonical lowercase receipt identities.
+func validChildDigest(value string) bool {
+	_, err := digestHex(value)
+	return err == nil && value == strings.ToLower(value)
 }
 
 // ChildWaitHeader is the bounded authority projection shared by scheduling and
