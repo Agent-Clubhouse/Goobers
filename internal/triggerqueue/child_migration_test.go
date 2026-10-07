@@ -67,3 +67,49 @@ func TestChildCustodyUpgradePreservesAdmittedReceiptAndReservation(t *testing.T)
 		t.Fatal("downgrade refusal damaged retained result", err)
 	}
 }
+
+func TestChildDispositionUpgradePreservesReturnedWorkspaceAndCredits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "returned.db")
+	db, err := sql.Open("sqlite", sqliteuri.File(path)+"?_txlock=immediate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	if err := sqliteschema.Migrate(t.Context(), db, "triggerqueue", migrations[:7]); err != nil {
+		t.Fatal(err)
+	}
+	before := &Store{db: db}
+	child := acceptChildTest(t, before, reservedChildRequest("returned-parent"), childTestTime)
+	if _, err := db.Exec(`UPDATE child_lineages SET reserved_bytes=34050048 WHERE child_id=?`, child.ChildID); err != nil {
+		t.Fatal(err)
+	}
+	if err := before.KeepChildSnapshot(t.Context(), child, childSnapshotTestValue("fork", "fork-bundle")); err != nil {
+		t.Fatal(err)
+	}
+	result := childResultValue("returned-result", "returned-bundle")
+	if err := before.KeepChildResult(t.Context(), child, result); err != nil {
+		t.Fatal(err)
+	}
+	remaining := childReservedBytes(t, before, child.ChildID)
+	if err := before.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after := openTestStore(t, path)
+	got, err := after.ChildResult(t.Context(), child.Identity)
+	if err != nil || got.ReceiptDigest != result.ReceiptDigest || string(got.Bundle) != "returned-bundle" {
+		t.Fatalf("upgrade changed returned custody: %+v, %v", got, err)
+	}
+	if err := after.KeepChildResult(t.Context(), child, result); err != nil {
+		t.Fatal(err)
+	}
+	if got := childReservedBytes(t, after, child.ChildID); got != remaining+childDispositionHistoryAllowance {
+		t.Fatalf("upgrade or duplicate result changed reserved credits: %d", got)
+	}
+	if _, err := after.ChildDisposition(t.Context(), child.Identity); !errors.Is(err, ErrChildDispositionPending) {
+		t.Fatalf("upgrade invented a parent choice: %v", err)
+	}
+	if err := sqliteschema.Migrate(t.Context(), after.db, "triggerqueue", migrations[:7]); err == nil {
+		t.Fatal("older custody writer accepted disposition schema")
+	}
+}

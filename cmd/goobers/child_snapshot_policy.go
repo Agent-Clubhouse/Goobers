@@ -32,6 +32,22 @@ func (h *daemonChildHandoff) yieldedWorkspace(ctx context.Context, service *daem
 		return parent, err
 	}
 	parent.RepositoryKey, parent.Policy = fork.Record.RepositoryKey, fork.Policy
+	if action != "discard" {
+		current, err := childSnapshotPolicy(custody.Path, h.layout.Root, service.config)
+		if err != nil {
+			return parent, err
+		}
+		// Preserve the immutable capture policy, but never apply it across a
+		// newly protected credential path introduced by current configuration.
+		for _, name := range current.ExcludedPaths {
+			covered := slices.ContainsFunc(fork.Policy.ExcludedPaths, func(prior string) bool {
+				return strings.EqualFold(name, prior) || strings.HasPrefix(strings.ToLower(name), strings.ToLower(prior)+"/")
+			})
+			if !covered {
+				return parent, childworkflow.ErrAuthorityChanged
+			}
+		}
+	}
 	return parent, nil
 }
 

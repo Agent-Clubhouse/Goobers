@@ -36,7 +36,7 @@ idempotent and binaries that do not understand the resulting schema must refuse
 it. Back up the instance before upgrading. Do not downgrade the database in place
 or discard unresolved custody to restore an older binary.
 
-Admission reserves 34,050,048 bytes per authored child for eventual fork/result
+The admission-only version reserves 34,050,048 bytes per authored child for eventual fork/result
 artifacts, receipts, and the application plan, in addition to existing retained
 bytes. Ordinary admissions respect these reservations. A later workspace slice
 must consume reserved credits as it stores artifacts and release them only with
@@ -88,14 +88,56 @@ actual permissions or isolate stored CLI logins.
 The current internal handoff is serial and requires a managed repository workspace.
 Parallel parent stages, parent pod waits, and the supported contained executor need
 separate qualification before runtime enablement. Admission's separate per-stage
-slots do not imply that these execution shapes already work. Merge, replace, and
-discard are refused here; completed children remain unacknowledged and retain their
-slot and evidence until the disposition follow-up lands. No recursion is enabled.
+slots do not imply that these execution shapes already work. The disposition
+follow-up below releases completed child slots only after a verified parent
+choice. No recursion is enabled.
+
+## Parent result disposition
+
+The `resolve_child_workflow` tool accepts merge, replace, or discard for the exact
+terminal result returned by `get_child_workflow`. Acceptance records intent; an
+`applied=false` receipt means the runner still needs to finish the handoff. The
+parent must not write through that handoff. A completed child keeps its stage
+slot until the chosen disposition is verified and acknowledged.
+
+Merge applies the fork-to-child change to the current parent; replace uses the
+child's permitted tree. Both preserve excluded runtime/credential paths and the
+parent HEAD, and stage only the changed paths. A newly configured credential path
+outside the retained exclusions prevents merge or replace until authority is
+reconciled; nonmutating discard remains available. A conflicting merge leaves the
+parent untouched. Discard settles verified result custody without importing or
+changing parent files and never retracts provider effects such as a published PR.
+File/directory shape replacement remains unavailable; a plan is limited to 1,024
+changed paths and 16 MiB of before/after content.
+
+The host stops and joins parent writers, checks the current stage authority and
+exact disposition revision, and persists a bounded application plan before
+changing files. Retrying a published plan accepts only its recorded before/after
+states and verifies the resulting files and index. An unrelated edit, changed
+HEAD/index, or substituted symlink refuses recovery. The parent remains stopped
+while an uncertain published plan needs reconciliation. An untouched preparation
+failure can return a bounded explanation to the parent so it can revise its choice.
+
+A replacement attempt must explicitly adopt the prior request by supplying its
+`expectedRequestDigest`. Only an unpublished plan can change action; a published
+plan must be resumed unchanged. Up to 32 earlier choices are retained as bounded
+receipts, then the system refuses further revision rather than deleting history.
+
+Migrations 8–9 add disposition intent and revision history after custody version 7.
+Admission now reserves 34,181,120 bytes per authored child, including 128 KiB for
+revision history. Migration increases the reservation for existing unresolved
+children; exhausted capacity continues to refuse new intake. A family tombstone
+releases its associated history, while unresolved plans retain their evidence.
+Back up before upgrading; older binaries refuse the newer schema.
+
+This remains internal runtime preparation. Public execution stays disabled until
+an isolated backend and its supported parent/child execution shape are qualified.
+The tool and local disposition do not implement delegated PR publication.
 
 ## Remaining delivery gates
 
 Public parent→child→result execution still requires a qualified isolated backend,
-result disposition, delegated PR publication, and Portal lineage in the remaining
+delegated PR publication and Portal lineage in the remaining
 LAND-C04–C07 slices. Internal custody/wait tests do not qualify a live provider,
 pod, Temporal, or Fleet execution journey. Human restart is the common
 HITL path. No browser, human, or Fleet identity is inferred from a stage grant.

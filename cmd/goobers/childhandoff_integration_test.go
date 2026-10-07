@@ -141,6 +141,13 @@ func TestIntegrationDaemonDispositionUsesRetainedCredentialPolicy(t *testing.T) 
 	if err != nil || !slices.Equal(yielded.Policy.ExcludedPaths, fork.Policy.ExcludedPaths) {
 		t.Fatal("disposition recomputed changed policy", yielded.Policy, err)
 	}
+	changed.Webhook.Secret = instance.TokenRef{File: filepath.Join(parent, "new-private.txt")}
+	if _, err := f.host.yieldedWorkspace(t.Context(), f.service, &coordinator, f.child, "merge", custody, parent); !errors.Is(err, childworkflow.ErrAuthorityChanged) {
+		t.Fatalf("new credential exclusion did not fence mutation: %v", err)
+	}
+	if _, err := f.host.yieldedWorkspace(t.Context(), f.service, &coordinator, f.child, "discard", custody, parent); err != nil {
+		t.Fatalf("new credential exclusion prevented nonmutating discard: %v", err)
+	}
 	f.service.config = original
 	disposition, err := f.host.Await(t.Context(), f.env)
 	if err != nil {
