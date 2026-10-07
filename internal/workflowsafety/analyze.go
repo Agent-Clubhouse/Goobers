@@ -334,14 +334,18 @@ func (a *analyzer) unknownObligation(stages, path []string, impact string) {
 	}
 }
 
-func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
+// supersedeUnknownEvidence forgets earlier unknown stages once a known
+// subject or evidence change supersedes what they might have produced,
+// unless a selected PR is still not bound to the workspace: an earlier
+// unknown stage may be that binding.
+func (f *frame) supersedeUnknownEvidence(e Effects) {
 	if e.SelectsPR || ((e.Changes || e.Patch) && (!f.pr || f.rebound)) {
-		// A later known subject or evidence change supersedes what earlier
-		// unknown stages might have produced, unless a selected PR is still
-		// not bound to the workspace: an earlier unknown stage may be that
-		// binding.
 		f.evidenceUnknown = nil
 	}
+}
+
+func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
+	f.supersedeUnknownEvidence(e)
 	if e.SelectsPR {
 		f.pr = true
 		f.patch, f.rebound, f.localAttempt = false, false, false
