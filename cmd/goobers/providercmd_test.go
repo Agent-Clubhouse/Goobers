@@ -194,6 +194,9 @@ type fakeGitHubServer struct {
 	issueItemGetRequests int
 	hiddenIssueLabels    map[int]map[string]int
 	issueGetMutations    map[int][]func(*fakeGitHubServer, *fakeIssue)
+	// bumpUpdatedAtOnWrite makes comment and label-add writes advance the
+	// issue's updated_at, as real GitHub does (#6903).
+	bumpUpdatedAtOnWrite bool
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -616,6 +619,12 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 	}
 	for _, label := range labels {
 		s.appendLabelEventLocked(number, label, true, createdAt)
+	}
+}
+
+func (s *fakeGitHubServer) bumpUpdatedAtLocked(issue *fakeIssue) {
+	if s.bumpUpdatedAtOnWrite {
+		issue.updatedAt = issue.updatedAt.Add(time.Hour)
 	}
 }
 
@@ -1173,6 +1182,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		decodeFakeJSON(r, &body)
 		s.nextCommentID++
+		s.bumpUpdatedAtLocked(issue)
 		issue.comments = append(issue.comments, body.Body)
 		issue.commentIDs = append(issue.commentIDs, s.nextCommentID)
 		issue.commentAuthors = append(issue.commentAuthors, s.authenticatedLogin)
@@ -1189,6 +1199,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			if hasAllLabels(issue.labels, []string{label}) {
 				continue
 			}
+			s.bumpUpdatedAtLocked(issue)
 			issue.labels = append(issue.labels, label)
 			if pr := s.prs[num]; pr != nil {
 				pr.labels = append(pr.labels, label)

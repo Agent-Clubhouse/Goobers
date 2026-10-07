@@ -318,7 +318,19 @@ func (f *FileCrossRun) EscalationCandidates(ctx context.Context, req EscalationC
 	if err != nil {
 		return nil, err
 	}
-	found, err := decomposition.FindEscalationCandidates(ctx, offline)
+	return EscalationCandidatesFromReads(ctx, offline, "")
+}
+
+// EscalationCandidatesFromReads runs the shared selection over any run reader.
+// The daemon passes its live read-model-backed service with the request's
+// gaggle (so the list is scoped by the indexed gaggle column); FileCrossRun
+// passes the layout-scoped offline reader with no gaggle. The qualification
+// rules and ordering are decomposition.FindEscalationCandidates's in both.
+func EscalationCandidatesFromReads(ctx context.Context, reads decomposition.EscalationReads, gaggle string) ([]EscalationCandidate, error) {
+	if gaggle != "" {
+		reads = gaggleScopedReads{EscalationReads: reads, gaggle: gaggle}
+	}
+	found, err := decomposition.FindEscalationCandidates(ctx, reads)
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +348,17 @@ func (f *FileCrossRun) EscalationCandidates(ctx context.Context, req EscalationC
 		})
 	}
 	return candidates, nil
+}
+
+// gaggleScopedReads pins every ListRuns to one gaggle.
+type gaggleScopedReads struct {
+	decomposition.EscalationReads
+	gaggle string
+}
+
+func (g gaggleScopedReads) ListRuns(ctx context.Context, options readservice.RunListOptions) (readservice.RunList, error) {
+	options.Gaggle = g.gaggle
+	return g.EscalationReads.ListRuns(ctx, options)
 }
 
 // BranchOwnership implements CrossRun by opening the target run's own

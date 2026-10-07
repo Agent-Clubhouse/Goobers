@@ -598,6 +598,10 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	if input.Run == nil {
 		attempt.Agentic = true
 		envelope := input.Envelope
+		if envelope.ChildWorkflowOrigin != nil {
+			origin := *envelope.ChildWorkflowOrigin
+			envelope.ChildWorkflowOrigin = &origin
+		}
 		attempt.Envelope = &envelope
 		// The completion contract rides the attempt into the kit writer, which
 		// stamps it as agentickit.Kit.Mode inside the verified claim check.

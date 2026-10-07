@@ -10,9 +10,33 @@
     {
       "if": { "required": ["nestedAgentPolicy"] },
       "then": { "required": ["attempt", "goober", "ownershipBoundary", "parentPlatformPolicy"] }
+    },
+    {
+      "if": { "required": ["childWorkflowOrigin"] },
+      "then": { "required": ["attempt", "goober", "ownershipBoundary"] }
     }
   ],
   "properties": {
+    "childWorkflowOrigin": {
+      "type": "object",
+      "description": "Runner-authored durable parent occurrence and dispatch identities; contains no credentials or policy grants.",
+      "additionalProperties": false,
+      "required": ["stageOccurrence", "attemptId"],
+      "properties": {
+        "stageOccurrence": {
+          "type": "string",
+          "pattern": "^sta_[A-Za-z0-9_-]{43}$",
+          "examples": ["sta_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+          "description": "Identity of the first committed stage start for this task visit and branch; retained across retry, recovery and human restart."
+        },
+        "attemptId": {
+          "type": "string",
+          "pattern": "^sta_[A-Za-z0-9_-]{43}$",
+          "examples": ["sta_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+          "description": "Identity bound to the current committed stage-start event; changes for each replacement dispatch without granting child authority."
+        }
+      }
+    },
     "artifactPublication": {
       "type": "object",
       "description": "Runner-owned DSL 3.1 publication contract, pinned to the stage visit.",

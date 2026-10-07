@@ -155,3 +155,22 @@ func writeExcludeTestFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestExcludeStageArtifactsHidesHarnessScratch is the regression for a blocked
+// pod stage going through recovery custody: the harness scratch directory and
+// goober assets are untracked in a pod checkout, so before this they made a
+// stage that changed nothing look dirty.
+func TestExcludeStageArtifactsHidesHarnessScratch(t *testing.T) {
+	workspace := initExcludeTestRepo(t)
+	ExcludeStageArtifacts(context.Background(), workspace, "claimed-item.json")
+	writeExcludeTestFile(t, filepath.Join(workspace, ".goobers", "mcp", "claude.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, ".goobers", "result.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, ".goober-assets", "skill.md"), "x\n")
+	if status := runExcludeTestGit(t, workspace, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Fatalf("harness scratch still dirties the workspace: %q", status)
+	}
+	writeExcludeTestFile(t, filepath.Join(workspace, "agent-work.txt"), "real work\n")
+	if status := runExcludeTestGit(t, workspace, "status", "--porcelain"); !strings.Contains(status, "agent-work.txt") {
+		t.Fatalf("real work hidden: %q", status)
+	}
+}

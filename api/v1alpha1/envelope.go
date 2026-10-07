@@ -26,7 +26,8 @@ import "fmt"
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
 // v1alpha10 adds immutable workspace-revision authority.
 // v1alpha11 adds the runner-owned named artifact publication contract.
-const StageContractVersion = "v1alpha11"
+// v1alpha12 adds durable child-workflow stage origin identities.
+const StageContractVersion = "v1alpha12"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -39,6 +40,18 @@ type ArtifactPublication struct {
 	Stage string         `json:"stage"`
 	Visit uint64         `json:"visit"`
 	Slots []ArtifactSlot `json:"slots"`
+}
+
+// ChildWorkflowOrigin identifies one admitted parent task occurrence and its
+// current dispatch. StageOccurrence retains the first durable StageAttemptID
+// across retries, crash replacements and human restarts. AttemptID names the
+// current stage.started event. A new visit to the task gets a new occurrence.
+// These identifiers confer no authority: the server resolves policy from the
+// pinned configuration and provisions any credential outside this envelope.
+// +kubebuilder:object:generate=false
+type ChildWorkflowOrigin struct {
+	StageOccurrence string `json:"stageOccurrence"`
+	AttemptID       string `json:"attemptId"`
 }
 
 // InvocationEnvelope is the standard context block delivered to a stage at
@@ -55,6 +68,9 @@ type ArtifactPublication struct {
 // deep-copied generically).
 // +kubebuilder:object:generate=false
 type InvocationEnvelope struct {
+	// ChildWorkflowOrigin is present only for an opted-in agentic task. The
+	// runner derives it from committed stage.started metadata, never Inputs.
+	ChildWorkflowOrigin *ChildWorkflowOrigin `json:"childWorkflowOrigin,omitempty"`
 	// ArtifactPublication authorizes named output publication. It is never
 	// populated from stage inputs or model-authored completion metadata.
 	ArtifactPublication *ArtifactPublication `json:"artifactPublication,omitempty"`
