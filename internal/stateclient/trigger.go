@@ -83,7 +83,8 @@ func (h *HTTP) PriorityTrigger(ctx context.Context, workflow, sourceRun string) 
 	headers := make(http.Header)
 	headers.Set("Idempotency-Key", requestID)
 	headers.Set("Accept", "application/json")
-	response, err := h.plane.DoJSON(ctx, http.MethodPost, apicontract.TriggerIngestPath, body, headers)
+	// Replay-safe: the Idempotency-Key / RequestID is deduplicated by the daemon.
+	response, err := h.plane.DoJSONRetrying(ctx, http.MethodPost, apicontract.TriggerIngestPath, body, headers, true)
 	if err != nil {
 		var requestErr *planehttp.RequestError
 		if errors.As(err, &requestErr) && requestErr.Op == "encode" {

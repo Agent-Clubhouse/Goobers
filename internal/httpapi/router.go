@@ -588,6 +588,10 @@ type Router struct {
 	// letting a handler run against subsystems recovery has not finished
 	// opening yet.
 	recoveryGate func() bool
+
+	// budgetLog records requests whose budget expired before the handler wrote
+	// a response (#6890). nil disables the log, never the 503.
+	budgetLog *log.Logger
 }
 
 // ensureAdmission creates the controller on first use.
@@ -1032,9 +1036,8 @@ func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc
 	// Shed at admission rather than accept-and-timeout: queue wait counts
 	// against the budget, so a saturated class that accepts work it cannot
 	// finish burns the caller's whole budget and returns nothing anyway.
-	if release, admitted := r.admission.admit(route.Cost); admitted {
-		defer release()
-	} else {
+	release, admitted := r.admission.admit(route.Cost)
+	if !admitted {
 		writeAdmissionRefusal(w, route.Cost)
 		return
 	}
@@ -1044,8 +1047,13 @@ func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc
 	if budget, bounded := routeBudget(route.ID); bounded {
 		bounded, cancel := withBudget(w, request, budget)
 		defer cancel()
-		request = bounded
+		// The slot is returned when the handler goroutine ends, not when the
+		// response does: a handler abandoned at its budget still occupies the
+		// capacity the class limit is protecting (#6890).
+		serveWithBudgetAnswer(r.budgetLog, string(route.ID), budget, w, bounded, handler, release)
+		return
 	}
+	defer release()
 	handler(w, request)
 }
 
@@ -1095,6 +1103,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
+	router.budgetLog = errorLog
 	discovery, err := registerDiscoveryRoutes(router, config)
 	if err != nil {
 		return nil, fmt.Errorf("register API discovery routes: %w", err)

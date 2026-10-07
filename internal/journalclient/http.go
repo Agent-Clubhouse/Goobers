@@ -121,9 +121,11 @@ func (h *HTTP) do(ctx context.Context, method, path string, body any, limit int6
 	var response *http.Response
 	var err error
 	if body != nil {
-		response, err = h.plane.DoJSON(ctx, method, path, body, nil)
+		// Every journal POST is a cross-run READ carried in a body, so a replay
+		// has no effect to duplicate.
+		response, err = h.plane.DoJSONRetrying(ctx, method, path, body, nil, true)
 	} else {
-		response, err = h.plane.DoRaw(ctx, method, path, nil, nil)
+		response, err = h.plane.DoRetrying(ctx, method, path, nil, nil, true)
 	}
 	if err != nil {
 		var requestErr *planehttp.RequestError
