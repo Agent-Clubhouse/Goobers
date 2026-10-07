@@ -38,9 +38,9 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 		return childworkflow.Authority{}, err
 	}
 	defer func() { _ = lease.Release() }()
-	set, _, err := loadConfigDirectory(directory)
+	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
-		return childworkflow.Authority{}, fmt.Errorf("load child parent generation: %w", err)
+		return childworkflow.Authority{}, fmt.Errorf("load child parent generation: %w (%s)", err, validationIssueSummary(report))
 	}
 	backend := childworkflow.BackendRunner
 	if parent.EngineDriven() {
