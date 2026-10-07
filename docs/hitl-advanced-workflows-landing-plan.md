@@ -250,6 +250,23 @@ documented on main, with qualified deployment shapes and every snapshot item
 accounted for. It does not mean merging #6807 or preserving its original branch
 boundaries.
 
+### Extraction record: first child slices
+
+These records describe the extracted changes, not completion of the broader design.
+Verify each linked PR's merged state before treating its scope as delivered.
+
+| Slice | Review | Source and disposition | Acceptance boundary |
+| --- | --- | --- | --- |
+| LAND-C01 | Merged [#6880](https://github.com/Agent-Clubhouse/Goobers/pull/6880) as `7ba3f512c15c3c509ab62a962b4f532dc74ebc18` | Retains validation portions of `918fbd376`, `89a1032a3`, `a04dc1cc4` and `451574e98`: `api` policy/schema, compiler feature checks, runtime refusal, `internal/childworkflow/{cli,configured,proposal}.go`, thin CLI registration/help and tests. Adapts the later credential-ceiling checks into pure validation, including Copilot model-auth publication refusal and Goober policy identity. Regenerates actual CLI/CRD outputs; updates Windows coverage and the exact CLI growth ledger. | Advisory validation only; no secret resolution, queue admission or runtime launch. The current-main harness admission and runner/engine behavior are preserved. |
+| LAND-C02a | [#6881](https://github.com/Agent-Clubhouse/Goobers/pull/6881), dependent on C01 | Retains `e9192d29e`'s `api` invocation/schema/completeness, `internal/journal/{childorigin,run}.go`, runner task-start/envelope/parallel wiring, engine dispatch-copy and agent-kit tests; adapts onto current main without replacing shared files. Carries the later metadata-key comment and adds checkpoint-failure qualification. | Atomic committed stage identity, branch/revisit separation, retry/recovery continuity and transport copy isolation. No new durable store or pruning obligation: metadata is added to existing stage-start events under the existing run-retention lifecycle. No child start or human restart surface is enabled. |
+
+C02 is intentionally split: C02a establishes occurrence identity before the child
+grant/admission handlers. Later C02 slices own the active grant fence, one-child
+admission, cancellation races and retained configuration. Neither the offline
+validator nor the stage-origin envelope is an authorization receipt. The general
+queue, runtime credential isolation, workspace and Portal snapshot changes remain
+assigned to their owning later slices.
+
 ## 7. Traceability to design tasks
 
 This mapping assigns review boundaries; it does not mark tasks implemented or
