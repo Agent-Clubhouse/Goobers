@@ -5,6 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestLifecycleLabelContractsRejectDrift(t *testing.T) {
@@ -280,17 +284,123 @@ func TestLifecycleLabelContractsRejectDrift(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			report := validateLifecycleConfig(t, tt.workflow)
-			if !report.HasErrors() {
-				t.Fatalf("expected lifecycle label drift to fail validation")
-			}
-			issues := joinIssues(report)
-			if !strings.Contains(issues, tt.want) {
-				t.Fatalf("issues =\n%s\nwant substring %q", issues, tt.want)
-			}
+		t.Run(tt.name+"/dsl3", func(t *testing.T) {
+			report := validateLifecycleConfig(t, withLifecycleDSL(tt.workflow, "3.0"))
+			requireLifecycleIssue(t, report, errorLifecycleLabelContract, Error, tt.want)
+		})
+		t.Run(tt.name+"/dsl2", func(t *testing.T) {
+			requireNoLifecycleIssues(t, validateLifecycleConfig(t, tt.workflow))
 		})
 	}
+}
+
+// TestLifecycleLabelContractsDSL2SampleKeepsLoading pins the goobers-ms sample
+// shape that broke on upgrade: a DSL 2.0 workflow named "implementation" that
+// claims on trustLabel alone, with no goobers:ready gate anywhere.
+func TestLifecycleLabelContractsDSL2SampleKeepsLoading(t *testing.T) {
+	workflow := lifecycleWorkflow("implementation", `    - name: query-backlog
+      type: deterministic
+      goal: Claim one trust-approved item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approved"
+        excludeLabels: "goobers/status:in-review,goobers:needs-human"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
+`)
+	gaggle := "  backlog:\n    provider: github\n    project: acme/app\n    labels: [\"goobers:approved\"]\n"
+	report := validateLifecycleConfigWithGaggle(t, gaggle, workflow)
+	if report.HasErrors() {
+		t.Fatalf("existing DSL 2.0 workflow must keep loading:\n%s", joinIssues(report))
+	}
+	requireNoLifecycleIssues(t, report)
+
+	report = validateLifecycleConfigWithGaggle(t, gaggle, withLifecycleDSL(workflow, "3.0"))
+	requireLifecycleIssue(t, report, errorLifecycleLabelContract, Error,
+		`input "requireLabels" configured lifecycle label "goobers:approved"; expected "goobers:ready"`)
+
+	report = validateLifecycleConfig(t, withLifecycleDSL(workflow, "3.0"))
+	requireLifecycleIssue(t, report, errorLifecycleLabelContract, Error,
+		`input "requireLabels" configured lifecycle label ""; expected "goobers:ready"`)
+}
+
+func TestLifecycleLabelContractsHonorGaggleRequireLabelsDefault(t *testing.T) {
+	workflow := withLifecycleDSL(lifecycleWorkflow("implementation", `    - name: query-backlog
+      type: deterministic
+      goal: Claim one ready item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approved"
+        excludeLabels: "goobers/status:in-review"
+`), "3.0")
+	report := validateLifecycleConfigWithGaggle(t, "  backlog:\n    provider: github\n    project: acme/app\n  requireLabels: [\"goobers:ready\"]\n", workflow)
+	requireNoLifecycleIssues(t, report)
+}
+
+// TestLifecycleLabelContractsHoldForShippedWorkflows keeps #6153's guard on
+// the workflows this repo ships. They are pinned to DSL 2.0, where LCL001 does
+// not run for users, so the contract is applied here directly regardless of
+// pin.
+func TestLifecycleLabelContractsHoldForShippedWorkflows(t *testing.T) {
+	roots := []string{"config-examples", "reference-workflows", "internal/instance", "templates", "examples"}
+	checked := 0
+	for _, root := range roots {
+		err := filepath.WalkDir(filepath.Join("..", "..", root), func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || (filepath.Ext(path) != ".yaml" && filepath.Ext(path) != ".yml") {
+				return err
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, doc := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n---") {
+				if !strings.Contains(doc, "kind: Workflow") {
+					continue
+				}
+				var w apiv1.Workflow
+				if err := yaml.Unmarshal([]byte(doc), &w); err != nil || w.Kind != "Workflow" {
+					continue
+				}
+				r := &Report{}
+				checkLifecycleLabelContracts(r, w, path, nil)
+				for _, issue := range r.Issues {
+					t.Errorf("%s: %s", path, issue.Message)
+				}
+				checked++
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("found no shipped workflows to check")
+	}
+}
+
+func requireNoLifecycleIssues(t *testing.T, report *Report) {
+	t.Helper()
+	for _, issue := range report.Issues {
+		if issue.Code == errorLifecycleLabelContract {
+			t.Fatalf("unexpected lifecycle label finding: %+v", issue)
+		}
+	}
+}
+
+func requireLifecycleIssue(t *testing.T, report *Report, code WarningCode, severity Severity, want string) {
+	t.Helper()
+	for _, issue := range report.Issues {
+		if issue.Code == code && issue.Severity == severity && strings.Contains(issue.Message, want) {
+			return
+		}
+	}
+	t.Fatalf("want %s %s containing %q; issues =\n%s", severity, code, want, joinIssues(report))
 }
 
 func TestLifecycleLabelContractsAllowArbitrarySelectorLabels(t *testing.T) {
@@ -358,6 +468,11 @@ func TestLifecycleLabelContractsAllowReferenceWorkflows(t *testing.T) {
 
 func validateLifecycleConfig(t *testing.T, workflow string) *Report {
 	t.Helper()
+	return validateLifecycleConfigWithGaggle(t, "  backlog:\n    provider: github\n    project: acme/app\n", workflow)
+}
+
+func validateLifecycleConfigWithGaggle(t *testing.T, gaggleBacklog, workflow string) *Report {
+	t.Helper()
 	dir := t.TempDir()
 	config := `apiVersion: goobers.dev/v1alpha1
 kind: Manifest
@@ -378,10 +493,7 @@ spec:
     provider: github
     owner: acme
     name: app
-  backlog:
-    provider: github
-    project: acme/app
-  isolation:
+` + gaggleBacklog + `  isolation:
     namespace: gaggle-acme
 ---
 ` + workflow
@@ -409,6 +521,14 @@ spec:
   start: ` + lifecycleStartTask(tasks) + `
   tasks:
 ` + tasks
+}
+
+// withLifecycleDSL repins a lifecycleWorkflow; preview 3.x pins carry their
+// own per-workflow acknowledgement so DVL011 does not mask the finding.
+func withLifecycleDSL(workflow, version string) string {
+	workflow = strings.Replace(workflow, `dslVersion: "2.0"`, `dslVersion: "`+version+`"`, 1)
+	return strings.Replace(workflow, "metadata:\n  name:",
+		"metadata:\n  annotations:\n    goobers.dev/allow-preview-features: \"true\"\n  name:", 1)
 }
 
 func lifecycleStartTask(tasks string) string {

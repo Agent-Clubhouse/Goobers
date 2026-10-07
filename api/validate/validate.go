@@ -2624,7 +2624,11 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w)
+	var gaggle *apiv1.Gaggle
+	if g, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+		gaggle = &g
+	}
+	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w, gaggle)
 	// A stage's own subprocess can carry a longer wall-clock ceiling than the
 	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
 	// under a 25-minute stage timeout. Warning, not error: detection only
@@ -2642,7 +2646,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// internal/workflow's stage-contract test).
 }
 
-func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file string, w apiv1.Workflow, gaggle *apiv1.Gaggle) {
 	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
 	// defensive refusals, but a retired input is visible in the workflow and
 	// must be rejected here before the stage can claim work and fail a run.
@@ -2652,7 +2656,9 @@ func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file 
 	for _, msg := range wf.CheckProviderStageUnsetDefaults(def) {
 		r.addWarning(WarningProviderInputDefaulted, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
-	checkLifecycleLabelContracts(r, w, file)
+	if lifecycleLabelContractsApply(w.DSLVersion) {
+		checkLifecycleLabelContracts(r, w, file, gaggle)
+	}
 	// Bounded waits must finish before the executor can terminate their stage;
 	// command-specific clamps are modeled by the workflow check itself.
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
@@ -2660,7 +2666,7 @@ func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file 
 	}
 }
 
-func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string) {
+func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string, gaggle *apiv1.Gaggle) {
 	for _, task := range w.Spec.Tasks {
 		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
 			continue
@@ -2675,15 +2681,27 @@ func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string) {
 				checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
 			}
 		case "backlog-query":
-			checkBacklogQueryLifecycleLabelContracts(r, file, w, task)
+			checkBacklogQueryLifecycleLabelContracts(r, file, w, task, effectiveBacklogQueryInputs(task, gaggle))
 		default:
 			checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
 		}
 	}
 }
 
-func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Workflow, task apiv1.Task) {
-	inputs := task.Inputs
+// effectiveBacklogQueryInputs resolves the inputs a backlog-query stage
+// actually receives at dispatch: the gaggle's spec.requireLabels default
+// (when the task declares none) and the gaggle's spec.backlog.labels scope,
+// applied exactly as cmd/goobers/run_continue.go does. Judging the raw task
+// inputs alone would reject a workflow whose ready label comes from its gaggle.
+func effectiveBacklogQueryInputs(task apiv1.Task, gaggle *apiv1.Gaggle) map[string]string {
+	if gaggle == nil {
+		return task.Inputs
+	}
+	inputs := backlogdefaults.RequireLabels(task, task.Inputs, strings.Join(gaggle.Spec.RequireLabels, ","))
+	return backlogdefaults.ApplyBacklogScope(task, inputs, strings.Join(gaggle.Spec.Backlog.Labels, ","), "")
+}
+
+func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Workflow, task apiv1.Task, inputs map[string]string) {
 	args := task.Run.Command[2:]
 	claim := commandHasArg(args, "--claim")
 	readOnly := commandHasArg(args, "--read-only")
@@ -2893,6 +2911,16 @@ func commandHasArg(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// lifecycleLabelContractsApply reports whether LCL001 governs a workflow. The
+// contract landed after DSL 2.0 shipped, so it is part of the DSL 3.0+
+// language only: a DSL 2.x workflow validates exactly as it did before the
+// contract existed. Shipped DSL 2.x workflows are held to it by
+// TestLifecycleLabelContractsHoldForShippedWorkflows instead.
+func lifecycleLabelContractsApply(dslVersion string) bool {
+	order, ok := supportmatrix.CompareDSLVersions(dslVersion, supportmatrix.V3DSLVersion)
+	return ok && order >= 0
 }
 
 func addLifecycleLabelContractIssue(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
