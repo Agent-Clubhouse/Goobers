@@ -1794,7 +1794,8 @@ summary:focus-visible {
   margin-top: 4px;
 }
 
-.recovery-reclaim-list .recovery-action code {
+.recovery-reclaim .recovery-action code {
+  max-width: 100%;
   overflow-wrap: anywhere;
 }
 
