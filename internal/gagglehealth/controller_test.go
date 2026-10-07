@@ -3,6 +3,7 @@ package gagglehealth
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -68,6 +69,75 @@ func TestControllerEvaluatesMultipleGagglesAndIsolatesFailure(t *testing.T) {
 	}
 	if len(broken.Active) != 1 || broken.Active[0].Code != FindingControllerDegraded {
 		t.Fatalf("broken gaggle findings = %+v", broken.Active)
+	}
+}
+
+func TestControllerRecoversDetectorPanicAndContinuesOtherGaggles(t *testing.T) {
+	store := controllerStore(t)
+	var healthyCalls atomic.Int32
+	source := snapshotSourceFunc(func(context.Context, string, []EvidenceDependency) (Snapshot, error) {
+		return Snapshot{}, nil
+	})
+	panicking := detectorFunc{name: "panicking", run: func(context.Context, Snapshot, apiv1.GaggleHealthPolicy) ([]Observation, error) {
+		panic("boom")
+	}}
+	healthy := detectorFunc{name: "healthy", run: func(context.Context, Snapshot, apiv1.GaggleHealthPolicy) ([]Observation, error) {
+		healthyCalls.Add(1)
+		return nil, nil
+	}}
+	controller, err := NewController(store, source, ControllerOptions{MaxConcurrent: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(context.Background(), []GaggleRegistration{
+		{Name: "broken", Policy: fastPolicy(t), Detectors: []Detector{panicking}},
+		{Name: "healthy", Policy: fastPolicy(t), Detectors: []Detector{healthy}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Stop()
+
+	eventually(t, func() bool {
+		broken, brokenOK := controller.Status("broken")
+		healthyStatus, healthyOK := controller.Status("healthy")
+		return brokenOK && strings.Contains(broken.LastError, "detector panic: boom") &&
+			healthyOK && healthyCalls.Load() > 0 && !healthyStatus.LastSuccessfulEvaluation.IsZero()
+	})
+	snapshot, err := store.Snapshot("broken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Active) != 1 || snapshot.Active[0].Code != FindingControllerDegraded {
+		t.Fatalf("panicking detector findings = %+v", snapshot.Active)
+	}
+}
+
+func TestControllerIndeterminateObservationDoesNotRecordSuccess(t *testing.T) {
+	store := controllerStore(t)
+	source := snapshotSourceFunc(func(context.Context, string, []EvidenceDependency) (Snapshot, error) {
+		return Snapshot{}, nil
+	})
+	detector := detectorFunc{name: "uncertain", run: func(context.Context, Snapshot, apiv1.GaggleHealthPolicy) ([]Observation, error) {
+		return []Observation{{Status: ObservationIndeterminate, Detail: "evidence unavailable"}}, nil
+	}}
+	controller, err := NewController(store, source, ControllerOptions{MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(context.Background(), []GaggleRegistration{{
+		Name: "alpha", Policy: fastPolicy(t), Detectors: []Detector{detector},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Stop()
+
+	eventually(t, func() bool {
+		status, ok := controller.Status("alpha")
+		return ok && strings.Contains(status.LastError, "evidence unavailable") && status.ActiveFindings == 1
+	})
+	status, _ := controller.Status("alpha")
+	if !status.LastSuccessfulEvaluation.IsZero() {
+		t.Fatalf("last successful evaluation = %s, want zero", status.LastSuccessfulEvaluation)
 	}
 }
 

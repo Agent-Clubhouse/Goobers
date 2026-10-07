@@ -332,7 +332,12 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 			continue
 		}
 		go func() {
-			defer func() { <-c.detectorSlots }()
+			defer func() {
+				<-c.detectorSlots
+				if recovered := recover(); recovered != nil {
+					resultCh <- result{err: errors.New(boundedDetail(fmt.Sprintf("detector panic: %v", recovered)))}
+				}
+			}()
 			results, detectorErr := detector.Evaluate(detectorCtx, snapshot, registration.Policy)
 			resultCh <- result{observations: results, err: detectorErr}
 		}()
@@ -359,7 +364,9 @@ func (c *Controller) evaluate(ctx context.Context, loop *gaggleLoop) {
 				continue
 			}
 			if observation.Status == ObservationIndeterminate {
-				observation = c.indeterminateObservation(registration.Name, detector.Name(), now, errors.New(observation.Detail))
+				indeterminateErr := errors.New(observation.Detail)
+				evaluationErrors = append(evaluationErrors, fmt.Errorf("%s: %w", detector.Name(), indeterminateErr))
+				observation = c.indeterminateObservation(registration.Name, detector.Name(), now, indeterminateErr)
 				indeterminate = true
 			}
 			observations = append(observations, observation)
