@@ -58,7 +58,8 @@ Unknown agents and scripts are not assumed unable to make progress.
 A custom deterministic stage whose effects are neither cataloged nor asserted
 is reported with `SAF006` only when it prevents proving a concrete obligation
 on a reachable path: patch evidence for a code review it precedes (after the
-last known subject change), publication of a rejection that is pending when it
+last known subject change, or since PR selection while that PR is not bound
+to the workspace), publication of a rejection that is pending when it
 runs, or a subject change in a rejection cycle it belongs to. Context
 gathering, polling, cleanup and other stages no obligation depends on stay
 silent; at most one `SAF006` is reported per stage, naming the first blocked

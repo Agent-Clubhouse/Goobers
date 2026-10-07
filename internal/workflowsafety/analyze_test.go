@@ -790,3 +790,17 @@ func TestSafetyUnknownStageSupersededByKnownChangeIsNotBlamed(t *testing.T) {
 		t.Fatalf("unknown stage before the subject change was blamed for missing evidence: %+v", findings)
 	}
 }
+func TestSafetyUnknownStageBeforeUnboundPRChangeIsBlamed(t *testing.T) {
+	d := reviewDefinition()
+	selector := shell("select", "checkout", "goobers", "pr-select")
+	for _, use := range providerstage.ForVersion("2.0").RequiredCapabilities("pr-select", nil) {
+		selector.Capabilities = append(selector.Capabilities, string(use.Capability))
+	}
+	selector.PolicyActions = []string{"flag-foundation-coupling"}
+	d.Spec.Start = selector.Name
+	d.Spec.Tasks = append(d.Spec.Tasks, selector, shell("checkout", "implement", "custom-checkout"))
+	findings := Analyze(compile(t, d), Options{})
+	if len(findingsFor(findings, EvidenceCode)) == 0 || !slices.Equal(coverageStages(findings), []string{"checkout"}) {
+		t.Fatalf("unknown stage that may bind the selected PR was not blamed: %+v", findings)
+	}
+}
