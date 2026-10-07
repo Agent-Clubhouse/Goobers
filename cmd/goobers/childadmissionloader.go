@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -58,23 +59,26 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 	}
 	// Current policy narrows only effective grants and available Goobers. The
 	// pinned ParentTask remains byte-for-byte the parent's compiled stage.
-	current, _, err := childStageCatalog(cfg, currentSet, selected, backend)
+	current, err := childCurrentCustodyPolicy(cfg, currentSet, selected)
 	if err != nil {
 		return childworkflow.Authority{}, err
-	}
-	if current.ParentTask.ChildWorkflows.EffectiveMaxChildren() < pinned.ParentTask.ChildWorkflows.EffectiveMaxChildren() {
-		return childworkflow.Authority{}, errors.New("current child allowance is below the pinned occurrence ceiling")
 	}
 	if err = pinChildAdmissionDigest(&pinned, parent); err != nil {
 		return childworkflow.Authority{}, err
 	}
-	intersectChildPermissions(&pinned, current)
-	validator, err := childworkflow.NewValidator(pinned)
-	if err != nil {
-		return childworkflow.Authority{}, err
+	if !reflect.DeepEqual(current.Gaggle.Spec.Project, pinned.Gaggle.Spec.Project) || !reflect.DeepEqual(current.Gaggle.Spec.AdditionalRepos, pinned.Gaggle.Spec.AdditionalRepos) {
+		pinned.ExecutionRefusal = "current child repository scope differs from pinned parent"
+		pinned.WorkspaceMutationDenied = true
 	}
+	if current.ParentTask.ChildWorkflows == nil {
+		pinned.ExecutionRefusal = "current parent stage no longer permits new children"
+	} else if current.ParentTask.ChildWorkflows.EffectiveMaxChildren() < pinned.ParentTask.ChildWorkflows.EffectiveMaxChildren() {
+		pinned.ExecutionRefusal = "current child allowance is below the pinned occurrence ceiling"
+	}
+	pinned.WorkspaceMutationDenied = pinned.WorkspaceMutationDenied || (pinned.ParentTask.Workspace.IsWritableRepo() && !current.ParentTask.Workspace.IsWritableRepo())
+	intersectChildPermissions(&pinned, current)
 	return snapshotChildAuthority(childworkflow.Authority{
-		Origin:    childworkflow.Origin{Gaggle: parent.Gaggle, RunID: parent.RunID, ConfigDigest: pinned.ConfigDigest, PolicyDigest: validator.PolicyDigest()},
+		Origin:    childworkflow.Origin{Gaggle: parent.Gaggle, RunID: parent.RunID, ConfigDigest: pinned.ConfigDigest, PolicyDigest: childworkflow.AuthorityPolicyDigest(pinned)},
 		Admission: pinned, ConfigGeneration: parent.ConfigGeneration,
 		ParentWorkflow: parent.Workflow, ParentWorkflowDigest: parent.WorkflowDigest, ParentGooberDigest: parent.GooberDigest,
 	})
@@ -188,6 +192,11 @@ func pinChildAdmissionDigest(input *childworkflow.AdmissionContext, parent journ
 }
 
 func intersectChildPermissions(pinned *childworkflow.AdmissionContext, current childworkflow.AdmissionContext) {
+	if current.ParentTask.ChildWorkflows == nil {
+		pinned.GrantedCapabilities, pinned.AllowPRPublication = nil, false
+		clear(pinned.Goobers)
+		return
+	}
 	pinned.GrantedCapabilities = childPermissionIntersection(pinned.GrantedCapabilities, current.GrantedCapabilities)
 	pinned.GrantedCapabilities = childPermissionIntersection(pinned.GrantedCapabilities, current.ParentTask.ChildWorkflows.AllowedCapabilities)
 	pinned.AllowPRPublication = pinned.AllowPRPublication && current.AllowPRPublication

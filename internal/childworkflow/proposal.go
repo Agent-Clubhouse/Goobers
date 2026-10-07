@@ -65,6 +65,9 @@ type AdmissionContext struct {
 	KnownExternalTelemetryConnectors []string
 	AllowPreviewFeatures             bool
 	Backend                          Backend
+	// ExecutionRefusal preserves owned custody when current launch permission narrows.
+	ExecutionRefusal        string
+	WorkspaceMutationDenied bool
 }
 
 // Diagnostic identifies a refused boundary without returning proposal source.
@@ -110,6 +113,9 @@ type Validator struct {
 
 // NewValidator snapshots trusted inputs for side-effect-free proposal checks.
 func NewValidator(input AdmissionContext) (*Validator, error) {
+	if input.ExecutionRefusal != "" {
+		return nil, refusal("current_policy", "", "childWorkflows", input.ExecutionRefusal)
+	}
 	if input.Config == nil || input.Gaggle.Name == "" || input.ConfigDigest == "" {
 		return nil, errors.New("child validation requires pinned config, gaggle, and config digest")
 	}
@@ -187,13 +193,19 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 
 // PolicyDigest identifies pinned policy, enclosing publication permission and
 // the existing Goober definitions. It grants no authority by itself.
-func (v *Validator) PolicyDigest() string {
+func (v *Validator) PolicyDigest() string { return AuthorityPolicyDigest(v.context) }
+
+// AuthorityPolicyDigest binds effective custody and execution permissions. It
+// does not assert that the current policy permits launching any new proposal.
+func AuthorityPolicyDigest(input AdmissionContext) string {
 	policyBytes, _ := json.Marshal(struct {
-		Policy      *apiv1.ChildWorkflowPolicy
-		Grants      []string
-		Publication bool
-		Goobers     map[string]apiv1.GooberSpec
-	}{v.context.ParentTask.ChildWorkflows, v.context.GrantedCapabilities, v.context.AllowPRPublication, v.context.Goobers})
+		Policy                  *apiv1.ChildWorkflowPolicy
+		Grants                  []string
+		Publication             bool
+		Goobers                 map[string]apiv1.GooberSpec
+		ExecutionRefusal        string
+		WorkspaceMutationDenied bool
+	}{input.ParentTask.ChildWorkflows, input.GrantedCapabilities, input.AllowPRPublication, input.Goobers, input.ExecutionRefusal, input.WorkspaceMutationDenied})
 	return digest(policyBytes)
 }
 

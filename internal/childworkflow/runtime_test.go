@@ -132,3 +132,37 @@ func TestRuntimeDefinitionsAreIndependentAndGaggleScoped(t *testing.T) {
 		t.Fatal("other gaggle changed authority digest")
 	}
 }
+
+func TestRuntimeNewAttemptCanInspectAfterChildExecutionRevoked(t *testing.T) {
+	r, f, env := runtimeFixture(t)
+	access, closeAccess, err := r.Acquire(t.Context(), env, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeAccess() }()
+	accepted, err := r.HTTPService().StartChildWorkflow(t.Context(), access.BearerToken, env.RunID, "child", []byte(validProposal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closeAccess(); err != nil {
+		t.Fatal(err)
+	}
+	f.pinned.Admission.ExecutionRefusal = "current child opt-in removed"
+	clear(f.pinned.Admission.Goobers)
+	if _, _, err := r.Acquire(t.Context(), env, journal.NewRegistryScrubber()); err == nil {
+		t.Fatal("revoked attempt reminted")
+	}
+	replacement := f.start(t, 1, 2, true)
+	next, closeNext, err := r.Acquire(t.Context(), replacement, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatal("replacement lost owned custody authority", err)
+	}
+	defer func() { _ = closeNext() }()
+	status, err := r.HTTPService().ChildWorkflowStatus(t.Context(), next.BearerToken, env.RunID, "child")
+	if err != nil || status.RunID != accepted.RunID {
+		t.Fatal(status, err)
+	}
+	if _, err := r.HTTPService().StartChildWorkflow(t.Context(), next.BearerToken, env.RunID, "new-child", []byte(validProposal)); err == nil {
+		t.Fatal("cleanup grant admitted new execution")
+	}
+}

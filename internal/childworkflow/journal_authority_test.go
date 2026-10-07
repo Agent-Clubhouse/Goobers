@@ -299,7 +299,7 @@ func TestJournalAuthorityRequiresTrustedPinnedDefinition(t *testing.T) {
 			case "wrong version":
 				id.WorkflowVersion++
 			}
-			if validator, err := checkedPinnedStage(rd, id, events[0], f.pinned); err == nil || validator != nil {
+			if _, err := checkedPinnedStage(rd, id, events[0], f.pinned); err == nil {
 				t.Fatal("accepted missing or altered pinned definition")
 			}
 		})

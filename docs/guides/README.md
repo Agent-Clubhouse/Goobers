@@ -15,6 +15,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Backlog label preflight](backlog-label-preflight.md)
 - [Configuring backlog park-label filtering](backlog-park-filtering.md)
 - [Find ready issues with no label route](backlog-routing-diagnostics.md)
+- [Child workflow admission internals (preview)](child-workflow-admission.md)
 - [CI test results: JUnit artifacts and failure annotations](ci-test-results.md)
 - [Inspect claim verification](claim-verification.md)
 - [Codex harness](codex-harness.md)
