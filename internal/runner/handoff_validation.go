@@ -8,9 +8,12 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowgraph"
 )
 
 const handoffValidationAnnotationKind = "handoff.validation"
@@ -19,6 +22,12 @@ const handoffValidationRetryAnnotationKind = "handoff.validation.retry"
 const invalidHandoffErrorCode = "invalid_handoff"
 
 const invalidHandoffOutputKey = "invalidHandoff"
+
+// invalidHandoffUnsupportedTopologyReason classifies an invalid handoff whose
+// producer cannot be rerouted from the consumer's execution scope (for example
+// a producer that ran before a parallel and is consumed inside a branch). The
+// run escalates instead of re-executing the producer in the wrong scope.
+const invalidHandoffUnsupportedTopologyReason = "invalid_handoff_unsupported_topology"
 
 type invalidHandoffRetry struct {
 	Consumer string               `json:"consumer"`
@@ -298,4 +307,273 @@ func invalidHandoffRetryAddendum(retry invalidHandoffRetry, attempt, limit int) 
 		}
 	}
 	return b.String()
+}
+
+// invalidHandoffRerouteUnsupported explains why the producer cannot be retried
+// from the consumer's execution scope, or returns "" when the reroute is safe.
+// branchStart is the consumer's parallel branch start ("" at the run's root)
+// and inherited holds the pointers the branch inherited from before the
+// parallel. A retry inside a branch may only re-execute a producer that lives
+// in that branch and whose artifacts are branch-local; a retry at the root may
+// not re-enter a producer that only runs inside a parallel branch.
+func invalidHandoffRerouteUnsupported(machine *workflow.Machine, branchStart string, inherited []apiv1.ContextPointer, producer string) string {
+	if branchStart == "" {
+		for _, name := range sortedParallelNames(machine) {
+			spec, _ := machine.Parallel(name)
+			for _, branch := range spec.Branches {
+				if workflowgraph.BranchContainsState(machine, branch.Start, producer) {
+					return fmt.Sprintf("producer %q runs inside parallel %q branch %q and cannot be retried outside that branch", producer, name, branch.Name)
+				}
+			}
+		}
+		return ""
+	}
+	if hasStageArtifactPointers(inherited, producer) {
+		return fmt.Sprintf("producer %q artifact was inherited from before the parallel and cannot be retried inside a branch", producer)
+	}
+	if !workflowgraph.BranchContainsState(machine, branchStart, producer) {
+		return fmt.Sprintf("producer %q is not part of the consumer's parallel branch", producer)
+	}
+	return ""
+}
+
+func sortedParallelNames(machine *workflow.Machine) []string {
+	names := make([]string, 0, len(machine.Parallels()))
+	for name := range machine.Parallels() {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// invalidHandoffDecision is the journaled outcome of one invalid handoff: the
+// annotation fields, and either an escalation or the producer retry addendum.
+type invalidHandoffDecision struct {
+	fields   map[string]any
+	escalate bool
+	addendum string
+}
+
+// decideInvalidHandoff charges the producer retry against budget (unless the
+// topology is unsupported, which escalates without charging).
+func decideInvalidHandoff(budget *runcontrol.RepassBudget, consumer string, retry invalidHandoffRetry, unsupported string, reentry bool, maxRepasses int) invalidHandoffDecision {
+	fields := map[string]any{
+		"kind":     handoffValidationRetryAnnotationKind,
+		"consumer": consumer,
+		"producer": retry.Producer,
+		"input":    retry.Input,
+	}
+	if unsupported != "" {
+		fields["escalated"] = true
+		fields["reason"] = invalidHandoffUnsupportedTopologyReason
+		fields["detail"] = unsupported
+		return invalidHandoffDecision{fields: fields, escalate: true}
+	}
+	synthetic := apiv1.Gate{
+		Name:      invalidHandoffGateName(consumer),
+		Evaluator: apiv1.EvaluatorAutomated,
+		Branches:  map[string]string{gate.OutcomeFail: retry.Producer},
+	}
+	charge := budget.Charge(synthetic, gate.OutcomeFail, retry.Producer, reentry, maxRepasses)
+	fields["target"] = retry.Producer
+	fields["repassAttempt"] = charge.Attempt
+	fields["repassLimit"] = charge.Bound
+	if charge.Exceeded {
+		fields["escalated"] = true
+		fields["reason"] = charge.EscalationReason()
+		return invalidHandoffDecision{fields: fields, escalate: true}
+	}
+	return invalidHandoffDecision{fields: fields, addendum: invalidHandoffRetryAddendum(retry, charge.Attempt, charge.Bound)}
+}
+
+func invalidHandoffGateName(consumer string) string {
+	return "handoff.validation:" + consumer
+}
+
+// invalidHandoffPrunedProducer returns the producer whose artifacts a journaled
+// invalid-handoff retry annotation discarded. Escalated annotations never
+// reroute, so they prune nothing. Every pointer replay (resume, rerun, parallel
+// join and branch restore) must apply this so a crash between the annotation
+// and the producer retry cannot resurrect the invalid artifact.
+func invalidHandoffPrunedProducer(e journal.Event) (string, bool) {
+	if e.Type != journal.EventRunnerAnnotation || e.Runner["kind"] != handoffValidationRetryAnnotationKind {
+		return "", false
+	}
+	if escalated, _ := e.Runner["escalated"].(bool); escalated {
+		return "", false
+	}
+	target, _ := e.Runner["target"].(string)
+	return target, target != ""
+}
+
+func isInvalidHandoffFailure(result apiv1.ResultEnvelope) bool {
+	return result.Status == apiv1.ResultFailure && result.Error != nil && result.Error.Code == invalidHandoffErrorCode
+}
+
+func isInvalidHandoffFailureEvent(e journal.Event) bool {
+	return e.Status == string(apiv1.ResultFailure) && e.Error != nil && e.Error.Code == invalidHandoffErrorCode
+}
+
+func hasStageArtifactPointers(pointers []apiv1.ContextPointer, stage string) bool {
+	prefix := stage + ".artifact["
+	for _, pointer := range pointers {
+		if strings.HasPrefix(pointer.Name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeStageArtifactPointers returns a copy of pointers without stage's
+// positional artifact pointers; the input slice is never modified.
+func removeStageArtifactPointers(pointers []apiv1.ContextPointer, stage string) []apiv1.ContextPointer {
+	prefix := stage + ".artifact["
+	kept := make([]apiv1.ContextPointer, 0, len(pointers))
+	for _, pointer := range pointers {
+		if !strings.HasPrefix(pointer.Name, prefix) {
+			kept = append(kept, pointer)
+		}
+	}
+	return kept
+}
+
+// invalidHandoffOutcome reroutes the root walk (or a sequential parallel
+// branch) to the producer of an invalid handoff, or escalates when the retry
+// budget is exhausted or the producer is outside the consumer's scope.
+func (r *Runner) invalidHandoffOutcome(ctx context.Context, ws *walkState, consumer apiv1.Task, retry invalidHandoffRetry) (string, Result, bool, error, bool) {
+	jr, in := ws.jr, ws.in
+	if _, ok := in.Machine.Task(retry.Producer); !ok {
+		terminal, err := r.finishStageFailure(ctx, in.RunID, jr, in.RepoRef, consumer.Name, ws.steps, &apiv1.ErrorInfo{
+			Code:    invalidHandoffErrorCode,
+			Message: fmt.Sprintf("invalid handoff producer %q is not a workflow task", retry.Producer),
+		})
+		return "", terminal, false, err, true
+	}
+	branchStart := ""
+	if ws.parallel != nil {
+		if current := ws.parallel.current(); current != nil {
+			branchStart = current.start
+		}
+	}
+	unsupported := invalidHandoffRerouteUnsupported(in.Machine, branchStart, ws.parallelRootPointers, retry.Producer)
+	budget := ws.repassBudget()
+	decision := decideInvalidHandoff(&budget, consumer.Name, retry, unsupported, ws.visitedStages[retry.Producer], int(in.RunControls.MaxRepasses))
+	ws.applyRepassBudget(budget)
+	if err := jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: consumer.Name, Runner: decision.fields}); err != nil {
+		terminal, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, consumer.Name, ws.steps, fmt.Errorf("runner: journal invalid handoff reroute for %q: %w", consumer.Name, err))
+		return "", terminal, false, failErr, true
+	}
+	if decision.escalate {
+		if ws.parallel != nil {
+			if err := r.closeParallelForLoudExit(jr, ws.parallel, workflow.TargetEscalate); err != nil {
+				terminal, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, consumer.Name, ws.steps, err)
+				return "", terminal, false, failErr, true
+			}
+			ws.parallel, ws.fanIn = nil, nil
+		}
+		terminal, err := r.finish(in.RunID, jr, journal.PhaseEscalated, consumer.Name, ws.steps)
+		return "", terminal, false, err, true
+	}
+	if ws.parallel == nil {
+		ws.pointers = removeStageArtifactPointers(ws.pointers, retry.Producer)
+	} else {
+		ws.parallel.removeCurrentStageArtifactPointers(retry.Producer)
+	}
+	ws.retryInstructionAddendum = decision.addendum
+	return retry.Producer, Result{}, true, nil, true
+}
+
+// repassBudget returns the walk's live repass counters. The gate evaluator
+// owns them once it exists: Charge may allocate maps the walk state never sees.
+func (ws *walkState) repassBudget() runcontrol.RepassBudget {
+	if ws.gateEval != nil {
+		return evaluatorRepassBudget(ws.gateEval)
+	}
+	return runcontrol.RepassBudget{
+		Attempts:                     ws.gateAttempts,
+		InfrastructureAttempts:       ws.infraGateAttempts,
+		RepassAttempts:               ws.repassAttempts,
+		InfrastructureRepassAttempts: ws.infraRepassAttempts,
+		PollAttempts:                 ws.pollAttempts,
+	}
+}
+
+func (ws *walkState) applyRepassBudget(budget runcontrol.RepassBudget) {
+	ws.gateAttempts = budget.Attempts
+	ws.infraGateAttempts = budget.InfrastructureAttempts
+	ws.repassAttempts = budget.RepassAttempts
+	ws.infraRepassAttempts = budget.InfrastructureRepassAttempts
+	ws.pollAttempts = budget.PollAttempts
+	if ws.gateEval != nil {
+		applyEvaluatorRepassBudget(ws.gateEval, budget)
+	}
+}
+
+func evaluatorRepassBudget(eval *gate.Evaluator) runcontrol.RepassBudget {
+	return runcontrol.RepassBudget{
+		Attempts:                     eval.Attempts,
+		InfrastructureAttempts:       eval.InfrastructureAttempts,
+		RepassAttempts:               eval.RepassAttempts,
+		InfrastructureRepassAttempts: eval.InfrastructureRepassAttempts,
+		PollAttempts:                 eval.PollAttempts,
+	}
+}
+
+func applyEvaluatorRepassBudget(eval *gate.Evaluator, budget runcontrol.RepassBudget) {
+	eval.Attempts = budget.Attempts
+	eval.InfrastructureAttempts = budget.InfrastructureAttempts
+	eval.RepassAttempts = budget.RepassAttempts
+	eval.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
+	eval.PollAttempts = budget.PollAttempts
+}
+func isInvalidHandoffEscalation(e journal.Event) bool {
+	if e.Type != journal.EventRunnerAnnotation || e.Runner["kind"] != handoffValidationRetryAnnotationKind {
+		return false
+	}
+	escalated, _ := e.Runner["escalated"].(bool)
+	return escalated
+}
+
+// replayInvalidHandoffAnnotation applies a journaled invalid-handoff decision
+// to a resumed parallel branch and reports whether event was such a decision.
+func replayInvalidHandoffAnnotation(branch *branchState, event journal.Event) bool {
+	if producer, ok := invalidHandoffPrunedProducer(event); ok {
+		branch.pointers = removeStageArtifactPointers(branch.pointers, producer)
+		branch.artifacts = artifactPointerCount(branch.pointers)
+		return true
+	}
+	if isInvalidHandoffEscalation(event) {
+		branch.failed = true
+		return true
+	}
+	return false
+}
+
+// failsParallelBranch reports whether a failed stage fails its sequential or
+// resumed parallel branch. Invalid-handoff failures are rerouted to their
+// producer instead, and continueOnError or a gate successor own the failure.
+func failsParallelBranch(machine *workflow.Machine, task apiv1.Task, invalidHandoff bool) bool {
+	if task.ContinueOnError || invalidHandoff {
+		return false
+	}
+	_, nextIsGate := machine.Gate(task.Next)
+	return !nextIsGate
+}
+
+// pruneInvalidHandoffPointers replays a journaled invalid-handoff reroute: the
+// producer's artifacts are discarded in the scope (root or branch) that
+// observed them, exactly as the live run discarded them. It reports whether e
+// was such a reroute and returns the updated root pointers.
+func pruneInvalidHandoffPointers(root []apiv1.ContextPointer, branches map[int][]apiv1.ContextPointer, e journal.Event) ([]apiv1.ContextPointer, bool) {
+	producer, ok := invalidHandoffPrunedProducer(e)
+	if !ok {
+		return root, false
+	}
+	if e.Branch <= 0 {
+		return removeStageArtifactPointers(root, producer), true
+	}
+	if pointers, known := branches[e.Branch]; known {
+		branches[e.Branch] = removeStageArtifactPointers(pointers, producer)
+	}
+	return root, true
 }

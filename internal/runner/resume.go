@@ -908,13 +908,11 @@ func (r *Runner) replayFinishedTask(ctx context.Context, f *resumeFrame, startSt
 	if ws.parallel != nil {
 		switch f.lastResult.Status {
 		case apiv1.ResultFailure:
-			if !t.ContinueOnError {
-				if _, nextIsGate := ws.in.Machine.Gate(t.Next); !nextIsGate {
-					ws.parallel.markCurrentFailed()
-					ws.lastResult.Outputs = nil
-					*startState = workflow.TargetJoin
-					return Result{}, true, nil
-				}
+			if failsParallelBranch(ws.in.Machine, t, isInvalidHandoffFailure(f.lastResult)) {
+				ws.parallel.markCurrentFailed()
+				ws.lastResult.Outputs = nil
+				*startState = workflow.TargetJoin
+				return Result{}, true, nil
 			}
 		case apiv1.ResultNoWork:
 			ws.parallel.markCurrentNoOutput()
@@ -1162,8 +1160,10 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 				if _, ok := invalidHandoffRetryFromResult(subject); !ok {
 					return "", false
 				}
-				target, ok := e.Runner["target"].(string)
-				if !ok || target == "" {
+				// An escalated annotation never reroutes: recovery replays the
+				// consumer's result so the escalation is re-applied instead.
+				target, ok := invalidHandoffPrunedProducer(e)
+				if !ok {
 					return "", false
 				}
 				switch target {
@@ -1469,18 +1469,13 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 				},
 			}})
 		case journal.EventRunnerAnnotation:
-			kind, _ := e.Runner["kind"].(string)
-			if kind != "learning.episode.injected" || e.Ref == nil {
+			if pruned, ok := pruneInvalidHandoffPointers(out, branchPointers, e); ok {
+				out = pruned
 				continue
 			}
-			record(e.Branch, []apiv1.ContextPointer{{
-				Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
-				Integrity: e.Ref.Integrity,
-				Artifact: &apiv1.ArtifactPointer{
-					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
-					MediaType: "application/json", Integrity: e.Ref.Integrity,
-				},
-			}})
+			if pointer, ok := learningEpisodePointer(e); ok {
+				record(e.Branch, []apiv1.ContextPointer{pointer})
+			}
 		case journal.EventParallelFinished:
 			spec, ok := machine.Parallel(e.Parallel)
 			if ok && e.Target == spec.Join {
@@ -1501,6 +1496,23 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 		}
 	}
 	return out
+}
+
+// learningEpisodePointer returns the context pointer journaled by a
+// learning-episode injection annotation.
+func learningEpisodePointer(e journal.Event) (apiv1.ContextPointer, bool) {
+	kind, _ := e.Runner["kind"].(string)
+	if kind != "learning.episode.injected" || e.Ref == nil {
+		return apiv1.ContextPointer{}, false
+	}
+	return apiv1.ContextPointer{
+		Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
+		Integrity: e.Ref.Integrity,
+		Artifact: &apiv1.ArtifactPointer{
+			Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+			MediaType: "application/json", Integrity: e.Ref.Integrity,
+		},
+	}, true
 }
 
 func runnerUint64(value any) uint64 {
@@ -1619,10 +1631,8 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			lastStage[event.Branch] = event
 			switch event.Status {
 			case string(apiv1.ResultFailure):
-				if taskKnown && !task.ContinueOnError {
-					if _, nextIsGate := machine.Gate(task.Next); !nextIsGate {
-						branch.failed = true
-					}
+				if taskKnown && failsParallelBranch(machine, task, isInvalidHandoffFailureEvent(event)) {
+					branch.failed = true
 				}
 			case string(apiv1.ResultNoWork):
 				branch.noOutput = true
@@ -1664,6 +1674,9 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			// correction is journaled and not dispatched, and the repass's
 			// derived-integrity downgrade silently disappears.
 			if branch == nil {
+				continue
+			}
+			if replayInvalidHandoffAnnotation(branch, event) {
 				continue
 			}
 			kind, _ := event.Runner["kind"].(string)
@@ -1812,7 +1825,9 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		if target == event.Target {
 			transition.task = task
 			transition.gate = gate
-			transition.aggregate = false
+			// An invalid-handoff escalation has no task or gate to replay; it
+			// escalates the run directly like an aggregate terminal.
+			transition.aggregate = task == nil && gate == nil
 			break
 		}
 	}

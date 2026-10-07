@@ -1724,13 +1724,11 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			if ws.parallel != nil {
 				switch result.Status {
 				case apiv1.ResultFailure:
-					if !t.ContinueOnError {
-						if _, nextIsGate := ws.in.Machine.Gate(t.Next); !nextIsGate {
-							ws.parallel.markCurrentFailed()
-							ws.lastResult.Outputs = nil
-							ws.state = workflow.TargetJoin
-							continue
-						}
+					if failsParallelBranch(ws.in.Machine, t, isInvalidHandoffFailure(result)) {
+						ws.parallel.markCurrentFailed()
+						ws.lastResult.Outputs = nil
+						ws.state = workflow.TargetJoin
+						continue
 					}
 				case apiv1.ResultNoWork:
 					ws.parallel.markCurrentNoOutput()
@@ -2458,82 +2456,6 @@ func (r *Runner) preTaskOutcome(ctx context.Context, ws *walkState, t apiv1.Task
 		return "", terminal, false, err, true
 	}
 	return "", Result{}, false, nil, false
-}
-
-func (r *Runner) invalidHandoffOutcome(ctx context.Context, ws *walkState, consumer apiv1.Task, retry invalidHandoffRetry) (string, Result, bool, error, bool) {
-	jr, in := ws.jr, ws.in
-	if _, ok := in.Machine.Task(retry.Producer); !ok {
-		terminal, err := r.finishStageFailure(ctx, in.RunID, jr, in.RepoRef, consumer.Name, ws.steps, &apiv1.ErrorInfo{
-			Code:    invalidHandoffErrorCode,
-			Message: fmt.Sprintf("invalid handoff producer %q is not a workflow task", retry.Producer),
-		})
-		return "", terminal, false, err, true
-	}
-	synthetic := apiv1.Gate{
-		Name:      "handoff.validation:" + consumer.Name,
-		Evaluator: apiv1.EvaluatorAutomated,
-		Branches:  map[string]string{gate.OutcomeFail: retry.Producer},
-	}
-	budget := runcontrol.RepassBudget{
-		Attempts:                     ws.gateAttempts,
-		InfrastructureAttempts:       ws.infraGateAttempts,
-		RepassAttempts:               ws.repassAttempts,
-		InfrastructureRepassAttempts: ws.infraRepassAttempts,
-		PollAttempts:                 ws.pollAttempts,
-	}
-	charge := budget.Charge(synthetic, gate.OutcomeFail, retry.Producer, ws.visitedStages[retry.Producer], int(in.RunControls.MaxRepasses))
-	ws.gateAttempts = budget.Attempts
-	ws.infraGateAttempts = budget.InfrastructureAttempts
-	ws.repassAttempts = budget.RepassAttempts
-	ws.infraRepassAttempts = budget.InfrastructureRepassAttempts
-	ws.pollAttempts = budget.PollAttempts
-	if ws.gateEval != nil {
-		ws.gateEval.Attempts = budget.Attempts
-		ws.gateEval.InfrastructureAttempts = budget.InfrastructureAttempts
-		ws.gateEval.RepassAttempts = budget.RepassAttempts
-		ws.gateEval.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
-		ws.gateEval.PollAttempts = budget.PollAttempts
-	}
-	fields := map[string]any{
-		"kind":          handoffValidationRetryAnnotationKind,
-		"consumer":      consumer.Name,
-		"producer":      retry.Producer,
-		"input":         retry.Input,
-		"target":        retry.Producer,
-		"repassAttempt": charge.Attempt,
-		"repassLimit":   charge.Bound,
-	}
-	if charge.Exceeded {
-		fields["escalated"] = true
-		fields["reason"] = charge.EscalationReason()
-	}
-	if err := jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: consumer.Name, Runner: fields}); err != nil {
-		terminal, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, consumer.Name, ws.steps, fmt.Errorf("runner: journal invalid handoff reroute for %q: %w", consumer.Name, err))
-		return "", terminal, false, failErr, true
-	}
-	if charge.Exceeded {
-		terminal, err := r.finish(ws.in.RunID, jr, journal.PhaseEscalated, consumer.Name, ws.steps)
-		return "", terminal, false, err, true
-	}
-	if ws.parallel == nil {
-		ws.pointers = removeStageArtifactPointers(ws.pointers, retry.Producer)
-	} else {
-		ws.parallel.removeCurrentStageArtifactPointers(retry.Producer)
-	}
-	ws.retryInstructionAddendum = invalidHandoffRetryAddendum(retry, charge.Attempt, charge.Bound)
-	return retry.Producer, Result{}, true, nil, true
-}
-
-func removeStageArtifactPointers(pointers []apiv1.ContextPointer, stage string) []apiv1.ContextPointer {
-	prefix := stage + ".artifact["
-	kept := pointers[:0]
-	for _, pointer := range pointers {
-		if strings.HasPrefix(pointer.Name, prefix) {
-			continue
-		}
-		kept = append(kept, pointer)
-	}
-	return kept
 }
 
 func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition taskTransition) (next string, res Result, advance bool, err error) {

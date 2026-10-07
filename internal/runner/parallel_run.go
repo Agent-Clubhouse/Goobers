@@ -10,7 +10,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
@@ -391,7 +390,7 @@ func (r *Runner) runConcurrentParallel(
 			firstErr = result.err
 			cancel(result.err)
 		}
-		if (result.terminalTask != nil || result.terminalGate != nil) && !terminalTriggered {
+		if result.terminalTarget != "" && !terminalTriggered {
 			terminalTriggered = true
 			cancel(errParallelTerminal)
 		}
@@ -688,7 +687,8 @@ func (r *Runner) runParallelBranch(
 				result.completed.record(task.Name, stageResult.Outputs, stageResult.Integrity)
 			}
 			workspaceBranch = r.parallelWorkspaceBranchAfterTask(in.Gaggle, task, stageResult, workspaceBranch)
-			switch post := r.parallelPostTaskTransition(ctx, branchJournal, gateEval, visitedStages, task, stageResult, &result); post.kind {
+			handoffScope := parallelHandoffScope{branchJournal, gateEval, visitedStages, in.Machine, branch.start, basePointers}
+			switch post := r.parallelPostTaskTransition(ctx, handoffScope, task, stageResult, &result); post.kind {
 			case parallelPostReturn:
 				return result
 			case parallelPostRetry:
@@ -934,11 +934,21 @@ type parallelPostTaskResult struct {
 	addendum string
 }
 
+// parallelHandoffScope is the concurrent branch context an invalid handoff
+// reroute needs: where to journal, which budget to charge, and which producers
+// the branch may legitimately re-execute.
+type parallelHandoffScope struct {
+	jr            executionJournal
+	eval          *gate.Evaluator
+	visitedStages map[string]bool
+	machine       *workflow.Machine
+	branchStart   string
+	inherited     []apiv1.ContextPointer
+}
+
 func (r *Runner) parallelPostTaskTransition(
 	ctx context.Context,
-	jr executionJournal,
-	eval *gate.Evaluator,
-	visitedStages map[string]bool,
+	scope parallelHandoffScope,
 	consumer apiv1.Task,
 	stageResult apiv1.ResultEnvelope,
 	result *parallelBranchResult,
@@ -952,67 +962,38 @@ func (r *Runner) parallelPostTaskTransition(
 	if !ok {
 		return parallelPostTaskResult{}
 	}
-	target, addendum, terminal := r.parallelInvalidHandoffOutcome(jr, eval, visitedStages, consumer, stageResult, retry, result)
+	target, addendum, terminal := parallelInvalidHandoffOutcome(scope, consumer, retry, result)
 	if terminal {
 		return parallelPostTaskResult{kind: parallelPostReturn}
 	}
 	return parallelPostTaskResult{kind: parallelPostRetry, target: target, addendum: addendum}
 }
 
-func (r *Runner) parallelInvalidHandoffOutcome(
-	jr executionJournal,
-	eval *gate.Evaluator,
-	visitedStages map[string]bool,
+func parallelInvalidHandoffOutcome(
+	scope parallelHandoffScope,
 	consumer apiv1.Task,
-	stageResult apiv1.ResultEnvelope,
 	retry invalidHandoffRetry,
 	result *parallelBranchResult,
 ) (target, addendum string, terminal bool) {
-	synthetic := apiv1.Gate{
-		Name:      "handoff.validation:" + consumer.Name,
-		Evaluator: apiv1.EvaluatorAutomated,
-		Branches:  map[string]string{gate.OutcomeFail: retry.Producer},
-	}
-	budget := runcontrol.RepassBudget{
-		Attempts:                     eval.Attempts,
-		InfrastructureAttempts:       eval.InfrastructureAttempts,
-		RepassAttempts:               eval.RepassAttempts,
-		InfrastructureRepassAttempts: eval.InfrastructureRepassAttempts,
-		PollAttempts:                 eval.PollAttempts,
-	}
-	charge := budget.Charge(synthetic, gate.OutcomeFail, retry.Producer, visitedStages[retry.Producer], eval.MaxRepasses)
-	eval.Attempts = budget.Attempts
-	eval.InfrastructureAttempts = budget.InfrastructureAttempts
-	eval.RepassAttempts = budget.RepassAttempts
-	eval.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
-	eval.PollAttempts = budget.PollAttempts
-	fields := map[string]any{
-		"kind":          handoffValidationRetryAnnotationKind,
-		"consumer":      consumer.Name,
-		"producer":      retry.Producer,
-		"input":         retry.Input,
-		"target":        retry.Producer,
-		"repassAttempt": charge.Attempt,
-		"repassLimit":   charge.Bound,
-	}
-	if charge.Exceeded {
-		fields["escalated"] = true
-		fields["reason"] = charge.EscalationReason()
-	}
-	if err := jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: consumer.Name, Runner: fields}); err != nil {
+	unsupported := invalidHandoffRerouteUnsupported(scope.machine, scope.branchStart, scope.inherited, retry.Producer)
+	budget := evaluatorRepassBudget(scope.eval)
+	decision := decideInvalidHandoff(&budget, consumer.Name, retry, unsupported, scope.visitedStages[retry.Producer], scope.eval.MaxRepasses)
+	applyEvaluatorRepassBudget(scope.eval, budget)
+	if err := scope.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: consumer.Name, Runner: decision.fields}); err != nil {
 		result.status, result.err = journal.BranchFailed, fmt.Errorf("runner: journal invalid handoff reroute for %q: %w", consumer.Name, err)
 		return "", "", true
 	}
-	if charge.Exceeded {
+	if decision.escalate {
+		// Escalate the whole parallel directly: replaying the consumer's
+		// invalid-handoff result through the root walk would reroute it there.
 		result.failed = true
 		result.status = journal.BranchFailed
 		result.terminalTarget = workflow.TargetEscalate
-		result.terminalTask = &parallelTaskTerminal{task: consumer, result: stageResult}
 		return "", "", true
 	}
 	result.pointers = removeStageArtifactPointers(result.pointers, retry.Producer)
 	result.artifacts = artifactPointerCount(result.pointers)
-	return retry.Producer, invalidHandoffRetryAddendum(retry, charge.Attempt, charge.Bound), false
+	return retry.Producer, decision.addendum, false
 }
 
 func completedGateRetry(result gate.Result, retryable bool) (string, bool) {
@@ -1030,6 +1011,9 @@ func completedGateRetry(result gate.Result, retryable bool) (string, bool) {
 func parallelBranchTerminal(history []journal.Event, machine *workflow.Machine) (string, *parallelTaskTerminal, *parallelGateTerminal) {
 	for i := len(history) - 1; i >= 0; i-- {
 		source := history[i]
+		if isInvalidHandoffEscalation(source) {
+			return workflow.TargetEscalate, nil, nil
+		}
 		if source.Type == journal.EventGateEvaluated {
 			if source.Target != workflow.TargetAbort && source.Target != workflow.TargetEscalate {
 				continue
