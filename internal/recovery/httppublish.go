@@ -23,6 +23,10 @@ const publishClientMargin = 15 * time.Second
 // the client first.
 const PublishTimeout = apicontract.RecoveryPublishBudget + publishClientMargin
 
+// DownloadTimeout bounds one archive download on the client, above the route's
+// server budget plus write-deadline margin for the same reason as PublishTimeout.
+const DownloadTimeout = apicontract.RecoveryDownloadBudget + publishClientMargin
+
 // countingWriter counts bytes the HTTP transport has consumed through the
 // upload pipe.
 type countingWriter struct {

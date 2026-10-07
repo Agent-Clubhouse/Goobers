@@ -158,3 +158,15 @@ func TestRecoveryPublishClientOutlastsServerCutoff(t *testing.T) {
 		t.Fatalf("budget %s cannot carry a maximum archive (%s transfer)", budget, transfer)
 	}
 }
+
+// TestRecoveryDownloadClientOutlastsServerCutoff mirrors the publish test for
+// the resume path.
+func TestRecoveryDownloadClientOutlastsServerCutoff(t *testing.T) {
+	budget, ok := routeBudget(apicontract.RouteRunRecovery)
+	if !ok || budget != apicontract.RecoveryDownloadBudget {
+		t.Fatalf("budget = %s (found %v), want %s", budget, ok, apicontract.RecoveryDownloadBudget)
+	}
+	if cutoff := budget + writeDeadlineMargin; recovery.DownloadTimeout <= cutoff {
+		t.Fatalf("recovery.DownloadTimeout %s must exceed the server cutoff %s", recovery.DownloadTimeout, cutoff)
+	}
+}

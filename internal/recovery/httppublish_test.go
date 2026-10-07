@@ -184,3 +184,10 @@ func mustEncode(t *testing.T, record Record) []byte {
 	}
 	return metadata
 }
+
+func TestHTTPArchiveDownloadTimeoutOutlastsServerBudget(t *testing.T) {
+	const serverWriteDeadlineMargin = 5 * time.Second
+	if DownloadTimeout <= apicontract.RecoveryDownloadBudget+serverWriteDeadlineMargin {
+		t.Fatalf("DownloadTimeout %s must exceed route budget %s plus margin", DownloadTimeout, apicontract.RecoveryDownloadBudget)
+	}
+}
