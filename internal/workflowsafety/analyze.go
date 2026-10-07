@@ -27,6 +27,8 @@ const (
 	maxExpansions  = 2048
 	maxDepth       = 128
 	maxFindings    = 128
+
+	unknownEffectsSummary = "custom command effects are unknown where a safety obligation depends on them"
 )
 
 // Codes returns the closed set of strict-neutral safety warning codes.
@@ -106,6 +108,10 @@ type frame struct {
 	cycleStart   string
 	cycleChange  bool
 	cycleUnknown bool
+	// Unknown deterministic stages are reported only when an obligation
+	// below depends on them, never merely for appearing on a path.
+	evidenceUnknown    []string
+	cycleUnknownStages []string
 }
 
 type analyzer struct {
@@ -122,6 +128,9 @@ type analyzer struct {
 type pendingRejection struct {
 	Gate         string
 	LocalAttempt bool
+	// Unknown lists unknown stages run while this rejection was pending;
+	// any of them might be its unrecognized publisher.
+	Unknown []string
 }
 
 // Analyze walks the actual compiled graph. It does not compile another
@@ -210,8 +219,8 @@ func (a *analyzer) walk(f frame) {
 		State, Feedback, LastTask, CycleStart                                                               string
 		Patch, Unknown, CodeSubject, PR, Rebound, ReboundWorkspace, LocalAttempt, CycleChange, CycleUnknown bool
 		Pending                                                                                             []pendingRejection
-		Visited                                                                                             []string
-	}{f.state, f.feedback, f.lastTask, f.cycleStart, f.patch, f.unknown, f.codeSubject, f.pr, f.rebound, f.reboundWorkspace, f.localAttempt, f.cycleChange, f.cycleUnknown, f.pending, f.visited})
+		Visited, EvidenceUnknown, CycleUnknownStages                                                        []string
+	}{f.state, f.feedback, f.lastTask, f.cycleStart, f.patch, f.unknown, f.codeSubject, f.pr, f.rebound, f.reboundWorkspace, f.localAttempt, f.cycleChange, f.cycleUnknown, f.pending, f.visited, f.evidenceUnknown, f.cycleUnknownStages})
 	if a.seen[string(key)] {
 		return
 	}
@@ -246,10 +255,10 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 	// An assertion supplies its named effect, not knowledge of every other
 	// effect a custom command may have.
 	f.unknown = f.unknown || !e.Known
-	if t.Type == apiv1.TaskDeterministic && !e.Known && !c.assertsEffects() {
-		a.add(CoverageCode, t.Name, f.path, "custom command or agent effects are unknown",
-			"Evidence production, subject changes and publication by this stage are not proven.",
-			"Declare a narrowly scoped safety contract if this stage supplies an obligation, or inspect it manually.", "unknown", "partial", 0, "")
+	unknown := unknownStage(t, e, c)
+	if unknown {
+		f.pending = withUnknownStage(f.pending, t.Name)
+		f.cycleUnknownStages = addSorted(f.cycleUnknownStages, t.Name)
 	}
 	recovery := c.RecoveryOnNoWork
 	if e.NoWork {
@@ -288,6 +297,9 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 		f.pending = removeParkedLocalAttempts(f.pending)
 	}
 	f.recordEvidence(t, e, c)
+	if unknown {
+		f.evidenceUnknown = addSorted(f.evidenceUnknown, t.Name)
+	}
 	f.cycleChange = f.cycleChange || e.Changes
 	f.cycleUnknown = f.cycleUnknown || !e.Known
 	f.visited = addSorted(f.visited, t.Name)
@@ -307,7 +319,27 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 	a.walk(f)
 }
 
+// unknownStage reports a deterministic stage whose effects are neither
+// cataloged nor asserted, so it may silently supply or break an obligation.
+func unknownStage(t apiv1.Task, e Effects, c StageContract) bool {
+	return t.Type == apiv1.TaskDeterministic && !e.Known && !c.assertsEffects()
+}
+
+// unknownObligation reports each unknown stage that prevents proving the
+// obligation reached at the end of path.
+func (a *analyzer) unknownObligation(stages, path []string, impact string) {
+	for _, stage := range stages {
+		a.add(CoverageCode, stage, path, unknownEffectsSummary, impact,
+			"Declare a narrowly scoped safety contract for this stage's effect, or inspect it manually.", "unknown", "partial", 0, "")
+	}
+}
+
 func (f *frame) recordEvidence(t apiv1.Task, e Effects, c StageContract) {
+	if e.SelectsPR || e.Changes || e.Patch {
+		// A later known subject or evidence change supersedes what earlier
+		// unknown stages might have produced.
+		f.evidenceUnknown = nil
+	}
 	if e.SelectsPR {
 		f.pr = true
 		f.patch, f.rebound, f.localAttempt = false, false, false
@@ -369,6 +401,8 @@ func (a *analyzer) reviewEvidence(f frame, g apiv1.Gate) bool {
 		"The reviewer may judge a changed subject without its usable patch.",
 		"Supply a subject-pinned patch artifact or use the runner's writable subject workspace. Read-only implicit evidence depends on workspace pinning.",
 		confidence, coverage, 0, "")
+	a.unknownObligation(f.evidenceUnknown, appendPath(f.path, g.Name),
+		fmt.Sprintf("Patch evidence for code review gate %q cannot be proven across this stage.", g.Name))
 	return prReview
 }
 
@@ -398,12 +432,10 @@ func (a *analyzer) gate(f frame, g apiv1.Gate) {
 		reentry := slices.Contains(f.visited, target)
 		if reentry {
 			bound, source := a.budgetFor(g.Name)
-			if next.cycleStart == g.Name && !next.cycleChange && !next.cycleUnknown && rejection {
-				a.add(CycleCode, g.Name, next.path, "a rejection cycle repeats without a recognized subject-changing effect",
-					"Rechecking unchanged work can spend the policy budget without addressing the rejection.",
-					"Route rejection through real rework and deliver its feedback; do not merely increase the retry limit.", "high", "modeled", bound, source)
+			if next.cycleStart == g.Name && !next.cycleChange && rejection {
+				a.cycle(next, g.Name, bound, source)
 			}
-			next.cycleStart, next.cycleChange, next.cycleUnknown = g.Name, false, false
+			next.cycleStart, next.cycleChange, next.cycleUnknown, next.cycleUnknownStages = g.Name, false, false, nil
 			// Ask the actual budget helper for the exhaustion transition.
 			// We analyze the boundary without unrolling a potentially huge
 			// configured number of retries or inventing a second loop policy.
@@ -424,6 +456,18 @@ func (a *analyzer) gate(f frame, g apiv1.Gate) {
 	}
 }
 
+// cycle checks a repeated rejection cycle that has no known subject change.
+func (a *analyzer) cycle(next frame, gate string, bound int, source string) {
+	if next.cycleUnknown {
+		a.unknownObligation(next.cycleUnknownStages, next.path,
+			fmt.Sprintf("Whether the rejection cycle through gate %q changes its subject cannot be proven.", gate))
+		return
+	}
+	a.add(CycleCode, gate, next.path, "a rejection cycle repeats without a recognized subject-changing effect",
+		"Rechecking unchanged work can spend the policy budget without addressing the rejection.",
+		"Route rejection through real rework and deliver its feedback; do not merely increase the retry limit.", "high", "modeled", bound, source)
+}
+
 func (a *analyzer) publication(f frame, stage string, terminalPark bool) {
 	for _, rejected := range f.pending {
 		if terminalPark && rejected.LocalAttempt {
@@ -438,6 +482,8 @@ func (a *analyzer) publication(f frame, stage string, terminalPark bool) {
 			"The PR can remain parked without the findings needed to repair it.",
 			fmt.Sprintf("Route this path through goobers apply-verdict --gate %s, or declare a publisher for that verdict.", rejected.Gate),
 			confidence, coverage, 0, "")
+		a.unknownObligation(rejected.Unknown, appendPath(f.path, stage),
+			fmt.Sprintf("Publication of rejected findings from gate %q cannot be proven across this stage.", rejected.Gate))
 	}
 }
 
@@ -483,12 +529,21 @@ func addSorted(items []string, item string) []string {
 func addPending(items []pendingRejection, item pendingRejection) []pendingRejection {
 	for i := range items {
 		if items[i].Gate == item.Gate {
-			items[i].LocalAttempt = items[i].LocalAttempt && item.LocalAttempt
-			return items
+			out := slices.Clone(items)
+			out[i].LocalAttempt = items[i].LocalAttempt && item.LocalAttempt
+			return out
 		}
 	}
 	out := append(slices.Clone(items), item)
 	sort.Slice(out, func(i, j int) bool { return out[i].Gate < out[j].Gate })
+	return out
+}
+
+func withUnknownStage(items []pendingRejection, stage string) []pendingRejection {
+	out := slices.Clone(items)
+	for i := range out {
+		out[i].Unknown = addSorted(out[i].Unknown, stage)
+	}
 	return out
 }
 

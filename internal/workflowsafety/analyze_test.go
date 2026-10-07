@@ -704,3 +704,89 @@ func TestSafetyCommandCatalogExactForms(t *testing.T) {
 		})
 	}
 }
+
+func coverageStages(findings []Finding) []string {
+	var stages []string
+	for _, f := range findingsFor(findings, CoverageCode) {
+		stages = append(stages, f.Details.Stage)
+	}
+	return stages
+}
+
+// #5842: unknown stages with no dependent obligation must not each emit SAF006.
+func TestSafetyUnknownStagesWithoutObligationsAreQuiet(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-context"
+	d.Spec.Tasks[1].Next = "poll-ci"
+	d.Spec.Tasks = append(d.Spec.Tasks,
+		shell("gather-context", "implement", "custom-gather"),
+		shell("poll-ci", "review", "custom-ci-poll"),
+		shell("release-claim", "close-out", "custom-release"),
+		shell("close-out", "", "custom-close-out"),
+		shell("park", wf.TargetEscalate, "custom-park"))
+	d.Spec.Gates[0].Branches = map[string]string{"pass": "release-claim", "needs-changes": "implement", "fail": "park"}
+	if findings := Analyze(compile(t, d), Options{}); len(findings) != 0 {
+		t.Fatalf("unknown stages without a dependent obligation produced findings: %+v", findings)
+	}
+}
+
+func TestSafetyUnknownStageBlockingPublicationIsReported(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-context"
+	d.Spec.Tasks = append(d.Spec.Tasks,
+		shell("gather-context", "implement", "custom-gather"),
+		shell("notify", wf.TargetEscalate, "custom-notify"))
+	d.Spec.Gates[0].Branches = map[string]string{"pass": "", "needs-changes": "notify", "fail": "notify"}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}}})
+	findings := Analyze(compile(t, d), Options{})
+	if got := coverageStages(findings); !slices.Equal(got, []string{"notify"}) {
+		t.Fatalf("SAF006 stages = %v, want only the stage after the rejection; findings=%+v", got, findings)
+	}
+	coverage := findingsFor(findings, CoverageCode)[0]
+	if path := strings.Join(coverage.Details.WitnessPath, " -> "); !strings.HasSuffix(path, "notify -> @escalate") ||
+		!strings.Contains(coverage.Details.Impact, `gate "review"`) {
+		t.Fatalf("SAF006 does not name the blocked obligation: %+v", coverage)
+	}
+	if publish := findingsFor(findings, PublishCode); len(publish) != 1 || publish[0].Details.Confidence != "uncertain" {
+		t.Fatalf("publication finding = %+v", publish)
+	}
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "pr"}, "notify": {Publishes: "review"}}})
+	if findings := Analyze(compile(t, d), Options{}); len(findings) != 0 {
+		t.Fatalf("declared publisher left findings: %+v", findings)
+	}
+}
+
+func TestSafetyUnknownStageBlockingRejectionCycleIsReported(t *testing.T) {
+	d := wf.Definition{Name: "cycle", Version: 1, DSLVersion: "2.0", Spec: apiv1.WorkflowSpec{
+		Gaggle: "example", Start: "custom", Tasks: []apiv1.Task{shell("custom", "verify", "custom-fix")},
+		Gates: []apiv1.Gate{{Name: "verify", Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{"pass": "", "fail": "custom"}}},
+	}}
+	findings := Analyze(compile(t, d), Options{})
+	if got := coverageStages(findings); !slices.Equal(got, []string{"custom"}) || len(findingsFor(findings, CycleCode)) != 0 {
+		t.Fatalf("unknown cycle stage findings = %+v", findings)
+	}
+	d.Spec.Gates[0].Branches["fail"] = wf.TargetAbort
+	if findings := Analyze(compile(t, d), Options{}); len(findings) != 0 {
+		t.Fatalf("acyclic unknown stage produced findings: %+v", findings)
+	}
+	d.Spec.Gates[0].Branches["fail"] = "custom"
+	d.Spec.Tasks[0].Run.Command = []string{"true"}
+	findings = Analyze(compile(t, d), Options{})
+	if len(findingsFor(findings, CycleCode)) != 1 || len(findingsFor(findings, CoverageCode)) != 0 {
+		t.Fatalf("known non-changing cycle findings = %+v", findings)
+	}
+}
+
+func TestSafetyUnknownStageSupersededByKnownChangeIsNotBlamed(t *testing.T) {
+	d := reviewDefinition()
+	d.Spec.Start = "gather-context"
+	d.Spec.Tasks = append(d.Spec.Tasks, shell("gather-context", "implement", "custom-gather"))
+	d.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+	annotate(t, &d, Contracts{Stages: map[string]StageContract{"review": {Review: "code"}}})
+	findings := Analyze(compile(t, d), Options{})
+	if len(findingsFor(findings, EvidenceCode)) == 0 || len(findingsFor(findings, CoverageCode)) != 0 {
+		t.Fatalf("unknown stage before the subject change was blamed for missing evidence: %+v", findings)
+	}
+}
