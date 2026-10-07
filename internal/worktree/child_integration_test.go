@@ -5,8 +5,8 @@ package worktree_test
 import (
 	"bytes"
 	"context"
+	"github.com/goobers/goobers/internal/testgit"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -111,7 +111,7 @@ func TestIntegrationChildWorktreeForkPreservesParentAndRetries(t *testing.T) {
 func childWorkspaceGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	base := []string{"-C", dir, "-c", "user.name=Child Workspace Test", "-c", "user.email=child-test@goobers.invalid", "-c", "commit.gpgsign=false"}
-	command := exec.Command("git", append(base, args...)...)
+	command := testgit.Command(append(base, args...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, output)

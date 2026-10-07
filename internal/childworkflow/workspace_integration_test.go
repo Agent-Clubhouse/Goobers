@@ -5,8 +5,8 @@ package childworkflow
 import (
 	"bytes"
 	"errors"
+	"github.com/goobers/goobers/internal/testgit"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,7 +21,7 @@ import (
 
 func childSnapshotGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=Snapshot Test", "-c", "user.email=snapshot@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+	command := testgit.Command(append([]string{"-C", dir, "-c", "user.name=Snapshot Test", "-c", "user.email=snapshot@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
 	data, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v %s", args, err, data)

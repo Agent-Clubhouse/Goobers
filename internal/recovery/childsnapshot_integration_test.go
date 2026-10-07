@@ -49,6 +49,7 @@ func captureChildFixture(t *testing.T, repository, key, id string, at time.Time,
 }
 
 func TestIntegrationChildSnapshotFiltersWithoutChangingParent(t *testing.T) {
+	testdep.Require(t, "git")
 	repository, key, at := childSnapshotFixture(t)
 	ctx := context.Background()
 	policy := SnapshotPolicy{ExcludedPaths: []string{"credentials/token"}}
@@ -124,6 +125,7 @@ func TestIntegrationChildSnapshotFiltersWithoutChangingParent(t *testing.T) {
 }
 
 func TestIntegrationChildSnapshotSymlinkAndNestedRefusal(t *testing.T) {
+	testdep.Require(t, "git")
 	repository, key, at := childSnapshotFixture(t)
 	if err := os.Symlink("tracked.txt", filepath.Join(repository, "safe-link")); err != nil {
 		t.Fatal(err)
