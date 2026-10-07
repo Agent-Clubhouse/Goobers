@@ -160,9 +160,29 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, "compute issue snapshot digest", digestErr, "selection.json")
 		}
 
+		// Provider-visible marker: best-effort mirror of the ledger's
+		// (already authoritative) decision, same discipline as backlog-query.
+		legacy, markerErr := legacyClaimMarkerAllowed(ctx, ledger, key, runID)
+		if markerErr != nil {
+			pf(stderr, "warning: could not verify marker mode for %s: %v\n", item.ID, markerErr)
+		} else if legacy {
+			if _, cerr := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: item.ID, RunID: runID}); cerr != nil {
+				pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", item.ID, cerr)
+			}
+		}
+
+		// #6903: the baseline publish-slices guards against is the parent's
+		// revision AFTER this run's own claim writes (comment + label above),
+		// not the pre-claim read. A foreign edit after this point still moves
+		// the revision and conflicts at publish.
 		observedRevision := ""
-		if item.UpdatedAt != nil {
-			observedRevision = item.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		if live, liveErr := issueProvider.GetWorkItem(ctx, repo, item.ID); liveErr != nil {
+			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
+				pf(stderr, "error: release claim %s after post-claim revision read failure: %v\n", item.ID, releaseErr)
+			}
+			return failProviderStage(stderr, fmt.Sprintf("read post-claim revision of parent %s", item.ID), liveErr, "selection.json")
+		} else if live.UpdatedAt != nil {
+			observedRevision = live.UpdatedAt.UTC().Format(time.RFC3339Nano)
 		}
 		selection := decomposition.Selection{
 			Mode:           decomposition.SelectionModeEscalation,
@@ -195,17 +215,6 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			}
 			pf(stderr, "error: write %s: %v\n", resultFile, err)
 			return 1
-		}
-
-		// Provider-visible marker: best-effort mirror of the ledger's
-		// (already authoritative) decision, same discipline as backlog-query.
-		legacy, markerErr := legacyClaimMarkerAllowed(ctx, ledger, key, runID)
-		if markerErr != nil {
-			pf(stderr, "warning: could not verify marker mode for %s: %v\n", item.ID, markerErr)
-		} else if legacy {
-			if _, cerr := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: item.ID, RunID: runID}); cerr != nil {
-				pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", item.ID, cerr)
-			}
 		}
 
 		pf(stdout, "selected parent %s from source run %s (%s)\n", item.ID, candidate.SourceRunID, candidate.ErrorCode)
