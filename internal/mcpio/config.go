@@ -22,6 +22,7 @@ import (
 	"os"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/secfile"
 )
 
 // ConfigFileName is the fixed filename the harness writes this server's
@@ -81,6 +82,7 @@ func WriteConfig(root, rel string, cfg Config) (string, error) {
 		if err := cfg.ChildWorkflows.Validate(cfg.RunID); err != nil {
 			return "", err
 		}
+		return writeJSON(root, rel, cfg, secfile.WritePrivateAtomic)
 	}
 	return WriteJSON(root, rel, cfg)
 }
@@ -97,6 +99,12 @@ func WriteConfig(root, rel string, cfg Config) (string, error) {
 // doc comment and #2413, which tracks the same gap at other pre-sandbox
 // harness writes into a workspace).
 func WriteJSON(root, rel string, v any) (string, error) {
+	return writeJSON(root, rel, v, func(path string, data []byte) error {
+		return journal.WriteFileAtomic(path, data, 0o600)
+	})
+}
+
+func writeJSON(root, rel string, v any, write func(string, []byte) error) (string, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return "", fmt.Errorf("mcpio: encode config: %w", err)
@@ -105,7 +113,7 @@ func WriteJSON(root, rel string, v any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("mcpio: resolve config path: %w", err)
 	}
-	if err := journal.WriteFileAtomic(full, data, 0o600); err != nil {
+	if err := write(full, data); err != nil {
 		return "", fmt.Errorf("mcpio: write config %s: %w", full, err)
 	}
 	return full, nil
