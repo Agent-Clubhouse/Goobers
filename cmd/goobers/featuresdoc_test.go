@@ -189,6 +189,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"Task.ContextFrom":          {"task.contextFrom"},
 		"Task.PolicyActions":        {"task.policyActions"},
 		"Task.NestedAgentPolicy":    {"task.nestedAgentPolicy"},
+		"Task.ChildWorkflows":       {"task.childWorkflows", "task.childWorkflows.allowedGoobers", "task.childWorkflows.allowedCapabilities", "task.childWorkflows.maxChildren", "task.childWorkflows.allowPRPublication"},
 		"Task.Retry":                {"task.retry"},
 		"Task.TimeoutSeconds":       {"task.timeoutSeconds"},
 		"Task.Limits":               {"task.limits"},
