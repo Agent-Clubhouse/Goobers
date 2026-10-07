@@ -26,11 +26,13 @@
         "stageOccurrence": {
           "type": "string",
           "pattern": "^sta_[A-Za-z0-9_-]{43}$",
+          "examples": ["sta_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
           "description": "Identity of the first committed stage start for this task visit and branch; retained across retry, recovery and human restart."
         },
         "attemptId": {
           "type": "string",
           "pattern": "^sta_[A-Za-z0-9_-]{43}$",
+          "examples": ["sta_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
           "description": "Identity bound to the current committed stage-start event; changes for each replacement dispatch without granting child authority."
         }
       }
