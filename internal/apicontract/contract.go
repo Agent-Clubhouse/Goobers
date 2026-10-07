@@ -71,12 +71,13 @@ const (
 	// (decision 005 R4 as amended by Goobers#4001, the blocker-1 half of
 	// #3996): the FIXED set of derived, threshold-crossing aggregates the
 	// `defect-nomination` and `work-nomination` lanes' `telemetry-query`
-	// stage needs — stage-failure-rate, gate-noise, credit-assignment, and a
-	// NORMALIZED, REDACTED error-signature aggregate.
+	// stage needs — stage-failure-rate, gate-noise, credit-assignment,
+	// ci-check-failure (admitted for #6707, pod-placed test-suite-quality), and
+	// a NORMALIZED, REDACTED error-signature aggregate.
 	//
 	// It is a query route in the sense that the DAEMON queries: the client
-	// names a gaggle, a bounded window, which of four aggregate families it
-	// wants, and bounded numeric thresholds. It cannot name a table, a path,
+	// names a gaggle, a bounded window, which of the admitted aggregate
+	// families it wants, and bounded numeric thresholds. It cannot name a table, a path,
 	// a connector, or a projection. Everything outside that closed parameter
 	// set is refused rather than ignored, and the raw rollup rows behind the
 	// aggregates never cross the boundary.
