@@ -2025,3 +2025,51 @@ export interface ReadState {
 export interface WithReadState {
   readState?: ReadState;
 }
+
+/** Stage-grant-only child operations. Human session credentials do not authorize these. */
+export interface ChildWorkflowSourceRequest {
+  source: string;
+}
+
+export interface ChildWorkflowStatusRequest {
+  invocationKey: string;
+}
+
+export interface ChildWorkflowDiagnostic {
+  code: string;
+  stage?: string;
+  field?: string;
+  message: string;
+}
+
+export interface ChildWorkflowValidationResponse {
+  valid: boolean;
+  advisory: boolean;
+  sourceDigest?: string;
+  canonicalDigest?: string;
+  configDigest?: string;
+  policyDigest?: string;
+  workflowDigest?: string;
+  diagnostics: readonly ChildWorkflowDiagnostic[];
+}
+
+/** Acceptance reports custody, not that execution has begun. */
+export interface ChildWorkflowResponse {
+  childId: string;
+  acceptanceId: string;
+  runId: string;
+  invocationKey: string;
+  sequence: number;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  duplicate?: boolean;
+  sourceDigest: string;
+  canonicalDigest: string;
+  configDigest: string;
+  policyDigest: string;
+  workflowDigest: string;
+  cancellationRequested: boolean;
+  resultRef?: string;
+  workspaceRef?: string;
+  acceptedAt: string;
+  updatedAt: string;
+}

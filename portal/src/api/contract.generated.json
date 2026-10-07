@@ -762,6 +762,39 @@
       "budgetMs": 8000,
       "streaming": false,
       "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowValidate",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflows/validate",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowStart",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflows/start",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowStatus",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflows/status",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
     }
   ]
 }
