@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -162,10 +163,26 @@ func FindEscalationCandidates(ctx context.Context, reads EscalationReads) ([]Esc
 	wg.Wait()
 
 	candidates := make([]EscalationCandidate, 0, len(runs))
+	// An error that is only this scan's own cancel (a sibling failed and the
+	// pool was cancelled) must not mask the real failure, whatever its list
+	// position. Report the first genuine error; fall back to the first of any.
+	var firstErr error
 	for i := range results {
-		if results[i].err != nil {
-			return nil, results[i].err
+		err := results[i].err
+		if err == nil {
+			continue
 		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !(errors.Is(err, context.Canceled) && ctx.Err() == nil) {
+			return nil, err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	for i := range results {
 		if results[i].candidate != nil {
 			candidates = append(candidates, *results[i].candidate)
 		}
