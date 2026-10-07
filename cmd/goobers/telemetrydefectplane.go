@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
+	"unicode"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
@@ -26,7 +28,8 @@ import (
 // cannot do without:
 //
 //  1. the ADMITTED SET. Only stage-failure-rate, gate-noise,
-//     credit-assignment and error-signature are derived at all. The families
+//     credit-assignment, error-signature and ci-check-failure (added for
+//     #6707 so test-suite-quality can run in a pod) are derived at all. The families
 //     the ruling did not admit are not filtered out of an answer; they are
 //     never asked for.
 //  2. REDACTION. Error-signature subjects are normalized before they leave
@@ -56,6 +59,7 @@ var planeAggregateAliases = map[telemetryclient.Aggregate]telemetryAggregate{
 	telemetryclient.AggregateErrorSignature:   telemetryAggregateErrorSignature,
 	telemetryclient.AggregateGateNoise:        telemetryAggregateGateNoise,
 	telemetryclient.AggregateCreditAssignment: telemetryAggregateCreditAssignment,
+	telemetryclient.AggregateCICheckFailure:   telemetryAggregateCICheckFailure,
 }
 
 // DefectAggregates derives the requested admitted families for one gaggle.
@@ -136,7 +140,7 @@ func (s *daemonTelemetryDefectAggregateService) DefectAggregates(
 }
 
 // planeAggregateSelectors maps the admitted plane names onto the CLI's
-// selectors. An empty request means all four admitted families, never "all",
+// selectors. An empty request means every admitted family, never "all",
 // so a family the ruling did not admit cannot be reached by omission.
 func planeAggregateSelectors(requested []telemetryclient.Aggregate) telemetryAggregateValues {
 	if len(requested) == 0 {
@@ -181,6 +185,9 @@ func planeThresholds(overrides telemetryclient.Thresholds) rollup.Thresholds {
 	}
 	if overrides.MinCreditFailureShare > 0 {
 		thresholds.MinCreditFailureShare = overrides.MinCreditFailureShare
+	}
+	if overrides.MinCICheckFailureRuns > 0 {
+		thresholds.MinCICheckFailureRuns = overrides.MinCICheckFailureRuns
 	}
 	if thresholds.MaxFlaggedRuns > telemetryclient.MaxFlaggedRuns {
 		thresholds.MaxFlaggedRuns = telemetryclient.MaxFlaggedRuns
@@ -274,13 +281,20 @@ func wireFaultFindings(findings []creditgraph.FaultFinding) []telemetryclient.Fa
 
 // redactFindingForPlane is decision 005 R4's boundary applied to one finding.
 //
-// Only the error-signature family is rewritten, and only its subject: the
-// other three families' subjects are stage, gate and workflow-node names,
-// which are the caller's own gaggle's configuration and already reach it
-// through every other read it makes. The finding keeps its stable digest in
+// The error-signature family is rewritten (its subject is a raw code), and the
+// ci-check-failure subject, a CI check name, is bounded and stripped of control
+// characters (sanitizeCICheckSubject): check names are workflow-authored labels
+// like "make ci", not content, but they originate in an external CI provider so
+// they are not trusted to be short or printable. The other families' subjects
+// are stage, gate and workflow-node names, which are the caller's own gaggle's
+// configuration and already reach it through every other read it makes. The finding keeps its stable digest in
 // Signature so a nominator can dedupe across runs without ever holding the
 // raw code.
 func redactFindingForPlane(finding rollup.Finding) rollup.Finding {
+	if finding.Kind == rollup.FindingCICheckFailure {
+		finding.Subject = sanitizeCICheckSubject(finding.Subject)
+		return finding
+	}
 	if finding.Kind != rollup.FindingErrorSignature {
 		return finding
 	}
@@ -288,6 +302,26 @@ func redactFindingForPlane(finding rollup.Finding) rollup.Finding {
 	finding.Subject = subject
 	finding.Signature = signature
 	return finding
+}
+
+// maxCICheckSubjectRunes bounds a CI check name on the plane. Real check names
+// ("make ci", "build (ubuntu-latest)") are far shorter.
+const maxCICheckSubjectRunes = 128
+
+// sanitizeCICheckSubject drops control characters and truncates a check name
+// to maxCICheckSubjectRunes. It deliberately does not hash or rewrite
+// ordinary names: the check name IS the finding's identity for the filer.
+func sanitizeCICheckSubject(subject string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, subject)
+	if runes := []rune(cleaned); len(runes) > maxCICheckSubjectRunes {
+		cleaned = string(runes[:maxCICheckSubjectRunes])
+	}
+	return strings.TrimSpace(cleaned)
 }
 
 func wireFinding(finding rollup.Finding) telemetryclient.Finding {

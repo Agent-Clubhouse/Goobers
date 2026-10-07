@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -227,8 +229,13 @@ func TestTelemetryQueryRefusesWhatThePlaneCannotServe(t *testing.T) {
 		},
 		{
 			name: "an unadmitted aggregate",
-			args: nominationArgs("--aggregate", "ci-check-failure"),
-			want: "ci-check-failure",
+			args: nominationArgs("--aggregate", "workflow-untriggered"),
+			want: "workflow-untriggered",
+		},
+		{
+			name: "the learning-episode aggregate",
+			args: nominationArgs("--aggregate", "learning-episode"),
+			want: "learning-episode",
 		},
 		{
 			name: "the all aggregate",
@@ -252,8 +259,8 @@ func TestTelemetryQueryRefusesWhatThePlaneCannotServe(t *testing.T) {
 		},
 		{
 			name: "a threshold for an unserved family",
-			args: nominationArgs("--threshold", "min-ci-check-failure-runs=9"),
-			want: "min-ci-check-failure-runs",
+			args: nominationArgs("--threshold", "min-learning-episode-runs=9"),
+			want: "min-learning-episode-runs",
 		},
 		{
 			name: "an instance path argument",
@@ -470,5 +477,145 @@ func writeFixtureRunWithErrorCode(t *testing.T, root, runID, gaggle, code string
 	}
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ciCheckArgs is the exact invocation the pod-placed goobers/test-suite-quality
+// workflow's first stage makes (#6707).
+func ciCheckArgs(extra ...string) []string {
+	args := []string{
+		"telemetry-query",
+		"--window", "72h",
+		"--gaggle", "example",
+		"--aggregate", "ci-check-failure",
+		"--threshold", "min-ci-check-failure-runs=2",
+		"--format", "candidate-findings",
+	}
+	return append(args, extra...)
+}
+
+// writeFixtureRunWithCICheckFailures writes a run whose ci-poll stage finished
+// with the named checks failing, in the shape insertCICheckFailures ingests.
+func writeFixtureRunWithCICheckFailures(t *testing.T, root, runID string, checks ...string) {
+	t.Helper()
+	dir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	if err := os.MkdirAll(filepath.Join(dir, "artifacts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Add(-time.Hour)
+	runYAML := fmt.Sprintf("schema: goobers.dev/journal/run/v1\nrunId: %s\nworkflow: merge-review\nworkflowVersion: 1\ngaggle: example\ntrigger:\n  kind: item\n  ref: issue-42\nstartedAt: %s\n",
+		runID, started.Format(time.RFC3339))
+	if err := os.WriteFile(filepath.Join(dir, "run.yaml"), []byte(runYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type check struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+	}
+	var list []check
+	for _, name := range checks {
+		list = append(list, check{Name: name, State: "failing"})
+	}
+	artifact, err := json.Marshal(map[string]any{"checks": list})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "artifacts", "ci-checks.json"), artifact, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ts := func(offset int) string {
+		return started.Add(time.Duration(offset) * time.Second).Format(time.RFC3339Nano)
+	}
+	lines := []string{
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":%q,"type":"run.started"}`, ts(0)),
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":2,"branch":0,"time":%q,"type":"stage.started","stage":"ci-poll","attempt":1,"attemptClass":"policy"}`, ts(1)),
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":3,"branch":0,"time":%q,"type":"stage.finished","stage":"ci-poll","attempt":1,"status":"failure","outputs":{"ciStatus":"failing"},"artifacts":[{"path":"artifacts/ci-checks.json","digest":%q,"size":%d,"mediaType":"application/json"}]}`,
+			ts(2), journal.Digest(artifact), len(artifact)),
+		fmt.Sprintf(`{"schema":"goobers.dev/journal/event/v1","seq":4,"branch":0,"time":%q,"type":"run.finished","status":"failed"}`, ts(3)),
+	}
+	if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTelemetryQueryPlaneServesCICheckFailure is #6707's acceptance test: the
+// exact test-suite-quality invocation answers from the plane, identically to
+// the local path, with the threshold honoured and the findings carrying only
+// derived data (check name, distinct-run count, flagged run ids).
+func TestTelemetryQueryPlaneServesCICheckFailure(t *testing.T) {
+	root := initDemo(t)
+	writeFixtureRunWithCICheckFailures(t, root, "ci-run-1", "make ci", "lint")
+	writeFixtureRunWithCICheckFailures(t, root, "ci-run-2", "make ci")
+	rebuildTelemetryQueryRollup(t, root)
+
+	code, localOut, stderr := runArgs(t, ciCheckArgs(root)...)
+	if code != 0 {
+		t.Fatalf("local: code = %d, stderr = %q", code, stderr)
+	}
+	local := decodeCandidateFindings(t, localOut)
+	if len(local.Findings) != 1 || local.Findings[0].Subject != "make ci" {
+		t.Fatalf("local findings = %+v, want exactly the recurring 'make ci'", local.Findings)
+	}
+
+	plane := newTelemetryReadPlane(t, root)
+	token := plane.admitRun(t, "example", "pod-run-1")
+	plane.stamp(t, token, "example")
+
+	code, planeOut, stderr := runArgs(t, ciCheckArgs()...)
+	if code != 0 {
+		t.Fatalf("plane: code = %d, stderr = %q", code, stderr)
+	}
+	validateCandidateFindings(t, []byte(planeOut))
+	planeArtifact := decodeCandidateFindings(t, planeOut)
+	planeJSON, err := json.Marshal(planeArtifact.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localJSON, err := json.Marshal(local.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(planeJSON) != string(localJSON) {
+		t.Fatalf("ci-check-failure drifted from the local derivation\nplane: %s\nlocal: %s", planeJSON, localJSON)
+	}
+	finding := planeArtifact.Findings[0]
+	if finding.Kind != rollup.FindingCICheckFailure || finding.Metrics["distinctRuns"] != 2 || finding.Threshold != 2 || len(finding.FlaggedRuns) != 2 {
+		t.Fatalf("unexpected finding shape: %+v", finding)
+	}
+
+	// The threshold crosses the wire: raising it above the observed count
+	// must clear the finding on the plane, as it does locally.
+	code, planeOut, stderr = runArgs(t, ciCheckArgs("--threshold", "min-ci-check-failure-runs=3")...)
+	if code != 0 {
+		t.Fatalf("plane (raised threshold): code = %d, stderr = %q", code, stderr)
+	}
+	if got := decodeCandidateFindings(t, planeOut); len(got.Findings) != 0 || !got.NoWork {
+		t.Fatalf("raised threshold was not honoured on the plane: %s", planeOut)
+	}
+}
+
+// TestDefectAggregateSanitizesCICheckNames pins the redaction choice for the
+// one new subject: check names pass through, but control characters are
+// dropped and the length is bounded, so a hostile check name cannot smuggle
+// a multi-line or unbounded string across the plane.
+func TestDefectAggregateSanitizesCICheckNames(t *testing.T) {
+	if got := sanitizeCICheckSubject("build (ubuntu-latest)"); got != "build (ubuntu-latest)" {
+		t.Fatalf("an ordinary check name was rewritten: %q", got)
+	}
+	if got := sanitizeCICheckSubject("lint\n\x1b[31mINJECT\x00"); strings.ContainsAny(got, "\n\x1b\x00") {
+		t.Fatalf("control characters survived: %q", got)
+	}
+	long := strings.Repeat("x", 5000)
+	if got := sanitizeCICheckSubject(long); len([]rune(got)) != maxCICheckSubjectRunes {
+		t.Fatalf("length = %d, want %d", len([]rune(got)), maxCICheckSubjectRunes)
+	}
+	redacted := redactFindingForPlane(rollup.Finding{Kind: rollup.FindingCICheckFailure, Subject: "a\nb"})
+	if redacted.Subject != "ab" {
+		t.Fatalf("redactFindingForPlane subject = %q", redacted.Subject)
+	}
+	// Other families are untouched by the ci-check branch.
+	other := redactFindingForPlane(rollup.Finding{Kind: rollup.FindingGateNeverFails, Subject: "gate\nx"})
+	if other.Subject != "gate\nx" {
+		t.Fatalf("a non-ci finding was rewritten: %q", other.Subject)
 	}
 }
