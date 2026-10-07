@@ -1048,6 +1048,7 @@ func (u *upSession) configureAPI() int {
 		return 1
 	}
 	defer func() { _ = u.durableTriggers.queue.Close() }()
+	attachChildGenerationPins(u.setup.Generations, u.durableTriggers.queue)
 	defer func() { _ = u.cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
@@ -1068,8 +1069,12 @@ func (u *upSession) configureAPI() int {
 	if err := u.credentialPlane.enableChildWorkflows(u.durableTriggers.queue, u.setup.Definitions); err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize child workflow authority", err)
 	}
+	u.credentialPlane.childDispatch = u.triggerPlane
 	u.credentialPlane.Replace(credentialPlaneDefinitionsFromSet(u.setup.Definitions))
 	u.setup.CredentialPlane = u.credentialPlane
+	if err := u.credentialPlane.installQueuedChildren(u.setup, u.durableTriggers, &u.wg); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize queued child execution", err)
+	}
 	// The surrender plane (#3699) rides beside the blob store, under the same
 	// instance-local root — the "<blob-store>/surrender" convention
 	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents
@@ -1684,7 +1689,7 @@ func (u *upSession) recoverRuns() int {
 	// sweeps that share the delegation ticker.
 	u.cancelSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "cancel_sweep_failed")
 	u.cancelSweep = func() error {
-		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now)
+		return sweepPendingCancelRequests(u.l.SchedulerDir(), u.setup.RunnerRegistry, u.setup.InstanceLog, u.sched.ReleaseRun, time.Now, u.cancelPlane.fenceChildren)
 	}
 	u.cancelSweepErrors.report(runStartupPhase(u.stdout, u.tracker, "cancel-request-reconcile", "", u.cancelSweep))
 

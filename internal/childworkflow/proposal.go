@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnersolve"
@@ -94,14 +95,15 @@ func (e *ValidationError) Error() string {
 // SourceDigest preserves exact submitted bytes; CanonicalDigest ignores YAML
 // formatting, and Machine.Digest is the normal compiler's execution identity.
 type Proposal struct {
-	Source          []byte
-	SourceDigest    string
-	CanonicalDigest string
-	ConfigDigest    string
-	PolicyDigest    string
-	Workflow        apiv1.Workflow
-	Machine         *workflow.Machine
-	Placements      []engine.PinnedPlacement
+	credentialCeiling credentials.ChildCeiling
+	Source            []byte
+	SourceDigest      string
+	CanonicalDigest   string
+	ConfigDigest      string
+	PolicyDigest      string
+	Workflow          apiv1.Workflow
+	Machine           *workflow.Machine
+	Placements        []engine.PinnedPlacement
 }
 
 // Validator owns a deep copy of its trusted inputs. Caller mutations cannot
@@ -187,7 +189,7 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Proposal{Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
+	return &Proposal{credentialCeiling: v.childCredentialCeiling(), Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
 		ConfigDigest: v.context.ConfigDigest, PolicyDigest: v.PolicyDigest(), Workflow: wf, Machine: machine, Placements: pins}, nil
 }
 

@@ -857,6 +857,9 @@ func (f *resumeFrame) attemptContext(machine *workflow.Machine, stage string) *r
 	if _, isTask := machine.Task(stage); !isTask || f.concurrentResume {
 		return nil
 	}
+	if restored, ok := recoverChildTaskContext(f.segment, stage); ok {
+		return restored
+	}
 	if attempt := interruptedAttempt(f.segment, stage); attempt > 0 {
 		return &resumeContext{
 			stage:                  stage,
@@ -2197,12 +2200,13 @@ func interruptedAttemptMutated(events []journal.Event, stageName string, attempt
 }
 
 func policyAttemptsBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	yielded := childYieldedAttempts(events, stageName)
 	var attempts int32
 	for _, event := range events {
 		if event.Type != journal.EventStageStarted ||
 			event.Stage != stageName ||
 			event.Attempt >= interruptedAttempt ||
-			event.AttemptClass == journal.AttemptInfra {
+			event.AttemptClass == journal.AttemptInfra || yielded[event.Attempt] {
 			continue
 		}
 		attempts++

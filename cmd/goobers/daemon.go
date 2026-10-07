@@ -42,6 +42,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
+	ChildRuntime childRuntimeBuilder
 	observation  *schedulerObservation
 	runtime      *schedulerRuntime
 	Generations  *configgeneration.Retainer
@@ -179,6 +180,7 @@ func logTelemetryOTLPUnavailable(log *journal.InstanceLog, cause error) {
 }
 
 type schedulerDefinitions struct {
+	ChildRuntime       childRuntimeBuilder
 	GenerationResolver executionGenerationResolver
 	Set                *instance.ConfigSet
 	Validation         *validate.Report
@@ -355,6 +357,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	return &schedulerSetup{
 		observation:              observation,
 		runtime:                  runtime,
+		ChildRuntime:             definitions.ChildRuntime,
 		Generations:              runtime.generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
@@ -850,16 +853,11 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
-	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
-		pinnedInput := input
-		pinnedInput.Layout = pinned
-		pinnedInput.Definitions = pinnedSet
-		pinnedInput.Validation = pinnedReport
-		pinnedInput.StartupProgress = nil
-		return buildSchedulerDefinitions(pinnedInput)
-	})
+	buildGeneration := schedulerGenerationBuilder(input)
+	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), buildGeneration)
 	return &schedulerDefinitions{
 		GenerationResolver: resolveGeneration,
+		ChildRuntime:       childRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), input.Config, buildGeneration),
 		Set:                input.Definitions,
 		Validation:         input.Validation,
 		HarnessPreflight:   harnessInfo,
@@ -875,6 +873,17 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		Worktrees:          firstWorktrees,
 		WorktreesByGaggle:  input.WorktreeManagers,
 	}, nil
+}
+
+func schedulerGenerationBuilder(input schedulerDefinitionsInput) func(instance.Layout, *instance.ConfigSet, *validate.Report) (*schedulerDefinitions, error) {
+	return func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
+		pinnedInput := input
+		pinnedInput.Layout = pinned
+		pinnedInput.Definitions = pinnedSet
+		pinnedInput.Validation = pinnedReport
+		pinnedInput.StartupProgress = nil
+		return buildSchedulerDefinitions(pinnedInput)
+	}
 }
 
 func preflightSchedulerHarnessesWithProgress(
@@ -1181,6 +1190,8 @@ func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Man
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(input.ProviderQuota)
 	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, input.TerminalNotifier)
+	childHandoff := &daemonChildHandoff{layout: input.Layout, worktrees: manager, repoCloneURL: runnerCfg.RepoCloneURL, project: input.GaggleProject}
+	runnerCfg.ChildHandoff, runnerCfg.ChildParentCapacity = childHandoff, childHandoff
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1638,27 +1649,24 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			continue
 		}
 
-		identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-		machine, ok := machines[identity]
-		gooberDigest := gooberDigests[identity]
-		repoRef := repoRefs[identity]
 		if id.ConfigGeneration != "" {
 			outcome.updateBlockingCandidate("resolving-generation", "resolve execution generation")
 			outcome.report(progress)
-			pinned, err := runnerRegistry.executionGeneration(ctx, id)
-			if err != nil {
-				return outcome, fmt.Errorf("resolve run %q execution generation: %w", id.RunID, err)
-			}
-			rn, machine, gooberDigest, repoRef = pinned.runner, pinned.machine, pinned.gooberDigest, pinned.repoRef
-			ok = true
 		}
-		if rn == nil || !ok {
+		runtime, available, err := resolveInterruptedRuntime(ctx, id, interruptedRuntimeInput{
+			runner: rn, registry: runnerRegistry, machines: machines, gooberDigests: gooberDigests,
+			repoRefs: repoRefs, log: log, release: release,
+		})
+		if err != nil {
+			return outcome, err
+		}
+		if !available {
 			outcome.Warned = append(outcome.Warned, id.RunID)
 			outcome.updateBlockingCandidate("skipped", "journal unresolvable workflow")
 			outcome.report(progress)
-			warnUnresolvableResume(log, id, rn == nil)
 			continue
 		}
+		rn, machine, gooberDigest, repoRef := runtime.runner, runtime.machine, runtime.gooberDigest, runtime.repoRef
 		// Never reinterpret a historical run under the current workflow
 		// merely because the name still matches.
 		outcome.updateBlockingCandidate("dispatching", "select workflow definition")

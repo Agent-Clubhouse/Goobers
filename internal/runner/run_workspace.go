@@ -211,6 +211,9 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
+	if in.heldChildWorkspace != nil {
+		return in.heldChildWorkspace, nil
+	}
 	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
 		return r.createChildStageWorkspace(ctx, in, mode, syncBase, workspaceBranch)
 	}

@@ -177,22 +177,6 @@ func ImportChildSnapshot(ctx context.Context, repository, archive string, snapsh
 	return verifySnapshotPolicy(ctx, repository, snapshot.Record.SnapshotSHA, snapshot.Policy)
 }
 
-// CheckChildSnapshotCurrent checks both content and staged state under the
-// caller's exclusive workspace lease. A match never authorizes mutation alone.
-func CheckChildSnapshotCurrent(ctx context.Context, repository string, expected ChildSnapshot) error {
-	if err := expected.validate(); err != nil {
-		return err
-	}
-	current, err := CaptureChildSnapshot(ctx, repository, expected.Record.RepositoryKey, expected.Record.RunID, expected.Record.CreatedAt, expected.Record.RetainUntil, expected.Policy)
-	if err != nil {
-		return err
-	}
-	if current.Record.SnapshotSHA != expected.Record.SnapshotSHA || current.TreeSHA != expected.TreeSHA || current.IndexDigest != expected.IndexDigest {
-		return ErrWorkspaceChanged
-	}
-	return nil
-}
-
 func readSnapshotTree(ctx context.Context, repository, snapshot string) ([]byte, error) {
 	var entries bytes.Buffer
 	writer := &archiveBudgetWriter{destination: &entries, remaining: maxSnapshotIndexBytes}

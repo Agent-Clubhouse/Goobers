@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/mcpio"
 )
 
@@ -23,6 +24,9 @@ func WithChildWorkflowAccess(provider ChildWorkflowAccessProvider) Option {
 
 func (e *Executor) prepareChildWorkflowAccess(ctx context.Context, env apiv1.InvocationEnvelope) (*mcpio.ChildWorkflowAccess, func() error, error) {
 	noop := func() error { return nil }
+	if err := credentials.RefuseUnisolatedChildProcess(ctx); err != nil {
+		return nil, noop, err
+	}
 	if env.ChildWorkflowOrigin == nil {
 		return nil, noop, nil
 	}

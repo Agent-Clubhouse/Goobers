@@ -113,12 +113,13 @@ func TestIntegrationChildSnapshotFiltersWithoutChangingParent(t *testing.T) {
 	if err := ImportChildSnapshot(ctx, destination, archivePath, published, 1<<20); err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckChildSnapshotCurrent(ctx, repository, snapshot); err != nil {
+	recoveryTestGit(t, repository, "add", "tracked.txt")
+	current, err := CaptureChildSnapshot(ctx, repository, snapshot.Record.RepositoryKey, snapshot.Record.RunID, snapshot.Record.CreatedAt, snapshot.Record.RetainUntil, snapshot.Policy)
+	if err != nil {
 		t.Fatal(err)
 	}
-	recoveryTestGit(t, repository, "add", "tracked.txt")
-	if err := CheckChildSnapshotCurrent(ctx, repository, snapshot); !errors.Is(err, ErrWorkspaceChanged) {
-		t.Fatalf("staging-only change was not detected: %v", err)
+	if current.IndexDigest == snapshot.IndexDigest {
+		t.Fatal("snapshot receipt did not distinguish a staging-only change")
 	}
 }
 
