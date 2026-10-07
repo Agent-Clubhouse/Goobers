@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/goobers/goobers/internal/truncate"
 )
 
 const (
@@ -455,8 +457,5 @@ func lastNonEmptyLine(output []byte) string {
 
 func truncateDiagnostic(message string) string {
 	message = strings.TrimSpace(message)
-	if len(message) <= maxDiagnosticLength {
-		return message
-	}
-	return message[:maxDiagnosticLength-3] + "..."
+	return truncate.Bytes(message, maxDiagnosticLength, "...")
 }
