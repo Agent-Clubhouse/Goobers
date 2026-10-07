@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -210,6 +211,81 @@ func TestDaemonGaggleHealthRepairTransitionWakesController(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventuallyHealth(t, func() bool { return source.calls.Load() > before })
+}
+
+func TestDaemonGaggleHealthInstanceAppendDoesNotWaitForController(t *testing.T) {
+	store, err := gagglehealth.OpenStore(t.TempDir(), func(string) (time.Duration, error) {
+		return 24 * time.Hour, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &countingHealthSnapshotSource{}
+	controller, err := gagglehealth.NewController(store, source, gagglehealth.ControllerOptions{MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controllerLocked := make(chan struct{})
+	releaseController := make(chan struct{})
+	var releaseOnce sync.Once
+	store.SetAppendObserver(func(apiv1.GaggleHealthEvent) {
+		select {
+		case <-controllerLocked:
+		default:
+			close(controllerLocked)
+		}
+		<-releaseController
+	})
+	if err := controller.Start(context.Background(), []gagglehealth.GaggleRegistration{{
+		Name: "alpha", Policy: gagglehealth.DefaultPolicy(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	instanceLog, _, err := journal.OpenInstanceLog(filepath.Join(t.TempDir(), "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	health := &daemonGaggleHealth{
+		controller: controller, instanceLog: instanceLog,
+		instanceWake: make(chan struct{}, 1), cancel: cancel,
+	}
+	instanceLog.SetAppendObserver(health.observeInstanceTransition)
+	health.wg.Add(1)
+	go health.watchInstanceTransitions(ctx)
+	t.Cleanup(func() {
+		instanceLog.SetAppendObserver(nil)
+		cancel()
+		releaseOnce.Do(func() { close(releaseController) })
+		controller.Stop()
+		health.wg.Wait()
+		if err := instanceLog.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	select {
+	case <-controllerLocked:
+	case <-time.After(time.Second):
+		t.Fatal("controller did not enter health-store append")
+	}
+
+	appended := make(chan error, 1)
+	go func() {
+		appended <- instanceLog.Append(journal.Event{Type: journal.EventTriggerFired, Workflow: "implement"})
+	}()
+	select {
+	case err := <-appended:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("instance append waited for the health controller")
+	}
 }
 
 func TestDaemonGaggleHealthReplacePublishesDefinitionsBeforeEvaluation(t *testing.T) {

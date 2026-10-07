@@ -31,25 +31,26 @@ type gaggleHealthEvidenceReader interface {
 }
 
 type daemonGaggleHealth struct {
-	mu          sync.RWMutex
-	root        string
-	config      *instance.Config
-	definitions *instance.ConfigSet
-	retentions  map[string]time.Duration
-	reads       gaggleHealthEvidenceReader
-	quota       *localscheduler.ProviderQuotaState
-	instanceLog *journal.InstanceLog
-	store       *gagglehealth.Store
-	controller  *gagglehealth.Controller
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	mu           sync.RWMutex
+	root         string
+	config       *instance.Config
+	definitions  *instance.ConfigSet
+	retentions   map[string]time.Duration
+	reads        gaggleHealthEvidenceReader
+	quota        *localscheduler.ProviderQuotaState
+	instanceLog  *journal.InstanceLog
+	store        *gagglehealth.Store
+	controller   *gagglehealth.Controller
+	cancel       context.CancelFunc
+	instanceWake chan struct{}
+	wg           sync.WaitGroup
 }
 
 func startDaemonGaggleHealth(ctx context.Context, root string, setup *schedulerSetup, reads *readservice.Local) (*daemonGaggleHealth, error) {
 	watchCtx, cancel := context.WithCancel(ctx)
 	health := &daemonGaggleHealth{
 		root: root, config: setup.Config, reads: reads, quota: setup.ProviderQuota,
-		instanceLog: setup.InstanceLog, cancel: cancel,
+		instanceLog: setup.InstanceLog, cancel: cancel, instanceWake: make(chan struct{}, 1),
 	}
 	health.replaceDefinitions(setup.Definitions)
 	store, err := gagglehealth.OpenStore(root, health.retention)
@@ -70,7 +71,9 @@ func startDaemonGaggleHealth(ctx context.Context, root string, setup *schedulerS
 		cancel()
 		return nil, err
 	}
-	setup.InstanceLog.SetAppendObserver(func(journal.Event) { controller.WakeAll() })
+	setup.InstanceLog.SetAppendObserver(health.observeInstanceTransition)
+	health.wg.Add(1)
+	go health.watchInstanceTransitions(watchCtx)
 	if setup.ReadModel != nil {
 		health.wg.Add(1)
 		go health.watchChanges(watchCtx, setup.ReadModel.Feed())
@@ -459,6 +462,25 @@ func (h *daemonGaggleHealth) observeHealthTransition(event apiv1.GaggleHealthEve
 		return
 	}
 	h.controller.Wake(event.Gaggle)
+}
+
+func (h *daemonGaggleHealth) observeInstanceTransition(journal.Event) {
+	select {
+	case h.instanceWake <- struct{}{}:
+	default:
+	}
+}
+
+func (h *daemonGaggleHealth) watchInstanceTransitions(ctx context.Context) {
+	defer h.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.instanceWake:
+			h.controller.WakeAll()
+		}
+	}
 }
 
 func (h *daemonGaggleHealth) watchChanges(ctx context.Context, feed *readmodel.Feed) {

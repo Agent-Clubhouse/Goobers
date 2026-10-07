@@ -172,8 +172,8 @@ func (l *InstanceLog) Append(ev Event) error {
 	return err
 }
 
-// SetAppendObserver installs a non-blocking daemon-local notification invoked
-// after each durable append. Passing nil removes the observer.
+// SetAppendObserver installs a daemon-local observer invoked synchronously after
+// each durable append. The observer must not block. Passing nil removes it.
 func (l *InstanceLog) SetAppendObserver(observer func(Event)) {
 	if l == nil {
 		return
