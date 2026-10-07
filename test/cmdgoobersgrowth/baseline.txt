@@ -2,7 +2,7 @@
 # Physical lines (including blanks/comments) in direct non-test .go files, all build tags.
 # Informational snapshot; PR enforcement compares head against merge-base.
 # Snapshot updates require !<dimension>-justification\t<exact target>\t<why>.
-!non-test-line-count-justification	133401	Inherited concurrent sprint growth on main before per-PR delta enforcement; one-time informational snapshot refresh.
-!non-test-line-count 133401
-!non-test-file-count-justification	434	Inherited concurrent sprint growth on main before per-PR delta enforcement; one-time informational snapshot refresh.
-!non-test-file-count 434
+!non-test-line-count-justification	136792	LAND-C01 adds a thin child-validation CLI adapter and command registration; reusable validation remains in internal/childworkflow.
+!non-test-line-count 136792
+!non-test-file-count-justification	464	LAND-C01 adds one thin child-validation CLI adapter; see justifications/haw-child-validation-cli.md.
+!non-test-file-count 464

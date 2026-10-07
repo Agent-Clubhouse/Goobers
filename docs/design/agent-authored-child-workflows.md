@@ -15,6 +15,19 @@ Companions: `interactive-factory-operations.md`,
 `source-owned-backlog-workbench.md`. The generated design index links each as it
 enters the review stack. Stable work IDs below do not require numbered issues.
 
+## Incremental delivery ledger
+
+The [landing plan](../hitl-advanced-workflows-landing-plan.md) splits the snapshot
+into independently reviewed changes. Keep this design approved until the full
+journey and its enabled backends are qualified.
+
+| Slice | Scope included in this slice | Remaining boundary |
+| --- | --- | --- |
+| LAND-C01 / HAW-CHD-001 and validation portion of HAW-CHD-002 | Preview DSL 3.1 opt-in, bounded proposal checks and `goobers workflow validate-child` against the configured parent; typed diagnostics, policy identity and publication ceilings | Validation is advisory. Runtime admission, credentials, child starts, durable waits and workspace handoff are not enabled; both runtimes explicitly refuse opted-in execution. |
+
+The later implementation notes in this document remain evidence from the reference
+snapshot; they are not a claim that those later slices have landed on main.
+
 ## 1. User journey
 
 An agent at an opted-in stage discovers work that needs a different composition

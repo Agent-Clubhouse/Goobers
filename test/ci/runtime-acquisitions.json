@@ -61,6 +61,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows CLI runtime:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows CI scope policy:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows bounded diagnostic history:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows child proposal validation:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows containment and journals:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows credential files:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows durable state services:go-modules",

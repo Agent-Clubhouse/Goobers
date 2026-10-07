@@ -8,9 +8,23 @@ import (
 	"os"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+func workflowCommands() cliCommand {
+	return coreGroupCommand("workflow", runWorkflow,
+		coreSubcommand("workflow show", "show", apicontract.ActionReadOnlyNavigation, runWorkflowShow).
+			withSynopsis(synopsisByID["workflow show"]).
+			withHelp("show a workflow as a text DAG", workflowShowHelp).
+			withExamples("goobers workflow show default-implement", "goobers workflow show default-implement --dot"),
+		coreSubcommand("workflow validate-child", "validate-child", apicontract.ActionReadOnlyNavigation, runWorkflowValidateChild).
+			withSynopsis(workflowValidateChildSynopsis).
+			withHelp("validate a child proposal against its configured parent", workflowValidateChildHelp).
+			withExamples("goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml"),
+	).withHelp("inspect workflows and validate child proposals", workflowHelp)
+}
 
 func runWorkflow(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -28,8 +42,8 @@ func runWorkflow(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const workflowHelp = "Usage: goobers workflow show [flags] <name> [path]\n\n" +
-	"Show the named workflow as a text DAG or Graphviz DOT (default path \".\").\n\n" +
+const workflowHelp = "Usage: goobers workflow <show | validate-child> [flags]\n\n" +
+	"Show a workflow DAG or validate a generated child proposal against its configured parent.\n\n" +
 	"Workflow\n\n" +
 	workflowConcept + "\n"
 

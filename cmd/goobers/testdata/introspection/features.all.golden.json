@@ -685,6 +685,31 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.childWorkflows",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowPRPublication",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedCapabilities",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.allowedGoobers",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.childWorkflows.maxChildren",
+      "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.commitsRepo",
       "stability": "ga",
       "sinceVersion": "v0.4.0"

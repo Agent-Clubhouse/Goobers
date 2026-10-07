@@ -538,6 +538,11 @@ task.artifactSlots.mediaType                             3.1          preview   
 task.artifactSlots.name                                  3.1          preview          preview          v0.5.0
 task.artifactSlots.schemaPath                            3.1          preview          preview          v0.5.0
 task.capabilities                                        3.1          ga               preview          dev
+task.childWorkflows                                      3.1          preview          preview          dev
+task.childWorkflows.allowPRPublication                   3.1          preview          preview          dev
+task.childWorkflows.allowedCapabilities                  3.1          preview          preview          dev
+task.childWorkflows.allowedGoobers                       3.1          preview          preview          dev
+task.childWorkflows.maxChildren                          3.1          preview          preview          dev
 task.commitsRepo                                         3.1          ga               preview          v0.4.0
 task.contextFrom                                         3.1          ga               preview          dev
 task.continueOnError                                     3.1          ga               preview          dev
@@ -628,4 +633,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-628 feature/version row(s)
+633 feature/version row(s)
