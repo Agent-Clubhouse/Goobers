@@ -212,6 +212,66 @@ func TestDaemonGaggleHealthRepairTransitionWakesController(t *testing.T) {
 	eventuallyHealth(t, func() bool { return source.calls.Load() > before })
 }
 
+func TestDaemonGaggleHealthReplacePublishesDefinitionsBeforeEvaluation(t *testing.T) {
+	initial := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}}},
+	}
+	replacement := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}},
+		},
+	}
+	health := &daemonGaggleHealth{definitions: initial}
+	health.retentions = resolvedHealthRetentions(initial)
+	store, err := gagglehealth.OpenStore(t.TempDir(), health.retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	controller, err := gagglehealth.NewController(store, health, gagglehealth.ControllerOptions{MaxConcurrent: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	health.store = store
+	health.controller = controller
+	if err := controller.Start(context.Background(), health.registrations(initial)); err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Stop()
+
+	if err := health.Replace(replacement); err != nil {
+		t.Fatal(err)
+	}
+	eventuallyHealth(t, func() bool {
+		status, ok := controller.Status("beta")
+		return ok && !status.LastSuccessfulEvaluation.IsZero()
+	})
+	snapshot, err := store.Snapshot("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Active) != 0 {
+		t.Fatalf("new gaggle first evaluation opened findings: %+v", snapshot.Active)
+	}
+
+	invalid := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "duplicate"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "duplicate"}},
+		},
+	}
+	if err := health.Replace(invalid); err == nil {
+		t.Fatal("Replace(invalid) error = nil")
+	}
+	health.mu.RLock()
+	current := health.definitions
+	health.mu.RUnlock()
+	if current != replacement {
+		t.Fatal("failed replacement did not restore the published definitions")
+	}
+}
+
 func eventuallyHealth(t *testing.T, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

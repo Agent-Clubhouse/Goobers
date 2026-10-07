@@ -85,12 +85,16 @@ func (h *daemonGaggleHealth) Replace(definitions *instance.ConfigSet) error {
 	registrations := h.registrations(definitions)
 	retentions := resolvedHealthRetentions(definitions)
 	h.mu.Lock()
+	previousDefinitions := h.definitions
+	previousRetentions := h.retentions
+	h.definitions = definitions
+	h.retentions = retentions
 	if err := h.controller.Reload(registrations); err != nil {
+		h.definitions = previousDefinitions
+		h.retentions = previousRetentions
 		h.mu.Unlock()
 		return fmt.Errorf("reload gaggle health controllers: %w", err)
 	}
-	h.definitions = definitions
-	h.retentions = retentions
 	h.mu.Unlock()
 	return nil
 }
