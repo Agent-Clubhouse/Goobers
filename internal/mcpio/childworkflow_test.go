@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract/childworkflowwire"
+	"github.com/goobers/goobers/internal/platform/secfile"
 )
 
 type childRoundTripper func(*http.Request) (*http.Response, error)
@@ -267,9 +268,8 @@ func TestChildConfigPrivateAndImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("config mode=%v err=%v", info, err)
+	if err := secfile.VerifyPrivate(path); err != nil {
+		t.Fatalf("config privacy: %v", err)
 	}
 	loaded, err := LoadConfig(path)
 	if err != nil || loaded.ChildWorkflows.BearerToken != childMCPGrant {
