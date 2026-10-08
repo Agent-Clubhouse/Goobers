@@ -8370,17 +8370,21 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 }
 
 // TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff pins #5334: a
-// repo-readonly reviewer gate is a detached checkout of the pinned base, so
-// recordReviewerDiff's empty result there cannot prove the agentic subject
-// committed nothing. The reviewer must run — whether or not the subject
-// actually committed — instead of the #415 empty-diff fast-fail parking it.
+// repo-readonly reviewer gate is a detached checkout of the pinned base, and a
+// scratch gate has no repo checkout at all, so recordReviewerDiff's empty
+// result in either cannot prove the agentic subject committed nothing. The
+// reviewer must run — whether or not the subject actually committed — instead
+// of the #415 empty-diff fast-fail parking it.
 func TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		commit bool
+		name      string
+		workspace apiv1.WorkspaceMode
+		commit    bool
 	}{
-		{name: "subject-committed", commit: true},
-		{name: "subject-committed-nothing", commit: false},
+		{name: "repo-readonly-subject-committed", workspace: apiv1.WorkspaceRepoReadOnly, commit: true},
+		{name: "repo-readonly-subject-committed-nothing", workspace: apiv1.WorkspaceRepoReadOnly, commit: false},
+		{name: "scratch-subject-committed", workspace: apiv1.WorkspaceScratch, commit: true},
+		{name: "scratch-subject-committed-nothing", workspace: apiv1.WorkspaceScratch, commit: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var coder invoke.Goober = &noCommitSuccessGoober{}
@@ -8405,6 +8409,7 @@ func TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff(t *testing.T) {
 					return coder, nil
 				},
 				Worktrees:    wtMgr,
+				ScratchDir:   filepath.Join(instanceRoot, "scratch"),
 				RunsDir:      filepath.Join(instanceRoot, "runs"),
 				RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
 			})
@@ -8412,7 +8417,7 @@ func TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 
-			machine := agenticImplementGateMachineWithWorkspace(t, apiv1.WorkspaceRepoReadOnly)
+			machine := agenticImplementGateMachineWithWorkspace(t, tc.workspace)
 			res, err := r.Start(context.Background(), StartInput{
 				RunID:   "run-readonly-review-" + tc.name,
 				Machine: machine,
@@ -8423,7 +8428,7 @@ func TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff(t *testing.T) {
 				t.Fatalf("Start: %v", err)
 			}
 			if !reviewer.called {
-				t.Fatal("reviewer was NOT invoked — a repo-readonly gate cannot observe the run branch, so its empty diff must not fast-fail")
+				t.Fatalf("reviewer was NOT invoked — a %s gate cannot observe the run branch, so its empty diff must not fast-fail", tc.workspace)
 			}
 			if res.Phase != journal.PhaseCompleted {
 				t.Fatalf("phase = %q, want completed on the reviewer's pass", res.Phase)
