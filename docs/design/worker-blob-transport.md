@@ -26,8 +26,19 @@ read that digest from its directory. A missing or different value refuses
 startup with `WORKER_BLOB_STORE_MISMATCH`. The small content-addressed probe is
 retained. While the daemon is not ready (HTTP 503 or no answer, 4-9 minutes on a
 rollout) the probe waits with backoff for `--blob-probe-wait` (env
-`GOOBERS_WORKER_BLOB_PROBE_WAIT`, default 20m), logging INFO progress; the
-bound expiring exits `WORKER_DAEMON_NOT_READY`. A 4xx, a non-503 5xx or a
+`GOOBERS_WORKER_BLOB_PROBE_WAIT`, default 20m), logging INFO progress. A
+starting daemon's 503 (both "daemon is starting" and the API recovery gate's
+"recovering") advertises its derived startup budget
+(`Goobers-Startup-Budget-Remaining`, seconds), a progress token
+(`Goobers-Startup-Progress`) and a per-process id (`Goobers-Startup-Daemon`):
+the probe waits until that budget ends plus five minutes, and each change of
+the token restarts the `--blob-probe-wait` window, so a slow but advancing
+daemon is waited for while a stuck one is not. A new daemon id re-baselines the
+token, and only the first daemon seen extends the wait by its budget; after a
+restart the wait ends at most one `--blob-probe-wait` window later, so a
+crash-looping daemon is not mistaken for progress. Neither extends the wait
+past 6h. The bound expiring exits `WORKER_DAEMON_NOT_READY`.
+A 4xx, a non-503 5xx or a
 read-back mismatch fails immediately with the daemon's error body. Local directory workers without `--dispatch-namespace` do not contact
 the plane and need no shared signing key.
 

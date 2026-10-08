@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -718,7 +719,7 @@ func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := buildReadModelIfNeeded(ctx, store, state, l); err != nil {
+	if err := buildReadModelIfNeeded(ctx, store, state, l, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -801,8 +802,12 @@ func TestBuildReadModelIfNeededCompletesReconstructionBeforeReady(t *testing.T) 
 	if before.Ready {
 		t.Fatal("fresh projection is ready before its journal build")
 	}
-	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+	var progress []string
+	if err := buildReadModelIfNeeded(ctx, store, before, l, func(line string) { progress = append(progress, line) }); err != nil {
 		t.Fatal(err)
+	}
+	if want := "read model build: scanned 1/1 run directories"; !slices.Contains(progress, want) {
+		t.Fatalf("startup progress = %q, want %q so operators can tell slow from stuck", progress, want)
 	}
 	after, err := store.State(ctx)
 	if err != nil {
@@ -836,7 +841,7 @@ func TestBuildReadModelIfNeededIgnoresCanceledContext(t *testing.T) {
 	if before.Ready {
 		t.Fatal("fresh projection is ready before its journal build")
 	}
-	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+	if err := buildReadModelIfNeeded(ctx, store, before, l, nil); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.State(context.Background())
