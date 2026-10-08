@@ -1089,7 +1089,11 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			reviewerGoober = g.Agentic.Goober
 			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
+		reviewerUpstream := upstream
+		if ev.ReviewerPointers != nil {
+			reviewerUpstream = ev.ReviewerPointers
+		}
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, reviewerUpstream, reviewerGoober)
 		_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 		env.ReviewerMechanicalEscalationAllowed = gate.StructuredMechanicalEscalation(g)
 		env.InstructionAddendum = instructionAddendum
