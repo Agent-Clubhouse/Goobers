@@ -196,6 +196,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	}
 	d, err := newStageDispatcher(dispatcher.Config{
 		TmpfsSizeLimit: tmpfsSize,
+		TmpDiskBacked:  cfg.Runner.PodTmpDiskBacked(),
 		PodEgressProxy: cfg.Runner.PodEgressProxy,
 		// Validation guarantees a non-nil signer before it enters the interface.
 		TokenMinter: signed,

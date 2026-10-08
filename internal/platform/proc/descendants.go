@@ -1,3 +1,5 @@
+//go:build !windows
+
 package proc
 
 // collectDescendants returns every pid reachable from root through parents,
@@ -17,6 +19,9 @@ package proc
 // processes until the whole test binary hits its timeout — the ten-minute
 // package panic reported in #3922, whose goroutine dump caught the loop in
 // startTime with the walk on the stack.
+//
+// Windows uses identifyDescendantsWithStartTime instead, which applies the
+// same guard and also rejects parentage left stale by pid reuse (#6744).
 func collectDescendants(root int, parents map[int][]int) []int {
 	visited := map[int]bool{root: true}
 	var descendants []int
