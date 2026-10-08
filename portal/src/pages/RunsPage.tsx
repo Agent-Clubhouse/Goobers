@@ -16,7 +16,7 @@ import {
   insightScopeOption,
 } from "../insightScope";
 import { manualRunCommand, statusCommand } from "../manualRunCommand";
-import { useOperationalSnapshot } from "../operationalData";
+import { runWorkTitle, useOperationalSnapshot } from "../operationalData";
 import { routeHash, type Navigate, type RunRouteFilters } from "../routing";
 import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
@@ -666,11 +666,11 @@ function validTimestamp(value: string | null): boolean {
 
 function RunHistoryRow({ run }: { run: RunSummary }) {
   const workItem = run.operator?.issue;
-  const identity = workItem
-    ? `#${workItem.number}${workItem.title ? ` · ${workItem.title}` : ""}`
-    : run.id;
+  const displayTitle = run.operator?.displayTitle;
+  const titled = Boolean(displayTitle || workItem);
+  const identity = runWorkTitle(run, " · ") ?? run.id;
   const context = `${run.gaggle} / ${run.workflow}${run.trigger.ref ? ` · ${run.trigger.ref}` : ""}${
-    workItem ? ` · ${run.id}` : ""
+    titled ? ` · ${run.id}` : ""
   }`;
 
   return (
@@ -681,7 +681,9 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
     >
       <span className="row-primary">
         <span className="row-title" title={identity}>
-          {workItem ? (
+          {displayTitle ? (
+            <span>{displayTitle}</span>
+          ) : workItem ? (
             <>
               <span>#{workItem.number}</span>
               {workItem.title ? ` · ${workItem.title}` : ""}
@@ -693,7 +695,7 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
         <span className="row-subtitle" title={context}>
           {run.gaggle} / {run.workflow}
           {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
-          {workItem ? <span className="mono"> · {run.id}</span> : null}
+          {titled ? <span className="mono"> · {run.id}</span> : null}
         </span>
       </span>
       <StatusBadge stale={run.stale} status={run.phase} />

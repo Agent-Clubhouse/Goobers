@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -62,6 +63,30 @@ func TestRunExecutionElapsedExcludesChildWaitAndStopsAtSettlement(t *testing.T) 
 	}
 	if elapsed, err := RunExecutionElapsed(nil, now.Add(time.Second), now); err != nil || elapsed != -time.Second {
 		t.Fatal("ordinary clock rollback behavior changed", elapsed, err)
+	}
+}
+
+// #5891: maxRunDuration counts active execution, so host suspension is
+// excluded, and a suspension that overlaps a child wait is excluded only once.
+func TestRunExecutionElapsedExcludesHostSuspension(t *testing.T) {
+	start := time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)
+	now := start.Add(24 * time.Hour)
+	suspended := []hostsuspend.Window{
+		{From: start.Add(9 * time.Hour), To: start.Add(13 * time.Hour)},
+		{From: start.Add(17 * time.Hour), To: start.Add(22 * time.Hour)},
+	}
+	elapsed, err := RunExecutionElapsed(nil, start, now, suspended...)
+	if err != nil || elapsed != 15*time.Hour {
+		t.Fatalf("suspended execution elapsed = %s, %v; want 15h", elapsed, err)
+	}
+
+	_, _, _, events, marker := recordedChildWait(t)
+	start = marker.Time.Add(-time.Minute)
+	now = marker.Time.Add(30 * 24 * time.Hour)
+	overlapping := hostsuspend.Window{From: marker.Time.Add(-30 * time.Second), To: marker.Time.Add(time.Hour)}
+	elapsed, err = RunExecutionElapsed(events, start, now, overlapping)
+	if err != nil || elapsed != 30*time.Second {
+		t.Fatalf("child wait with overlapping suspension elapsed = %s, %v; want 30s", elapsed, err)
 	}
 }
 

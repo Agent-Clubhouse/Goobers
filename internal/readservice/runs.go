@@ -226,7 +226,11 @@ type LineageRun struct {
 // OperatorRunSummary answers the operational questions that otherwise require
 // correlating the journal, claim ledger, and artifact blobs by hand.
 type OperatorRunSummary struct {
-	Issue              *OperatorIssue       `json:"issue,omitempty"`
+	Issue *OperatorIssue `json:"issue,omitempty"`
+	// DisplayTitle is the canonical run title a stage published through the
+	// well-known displayTitle output after claiming work (#5429). Clients
+	// render it verbatim; when absent they fall back to Issue or the run ID.
+	DisplayTitle       string               `json:"displayTitle,omitempty"`
 	CurrentStage       string               `json:"currentStage,omitempty"`
 	LastHeartbeatAt    *time.Time           `json:"lastHeartbeatAt,omitempty"`
 	HeartbeatAgeMillis *int64               `json:"heartbeatAgeMillis,omitempty"`
@@ -1956,6 +1960,9 @@ func summarizeRunForStage(
 func projectOperatorStageOutputs(operator *OperatorRunSummary, event journal.Event, claimedIssueFound bool) bool {
 	if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
 		operator.ResumedFromRunID = source
+	}
+	if title, ok := readmodel.StageDisplayTitle(event); ok {
+		operator.DisplayTitle = title
 	}
 	if claimedIssueFound {
 		return true

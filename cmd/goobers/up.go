@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/ephemeraltmp"
+	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/intervention"
@@ -1114,6 +1115,7 @@ func (u *upSession) configureAPI() int {
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
 	journalService.reads = u.reads
+	journalService.definitions = u.setup.Interventions
 	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	u.apiHandlerOpts = append(u.apiHandlerOpts,
@@ -1524,23 +1526,27 @@ func (u *upSession) startScheduler() int {
 		return 1
 	}
 	u.stalledSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "stalled_run_sweep_failed")
-	drainedDowntime := readDrainedDowntime(u.setup.InstanceLog, u.stderr)
+	drainedDowntime, hostSuspensions := readSweepDowntime(u.setup.InstanceLog, u.stderr)
+	sweepDeps := stalledSweepDependencies(u.setup, drainedDowntime, hostSuspensions, u.liveJournals)
 	u.sweepStalled = func(now time.Time, recoveryRunDirs ...[]string) error {
-		return sweepStalledRuns(
+		// Observe first, so a suspension that just ended is credited by the
+		// sweep that would otherwise read it as run time or silence.
+		observeErr := hostSuspensions.Observe(now)
+		return errors.Join(observeErr, sweepStalledRuns(
 			u.ctx,
 			u.l,
 			u.setup.RunnerRegistry,
 			u.setup.LegacyRunner,
 			u.engineGuards,
 			u.setup.InstanceLog,
-			stalledSweepDependencies(u.setup, drainedDowntime, u.liveJournals),
+			sweepDeps,
 			u.setup.TerminalNotifier,
 			u.sched.ReleaseRun,
 			now,
 			stalledRunTimeout,
 			maxRunDuration,
 			recoveryRunDirs...,
-		)
+		))
 	}
 	// Reap stale journals before crash-resume can refresh them with a new
 	// stage heartbeat.
@@ -2348,23 +2354,25 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 
 // stalledSweepDependencies is the daemon-owned wiring the stalled-run sweep
 // needs when it has to terminalize a run no live Runner owns.
-// readDrainedDowntime reads the graceful-drain downtime the stalled-run sweep
-// credits (#5601). The daemon has already journaled its own start, so the
-// newest interval ends at this lifetime's beginning. A read failure credits
-// nothing, which is the pre-#5601 behavior, and says so.
-func readDrainedDowntime(log *journal.InstanceLog, stderr io.Writer) []daemonDowntime {
+// readSweepDowntime reads the graceful-drain downtime (#5601) and the host
+// suspensions earlier daemon lifetimes journaled (#5891) that the stalled-run
+// sweep credits, and starts observing new suspensions. The daemon has already
+// journaled its own start, so the newest drain interval ends at this
+// lifetime's beginning. A read failure credits nothing, which is the
+// pre-#5601 behavior, and says so.
+func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDowntime, *hostsuspend.Ledger) {
 	if log == nil {
-		return nil
+		return nil, hostsuspend.NewLedger(nil, nil)
 	}
 	events, err := journal.ReadInstanceLog(log.Dir())
 	if err != nil {
 		pf(stderr, "warning: read daemon lifecycle for stalled-run downtime credit: %v\n", err)
-		return nil
+		return nil, hostsuspend.NewLedger(log, nil)
 	}
-	return cleanDaemonDowntime(events)
+	return cleanDaemonDowntime(events), hostsuspend.NewLedger(log, hostsuspend.FromEvents(events))
 }
 
-func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, live *livejournal.Writer) *stalledSweepDeps {
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, hostSuspensions *hostsuspend.Ledger, live *livejournal.Writer) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
@@ -2386,6 +2394,7 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		// projector never re-reads the run (#5278).
 		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
 		DrainedDowntime:        drainedDowntime,
+		HostSuspensions:        hostSuspensions,
 		CloseEngineRun:         closeTerminatedEngineRun(live),
 	}
 }

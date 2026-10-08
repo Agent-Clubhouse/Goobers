@@ -165,11 +165,6 @@ func unbiasedUptime() (time.Duration, error) {
 	return time.Duration(ticks100ns) * 100 * time.Nanosecond, nil
 }
 
-// suspendNoiseFloor absorbs the difference between the two clocks' update
-// granularity (the unbiased interrupt time advances in timer-tick steps of
-// about 15.6ms), so an unsuspended host never reports a phantom suspension.
-const suspendNoiseFloor = time.Second
-
 // Mark records one instant so a later SuspendedSince can report how much of
 // the elapsed time the host spent suspended. See the package documentation.
 // The zero Mark, or one taken while the unbiased clock was unavailable,
@@ -210,9 +205,22 @@ func (m Mark) suspendedSinceWithSources(now func() time.Time, uptime func() (tim
 	if err != nil {
 		return 0
 	}
-	suspended := now().Sub(m.wall) - (active - m.active)
-	if suspended < suspendNoiseFloor {
-		return 0
-	}
-	return suspended
+	return suspendedGap(now().Sub(m.wall), active-m.active)
+}
+
+// WallMark records one instant so a later SuspendedSince can report how much
+// wall-clock time since then the host spent suspended. On Windows the
+// monotonic clock tracks the wall clock through a suspend, so this is Mark.
+type WallMark struct {
+	mark Mark
+}
+
+// NewWallMark records the current instant for a later SuspendedSince.
+func NewWallMark() WallMark {
+	return WallMark{mark: NewMark()}
+}
+
+// SuspendedSince reports how long the host was suspended since m was taken.
+func (m WallMark) SuspendedSince() time.Duration {
+	return m.mark.SuspendedSince()
 }

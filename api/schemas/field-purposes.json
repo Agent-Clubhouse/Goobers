@@ -117,7 +117,7 @@
     "inputs[].ref.size": "Stored input length in bytes.",
     "runControls.maxRepasses": "Resolved maximum number of gate-directed repass cycles for this run.",
     "runControls.stalledRunTimeout": "Resolved duration after which the run is considered stalled.",
-    "runControls.maxRunDuration": "Resolved maximum total wall-clock age of the run; omitted when disabled.",
+    "runControls.maxRunDuration": "Resolved maximum active execution time of the run, excluding host suspension and durable child waits; omitted when disabled.",
     "schema": "Versioned identifier for the pinned run identity contract.",
     "startedAt": "Timestamp when the runner published the initialized run journal.",
     "trigger": "Pinned trigger identity that caused the run to start.",

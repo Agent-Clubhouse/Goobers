@@ -156,6 +156,12 @@ Constraints:
   crash mid-chain does not silently revert the rest of the run to the default
   branch.
 
+One key is interpreted only by the **read model** and never changes execution:
+
+| Output | Effect |
+|---|---|
+| `displayTitle` | The run's canonical human-readable title, published by a stage once it has claimed work (for example `Investigate #123: Example incident title`). A `success` `stage.finished` carrying it is projected into `operator.displayTitle` on every run list and detail response, and clients render it verbatim instead of reconstructing one. The latest well-formed value wins, so a retried claim stage may refine it. Values that are not strings, are blank after trimming, contain control characters (including newlines), or exceed 300 characters are ignored — never truncated — and do not replace an earlier valid title. Absent, clients fall back to `operator.issue` (`#number · title`) or the run ID. |
+
 ## How a stage gets its input
 
 The runner hands the stage an `InvocationEnvelope`:

@@ -953,6 +953,7 @@ export const goWireFixtures = {
               "goobers:needs-human"
             ]
           },
+          "displayTitle": "Implement #673: Improve operator status",
           "currentStage": "review",
           "liveness": "terminal",
           "trajectory": "terminal",
@@ -1048,6 +1049,7 @@ export const goWireFixtures = {
           "goobers:needs-human"
         ]
       },
+      "displayTitle": "Implement #673: Improve operator status",
       "currentStage": "review",
       "liveness": "terminal",
       "trajectory": "terminal",

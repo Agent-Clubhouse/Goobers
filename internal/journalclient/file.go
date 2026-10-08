@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -241,14 +242,22 @@ const runListPageLimit = 200
 // after since, using the read model (an indexed query on the gaggle's
 // last-activity axis) instead of listing the runs directory.
 //
+// workflows restricts the listing to the runs of those workflows, one indexed
+// listing per workflow. The caller derives the set from the route's own
+// producers (WorkflowCanRecordBaseSyncConflict, WorkflowCanStrandUnpushedWork):
+// a run of any other workflow cannot hold an event the scan reads, so skipping
+// it cannot change the answer. An empty set is a legitimate answer (no workflow
+// can contribute) and lists nothing.
+//
 // It is a superset of what the directory scan would open after its own
-// journalQuiescentBefore prune: a run with an event timestamped at or after
-// since has last activity at or after since, and the window is widened by the
-// same journalClockSlack the file prune uses. Candidates come back in
-// ascending run-id order, the order os.ReadDir yields, so tie-breaks (newest
-// diff wins, first seen on a tie) are identical. Requires a gaggle and a
-// since: an unbounded window would be every run.
-func (f *FileCrossRun) activeRunCandidates(ctx context.Context, reads RunLister, gaggle string, since time.Time) ([]runCandidate, error) {
+// journalQuiescentBefore prune AND could contribute from: a run with an event
+// timestamped at or after since has last activity at or after since, and the
+// window is widened by the same journalClockSlack the file prune uses.
+// Candidates come back in ascending run-id order, the order os.ReadDir yields
+// across the merged per-workflow listings, so tie-breaks (newest diff wins,
+// first seen on a tie) are identical. Requires a gaggle and a since: an
+// unbounded window would be every run.
+func (f *FileCrossRun) activeRunCandidates(ctx context.Context, reads RunLister, gaggle string, since time.Time, workflows []string) ([]runCandidate, error) {
 	if reads == nil {
 		return nil, errors.New("journalclient: a live read model is required to narrow the run set")
 	}
@@ -259,27 +268,37 @@ func (f *FileCrossRun) activeRunCandidates(ctx context.Context, reads RunLister,
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]struct{})
 	var ids []string
-	cursor := ""
-	for {
-		page, err := reads.ListRuns(ctx, readservice.RunListOptions{
-			Gaggle:          gaggle,
-			Since:           since.Add(-journalClockSlack),
-			OrderByActivity: true,
-			ShowNoWork:      true,
-			Limit:           runListPageLimit,
-			Cursor:          cursor,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("journalclient: list active runs: %w", err)
+	for _, workflow := range workflows {
+		if workflow == "" {
+			continue // an empty Workflow would list every workflow's runs
 		}
-		for _, run := range page.Runs {
-			ids = append(ids, run.ID)
+		cursor := ""
+		for {
+			page, err := reads.ListRuns(ctx, readservice.RunListOptions{
+				Gaggle:          gaggle,
+				Workflow:        workflow,
+				Since:           since.Add(-journalClockSlack),
+				OrderByActivity: true,
+				ShowNoWork:      true,
+				Limit:           runListPageLimit,
+				Cursor:          cursor,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("journalclient: list active %s runs: %w", workflow, err)
+			}
+			for _, run := range page.Runs {
+				if _, dup := seen[run.ID]; !dup {
+					seen[run.ID] = struct{}{}
+					ids = append(ids, run.ID)
+				}
+			}
+			if page.NextCursor == "" || len(page.Runs) == 0 {
+				break
+			}
+			cursor = page.NextCursor
 		}
-		if page.NextCursor == "" || len(page.Runs) == 0 {
-			break
-		}
-		cursor = page.NextCursor
 	}
 	sort.Strings(ids)
 	candidates := make([]runCandidate, 0, len(ids))
@@ -293,6 +312,40 @@ func (f *FileCrossRun) activeRunCandidates(ctx context.Context, reads RunLister,
 		}
 	}
 	return candidates, nil
+}
+
+// WorkflowCanRecordBaseSyncConflict reports whether a run of this workflow can
+// journal a "<stage>/base-sync-conflict.json" artifact, the only thing
+// ConflictTouches reads. Both producers (the local runner's dispatchTask and
+// the engine's RunDeterministic) record it only when a task's base
+// synchronization fails, and that happens only for a task declaring
+// run.syncBase.
+func WorkflowCanRecordBaseSyncConflict(spec apiv1.WorkflowSpec) bool {
+	for i := range spec.Tasks {
+		if run := spec.Tasks[i].Run; run != nil && run.SyncBase {
+			return true
+		}
+	}
+	return false
+}
+
+// WorkflowCanStrandUnpushedWork reports whether a run of this workflow can
+// journal a "<stage>/unpushed-diff.json" artifact, the only thing UnpushedWork
+// reads. Both producers (the local runner's recordUnpushedDiff and the engine's
+// captureUnpushedDiff) record it after an AGENTIC task attempt whose workspace
+// is the writable run-branch worktree (an unset workspace is that worktree).
+// Deterministic tasks, gates, and scratch or read-only workspaces never do.
+func WorkflowCanStrandUnpushedWork(spec apiv1.WorkflowSpec) bool {
+	for i := range spec.Tasks {
+		task := spec.Tasks[i]
+		if task.Type != apiv1.TaskAgentic {
+			continue
+		}
+		if mode := task.EffectiveWorkspace(); mode == "" || mode.IsWritableRepo() {
+			return true
+		}
+	}
+	return false
 }
 
 // ConflictTouches implements CrossRun over the gaggle's run directories. Runs
@@ -330,9 +383,10 @@ func (f *FileCrossRun) ConflictTouches(ctx context.Context, req ConflictTouchReq
 // directories: the live read model names the runs whose journal saw activity
 // since req.Since, and only those journals are opened. Results are identical to
 // ConflictTouches (see activeRunCandidates for why the candidate set is a
-// superset of every run that can contribute).
-func (f *FileCrossRun) ConflictTouchesFromReads(ctx context.Context, reads RunLister, req ConflictTouchRequest) ([]ConflictTouch, error) {
-	candidates, err := f.activeRunCandidates(ctx, reads, req.Gaggle, req.Since)
+// superset of every run that can contribute). workflows are the workflows whose
+// runs can record a conflict artifact (WorkflowCanRecordBaseSyncConflict).
+func (f *FileCrossRun) ConflictTouchesFromReads(ctx context.Context, reads RunLister, workflows []string, req ConflictTouchRequest) ([]ConflictTouch, error) {
+	candidates, err := f.activeRunCandidates(ctx, reads, req.Gaggle, req.Since, workflows)
 	if err != nil {
 		return nil, err
 	}
@@ -599,12 +653,13 @@ func (f *FileCrossRun) UnpushedWork(ctx context.Context, req UnpushedWorkRequest
 // UnpushedWorkFromReads answers UnpushedWork without listing the run
 // directories: the live read model names the runs with journal activity since
 // req.Since, and only those journals are opened. Results are identical to
-// UnpushedWork.
-func (f *FileCrossRun) UnpushedWorkFromReads(ctx context.Context, reads RunLister, req UnpushedWorkRequest) (*UnpushedWork, error) {
+// UnpushedWork. workflows are the workflows whose runs can strand a diff
+// (WorkflowCanStrandUnpushedWork).
+func (f *FileCrossRun) UnpushedWorkFromReads(ctx context.Context, reads RunLister, workflows []string, req UnpushedWorkRequest) (*UnpushedWork, error) {
 	if len(req.ItemIDs) == 0 {
 		return nil, nil
 	}
-	candidates, err := f.activeRunCandidates(ctx, reads, req.Gaggle, req.Since)
+	candidates, err := f.activeRunCandidates(ctx, reads, req.Gaggle, req.Since, workflows)
 	if err != nil {
 		return nil, err
 	}

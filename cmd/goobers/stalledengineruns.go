@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
@@ -38,6 +39,7 @@ func settleStalledEngineRun(
 	identity journal.RunIdentity,
 	events []journal.Event,
 	now time.Time,
+	suspended []hostsuspend.Window,
 	runTimeout, runMaxDuration time.Duration,
 	durationExceeded bool,
 ) error {
@@ -45,7 +47,7 @@ func settleStalledEngineRun(
 	if durationExceeded {
 		message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
 	}
-	unhonoured, err := engineCancelUnhonoured(deps, cancels, identity.RunID, events, now, runTimeout)
+	unhonoured, err := engineCancelUnhonoured(deps, cancels, identity.RunID, events, now, suspended, runTimeout)
 	if err != nil {
 		return fmt.Errorf("read engine cancellations for run %q: %w", identity.RunID, err)
 	}
@@ -97,8 +99,8 @@ func settleStalledEngineRun(
 // a stalled run at least one full stall timeout ago, after the run's last
 // journal activity, and the journal has stayed silent since: had any worker
 // taken the cancellation, the engine's cancel arm would have journaled the
-// run's terminal by now. Graceful-drain downtime is credited exactly as it is
-// for the stall itself. The cancellation is dated on its own, never from the
+// run's terminal by now. Graceful-drain downtime and host suspension (#5891)
+// are credited exactly as they are for the stall itself. The cancellation is dated on its own, never from the
 // stall: a maximum-duration breach cancels a run that was active moments
 // before. The instance log is consulted only once the journal has been silent
 // for a full timeout, the least a cancellation after it could have waited.
@@ -108,6 +110,7 @@ func engineCancelUnhonoured(
 	runID string,
 	events []journal.Event,
 	now time.Time,
+	suspended []hostsuspend.Window,
 	runTimeout time.Duration,
 ) (bool, error) {
 	if runTimeout <= 0 || len(events) == 0 {
@@ -121,7 +124,8 @@ func engineCancelUnhonoured(
 	if err != nil || !ok {
 		return false, err
 	}
-	return requested.Before(now.Add(-(runTimeout + deps.drainedDowntimeSince(requested)))), nil
+	credit := deps.drainedDowntimeSince(requested) + hostsuspend.Overlap(suspended, requested, now)
+	return requested.Before(now.Add(-(runTimeout + credit))), nil
 }
 
 // engineCancelHistory dates the stall sweep's own cancellation requests from
