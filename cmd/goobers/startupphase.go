@@ -26,6 +26,9 @@ type startupPhaseTracker struct {
 	recoveryScan  bool
 	recovery      *startupRecoveryCandidate
 	budgetUpdates chan struct{}
+	// progress counts startup advances; a starting daemon advertises it so a
+	// waiting worker can tell slow from stuck (#6895).
+	progress uint64
 }
 
 func newStartupPhaseTracker(budgetFloor time.Duration) *startupPhaseTracker {
@@ -38,6 +41,7 @@ func (t *startupPhaseTracker) set(phase, target string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.phase, t.target, t.started = phase, target, time.Now()
+	t.progress++
 }
 
 func (t *startupPhaseTracker) update(phase, target string) {
@@ -45,6 +49,7 @@ func (t *startupPhaseTracker) update(phase, target string) {
 	defer t.mu.Unlock()
 	if t.phase == phase {
 		t.target = target
+		t.progress++
 	}
 }
 
@@ -107,6 +112,7 @@ func (t *startupPhaseTracker) observeRecoveryProgress(outcome resumeOutcome) {
 		candidate.LastProgressAt = outcome.Blocking.LastProgressAt
 	}
 	t.recovery = candidate
+	t.progress++
 }
 
 func (t *startupPhaseTracker) recoverySnapshot() *startupRecoveryCandidate {
@@ -210,6 +216,7 @@ func (t *startupPhaseTracker) budgetUpdateChannel() <-chan struct{} {
 }
 
 func (t *startupPhaseTracker) signalBudgetUpdateLocked() {
+	t.progress++
 	if t.budgetUpdates == nil {
 		t.budgetUpdates = make(chan struct{}, 1)
 	}

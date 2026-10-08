@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/startuphint"
 )
 
 // daemonStartingMessage is the body of every reply served before startup
@@ -34,7 +36,7 @@ func startStartupAPI(
 ) (*httpapi.SwitchHandler, *httpapi.Server, *log.Logger, error) {
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	startingHandler := httpapi.WrapWithProbes(
-		http.HandlerFunc(serveDaemonStarting),
+		daemonStartingHandler(tracker),
 		probes.liveness,
 		probes.readiness,
 	)
@@ -63,4 +65,51 @@ func startStartupAPI(
 		return nil, nil, nil, err
 	}
 	return handler, server, apiLog, nil
+}
+
+// noteProgress records that a startup phase reported progress (for example
+// read-model build or re-projection counts), so the starting daemon's 503
+// tells a waiting worker it is still advancing (#6895).
+func (t *startupPhaseTracker) noteProgress() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.progress++
+}
+
+// startupHints is what a starting daemon advertises about itself: the time
+// left in its derived startup budget and its progress token.
+func (t *startupPhaseTracker) startupHints(now time.Time) startuphint.Hints {
+	budget := t.budgetSnapshot(now)
+	t.mu.Lock()
+	progress := t.progress
+	t.mu.Unlock()
+	hints := startuphint.Hints{Progress: strconv.FormatUint(progress, 10)}
+	if budget.Budget > 0 {
+		hints.HasBudget = true
+		hints.BudgetRemaining = budget.Budget - budget.Elapsed
+	}
+	return hints
+}
+
+// trackStartupProgress counts each startup progress report on tracker before
+// passing it on.
+func trackStartupProgress(tracker *startupPhaseTracker, report func(string)) func(string) {
+	return func(message string) {
+		tracker.noteProgress()
+		report(message)
+	}
+}
+
+// daemonStartingHandler is serveDaemonStarting plus the daemon's startup
+// hints, from which a waiting worker derives how long to wait.
+func daemonStartingHandler(tracker *startupPhaseTracker) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if tracker != nil {
+			startuphint.Set(response.Header(), tracker.startupHints(time.Now()))
+		}
+		serveDaemonStarting(response, request)
+	}
 }

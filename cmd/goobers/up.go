@@ -756,7 +756,7 @@ func (u *upSession) prepare() int {
 	// has been rebuilt from ledger + liveness below.
 	u.claimRecoveryGate = localscheduler.NewRecoveryGate()
 	var setupOptions []schedulerSetupOption
-	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate)
+	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate, u.tracker)
 	buildSetup := buildSchedulerSetup
 	if *u.skipPreflight {
 		buildSetup = buildSchedulerSetupAllowingInvalidConfig
