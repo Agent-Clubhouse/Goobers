@@ -867,8 +867,9 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 
 // Dispatch executes one stage attempt on the eligible runner set (the
 // solver's ELIGIBLE-SET output for this stage, in inventory order): resolve
-// the runner (Linux-preferring), verify the image skew contract, wait
-// bounded for capacity, create ONE fresh pod, supervise it, confirm output
+// the runner (Linux-preferring), verify the image skew contract, retire any
+// earlier attempt's still-running pod, wait bounded for capacity, create ONE
+// fresh pod, supervise it, confirm output
 // surrender, and dispose the pod when recovery custody permits. Writable pods
 // without a verified recovery acknowledgment are preserved. Every retry still
 // receives a fresh pod, never a reused one (D1).
@@ -928,7 +929,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		return Report{}, err
 	}
 
-	if err := d.waitForCapacity(ctx, selected); err != nil {
+	if err := d.admitAttempt(ctx, attempt, selected); err != nil {
 		return report, err
 	}
 
