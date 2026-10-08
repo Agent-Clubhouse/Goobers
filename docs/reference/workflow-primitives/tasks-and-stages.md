@@ -208,7 +208,7 @@ Required capability: `telemetry:read`.
 | `continueOnError` | Marks a failure as best-effort, discards its scalar outputs, and advances to `next`; a failed task already advances to a declared next gate without this flag, while preserving its outputs for classification/remediation. |
 | `workspace` | Task-level `repo`, `repo-readonly`, or `scratch`. |
 | `outbox` | Up to 32 workspace-relative files/directories to export durably. |
-| `outboxMirrorPath` | Task override for the local outbox mirror root. |
+| `outboxMirrorPath` | Task override for the local outbox mirror root. The task value overrides the workflow value, which overrides the gaggle value. See [Local outbox mirror](graph-and-execution.md#local-outbox-mirror-outboxmirrorpath) for the layout. |
 | `next` | Next task, gate, parallel, or reserved terminal; omission completes successfully. |
 | `requiredCapabilities` | DSL 2.0 runner/toolchain tags, not credential grants. |
 | `runsOn` | DSL 3.0 placement requirements. |

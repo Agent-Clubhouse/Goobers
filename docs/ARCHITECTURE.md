@@ -258,7 +258,9 @@ Rules:
   chaining is a tier-2+ option, not a baseline claim).
 - A stage may additionally mirror its durable outbox files to a configured local
   filesystem root. Stage, workflow, then gaggle configuration wins in that order.
-  The mirror is arranged beneath `<root>/<run-id>/`; the journal remains the
+  Each file is mirrored to
+  `<root>/<run-id>/<stage>/attempt-<N>/occurrence-<S>/<workspace-relative path>`.
+  The mirror is export-only and is not a stage input. The journal remains the
   source of truth, and every source and destination path is containment-checked.
 - **Version pinning:** a run records the workflow definition version it started on and
   completes on it; definition changes affect only new runs (`WF-016`).
