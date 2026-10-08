@@ -34,7 +34,8 @@ starting daemon's 503 (both "daemon is starting" and the API recovery gate's
 the probe waits until that budget ends plus five minutes, and each change of
 the token restarts the `--blob-probe-wait` window, so a slow but advancing
 daemon is waited for while a stuck one is not. A new daemon id re-baselines the
-token, and only the first daemon seen extends the wait by its budget, so a
+token, and only the first daemon seen extends the wait by its budget; after a
+restart the wait ends at most one `--blob-probe-wait` window later, so a
 crash-looping daemon is not mistaken for progress. Neither extends the wait
 past 6h. The bound expiring exits `WORKER_DAEMON_NOT_READY`.
 A 4xx, a non-503 5xx or a

@@ -258,10 +258,20 @@ func TestReadinessBoundIgnoresRestartedDaemonsResetProgressAndFreshBudget(t *tes
 			t.Fatalf("restart %s: deadline = %s, want unchanged %s", daemon, b.deadline.Sub(start), wait)
 		}
 	}
-	// Real progress within the latest process still extends the bound.
+	// Progress within the restarted process may still extend the bound, but
+	// only up to one stall window after the first restart (5m + wait).
 	b.observe(at(18*time.Minute), startuphint.Hints{HasBudget: true, BudgetRemaining: time.Hour, Progress: "4", Daemon: "d"})
-	if want := at(18*time.Minute + wait); !b.deadline.Equal(want) {
+	if want := at(5*time.Minute + wait); !b.deadline.Equal(want) {
 		t.Fatalf("progress after restart: deadline = %s, want %s", b.deadline.Sub(start), want.Sub(start))
+	}
+	// A loop whose processes each advance a little cannot chain extensions.
+	for i, daemon := range []string{"e", "f", "g"} {
+		base := at(19*time.Minute + time.Duration(i)*time.Minute)
+		b.observe(base, startuphint.Hints{Progress: "1", Daemon: daemon})
+		b.observe(base.Add(30*time.Second), startuphint.Hints{Progress: "5", Daemon: daemon})
+	}
+	if want := at(5*time.Minute + wait); !b.deadline.Equal(want) {
+		t.Fatalf("advancing crash loop: deadline = %s, want capped at %s", b.deadline.Sub(start), want.Sub(start))
 	}
 }
 

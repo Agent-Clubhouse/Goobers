@@ -233,8 +233,10 @@ func newReadinessBound(now time.Time, opts ProbeOptions) *readinessBound {
 // progress token seen from a daemon process is a baseline, not progress, and
 // only the first daemon process seen may extend the bound by its budget: a
 // crash-looping daemon advertises a fresh budget and a reset progress token
-// on every restart, which must not read as advancing. A spent budget extends
-// nothing, so a daemon past its own estimate is held only by real progress.
+// on every restart, which must not read as advancing. A restart also caps
+// the bound at one more stall window, so a loop whose processes each advance
+// a little cannot chain extensions. A spent budget extends nothing, so a
+// daemon past its own estimate is held only by real progress.
 func (b *readinessBound) observe(now time.Time, hints startuphint.Hints) {
 	if hints == (startuphint.Hints{}) {
 		return
@@ -248,6 +250,9 @@ func (b *readinessBound) observe(now time.Time, hints startuphint.Hints) {
 	}
 	switch {
 	case hints.Daemon != b.daemon:
+		// A restart: from here on nothing may hold the worker past one more
+		// stall window, however much the new processes appear to advance.
+		b.limit = earliest(b.limit, latest(b.deadline, now.Add(b.stall)))
 		b.daemon, b.progress = hints.Daemon, hints.Progress
 	case hints.Progress != "" && hints.Progress != b.progress:
 		if b.progress != "" {
