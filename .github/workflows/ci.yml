@@ -1756,7 +1756,7 @@ jobs:
         run: go test ./internal/credentials ./internal/fleet
 
       - name: Windows child proposal validation
-        run: go test ./internal/childworkflow -count=1
+        run: go test ./internal/childworkflow ./internal/childpod -count=1
 
       - name: Windows child admission authority
         run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild' -count=1
