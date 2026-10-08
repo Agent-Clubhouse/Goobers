@@ -73,3 +73,30 @@ func TestOperationalBundleMissingHistoryIsExplicit(t *testing.T) {
 		t.Fatalf("missing history claimed complete: %+v", evidence)
 	}
 }
+
+func TestOperationalUnsupportedSchemaGapRecordedOnce(t *testing.T) {
+	root := t.TempDir()
+	log, _, err := journal.OpenInstanceLog((instance.Layout{Root: root}).SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		err = log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "goobers.fleet.heartbeat", "diagnostic": map[string]any{"schemaVersion": 2}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	evidence := collectOperationalEvidence(root)
+	count := 0
+	for _, gap := range evidence.Gaps {
+		if gap == "An unsupported diagnostic schema was omitted." {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("unsupported schema gap count = %d, want 1: %v", count, evidence.Gaps)
+	}
+}
