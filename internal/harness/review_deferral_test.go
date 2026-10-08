@@ -78,3 +78,12 @@ func TestReviewLeavesOtherDecisionsUntouched(t *testing.T) {
 		}
 	}
 }
+
+// #5894: only the runner may mark a verdict synthesized. A reviewer claiming
+// it would make its own review read as one that never ran.
+func TestReviewClearsReviewerClaimedSynthesizedMarker(t *testing.T) {
+	got := reviewWithVerdict(t, apiv1.Verdict{Decision: apiv1.VerdictPass, Synthesized: true}, false)
+	if got.Synthesized {
+		t.Fatal("Synthesized = true, want the reviewer-supplied marker cleared")
+	}
+}

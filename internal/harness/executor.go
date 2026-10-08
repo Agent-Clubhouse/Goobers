@@ -468,6 +468,9 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
 	}
 	verdict = undeclaredDeferralAsNeedsChanges(verdict, env.ReviewerDeferralAllowed)
+	// Only the runner may mark a verdict synthesized (#5894); a reviewer
+	// that claims it would make its own review read as one that never ran.
+	verdict.Synthesized = false
 	verdict.Evidence, err = e.liftArtifacts(ctx, env, verdict.Evidence)
 	if err != nil {
 		if _, summary, ok := declaredArtifactFailure(err); ok {
