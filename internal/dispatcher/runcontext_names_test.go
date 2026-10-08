@@ -27,6 +27,7 @@ func TestRunContextEnvMatchesExecutor(t *testing.T) {
 		executor.BaseBranchEnvVar,
 		executor.TriggerRefEnvVar,
 		executor.NeedsHumanAssigneeEnvVar,
+		executor.StageTimeoutEnvVar,
 	} {
 		found := false
 		for _, got := range dispatcher.DispatcherRunIdentityEnv {
