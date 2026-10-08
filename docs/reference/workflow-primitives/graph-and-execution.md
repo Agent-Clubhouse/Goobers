@@ -239,7 +239,7 @@ narrower scope overriding the broader one.
 | --- | --- |
 | `maxRepasses` | Bounds how often gates may route back to an already completed stage. A non-human gate may override it. |
 | `stalledRunTimeout` | Positive Go duration after which a silent running journal is escalated. |
-| `maxRunDuration` | Positive Go duration bounding total run age; empty disables this bound. |
+| `maxRunDuration` | Positive Go duration bounding active execution time: run age less time the host spent suspended and durable child waits. Empty disables this bound. |
 
 `maxRunDuration` requires daemon-backed execution. Without a live daemon,
 `goobers run` rejects the selected workflow before dispatch if its effective

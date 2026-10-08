@@ -409,8 +409,9 @@ Contract rules:
   `Workflow.spec.runControls` overrides them for one definition. The resolved
   `maxRepasses`, `stalledRunTimeout`, and optional `maxRunDuration` are pinned
   in `run.yaml` when a run starts, so config reloads cannot retune a run in
-  flight. `maxRunDuration` bounds total wall-clock age independently of journal
-  activity and is disabled when omitted. An automated or
+  flight. `maxRunDuration` bounds active execution time (run age less host
+  suspension and durable child waits) independently of journal activity and
+  is disabled when omitted. An automated or
   agentic gate may override `maxRepasses`. The value bounds cumulative
   re-entries to a branch's target stage across all gates that route back to
   that stage; a pass at one gate does not reset that target's live budget.

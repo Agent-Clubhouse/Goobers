@@ -237,7 +237,7 @@
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Pinned maximum gate repasses." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Pinned stalled-run timeout." },
-        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Resolved maximum total wall-clock age of the run; omitted when disabled." }
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Resolved maximum active execution time of the run, excluding host suspension and durable child waits; omitted when disabled." }
       }
     },
     "trigger": {

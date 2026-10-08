@@ -634,7 +634,8 @@ type RunControls struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
-	// MaxRunDuration is the maximum total wall-clock age of a run. Empty
+	// MaxRunDuration is the maximum active execution time of a run: its age
+	// less time the host spent suspended and durable child waits. Empty
 	// disables the total-duration limit. It uses Go duration syntax.
 	// +kubebuilder:validation:MinLength=1
 	// +optional

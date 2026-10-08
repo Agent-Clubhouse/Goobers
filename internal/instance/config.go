@@ -84,7 +84,7 @@ const (
 	LargeRepoDefaultStageTimeout = "4h"
 	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
 	LargeRepoStalledRunTimeout = "6h"
-	// LargeRepoMaxRunDuration is the preset's total run-age limit.
+	// LargeRepoMaxRunDuration is the preset's active execution-time limit.
 	LargeRepoMaxRunDuration = "24h"
 )
 
@@ -1607,7 +1607,8 @@ type RunConditions struct {
 	// StalledRunTimeout is the maximum period a running journal may remain
 	// silent before the daemon escalates it. Empty defaults to 45 minutes.
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
-	// MaxRunDuration is the maximum total wall-clock age of a run. Empty
+	// MaxRunDuration is the maximum active execution time of a run: its age
+	// less time the host spent suspended and durable child waits. Empty
 	// disables the limit.
 	MaxRunDuration string `json:"maxRunDuration,omitempty" yaml:"maxRunDuration,omitempty"`
 	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
@@ -2100,7 +2101,7 @@ func (c RunConditions) StalledRunTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
-// MaxRunDurationDuration resolves the optional total run-age limit.
+// MaxRunDurationDuration resolves the optional active execution-time limit.
 func (c RunConditions) MaxRunDurationDuration() (time.Duration, error) {
 	if c.MaxRunDuration == "" {
 		return 0, nil
