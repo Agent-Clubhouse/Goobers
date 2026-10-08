@@ -346,6 +346,11 @@ const (
 	// terminalizing its journal. The run's own terminal event follows from the
 	// engine once the cancellation lands.
 	RecoveryActionEngineCancelRequested = "engine_cancel_requested"
+	// RecoveryActionEngineTerminated records that the stalled-run sweep
+	// terminated an engine-driven run's workflow on the server because no
+	// worker acted on its earlier cancellation, then wrote the run's terminal
+	// itself (#5407).
+	RecoveryActionEngineTerminated = "engine_terminated"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in
