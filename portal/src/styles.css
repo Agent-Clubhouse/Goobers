@@ -6411,6 +6411,13 @@ code,
   gap: 10px;
 }
 
+.run-secondary-id {
+  color: var(--muted-strong);
+  font-size: var(--font-ui);
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
 .run-stale-state {
   align-items: center;
   border: 1px solid var(--line);

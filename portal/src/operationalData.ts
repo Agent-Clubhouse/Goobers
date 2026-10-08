@@ -198,6 +198,17 @@ export function runWorkTitle(run: RunSummary, separator = " "): string | undefin
   return undefined;
 }
 
+/**
+ * The trigger reference worth showing in a run subtitle (#5428). A manually
+ * admitted queue worker records the workflow name as its ref; repeating it next
+ * to the workflow adds nothing, so it is omitted. Trigger provenance itself is
+ * unchanged.
+ */
+export function distinctTriggerRef(run: RunSummary): string | undefined {
+  const ref = run.trigger.ref;
+  return ref && ref !== run.workflow ? ref : undefined;
+}
+
 function sameWorkItem(left: RunSummary, right: RunSummary): boolean {
   if (left.gaggle !== right.gaggle) {
     return false;

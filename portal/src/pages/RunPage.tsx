@@ -57,6 +57,7 @@ import {
   useRunDetail,
 } from "../runDetailData";
 import { routeHash, type Navigate, type RunDetailTab } from "../routing";
+import { runWorkTitle } from "../operationalData";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -397,6 +398,8 @@ function RunDetailWorkspace({
     }
   };
   const displayedRunId = shortenIdentifier(run.id);
+  const workTitle = runWorkTitle(run, " · ");
+  const claimedIssue = run.operator?.issue;
   const relatedReferences = collectRelatedReferences(run, events);
   const stageVisits = semanticStageVisits(events, runId);
   const artifacts = newestFirst(
@@ -443,12 +446,31 @@ function RunDetailWorkspace({
         className="run-heading"
         contentClassName="run-heading-main"
         fullWidth
-        title={
-          <>
-            Run <span aria-hidden="true">{displayedRunId}</span>
-          </>
+        beforeTitle={
+          workTitle && (
+            // Outside the description, which narrow layouts hide, so the run
+            // ID stays visible and readable whenever claimed work headlines.
+            <div className="run-secondary-id">
+              Run{" "}
+              <span aria-hidden="true" className="mono" title={run.id}>
+                {displayedRunId}
+              </span>
+              <span className="sr-only">{run.id}</span>
+            </div>
+          )
         }
-        titleProps={{ "aria-label": `Run ${run.id}` }}
+        title={
+          workTitle ? (
+            <span className="run-work-title">{workTitle}</span>
+          ) : (
+            <>
+              Run <span aria-hidden="true">{displayedRunId}</span>
+            </>
+          )
+        }
+        titleProps={
+          workTitle ? { title: workTitle } : { "aria-label": `Run ${run.id}` }
+        }
         titleActions={
           <>
             <button
@@ -482,6 +504,16 @@ function RunDetailWorkspace({
                 {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
               </dd>
             </div>
+            {claimedIssue && (
+              <div>
+                <dt>Claimed work</dt>
+                <dd
+                  title={`#${claimedIssue.number}${claimedIssue.title ? ` · ${claimedIssue.title}` : ""}`}
+                >
+                  #{claimedIssue.number}
+                </dd>
+              </div>
+            )}
             <div>
               <dt>Started</dt>
               <dd>
