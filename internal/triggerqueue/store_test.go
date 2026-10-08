@@ -404,3 +404,24 @@ func TestRequeuePreservesAcceptanceAndReason(t *testing.T) {
 		t.Fatalf("terminal outcome accepted without custody: %v", err)
 	}
 }
+
+func TestAcceptAdmittedRefusesNewKeysButReplaysRecordedOnes(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "triggers.db"))
+	now := time.Now()
+	payload := []byte(`{"workflow":"impl"}`)
+	refusal := errors.New("unknown workflow")
+	refuse := func() error { return refusal }
+	if _, _, err := s.AcceptAdmitted(t.Context(), "typo", "operator", payload, now, refuse); !errors.Is(err, refusal) {
+		t.Fatalf("refused accept err = %v, want admission refusal", err)
+	}
+	if pending, err := s.Pending(t.Context(), 100); err != nil || len(pending) != 0 {
+		t.Fatalf("refused acceptance recorded %+v, %v", pending, err)
+	}
+	original := acceptTest(t, s, "delivery", now)
+	// A catalog change after acknowledgement must not turn the redelivery
+	// into a refusal: the original record answers without consulting admit.
+	replay, duplicate, err := s.AcceptAdmitted(t.Context(), "delivery", "operator", payload, now, refuse)
+	if err != nil || !duplicate || replay.ID != original.ID {
+		t.Fatalf("redelivery = %+v, %v, %v; want original %s", replay, duplicate, err, original.ID)
+	}
+}

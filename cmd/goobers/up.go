@@ -756,7 +756,7 @@ func (u *upSession) prepare() int {
 	// has been rebuilt from ledger + liveness below.
 	u.claimRecoveryGate = localscheduler.NewRecoveryGate()
 	var setupOptions []schedulerSetupOption
-	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate)
+	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate, u.tracker)
 	buildSetup := buildSchedulerSetup
 	if *u.skipPreflight {
 		buildSetup = buildSchedulerSetupAllowingInvalidConfig
@@ -1035,7 +1035,7 @@ func (u *upSession) configureAPI() int {
 	// for local/mode-1 callers.
 	u.triggerPlane = newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
 		return runBelongsToGaggle(u.l, gaggle, runID)
-	}).withSchedulerReadyGate(u.ready.Load)
+	}).withSchedulerReadyGate(u.ready.Load).withStartupCatalog(u.setup.Entries)
 	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
 	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
 	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
@@ -1145,6 +1145,7 @@ func (u *upSession) configureAPI() int {
 		// tracker regardless of which optional services below it configures.
 		httpapi.WithInstanceReadinessService(&daemonInstanceReadinessService{instanceRoot: u.l.Root, tracker: u.tracker, ready: u.ready.Load}),
 		httpapi.WithRecoveryGate(u.ready.Load),
+		httpapi.WithRecoveryHints(u.tracker.setStartupHints),
 	)
 	if u.liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal

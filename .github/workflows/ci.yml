@@ -1912,6 +1912,9 @@ jobs:
         run: make build-operator
 
       - name: Windows platform runtime
+        # Hosted runners can ship wsl.exe without a usable distro, so the WSL
+        # descendant test probes for a guest and skips with diagnostics; set
+        # GOOBERS_REQUIRE_WSL_GUEST=1 on hosts that must run it.
         env:
           GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock ./internal/platform/activetime

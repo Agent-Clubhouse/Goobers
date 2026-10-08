@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"io"
 	"sync"
 	"time"
@@ -26,18 +28,33 @@ type startupPhaseTracker struct {
 	recoveryScan  bool
 	recovery      *startupRecoveryCandidate
 	budgetUpdates chan struct{}
+	// progress counts startup advances; a starting daemon advertises it so a
+	// waiting worker can tell slow from stuck (#6895).
+	progress uint64
+	// daemonID names this daemon process in its startup hints, so a waiting
+	// worker does not mistake a restart's reset counter for progress.
+	daemonID string
 }
 
 func newStartupPhaseTracker(budgetFloor time.Duration) *startupPhaseTracker {
-	tracker := &startupPhaseTracker{}
+	tracker := &startupPhaseTracker{daemonID: newDaemonID()}
 	tracker.configureBudget(budgetFloor)
 	return tracker
+}
+
+// newDaemonID returns a random per-process id; a time-based one could collide
+// across a fast restart. A failed read only weakens restart detection.
+func newDaemonID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (t *startupPhaseTracker) set(phase, target string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.phase, t.target, t.started = phase, target, time.Now()
+	t.progress++
 }
 
 func (t *startupPhaseTracker) update(phase, target string) {
@@ -45,6 +62,7 @@ func (t *startupPhaseTracker) update(phase, target string) {
 	defer t.mu.Unlock()
 	if t.phase == phase {
 		t.target = target
+		t.progress++
 	}
 }
 
@@ -107,6 +125,7 @@ func (t *startupPhaseTracker) observeRecoveryProgress(outcome resumeOutcome) {
 		candidate.LastProgressAt = outcome.Blocking.LastProgressAt
 	}
 	t.recovery = candidate
+	t.progress++
 }
 
 func (t *startupPhaseTracker) recoverySnapshot() *startupRecoveryCandidate {
@@ -210,6 +229,7 @@ func (t *startupPhaseTracker) budgetUpdateChannel() <-chan struct{} {
 }
 
 func (t *startupPhaseTracker) signalBudgetUpdateLocked() {
+	t.progress++
 	if t.budgetUpdates == nil {
 		t.budgetUpdates = make(chan struct{}, 1)
 	}

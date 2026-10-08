@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/startuphint"
 )
 
 // dirPutter writes straight into a directory store, standing in for a daemon
@@ -200,5 +202,109 @@ func TestDispatchDirectoryProbeRejectsDifferentStore(t *testing.T) {
 	}
 	if _, err := Open(context.Background(), "", "http://plane", "", nil, ProbeOptions{}); err == nil {
 		t.Fatal("unsigned endpoint accepted")
+	}
+}
+
+func TestReadinessBoundFollowsDaemonBudgetAndProgress(t *testing.T) {
+	start := time.Unix(1_000_000, 0)
+	wait := 20 * time.Minute
+	b := newReadinessBound(start, ProbeOptions{ReadyWait: wait, MaxReadyWait: 3 * time.Hour})
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+	expect := func(step string, want time.Time) {
+		t.Helper()
+		if !b.deadline.Equal(want) {
+			t.Fatalf("%s: deadline = %s after start, want %s", step, b.deadline.Sub(start), want.Sub(start))
+		}
+	}
+
+	expect("silent daemon", at(wait))
+	b.observe(at(time.Minute), startuphint.Hints{})
+	expect("no hints", at(wait))
+
+	// A daemon whose own budget outlasts the default is waited for until that
+	// budget ends, plus grace.
+	b.observe(at(time.Minute), startuphint.Hints{HasBudget: true, BudgetRemaining: 40 * time.Minute, Progress: "3"})
+	expect("budget", at(time.Minute+40*time.Minute+startupBudgetGrace))
+	// The first token is a baseline; repeating it is not progress.
+	b.observe(at(30*time.Minute), startuphint.Hints{HasBudget: true, BudgetRemaining: 11 * time.Minute, Progress: "3"})
+	expect("same token, shrinking budget", at(46*time.Minute))
+	// A spent budget extends nothing on its own.
+	b.observe(at(42*time.Minute), startuphint.Hints{HasBudget: true, Progress: "3"})
+	expect("spent budget", at(46*time.Minute))
+	// Progress past the budget earns a fresh ReadyWait from that moment.
+	b.observe(at(45*time.Minute), startuphint.Hints{HasBudget: true, Progress: "4"})
+	expect("progress", at(45*time.Minute+wait))
+	// Nothing moves the bound past the cap.
+	b.observe(at(2*time.Hour+50*time.Minute), startuphint.Hints{Progress: "5"})
+	expect("cap", at(3*time.Hour))
+}
+
+func TestReadinessBoundIgnoresRestartedDaemonsResetProgressAndFreshBudget(t *testing.T) {
+	start := time.Unix(1_000_000, 0)
+	wait := 20 * time.Minute
+	b := newReadinessBound(start, ProbeOptions{ReadyWait: wait, MaxReadyWait: 6 * time.Hour})
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+
+	b.observe(at(0), startuphint.Hints{HasBudget: true, BudgetRemaining: 10 * time.Minute, Progress: "17", Daemon: "a"})
+	if !b.deadline.Equal(at(wait)) {
+		t.Fatalf("first daemon: deadline = %s, want %s", b.deadline.Sub(start), wait)
+	}
+	// Each restart resets the counter and advertises a fresh full budget;
+	// neither may read as the daemon advancing.
+	for i, daemon := range []string{"b", "c", "d"} {
+		now := at(time.Duration(i+1) * 5 * time.Minute)
+		b.observe(now, startuphint.Hints{HasBudget: true, BudgetRemaining: time.Hour, Progress: "3", Daemon: daemon})
+		if !b.deadline.Equal(at(wait)) {
+			t.Fatalf("restart %s: deadline = %s, want unchanged %s", daemon, b.deadline.Sub(start), wait)
+		}
+	}
+	// Progress within the restarted process may still extend the bound, but
+	// only up to one stall window after the first restart (5m + wait).
+	b.observe(at(18*time.Minute), startuphint.Hints{HasBudget: true, BudgetRemaining: time.Hour, Progress: "4", Daemon: "d"})
+	if want := at(5*time.Minute + wait); !b.deadline.Equal(want) {
+		t.Fatalf("progress after restart: deadline = %s, want %s", b.deadline.Sub(start), want.Sub(start))
+	}
+	// A loop whose processes each advance a little cannot chain extensions.
+	for i, daemon := range []string{"e", "f", "g"} {
+		base := at(19*time.Minute + time.Duration(i)*time.Minute)
+		b.observe(base, startuphint.Hints{Progress: "1", Daemon: daemon})
+		b.observe(base.Add(30*time.Second), startuphint.Hints{Progress: "5", Daemon: daemon})
+	}
+	if want := at(5*time.Minute + wait); !b.deadline.Equal(want) {
+		t.Fatalf("advancing crash loop: deadline = %s, want capped at %s", b.deadline.Sub(start), want.Sub(start))
+	}
+}
+
+func TestProbeWaitsForAdvancingDaemonPastReadyWaitButNotForStuckOne(t *testing.T) {
+	answer := func(progress func(n int32) string, readyAfter int32) (probePutter, *atomic.Int32, blobstore.Store) {
+		local, _ := blobstore.NewDir(t.TempDir())
+		var calls atomic.Int32
+		return probePutterFunc(func(ctx context.Context, digest string, data []byte) error {
+			n := calls.Add(1)
+			time.Sleep(10 * time.Millisecond)
+			if n > readyAfter {
+				return local.Put(ctx, digest, data)
+			}
+			header := http.Header{}
+			startuphint.Set(header, startuphint.Hints{Progress: progress(n)})
+			return &dispatcher.BlobStatusError{StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable", Body: "daemon is starting", Header: header}
+		}), &calls, local
+	}
+	opts := fastProbe
+	opts.ReadyWait = 100 * time.Millisecond
+
+	// Forty answers take well over ReadyWait, but each reports new progress.
+	remote, calls, local := answer(func(n int32) string { return strconv.Itoa(int(n)) }, 40)
+	if err := VerifyShared(context.Background(), local, remote, opts); err != nil {
+		t.Fatalf("an advancing daemon was given up on after %d answers: %v", calls.Load(), err)
+	}
+
+	remote, calls, local = answer(func(int32) string { return "7" }, 1<<30)
+	err := VerifyShared(context.Background(), local, remote, opts)
+	if err == nil || !strings.Contains(err.Error(), "WORKER_DAEMON_NOT_READY") {
+		t.Fatalf("a daemon reporting no progress must still hit the bound: %v", err)
+	}
+	if calls.Load() >= 40 {
+		t.Fatalf("stuck daemon was probed %d times; the bound did not hold", calls.Load())
 	}
 }
