@@ -609,6 +609,11 @@ func backlogReadyLedgerExitCode(err error, stderr io.Writer) int {
 // the ledger — not the repository — is wrong. That is the integrity mismatch
 // the bounded full rescan exists for, so it is retried once from scratch rather
 // than failing the stage.
+//
+// A full scan can still miss an item: the repository-wide event walk is
+// bounded (and the provider may not serve arbitrarily old history), so a label
+// added long ago may sit below its oldest page (#6986). Those items alone are
+// resolved from their own complete label history instead of failing the stage.
 func resolveBacklogReadyTimes(
 	ctx context.Context,
 	issueProvider backlogHealthProvider,
@@ -632,7 +637,7 @@ func resolveBacklogReadyTimes(
 		return filtered, scan, nil
 	}
 	if !scan.resumable() {
-		return nil, scan, &backlogReadyLedgerError{what: "snapshot ready backlog", err: annotateErr}
+		return resolveUnledgeredReadyItems(ctx, issueProvider, root, repo, items, readyLabel, filtered, scan, stdout)
 	}
 	pf(stdout, "resumed ready-transition ledger does not explain the live ready pool (%v); rescanning full history\n",
 		annotateErr)
@@ -647,7 +652,7 @@ func resolveBacklogReadyTimes(
 	}
 	filtered = transitionsForItems(transitions, items)
 	if err := annotateBacklogReadyTimes(repo.Provider, items, readyLabel, filtered); err != nil {
-		return nil, scan, &backlogReadyLedgerError{what: "snapshot ready backlog", err: err}
+		return resolveUnledgeredReadyItems(ctx, issueProvider, root, repo, items, readyLabel, filtered, scan, stdout)
 	}
 	return filtered, scan, nil
 }
@@ -987,11 +992,18 @@ func transitionsForItems(
 	return filtered
 }
 
-func annotateReadyTimes(
-	items []providers.WorkItem,
+// needsReadyTime reports whether an item is an open ready item whose ReadyAt
+// must be resolved from a label-add event.
+func needsReadyTime(item providers.WorkItem, readyLabel string) bool {
+	return item.HasLabel(readyLabel) && (item.State == "" || strings.EqualFold(item.State, "open"))
+}
+
+// activeReadyTimes replays transitions in event order and returns, per item,
+// the time of the label-add event that is still in effect.
+func activeReadyTimes(
 	readyLabel string,
 	transitions []providers.WorkItemLabelTransition,
-) error {
+) map[string]time.Time {
 	ordered := append([]providers.WorkItemLabelTransition(nil), transitions...)
 	sort.Slice(ordered, func(i, j int) bool {
 		if ordered[i].OccurredAt.Equal(ordered[j].OccurredAt) {
@@ -1010,9 +1022,17 @@ func annotateReadyTimes(
 			delete(active, transition.ItemID)
 		}
 	}
+	return active
+}
+
+func annotateReadyTimes(
+	items []providers.WorkItem,
+	readyLabel string,
+	transitions []providers.WorkItemLabelTransition,
+) error {
+	active := activeReadyTimes(readyLabel, transitions)
 	for i := range items {
-		if !items[i].HasLabel(readyLabel) ||
-			(items[i].State != "" && !strings.EqualFold(items[i].State, "open")) {
+		if !needsReadyTime(items[i], readyLabel) {
 			continue
 		}
 		readyAt, ok := active[items[i].ID]
