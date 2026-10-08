@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,6 +163,69 @@ func TestFindEscalationCandidatesReportsTheFirstErrorInListOrder(t *testing.T) {
 	_, err := FindEscalationCandidates(context.Background(), f)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the run-005 error", err)
+	}
+}
+
+// gatedScanFake blocks GetRun for chosen runs until their gate closes or
+// their context is cancelled, reporting entry on entered.
+type gatedScanFake struct {
+	*scanFake
+	gates   map[string]chan struct{}
+	entered chan string
+}
+
+func (f *gatedScanFake) GetRun(ctx context.Context, id string) (readservice.RunDetail, error) {
+	gate, ok := f.gates[id]
+	if !ok {
+		return f.scanFake.GetRun(ctx, id)
+	}
+	f.entered <- id
+	select {
+	case <-ctx.Done():
+		return readservice.RunDetail{}, ctx.Err()
+	case <-gate:
+		return f.scanFake.GetRun(ctx, id)
+	}
+}
+
+// A later run failing first must neither cancel nor skip an earlier run: the
+// earlier run's own error is still the one reported, exactly as the
+// sequential scan would report it. Runs after the failure are cancelled.
+func TestEscalationScanPoolLaterFailureDoesNotMaskEarlierRun(t *testing.T) {
+	base := scanFixture(32)
+	boom := errors.New("boom")
+	base.getErr["run-005"] = boom
+	base.getErr["run-020"] = errors.New("later")
+	f := &gatedScanFake{scanFake: base, gates: map[string]chan struct{}{
+		"run-005": make(chan struct{}), "run-025": make(chan struct{}),
+	}, entered: make(chan string)}
+	runs, err := listEscalatedRuns(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := newEscalationScanPool(len(runs))
+	var wg sync.WaitGroup
+	for _, i := range []int{5, 25} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.scan(context.Background(), f, runs, i)
+		}()
+		<-f.entered
+	}
+	pool.scan(context.Background(), f, runs, 20) // fails while 5 and 25 are in flight
+	pool.scan(context.Background(), f, runs, 30) // after the failure: skipped
+	close(f.gates["run-005"])
+	wg.Wait()
+
+	if pool.failed != 5 || !errors.Is(pool.results[5].err, boom) {
+		t.Fatalf("failed = %d, err = %v; want run-005's error", pool.failed, pool.results[5].err)
+	}
+	if !errors.Is(pool.results[25].err, context.Canceled) {
+		t.Fatalf("run-025 err = %v, want it cancelled by the earlier failure", pool.results[25].err)
+	}
+	if pool.results[30] != (escalationScanResult{}) {
+		t.Fatalf("run-030 = %+v, want it skipped", pool.results[30])
 	}
 }
 

@@ -57,6 +57,9 @@ func TestIntegrationChildSnapshotFiltersWithoutChangingParent(t *testing.T) {
 		childSnapshotWrite(t, repository, name, content)
 	}
 	recoveryTestGit(t, repository, "add", "--force", ".goobers/token", "credentials/token")
+	// Dirty tracked exclusions must not reenter through main's tracked-update selector.
+	childSnapshotWrite(t, repository, ".goobers/token", "changed runtime secret")
+	childSnapshotWrite(t, repository, "credentials/token", "changed provider secret")
 	if err := os.Remove(filepath.Join(repository, "deleted.txt")); err != nil {
 		t.Fatal(err)
 	}

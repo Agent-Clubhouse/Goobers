@@ -1872,8 +1872,10 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 				}
 			}
 		}
-		if err := commitAgentChange(request.Workspace, stage, call); err != nil {
-			return err
+		if task.Workspace != apiv1.WorkspaceRepoReadOnly {
+			if err := commitAgentChange(request.Workspace, stage, call); err != nil {
+				return err
+			}
 		}
 		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, result)
 	case harness.ModeReview:
@@ -2144,6 +2146,13 @@ func writeScriptedArtifactFile(request harness.RunRequest) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
+// commitAgentChange stands in for a writable stage's agent committing work.
+// harnessAct never calls it for a repo-readonly task (#6633): such a worktree
+// shares the managed mirror's object store, and a concurrent sibling branch's
+// workspace provisioning runs mirror maintenance whose gc removes empty
+// loose-object fan-out directories, so a fake read-only lens writing objects
+// there can lose git's mkdir/mkstemp race ("unable to create temporary file").
+// A read-only lens must not write to the repository anyway.
 func commitAgentChange(workspace, stage string, call int) error {
 	name := strings.NewReplacer("/", "-", ":", "-").Replace(stage)
 	path := filepath.Join(workspace, fmt.Sprintf("contract-%s-%d.txt", name, call))
@@ -2165,6 +2174,35 @@ func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	if err := runGitCommand(dir, args...); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// #6633: a fake read-only lens must complete without touching git, so it can
+// never write into an object store a sibling branch's provisioning is
+// garbage-collecting. The workspace is deliberately not a repository: any git
+// invocation would fail the stage.
+func TestHarnessActReadOnlyTaskDoesNotWriteRepository(t *testing.T) {
+	t.Parallel()
+	script := newScenarioScript(apiv1.Workflow{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+		Name: "lens", Type: apiv1.TaskAgentic, Workspace: apiv1.WorkspaceRepoReadOnly,
+		ExpectedOutputs: []string{"findingsRef"},
+	}}}}, terminalScenario{})
+	workspace := t.TempDir()
+	err := script.harnessAct(context.Background(), harness.RunRequest{
+		Mode:           harness.ModeInvoke,
+		Envelope:       apiv1.InvocationEnvelope{TaskID: "run:lens"},
+		Workspace:      workspace,
+		CompletionPath: "result.json",
+	})
+	if err != nil {
+		t.Fatalf("harnessAct: %v", err)
+	}
+	written, err := filepath.Glob(filepath.Join(workspace, "contract-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 0 {
+		t.Fatalf("read-only lens wrote agent changes %v", written)
 	}
 }
 
