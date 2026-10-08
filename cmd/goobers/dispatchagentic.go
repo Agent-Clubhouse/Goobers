@@ -157,13 +157,13 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 			// The harness's own class survives the surrender plane only as
 			// Retryable, so it is committed HERE, where the marker is still
 			// visible: harness.Executor.Review marks a session that ended
-			// without a completion (ErrNoCompletion) as an
-			// invoke.InfrastructureFailure, and the self arm's ReviewGoober
-			// hands exactly that class to classifySeamError, so the gate's
-			// evaluator retry bound covers it there. A pod that dropped the
-			// class would fail the run where the worker would retry. A
-			// verdict the schema refused, or a harness that would not run,
-			// carries no marker and stays the review's own outcome.
+			// without a verdict (no completion, a harness exit, a timeout —
+			// #5543) as an invoke.InfrastructureFailure, and the self arm's
+			// ReviewGoober hands that class to classifySeamError, so the
+			// gate's evaluator retry bound covers it there. A pod that dropped
+			// the class would fail the run where the worker would retry. A
+			// verdict the schema refused, or a harness that refused the
+			// session, carries no marker and stays the review's own outcome.
 			outcome := fail("agentic_review_failed", err)
 			outcome.Result.Error.Retryable = invoke.IsInfrastructureFailure(err)
 			return outcome
