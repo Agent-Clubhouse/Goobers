@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -56,5 +58,17 @@ func TestEscalationCommenterReadsItemLabels(t *testing.T) {
 	newEscalationPoster = func(string) gate.Commenter { return &escFakeCommenter{} }
 	if _, err := reader.GetWorkItem(context.Background(), repo, "42"); err == nil {
 		t.Fatal("GetWorkItem through a poster that cannot read items succeeded; want an error so the comment hedges")
+	}
+
+	// An ADO PR number is not a Boards work-item id: refuse rather than read
+	// an unrelated work item's labels as the PR's.
+	newEscalationPoster = func(string) gate.Commenter {
+		t.Fatal("ADO PR label read must not reach any provider")
+		return nil
+	}
+	adoReader := &escalationCommenter{resolver: resolver, reg: &escTestRegistrar{}, layout: instance.NewLayout(t.TempDir())}
+	adoRepo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "example-org", Project: "proj", Name: "repo"}
+	if _, err := adoReader.GetWorkItem(context.Background(), adoRepo, "pr/42"); err == nil || !strings.Contains(err.Error(), "ADO pull request") {
+		t.Fatalf("ADO pr/ read error = %v, want a refusal", err)
 	}
 }
