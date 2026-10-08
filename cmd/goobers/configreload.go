@@ -340,7 +340,8 @@ func (r *configReloader) poll(now time.Time) error {
 		r.observedDigest = r.appliedDigest
 		return err
 	}
-	superseded := supersededWorkflows(pinnedDefinitions{r.setup.Machines, r.setup.GooberDigests, r.setup.Definitions}, pinnedDefinitions{definitions.Machines, definitions.GooberDigests, definitions.Set})
+	superseded := supersededWorkflows(newPinnedDefinitions(r.setup.Config, r.setup.Machines, r.setup.GooberDigests, r.setup.RepoRefs, r.setup.Definitions),
+		newPinnedDefinitions(r.setup.Config, definitions.Machines, definitions.GooberDigests, definitions.RepoRefs, definitions.Set))
 	r.setup.EngineRuntime = definitions.EngineRuntime
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
