@@ -4,6 +4,7 @@ package proc
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -376,7 +377,53 @@ const (
 	wslLauncherAttempts = 3
 	wslGuestReady       = "goobers-wsl-guest-ready"
 	wslReadyTimeout     = 60 * time.Second
+	// wslRequireGuestEnv turns a host whose WSL never runs a guest command
+	// from a skip into a failure, for hosts that must have a working distro.
+	wslRequireGuestEnv = "GOOBERS_REQUIRE_WSL_GUEST"
 )
+
+// requireFunctionalWSL probes whether WSL can run a guest command at all. A
+// host with wsl.exe but no usable distro (hosted Windows runners exit with
+// 0xffffffff on every launch) cannot exercise WSL descendants, so the test
+// skips with the probe's diagnostics unless wslRequireGuestEnv demands WSL.
+// The probe retries like the helper so one launcher startup failure is not
+// mistaken for a non-functional WSL; it also boots the distro, so the timed
+// helper launch below does not pay for a cold start.
+func requireFunctionalWSL(t *testing.T) {
+	t.Helper()
+	var failures []string
+	for attempt := 1; attempt <= wslLauncherAttempts; attempt++ {
+		failure := probeWSLGuest()
+		if failure == "" {
+			return
+		}
+		failures = append(failures, fmt.Sprintf("attempt %d/%d: %s", attempt, wslLauncherAttempts, failure))
+		if attempt < wslLauncherAttempts {
+			time.Sleep(time.Duration(attempt) * time.Second) // Back off before relaunching a launcher that failed to initialize.
+		}
+	}
+	msg := "WSL is installed but never ran a guest command: " + strings.Join(failures, "; ")
+	if os.Getenv(wslRequireGuestEnv) == "1" {
+		t.Fatalf("%s (%s=1 requires a functional WSL distro)", msg, wslRequireGuestEnv)
+	}
+	t.Skipf("%s (set %s=1 to fail instead)", msg, wslRequireGuestEnv)
+}
+
+// probeWSLGuest runs one guest command and returns why it did not run, or ""
+// once the guest printed the readiness line.
+func probeWSLGuest() string {
+	ctx, cancel := context.WithTimeout(context.Background(), wslReadyTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-e", "sh", "-c", "echo "+wslGuestReady)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	if strings.Contains(string(out), wslGuestReady) {
+		return ""
+	}
+	// wsl.exe reports its own errors in UTF-16; dropping the NULs keeps the
+	// ASCII diagnostics readable.
+	return fmt.Sprintf("wait=%v, output=%q", err, strings.TrimSpace(strings.ReplaceAll(string(out), "\x00", "")))
+}
 
 // startReadyWSLGuest launches wsl.exe and returns once the guest command has
 // printed its readiness line, so the launcher PID is only published for a WSL
@@ -512,6 +559,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
 		t.Fatalf("WSL integration was explicitly required but wsl.exe is unavailable: %v", err)
 	}
+	requireFunctionalWSL(t)
 
 	marker := filepath.Join(t.TempDir(), "wsl.pid")
 	// Keep helper startup errors rather than reducing every setup failure to a
