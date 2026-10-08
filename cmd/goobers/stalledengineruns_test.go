@@ -11,6 +11,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -29,6 +30,7 @@ type stalledEngineSweepFixture struct {
 	// nothingOpen gives the guards an open-workflow scan that finds nothing.
 	nothingOpen bool
 	maxDuration time.Duration
+	suspended   []hostsuspend.Window
 }
 
 const stalledEngineSweepTimeout = 45 * time.Minute
@@ -78,7 +80,10 @@ func (f *stalledEngineSweepFixture) sweep(t *testing.T, fake *fakeEngineWorkflow
 	}
 	return sweepStalledRuns(
 		context.Background(), f.layout, nil, nil, guards, f.log,
-		&stalledSweepDeps{CloseEngineRun: closeTerminatedEngineRun(writer)}, nil,
+		&stalledSweepDeps{
+			CloseEngineRun:  closeTerminatedEngineRun(writer),
+			HostSuspensions: hostsuspend.NewLedger(nil, f.suspended),
+		}, nil,
 		func(runID, _ string) { f.released = append(f.released, runID) },
 		now, stalledEngineSweepTimeout, f.maxDuration,
 	)
@@ -299,4 +304,39 @@ func TestSweepStalledRunsTerminatesOverAgeEngineRunOneTimeoutAfterItsCancel(t *t
 		t.Fatalf("terminated %v released %v, want the run terminated one timeout after its cancellation", second.terminated, f.released)
 	}
 	assertWatchdogPhase(t, f.layout.RunsDir(), f.runID, journal.PhaseAborted)
+}
+
+// TestSweepStalledRunsCreditsHostSuspensionBeforeTerminatingEngineRun is
+// #5891 applied to #5407's escalation: a host asleep after the sweep asked
+// the engine to cancel gave no worker a chance to take the cancellation, so
+// that time is credited before the workflow is terminated, as it is for the
+// stall itself.
+func TestSweepStalledRunsCreditsHostSuspensionBeforeTerminatingEngineRun(t *testing.T) {
+	f := newStalledEngineSweepFixture(t)
+	cancelledAt := f.started.Add(stalledEngineSweepTimeout + time.Minute)
+	first := &fakeEngineWorkflows{status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}
+	if err := f.sweep(t, first, f.writer(t), cancelledAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, cancelled := first.snapshot(); len(cancelled) != 1 {
+		t.Fatalf("cancelled = %v, want the stalled run cancelled first", cancelled)
+	}
+
+	f.suspended = []hostsuspend.Window{{From: cancelledAt.Add(5 * time.Minute), To: cancelledAt.Add(35 * time.Minute)}}
+	asleep := &fakeEngineWorkflows{status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}
+	if err := f.sweep(t, asleep, f.writer(t), cancelledAt.Add(stalledEngineSweepTimeout+time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(asleep.terminated) != 0 || len(f.released) != 0 {
+		t.Fatalf("terminated %v released %v while the host slept through the cancellation, want the slot held", asleep.terminated, f.released)
+	}
+	assertWatchdogPhase(t, f.layout.RunsDir(), f.runID, journal.PhaseRunning)
+
+	awake := &fakeEngineWorkflows{status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}
+	if err := f.sweep(t, awake, f.writer(t), cancelledAt.Add(stalledEngineSweepTimeout+31*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(awake.terminated) != 1 || len(f.released) != 1 {
+		t.Fatalf("terminated %v released %v, want the run terminated once a timeout of awake time passed", awake.terminated, f.released)
+	}
 }

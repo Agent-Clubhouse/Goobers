@@ -494,7 +494,7 @@ func sweepStalledRuns(
 		// server-side terminate one stall timeout after it was first
 		// requested; see settleStalledEngineRun.
 		if identity.EngineDriven() {
-			if err := settleStalledEngineRun(ctx, guards, log, deps, cancels, release, identity, events, now, runTimeout, runMaxDuration, durationExceeded); err != nil {
+			if err := settleStalledEngineRun(ctx, guards, log, deps, cancels, release, identity, events, now, suspended, runTimeout, runMaxDuration, durationExceeded); err != nil {
 				sweepErrs = append(sweepErrs, err)
 			}
 			continue
