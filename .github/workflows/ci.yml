@@ -214,6 +214,30 @@ jobs:
       - name: Run preflight
         run: go run ./test/ci group preflight
 
+      # CI failure diagnostics (#6912, docs/guides/ci-test-results.md): every
+      # run records its runner image and Go toolchain in the job summary; a
+      # failed or cancelled run also lists the failing check, tests, and their
+      # output, classified as test, check, or infrastructure failure, and
+      # uploads them as ci-diagnostics-<job>-<index>. Observability only: these
+      # steps never change the job's verdict. Keep this pair identical in every
+      # job (TestCIJobsRecordFailureDiagnostics).
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
+
   # Compare each PR head with its merge-base; concurrent main growth is unrelated.
   cmdgoobers-growth:
     name: cmd/goobers growth ratchet
@@ -238,6 +262,23 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'HEAD' }}
           HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || '' }}
         run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF" -head-ref "$HEAD_REF"
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   # Unreachable-production-code report. Ran once, on this one runner — not
   # because the analysis is platform-independent (#4434: a symbol reachable
@@ -279,6 +320,23 @@ jobs:
 
       - name: Dead-code analysis
         run: make deadcode
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   # Node-backed Portal, extension, generated-contract, and manifest checks.
   # Preflight already owns the Node-free format, policy, vet, build, and config
@@ -413,6 +471,23 @@ jobs:
           GOOBERS_DESIGN_DELIVERY_CONTEXT: ${{ github.event_name == 'pull_request' && format('{0}/design-delivery-context.json', runner.temp) || '' }}
         run: go run ./test/ci group checks
 
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
+
   deploy-reference:
     name: deploy reference manifests
     needs: [preflight, scope]
@@ -431,6 +506,23 @@ jobs:
 
       - name: Render and schema-check reference manifests
         run: make deploy-validate
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   # golangci-lint (staticcheck/govet/revive/...) per target GOOS, all on cheap
   # Linux runners. golangci-lint honours GOOS, so it sees each platform's
@@ -492,6 +584,23 @@ jobs:
         env:
           GOOBERS_LINT_GOOS: ${{ matrix.goos }}
         run: go run ./test/ci group lint
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   # darwin build+vet gate, cross-compiled on Linux (mirrors windows-smoke).
   # Compiles and vets the whole tree — including the //go:build darwin files
@@ -560,6 +669,23 @@ jobs:
           GOARCH: amd64
           CGO_ENABLED: "0"
         run: go vet ./...
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   # The long pole: the -race unit suite. Split into shards across Linux runners
   # (test/ci group unit + GOOBERS_CI_SHARD; the hermetic runner partitions
@@ -736,6 +862,23 @@ jobs:
           path: test-timings/unit-race.part*.junit.xml
           if-no-files-found: warn
 
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
+
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
@@ -874,6 +1017,23 @@ jobs:
           path: test-timings/unit-${{ runner.os }}.junit.xml
           if-no-files-found: warn
 
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
+
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
   # it without -race. The macOS leg runs nightly in macos-nightly.yml.
   shipped:
@@ -923,6 +1083,23 @@ jobs:
           GOOBERS_CI_RACE: ${{ matrix.race }}
           GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}
         run: go run ./test/ci group shipped
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   integration:
     name: declared-dependency integration
@@ -1240,6 +1417,23 @@ jobs:
             echo "::error::TestIntegrationEnvtestReconcile did not PASS (skipped or absent) — the envtest control plane is not being exercised"
             exit 1
           fi
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   # Publishes the declared-dependency .deb payloads on main (#3322).
   #
@@ -1895,6 +2089,23 @@ jobs:
           path: bin/windows-validation-evidence/
           if-no-files-found: warn
 
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
+
   vulnerability-scan:
     name: Go vulnerability scan
     needs: [preflight, scope]
@@ -1913,6 +2124,23 @@ jobs:
 
       - name: Scan reachable Go code
         run: make vulncheck
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
 
   required-ci:
     name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (skipped for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}
@@ -2013,6 +2241,23 @@ jobs:
       - name: Exercise native sandbox
         run: make sandbox-check
 
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
+
   # Linux node validation (#636): prove the shipped binary end to end on Linux —
   # an offline demo run to completion plus the full daemon start/status/stop
   # lifecycle under a real SIGTERM — and cross-compile the Windows supervision
@@ -2045,6 +2290,23 @@ jobs:
         with:
           name: linux-validation-evidence
           path: bin/linux-validation-evidence/
+          if-no-files-found: warn
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
           if-no-files-found: warn
 
   # Cancel-on-failure (pull requests only). The jobs above are independent
