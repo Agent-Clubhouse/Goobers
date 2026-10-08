@@ -23,6 +23,9 @@ type fakeWorkspaces struct {
 	root     string
 	requests []WorkspaceRequest
 	removed  []string
+	// lifecycle logs "provision <stage>" / "remove <stage>" in call order, so
+	// a test can assert one workspace was torn down before the next was made.
+	lifecycle []string
 	// provisionErrs are consumed FIFO: each Provision call pops and returns
 	// one until the script is exhausted, then provisioning succeeds.
 	provisionErrs []error
@@ -83,6 +86,7 @@ func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Wor
 		return nil, fmt.Errorf("fakeWorkspaces: unknown workspace mode %q for stage %q (workerhost.WorktreeWorkspaces would refuse it too)", req.Mode, req.Stage)
 	}
 	f.requests = append(f.requests, req)
+	f.lifecycle = append(f.lifecycle, "provision "+req.Stage)
 	if f.emptyPath {
 		return f.wrap(&fakeWorkspace{owner: f, stage: req.Stage}), nil
 	}
@@ -185,6 +189,18 @@ func (f *fakeWorkspaces) provisioned() []WorkspaceRequest {
 	return append([]WorkspaceRequest(nil), f.requests...)
 }
 
+func (f *fakeWorkspaces) lifecycleOf(stage string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, e := range f.lifecycle {
+		if e == "provision "+stage || e == "remove "+stage {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func (f *fakeWorkspaces) removedPaths() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -214,6 +230,7 @@ func (w *fakeWorkspace) Remove(context.Context) error {
 	w.owner.mu.Lock()
 	defer w.owner.mu.Unlock()
 	w.owner.removed = append(w.owner.removed, w.path)
+	w.owner.lifecycle = append(w.owner.lifecycle, "remove "+w.stage)
 	return os.RemoveAll(w.path)
 }
 

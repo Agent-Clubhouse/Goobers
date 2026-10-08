@@ -326,9 +326,24 @@ func selectTaskDelta(ctx workflow.Context, t apiv1.Task, remote bool, record []c
 // inherits its subject's repo state (decision 001 on gates, ruling 4), so it
 // is handed the last entry whenever its reviewer evaluates in a writable repo
 // workspace.
-func selectGateDelta(ctx workflow.Context, g apiv1.Gate, record []continuityEntry, branch string, rec *runJournal) continuityEntry {
-	if g.Evaluator != apiv1.EvaluatorAgentic || !writableWorkspace(g.EffectiveWorkspace()) {
+//
+// An implementation-review gate (runner.ReviewsImplementation) whose reviewer
+// declared a non-writable workspace is handed the same entry, unjournaled
+// (#5414): the reviewer's own workspace never receives it, but ReviewGoober
+// lands it on a short-lived probe of the run branch to read the committed
+// diff the reviewer is owed. Not journaling keeps the walk's command sequence
+// for such a gate identical to the one histories recorded before this change
+// replay against.
+func selectGateDelta(ctx workflow.Context, g apiv1.Gate, reviewsImplementation bool, record []continuityEntry, branch string, rec *runJournal) continuityEntry {
+	if g.Evaluator != apiv1.EvaluatorAgentic {
 		return continuityEntry{}
+	}
+	if !writableWorkspace(g.EffectiveWorkspace()) {
+		if !reviewsImplementation {
+			return continuityEntry{}
+		}
+		selected, _ := selectDelta(record, g.Name, nil, branch)
+		return selected
 	}
 	selected, _ := selectDelta(record, g.Name, nil, branch)
 	if selected.Digest != "" {

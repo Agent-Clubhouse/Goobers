@@ -78,6 +78,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	if err != nil {
 		return "", err
 	}
+	kit.ReviewRequiresDiff = attempt.Review && attempt.ReviewRequiresDiff
 	data, digest, err := agentickit.Marshal(kit)
 	if err != nil {
 		return "", err

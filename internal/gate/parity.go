@@ -80,6 +80,14 @@ func EmptyDiffVerdict() apiv1.Verdict {
 	}
 }
 
+// IsEmptyDiffVerdict reports whether v is EmptyDiffVerdict, before or after
+// MechanicalVerdict rewrote its decision. A review pod surrenders it when the
+// run diff a gate requires is empty (#5414), and the engine must then apply
+// the same forced escalation the self-placed arm does.
+func IsEmptyDiffVerdict(v apiv1.Verdict) bool {
+	return v.Synthesized && v.Rationale == EmptyDiffVerdict().Rationale
+}
+
 // DuplicateDiffVerdict is the verdict Evaluate synthesizes for #316's
 // identical-diff guard: this repass produced a diff byte-identical to the one
 // the reviewer already judged, so a second reviewer call can only repeat its
