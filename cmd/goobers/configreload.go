@@ -340,6 +340,8 @@ func (r *configReloader) poll(now time.Time) error {
 		r.observedDigest = r.appliedDigest
 		return err
 	}
+	superseded := supersededWorkflows(newPinnedDefinitions(r.setup.Config, r.setup.Machines, r.setup.GooberDigests, r.setup.RepoRefs, r.setup.Definitions),
+		newPinnedDefinitions(r.setup.Config, definitions.Machines, definitions.GooberDigests, definitions.RepoRefs, definitions.Set))
 	r.setup.EngineRuntime = definitions.EngineRuntime
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
@@ -384,9 +386,9 @@ func (r *configReloader) poll(now time.Time) error {
 	// still resume from their pinned snapshot and which one would refuse —
 	// logged, never fatal, since an applied reload must not be reported as
 	// failed because its advisory report could not be written.
-	if drift, driftErr := inspectWorkflowDigestDrift(r.layout, r.setup.Machines); driftErr != nil {
+	if drift, driftErr := inspectWorkflowDigestDrift(r.layout, r.setup.Machines, superseded); driftErr != nil {
 		log.Printf("config reload: inspect workflow digest drift: %v", driftErr)
-	} else if driftErr := journalWorkflowDigestDrift(r.setup.InstanceLog, drift); driftErr != nil {
+	} else if driftErr := reportWorkflowDigestDrift(r.setup.InstanceLog, drift, log.Printf); driftErr != nil {
 		log.Printf("config reload: journal workflow digest drift: %v", driftErr)
 	}
 	r.appliedDigest = digest
