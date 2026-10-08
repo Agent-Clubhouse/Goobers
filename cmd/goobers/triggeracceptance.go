@@ -106,7 +106,13 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
 	}
-	record, duplicate, err := s.queue.Accept(ctx, request.RequestID, request.Actor, payload, s.dispatch.now())
+	record, duplicate, err := s.queue.AcceptAdmitted(ctx, request.RequestID, request.Actor, payload, s.dispatch.now(), func() error {
+		return s.dispatch.validateTriggerTarget(request)
+	})
+	var refusal *httpapi.InterventionError
+	if errors.As(err, &refusal) {
+		return httpapi.TriggerResponse{}, err
+	}
 	if errors.Is(err, triggerqueue.ErrConflict) {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusConflict, "trigger_request_conflict", "request key belongs to another trigger", nil)
 	}

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -285,5 +289,123 @@ func TestDurableTriggerStatusBindsActorAndPodIdentity(t *testing.T) {
 		if err == nil || status.AcceptanceID != "" || err.Error() != "trigger acceptance not found" {
 			t.Fatalf("foreign status = %+v, %v", status, err)
 		}
+	}
+}
+
+// TestDurableTriggerRefusesUnknownWorkflowBeforeAcceptance is #5895: a
+// mistyped workflow (`goobers run list`) must be refused with the available
+// workflows instead of being journaled as an accepted trigger whose dispatch
+// is rejected later. The startup catalog covers the window before the
+// scheduler attaches; afterwards the scheduler's reload-aware catalog wins.
+func TestDurableTriggerRefusesUnknownWorkflowBeforeAcceptance(t *testing.T) {
+	entries := []localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "impl"}, {Gaggle: "other", Workflow: "impl"}, {Gaggle: "own", Workflow: "review"}}
+	for _, phase := range []string{"startup catalog", "attached scheduler"} {
+		t.Run(phase, func(t *testing.T) {
+			dispatch := newDaemonTriggerService()
+			if phase == "startup catalog" {
+				dispatch.withStartupCatalog(entries)
+			} else {
+				dispatch.AttachScheduler(localscheduler.New(entries, nil))
+			}
+			s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
+			for _, refused := range []struct {
+				request httpapi.TriggerRequest
+				status  int
+				code    string
+				message string
+			}{
+				{httpapi.TriggerRequest{Workflow: "list"}, http.StatusNotFound, "workflow_not_found", `no workflow named "list"; available workflows: other/impl, own/impl, own/review`},
+				{httpapi.TriggerRequest{Workflow: "list", Gaggle: "own"}, http.StatusNotFound, "workflow_not_found", `no workflow named "list" in gaggle "own"; available workflows: impl, review`},
+				{httpapi.TriggerRequest{Workflow: "review", Gaggle: "own", SourceRun: "source"}, 0, "", ""},
+				{httpapi.TriggerRequest{Workflow: "impl"}, http.StatusBadRequest, "workflow_ambiguous", `workflow "impl" is ambiguous`},
+			} {
+				request := refused.request
+				request.RequestID, request.Actor = "delivery-"+request.Gaggle+"-"+request.Workflow, "operator"
+				response, err := s.Trigger(t.Context(), request)
+				if refused.status == 0 {
+					if err != nil || response.State != "accepted" {
+						t.Fatalf("known workflow %+v: response = %+v, err = %v", request, response, err)
+					}
+					continue
+				}
+				var intervention *httpapi.InterventionError
+				if !errors.As(err, &intervention) || intervention.Status != refused.status || intervention.Code != refused.code || !strings.Contains(intervention.Message, refused.message) {
+					t.Fatalf("%+v: response = %+v, err = %v; want %d %s %q", request, response, err, refused.status, refused.code, refused.message)
+				}
+			}
+			pending, err := s.queue.Pending(t.Context(), 100)
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("pending = %+v, %v; want only the known workflow's acceptance", pending, err)
+			}
+		})
+	}
+}
+
+// TestDurableTriggerReplaysAcceptanceAfterCatalogShrinks proves the
+// acceptance-time check never breaks idempotency: a redelivery of a trigger
+// accepted before a reload removed its workflow answers the original record.
+func TestDurableTriggerReplaysAcceptanceAfterCatalogShrinks(t *testing.T) {
+	dispatch := newDaemonTriggerService().withStartupCatalog([]localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "impl"}})
+	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
+	request := httpapi.TriggerRequest{Workflow: "impl", RequestID: "delivery", Actor: "operator"}
+	original, err := s.Trigger(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch.AttachScheduler(localscheduler.New([]localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "renamed"}}, nil))
+	replay, err := s.Trigger(t.Context(), request)
+	if err != nil || !replay.Duplicate || replay.AcceptanceID != original.AcceptanceID {
+		t.Fatalf("replay = %+v, %v; want duplicate of %s", replay, err, original.AcceptanceID)
+	}
+}
+
+// A pod principal naming a gaggle with no configured workflows must not be
+// answered with other gaggles' catalogs.
+func TestDurableTriggerUnknownGaggleRefusalStaysPodScoped(t *testing.T) {
+	entries := []localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "impl"}}
+	dispatch := newDaemonTriggerService().withStartupCatalog(entries).withGaggleContainment(func(string, string) bool { return true })
+	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
+	for _, pod := range []bool{false, true} {
+		request := httpapi.TriggerRequest{Workflow: "impl", Gaggle: "ghost", RequestID: fmt.Sprint("delivery-", pod), Actor: "operator"}
+		if pod {
+			request.Actor, request.PodScoped, request.PodRunID = "pod:run-1", true, "run-1"
+		}
+		_, err := s.Trigger(t.Context(), request)
+		var intervention *httpapi.InterventionError
+		if !errors.As(err, &intervention) || intervention.Code != "workflow_not_found" ||
+			!strings.Contains(intervention.Message, `no gaggle named "ghost" is configured`) ||
+			strings.Contains(intervention.Message, "own/impl") != !pod {
+			t.Fatalf("pod=%v: err = %v; want the catalog listed only for operators", pod, err)
+		}
+	}
+}
+
+// TestRunUnknownWorkflowAgainstLiveDaemonRecordsNoTrigger is the #5895
+// reproduction end to end: `goobers run list <root>` against a running
+// daemon must fail with the available workflows and leave no accepted
+// trigger behind.
+func TestRunUnknownWorkflowAgainstLiveDaemonRecordsNoTrigger(t *testing.T) {
+	daemon := startUpOnFreeLoopback(t, freeLoopbackAddress, func(address string) string {
+		root := initDeterministicDemo(t)
+		setAPIListenAddress(t, root, address)
+		return root
+	})
+	code, stdout, stderr := runArgs(t, "run", "list", daemon.root)
+	daemon.cancel()
+	select {
+	case <-daemon.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not stop")
+	}
+	if code != 1 || strings.Contains(stdout, "accepted trigger") || !strings.Contains(stderr, `workflow_not_found: no workflow named "list"; available workflows: example/`) {
+		t.Fatalf("run list: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	queue, err := triggerqueue.Open(filepath.Join(instance.NewLayout(daemon.root).SchedulerDir(), "accepted-triggers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = queue.Close() }()
+	if pending, err := queue.Pending(t.Context(), 100); err != nil || len(pending) != 0 {
+		t.Fatalf("pending triggers = %+v, %v; want none", pending, err)
 	}
 }

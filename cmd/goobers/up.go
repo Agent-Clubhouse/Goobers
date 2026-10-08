@@ -1035,7 +1035,7 @@ func (u *upSession) configureAPI() int {
 	// for local/mode-1 callers.
 	u.triggerPlane = newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
 		return runBelongsToGaggle(u.l, gaggle, runID)
-	}).withSchedulerReadyGate(u.ready.Load)
+	}).withSchedulerReadyGate(u.ready.Load).withStartupCatalog(u.setup.Entries)
 	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
 	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
 	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
