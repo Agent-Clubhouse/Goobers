@@ -16,7 +16,7 @@ import {
   insightScopeOption,
 } from "../insightScope";
 import { manualRunCommand, statusCommand } from "../manualRunCommand";
-import { runWorkTitle, useOperationalSnapshot } from "../operationalData";
+import { distinctTriggerRef, runWorkTitle, useOperationalSnapshot } from "../operationalData";
 import { routeHash, type Navigate, type RunRouteFilters } from "../routing";
 import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
@@ -669,7 +669,8 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
   const displayTitle = run.operator?.displayTitle;
   const titled = Boolean(displayTitle || workItem);
   const identity = runWorkTitle(run, " · ") ?? run.id;
-  const context = `${run.gaggle} / ${run.workflow}${run.trigger.ref ? ` · ${run.trigger.ref}` : ""}${
+  const triggerRef = distinctTriggerRef(run);
+  const context = `${run.gaggle} / ${run.workflow}${triggerRef ? ` · ${triggerRef}` : ""}${
     titled ? ` · ${run.id}` : ""
   }`;
 
@@ -694,7 +695,7 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
         </span>
         <span className="row-subtitle" title={context}>
           {run.gaggle} / {run.workflow}
-          {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
+          {triggerRef ? ` · ${triggerRef}` : ""}
           {titled ? <span className="mono"> · {run.id}</span> : null}
         </span>
       </span>
