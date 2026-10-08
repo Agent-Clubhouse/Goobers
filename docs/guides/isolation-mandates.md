@@ -38,3 +38,29 @@ retain their pinned placements; this is not retroactive migration or revocation.
 `goobers status` displays configured class floors and its JSON output includes
 `isolationMandates`; refused workflows retain their placement diagnostics.
 `goobers explain instance.isolation` describes the configuration contract.
+
+## Backing and sizing `tmp:ephemeral` in stage pods
+
+On a Kubernetes stage pod whose runner class carries `tmp:ephemeral`, the
+dispatcher mounts a fresh `/tmp` volume (the profile temp directory on Windows)
+and points `TMPDIR` (`TMP`/`TEMP` on Windows) at it. Two `runner` settings in
+`instance.yaml` shape that volume:
+
+```yaml
+runner:
+  podTmpMedium: disk   # memory (default) | disk
+  podTmpfsSize: 8Gi    # optional; default 512Mi for memory, 4Gi for disk
+```
+
+- `memory` (the default) mounts a Linux tmpfs. Its size is added to the
+  container memory limit, so a full `/tmp` fails against a named budget rather
+  than an unexplained OOM.
+- `disk` mounts a node-disk `emptyDir` with the same explicit size limit. It
+  uses ephemeral storage under the runner's `disk` ceiling, not memory. Choose
+  it when stages run real builds: Go's build work directory and `t.TempDir()`
+  live under `TMPDIR`, and a 512Mi tmpfs fails them with `no space left on
+  device`.
+
+Windows stage pods are always disk-backed; `podTmpMedium: disk` only raises
+their default size. `GOCACHE` never lives on this volume. Both settings are
+read when the worker starts, so restart it after changing them.
