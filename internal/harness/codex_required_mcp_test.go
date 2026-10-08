@@ -95,6 +95,14 @@ func TestCodexOtherStartupFailuresKeepTheirClassification(t *testing.T) {
 			if err == nil || errors.Is(err, errRequiredMCPUnavailable) {
 				t.Fatalf("Run error = %v, want an unclassified failure", err)
 			}
+			// #5543: a declared server's refusal is marked so a reviewer
+			// session keeps it out of the transient class; nothing else is.
+			if got, want := errors.Is(err, errRequiredMCPDeclaredStartupFailed), name == "declared server"; got != want {
+				t.Fatalf("declared-startup marker = %v, want %v (error %v)", got, want, err)
+			}
+			if err.Error() != runner.err.Error() {
+				t.Fatalf("Run error text = %q, want the harness error unchanged", err)
+			}
 			if len(reports) != 1 || reports[0].Category != "check_unobservable" {
 				t.Fatalf("readiness reports = %+v, want only the pre-model check_unobservable", reports)
 			}

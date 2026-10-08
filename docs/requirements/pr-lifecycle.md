@@ -170,8 +170,11 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   digest and source run id.
 - **PRL-015 (MUST, Shipped):** The agentic reviewer gate MUST retry a
   transient evaluator-harness failure within declared bounds
-  (`retry.maxAttempts`) instead of failing the run on first occurrence (#765);
-  non-transient errors still fail fast. (Gate mechanics owned by `GT-011`.)
+  (`retry.maxAttempts`) instead of failing the run on first occurrence (#765).
+  A reviewer session that ends without a verdict is transient: no completion
+  file, a non-zero harness exit, or a session timeout (#5543). Non-transient
+  errors (a schema-invalid verdict, a rejected or policy-blocked required MCP
+  server, a refused session) still fail fast. (Gate mechanics owned by `GT-011`.)
 
 ### Election: single lander, policy seam
 

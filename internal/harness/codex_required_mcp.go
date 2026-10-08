@@ -56,7 +56,7 @@ const codexInitialCheckpoint = 1
 // server error text is not copied into the error or the annotation.
 func observeCodexRequiredMCPStartup(req RunRequest, result ProcessResult, sessionStarted bool, err error) error {
 	if !req.GoobersIORegistered {
-		return err
+		return declaredRequiredMCPStartupRefusal(result, sessionStarted, err)
 	}
 	if sessionStarted {
 		return readinessReportedError(req, MCPReadiness{
@@ -71,7 +71,7 @@ func observeCodexRequiredMCPStartup(req RunRequest, result ProcessResult, sessio
 		}, err)
 	}
 	if err == nil || !codexRequiredMCPStartupFailed(result.Stderr, goobersIOServerName) {
-		return err
+		return declaredRequiredMCPStartupRefusal(result, sessionStarted, err)
 	}
 	classified := errors.Join(fmt.Errorf(
 		"%w: codex refused to start the session because the required %s MCP server failed to initialize",
@@ -85,6 +85,32 @@ func observeCodexRequiredMCPStartup(req RunRequest, result ProcessResult, sessio
 		Authorization:  "unobservable",
 		ObservedStatus: mcpObservedUnobserved,
 	}, classified)
+}
+
+// errRequiredMCPDeclaredStartupFailed marks a codex invocation the CLI refused
+// to start because a DECLARED required MCP server (not goobers-io) failed to
+// initialize. The error text and every other class are unchanged; the marker
+// only lets a reviewer session's classification (classifyReviewSessionError,
+// #5543) keep this likely configuration error out of the transient class a
+// gate's evaluator retry bound covers.
+var errRequiredMCPDeclaredStartupFailed = errors.New("declared required MCP server failed to initialize")
+
+type declaredRequiredMCPStartupError struct{ err error }
+
+func (e *declaredRequiredMCPStartupError) Error() string { return e.err.Error() }
+
+func (e *declaredRequiredMCPStartupError) Unwrap() []error {
+	return []error{e.err, errRequiredMCPDeclaredStartupFailed}
+}
+
+// declaredRequiredMCPStartupRefusal marks err when the invocation never
+// started a session and its stderr carries the CLI's required-server refusal.
+// A goobers-io refusal is classified before this is reached.
+func declaredRequiredMCPStartupRefusal(result ProcessResult, sessionStarted bool, err error) error {
+	if err == nil || sessionStarted || !bytes.Contains(result.Stderr, []byte(codexRequiredMCPStartupMarker)) {
+		return err
+	}
+	return &declaredRequiredMCPStartupError{err: err}
 }
 
 // codexSessionStarted reports whether a codex invocation got past session

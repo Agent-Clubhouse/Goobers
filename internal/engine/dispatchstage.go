@@ -818,9 +818,10 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 //   - The pod's own session failed (ResultFailure, no verdict): the failure
 //     is returned as an ERROR — the self arm's ReviewGoober does the same
 //     when Goober.Review errors — classed by the pod's own Retryable
-//     marking, so a substrate fault (kit, credential, checkout, context)
-//     retries on a fresh pod under the gate's evaluator retry bound and a
-//     harness failure fails the run. The two kit-FETCH codes are classed
+//     marking, so a substrate fault (kit, credential, checkout, context) or
+//     a reviewer session that ended without a verdict (#5543) retries on a
+//     fresh pod under the gate's evaluator retry bound, and a harness
+//     refusal fails the run. The two kit-FETCH codes are classed
 //     here regardless of that marking; see reviewKitFetchFailure (#3888).
 //   - No verdict on a successful session: refused. Nothing to route on.
 //   - An empty Decision, or a verdict the shared verdict schema rejects:

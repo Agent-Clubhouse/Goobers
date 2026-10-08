@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -432,6 +433,15 @@ func TestReviewPodKeepsTheHarnessInfrastructureClass(t *testing.T) {
 			act:  func(context.Context, harness.RunRequest) error { return nil },
 			// A nil error with no completion file is harness.ErrNoCompletion,
 			// which the executor marks invoke.InfrastructureFailure.
+			wantRetryable: true,
+		},
+		{
+			// #5543: a reviewer session that ran out its timeout never
+			// answered; the gate's declared retry bound must cover it.
+			name: "a timed-out session is an infrastructure fault the engine may retry",
+			act: func(context.Context, harness.RunRequest) error {
+				return fmt.Errorf("%w after 40m0s: copilot", harness.ErrTimeout)
+			},
 			wantRetryable: true,
 		},
 		{
