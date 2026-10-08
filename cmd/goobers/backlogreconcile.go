@@ -1702,7 +1702,7 @@ func restoreInvisibleClaimWindowEntry(
 ) (invisibleClaimEntryResult, error) {
 	itemID := claimEntryItemID(entry)
 	if entry.Verification.State == "ownership-mismatch" && !entry.Verification.ObservedAt.IsZero() {
-		leaseDuration := entry.ExpiresAt.Sub(entry.ClaimedAt)
+		leaseDuration := entry.ExpiresAt.Sub(entry.LastGrantedAt())
 		if now().Before(entry.Verification.ObservedAt.Add(leaseDuration)) {
 			pf(stderr, "notice: delaying claim-visibility retry for item %s; provider owner %s disagrees with ledger owner %s\n",
 				itemID, entry.Verification.ProviderRunID, entry.RunID)

@@ -320,6 +320,7 @@ func localExecutionTimes(entries []Entry, started, observed time.Time) []Entry {
 		entries[i].ExpiresAt = translate(entries[i].ExpiresAt)
 		entries[i].SharedDeadline = translate(entries[i].SharedDeadline)
 		entries[i].ClaimedAt = translate(entries[i].ClaimedAt)
+		entries[i].RenewedAt = translate(entries[i].RenewedAt)
 		if entries[i].ReleasedAt != nil {
 			released := translate(*entries[i].ReleasedAt)
 			entries[i].ReleasedAt = &released
