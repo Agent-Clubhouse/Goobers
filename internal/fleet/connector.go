@@ -99,7 +99,8 @@ func (c *Connector) Run(ctx context.Context) error {
 			_ = c.recordDisconnected(record.Association.RegistrationID, err)
 			return err
 		}
-		err = c.connectOnce(ctx, record)
+		connected := false
+		err = c.connectOnce(ctx, record, func() { connected = true })
 		if errors.Is(err, errCredentialExpired) {
 			_ = c.recordDisconnected(record.Association.RegistrationID, err)
 			return err
@@ -110,6 +111,9 @@ func (c *Connector) Run(ctx context.Context) error {
 		}
 		safeErr := redactCredential(err, record.Credential)
 		_ = c.recordDisconnected(record.Association.RegistrationID, safeErr)
+		if connected {
+			attempt = 0
+		}
 		delay := c.backoff(attempt)
 		attempt++
 		if err := c.wait(ctx, delay); err != nil {
@@ -130,7 +134,7 @@ func redactCredential(err error, credential string) error {
 	return errors.New(strings.ReplaceAll(err.Error(), credential, "<redacted>"))
 }
 
-func (c *Connector) connectOnce(ctx context.Context, record Record) error {
+func (c *Connector) connectOnce(ctx context.Context, record Record, onConnected func()) error {
 	key, err := ParsePrivateKey(record.PrivateKey)
 	if err != nil {
 		return err
@@ -223,6 +227,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 	}); err != nil {
 		return err
 	}
+	onConnected()
 	defer func() { _ = c.recordDisconnected(record.Association.RegistrationID, nil) }()
 
 	if c.HeartbeatOverride > 0 {

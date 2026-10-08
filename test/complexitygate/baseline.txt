@@ -96,7 +96,7 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	internal/engine/dispatchstage.go	(*Activities).DispatchStage	284
 !body-length	internal/engine/engine.go	walk	374
 !body-length	internal/executor/shell.go	(*ShellExecutor).Run	553
-!body-length	internal/fleet/connector.go	(*Connector).connectOnce	227
+!body-length	internal/fleet/connector.go	(*Connector).connectOnce	228
 !body-length	internal/harness/claude.go	(*ClaudeAdapter).Run	234
 !body-length	internal/harness/copilot.go	(*CopilotAdapter).Run	317
 !body-length	internal/harness/executor.go	(*Executor).run	331

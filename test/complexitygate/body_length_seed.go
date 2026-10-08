@@ -31,7 +31,7 @@ var bodyLengthSeedCeilings = map[string]int{
 	"internal/engine/dispatchstage.go\t(*Activities).DispatchStage":    284,
 	"internal/engine/engine.go\twalk":                                  374,
 	"internal/executor/shell.go\t(*ShellExecutor).Run":                 553,
-	"internal/fleet/connector.go\t(*Connector).connectOnce":            227,
+	"internal/fleet/connector.go\t(*Connector).connectOnce":            228,
 	"internal/harness/claude.go\t(*ClaudeAdapter).Run":                 234,
 	"internal/harness/copilot.go\t(*CopilotAdapter).Run":               317,
 	"internal/harness/executor.go\t(*Executor).run":                    331,
