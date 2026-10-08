@@ -86,6 +86,7 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 		printValidationIssues(stderr, report)
 		pf(stderr, "error: %v\n", err)
 		if errors.Is(err, instance.ErrInvalidConfig) {
+			instance.WriteInvalidConfigScope(stderr, l.ConfigDir(), report)
 			return 1
 		}
 		return 2
