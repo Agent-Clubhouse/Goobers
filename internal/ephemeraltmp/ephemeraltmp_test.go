@@ -1,6 +1,7 @@
 package ephemeraltmp
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -377,6 +378,32 @@ func TestReclaimIsIdempotent(t *testing.T) {
 	}
 	if got, err := nilScope.Apply([]string{"PATH=/bin"}); err != nil || len(got) != 1 {
 		t.Fatalf("nil Apply = %v, %v; want the env unchanged so callers need no branch", got, err)
+	}
+}
+
+// TestReclaimIsRetryableAfterRemoveFailure: a failed removal must not forget
+// the directory, or a retry is a no-op and the directory leaks.
+func TestReclaimIsRetryableAfterRemoveFailure(t *testing.T) {
+	root := t.TempDir()
+	scope, err := Establish(root)
+	if err != nil {
+		t.Fatalf("Establish: %v", err)
+	}
+	dir := scope.dir
+	t.Cleanup(func() { _ = scope.Reclaim() })
+
+	orig := removeAll
+	t.Cleanup(func() { removeAll = orig })
+	removeAll = func(string) error { return errors.New("boom") }
+	if err := scope.Reclaim(); err == nil {
+		t.Fatal("Reclaim succeeded despite removal failure")
+	}
+	removeAll = orig
+	if err := scope.Reclaim(); err != nil {
+		t.Fatalf("retry Reclaim: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("retry did not remove the directory (stat err %v)", err)
 	}
 }
 
