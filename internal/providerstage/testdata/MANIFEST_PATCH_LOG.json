@@ -83,7 +83,7 @@
     },
     {
       "version": 21,
-      "description": "Version 20 broke existing configs: every merge-review pr-select written before v0.6.0-alpha.3 declares github:pr:write and stopped validating. pr-select now accepts github:pr:write as an explicit alternative to provider:pr:write and uses whichever credential the stage declared, so configs from both before and after version 20 load. Snapshot rows gain an alternatives list; no other row changes."
+      "description": "Version 20 broke existing configs: every merge-review pr-select written before v0.6.0-alpha.3 declares github:pr:write and stopped validating. pr-select now accepts github:pr:write as an explicit alternative to provider:pr:write at validation, so configs from both before and after version 20 validate. Runtime credential selection is unchanged. Snapshot rows gain an alternatives list; no other row changes."
     }
   ]
 }

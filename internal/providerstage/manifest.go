@@ -383,8 +383,9 @@ var commands = map[string]Command{
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			// github:pr:write was the requirement through v0.6.0-alpha.2 and
-			// stays accepted so configs written against it keep loading.
-			// pr-select uses whichever of the two the stage declared.
+			// stays accepted so configs written against it keep validating.
+			// Validation only: at runtime pr-select still reads the
+			// provider:pr:write credential until the providers are split.
 			requiredAnyOf(capability.ProviderPRWrite, []capability.Capability{capability.GitHubPRWrite},
 				"the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},

@@ -599,24 +599,15 @@ type prSelectSourceRequest struct {
 // the documented ADO no-op gates unreachable rather than probing unsupported
 // comment, file, or branch operations.
 func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
-	writeCapability := prSelectWriteCapability()
 	if repo.Provider == providers.ProviderADO {
-		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(writeCapability))
+		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.ProviderPRWrite))
 		if err != nil {
 			return nil, nil, err
 		}
 		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider)}, nil, nil
 	}
 
-	// Constant arguments keep providerToken visible to the manifest drift
-	// check (provider_capability_manifest_test.go).
-	var token string
-	var err error
-	if writeCapability == capability.GitHubPRWrite {
-		token, err = providerToken(capability.GitHubPRWrite)
-	} else {
-		token, err = providerToken(capability.ProviderPRWrite)
-	}
+	token, err := providerToken(capability.ProviderPRWrite)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -630,22 +621,6 @@ func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSour
 		return nil, nil, err
 	}
 	return refCheckPRSelectSource{provider: provider}, provider, nil
-}
-
-// prSelectWriteCapability names the PR-write capability pr-select runs with.
-// The manifest accepts provider:pr:write or github:pr:write (configs written
-// before v0.6.0-alpha.3 declare the latter); validation forbids declaring
-// both, so the delivered one is used. provider:pr:write is the fallback so a
-// stage holding neither fails naming the current capability. Stale
-// run-aborted recovery trusts the identity of the credential used here, so a
-// github:pr:write token that differs from the verdict-posting identity can keep
-// such PRs excluded rather than clearing them.
-func prSelectWriteCapability() capability.Capability {
-	if os.Getenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite))) == "" &&
-		os.Getenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite))) != "" {
-		return capability.GitHubPRWrite
-	}
-	return capability.ProviderPRWrite
 }
 
 // refCheckPRSelectSource is the GitHub/Gitea source: checks are resolved at a
