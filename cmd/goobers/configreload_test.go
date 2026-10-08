@@ -991,6 +991,11 @@ func TestBuildSchedulerSetupRejectsConfigChangedDuringStartup(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "config directory changed during daemon setup") {
 		t.Fatalf("buildSchedulerSetup error = %v, want changed-during-setup refusal", err)
 	}
+	// #6715: the rejected setup must release every store it opened; a handle
+	// still held by a background loop makes this fail on Windows.
+	if err := os.Remove(layout.IntakeDB()); err != nil {
+		t.Fatalf("remove intake store after rejected setup: %v", err)
+	}
 }
 
 func waitForConfigEvent(t *testing.T, schedulerDir string, eventType journal.EventType, count int) journal.Event {
