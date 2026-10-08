@@ -196,11 +196,12 @@ func (d *Dispatcher) SweepOrphansWithReport(ctx context.Context, runs RunStates)
 // the recovery-custody gate, and past that gate only once the hold on an
 // unconfirmed writable pod has expired. It returns the disposal reason.
 func (d *Dispatcher) reapTerminalPod(ctx context.Context, pod *corev1.Pod, attempt PodAttempt) (string, error) {
-	err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt})
+	disposal := orphanDisposalAttempt(pod, attempt)
+	err := d.disposePod(ctx, pod, disposal)
 	if err == nil {
 		return orphanReapReasonOwningWorkflowTerminal, nil
 	}
-	if !errors.Is(err, ErrRecoveryUnconfirmed) {
+	if disposal.ChildExecutionDigest != "" || !errors.Is(err, ErrRecoveryUnconfirmed) {
 		return "", fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
 	stopped, ok := stageStoppedAt(pod)
@@ -303,4 +304,17 @@ func sweepSelector(instanceID string) map[string]string {
 		runnercap.LabelRole: runnercap.RoleStage,
 		LabelInstance:       instanceID,
 	}
+}
+
+// Physical pod ordinals remain authoritative for surrender after a restart.
+// Malformed isolated identity returns an unusable digest and refuses disposal.
+func orphanDisposalAttempt(pod *corev1.Pod, identity PodAttempt) Attempt {
+	a := Attempt{RunID: identity.RunID, Stage: identity.Stage, Number: identity.Attempt, ChildExecutionDigest: isolatedDigestFromPod(pod)}
+	if value := pod.Labels[LabelPodAttempt]; value != "" {
+		a.PodAttempt, _ = strconv.Atoi(value)
+		if a.PodAttempt < 1 && a.ChildExecutionDigest != "" {
+			a.ChildExecutionDigest = "invalid"
+		}
+	}
+	return a
 }
