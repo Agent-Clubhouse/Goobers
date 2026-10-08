@@ -28,6 +28,11 @@ func TestChildRuntimeBuilderUsesRetainedSourceWithoutCatalogRegistration(t *test
 		t.Fatal(err)
 	}
 	retainer := &configgeneration.Retainer{Store: store}
+	t.Cleanup(func() {
+		if err := retainer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	build := func(layout instance.Layout, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
 		if len(set.Workflows) != 1 || set.Workflows[0].Name != proposal.Workflow.Name {
 			t.Fatal("named parent catalog leaked into generated runtime")
