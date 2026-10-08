@@ -91,10 +91,20 @@ list-open-work-items and get-work-item provider paths, including ADO's WIQL,
 `test/providers/testdata/ado_contract.json`.
 
 The workflow remains `workflow_dispatch`-only and is not part of required CI.
-It reuses `ADO_ORG_URL`, `ADO_PROJECT`, and the `ADO_PAT` secret. Configure the
-`ADO_PROVIDER_FIXTURE_WORK_ITEM` repository variable with the positive numeric
-ID of a stable, open seeded work item in that project, tagged
-`goobers-fixture`. The recorded listing is filtered to that tag: the listing
+It reuses `ADO_ORG_URL`, `ADO_PROJECT`, and the `ADO_PAT` secret.
+
+The workflow owns the seeded work item's lifecycle rather than pinning its
+number. `refresh` without `-work-item` reads the oldest open work item titled
+`goobers provider fixture (do not close)` and tagged `goobers-fixture`. The
+workflow passes `-provision-fixture`, so when that item has been closed,
+removed, or never seeded, the refresh creates a new one (of `-fixture-type`,
+default `Issue`) and records it. Closed fixtures are never reopened or edited.
+Re-running the workflow is therefore the recovery for a missing fixture, and
+needs no repository change or repository variable. This needs a PAT with
+work-item write scope. Without `-provision-fixture`, a missing fixture fails
+with an error that names the flag.
+
+The recorded listing is filtered to the `goobers-fixture` tag: the listing
 returns the oldest open items first up to a limit, so in a busy project an
 unfiltered one never reaches a recently seeded item, and it would churn with
 every unrelated item anyway. The PAT is sent using ADO Basic authentication and
@@ -107,12 +117,11 @@ Review the uploaded candidate artifact, then replace the baseline with it.
 Refresh the ADO candidate locally with:
 
 ```sh
-export ADO_PAT='<read-only ADO PAT>'
+export ADO_PAT='<ADO PAT>'
 go run ./test/providerfixtures refresh \
   -provider ado \
   -organization-url 'https://dev.azure.com/organization' \
   -project project \
-  -work-item 7 \
   -output /tmp/ado-provider-candidate.json
 go run ./test/providerfixtures contract \
   -fixture /tmp/ado-provider-candidate.json
@@ -121,14 +130,21 @@ go run ./test/providerfixtures drift \
   -candidate /tmp/ado-provider-candidate.json
 ```
 
+Add `-provision-fixture` to create the fixture when no open one exists, or pass
+`-work-item N` instead to pin a specific item (a read-only PAT is enough for
+either read path).
+
 ADO normalization replaces the organization and project, identity GUIDs and
-descriptors, revisions, timestamps, and rate-limit counters while retaining
-the seeded numeric work-item ID needed for replay.
+descriptors, revisions, timestamps, and rate-limit counters. It also records
+the fixture's work-item number as `7`, so a recreated fixture with a new
+number does not read as drift.
 
 ### Provision the seeded work item
 
-`go run ./test/adolive provision` creates the seeded work item this workflow
-reads (#4602). It uses the same tool that provisions the live ADO write leg's
+`go run ./test/adolive provision` can also seed the work item this workflow
+reads (#4602), with the same title, body, and tag the workflow uses. It only
+creates the item when none with that title and tag exists in any state, so it
+does not replace a closed fixture; the workflow's `-provision-fixture` does. It uses the same tool that provisions the live ADO write leg's
 scratch repository (`ado-live-write.yml`, #5727). The tool is a dry run by
 default: it reads the project and prints what it would create. Pass `-apply` to
 create only what is missing. A second run finds everything and changes nothing.
@@ -176,7 +192,7 @@ The tool:
 
 It ends by printing the repository variables to set:
 `ADO_WRITE_REPOSITORY` for the live write leg,
-`ADO_PROVIDER_FIXTURE_WORK_ITEM` for this workflow, `ADO_LIVE_SPEC_WORK_ITEM`
+`ADO_LIVE_SPEC_WORK_ITEM`
 for the conformance leg's spec-fixture test, and, with `-ci-pipeline`,
 `ADO_LIVE_CI_FAILURE_PIPELINE` for the write leg's CI failure scenario. A
 repository admin sets them; the tool cannot. Until the last two are set, the
