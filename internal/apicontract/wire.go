@@ -396,6 +396,7 @@ func newWireFixtures() wireFixtures {
 		},
 		Operator: readservice.OperatorRunSummary{
 			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
+			DisplayTitle:      "Implement #673: Improve operator status",
 			CurrentStage:      "review",
 			Liveness:          "terminal",
 			Trajectory:        "terminal",

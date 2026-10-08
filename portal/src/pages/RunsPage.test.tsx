@@ -110,6 +110,26 @@ describe("runs history page", () => {
     expect(window.location.hash).toBe("#/runs?gaggle=core&workflow=implementation&status=active");
   });
 
+  it("renders a published display title verbatim instead of reconstructing one", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const run = fixtures.runs.runs.find((candidate) => candidate.id === "01JZ441DAEMONAPI");
+    if (!run?.operator) {
+      throw new Error("fixture run 01JZ441DAEMONAPI has no operator summary");
+    }
+    run.operator.displayTitle = "Investigate #3088: Operator status progress";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(row.querySelector(".row-title")).toHaveTextContent(
+      /^Investigate #3088: Operator status progress$/,
+    );
+    expect(row.querySelector(".row-title")).toHaveAttribute(
+      "title",
+      "Investigate #3088: Operator status progress",
+    );
+    expect(row.querySelector(".row-subtitle")).toHaveTextContent("01JZ441DAEMONAPI");
+  });
+
   it("identifies runs by their work item while retaining the run ID", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
