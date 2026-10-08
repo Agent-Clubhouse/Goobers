@@ -711,10 +711,30 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if wt.pinned {
 		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
 	}
-	// Evidence artifacts must not depend on repository-local diff drivers,
-	// presentation, hunk, or heuristic settings. Those settings can vary
-	// between otherwise identical runner environments.
-	args := []string{
+	args := evidenceDiffArgs(baseRef)
+	var out []byte
+	var err error
+	if wt.partialMirror {
+		// On a blobless mirror the merge-base side of the diff can name blobs
+		// no checkout ever materialized (a rebound PR branch's checkout brings
+		// only its own tip), so the diff spawns a promisor blob fetch: it
+		// needs the credential environment, and its failure must classify
+		// through IsTransientProvisionError like every other promisor fetch.
+		out, err = wt.manager.remoteGitOutput(ctx, wt.repoURL, wt.Path, args...)
+	} else {
+		out, err = rawGitOutput(ctx, wt.Path, nil, args...)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return out, nil
+}
+
+// evidenceDiffArgs keeps Diff's evidence bytes independent of
+// repository-local diff drivers, presentation, hunk, or heuristic settings.
+// Those settings can vary between otherwise identical runner environments.
+func evidenceDiffArgs(baseRef string) []string {
+	return []string{
 		"-c", "diff.algorithm=myers",
 		"-c", "diff.compactionHeuristic=false",
 		"-c", "diff.indentHeuristic=false",
@@ -734,25 +754,12 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 		"--inter-hunk-context=0",
 		"--no-indent-heuristic",
 		"--submodule=short",
-		"-O" + os.DevNull,
+		// Git resolves a relative order file against the repository prefix,
+		// so os.DevNull ("NUL" on Windows) is not portable (#6297). Git treats
+		// "/dev/null" as absolute everywhere and maps it on Windows.
+		"-O/dev/null",
 		baseRef + "...HEAD",
 	}
-	var out []byte
-	var err error
-	if wt.partialMirror {
-		// On a blobless mirror the merge-base side of the diff can name blobs
-		// no checkout ever materialized (a rebound PR branch's checkout brings
-		// only its own tip), so the diff spawns a promisor blob fetch: it
-		// needs the credential environment, and its failure must classify
-		// through IsTransientProvisionError like every other promisor fetch.
-		out, err = wt.manager.remoteGitOutput(ctx, wt.repoURL, wt.Path, args...)
-	} else {
-		out, err = rawGitOutput(ctx, wt.Path, nil, args...)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
-	}
-	return out, nil
 }
 
 // HasCommitsAheadOf reports whether HEAD contains commits not reachable from

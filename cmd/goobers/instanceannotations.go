@@ -8,7 +8,7 @@ func annotationRepositories(records map[string]instanceannotations.ItemRepositor
 	}
 	converted := make(map[string]recordedItemRepo, len(records))
 	for id, record := range records {
-		converted[id] = recordedItemRepo{repo: record.Repository, kind: record.Kind}
+		converted[id] = recordedItemRepo{repo: record.Repository, kind: record.Kind, purpose: record.Purpose}
 	}
 	return converted
 }
