@@ -336,6 +336,16 @@ const (
 	// check is the complement — pattern-shaped, so intentionally incomplete
 	// and never an error on its own evidence.
 	WarningSecretShapedInput WarningCode = "SEC001"
+	// WarningSiblingOverlapUnsequenced identifies a gate that routes a
+	// detected sibling overlap (hasSiblingOverlap=true) to run termination
+	// without any path through lander election, verdict publication, or
+	// another stage that durably records sequencing or remediation state
+	// (#5592). Lazy remediation never counts green, unlabeled, uncrowned
+	// overlapping PRs as demand, so such a graph reselects and terminates
+	// on the same PR forever. A warning rather than an error because the
+	// config still loads and runs; --strict promotes it, since the shape is
+	// a guaranteed livelock rather than a compatibility notice.
+	WarningSiblingOverlapUnsequenced WarningCode = "WF028"
 	// WF024 was the "gate placement not yet honoured" warning that stood
 	// between the DSL half of decision 001 (#3848) and its engine/pod half
 	// (rulings 7–8). It retired with that half and the code is not reused.
@@ -2537,6 +2547,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	ix.addImplicitWritableWorkspaceWarnings(r, def, file, w)
+	addSiblingOverlapSequencingWarnings(r, def, file, w)
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
 	}
@@ -2947,6 +2958,12 @@ func addLifecycleLabelContractIssue(r *Report, file string, w apiv1.Workflow, ta
 func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
 	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def, ix.gooberSpecs()) {
 		r.addWarning(WarningImplicitWritableWorkspace, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
+	}
+}
+
+func addSiblingOverlapSequencingWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	for _, msg := range wf.CheckSiblingOverlapSequencing(def) {
+		r.addWarning(WarningSiblingOverlapUnsequenced, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 }
 

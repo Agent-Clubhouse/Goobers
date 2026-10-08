@@ -62,7 +62,11 @@ func (p *Policy) applyCircuitBreaker(ctx context.Context, runID, stage, runURL s
 			errs = append(errs, fmt.Errorf("persist failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
 			continue
 		}
-		if err := gate.UpsertFailureComment(ctx, p.Poster, repoRef, itemID, count, stage, runID, runURL); err != nil {
+		var applying []string
+		if count >= FailureStreakThreshold {
+			applying = []string{providers.LabelNeedsHuman}
+		}
+		if err := gate.UpsertFailureComment(ctx, p.Poster, repoRef, itemID, count, stage, runID, runURL, applying); err != nil {
 			errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 
