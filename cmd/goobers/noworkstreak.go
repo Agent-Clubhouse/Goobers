@@ -103,6 +103,13 @@ func settleNoWorkStreak(
 //
 // #5379's own loop is a single-item implementation run, so the narrow rule
 // covers the reported defect exactly.
+//
+// A curation claim is never counted either (#6293). curate-resweep re-selects
+// items that are already goobers:ready precisely to confirm they still are, so
+// "no mutation needed" is its expected steady state; charging that to the
+// item would strip readiness from correctly ready, actionable work. The
+// purpose comes from the workflow's own declared selection (`curation:
+// "true"` or `--resweep`), recorded with the claim, not from its name.
 func applyNoWorkStreak(
 	ctx context.Context,
 	poster gate.Commenter,
@@ -115,7 +122,7 @@ func applyNoWorkStreak(
 	if err != nil {
 		return err
 	}
-	if len(items) != 1 {
+	if len(items) != 1 || items[0].Purpose == itemPurposeCuration {
 		return nil
 	}
 	repoRef, itemID := items[0].Repo, items[0].ItemID

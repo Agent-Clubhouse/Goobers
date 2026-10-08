@@ -945,6 +945,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		leaseDuration:    leaseDuration,
 		maxItems:         maxItems,
 		gaggle:           providerGaggle(),
+		purpose:          claimPurpose(curationRun),
 	}
 	claimResultCommitted := false
 	if opts.beforeClaimTransaction != nil {
@@ -1213,6 +1214,7 @@ type backlogClaimSession struct {
 	runID               string
 	workflow            string
 	gaggle              string
+	purpose             string
 	leaseDuration       time.Duration
 	maxItems            int
 	nextClaimIndex      int
@@ -1489,7 +1491,7 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 	// claim — terminal circuit-breaker/notification bookkeeping later reads
 	// this back instead of reconstructing ownership from the gaggle's
 	// static project or cfg.Repos[0].
-	if recordErr := recordItemRepository(session.annotations, session.runID, item.ID, itemKindIssue, session.env.issueRepo()); recordErr != nil {
+	if recordErr := recordItemRepositoryForPurpose(session.annotations, session.runID, item.ID, itemKindIssue, session.purpose, session.env.issueRepo()); recordErr != nil {
 		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
 			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
 		}

@@ -67,35 +67,57 @@ var ErrItemRepositoryUnknown = errors.New("goobers: no recorded repository ident
 // (provider, owner, name) at that point, since selection is exactly where a
 // real one was resolved to make the provider call that found the item.
 func recordItemRepository(annotations stageAnnotator, runID, itemID, kind string, repo providers.RepositoryRef) error {
+	return recordItemRepositoryForPurpose(annotations, runID, itemID, kind, "", repo)
+}
+
+// itemPurposeCuration marks a claim taken by a curation selection
+// (`backlog-query --claim` with `curation: "true"`, or `--resweep`). Such a
+// claim selects the item for re-evaluation, not for implementation, so a
+// no-work verdict on it is the expected steady state rather than evidence the
+// item is unactionable (#6293).
+const itemPurposeCuration = "curation"
+
+// claimPurpose is the selection purpose a backlog-query claim records.
+func claimPurpose(curationRun bool) string {
+	if curationRun {
+		return itemPurposeCuration
+	}
+	return ""
+}
+
+// recordItemRepositoryForPurpose is recordItemRepository with the claim's
+// declared selection purpose; "" is an ordinary work claim.
+func recordItemRepositoryForPurpose(annotations stageAnnotator, runID, itemID, kind, purpose string, repo providers.RepositoryRef) error {
 	if repo.Provider == "" || repo.Owner == "" || repo.Name == "" {
 		return fmt.Errorf(
 			"record repository identity for %s: incomplete repository (provider=%q owner=%q name=%q)",
 			itemID, repo.Provider, repo.Owner, repo.Name,
 		)
 	}
-	return annotations.Append(journal.Event{
-		Type:  journal.EventRunnerAnnotation,
-		RunID: runID,
-		Runner: map[string]any{
-			"annotation":    itemRepoAnnotation,
-			"key":           itemRepoKey(runID, itemID),
-			"itemId":        itemID,
-			"kind":          kind,
-			"provider":      string(repo.Provider),
-			"owner":         repo.Owner,
-			"project":       repo.Project,
-			"name":          repo.Name,
-			"repositoryKey": repo.CanonicalKey(),
-		},
-	})
+	runner := map[string]any{
+		"annotation":    itemRepoAnnotation,
+		"key":           itemRepoKey(runID, itemID),
+		"itemId":        itemID,
+		"kind":          kind,
+		"provider":      string(repo.Provider),
+		"owner":         repo.Owner,
+		"project":       repo.Project,
+		"name":          repo.Name,
+		"repositoryKey": repo.CanonicalKey(),
+	}
+	if purpose != "" {
+		runner["purpose"] = purpose
+	}
+	return annotations.Append(journal.Event{Type: journal.EventRunnerAnnotation, RunID: runID, Runner: runner})
 }
 
-// claimedItem pairs one claimed item ID with the typed repository and kind
-// recorded for it at selection time.
+// claimedItem pairs one claimed item ID with the typed repository, kind and
+// selection purpose recorded for it at selection time.
 type claimedItem struct {
-	ItemID string
-	Kind   string
-	Repo   providers.RepositoryRef
+	ItemID  string
+	Kind    string
+	Purpose string
+	Repo    providers.RepositoryRef
 }
 
 // claimedItemsForRun resolves every item runID's claim ledger entries name,
@@ -126,14 +148,15 @@ func claimedItemsForRun(l instance.Layout, runID string) ([]claimedItem, error) 
 		if !ok {
 			return nil, fmt.Errorf("%w: run %s item %s", ErrItemRepositoryUnknown, runID, id)
 		}
-		items = append(items, claimedItem{ItemID: id, Kind: entry.kind, Repo: entry.repo})
+		items = append(items, claimedItem{ItemID: id, Kind: entry.kind, Purpose: entry.purpose, Repo: entry.repo})
 	}
 	return items, nil
 }
 
 type recordedItemRepo struct {
-	repo providers.RepositoryRef
-	kind string
+	repo    providers.RepositoryRef
+	kind    string
+	purpose string
 }
 
 // loadItemRepositories reads the incremental instance-annotation fold for
