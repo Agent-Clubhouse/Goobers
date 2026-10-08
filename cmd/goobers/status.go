@@ -1821,6 +1821,9 @@ func renderStatusReview(stdout io.Writer, review *readservice.OperatorReview) {
 	} else if review.LegacyFailAmbiguous || review.Verdict == string(apiv1.VerdictFail) {
 		pf(stdout, "  review reason: %s\n", legacyFailAmbiguous)
 	}
+	if review.Synthesized {
+		pln(stdout, "  review synthesized: runner-generated, reviewer did not run (findings absent)")
+	}
 }
 
 func truncateStatusCell(value string, width int) string {

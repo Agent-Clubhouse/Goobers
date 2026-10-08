@@ -3,7 +3,8 @@
 Reviewer decisions distinguish changes to make, waiting for siblings, terminal
 rejection, and a mechanical stop. The original rationale and findings remain
 part of the verdict artifact and published provider comment; operator run
-summaries expose `reasonCode`, `findings`, and `legacyFailAmbiguous`.
+summaries expose `reasonCode`, `findings`, `synthesized`, and
+`legacyFailAmbiguous`.
 
 | Decision | Meaning | Reason codes |
 |---|---|---|
@@ -15,6 +16,17 @@ summaries expose `reasonCode`, `findings`, and `legacyFailAmbiguous`.
 
 Typed rejection, deferral, and escalation require a non-empty rationale.
 Deferrals and mechanical stops cannot claim `elected: true`.
+
+## Runner-synthesized verdicts
+
+When the subject stage commits an empty diff, or a repass reproduces the diff
+the reviewer already judged (unchanged repass), the runner does not invoke the
+reviewer. It writes a verdict with the usual shape plus `synthesized: true`,
+and the `findings` field is absent rather than an empty list. Absent findings on
+a synthesized verdict mean that no review ran, not that the review was clean.
+Reviewer-produced verdicts never carry `synthesized`; the runner clears the
+field if a reviewer sets it. `goobers trace --verdicts`, `goobers status`, and
+operator run summaries surface the marker.
 
 ## Workflow opt-in
 
