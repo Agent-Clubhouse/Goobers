@@ -198,6 +198,20 @@ func (x *azureReplayIndex) release(ctx context.Context) error {
 	if !last {
 		return nil
 	}
+	// An initialized index closes synchronously even past the caller's
+	// deadline; select would otherwise pick randomly and leave the manifest
+	// open after shutdown returns (#6684). A successful first attempt is
+	// followed immediately by readiness.
+	select {
+	case <-x.ready:
+		return x.closeDatabases()
+	case <-x.firstAttempt:
+		if x.firstErr == nil {
+			<-x.ready
+			return x.closeDatabases()
+		}
+	default:
+	}
 	select {
 	case <-x.ready:
 		return x.closeDatabases()
