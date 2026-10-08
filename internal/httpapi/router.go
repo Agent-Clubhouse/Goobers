@@ -601,7 +601,7 @@ type Router struct {
 
 // ensureAdmission creates the controller on first use.
 func (r *Router) ensureAdmission() {
-	r.admissionOnce.Do(func() { r.admission = newAdmissionController() })
+	r.admissionOnce.Do(func() { r.admission = newAdmissionController(classLimits) })
 }
 
 type handlerConfig struct {
