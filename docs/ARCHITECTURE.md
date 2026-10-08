@@ -519,8 +519,13 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   every scalar work-item field by its reference name plus `System.Id` and
   `System.Rev`. Gitea projects a narrower fixed set: `id`, `number`, `state`,
   `comments`, `user.login`, `assignee.login`, `created_at`, `updated_at`, and
-  `milestone.title` (`providers/gitea_issues.go:1139-1160`). Gaggle and
-  workflow-trigger field predicates are ANDed.
+  `milestone.title` (`providers/gitea_issues.go:1139-1160`). All three also
+  project a normalized `title` (ADO keeps `System.Title` too), and string fields
+  accept literal-argument `contains`/`startsWith`/`endsWith` (case-sensitive)
+  and their `IgnoreCase` variants (#5810). `pr-select`'s optional
+  `titlePredicate` applies the same grammar, restricted to `fields["title"]`, to
+  pull request candidates on every provider; omitted, it changes nothing.
+  Gaggle and workflow-trigger field predicates are ANDed.
   Optional or unsupported fields are errors rather than false matches.
   `backlog-query` also accepts `fieldOrder` as comma-separated
   `field[:asc|desc]` terms, applied across the complete candidate set after

@@ -75,6 +75,13 @@ func TestPredicateRejectsUnsupportedCEL(t *testing.T) {
 		`fields["priority"] > fields["other"]`,
 		`2 < fields["priority"]`,
 		`true`,
+		`fields["title"].matches("^wid")`,
+		`fields["title"].size() > 3`,
+		`fields["title"].contains(fields["other"])`,
+		`fields["title"].contains(1)`,
+		`"widget".contains(fields["title"])`,
+		`fields["title"].lowerAscii().contains("widget")`,
+		`fields["title"].containsIgnoreCase()`,
 	} {
 		t.Run(expression, func(t *testing.T) {
 			_, err := Compile(expression)
@@ -82,6 +89,70 @@ func TestPredicateRejectsUnsupportedCEL(t *testing.T) {
 				t.Fatalf("Compile(%q) succeeded, want validation error", expression)
 			}
 		})
+	}
+}
+
+func TestPredicateStringOperations(t *testing.T) {
+	for _, tt := range []struct {
+		expression string
+		title      string
+		want       bool
+	}{
+		{`fields["title"] == "Fix widget"`, "Fix widget", true},
+		{`fields["title"] == "Fix widget"`, "fix widget", false},
+		{`fields["title"].contains("widget")`, "Fix the widget crash", true},
+		{`fields["title"].contains("widget")`, "Fix the Widget crash", false},
+		{`fields["title"].containsIgnoreCase("widget")`, "Fix the WIDGET crash", true},
+		{`fields["title"].containsIgnoreCase("widget")`, "Fix the gadget crash", false},
+		{`fields["title"].startsWith("[ui]")`, "[ui] Align header", true},
+		{`fields["title"].startsWith("[ui]")`, "[UI] Align header", false},
+		{`fields["title"].startsWith("[ui]")`, "Align [ui] header", false},
+		{`fields["title"].startsWithIgnoreCase("[ui]")`, "[UI] Align header", true},
+		{`fields["title"].endsWith("(v2)")`, "Ship release (v2)", true},
+		{`fields["title"].endsWithIgnoreCase("(V2)")`, "Ship release (v2)", true},
+		{`fields["title"].startsWith("Release:") && !fields["title"].contains("draft")`, "Release: 1.2", true},
+		{`fields["title"].startsWith("Release:") && !fields["title"].contains("draft")`, "Release: draft notes", false},
+		{`fields["title"].contains("")`, "", true},
+	} {
+		t.Run(tt.expression+"/"+tt.title, func(t *testing.T) {
+			predicate, err := Compile(tt.expression)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			got, err := predicate.Matches(Fields{"title": tt.title})
+			if err != nil {
+				t.Fatalf("Matches: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Matches(%q) = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPredicateStringOperationRequiresAvailableStringField(t *testing.T) {
+	predicate, err := Compile(`fields["state"] == "closed" || fields["title"].contains("widget")`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if _, err := predicate.Matches(Fields{"state": "closed"}); err == nil ||
+		!strings.Contains(err.Error(), `field "title" is unavailable`) {
+		t.Fatalf("missing title error = %v, want unavailable-field error", err)
+	}
+	if _, err := predicate.Matches(Fields{"state": "open", "title": int64(7)}); err == nil ||
+		!strings.Contains(err.Error(), "string operation requires a string value") {
+		t.Fatalf("non-string title error = %v, want string-operand error", err)
+	}
+	conjunction, err := CompileConjunction(`fields["state"] == "open"`, `fields["title"].startsWith("x")`)
+	if err != nil {
+		t.Fatalf("CompileConjunction: %v", err)
+	}
+	if _, err := conjunction.Matches(Fields{"state": "open", "title": true}); err == nil ||
+		!strings.Contains(err.Error(), "string operation requires a string value") {
+		t.Fatalf("conjunction non-string title error = %v, want string-operand error", err)
+	}
+	if got := conjunction.ReferencedFields(); strings.Join(got, ",") != "state,title" {
+		t.Fatalf("ReferencedFields = %v, want [state title]", got)
 	}
 }
 

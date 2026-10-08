@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/operators"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -21,13 +23,57 @@ type Fields map[string]any
 // Predicate is a compiled boolean expression over provider-native fields.
 type Predicate struct {
 	referenced map[string]struct{}
-	programs   []cel.Program
+	// stringOperands are referenced fields used as the receiver of a string
+	// operation; they must hold string values at evaluation time.
+	stringOperands map[string]struct{}
+	programs       []cel.Program
+}
+
+// String operations a predicate may apply to a field with a string constant
+// argument. contains, startsWith, and endsWith keep CEL's case-sensitive
+// semantics; the IgnoreCase variants compare Unicode lower-cased operands.
+const (
+	opContains             = "contains"
+	opStartsWith           = "startsWith"
+	opEndsWith             = "endsWith"
+	opContainsIgnoreCase   = "containsIgnoreCase"
+	opStartsWithIgnoreCase = "startsWithIgnoreCase"
+	opEndsWithIgnoreCase   = "endsWithIgnoreCase"
+)
+
+var stringOperations = map[string]struct{}{
+	opContains: {}, opStartsWith: {}, opEndsWith: {},
+	opContainsIgnoreCase: {}, opStartsWithIgnoreCase: {}, opEndsWithIgnoreCase: {},
+}
+
+func newPredicate() *Predicate {
+	return &Predicate{referenced: map[string]struct{}{}, stringOperands: map[string]struct{}{}}
+}
+
+func ignoreCaseFunction(name string, match func(string, string) bool) cel.EnvOption {
+	return cel.Function(name, cel.MemberOverload(
+		"string_"+name+"_string",
+		[]*cel.Type{cel.StringType, cel.StringType}, cel.BoolType,
+		cel.BinaryBinding(func(lhs, rhs ref.Val) ref.Val {
+			value, ok := lhs.Value().(string)
+			if !ok {
+				return types.MaybeNoSuchOverloadErr(lhs)
+			}
+			operand, ok := rhs.Value().(string)
+			if !ok {
+				return types.MaybeNoSuchOverloadErr(rhs)
+			}
+			return types.Bool(match(strings.ToLower(value), strings.ToLower(operand)))
+		}),
+	))
 }
 
 // Compile validates and compiles expression. Field access is limited to
-// fields["name"] comparisons with scalar constants, joined by &&, ||, and !.
+// fields["name"] comparisons with scalar constants and fields["name"] string
+// operations (contains, startsWith, endsWith, and their IgnoreCase variants)
+// with string constants, joined by &&, ||, and !.
 func Compile(expression string) (*Predicate, error) {
-	predicate := &Predicate{referenced: map[string]struct{}{}}
+	predicate := newPredicate()
 	if expression == "" {
 		return predicate, nil
 	}
@@ -36,7 +82,12 @@ func Compile(expression string) (*Predicate, error) {
 		return nil, fmt.Errorf("CEL expression must not be blank")
 	}
 
-	env, err := cel.NewEnv(cel.Variable("fields", cel.MapType(cel.StringType, cel.DynType)))
+	env, err := cel.NewEnv(
+		cel.Variable("fields", cel.MapType(cel.StringType, cel.DynType)),
+		ignoreCaseFunction(opContainsIgnoreCase, strings.Contains),
+		ignoreCaseFunction(opStartsWithIgnoreCase, strings.HasPrefix),
+		ignoreCaseFunction(opEndsWithIgnoreCase, strings.HasSuffix),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create CEL environment: %w", err)
 	}
@@ -51,7 +102,7 @@ func Compile(expression string) (*Predicate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("convert checked CEL expression: %w", err)
 	}
-	if err := validateExpression(checked.GetExpr(), predicate.referenced); err != nil {
+	if err := predicate.validateExpression(checked.GetExpr()); err != nil {
 		return nil, err
 	}
 	program, err := env.Program(ast)
@@ -65,7 +116,7 @@ func Compile(expression string) (*Predicate, error) {
 // CompileConjunction compiles independently declared predicate levels into one
 // predicate that requires every configured expression to match.
 func CompileConjunction(expressions ...string) (*Predicate, error) {
-	combined := &Predicate{referenced: map[string]struct{}{}}
+	combined := newPredicate()
 	for _, expression := range expressions {
 		predicate, err := Compile(expression)
 		if err != nil {
@@ -74,9 +125,33 @@ func CompileConjunction(expressions ...string) (*Predicate, error) {
 		for name := range predicate.referenced {
 			combined.referenced[name] = struct{}{}
 		}
+		for name := range predicate.stringOperands {
+			combined.stringOperands[name] = struct{}{}
+		}
 		combined.programs = append(combined.programs, predicate.programs...)
 	}
 	return combined, nil
+}
+
+// TitleField is the provider-neutral key under which backlog items and pull
+// requests project their title.
+const TitleField = "title"
+
+// CompileTitlePredicate compiles a pull-request title predicate: the same
+// grammar as Compile, restricted to fields["title"] because that is the only
+// field a pull request projects for matching. An empty expression yields a
+// zero predicate that matches everything.
+func CompileTitlePredicate(expression string) (*Predicate, error) {
+	predicate, err := Compile(expression)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range predicate.ReferencedFields() {
+		if name != TitleField {
+			return nil, fmt.Errorf("title predicate may only reference fields[%q], not fields[%q]", TitleField, name)
+		}
+	}
+	return predicate, nil
 }
 
 // IsZero reports whether p represents no actual filter — a nil pointer, or
@@ -90,24 +165,37 @@ func (p *Predicate) IsZero() bool {
 	return p == nil || len(p.programs) == 0
 }
 
-// Matches evaluates the predicate. Every referenced field must be available
-// and contain a supported scalar, even when CEL short-circuiting would skip it.
-func (p *Predicate) Matches(fields Fields) (bool, error) {
-	if p == nil || len(p.programs) == 0 {
-		return true, nil
+// ReferencedFields returns the sorted field names the predicate reads.
+func (p *Predicate) ReferencedFields() []string {
+	if p == nil {
+		return nil
 	}
 	names := make([]string, 0, len(p.referenced))
 	for name := range p.referenced {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	for _, name := range names {
+	return names
+}
+
+// Matches evaluates the predicate. Every referenced field must be available
+// and contain a supported scalar, even when CEL short-circuiting would skip it;
+// a field used by a string operation must hold a string.
+func (p *Predicate) Matches(fields Fields) (bool, error) {
+	if p == nil || len(p.programs) == 0 {
+		return true, nil
+	}
+	for _, name := range p.ReferencedFields() {
 		value, ok := fields[name]
 		if !ok || value == nil {
 			return false, fmt.Errorf("field %q is unavailable", name)
 		}
-		if _, err := scalarKind(value); err != nil {
+		kind, err := scalarKind(value)
+		if err != nil {
 			return false, fmt.Errorf("field %q: %w", name, err)
+		}
+		if _, ok := p.stringOperands[name]; ok && kind != "string" {
+			return false, fmt.Errorf("field %q: string operation requires a string value, got %s", name, kind)
 		}
 	}
 	for _, program := range p.programs {
@@ -126,10 +214,13 @@ func (p *Predicate) Matches(fields Fields) (bool, error) {
 	return true, nil
 }
 
-func validateExpression(expr *exprpb.Expr, referenced map[string]struct{}) error {
+func (p *Predicate) validateExpression(expr *exprpb.Expr) error {
 	call := expr.GetCallExpr()
-	if call == nil || call.Target != nil {
+	if call == nil {
 		return unsupportedExpressionError()
+	}
+	if call.Target != nil {
+		return p.validateStringOperation(call)
 	}
 	switch call.Function {
 	case operators.LogicalAnd, operators.LogicalOr:
@@ -137,7 +228,7 @@ func validateExpression(expr *exprpb.Expr, referenced map[string]struct{}) error
 			return unsupportedExpressionError()
 		}
 		for _, arg := range call.Args {
-			if err := validateExpression(arg, referenced); err != nil {
+			if err := p.validateExpression(arg); err != nil {
 				return err
 			}
 		}
@@ -146,7 +237,7 @@ func validateExpression(expr *exprpb.Expr, referenced map[string]struct{}) error
 		if len(call.Args) != 1 {
 			return unsupportedExpressionError()
 		}
-		return validateExpression(call.Args[0], referenced)
+		return p.validateExpression(call.Args[0])
 	case operators.Equals, operators.NotEquals,
 		operators.Less, operators.LessEquals, operators.Greater, operators.GreaterEquals:
 		if len(call.Args) != 2 {
@@ -159,11 +250,33 @@ func validateExpression(expr *exprpb.Expr, referenced map[string]struct{}) error
 		if !fieldOnLeft && call.Function != operators.Equals && call.Function != operators.NotEquals {
 			return unsupportedExpressionError()
 		}
-		referenced[name] = struct{}{}
+		p.referenced[name] = struct{}{}
 		return nil
 	default:
 		return unsupportedExpressionError()
 	}
+}
+
+// validateStringOperation admits exactly fields["name"].op("constant") for the
+// allowed string operations.
+func (p *Predicate) validateStringOperation(call *exprpb.Expr_Call) error {
+	if _, ok := stringOperations[call.Function]; !ok || len(call.Args) != 1 {
+		return unsupportedExpressionError()
+	}
+	name, ok := fieldAccess(call.Target)
+	if !ok {
+		return unsupportedExpressionError()
+	}
+	constant := call.Args[0].GetConstExpr()
+	if constant == nil {
+		return unsupportedExpressionError()
+	}
+	if _, ok := constant.ConstantKind.(*exprpb.Constant_StringValue); !ok {
+		return unsupportedExpressionError()
+	}
+	p.referenced[name] = struct{}{}
+	p.stringOperands[name] = struct{}{}
+	return nil
 }
 
 func fieldComparison(left, right *exprpb.Expr) (string, bool, bool) {
@@ -211,7 +324,7 @@ func scalarConstant(expr *exprpb.Expr) bool {
 }
 
 func unsupportedExpressionError() error {
-	return fmt.Errorf(`unsupported CEL expression: compare fields["name"] with string, number, or bool constants using ==, !=, <, <=, >, or >=, combined with the &&, ||, and ! operators`)
+	return fmt.Errorf(`unsupported CEL expression: compare fields["name"] with string, number, or bool constants using ==, !=, <, <=, >, or >=, or match it against a string constant with contains, startsWith, endsWith, containsIgnoreCase, startsWithIgnoreCase, or endsWithIgnoreCase, combined with the &&, ||, and ! operators`)
 }
 
 type direction bool

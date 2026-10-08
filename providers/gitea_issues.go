@@ -798,6 +798,7 @@ func giteaIssueFields(issue giteaIssue) fieldpredicate.Fields {
 	fields := fieldpredicate.Fields{
 		"id":       issue.ID,
 		"number":   int64(issue.Number),
+		"title":    issue.Title,
 		"state":    issue.State,
 		"comments": int64(issue.Comments),
 	}
