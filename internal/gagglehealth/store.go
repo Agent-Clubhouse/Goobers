@@ -32,8 +32,9 @@ type Store struct {
 	now              func() time.Time
 	lock             *platformlock.Handle
 
-	mu     sync.Mutex
-	events []apiv1.GaggleHealthEvent
+	mu      sync.Mutex
+	events  []apiv1.GaggleHealthEvent
+	observe func(apiv1.GaggleHealthEvent)
 }
 
 // OpenStore opens an instance health store, validates its journal, and rebuilds
@@ -93,15 +94,53 @@ func (s *Store) Append(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapsho
 		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: nil store")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.lock == nil {
+		s.mu.Unlock()
 		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: store is closed")
 	}
-
-	wantSequence := uint64(1)
-	if len(s.events) != 0 {
-		wantSequence = s.events[len(s.events)-1].Sequence + 1
+	snapshot, err := s.appendLocked(event)
+	observe := s.observe
+	s.mu.Unlock()
+	if err == nil && observe != nil {
+		observe(event)
 	}
+	return snapshot, err
+}
+
+// AppendNext assigns the next journal sequence and appends the event while
+// holding the store lock.
+func (s *Store) AppendNext(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapshot, error) {
+	if s == nil {
+		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: nil store")
+	}
+	s.mu.Lock()
+	if s.lock == nil {
+		s.mu.Unlock()
+		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: store is closed")
+	}
+	event.Sequence = uint64(len(s.events) + 1)
+	snapshot, err := s.appendLocked(event)
+	observe := s.observe
+	s.mu.Unlock()
+	if err == nil && observe != nil {
+		observe(event)
+	}
+	return snapshot, err
+}
+
+// SetAppendObserver installs the daemon notification seam for durable health
+// transitions. The observer runs after the journal and projection commit.
+func (s *Store) SetAppendObserver(observer func(apiv1.GaggleHealthEvent)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.observe = observer
+	s.mu.Unlock()
+}
+
+func (s *Store) appendLocked(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapshot, error) {
+	wantSequence := uint64(len(s.events) + 1)
 	if event.Sequence != wantSequence {
 		return apiv1.GaggleHealthSnapshot{}, fmt.Errorf("gagglehealth: event sequence %d, want %d", event.Sequence, wantSequence)
 	}

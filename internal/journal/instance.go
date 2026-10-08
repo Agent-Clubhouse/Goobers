@@ -39,6 +39,7 @@ type InstanceLog struct {
 
 	droppedAppends atomic.Uint64
 	dropObserver   InstanceAppendDropObserver
+	appendObserver func(Event)
 }
 
 // InstanceLogStats are process-lifetime health counters for one open instance
@@ -165,7 +166,21 @@ func (l *InstanceLog) Append(ev Event) error {
 		}
 	}
 	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev, l.commits)
+	if err == nil && l.appendObserver != nil {
+		l.appendObserver(ev)
+	}
 	return err
+}
+
+// SetAppendObserver installs a daemon-local observer invoked synchronously after
+// each durable append. The observer must not block. Passing nil removes it.
+func (l *InstanceLog) SetAppendObserver(observer func(Event)) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.appendObserver = observer
+	l.mu.Unlock()
 }
 
 // AppendBestEffort is the single intentional discard path for instance-log

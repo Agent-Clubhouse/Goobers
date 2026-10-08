@@ -14,6 +14,7 @@ export const apiRoutes = {
   "gaggles": { method: "GET", path: "/api/v1/gaggles", actionClass: "read-only-navigation" },
   "gaggleGoobers": { method: "GET", path: "/api/v1/gaggles/{gaggle}/goobers", actionClass: "read-only-navigation" },
   "gaggleWorkflows": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows", actionClass: "read-only-navigation" },
+  "gaggleHealth": { method: "GET", path: "/api/v1/gaggles/{gaggle}/health", actionClass: "read-only-navigation" },
   "gaggleConnections": { method: "GET", path: "/api/v1/gaggles/{gaggle}/connections", actionClass: "read-only-navigation" },
   "gaggleBundleExport": { method: "GET", path: "/api/v1/gaggles/{gaggle}/bundle", actionClass: "read-only-navigation" },
   "gaggleBundleImport": { method: "POST", path: "/api/v1/gaggles/import", actionClass: "maintenance" },

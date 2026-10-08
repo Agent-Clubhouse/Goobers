@@ -282,8 +282,8 @@ Rules:
   `scheduler/events.jsonl` in the instance root (§6), under the same envelope and
   append-only rules — so the portal, telemetry, and Tutor read scheduling history
   the same way they read runs.
-- **Gaggle health is an instance projection** (contract defined by #4424; the
-  daemon controller that produces these transitions is #4425): versioned health transitions
+- **Gaggle health is an instance projection** (`internal/gagglehealth` owns the
+  daemon controller and durable store): versioned health transitions
   (`evaluation`, finding open/update/resolve, repair start/finish, and escalation)
   append beneath `health/events.jsonl` in the instance root. Each event carries a
   gaggle partition key and a complete bounded, scrubbed finding snapshot. The

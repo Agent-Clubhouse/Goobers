@@ -103,6 +103,7 @@ type configReloader struct {
 	// digests publishes each applied digest to the config-digest plane, so a
 	// worker polling the daemon sees the tree actually in force (#4153).
 	digests         *configDigestPublisher
+	gaggleHealth    *daemonGaggleHealth
 	lastDigestError string
 	// lastRejectionMessage is set by reject() during the most recent poll
 	// call and cleared at the start of each pollOnce (#459) — it lets an
@@ -367,6 +368,9 @@ func (r *configReloader) poll(now time.Time) error {
 	if r.setup.MergedPRCostReconciler != nil {
 		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
 	}
+	if err := r.replaceGaggleHealth(definitions.Set); err != nil {
+		return err
+	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		r.observedDigest = r.appliedDigest
@@ -402,6 +406,13 @@ func (r *configReloader) poll(now time.Time) error {
 		log.Printf("config reload: record advisory warnings: %v", err)
 	}
 	return nil
+}
+
+func (r *configReloader) replaceGaggleHealth(definitions *instance.ConfigSet) error {
+	if r.gaggleHealth == nil {
+		return nil
+	}
+	return r.gaggleHealth.Replace(definitions)
 }
 
 func (r *configReloader) publishReloadStatus(now time.Time) {

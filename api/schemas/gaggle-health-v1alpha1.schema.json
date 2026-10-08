@@ -8,9 +8,23 @@
   "required": ["schemaVersion", "health"],
   "properties": {
     "schemaVersion": { "const": "goobers.dev/gaggle-health/v1alpha1", "description": "Wire-contract version." },
-    "health": { "$ref": "#/$defs/snapshot", "description": "Current projection and bounded episode history." }
+    "health": { "$ref": "#/$defs/snapshot", "description": "Current projection and bounded episode history." },
+    "controller": { "$ref": "#/$defs/controller", "description": "Daemon evaluation freshness and bounded error state." }
   },
   "$defs": {
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["freshAt", "nextEvaluation", "activeFindingCount", "evaluating"],
+      "properties": {
+        "freshAt": { "type": "string", "format": "date-time", "description": "Time the controller status was last refreshed." },
+        "lastSuccessfulEvaluation": { "type": "string", "format": "date-time", "description": "Time the most recent successful evaluation completed." },
+        "lastError": { "type": "string", "maxLength": 512, "description": "Bounded error from the most recent unsuccessful evaluation." },
+        "nextEvaluation": { "type": "string", "format": "date-time", "description": "Scheduled time of the next periodic evaluation." },
+        "activeFindingCount": { "type": "integer", "minimum": 0, "description": "Number of unresolved findings in the current projection." },
+        "evaluating": { "type": "boolean", "description": "Whether an evaluation is currently in progress." }
+      }
+    },
     "state": {
       "type": "string",
       "enum": ["healthy", "degraded", "stalled", "inconsistent", "recovering", "operator-required"],
@@ -74,7 +88,7 @@
       "required": ["schemaVersion", "code", "severity", "contribution", "identity", "firstObserved", "lastObserved", "observationCount", "episodeKey", "evidence", "summary", "confidence", "evidenceAssessment", "repair"],
       "properties": {
         "schemaVersion": { "const": "goobers.dev/gaggle-health/v1alpha1", "description": "Finding-contract version." },
-        "code": { "type": "string", "enum": ["trigger-silence", "no-progress", "workflow-flapping", "prolonged-degradation", "orphaned-claim", "projection-drift"], "description": "Stable finding code." },
+        "code": { "type": "string", "enum": ["trigger-silence", "no-progress", "workflow-flapping", "prolonged-degradation", "orphaned-claim", "projection-drift", "controller-degraded"], "description": "Stable finding code." },
         "severity": { "$ref": "#/$defs/severity", "description": "Finding severity after a safe override." },
         "contribution": { "$ref": "#/$defs/state", "description": "Finding contribution to deterministic aggregate state." },
         "identity": { "$ref": "#/$defs/identity", "description": "Gaggle and optional workflow/runtime scope." },

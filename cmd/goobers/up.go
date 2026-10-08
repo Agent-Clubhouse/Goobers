@@ -476,6 +476,7 @@ type upServices struct {
 	interventions              *intervention.Service
 	liveJournals               *livejournal.Writer
 	reads                      *readservice.Local
+	gaggleHealth               *daemonGaggleHealth
 	recoverExpiredClaims       func(now time.Time) ([]localscheduler.ClaimEntry, error)
 	shutdownSetup              func() error
 	stopDaemonHealth           func()
@@ -970,6 +971,16 @@ func (u *upSession) startServices() int {
 		return readserviceStartupStatus(u.tracker, u.ready.Load())
 	})
 	attachFreshnessSignals(u.reads, u.setup)
+	u.gaggleHealth, err = startDaemonGaggleHealth(u.ctx, u.root, u.setup, u.reads)
+	if err != nil {
+		pf(u.stderr, "error: initialize gaggle health controller: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if closeErr := u.gaggleHealth.Close(); closeErr != nil {
+			pf(u.stderr, "warning: close gaggle health controller: %v\n", closeErr)
+		}
+	}()
 	if *u.disableReadModelReads {
 		// The design §6.6 rollback, made operator-reachable (#2036):
 		// DisableReadModelReads previously had no caller anywhere, so the
@@ -1012,6 +1023,7 @@ func (u *upSession) configureAPI() int {
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
 	u.apiHandlerOpts = daemonReadHandlerOptions(u.l.Root, u.setup)
+	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithGaggleHealth(u.gaggleHealth))
 	configReader, err := newConfigAuthoringReader(u.ctx, u.l, u.setup.Config)
 	if err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize configuration source reader", err)
@@ -1592,6 +1604,7 @@ func (u *upSession) startScheduler() int {
 		appliedDigest:  u.setup.ConfigDigest,
 		observedDigest: u.setup.ConfigDigest,
 		digests:        u.configDigests,
+		gaggleHealth:   u.gaggleHealth,
 	}
 	// The workflow mutation service was built above so the HTTP handler could
 	// register the surface before the reloader existed. Now that it does,
