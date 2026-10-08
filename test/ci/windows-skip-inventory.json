@@ -817,6 +817,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/startuphint",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Header encoding and parsing only; no Windows-specific seam identified. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/stateclient",
       "coverage": "none",
       "category": "not-selected",

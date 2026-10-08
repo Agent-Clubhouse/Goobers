@@ -2274,15 +2274,7 @@ func (s *Scheduler) TriggerWithDispatchContextOptions(ctx, dispatchCtx context.C
 		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
 	}
 	if len(gaggles) > 1 {
-		sort.Strings(gaggles)
-		commands := make([]string, 0, len(gaggles))
-		for _, gaggle := range gaggles {
-			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
-		}
-		return "", fmt.Errorf(
-			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
-			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
-		)
+		return "", ambiguousWorkflowError(workflow, gaggles)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -2328,15 +2320,7 @@ func (s *Scheduler) TriggerSignalWithDispatchContextOptions(ctx, dispatchCtx con
 		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
 	}
 	if len(gaggles) > 1 {
-		sort.Strings(gaggles)
-		commands := make([]string, 0, len(gaggles))
-		for _, gaggle := range gaggles {
-			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
-		}
-		return "", fmt.Errorf(
-			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
-			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
-		)
+		return "", ambiguousWorkflowError(workflow, gaggles)
 	}
 	return s.TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx,
 		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now, options)

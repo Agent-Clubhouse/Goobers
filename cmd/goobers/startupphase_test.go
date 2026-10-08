@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/startuphint"
 )
 
 func TestRunStartupPhaseLogsStartDoneAndFailure(t *testing.T) {
@@ -251,5 +255,41 @@ func TestWatchStartupReadinessSilentOnceReady(t *testing.T) {
 
 	if out := buf.String(); out != "" {
 		t.Fatalf("output = %q, want no diagnostic once ready", out)
+	}
+}
+
+// TestDaemonStartingAdvertisesBudgetAndProgress pins the hints a waiting
+// worker derives its readiness bound from (#6895): the remaining startup
+// budget, and a progress token that changes when startup reports progress.
+func TestDaemonStartingAdvertisesBudgetAndProgress(t *testing.T) {
+	tracker := newStartupPhaseTracker(10 * time.Minute)
+	answer := func(tracker *startupPhaseTracker) (*httptest.ResponseRecorder, startuphint.Hints) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		daemonStartingHandler(tracker)(rec, httptest.NewRequest(http.MethodPut, "/", nil))
+		if rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != daemonStartingMessage {
+			t.Fatalf("starting answer = %d %q", rec.Code, rec.Body.String())
+		}
+		return rec, startuphint.Parse(rec.Header())
+	}
+
+	_, first := answer(tracker)
+	if !first.HasBudget || first.BudgetRemaining <= 9*time.Minute || first.BudgetRemaining > 10*time.Minute || first.Progress == "" || first.Daemon == "" {
+		t.Fatalf("hints = %+v, want ~10m budget, a progress token and a daemon id", first)
+	}
+	if other := newStartupPhaseTracker(10 * time.Minute).startupHints(time.Now()); other.Daemon == first.Daemon {
+		t.Fatalf("two daemon processes share id %q; a restart would read as the same daemon", other.Daemon)
+	}
+	if _, again := answer(tracker); again.Progress != first.Progress {
+		t.Fatalf("progress token moved without progress: %q -> %q", first.Progress, again.Progress)
+	}
+	var reported []string
+	trackStartupProgress(tracker, func(m string) { reported = append(reported, m) })("read model build: scanned 500/20000 run directories")
+	if _, after := answer(tracker); after.Progress == first.Progress || len(reported) != 1 {
+		t.Fatalf("progress token %q -> %q after a progress report (forwarded %q)", first.Progress, after.Progress, reported)
+	}
+
+	if rec, hints := answer(nil); hints != (startuphint.Hints{}) || rec.Header().Get(startuphint.HeaderProgress) != "" {
+		t.Fatalf("no tracker advertised %+v", hints)
 	}
 }

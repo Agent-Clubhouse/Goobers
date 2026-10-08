@@ -98,6 +98,10 @@ type Store struct {
 	// run.removed, whose whole point is that the journal is gone. Injectable so
 	// a test can assert removal ordering without sleeping.
 	clock func() time.Time
+
+	// projectDirObserver, when set, sees every run directory a build or
+	// stale-row pass projects. Tests use it to count journal opens.
+	projectDirObserver func(dir string)
 }
 
 // ErrClosed is returned when an operation starts after the store is closed.
@@ -272,14 +276,22 @@ func (s *Store) State(ctx context.Context) (State, error) {
 
 // MarkReady records that a whole-journal build completed successfully.
 func (s *Store) MarkReady(ctx context.Context) error {
+	return s.setReady(ctx, true)
+}
+
+func (s *Store) setReady(ctx context.Context, ready bool) error {
 	db, release, err := s.writeHandle()
 	if err != nil {
 		return err
 	}
 	defer release()
+	flag := 0
+	if ready {
+		flag = 1
+	}
 	if _, err := db.ExecContext(ctx,
-		`UPDATE projection_state SET ready = 1 WHERE id = 1`); err != nil {
-		return fmt.Errorf("readmodel: mark projection ready: %w", err)
+		`UPDATE projection_state SET ready = ? WHERE id = 1`, flag); err != nil {
+		return fmt.Errorf("readmodel: set projection ready=%t: %w", ready, err)
 	}
 	return nil
 }
@@ -328,15 +340,9 @@ func (s *Store) migrateOnce(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE projection_state
-		SET ready = 0
-		WHERE id = 1 AND ready <> 0
-			AND EXISTS (
-				SELECT 1 FROM run WHERE projection_version < ?
-			)`, currentProjectionVersion); err != nil {
-		return fmt.Errorf("readmodel: invalidate stale projections: %w", err)
-	}
+	// Rows projected by older rules no longer withdraw readiness here (#6895):
+	// startup re-projects exactly those rows (EnsureReady), where withdrawing
+	// readiness forced a whole-journal rebuild on every open that found one.
 	return tx.Commit()
 }
 

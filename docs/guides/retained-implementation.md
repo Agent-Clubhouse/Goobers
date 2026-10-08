@@ -360,6 +360,17 @@ Only the cleanup's existing selection (crash orphan, abandoned or
 cleanup-pending) decides which targets are examined, so a live run's
 worktree is never selected by this rule.
 
+The same applies when the checkout directory still exists but holds nothing
+a capture could read: it is empty, or its only entry is a `.git` file naming
+a worktree admin directory that was already pruned. On Windows,
+`git worktree remove` can delete the checkout and its admin entry yet fail to
+unlink the directory itself while another process still holds it, leaving
+exactly this shell; every git command there fails "not a git repository", so
+deferring could never succeed. The annotation's `checkout` field is `missing`
+for a vanished directory and `empty` for this shell. A directory that lost its
+git metadata but still holds any other file is not settled: it may be the
+only copy of uncommitted work, so it stays deferred for an operator.
+
 The wrapped failure carries three pieces of evidence an operator needs, all
 preserved in the error chain and in whatever journal/log surfaces it (both
 pass through the instance journal's scrubber, so nothing beyond this bounded,

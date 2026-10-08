@@ -196,7 +196,9 @@ func (d *Dispatcher) SweepOrphansWithReport(ctx context.Context, runs RunStates)
 // the recovery-custody gate, and past that gate only once the hold on an
 // unconfirmed writable pod has expired. It returns the disposal reason.
 func (d *Dispatcher) reapTerminalPod(ctx context.Context, pod *corev1.Pod, attempt PodAttempt) (string, error) {
-	err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt})
+	// Custody is keyed by the physical attempt the pod surrendered under.
+	physical, _ := podPhysicalAttempt(pod)
+	err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt, PodAttempt: physical})
 	if err == nil {
 		return orphanReapReasonOwningWorkflowTerminal, nil
 	}
