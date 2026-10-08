@@ -35,6 +35,7 @@ cannot leave it outside the documented navigation surfaces.
 - [EvalSuite PR review checklist](evals-review-checklist.md)
 - [External telemetry connectors](external-telemetry-connectors.md)
 - [Flake management](flake-management.md)
+- [CI failure investigation: runs 32040570522 and 32063514602](ci-main-failures-32040570522-32063514602.md)
 - [Fleet diagnostics reference collector and queries](fleet-diagnostics-reference.md)
 - [Portable gaggle bundles](gaggle-bundles.md)
 - [Tracked gaggle templates](gaggle-templates.md)
