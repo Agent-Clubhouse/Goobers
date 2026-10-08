@@ -251,6 +251,8 @@ type Authenticator struct {
 	// grants verifies stage credential-refresh grants (Goobers#6120). Nil
 	// refuses every grant-prefixed bearer rather than passing it to fallback.
 	grants *SignedKey
+	// childGrants is separately enabled once the child operation service is wired.
+	childGrants *SignedKey
 }
 
 // WithCredentialGrants makes the authenticator admit stage credential-refresh
@@ -292,9 +294,12 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 
 // Authenticate verifies pod or shared-key worker bearers. A worker credential
 // carries a distinct identity, never a synthetic run. Unknown credentials with
-// either reserved prefix fail closed instead of reaching human authentication.
+// a reserved prefix fail closed instead of reaching human authentication.
 func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	token := bearerToken(request)
+	if strings.HasPrefix(token, ChildWorkflowGrantPrefix) {
+		return a.authenticateChildWorkflow(token)
+	}
 	if IsCredentialGrant(token) {
 		return a.authenticateGrant(token)
 	}

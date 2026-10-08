@@ -98,6 +98,9 @@ type RunRequest struct {
 	// eligibility alone (#2774) — an adapter that never registers the server
 	// must never instruct the model to call tools that don't exist there.
 	GoobersIORegistered bool
+	// ChildWorkflows is trusted launcher access, never model/config-authored policy.
+	// It is excluded from generic request serialization and rendered prompts.
+	ChildWorkflows *mcpio.ChildWorkflowAccess `json:"-"`
 	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
 	MCPReadinessSink func(MCPReadiness) error
 	// Workspace is the working directory the harness runs in — normally

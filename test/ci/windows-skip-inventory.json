@@ -536,9 +536,9 @@
     },
     {
       "package": "internal/mcpio",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
     },
     {
       "package": "internal/mergepolicy",
@@ -638,9 +638,9 @@
     },
     {
       "package": "internal/podauth",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
     },
     {
       "package": "internal/planehttp",
@@ -932,9 +932,9 @@
     },
     {
       "package": "internal/triggerqueue",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
     },
     {
       "package": "internal/truncate",

@@ -1062,6 +1062,12 @@ func (u *upSession) configureAPI() int {
 	// handing raw secret material to any local caller. Local modes never need
 	// the plane; their resolution stays in-process via buildCredentialEnv.
 	u.credentialPlane = newDaemonCredentialService(u.l, u.setup.Config, u.setup.SecretStores, u.setup.SharedRegistry, u.setup.InstanceLog).withStageGrants(u.l.Root, u.apiServer.Address(), u.setup.Config.API.TLS != nil)
+	// The startup methods tail-call through supervise/finish: this scope stays
+	// alive for the daemon session, as do the queue-close defers above.
+	defer unregisterDaemonStageGrants(u.l.Root, u.credentialPlane)
+	if err := u.credentialPlane.enableChildWorkflows(u.durableTriggers.queue, u.setup.Definitions); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize child workflow authority", err)
+	}
 	u.credentialPlane.Replace(credentialPlaneDefinitionsFromSet(u.setup.Definitions))
 	u.setup.CredentialPlane = u.credentialPlane
 	// The surrender plane (#3699) rides beside the blob store, under the same
@@ -1110,6 +1116,7 @@ func (u *upSession) configureAPI() int {
 		httpapi.WithEscalationService(intervention.NewEscalationResolver(u.interventions)),
 		httpapi.WithCancelService(u.cancelPlane),
 		httpapi.WithCredentialService(u.credentialPlane),
+		httpapi.WithChildWorkflowService(u.credentialPlane.children.HTTPService()),
 		httpapi.WithBlobService(u.blobStore),
 		httpapi.WithRecoveryService(recoveryDeliveryService{layout: u.l, setup: u.setup}),
 		httpapi.WithSurrenderService(surrenderStore),
@@ -1196,7 +1203,7 @@ func (u *upSession) activateAPI() int {
 			pf(u.stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey())))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	} else if !instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) {
 		// Non-loopback with no human authenticator configured: serve the pod
@@ -1210,7 +1217,7 @@ func (u *upSession) activateAPI() int {
 			pf(u.stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey())))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(u.reads, u.apiAuthorizer, u.apiLog, u.apiHandlerOpts...)

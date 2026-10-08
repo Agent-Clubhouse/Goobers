@@ -1758,6 +1758,9 @@ jobs:
       - name: Windows child proposal validation
         run: go test ./internal/childworkflow -count=1
 
+      - name: Windows child admission authority
+        run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild' -count=1
+
       - name: Windows child stage identities
         run: go test ./internal/runner ./internal/engine ./internal/agentickit ./api/validate -run 'TestChildOrigin|TestChildWorkflowOrigin|TestKitGrantsCarryNoSecretMaterial' -count=1
 

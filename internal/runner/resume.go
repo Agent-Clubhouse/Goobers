@@ -683,6 +683,7 @@ func (r *Runner) newResumeFrame(
 		Machine:          in.Machine,
 		GooberDigest:     in.GooberDigest,
 		Gaggle:           id.Gaggle,
+		Child:            id.Child,
 		Trigger:          id.Trigger,
 		RepoRef:          in.RepoRef,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches

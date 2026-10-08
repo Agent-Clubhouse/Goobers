@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 )
 
 // Versioned V1 route paths.
@@ -261,6 +263,11 @@ const (
 	// The route stamps request identity and the authenticated principal; body
 	// fields are data only and cannot carry execution authority.
 	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
+
+	// ChildWorkflow paths are stage-grant-only operations scoped to one parent run.
+	ChildWorkflowValidatePath = childworkflowwire.ValidatePath
+	ChildWorkflowStartPath    = childworkflowwire.StartPath
+	ChildWorkflowStatusPath   = childworkflowwire.StatusPath
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.
@@ -370,6 +377,9 @@ const (
 	RouteJournalMergeAuthority       RouteID = "journalMergeAuthority"
 	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
 	RouteOperatorMessageSubmit       RouteID = "operatorMessageSubmit"
+	RouteChildWorkflowValidate       RouteID = "childWorkflowValidate"
+	RouteChildWorkflowStart          RouteID = "childWorkflowStart"
+	RouteChildWorkflowStatus         RouteID = "childWorkflowStatus"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -658,6 +668,9 @@ var v1Routes = []Route{
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowValidate, Method: http.MethodPost, Path: ChildWorkflowValidatePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowStart, Method: http.MethodPost, Path: ChildWorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowStatus, Method: http.MethodPost, Path: ChildWorkflowStatusPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{

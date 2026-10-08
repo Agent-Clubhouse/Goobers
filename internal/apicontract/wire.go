@@ -19,6 +19,10 @@ import (
 )
 
 type wireFixtures struct {
+	ChildWorkflowSource      ChildWorkflowSourceRequest                 `json:"childWorkflowSource"`
+	ChildWorkflowStatus      ChildWorkflowStatusRequest                 `json:"childWorkflowStatus"`
+	ChildWorkflowValidation  ChildWorkflowValidationResponse            `json:"childWorkflowValidation"`
+	ChildWorkflow            ChildWorkflowResponse                      `json:"childWorkflow"`
 	TriggerRequest           TriggerRequest                             `json:"triggerRequest"`
 	TriggerResponse          TriggerResponse                            `json:"triggerResponse"`
 	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
@@ -59,6 +63,10 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "childWorkflowSource", scriptType: "ChildWorkflowSourceRequest"},
+	{name: "childWorkflowStatus", scriptType: "ChildWorkflowStatusRequest"},
+	{name: "childWorkflowValidation", scriptType: "ChildWorkflowValidationResponse"},
+	{name: "childWorkflow", scriptType: "ChildWorkflowResponse"},
 	{name: "triggerRequest", scriptType: "TriggerRequest"},
 	{name: "triggerResponse", scriptType: "TriggerResponse"},
 	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
@@ -447,7 +455,7 @@ func newWireFixtures() wireFixtures {
 
 	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
 
-	return wireFixtures{
+	return withChildWorkflowFixtures(wireFixtures{
 		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
 		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
 		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
@@ -1033,9 +1041,8 @@ func newWireFixtures() wireFixtures {
 				Message: "requested resource was not found",
 			},
 		},
-	}
+	})
 }
-
 func int64Pointer(value int64) *int64 {
 	return &value
 }
@@ -1070,4 +1077,18 @@ func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequ
 		},
 	}
 	return request, response
+}
+
+func childWorkflowWireFixture() ChildWorkflowResponse {
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	digest := "sha256:" + strings.Repeat("a", 64)
+	return ChildWorkflowResponse{ChildID: "child-1", AcceptanceID: "trigger-1", RunID: "run-1", InvocationKey: "inspect-1", Sequence: 1, State: "queued", SourceDigest: digest, CanonicalDigest: digest, ConfigDigest: digest, PolicyDigest: digest, WorkflowDigest: digest, AcceptedAt: at, UpdatedAt: at}
+}
+
+func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures.ChildWorkflowSource = ChildWorkflowSourceRequest{Source: "kind: Workflow\n"}
+	fixtures.ChildWorkflowStatus = ChildWorkflowStatusRequest{InvocationKey: "inspect-1"}
+	fixtures.ChildWorkflowValidation = ChildWorkflowValidationResponse{Valid: false, Advisory: true, Diagnostics: []ChildWorkflowDiagnostic{{Code: "schema", Field: "dslVersion", Message: "explicit DSL 3.1 is required"}}}
+	fixtures.ChildWorkflow = childWorkflowWireFixture()
+	return fixtures
 }
