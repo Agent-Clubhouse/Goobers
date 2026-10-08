@@ -855,6 +855,13 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		if !req.MatchesIdentityFields(pr.User.Login, githubUserLogins(pr.Assignees), githubUserLogins(pr.RequestedReviewers)) {
 			continue
 		}
+		titleMatched, err := req.MatchesTitle(pr.Title)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.Number, err)
+		}
+		if !titleMatched {
+			continue
+		}
 		var checkState CheckState
 		if !req.SkipCheckState {
 			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)

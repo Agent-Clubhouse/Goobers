@@ -423,6 +423,7 @@ const (
 	errorFieldPredicateTrigger    WarningCode = "FLD002"
 	errorFieldPredicateTask       WarningCode = "FLD003"
 	errorFieldOrderTask           WarningCode = "FLD004"
+	errorTitlePredicateTask       WarningCode = "FLD005"
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
 	errorContextFromDuplicate     WarningCode = "CTX001"
@@ -1589,6 +1590,7 @@ func (ix *index) checkFieldSelections(r *Report) {
 			}
 		}
 		for i, task := range workflow.Spec.Tasks {
+			checkPRSelectTitlePredicate(r, indexed.file, workflow.Name, i, task)
 			if !isBacklogQueryTask(task) {
 				continue
 			}
@@ -1615,10 +1617,30 @@ func (ix *index) checkFieldSelections(r *Report) {
 }
 
 func isBacklogQueryTask(task apiv1.Task) bool {
+	return isGoobersSubcommandTask(task, "backlog-query")
+}
+
+func isGoobersSubcommandTask(task apiv1.Task, subcommand string) bool {
 	return task.Run != nil &&
 		len(task.Run.Command) >= 2 &&
 		filepath.Base(task.Run.Command[0]) == "goobers" &&
-		task.Run.Command[1] == "backlog-query"
+		task.Run.Command[1] == subcommand
+}
+
+// checkPRSelectTitlePredicate compiles a pr-select titlePredicate input so an
+// unsupported or non-title expression fails validation instead of the stage.
+func checkPRSelectTitlePredicate(r *Report, file, workflow string, i int, task apiv1.Task) {
+	expression, ok := task.Inputs["titlePredicate"]
+	if !ok || !isGoobersSubcommandTask(task, "pr-select") {
+		return
+	}
+	if strings.TrimSpace(expression) == "" {
+		r.add(errorTitlePredicateTask, Error, file, "Workflow", workflow,
+			"spec.tasks[%d].inputs.titlePredicate is invalid: CEL expression must not be blank", i)
+	} else if _, err := fieldpredicate.CompileTitlePredicate(expression); err != nil {
+		r.add(errorTitlePredicateTask, Error, file, "Workflow", workflow,
+			"spec.tasks[%d].inputs.titlePredicate is invalid: %v", i, err)
+	}
 }
 
 // prLifecycleBaseCommands are the goobers CLI subcommands whose "base" input
