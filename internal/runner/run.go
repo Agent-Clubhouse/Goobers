@@ -4635,7 +4635,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
 		prepFailures := 0
-		env, workspace, prepFailures, err = r.buildGateEnvelopeWithRetry(ctx, jr, in, g, gateCaps, gateLimits, upstream, workspaceBranch)
+		env, workspace, prepFailures, err = r.buildGateEnvelopeWithRetry(ctx, jr, in, g, gateCaps, gateLimits, reviewerContextPointers(jr, in.Machine, subjectStage, upstream), workspaceBranch)
 		if err != nil {
 			prepErr := fmt.Errorf("prepare gate %q: %w", g.Name, err)
 			err = codedStageFailure(provisionFailureCode(err), prepErr)
