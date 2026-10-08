@@ -1261,6 +1261,12 @@
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
     },
     {
+      "package": "test/releasedconfigs",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
       "package": "test/scale",
       "coverage": "none",
       "category": "cost",
