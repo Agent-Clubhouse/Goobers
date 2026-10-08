@@ -177,6 +177,7 @@ func (i *Injector) MaterializeRestricted(ctx context.Context, admitted []string)
 }
 
 func (i *Injector) materialize(ctx context.Context, keys []string) (*Set, error) {
+	keys = FilterChildCredentialKeys(ctx, keys)
 	s := &Set{
 		declared:   make(map[string]bool, len(keys)),
 		tokens:     make(map[string]string, len(keys)),

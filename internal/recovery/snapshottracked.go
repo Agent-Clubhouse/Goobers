@@ -28,7 +28,7 @@ import (
 // Status runs with those filter drivers disabled so capture never executes
 // external clean filters or fails on a missing required one; the filtered
 // paths are captured raw regardless of their status.
-func snapshotTrackedUpdates(ctx context.Context, repository, directory string) (string, error) {
+func snapshotTrackedUpdates(ctx context.Context, repository, directory string, policy *SnapshotPolicy) (string, error) {
 	tracked, updates, err := snapshotTrackedEntries(ctx, repository)
 	if err != nil {
 		return "", err
@@ -42,7 +42,9 @@ func snapshotTrackedUpdates(ctx context.Context, repository, directory string) (
 	}
 	paths := make([]string, 0, len(updates))
 	for path := range updates {
-		paths = append(paths, path)
+		if !policy.excludes(path) {
+			paths = append(paths, path)
+		}
 	}
 	slices.Sort(paths)
 	var selected bytes.Buffer

@@ -63,6 +63,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows bounded diagnostic history:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows child proposal validation:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows child admission authority:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows child custody and waits:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows child stage identities:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows containment and journals:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows credential files:go-modules",

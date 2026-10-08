@@ -524,9 +524,9 @@
     },
     {
       "package": "internal/localscheduler",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission, durable wait capacity and recovered parked-parent accounting run in the Windows child custody and waits step; the remaining scheduler suite runs on Linux."
     },
     {
       "package": "internal/mcpconfig",
@@ -742,7 +742,7 @@
       "package": "internal/runner",
       "coverage": "partial",
       "category": "cost",
-      "reason": "Whole package exceeds 30min on Windows (PR #2364 measurement). Entered by named tests in the 'Windows journal OTLP export' step."
+      "reason": "Whole package exceeds 30min on Windows (PR #2364 measurement). Named tests exercise journal OTLP, child stage identity, child custody/credential refusal and durable wait projection in the Windows gate."
     },
     {
       "package": "internal/runnercap",

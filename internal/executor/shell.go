@@ -803,11 +803,8 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
 	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
-	if env.Workspace == "" {
-		// exec.Cmd treats Dir == "" as "run in the daemon's own working
-		// directory" — a silent, surprising fallback (#122) rather than the
-		// fail-closed misconfiguration error an unset workspace should be.
-		return apiv1.ResultEnvelope{}, errors.New("executor: InvocationEnvelope.Workspace is empty")
+	if err := validateShellChildWorkspace(ctx, env); err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	command, commandEnv, cleanup, err := DeterministicCommand(run)
 	if err != nil {
@@ -950,6 +947,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
+	stopWriters, joinedWriters := invoke.TrackWorkspaceProcess(runCtx, tree, groupKillWaitDelay)
+	defer joinedWriters()
 	defer e.observeExecutionDeadline(runCtx, env)()
 	// Released only after the stage is fully accounted for: the bound's own
 	// record of whether it fired (the child cgroup's memory.events) has to
@@ -981,6 +980,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 
 	waitOutcome := proc.WaitOrKill(runCtx, tree, waitDone, proc.WaitOptions{
 		KillWait: groupKillWaitDelay,
+		StopTree: stopWriters,
 		BeforeKill: func(timedOut bool) (bool, error) {
 			if !timedOut {
 				return false, nil

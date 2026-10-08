@@ -300,6 +300,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		return ProcessResult{ExitCode: -1}, fmt.Errorf("harness: start %v: %w", req.Command, err)
 	}
 
+	stopWriters, joinedWriters := workspaceWriterStop(runCtx, tree)
+	defer joinedWriters()
+
 	_, deadlineDone := invoke.BeginExecution(runCtx)
 	defer deadlineDone()
 
@@ -314,7 +317,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	waitOutcome := proc.WaitOrKill(runCtx, tree, waitDone, proc.WaitOptions{KillWait: groupKillWaitDelay})
+	waitOutcome := proc.WaitOrKill(runCtx, tree, waitDone, proc.WaitOptions{KillWait: groupKillWaitDelay, StopTree: stopWriters})
 	err = waitOutcome.Err
 	timedOut, canceled := waitOutcome.TimedOut, waitOutcome.Canceled
 
@@ -339,7 +342,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	case err == nil && !timedOut && !canceled:
 		result.ExitCode = 0
 	case errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success():
-		_ = tree.Kill()
+		_ = stopWriters()
 		result.ExitCode = 0
 		err = nil
 	case errors.As(err, &exitErr):

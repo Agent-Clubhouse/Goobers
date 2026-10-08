@@ -158,7 +158,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 				branch = owner.id
 			}
 		}
-		startIn, err = r.restoreResumeWorkspaceRevision(ctx, startIn, events, activeParallel, parallelStart, branch)
+		startIn, err = r.restoreExecutionWorkspace(ctx, rd, id, startIn, events, activeParallel, parallelStart, branch)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
 		}

@@ -44,6 +44,7 @@ func (s *daemonCredentialService) enableChildWorkflows(queue *triggerqueue.Store
 		return err
 	}
 	s.children = runtime
+	s.childQueue = queue
 	return nil
 }
 
