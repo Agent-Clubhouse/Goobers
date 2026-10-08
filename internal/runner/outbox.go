@@ -166,7 +166,8 @@ func taskDispatchError(stage string, result apiv1.ResultEnvelope, dispatchErr er
 }
 
 func stageFinishedOutputs(result apiv1.ResultEnvelope, continueOnError bool) map[string]interface{} {
-	if result.Status == apiv1.ResultFailure && continueOnError && !isOutboxExportFailure(result) {
+	// Invalid-handoff outputs carry the reroute that resume must replay.
+	if result.Status == apiv1.ResultFailure && continueOnError && !isOutboxExportFailure(result) && !isInvalidHandoffFailure(result) {
 		return nil
 	}
 	return result.Outputs

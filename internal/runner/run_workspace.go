@@ -226,6 +226,18 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			return nil, fmt.Errorf("create scratch workspace: syncBase requires a repo workspace")
 		}
 
+		if r.cfg.ScratchDir == "" && in.pinnedWorkspace != nil {
+			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, false, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, release: in.pinnedStage.Unlock}, nil
+		}
 		if r.cfg.ScratchDir == "" {
 			return nil, fmt.Errorf("create scratch workspace: runner ScratchDir is required")
 		}

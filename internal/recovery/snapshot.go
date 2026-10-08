@@ -12,7 +12,10 @@ import (
 // CaptureSnapshot records the current tracked and non-ignored untracked files
 // in a commit without changing HEAD, the working files, or the caller's index.
 // The caller must own the worktree exclusively for this operation. Ignored
-// build outputs are not added; existing tracked files remain tracked. The
+// build outputs are not added; existing tracked files remain tracked. Tracked
+// files the source checkout reports as clean keep their canonical index blobs,
+// so a checkout's line-ending or encoding conversion is not recorded as an
+// edit; changed tracked files and untracked files are captured as raw bytes. The
 // returned object is not durable recovery until pinned and archived. Captured
 // content is not permission to restore reserved runtime assets: the restoration
 // coordinator must enforce those protections before applying a retained patch.
@@ -59,19 +62,16 @@ func captureSnapshot(ctx context.Context, repository, runID string, identityTime
 	if err != nil {
 		return "", err
 	}
+	updates, err := snapshotTrackedUpdates(ctx, repository, directory, policy)
+	if err != nil {
+		return "", err
+	}
 	if err := snapshotIndexWithPolicy(ctx, repository, environment, policy); err != nil {
 		return "", err
 	}
-	selected, err := os.Stat(paths)
+	commands, err := snapshotAddCommands(updates, paths)
 	if err != nil {
-		return "", fmt.Errorf("inspect recovery snapshot paths: %w", err)
-	}
-	// With an empty source index, an explicit "." pathspec is unmatched.
-	commands := [][]string{{"add", "--update", "--"}}
-	// An empty pathspec file makes forced `add --all` capture the whole
-	// worktree, including ignored build outputs. Only add selected paths.
-	if selected.Size() > 0 {
-		commands = append(commands, []string{"--literal-pathspecs", "add", "--all", "--force", "--sparse", "--pathspec-file-nul", "--pathspec-from-file=" + paths})
+		return "", err
 	}
 	for _, args := range commands {
 		if err := recoveryGitWithEnv(ctx, repository, io.Discard, environment, args...); err != nil {
@@ -108,4 +108,28 @@ func captureSnapshot(ctx context.Context, repository, runID string, identityTime
 		return "", fmt.Errorf("invalid recovery snapshot commit")
 	}
 	return id, nil
+}
+
+// snapshotAddCommands stages the selected tracked updates and untracked paths.
+// An empty pathspec file makes `add` operate on the whole worktree: for
+// --update that would re-add Git-clean tracked files raw (#6917), and for
+// forced --all it would capture ignored build outputs. Only add selected paths.
+func snapshotAddCommands(updates, untracked string) ([][]string, error) {
+	var commands [][]string
+	for _, step := range []struct {
+		file string
+		args []string
+	}{
+		{updates, []string{"--literal-pathspecs", "add", "--update"}},
+		{untracked, []string{"--literal-pathspecs", "add", "--all", "--force", "--sparse"}},
+	} {
+		selected, err := os.Stat(step.file)
+		if err != nil {
+			return nil, fmt.Errorf("inspect recovery snapshot paths: %w", err)
+		}
+		if selected.Size() > 0 {
+			commands = append(commands, append(step.args, "--pathspec-file-nul", "--pathspec-from-file="+step.file))
+		}
+	}
+	return commands, nil
 }

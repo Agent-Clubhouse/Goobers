@@ -221,15 +221,23 @@ func (p *Projector) Start(ctx context.Context) func() {
 	p.mu.Unlock()
 
 	loopCtx, cancel := context.WithCancel(ctx)
+	scheduled := make(chan struct{})
 	go p.commitLoop(loopCtx)
-	go p.schedule(loopCtx)
+	go func() {
+		defer close(scheduled)
+		p.schedule(loopCtx)
+	}()
 
+	// Stop waits for the drain schedule as well as the commit loop: an
+	// in-flight drain holds an intake connection, and callers close the intake
+	// store right after stop returns (#6715).
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			cancel()
 			close(p.stop)
 			<-p.done
+			<-scheduled
 		})
 	}
 }

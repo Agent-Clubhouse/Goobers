@@ -2692,6 +2692,169 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 }
 
+func TestSchedulerDefinitionsQuarantineGaggleWithUnreadableGooberInstructions(t *testing.T) {
+	t.Setenv("GOOBERS_TEST_MISSING_TOKEN", "")
+	testBin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := func(gaggle string, triggers []apiv1.Trigger, capabilities []string, readiness apiv1.ReadinessConditions) apiv1.Workflow {
+		return apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "deploy"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:    gaggle,
+				Triggers:  triggers,
+				Start:     "deploy",
+				Readiness: readiness,
+				Tasks: []apiv1.Task{{
+					Name:         "deploy",
+					Type:         apiv1.TaskDeterministic,
+					Goal:         "Deploy.",
+					Capabilities: capabilities,
+					Run:          &apiv1.DeterministicRun{Command: []string{testBin, "-test.run=^$"}, Workspace: apiv1.WorkspaceScratch},
+				}},
+			},
+		}
+	}
+	set := &instance.ConfigSet{
+		Manifest: &apiv1.Manifest{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{workflow.PreviewFeaturesAnnotation: "true"},
+		}},
+		Gaggles: []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}, Spec: apiv1.GaggleSpec{
+				Project: apiv1.RepoRef{Provider: apiv1.ProviderGitea, Owner: "example", Name: "alpha"},
+			}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{
+				Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "beta"},
+			}},
+		},
+		Goobers: []apiv1.Goober{
+			{ObjectMeta: metav1.ObjectMeta{Name: "alpha-coder"}, Spec: apiv1.GooberSpec{
+				Gaggle: "alpha", Role: "coder", Instructions: "instructions.md", Harness: apiv1.HarnessCopilot,
+			}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "beta-coder"}, Spec: apiv1.GooberSpec{
+				Gaggle: "beta", Role: "coder", Instructions: "instructions.md", Harness: apiv1.HarnessCopilot,
+			}},
+		},
+		Workflows: []apiv1.Workflow{
+			definition("alpha", []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 24h"}}, []string{"repo:read"}, apiv1.ReadinessConditions{MaxOpenPRs: 1}),
+			definition("beta", []apiv1.Trigger{{Type: apiv1.TriggerManual}}, nil, apiv1.ReadinessConditions{}),
+		},
+	}
+
+	layout := instance.NewLayout(t.TempDir())
+	for _, gaggle := range []string{"alpha", "beta"} {
+		if err := layout.EnsureGaggleRuntime(gaggle); err != nil {
+			t.Fatal(err)
+		}
+		gooberDir := filepath.Join(layout.ConfigDir(), "gaggles", gaggle, "goobers", gaggle+"-coder")
+		if err := os.MkdirAll(gooberDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gooberDir, "instructions.md"), []byte(gaggle+" instructions\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(filepath.Join(layout.ConfigDir(), "gaggles", "alpha", "goobers", "alpha-coder", "instructions.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	var wg sync.WaitGroup
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "example", Name: "beta"},
+		{Provider: "gitea", BaseURL: "https://gitea.example.invalid", Owner: "example", Name: "alpha", Token: instance.TokenRef{Env: "GOOBERS_TEST_MISSING_TOKEN"}},
+	}}
+	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
+		Layout:           layout,
+		Config:           cfg,
+		Definitions:      set,
+		WaitGroup:        &wg,
+		RunnerRegistry:   newDaemonRunnerRegistry(),
+		InstanceLog:      log,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		WorktreeManagers: nil,
+		ProviderQuota:    localscheduler.NewProviderQuotaState(),
+	})
+	if err != nil {
+		t.Fatalf("buildSchedulerDefinitions: %v", err)
+	}
+	alpha := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "deploy"}
+	beta := localscheduler.WorkflowIdentity{Gaggle: "beta", Workflow: "deploy"}
+	if definitions.Runners["alpha"] != nil {
+		t.Fatal("alpha runtime was initialized despite goober instruction quarantine")
+	}
+	if definitions.Runners["beta"] == nil {
+		t.Fatal("beta runtime was not initialized")
+	}
+	entries := map[localscheduler.WorkflowIdentity]localscheduler.WorkflowEntry{}
+	for _, entry := range definitions.Entries {
+		entries[localscheduler.WorkflowIdentity{Gaggle: entry.Gaggle, Workflow: entry.Workflow}] = entry
+	}
+	if got := entries[alpha].HarnessRefusal; !strings.Contains(got, `gaggle "alpha" quarantined`) ||
+		!strings.Contains(got, `read goober "alpha-coder" instructions`) {
+		t.Fatalf("alpha refusal = %q, want clear goober instruction quarantine", got)
+	}
+	if got := entries[beta].HarnessRefusal; got != "" {
+		t.Fatalf("beta refusal = %q, want none", got)
+	}
+	runID, err := telemetry.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := definitions.Runners["beta"].Start(context.Background(), runner.StartInput{
+		RunID:   runID,
+		Machine: definitions.Machines[beta],
+		Gaggle:  "beta",
+	})
+	if err != nil || result.Phase != journal.PhaseCompleted {
+		t.Fatalf("healthy beta run: phase=%s err=%v", result.Phase, err)
+	}
+	if entries[beta].GooberDigest == "" {
+		t.Fatal("healthy beta workflow lost its goober digest")
+	}
+	legacy, _, err := buildRetainedLegacyRunner(retainedLegacyRunnerInput{
+		Layout:               layout,
+		Config:               cfg,
+		Definitions:          set,
+		Goobers:              definitions.Goobers,
+		InstructionsByGoober: definitions.Instructions,
+		InstructionFailures:  definitions.InstructionFailures,
+		InstanceLog:          log,
+		SharedRegistry:       journal.NewRegistryScrubber(),
+		ProviderQuota:        localscheduler.NewProviderQuotaState(),
+		HarnessInfo:          definitions.HarnessPreflight,
+	})
+	if err != nil {
+		t.Fatalf("retained legacy runtime should not re-abort on quarantined instructions: %v", err)
+	}
+	if legacy == nil {
+		t.Fatal("retained legacy runtime was not built")
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLog bool
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Gaggle == "alpha" && event.Error != nil &&
+			event.Error.Code == "goober_instructions_unavailable" &&
+			strings.Contains(event.Error.Message, `read goober "alpha-coder" instructions`) {
+			sawLog = true
+		}
+	}
+	if !sawLog {
+		t.Fatalf("missing visible alpha goober quarantine event: %+v", events)
+	}
+}
+
 func TestWorkcopyRootClaimsAllowSharedDefaultPinnedRoot(t *testing.T) {
 	claims := make(map[string]workcopyRootClaim)
 	root := filepath.Join(t.TempDir(), "workcopies")
