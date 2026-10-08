@@ -276,14 +276,22 @@ func (s *Store) State(ctx context.Context) (State, error) {
 
 // MarkReady records that a whole-journal build completed successfully.
 func (s *Store) MarkReady(ctx context.Context) error {
+	return s.setReady(ctx, true)
+}
+
+func (s *Store) setReady(ctx context.Context, ready bool) error {
 	db, release, err := s.writeHandle()
 	if err != nil {
 		return err
 	}
 	defer release()
+	flag := 0
+	if ready {
+		flag = 1
+	}
 	if _, err := db.ExecContext(ctx,
-		`UPDATE projection_state SET ready = 1 WHERE id = 1`); err != nil {
-		return fmt.Errorf("readmodel: mark projection ready: %w", err)
+		`UPDATE projection_state SET ready = ? WHERE id = 1`, flag); err != nil {
+		return fmt.Errorf("readmodel: set projection ready=%t: %w", ready, err)
 	}
 	return nil
 }

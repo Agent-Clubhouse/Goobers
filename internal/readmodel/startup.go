@@ -19,7 +19,8 @@ import (
 //
 // Readiness now means only "a whole-journal build completed" (new store,
 // replaying migration, interrupted build). A ready store's older rows are
-// re-projected by locating each one's journal directly. That is not a weaker
+// re-projected by locating each one's journal directly (readiness is withdrawn
+// only while that pass runs). That is not a weaker
 // guarantee: a build skips the same unreadable journals, and runs whose
 // journals changed while the daemon was down are the projector's restart pass
 // and repair's job in both cases, exactly as for a store with no older rows.
@@ -75,11 +76,30 @@ func (s *Store) fullBuild(ctx context.Context, runsDirs []string, report func(st
 
 // reprojectStaleRuns re-projects only the rows written by older projection
 // rules, locating each run's journal directly instead of scanning every root.
+//
+// Readiness is withdrawn for the duration so out-of-process readers fall back
+// to journals rather than trust a mix of old- and new-rule rows, and so an
+// interrupted pass leaves the store unready (a full build on the next start).
+// It is restored once every stale row has been attempted, exactly as a full
+// build restores it despite skipping unreadable journals: unresolved rows keep
+// their older version, so they are retried on each start, but they cost one
+// directory probe each rather than a whole-journal scan.
 func (s *Store) reprojectStaleRuns(ctx context.Context, runsDirs []string, report func(string)) (ReadyResult, error) {
 	runIDs, err := s.staleRunIDs(ctx)
 	if err != nil || len(runIDs) == 0 {
 		return ReadyResult{}, err
 	}
+	if err := s.setReady(ctx, false); err != nil {
+		return ReadyResult{}, err
+	}
+	result, err := s.reprojectRuns(ctx, runIDs, runsDirs, report)
+	if err != nil {
+		return result, err
+	}
+	return result, s.MarkReady(ctx)
+}
+
+func (s *Store) reprojectRuns(ctx context.Context, runIDs, runsDirs []string, report func(string)) (ReadyResult, error) {
 	result := ReadyResult{Considered: len(runIDs)}
 	reportLine(report, fmt.Sprintf(
 		"read model: %d run(s) were projected by older rules; re-projecting only those (no full journal scan)", len(runIDs)))
@@ -90,6 +110,7 @@ func (s *Store) reprojectStaleRuns(ctx context.Context, runsDirs []string, repor
 		}
 		projected := false
 		if dir, ok := locateRunDir(runID, runsDirs); ok {
+			var err error
 			if projected, err = s.projectRunDir(ctx, dir); err != nil {
 				return result, err
 			}

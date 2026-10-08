@@ -61,9 +61,22 @@ func TestEnsureReadyRestartOpensOnlyStaleJournals(t *testing.T) {
 	closeStore(t, store)
 
 	store, opened, lines = openCountingStore(t, path)
+	readyDuringPass := false
+	store.projectDirObserver = func(string) {
+		*opened++
+		if state, err := store.State(ctx); err != nil || state.Ready {
+			readyDuringPass = true
+		}
+	}
 	result = ensureReady(t, store, roots, lines)
 	if result.FullBuild || *opened != 3 || result.Considered != 4 || result.Projected != 3 || result.Unresolved != 1 {
 		t.Fatalf("restart: result=%+v opened=%d, want 3 of 4 stale rows re-projected and no full scan", result, *opened)
+	}
+	if readyDuringPass {
+		t.Fatal("store reported ready while mixing old- and new-rule rows")
+	}
+	if state, err := store.State(ctx); err != nil || !state.Ready {
+		t.Fatalf("state after re-projection = %+v err=%v, want ready", state, err)
 	}
 	if !slices.Contains(*lines, "read model re-projection: 4/4 runs") {
 		t.Fatalf("re-projection progress = %q, want a 4/4 line", *lines)
@@ -109,6 +122,35 @@ func TestEnsureReadyUnreadyStoreStillBuildsEveryJournal(t *testing.T) {
 	}
 	if state, err := store.State(ctx); err != nil || !state.Ready {
 		t.Fatalf("state after build = %+v err=%v, want ready", state, err)
+	}
+}
+
+// TestEnsureReadyInterruptedReprojectionLeavesStoreUnready proves a pass cut
+// short cannot leave old-rule rows behind a ready flag.
+func TestEnsureReadyInterruptedReprojectionLeavesStoreUnready(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 3; i++ {
+		writeRunJournal(t, root, fmt.Sprintf("run-%d", i), false)
+	}
+	path := filepath.Join(t.TempDir(), FileName)
+	store, _, _ := openCountingStore(t, path)
+	ensureReady(t, store, []string{root}, nil)
+	if _, err := store.writer.ExecContext(context.Background(),
+		`UPDATE run SET projection_version = ?`, currentProjectionVersion-1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store.projectDirObserver = func(string) { cancel() }
+	state, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureReady(ctx, state, []string{root}, nil); err == nil {
+		t.Fatal("interrupted re-projection reported success")
+	}
+	if state, err := store.State(context.Background()); err != nil || state.Ready {
+		t.Fatalf("state after interrupted pass = %+v err=%v, want unready", state, err)
 	}
 }
 
