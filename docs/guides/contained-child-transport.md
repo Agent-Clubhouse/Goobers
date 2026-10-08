@@ -36,7 +36,8 @@ surrender. Successful foreground command exit alone does not prove writer exit.
 
 The dispatcher records the pod's immutable UID and requires observed writer
 termination plus confirmed surrender before releasing its custody finalizer.
-Cancellation initiates graceful termination and bounded observation; socket or
+The reference dispatcher role adds the Kubernetes `patch` verb on pods to release
+that finalizer after confirmation. Cancellation initiates graceful termination and bounded observation; socket or
 pod disappearance alone does not count as successful cancellation.
 
 Ordinary orphan cleanup keeps its existing retention policy. An isolated child
