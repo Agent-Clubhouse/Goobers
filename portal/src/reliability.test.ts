@@ -23,7 +23,7 @@ describe("reliabilitySummary", () => {
     expect(reliabilitySummary(reliability({ currentStage: "implement", currentAttempt: 1 }))).toBe(
       "Reliability active implement attempt 1; failure none (no-error-recorded); " +
         "budgets implementation-review 0 used/? left, ci-poll ? used/? left; " +
-        "verdict unknown; acceptance unknown; next finish implement",
+        "verdict unknown; acceptance unknown; retained unknown; next finish implement",
     );
   });
 
@@ -36,7 +36,7 @@ describe("reliabilitySummary", () => {
       }),
     );
     expect(line).toContain("Reliability retrying;");
-    expect(line).toContain("failure infra (latestError.causes.class)");
+    expect(line).toContain("failure infra workspace_failed (latestError.causes.class)");
     expect(line).toContain("next wait for retry backoff on implement");
   });
 
@@ -47,12 +47,14 @@ describe("reliabilitySummary", () => {
         failure: { classification: "escalation", evidenceRule: "terminalCause.classification" },
         budgets: [{ kind: "local-infra", consumed: 1, remaining: 2, evidence: "terminalCause" }],
         latestVerdict: "escalate",
+        retained: { branch: "goobers/5313", branchSha: "abc123", recoveryRunId: "run-1" },
         nextAction: "human intervention required",
         humanInterventionReason: "reviewer requested a human decision",
       }),
     );
     expect(line).toContain("budgets local-infra 1 used/2 left");
     expect(line).toContain("verdict escalate");
+    expect(line).toContain("retained branch goobers/5313@abc123, recovers run-1");
     expect(line.endsWith("needs human: reviewer requested a human decision")).toBe(true);
   });
 });

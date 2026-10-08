@@ -1,6 +1,7 @@
 package readservice
 
 import (
+	"cmp"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,7 +25,7 @@ const (
 
 	reliabilityRuleCauseClass      = "latestError.causes.class"
 	reliabilityRuleErrorCode       = "latestError.code"
-	reliabilityRuleTerminalReason  = "terminalReason"
+	reliabilityRuleCompleted       = "run-completed"
 	reliabilityRuleNoError         = "no-error-recorded"
 	reliabilityRuleNoTerminalCause = "terminal-cause-not-recorded"
 	reliabilityRuleTerminalCause   = "terminalCause.classification"
@@ -53,7 +54,8 @@ type RunReliability struct {
 	// CurrentAttempt is the active attempt number of CurrentStage; zero means
 	// no attempt is active or the attempt is not recorded.
 	CurrentAttempt int `json:"currentAttempt,omitempty"`
-	// Failure is the normalized classification of the latest recorded failure.
+	// Failure classifies a running run's latest recorded error; a terminal
+	// run's failure is unknown until a recorded terminal cause refines it.
 	Failure ReliabilityFailure `json:"failure"`
 	// Budgets reports consumed and remaining counts per retry target.
 	Budgets []ReliabilityBudget `json:"budgets"`
@@ -147,10 +149,10 @@ func projectRunReliability(summary RunSummary) RunReliability {
 		out.LatestVerdict = summary.Operator.Review.Verdict
 	}
 	if summary.Phase == journal.PhaseEscalated {
-		out.HumanInterventionReason = summary.TerminalReason
-		if out.HumanInterventionReason == "" {
-			out.HumanInterventionReason = reliabilityUnknown
-		}
+		// List-path TerminalReason may be a heuristic (the read model's last
+		// error, or a legacy journal scan), so only a recorded terminal cause
+		// supplies the exact reason; see withTerminalCauseReliability.
+		out.HumanInterventionReason = reliabilityUnknown
 	}
 	return out
 }
@@ -169,6 +171,15 @@ func currentAttempt(summary RunSummary) int {
 }
 
 func reliabilityFailure(summary RunSummary) ReliabilityFailure {
+	switch {
+	case summary.Phase == journal.PhaseCompleted:
+		return ReliabilityFailure{Classification: reliabilityFailureNone, EvidenceRule: reliabilityRuleCompleted}
+	case summary.Terminal:
+		// LatestError is never cleared, so it may be an earlier recovered
+		// failure rather than what ended the run; without a recorded terminal
+		// cause the terminal failure is unknown.
+		return ReliabilityFailure{Classification: reliabilityUnknown, EvidenceRule: reliabilityRuleNoTerminalCause}
+	}
 	if latest := summary.Operator.LatestError; latest != nil {
 		for _, cause := range latest.Causes {
 			if class := strings.ToLower(strings.TrimSpace(cause.Class)); class != "" {
@@ -178,14 +189,6 @@ func reliabilityFailure(summary RunSummary) ReliabilityFailure {
 		if latest.Code != "" {
 			return ReliabilityFailure{Classification: reliabilityFailureUnclassified, EvidenceRule: reliabilityRuleErrorCode, Code: latest.Code}
 		}
-	}
-	if summary.TerminalReason != "" {
-		return ReliabilityFailure{Classification: reliabilityFailureUnclassified, EvidenceRule: reliabilityRuleTerminalReason}
-	}
-	if summary.Terminal && summary.Phase != journal.PhaseCompleted {
-		// A non-completed terminal run ended for some reason; a source that
-		// did not record it must not claim there was no failure.
-		return ReliabilityFailure{Classification: reliabilityUnknown, EvidenceRule: reliabilityRuleNoTerminalCause}
 	}
 	return ReliabilityFailure{Classification: reliabilityFailureNone, EvidenceRule: reliabilityRuleNoError}
 }
@@ -257,13 +260,18 @@ func (r RunReliability) StatusLine() string {
 			b.WriteString(" attempt " + strconv.Itoa(r.CurrentAttempt))
 		}
 	}
-	b.WriteString("; failure " + r.Failure.Classification + " (" + r.Failure.EvidenceRule + ")")
+	b.WriteString("; failure " + r.Failure.Classification)
+	if r.Failure.Code != "" {
+		b.WriteString(" " + r.Failure.Code)
+	}
+	b.WriteString(" (" + r.Failure.EvidenceRule + ")")
 	budgets := make([]string, len(r.Budgets))
 	for i, budget := range r.Budgets {
 		budgets[i] = budget.Kind + " " + countOrUnknown(budget.Consumed) + " used/" + countOrUnknown(budget.Remaining) + " left"
 	}
 	b.WriteString("; budgets " + strings.Join(budgets, ", "))
 	b.WriteString("; verdict " + r.LatestVerdict + "; acceptance " + r.Acceptance.State)
+	b.WriteString("; retained " + r.Retained.summary())
 	b.WriteString("; next " + r.NextAction)
 	if r.HumanInterventionReason != "" {
 		b.WriteString("; needs human: " + r.HumanInterventionReason)
@@ -276,6 +284,27 @@ func countOrUnknown(count *int) string {
 		return "?"
 	}
 	return strconv.Itoa(*count)
+}
+
+func (r ReliabilityRetainedRefs) summary() string {
+	var parts []string
+	if r.Branch != "" {
+		branch := "branch " + r.Branch
+		if r.BranchSHA != "" {
+			branch += "@" + r.BranchSHA
+		}
+		parts = append(parts, branch)
+	}
+	if r.PullRequest != nil {
+		parts = append(parts, "pr "+cmp.Or(r.PullRequest.URL, r.PullRequest.ID))
+	}
+	if r.RecoveryRunID != "" {
+		parts = append(parts, "recovers "+r.RecoveryRunID)
+	}
+	if len(parts) == 0 {
+		return reliabilityUnknown
+	}
+	return strings.Join(parts, ", ")
 }
 
 // withTerminalCauseReliability refines the projection with a durably recorded
@@ -292,6 +321,9 @@ func withTerminalCauseReliability(summary RunSummary, cause *EscalationCause) Ru
 		Classification: string(record.Classification),
 		EvidenceRule:   reliabilityRuleTerminalCause,
 		Code:           record.Code,
+	}
+	if summary.Phase == journal.PhaseEscalated {
+		reliability.HumanInterventionReason = cmp.Or(record.Message, record.Code, reliabilityUnknown)
 	}
 	reliability.Budgets = slices.Clone(reliability.Budgets)
 	repassKind := budgetImplementationReview

@@ -133,6 +133,9 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 	escalated, clock := createFixtureRun(t, layout, machine, "reliability-escalated", "implementation", "goobers", fixedTime.Add(2*time.Minute), trigger, true)
 	appendReliabilityEvents(t, escalated, clock,
 		journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		journal.Event{Type: journal.EventError, Stage: "implement", Error: &journal.ErrorDetail{
+			Code: "workspace_failed", Message: "recovered earlier", Causes: []journal.ErrorCause{{Code: "workspace_failed", Class: "infra"}},
+		}},
 		journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
 		journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "escalate", Target: journal.TargetEscalate},
 		journal.Event{
@@ -187,16 +190,17 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 
 	got = fromJournal["reliability-escalated"]
 	if got.State != "escalated" || got.LatestVerdict != "escalate" ||
-		got.NextAction != "human intervention required" ||
-		got.Failure.EvidenceRule != "terminalReason" ||
-		got.HumanInterventionReason != "reviewer requested a human decision" {
+		got.NextAction != "human intervention required" {
 		t.Fatalf("escalated reliability = %+v", got)
 	}
 	assertBudget(t, "escalated list", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
-	got = fromReadModel["reliability-escalated"]
-	if got.State != "escalated" || got.Failure.Classification != "unknown" ||
-		got.Failure.EvidenceRule != "terminal-cause-not-recorded" || got.HumanInterventionReason != "unknown" {
-		t.Fatalf("read-model escalated reliability must mark missing cause unknown: %+v", got)
+	// Neither list path carries the recorded terminal cause, and the earlier
+	// recovered infra error must not be reported as what ended the run.
+	for name, got := range map[string]RunReliability{"journal": got, "read model": fromReadModel["reliability-escalated"]} {
+		if got.State != "escalated" || got.Failure.Classification != "unknown" ||
+			got.Failure.EvidenceRule != "terminal-cause-not-recorded" || got.HumanInterventionReason != "unknown" {
+			t.Fatalf("%s escalated reliability must mark missing cause unknown: %+v", name, got)
+		}
 	}
 
 	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
@@ -210,10 +214,25 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 	refined := detail.Operator.Reliability
 	if refined == nil || refined.Failure.Classification != string(journal.TerminalEscalation) ||
 		refined.Failure.EvidenceRule != "terminalCause.classification" ||
-		refined.Failure.Code != runcontrol.ReasonInfrastructureBudgetExhausted {
+		refined.Failure.Code != runcontrol.ReasonInfrastructureBudgetExhausted ||
+		refined.HumanInterventionReason != "reviewer requested a human decision" {
 		t.Fatalf("detail reliability = %+v", refined)
 	}
 	assertBudget(t, "escalated detail", budgetByKind(t, *refined, "local-infra"), intPtr(1), intPtr(2), "terminalCause")
 	assertBudget(t, "escalated detail", budgetByKind(t, *refined, "implementation-review"), intPtr(0), nil, "journal")
 	assertBudget(t, "escalated detail", budgetByKind(t, *refined, "ci-poll"), nil, nil, "unknown")
+}
+
+func TestRunReliabilityCompletedRunIgnoresRecoveredErrorAndShowsRetainedRefs(t *testing.T) {
+	summary := RunSummary{Phase: journal.PhaseCompleted, Terminal: true}
+	summary.Operator.LatestError = &journal.ErrorDetail{Code: "workspace_failed", Causes: []journal.ErrorCause{{Class: "infra"}}}
+	summary.Operator.PullRequest = &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"}
+	summary.Lineage = &RunLineage{WorkspaceBranch: "goobers/5313", WorkspaceBranchSHA: "abc123"}
+	got := projectRunReliability(summary)
+	if got.Failure.Classification != "none" || got.Failure.EvidenceRule != "run-completed" {
+		t.Fatalf("completed run failure = %+v", got.Failure)
+	}
+	if line := got.StatusLine(); !strings.Contains(line, "; retained branch goobers/5313@abc123, pr 42;") {
+		t.Fatalf("status line missing retained refs: %q", line)
+	}
 }
