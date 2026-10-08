@@ -31,6 +31,10 @@ func TestEnforceExpectedOutputs(t *testing.T) {
 	agentic.Type, agentic.Run, agentic.Goober = apiv1.TaskAgentic, nil, "coder"
 	noResultFile := shell
 	noResultFile.Inputs = nil
+	dynamicKind := shell
+	dynamicKind.InputsFrom = map[string]string{"kind": "plan.kind"}
+	boundResultFile := noResultFile
+	boundResultFile.InputsFrom = map[string]string{"resultFile": "plan.resultFile"}
 	partial := map[string]any{"merged": "do-not-leak-this-value"}
 	complete := map[string]any{"prNumber": "194", "merged": true}
 
@@ -62,9 +66,15 @@ func TestEnforceExpectedOutputs(t *testing.T) {
 			status: apiv1.ResultSuccess, outputs: nil, wantFail: true,
 			wantMsg: []string{"no inputs.resultFile", `"prNumber"`},
 		},
+		{
+			name: "dsl 3.1 result file bound through inputsFrom", version: supportmatrix.V31DSLVersion, task: boundResultFile,
+			status: apiv1.ResultSuccess, outputs: nil, wantFail: true,
+			wantMsg: []string{`"inputsFrom.resultFile"`, `"prNumber"`},
+		},
 		{name: "no-work is not a contract breach", version: supportmatrix.V31DSLVersion, task: shell, status: apiv1.ResultNoWork},
 		{name: "failure keeps its own diagnosis", version: supportmatrix.V31DSLVersion, task: shell, status: apiv1.ResultFailure},
 		{name: "built-in ci-poll owns its outputs", version: supportmatrix.V31DSLVersion, task: withKind(shell, "ci-poll"), status: apiv1.ResultSuccess},
+		{name: "runtime-bound kind may be built in", version: supportmatrix.V31DSLVersion, task: dynamicKind, status: apiv1.ResultSuccess},
 		{name: "agentic stage owns its outputs", version: supportmatrix.V31DSLVersion, task: agentic, status: apiv1.ResultSuccess},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

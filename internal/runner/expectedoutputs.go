@@ -40,6 +40,11 @@ func EnforceExpectedOutputs(dslVersion string, task apiv1.Task, result apiv1.Res
 func missingExpectedOutputsMessage(task apiv1.Task, missing []string) string {
 	resultFile := strings.TrimSpace(task.Inputs["resultFile"])
 	if resultFile == "" {
+		if _, bound := task.InputsFrom["resultFile"]; bound {
+			resultFile = "inputsFrom.resultFile"
+		}
+	}
+	if resultFile == "" {
 		return fmt.Sprintf(
 			"stage %q declares expectedOutputs %q but did not emit %q: it declares no inputs.resultFile, the only channel a shell stage emits outputs through",
 			task.Name, task.ExpectedOutputs, missing)

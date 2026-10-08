@@ -298,9 +298,14 @@ func isShellStage(task apiv1.Task) bool {
 // VER003 behaviour. From DSL 3.1 on, a shell stage (whose outputs come only
 // from its declared result file) fails when it reports success without one of
 // its declared keys. Built-in kinds and agentic stages define their own,
-// sometimes conditional, output contracts and are not enforced.
+// sometimes conditional, output contracts and are not enforced; neither is a
+// stage whose kind is bound at runtime through inputsFrom.kind, since it may
+// resolve to a built-in kind.
 func EnforcesExpectedOutputs(dslVersion string, task apiv1.Task) bool {
 	if len(task.ExpectedOutputs) == 0 || !isShellStage(task) {
+		return false
+	}
+	if _, dynamicKind := task.InputsFrom["kind"]; dynamicKind {
 		return false
 	}
 	order, ok := supportmatrix.CompareDSLVersions(dslVersion, supportmatrix.V31DSLVersion)
