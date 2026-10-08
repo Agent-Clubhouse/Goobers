@@ -83,6 +83,8 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
+	// GeneratedChild is populated only by the signed generated-worker authenticator.
+	GeneratedChild *GeneratedChildPrincipal
 	// ChildWorkflow is populated only by the stage-grant authenticator.
 	ChildWorkflow *ChildWorkflowPrincipal
 	Subject       string
@@ -151,6 +153,14 @@ func (p Principal) HasRole(required Role) bool {
 // implementation). Pod principals hold no instance roles: authorization for
 // them is plane-scoped, not role-ranked.
 const PodPrincipalIssuer = "goobers/pod"
+
+// GeneratedChildPrincipalIssuer is separate from ordinary pod and human authority.
+const GeneratedChildPrincipalIssuer = "goobers/generated-child"
+
+// GeneratedChildPrincipal binds authentication to one immutable execution contract.
+type GeneratedChildPrincipal struct {
+	ContractDigest string
+}
 
 // WorkerPrincipalIssuer identifies a resident worker's short-lived
 // config-observability credential. It carries neither instance roles nor a run
@@ -423,6 +433,11 @@ func RequireRoles() Authorizer {
 				return nil
 			}
 			return errors.New("only an authenticated worker may report config divergence")
+		}
+		if principal.Issuer == GeneratedChildPrincipalIssuer {
+			// The exact-attempt route owner must be connected before this identity
+			// can reach any API. Ordinary pod scopes and human roles cannot widen it.
+			return errors.New("generated child execution authority unavailable")
 		}
 		if principal.Issuer == ChildWorkflowPrincipalIssuer {
 			return authorizeChildWorkflow(request, principal)

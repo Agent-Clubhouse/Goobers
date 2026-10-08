@@ -297,3 +297,28 @@ func TestConfigDigestPlaneServesOnlyADigest(t *testing.T) {
 		t.Errorf("digest = %v", decoded["digest"])
 	}
 }
+
+// Generated workers must not inherit the ordinary pod or operator authority
+// while their exact-attempt route owner is unavailable.
+func TestGeneratedChildCannotInheritOrdinaryAuthority(t *testing.T) {
+	routes := podRouteTable()
+	routes = append(routes, struct{ name, method, path, scope string }{
+		"operator message", http.MethodPost, "/api/v1/runs/run-1/operator-messages", "",
+	}, struct{ name, method, path, scope string }{
+		"human health read", http.MethodGet, HealthPath, "",
+	})
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			principal := Principal{
+				Subject: podPrincipalSubject("run-1"), Issuer: GeneratedChildPrincipalIssuer,
+				Roles: []Role{RoleAdmin, RoleOperate, RoleView}, Scopes: knownPodScopes(),
+				GeneratedChild: &GeneratedChildPrincipal{ContractDigest: "sha256:" + strings.Repeat("a", 64)},
+			}
+			request := httptest.NewRequest(route.method, route.path, nil)
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+			if err := RequireRoles().Authorize(request); err == nil {
+				t.Fatalf("generated child inherited authority for %s %s", route.method, route.path)
+			}
+		})
+	}
+}

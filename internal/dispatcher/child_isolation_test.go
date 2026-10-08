@@ -200,8 +200,10 @@ func TestChildOrphanRetainsUnconfirmedCustodyAfterOrdinaryHoldExpires(t *testing
 	}
 }
 
-func (childMinter) Mint(string, time.Duration) (string, error)         { return "ordinary", nil }
-func (childMinter) MintChildPod(string, time.Duration) (string, error) { return "generated", nil }
+func (childMinter) Mint(string, time.Duration) (string, error) { return "ordinary", nil }
+func (childMinter) MintChildPod(string, string, time.Duration) (string, error) {
+	return "generated", nil
+}
 
 func TestChildTokenCannotUseOrdinaryOrCallerBearer(t *testing.T) {
 	for _, scenario := range []string{"signed", "ordinary-only", "caller"} {
