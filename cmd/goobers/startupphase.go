@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"io"
 	"sync"
 	"time"
@@ -29,12 +31,23 @@ type startupPhaseTracker struct {
 	// progress counts startup advances; a starting daemon advertises it so a
 	// waiting worker can tell slow from stuck (#6895).
 	progress uint64
+	// daemonID names this daemon process in its startup hints, so a waiting
+	// worker does not mistake a restart's reset counter for progress.
+	daemonID string
 }
 
 func newStartupPhaseTracker(budgetFloor time.Duration) *startupPhaseTracker {
-	tracker := &startupPhaseTracker{}
+	tracker := &startupPhaseTracker{daemonID: newDaemonID()}
 	tracker.configureBudget(budgetFloor)
 	return tracker
+}
+
+// newDaemonID returns a random per-process id; a time-based one could collide
+// across a fast restart. A failed read only weakens restart detection.
+func newDaemonID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (t *startupPhaseTracker) set(phase, target string) {

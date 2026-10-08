@@ -239,6 +239,32 @@ func TestReadinessBoundFollowsDaemonBudgetAndProgress(t *testing.T) {
 	expect("cap", at(3*time.Hour))
 }
 
+func TestReadinessBoundIgnoresRestartedDaemonsResetProgressAndFreshBudget(t *testing.T) {
+	start := time.Unix(1_000_000, 0)
+	wait := 20 * time.Minute
+	b := newReadinessBound(start, ProbeOptions{ReadyWait: wait, MaxReadyWait: 6 * time.Hour})
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+
+	b.observe(at(0), startuphint.Hints{HasBudget: true, BudgetRemaining: 10 * time.Minute, Progress: "17", Daemon: "a"})
+	if !b.deadline.Equal(at(wait)) {
+		t.Fatalf("first daemon: deadline = %s, want %s", b.deadline.Sub(start), wait)
+	}
+	// Each restart resets the counter and advertises a fresh full budget;
+	// neither may read as the daemon advancing.
+	for i, daemon := range []string{"b", "c", "d"} {
+		now := at(time.Duration(i+1) * 5 * time.Minute)
+		b.observe(now, startuphint.Hints{HasBudget: true, BudgetRemaining: time.Hour, Progress: "3", Daemon: daemon})
+		if !b.deadline.Equal(at(wait)) {
+			t.Fatalf("restart %s: deadline = %s, want unchanged %s", daemon, b.deadline.Sub(start), wait)
+		}
+	}
+	// Real progress within the latest process still extends the bound.
+	b.observe(at(18*time.Minute), startuphint.Hints{HasBudget: true, BudgetRemaining: time.Hour, Progress: "4", Daemon: "d"})
+	if want := at(18*time.Minute + wait); !b.deadline.Equal(want) {
+		t.Fatalf("progress after restart: deadline = %s, want %s", b.deadline.Sub(start), want.Sub(start))
+	}
+}
+
 func TestProbeWaitsForAdvancingDaemonPastReadyWaitButNotForStuckOne(t *testing.T) {
 	answer := func(progress func(n int32) string, readyAfter int32) (probePutter, *atomic.Int32, blobstore.Store) {
 		local, _ := blobstore.NewDir(t.TempDir())

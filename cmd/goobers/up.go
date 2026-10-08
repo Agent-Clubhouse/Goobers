@@ -1142,6 +1142,7 @@ func (u *upSession) configureAPI() int {
 		// tracker regardless of which optional services below it configures.
 		httpapi.WithInstanceReadinessService(&daemonInstanceReadinessService{instanceRoot: u.l.Root, tracker: u.tracker, ready: u.ready.Load}),
 		httpapi.WithRecoveryGate(u.ready.Load),
+		httpapi.WithRecoveryHints(u.tracker.setStartupHints),
 	)
 	if u.liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal

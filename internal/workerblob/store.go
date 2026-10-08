@@ -208,6 +208,10 @@ type readinessBound struct {
 	start, deadline, limit time.Time
 	stall                  time.Duration
 	progress               string
+	// daemon is the process whose progress token is the current baseline;
+	// firstDaemon is the only process whose budget extends the bound.
+	daemon, firstDaemon string
+	seen                bool
 }
 
 func newReadinessBound(now time.Time, opts ProbeOptions) *readinessBound {
@@ -226,14 +230,26 @@ func newReadinessBound(now time.Time, opts ProbeOptions) *readinessBound {
 }
 
 // observe folds one not-ready answer's hints into the bound. The first
-// progress token seen is a baseline, not progress. A spent budget extends
+// progress token seen from a daemon process is a baseline, not progress, and
+// only the first daemon process seen may extend the bound by its budget: a
+// crash-looping daemon advertises a fresh budget and a reset progress token
+// on every restart, which must not read as advancing. A spent budget extends
 // nothing, so a daemon past its own estimate is held only by real progress.
 func (b *readinessBound) observe(now time.Time, hints startuphint.Hints) {
+	if hints == (startuphint.Hints{}) {
+		return
+	}
+	if !b.seen {
+		b.seen, b.firstDaemon, b.daemon = true, hints.Daemon, hints.Daemon
+	}
 	next := b.deadline
-	if hints.HasBudget && hints.BudgetRemaining > 0 {
+	if hints.Daemon == b.firstDaemon && hints.HasBudget && hints.BudgetRemaining > 0 {
 		next = latest(next, now.Add(hints.BudgetRemaining+startupBudgetGrace))
 	}
-	if hints.Progress != "" && hints.Progress != b.progress {
+	switch {
+	case hints.Daemon != b.daemon:
+		b.daemon, b.progress = hints.Daemon, hints.Progress
+	case hints.Progress != "" && hints.Progress != b.progress:
 		if b.progress != "" {
 			next = latest(next, now.Add(b.stall))
 		}
@@ -249,6 +265,9 @@ func describeHints(hints startuphint.Hints) string {
 	}
 	if hints.Progress != "" {
 		parts = append(parts, "daemon progress "+hints.Progress)
+	}
+	if hints.Daemon != "" {
+		parts = append(parts, "daemon "+hints.Daemon)
 	}
 	if len(parts) == 0 {
 		return ""

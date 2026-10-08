@@ -274,8 +274,11 @@ func TestDaemonStartingAdvertisesBudgetAndProgress(t *testing.T) {
 	}
 
 	_, first := answer(tracker)
-	if !first.HasBudget || first.BudgetRemaining <= 9*time.Minute || first.BudgetRemaining > 10*time.Minute || first.Progress == "" {
-		t.Fatalf("hints = %+v, want ~10m budget and a progress token", first)
+	if !first.HasBudget || first.BudgetRemaining <= 9*time.Minute || first.BudgetRemaining > 10*time.Minute || first.Progress == "" || first.Daemon == "" {
+		t.Fatalf("hints = %+v, want ~10m budget, a progress token and a daemon id", first)
+	}
+	if other := newStartupPhaseTracker(10 * time.Minute).startupHints(time.Now()); other.Daemon == first.Daemon {
+		t.Fatalf("two daemon processes share id %q; a restart would read as the same daemon", other.Daemon)
 	}
 	if _, again := answer(tracker); again.Progress != first.Progress {
 		t.Fatalf("progress token moved without progress: %q -> %q", first.Progress, again.Progress)

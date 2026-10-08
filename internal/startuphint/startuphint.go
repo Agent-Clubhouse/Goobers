@@ -23,11 +23,15 @@ const (
 	// advances (a phase begins, a budget input is measured, or a phase reports
 	// progress). Only equality is meaningful.
 	HeaderProgress = "Goobers-Startup-Progress"
+	// HeaderDaemon is an opaque token naming the daemon process that sent
+	// the hints. A restarted daemon sends a new one, so its progress token
+	// and budget are not mistaken for the previous process advancing.
+	HeaderDaemon = "Goobers-Startup-Daemon"
 
 	// maxBudgetRemaining bounds a parsed budget so a malformed or hostile
 	// answer cannot stretch a client's wait without limit.
 	maxBudgetRemaining = 24 * time.Hour
-	maxProgressLen     = 64
+	maxTokenLen        = 64
 )
 
 // Hints is what a starting daemon advertised. The zero value advertises
@@ -40,6 +44,8 @@ type Hints struct {
 	HasBudget bool
 	// Progress is the daemon's progress token, or "" when none was sent.
 	Progress string
+	// Daemon identifies the daemon process, or "" when none was sent.
+	Daemon string
 }
 
 // Set writes hints onto h. Absent fields are left unset.
@@ -53,6 +59,9 @@ func Set(h http.Header, hints Hints) {
 	}
 	if hints.Progress != "" {
 		h.Set(HeaderProgress, hints.Progress)
+	}
+	if hints.Daemon != "" {
+		h.Set(HeaderDaemon, hints.Daemon)
 	}
 }
 
@@ -70,8 +79,14 @@ func Parse(h http.Header) Hints {
 			}
 		}
 	}
-	if raw := strings.TrimSpace(h.Get(HeaderProgress)); raw != "" && len(raw) <= maxProgressLen {
-		hints.Progress = raw
-	}
+	hints.Progress = token(h, HeaderProgress)
+	hints.Daemon = token(h, HeaderDaemon)
 	return hints
+}
+
+func token(h http.Header, name string) string {
+	if raw := strings.TrimSpace(h.Get(name)); len(raw) <= maxTokenLen {
+		return raw
+	}
+	return ""
 }

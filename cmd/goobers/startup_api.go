@@ -86,12 +86,21 @@ func (t *startupPhaseTracker) startupHints(now time.Time) startuphint.Hints {
 	t.mu.Lock()
 	progress := t.progress
 	t.mu.Unlock()
-	hints := startuphint.Hints{Progress: strconv.FormatUint(progress, 10)}
+	hints := startuphint.Hints{Progress: strconv.FormatUint(progress, 10), Daemon: t.daemonID}
 	if budget.Budget > 0 {
 		hints.HasBudget = true
 		hints.BudgetRemaining = budget.Budget - budget.Elapsed
 	}
 	return hints
+}
+
+// setStartupHints writes the daemon's current startup hints onto h. It
+// decorates both the pre-API "daemon is starting" 503 and the recovery
+// gate's 503, since the longest startup phases run behind the latter.
+func (t *startupPhaseTracker) setStartupHints(h http.Header) {
+	if t != nil {
+		startuphint.Set(h, t.startupHints(time.Now()))
+	}
 }
 
 // trackStartupProgress counts each startup progress report on tracker before
@@ -107,9 +116,7 @@ func trackStartupProgress(tracker *startupPhaseTracker, report func(string)) fun
 // hints, from which a waiting worker derives how long to wait.
 func daemonStartingHandler(tracker *startupPhaseTracker) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
-		if tracker != nil {
-			startuphint.Set(response.Header(), tracker.startupHints(time.Now()))
-		}
+		tracker.setStartupHints(response.Header())
 		serveDaemonStarting(response, request)
 	}
 }

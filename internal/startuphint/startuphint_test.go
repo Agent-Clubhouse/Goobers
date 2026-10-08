@@ -9,8 +9,8 @@ import (
 
 func TestSetParseRoundTripAndRejectsMalformed(t *testing.T) {
 	h := http.Header{}
-	Set(h, Hints{BudgetRemaining: 90*time.Second + 500*time.Millisecond, HasBudget: true, Progress: "7"})
-	if got := Parse(h); got != (Hints{BudgetRemaining: 90 * time.Second, HasBudget: true, Progress: "7"}) {
+	Set(h, Hints{BudgetRemaining: 90*time.Second + 500*time.Millisecond, HasBudget: true, Progress: "7", Daemon: "d1"})
+	if got := Parse(h); got != (Hints{BudgetRemaining: 90 * time.Second, HasBudget: true, Progress: "7", Daemon: "d1"}) {
 		t.Fatalf("round trip = %+v", got)
 	}
 
@@ -21,7 +21,8 @@ func TestSetParseRoundTripAndRejectsMalformed(t *testing.T) {
 	}
 
 	for _, raw := range []string{"-5", "soon", "1.5"} {
-		h = http.Header{HeaderBudgetRemaining: {raw}, HeaderProgress: {strings.Repeat("x", maxProgressLen+1)}}
+		long := strings.Repeat("x", maxTokenLen+1)
+		h = http.Header{HeaderBudgetRemaining: {raw}, HeaderProgress: {long}, HeaderDaemon: {long}}
 		if got := Parse(h); got != (Hints{}) {
 			t.Fatalf("malformed %q parsed as %+v", raw, got)
 		}
