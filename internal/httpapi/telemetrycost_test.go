@@ -57,16 +57,19 @@ func TestTelemetryCostRouteParsesAndReturnsSharedContract(t *testing.T) {
 }
 
 func TestTelemetryCostRouteRejectsMalformedQuery(t *testing.T) {
-	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, query := range []string{
 		"?since=yesterday&until=2026-08-02T00:00:00Z",
 		"?since=2026-08-01T00:00:00Z&until=tomorrow",
 		"?since=2026-08-01T00:00:00Z&until=2026-08-02T00:00:00Z&sort=cost",
 		"?since=2026-08-01T00:00:00Z&since=2026-08-01T01:00:00Z&until=2026-08-02T00:00:00Z",
 	} {
+		// Each query is independent. A response can precede the budget
+		// goroutine releasing its admission slot, so do not carry that pool
+		// into the next parsing case (saturation is covered separately).
+		handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger())
+		if err != nil {
+			t.Fatal(err)
+		}
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.TelemetryCostsPath+query, nil))
 		if response.Code != http.StatusBadRequest {
