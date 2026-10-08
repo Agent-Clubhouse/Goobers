@@ -22,13 +22,34 @@ const (
 
 type refreshFunc func(context.Context, providerfixture.RefreshConfig) (providerfixture.Fixture, error)
 type adoRefreshFunc func(context.Context, providerfixture.ADORefreshConfig) (providerfixture.Fixture, error)
+type adoEnsureFunc func(context.Context, providerfixture.ADOFixtureConfig) (providerfixture.ADOFixtureResolution, error)
+
+// adoRefreshers are the live ADO calls a refresh makes.
+type adoRefreshers struct {
+	refresh adoRefreshFunc
+	ensure  adoEnsureFunc
+}
+
+// adoTarget is the fixture an ADO refresh reads: an explicitly pinned work
+// item, or the open fixture resolved (and, with provision, recreated) by
+// title and tag.
+type adoTarget struct {
+	organizationURL string
+	project         string
+	workItem        string
+	workItemType    string
+	provision       bool
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
 
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
-	return runWithRefreshers(args, getenv, stdout, stderr, providerfixture.Refresh, providerfixture.RefreshADO)
+	return runWithRefreshers(args, getenv, stdout, stderr, providerfixture.Refresh, adoRefreshers{
+		refresh: providerfixture.RefreshADO,
+		ensure:  providerfixture.EnsureADOFixture,
+	})
 }
 
 func runWithRefreshers(
@@ -36,7 +57,7 @@ func runWithRefreshers(
 	getenv func(string) string,
 	stdout, stderr io.Writer,
 	refresh refreshFunc,
-	refreshADO adoRefreshFunc,
+	ado adoRefreshers,
 ) int {
 	if len(args) == 0 {
 		if _, err := fmt.Fprintln(stderr, "usage: providerfixtures <refresh|contract|drift> [flags]"); err != nil {
@@ -47,7 +68,7 @@ func runWithRefreshers(
 	var err error
 	switch args[0] {
 	case "refresh":
-		err = runRefresh(args[1:], getenv, stdout, stderr, refresh, refreshADO)
+		err = runRefresh(args[1:], getenv, stdout, stderr, refresh, ado)
 	case "contract":
 		err = runContract(args[1:], stdout, stderr)
 	case "drift":
@@ -80,7 +101,7 @@ func runRefresh(
 	getenv func(string) string,
 	stdout, stderr io.Writer,
 	refresh refreshFunc,
-	refreshADO adoRefreshFunc,
+	ado adoRefreshers,
 ) error {
 	flags := flag.NewFlagSet("refresh", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -88,9 +109,12 @@ func runRefresh(
 	repository := flags.String("repository", "", "designated fixture repository in owner/name form")
 	issue := flags.String("issue", "", "stable fixture issue number")
 	pullRequest := flags.String("pull-request", "", "stable fixture pull request number")
-	organizationURL := flags.String("organization-url", "", "Azure DevOps organization URL")
-	project := flags.String("project", "", "Azure DevOps project")
-	workItem := flags.String("work-item", "", "stable Azure DevOps work-item number")
+	var target adoTarget
+	flags.StringVar(&target.organizationURL, "organization-url", "", "Azure DevOps organization URL")
+	flags.StringVar(&target.project, "project", "", "Azure DevOps project")
+	flags.StringVar(&target.workItem, "work-item", "", "pinned Azure DevOps work-item number (default: resolve the open fixture by title and tag)")
+	flags.StringVar(&target.workItemType, "fixture-type", providerfixture.ADOFixtureDefaultType, "work item type of a provisioned ADO fixture")
+	flags.BoolVar(&target.provision, "provision-fixture", false, "create the ADO fixture work item when no open one exists")
 	output := flags.String("output", "", "candidate fixture output path")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -112,7 +136,7 @@ func runRefresh(
 		}
 	case "ado":
 		var err error
-		fixture, err = refreshAzureDevOps(ctx, getenv, *organizationURL, *project, *workItem, refreshADO)
+		fixture, err = refreshAzureDevOps(ctx, getenv, stdout, target, ado)
 		if err != nil {
 			return err
 		}
@@ -158,25 +182,47 @@ func refreshGitHub(
 func refreshAzureDevOps(
 	ctx context.Context,
 	getenv func(string) string,
-	organizationURL, project, workItem string,
-	refresh adoRefreshFunc,
+	stdout io.Writer,
+	target adoTarget,
+	ado adoRefreshers,
 ) (providerfixture.Fixture, error) {
-	if organizationURL == "" {
+	if target.organizationURL == "" {
 		return providerfixture.Fixture{}, fmt.Errorf("-organization-url is required for ADO")
 	}
-	if project == "" {
+	if target.project == "" {
 		return providerfixture.Fixture{}, fmt.Errorf("-project is required for ADO")
 	}
-	if workItem == "" {
-		return providerfixture.Fixture{}, fmt.Errorf("-work-item is required for ADO")
+	if target.workItem != "" && target.provision {
+		return providerfixture.Fixture{}, fmt.Errorf("-provision-fixture resolves the fixture itself; omit -work-item")
 	}
 	token := strings.TrimSpace(getenv(adoTokenEnvironment))
 	if token == "" {
 		return providerfixture.Fixture{}, fmt.Errorf("%s is required for ADO refresh", adoTokenEnvironment)
 	}
-	fixture, err := refresh(ctx, providerfixture.ADORefreshConfig{
-		OrganizationURL: organizationURL,
-		Project:         project,
+	workItem := target.workItem
+	if workItem == "" {
+		resolved, err := ado.ensure(ctx, providerfixture.ADOFixtureConfig{
+			OrganizationURL: target.organizationURL,
+			Project:         target.project,
+			Token:           token,
+			WorkItemType:    target.workItemType,
+			Provision:       target.provision,
+		})
+		if err != nil {
+			return providerfixture.Fixture{}, fmt.Errorf("resolve ADO provider fixture: %w", err)
+		}
+		workItem = resolved.WorkItem
+		state := "found open"
+		if resolved.Created {
+			state = "created"
+		}
+		if _, err := fmt.Fprintf(stdout, "ADO provider fixture work item #%s: %s\n", workItem, state); err != nil {
+			return providerfixture.Fixture{}, err
+		}
+	}
+	fixture, err := ado.refresh(ctx, providerfixture.ADORefreshConfig{
+		OrganizationURL: target.organizationURL,
+		Project:         target.project,
 		WorkItem:        workItem,
 		Token:           token,
 	})

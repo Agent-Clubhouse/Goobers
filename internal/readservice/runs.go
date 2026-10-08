@@ -271,11 +271,14 @@ type OperatorClaim struct {
 
 // OperatorReview summarizes the latest review verdict driving a repass.
 type OperatorReview struct {
-	Verdict             string                  `json:"verdict"`
-	Rationale           string                  `json:"rationale,omitempty"`
-	ReasonCode          apiv1.VerdictReasonCode `json:"reasonCode,omitempty"`
-	Findings            []apiv1.Finding         `json:"findings,omitempty"`
-	LegacyFailAmbiguous bool                    `json:"legacyFailAmbiguous,omitempty"`
+	Verdict    string                  `json:"verdict"`
+	Rationale  string                  `json:"rationale,omitempty"`
+	ReasonCode apiv1.VerdictReasonCode `json:"reasonCode,omitempty"`
+	Findings   []apiv1.Finding         `json:"findings,omitempty"`
+	// Synthesized marks a runner-generated verdict (#5894): the reviewer did
+	// not run, so absent findings do not mean a clean review.
+	Synthesized         bool `json:"synthesized,omitempty"`
+	LegacyFailAmbiguous bool `json:"legacyFailAmbiguous,omitempty"`
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
