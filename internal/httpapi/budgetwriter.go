@@ -124,7 +124,12 @@ func (b *budgetWriter) preempt() bool {
 // It runs before the handler's completion is signalled, so a request that did
 // not hit its budget has released its slot by the time this function returns
 // (#6926).
-func serveWithBudgetAnswer(logger *log.Logger, route string, budget time.Duration, w http.ResponseWriter, request *http.Request, handler http.HandlerFunc, handlerDone func()) {
+//
+// margin is how far past the budget the caller armed the socket's write
+// deadline. A handler that started its response and is still running then is
+// about to be cut by that deadline — over HTTP/2 a stream reset with
+// INTERNAL_ERROR that net/http does not log — so that is logged here (#5501).
+func serveWithBudgetAnswer(logger *log.Logger, route string, budget, margin time.Duration, w http.ResponseWriter, request *http.Request, handler http.HandlerFunc, handlerDone func()) {
 	bw := newBudgetWriter(w)
 	started := time.Now()
 	finished := make(chan any, 1) // the handler's panic value, or nil
@@ -150,10 +155,28 @@ func serveWithBudgetAnswer(logger *log.Logger, route string, budget time.Duratio
 			}
 			return
 		}
-		outcome = <-finished
+		outcome = awaitStartedHandler(logger, route, margin, request, started, finished)
 	}
 	if outcome != nil {
 		panic(outcome) // http.ErrAbortHandler and real panics reach net/http as before
 	}
 	bw.finish()
+}
+
+// awaitStartedHandler waits for a handler that began its response before the
+// budget expired, logging if it is still running when the write deadline cuts
+// the response.
+func awaitStartedHandler(logger *log.Logger, route string, margin time.Duration, request *http.Request, started time.Time, finished <-chan any) any {
+	cut := time.NewTimer(margin)
+	defer cut.Stop()
+	select {
+	case outcome := <-finished:
+		return outcome
+	case <-cut.C:
+		if logger != nil {
+			logger.Printf("request passed its write deadline after starting its response; the transport cuts it (HTTP/2: stream reset INTERNAL_ERROR): route=%s method=%s elapsed=%s",
+				route, request.Method, time.Since(started).Round(time.Millisecond))
+		}
+		return <-finished
+	}
 }

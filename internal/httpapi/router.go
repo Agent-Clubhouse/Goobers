@@ -1076,7 +1076,7 @@ func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc
 		// The slot is returned when the handler goroutine ends, not when the
 		// response does: a handler abandoned at its budget still occupies the
 		// capacity the class limit is protecting (#6890).
-		serveWithBudgetAnswer(r.budgetLog, string(route.ID), budget, w, bounded, handler, release)
+		serveWithBudgetAnswer(r.budgetLog, string(route.ID), budget, writeDeadlineMargin, w, bounded, handler, release)
 		return
 	}
 	defer release()

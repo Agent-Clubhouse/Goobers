@@ -240,7 +240,7 @@ func TestBudgetAnswerReleasesBeforeReturning(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		released.Store(true)
 	}
-	serveWithBudgetAnswer(nil, "test", time.Minute, httptest.NewRecorder(),
+	serveWithBudgetAnswer(nil, "test", time.Minute, time.Minute, httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/", nil),
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }, handlerDone)
 	if !released.Load() {

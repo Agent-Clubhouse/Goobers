@@ -11,11 +11,19 @@ import (
 	"time"
 )
 
-func budgetTestServer(t *testing.T, budget time.Duration, handler http.HandlerFunc, logs *bytes.Buffer) *httptest.Server {
+func budgetTestServer(t *testing.T, budget time.Duration, handler http.HandlerFunc, logs io.Writer) *httptest.Server {
+	t.Helper()
+	return budgetTestServerWithMargin(t, budget, time.Minute, handler, logs)
+}
+
+// budgetTestServerWithMargin arms the write deadline at budget+margin, as
+// withBudget does, so the transport's own cut is part of the test.
+func budgetTestServerWithMargin(t *testing.T, budget, margin time.Duration, handler http.HandlerFunc, logs io.Writer) *httptest.Server {
 	t.Helper()
 	logger := log.New(logs, "", 0)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveWithBudgetAnswer(logger, "testRoute", budget, w, r, handler, func() {})
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget + margin))
+		serveWithBudgetAnswer(logger, "testRoute", budget, margin, w, r, handler, func() {})
 	}))
 	server.EnableHTTP2 = true
 	server.StartTLS()
@@ -84,6 +92,47 @@ func TestStartedResponseIsNotPreempted(t *testing.T) {
 	}
 }
 
+// logSignal is a log sink that reports each line, so a test can wait for a log
+// written on the serving goroutine instead of sleeping.
+type logSignal chan string
+
+func (s logSignal) Write(p []byte) (int, error) {
+	s <- string(p)
+	return len(p), nil
+}
+
+// TestStartedResponseCutByWriteDeadlineIsLogged pins #5501: a handler that
+// began its response and is still running at the write deadline has its
+// HTTP/2 stream reset with INTERNAL_ERROR, which net/http records nowhere.
+// The daemon must leave server-side evidence naming the route.
+func TestStartedResponseCutByWriteDeadlineIsLogged(t *testing.T) {
+	logs := make(logSignal, 4)
+	release := make(chan struct{})
+	defer close(release)
+	server := budgetTestServerWithMargin(t, 20*time.Millisecond, 50*time.Millisecond, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "partial")
+		_ = http.NewResponseController(w).Flush()
+		<-release
+	}, logs)
+	response, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatalf("the started response should reach the client: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if _, err := io.ReadAll(response.Body); err == nil || !strings.Contains(err.Error(), "INTERNAL_ERROR") {
+		t.Fatalf("read error = %v, want the write deadline's INTERNAL_ERROR stream reset", err)
+	}
+	select {
+	case line := <-logs:
+		if !strings.Contains(line, "route=testRoute") || !strings.Contains(line, "write deadline") {
+			t.Fatalf("log = %q, want the write-deadline cut with its route", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write-deadline cut left no server-side log")
+	}
+}
+
 func TestImplicitOKKeepsHandlerHeaders(t *testing.T) {
 	var logs bytes.Buffer
 	server := budgetTestServer(t, time.Second, func(w http.ResponseWriter, _ *http.Request) {
@@ -105,7 +154,7 @@ func TestAbandonedHandlerKeepsItsSlotUntilItReturns(t *testing.T) {
 	slotReleased := make(chan struct{})
 	logger := log.New(&logs, "", 0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveWithBudgetAnswer(logger, "testRoute", 30*time.Millisecond, w, r, func(http.ResponseWriter, *http.Request) {
+		serveWithBudgetAnswer(logger, "testRoute", 30*time.Millisecond, time.Minute, w, r, func(http.ResponseWriter, *http.Request) {
 			<-release
 		}, func() { close(slotReleased) })
 	}))
