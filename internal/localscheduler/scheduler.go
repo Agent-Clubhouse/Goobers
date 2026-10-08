@@ -322,6 +322,10 @@ type Scheduler struct {
 	// silently stalled schedule trigger (#1868), so each stall episode
 	// journals one workflow.starved event instead of one per tick.
 	triggerStallNotified map[WorkflowIdentity]bool
+	// scheduleQuiet tracks, per workflow, how long due schedule slots have
+	// been sized to zero demand without a scheduled trigger.fired (#5564).
+	// See recordScheduleFire and recordScheduleDemandOutcome.
+	scheduleQuiet map[WorkflowIdentity]scheduleQuietWindow
 	// demandPollFailures counts consecutive failed demand polls per workflow
 	// and poll kind, so a lane whose counter keeps failing journals one
 	// workflow.starved event (#5605). See recordDemandPollFailure.
@@ -546,6 +550,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		capacityRefusals:        make(map[WorkflowIdentity]capacityRefusal),
 		capacityStarvedNotified: make(map[WorkflowIdentity]bool),
 		triggerStallNotified:    make(map[WorkflowIdentity]bool),
+		scheduleQuiet:           make(map[WorkflowIdentity]scheduleQuietWindow),
 		demandPollFailures:      make(map[demandPollFailureKey]int),
 		quotaResumePacing:       make(map[apiv1.Provider]bool),
 		authCircuits:            make(map[WorkflowIdentity]authCircuit),
@@ -1192,6 +1197,9 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 				}
 				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes, false, false, "")
 				s.recordDispatchOutcome(entryIdentity(candidate.entry), admitted, reason, now)
+				if kind == journal.TriggerSchedule {
+					s.recordScheduleFire(entryIdentity(candidate.entry), now)
+				}
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -1517,6 +1525,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
 	s.triggerStallNotified = triggerStallNotified
+	// A reload can lift a refusal that kept a lane from being polled; that
+	// span was not observed zero demand, so quiet episodes restart (#5564).
+	s.scheduleQuiet = make(map[WorkflowIdentity]scheduleQuietWindow, len(entries))
 	s.authCircuits = make(map[WorkflowIdentity]authCircuit)
 
 	select {
@@ -1847,6 +1858,7 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			entry := poll.candidate.entry
 			if s.authCircuitOpen(entryIdentity(entry), now) {
 				s.applyDemandSnapshot(poll, demandSnapshot{})
+				s.recordScheduleDemandOutcome(poll, demandSnapshot{}, now)
 				continue
 			}
 			if pacing && entryIdentity(entry) != pacedIdentity {
@@ -1873,16 +1885,21 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			}
 			if decision.Allowed > 0 {
 				pollCtx := WithProviderPollBudget(ctx, decision)
-				s.applyDemandSnapshot(poll, s.pollDemand(pollCtx, entry, poll))
+				snapshot := s.pollDemand(pollCtx, entry, poll)
+				s.applyDemandSnapshot(poll, snapshot)
+				s.recordScheduleDemandOutcome(poll, snapshot, now)
 				s.markPollProgress()
 				continue
 			}
 			if guarded, ok := poll.counter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
-				s.applyDemandSnapshot(poll, s.pollDemand(ctx, entry, poll))
+				snapshot := s.pollDemand(ctx, entry, poll)
+				s.applyDemandSnapshot(poll, snapshot)
+				s.recordScheduleDemandOutcome(poll, snapshot, now)
 				s.markPollProgress()
 				continue
 			}
 			s.applyDemandSnapshot(poll, demandSnapshot{})
+			s.recordScheduleDemandOutcome(poll, demandSnapshot{}, now)
 			s.journalPollShed(entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
 		}
 	}
@@ -2943,6 +2960,8 @@ func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity, now time.Time) {
 	circuit.strikes++
 	circuit.retryAt = now.Add(authCircuitCooldown(circuit.strikes))
 	s.authCircuits[identity] = circuit
+	// Unpolled time behind an open circuit is not observed zero demand (#5564).
+	delete(s.scheduleQuiet, identity)
 	s.mu.Unlock()
 	s.journalEvent(journal.Event{
 		Type:     journal.EventTickSkipped,
