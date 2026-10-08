@@ -135,7 +135,9 @@ func corpusDigest(dir string) (string, error) {
 			return "", err
 		}
 		normalized := strings.ReplaceAll(string(content), "\r\n", "\n")
-		fmt.Fprintf(h, "%s\x00%d\x00%s\x00", rel, len(normalized), normalized)
+		if _, err := fmt.Fprintf(h, "%s\x00%d\x00%s\x00", rel, len(normalized), normalized); err != nil {
+			return "", err
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
