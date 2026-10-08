@@ -537,6 +537,14 @@ on the configured source:
   revisions are rejected while the last-known-good definitions keep running.
 
 In-flight runs stay pinned to the definitions they started with in either mode.
+Watching changes only what subsequent runs start with: a running run keeps the
+workflow snapshot (`runs/<id>/inputs/workflow-definition`), goober content and
+gaggle `runControls` it launched with, so raising a stage timeout or
+`maxRepasses` mid-run does not extend that run. When an applied edit changes
+any of these for a run still in flight, the daemon logs
+`config reload: definition change detected; will apply to subsequent runs only`
+with the affected run IDs. In-flight runs pinned to a superseded workflow digest
+are also recorded as a `workflow.digest.drift` annotation on the instance log.
 
 To trigger one workflow manually instead of starting the daemon, use the other
 command from the guided banner:

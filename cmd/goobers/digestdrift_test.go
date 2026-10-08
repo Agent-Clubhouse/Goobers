@@ -2,7 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -87,7 +91,7 @@ func TestInspectWorkflowDigestDriftSeparatesRecoverableFromAtRisk(t *testing.T) 
 	machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{
 		{Gaggle: "goobers", Workflow: "implementation"}: served,
 	}
-	drift, err := inspectWorkflowDigestDrift(l, machines)
+	drift, err := inspectWorkflowDigestDrift(l, machines, nil)
 	if err != nil {
 		t.Fatalf("inspectWorkflowDigestDrift: %v", err)
 	}
@@ -148,5 +152,116 @@ func TestJournalWorkflowDigestDriftStaysQuietWithoutDrift(t *testing.T) {
 	}
 	if got, _ := found.Runner["recoverableCount"].(float64); int(got) != 1 {
 		t.Fatalf("recoverableCount = %v, want 1", found.Runner["recoverableCount"])
+	}
+}
+
+func driftTestGaggles(maxRepasses int32) *instance.ConfigSet {
+	return &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{
+		ObjectMeta: metav1.ObjectMeta{Name: "goobers"},
+		Spec:       apiv1.GaggleSpec{RunControls: &apiv1.RunControls{MaxRepasses: maxRepasses}},
+	}}}
+}
+
+// TestInspectWorkflowDigestDriftReportsRunsSupersededByThisReload is #5898:
+// with definition watching on, an applied edit never reaches an in-flight
+// run, which keeps the workflow, goober content and gaggle run controls (and
+// so the stage timeouts and maxRepasses) it launched with. The reload must
+// name exactly the runs it left behind: not runs launched on the new
+// definitions, not terminal runs, and not runs an earlier reload already
+// superseded when this reload changed nothing they pinned.
+func TestInspectWorkflowDigestDriftReportsRunsSupersededByThisReload(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	pinned := driftTestMachine(t, "implement")
+	served := driftTestMachine(t, "implement, but edited")
+	newDriftTestRun(t, l, "run-recoverable", pinned, true, false)
+	newDriftTestRun(t, l, "run-at-risk", pinned, false, false)
+	newDriftTestRun(t, l, "run-current", served, true, false)
+	newDriftTestRun(t, l, "run-terminal", pinned, false, true)
+
+	key := localscheduler.WorkflowIdentity{Gaggle: "goobers", Workflow: "implementation"}
+	defs := func(machine *workflow.Machine, gooberDigest string, maxRepasses int32) pinnedDefinitions {
+		return pinnedDefinitions{
+			machines:      map[localscheduler.WorkflowIdentity]*workflow.Machine{key: machine},
+			gooberDigests: map[localscheduler.WorkflowIdentity]string{key: gooberDigest},
+			set:           driftTestGaggles(maxRepasses),
+		}
+	}
+	cases := []struct {
+		name          string
+		before, after pinnedDefinitions
+		want          []string
+	}{
+		{"workflow edit", defs(pinned, "", 3), defs(served, "", 3), []string{"run-at-risk", "run-recoverable"}},
+		{"unrelated reload", defs(served, "", 3), defs(served, "", 3), nil},
+		{"goober edit", defs(served, "", 3), defs(served, "sha256:goober-edited", 3), []string{"run-at-risk", "run-current", "run-recoverable"}},
+		{"gaggle maxRepasses", defs(served, "", 3), defs(served, "", 9), []string{"run-at-risk", "run-current", "run-recoverable"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			drift, err := inspectWorkflowDigestDrift(l, tc.after.machines, supersededWorkflows(tc.before, tc.after))
+			if err != nil {
+				t.Fatalf("inspectWorkflowDigestDrift: %v", err)
+			}
+			if fmt.Sprint(drift.Superseded) != fmt.Sprint(tc.want) {
+				t.Fatalf("superseded = %v, want %v", drift.Superseded, tc.want)
+			}
+			if len(drift.Recoverable) != 1 || len(drift.AtRisk) != 1 {
+				t.Fatalf("standing drift = %+v, want one recoverable and one at-risk run regardless of this reload", drift)
+			}
+		})
+	}
+}
+
+// TestReportWorkflowDigestDriftLogsSubsequentRunsOnlyNotice keeps the #5898
+// daemon-log line tied to the runs this reload superseded: silent when there
+// are none (even with standing drift still journaled), and naming them when
+// there are.
+func TestReportWorkflowDigestDriftLogsSubsequentRunsOnlyNotice(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = instanceLog.Close() })
+
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	if err := reportWorkflowDigestDrift(instanceLog, workflowDigestDrift{AtRisk: []string{"run-a"}}, logf); err != nil {
+		t.Fatalf("reportWorkflowDigestDrift: %v", err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("standing drift alone logged %q, want silence", lines)
+	}
+
+	if err := reportWorkflowDigestDrift(instanceLog, workflowDigestDrift{
+		AtRisk: []string{"run-a"}, Superseded: []string{"run-a", "run-b"},
+	}, logf); err != nil {
+		t.Fatalf("reportWorkflowDigestDrift: %v", err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("logged %d lines, want 1: %q", len(lines), lines)
+	}
+	for _, want := range []string{
+		"config reload: definition change detected; will apply to subsequent runs only",
+		"2 in-flight run(s)", "stage timeouts and maxRepasses", "[run-a run-b]",
+	} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("notice %q missing %q", lines[0], want)
+		}
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	journaled := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["kind"] == journal.RunnerAnnotationWorkflowDigestDrift {
+			journaled++
+		}
+	}
+	if journaled != 2 {
+		t.Fatalf("journaled %d drift annotations, want 2", journaled)
 	}
 }

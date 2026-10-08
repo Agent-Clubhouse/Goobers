@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -34,6 +37,62 @@ type workflowDigestDrift struct {
 	// AtRisk runs are pinned to a superseded digest with no reconstructable
 	// definition: a restart refuses and fails them.
 	AtRisk []string
+	// Superseded runs are in flight for a workflow whose launch-pinned inputs
+	// the reload being reported just changed (#5898). Unlike Recoverable and
+	// AtRisk, which describe standing state, this set is only what this
+	// reload newly left behind.
+	Superseded []string
+}
+
+// pinnedDefinitions is the hot-reloadable configuration an in-flight run pins
+// at launch: its compiled workflow (task timeouts, workflow runControls), its
+// resolved goober content (goober timeouts) and its gaggle (gaggle
+// runControls such as maxRepasses). Instance and repo settings live in
+// instance.yaml, which is never hot-reloaded.
+type pinnedDefinitions struct {
+	machines      map[localscheduler.WorkflowIdentity]*workflow.Machine
+	gooberDigests map[localscheduler.WorkflowIdentity]string
+	set           *instance.ConfigSet
+}
+
+// supersededWorkflows reports whether a reload from before to after changed
+// anything the given in-flight run pinned at launch. A run whose pinned
+// workflow and goober digests already match after was launched on the new
+// definitions (it started between the scheduler swap and this report) and is
+// excluded. Gaggle run controls are pinned only as an effective merge, so a
+// change confined to them cannot make that distinction; the window is the few
+// instructions between the swap and the report.
+func supersededWorkflows(before, after pinnedDefinitions) func(journal.RunIdentity) bool {
+	return func(run journal.RunIdentity) bool {
+		key := localscheduler.WorkflowIdentity{Gaggle: run.Gaggle, Workflow: run.Workflow}
+		next := machineDigest(after.machines[key])
+		if machineDigest(before.machines[key]) != next && run.WorkflowDigest != next {
+			return true
+		}
+		if before.gooberDigests[key] != after.gooberDigests[key] && run.GooberDigest != after.gooberDigests[key] {
+			return true
+		}
+		return !reflect.DeepEqual(gaggleRunControls(before.set, run.Gaggle), gaggleRunControls(after.set, run.Gaggle))
+	}
+}
+
+func machineDigest(machine *workflow.Machine) string {
+	if machine == nil {
+		return ""
+	}
+	return machine.Digest()
+}
+
+func gaggleRunControls(set *instance.ConfigSet, gaggle string) *apiv1.RunControls {
+	if set == nil {
+		return nil
+	}
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == gaggle {
+			return set.Gaggles[i].Spec.RunControls
+		}
+	}
+	return nil
 }
 
 func (d workflowDigestDrift) empty() bool {
@@ -45,7 +104,7 @@ func (d workflowDigestDrift) empty() bool {
 // directory that cannot be opened or whose identity cannot be read is skipped
 // rather than failing the caller, because this report exists to inform an
 // operator, never to gate a config reload or a daemon start.
-func inspectWorkflowDigestDrift(l instance.Layout, machines map[localscheduler.WorkflowIdentity]*workflow.Machine) (workflowDigestDrift, error) {
+func inspectWorkflowDigestDrift(l instance.Layout, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, superseded func(journal.RunIdentity) bool) (workflowDigestDrift, error) {
 	var drift workflowDigestDrift
 	runDirs, err := l.RunDirs()
 	if err != nil {
@@ -78,6 +137,9 @@ func inspectWorkflowDigestDrift(l instance.Layout, machines map[localscheduler.W
 			if err != nil || phase != journal.PhaseRunning {
 				continue
 			}
+			if superseded != nil && superseded(id) {
+				drift.Superseded = append(drift.Superseded, id.RunID)
+			}
 			if id.WorkflowDigest == "" {
 				drift.AtRisk = append(drift.AtRisk, id.RunID)
 				continue
@@ -99,6 +161,7 @@ func inspectWorkflowDigestDrift(l instance.Layout, machines map[localscheduler.W
 	}
 	sort.Strings(drift.Recoverable)
 	sort.Strings(drift.AtRisk)
+	sort.Strings(drift.Superseded)
 	return drift, nil
 }
 
@@ -120,6 +183,31 @@ func journalWorkflowDigestDrift(log *journal.InstanceLog, drift workflowDigestDr
 			"atRiskRuns":       boundRunIDs(drift.AtRisk),
 		},
 	})
+}
+
+// workflowDigestDriftNotice is the daemon-log line for the runs a reload just
+// superseded (#5898). A watched edit never reaches an in-flight run: each run
+// executes the workflow, goober content and gaggle run controls it pinned at
+// launch, so limits such as stage timeouts and maxRepasses keep their launch
+// values. Without this line an applied reload is indistinguishable from one
+// the running work picked up. It returns "" when the reload changed nothing
+// an in-flight run pinned.
+func workflowDigestDriftNotice(drift workflowDigestDrift) string {
+	if len(drift.Superseded) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("config reload: definition change detected; will apply to subsequent runs only: "+
+		"%d in-flight run(s) keep the definitions they launched with, including stage timeouts and maxRepasses: %v",
+		len(drift.Superseded), boundRunIDs(drift.Superseded))
+}
+
+// reportWorkflowDigestDrift surfaces a drift report both on the daemon log and
+// on the instance log. Neither is fatal to the reload that produced it.
+func reportWorkflowDigestDrift(instanceLog *journal.InstanceLog, drift workflowDigestDrift, logf func(string, ...any)) error {
+	if notice := workflowDigestDriftNotice(drift); notice != "" {
+		logf("%s", notice)
+	}
+	return journalWorkflowDigestDrift(instanceLog, drift)
 }
 
 func boundRunIDs(ids []string) []string {
