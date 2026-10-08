@@ -1652,7 +1652,7 @@ func (s *fakeGitHubServer) prDetailJSON(pr *fakePR) map[string]interface{} {
 		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
 	}
 	return map[string]interface{}{
-		"number": pr.number, "html_url": s.prHTMLURL(pr.number),
+		"number": pr.number, "title": pr.title, "html_url": s.prHTMLURL(pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft, "mergeable": pr.mergeable,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},

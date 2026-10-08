@@ -477,6 +477,11 @@ type Attempt struct {
 	// document that carries its instructions, never from a listable env var.
 	// Meaningless without Agentic; Dispatch refuses the combination.
 	Review bool
+	// ReviewRequiresDiff marks a Review whose gate must judge a non-empty run
+	// diff (#5414). Like Review it rides the verified kit
+	// (agentickit.Kit.ReviewRequiresDiff), never the pod spec. Meaningless
+	// without Review.
+	ReviewRequiresDiff bool
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.

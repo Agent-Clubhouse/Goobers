@@ -31,33 +31,21 @@ func AuthScheme(repo instance.RepoRef) string {
 	if repo.Provider != string(providers.ProviderADO) {
 		return ""
 	}
-	kind := instance.ADOAuthPAT
-	if repo.Auth != nil {
-		kind = repo.Auth.Kind
-	}
-	switch kind {
-	case instance.ADOAuthPAT:
-		return SchemeBasic
-	case instance.ADOAuthAzureCLI, instance.ADOAuthWorkloadIdentity, instance.ADOAuthManagedIdentity:
-		return SchemeBearer
-	default:
+	spec, ok := resolveKind(repo)
+	if !ok {
 		return ""
 	}
+	return spec.scheme
 }
 
-// Source builds the configured Azure DevOps credential source. stores
-// resolves a store-backed PAT ref (#683); it may be nil only when the PAT is
-// env/file-backed — a store ref without it fails closed at construction.
-func Source(repo instance.RepoRef, runner providers.CommandRunner, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
-	if repo.Provider != string(providers.ProviderADO) {
-		return nil, fmt.Errorf("ADO credential source requires provider %q, got %q", providers.ProviderADO, repo.Provider)
-	}
-	kind := instance.ADOAuthPAT
-	if repo.Auth != nil {
-		kind = repo.Auth.Kind
-	}
-	switch kind {
-	case instance.ADOAuthPAT:
+type kindSpec struct {
+	scheme string
+	build  func(repo instance.RepoRef, runner providers.CommandRunner, stores credentials.StoreResolver) (providers.ADOCredentialSource, error)
+}
+
+// kindSpecs is the single place an ADO auth kind is defined.
+var kindSpecs = map[string]kindSpec{
+	instance.ADOAuthPAT: {scheme: SchemeBasic, build: func(repo instance.RepoRef, _ providers.CommandRunner, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 		const refName = "ado-repository"
 		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
 			repo.Token.CredentialTokenRef(refName),
@@ -68,15 +56,42 @@ func Source(repo instance.RepoRef, runner providers.CommandRunner, stores creden
 		return providers.NewResolvingADOPATCredentialSource("goobers", func(ctx context.Context) (string, error) {
 			return resolver.Resolve(ctx, refName)
 		}), nil
-	case instance.ADOAuthAzureCLI:
+	}},
+	instance.ADOAuthAzureCLI: {scheme: SchemeBearer, build: func(repo instance.RepoRef, runner providers.CommandRunner, _ credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 		return providers.NewAzureCLIADOCredentialSource(runner, repo.Auth.Tenant), nil
-	case instance.ADOAuthWorkloadIdentity:
+	}},
+	instance.ADOAuthWorkloadIdentity: {scheme: SchemeBearer, build: func(repo instance.RepoRef, _ providers.CommandRunner, _ credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 		return providers.NewWorkloadIdentityADOCredentialSource(repo.Auth.ClientID)
-	case instance.ADOAuthManagedIdentity:
+	}},
+	instance.ADOAuthManagedIdentity: {scheme: SchemeBearer, build: func(repo instance.RepoRef, _ providers.CommandRunner, _ credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 		return providers.NewManagedIdentityADOCredentialSource(repo.Auth.ClientID)
-	default:
-		return nil, fmt.Errorf("unsupported ADO auth kind %q", kind)
+	}},
+}
+
+func repoKind(repo instance.RepoRef) string {
+	if repo.Auth != nil {
+		return repo.Auth.Kind
 	}
+	return instance.ADOAuthPAT
+}
+
+func resolveKind(repo instance.RepoRef) (kindSpec, bool) {
+	spec, ok := kindSpecs[repoKind(repo)]
+	return spec, ok
+}
+
+// Source builds the configured Azure DevOps credential source. stores
+// resolves a store-backed PAT ref (#683); it may be nil only when the PAT is
+// env/file-backed — a store ref without it fails closed at construction.
+func Source(repo instance.RepoRef, runner providers.CommandRunner, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+	if repo.Provider != string(providers.ProviderADO) {
+		return nil, fmt.Errorf("ADO credential source requires provider %q, got %q", providers.ProviderADO, repo.Provider)
+	}
+	spec, ok := resolveKind(repo)
+	if !ok {
+		return nil, fmt.Errorf("unsupported ADO auth kind %q", repoKind(repo))
+	}
+	return spec.build(repo, runner, stores)
 }
 
 // Provider constructs an ADO provider from one validated instance repository.

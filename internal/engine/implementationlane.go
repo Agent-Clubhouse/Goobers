@@ -542,6 +542,28 @@ type gateEvidence struct {
 	// validation evidence withheld (runner.ReviewerContextPointers, #5901).
 	// Nil means the gate's upstream pointers are used unchanged.
 	ReviewerPointers []apiv1.ContextPointer
+	// RequireDiff marks a gate whose reviewer must be handed a non-empty run
+	// diff (gateRequiresDiff). It licenses ReviewGoober's off-branch probe and
+	// the pod's reviewer_diff_missing failure for a reviewer whose own
+	// workspace is not on the run branch, so it is set for such a reviewer
+	// only when the gate reviews implementation work (#5414).
+	RequireDiff bool
+}
+
+// gateRequiresDiff keeps two rules apart. A reviewer on the run branch keeps
+// the #415 direct-agentic-subject empty-diff guard, widened by #5414 to any
+// implementation review (runner.RequiresReviewerDiff); its own workspace
+// observes the diff. A reviewer off the run branch (repo-readonly, scratch)
+// observes nothing itself, so a diff is retrieved for it, and its emptiness
+// fails the review, only when the gate reviews implementation work
+// (runner.ReviewsImplementation). A read-only agentic subject such as a
+// research task commits nothing, so its review must still reach the reviewer,
+// exactly as on the local runner.
+func gateRequiresDiff(m *wf.Machine, g apiv1.Gate, subjectStage string) bool {
+	if writableWorkspace(g.EffectiveWorkspace()) {
+		return runner.RequiresReviewerDiff(m, g.Name, subjectStage)
+	}
+	return runner.ReviewsImplementation(m, g.Name)
 }
 
 // collectGateEvidence gathers the above. A free function over the walk's state
@@ -569,6 +591,7 @@ func collectGateEvidence(
 	if ev.SubjectAgentic {
 		ev.ReviewerPointers = reviewerContextPointers(rec, m, subjectStage, pointers)
 	}
+	ev.RequireDiff = gateRequiresDiff(m, g, subjectStage)
 	if !ev.SubjectAgentic || instructionAddendum != "" {
 		return ev, nil
 	}
