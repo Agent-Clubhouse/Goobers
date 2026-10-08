@@ -149,3 +149,27 @@ jobs:
           name: test-timings-macOS-nightly
           path: test-timings/unit-macOS.json
           if-no-files-found: warn
+
+      # CI failure diagnostics (#6912, docs/guides/ci-test-results.md): every
+      # run records its runner image and Go toolchain in the job summary; a
+      # failed or cancelled run also lists the failing check, tests, and their
+      # output, classified as test, check, or infrastructure failure, and
+      # uploads them as ci-diagnostics-<job>-<index>. Observability only: these
+      # steps never change the job's verdict. Keep this pair identical in every
+      # job (TestCIJobsRecordFailureDiagnostics).
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
