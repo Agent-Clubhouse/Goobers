@@ -98,15 +98,17 @@ func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, it
 	if err != nil || !result.Claimed {
 		return result, err
 	}
-	// The pre-IO snapshot is unlocked, so the lease can change hands while the
-	// marker is written. A provider marker must only mirror a ledger grant:
-	// re-read the lease and retract the marker if it is no longer this one.
-	held, err := session.leaseStillHeld(ctx, owned)
+	// The pre-IO snapshot is unlocked, so the lease can lapse or change hands
+	// while the marker is written. A provider marker must only mirror a ledger
+	// grant: reconfirm the lease and retract the marker if it is not this one.
+	held, err := session.reconfirmLease(ctx, owned)
 	if err != nil || held {
 		return result, err
 	}
-	if _, releaseErr := session.env.issueProvider.ReleaseWorkItemClaim(ctx, request); releaseErr != nil {
-		pf(session.env.stderr, "warning: could not retract the provider claim on item %s after its ledger lease was lost: %v\n", item.ID, releaseErr)
+	if _, err := session.env.issueProvider.ReleaseWorkItemClaim(ctx, request); err != nil {
+		// The open provider epoch would block the lease's new owner, so the
+		// stage must fail rather than carry on as though cleanup succeeded.
+		return providers.ClaimResult{}, fmt.Errorf("retract provider claim on item %s after its ledger lease was lost: %w", item.ID, err)
 	}
 	return providers.ClaimResult{}, &ledgerLeaseLostError{itemID: item.ID}
 }
@@ -119,19 +121,35 @@ func (e *ledgerLeaseLostError) Error() string {
 	return fmt.Sprintf("ledger lease for item %s was lost while its provider claim was written", e.itemID)
 }
 
-// leaseStillHeld reports whether owned is still this run's unreleased lease
-// incarnation. ClaimedAt identifies the incarnation: renewals keep it, and a
-// replacement or re-grant after expiry never does.
-func (session *backlogClaimSession) leaseStillHeld(ctx context.Context, owned claimsclient.Entry) (bool, error) {
-	entries, err := session.ledger.ForRunAll(ctx, session.runID)
-	if err != nil {
-		return false, err
-	}
+// reconfirmLease reports whether owned is still this run's live, unreleased
+// lease incarnation. It reads under the claims lock so no renewal or
+// recovery sweep can move the lease between the read and the decision.
+// ClaimedAt identifies the incarnation: renewals keep it, and a replacement
+// or a re-grant after expiry never does. Liveness uses the session clock,
+// which on a self runner is the clock the local ledger itself judges expiry
+// by, so a provider write that outlasts the lease cannot keep its marker.
+func (session *backlogClaimSession) reconfirmLease(ctx context.Context, owned claimsclient.Entry) (bool, error) {
 	key := claimsclient.KeyForEntry(owned)
-	for _, entry := range entries {
-		if claimsclient.KeyForEntry(entry) == key && entry.ClaimedAt.Equal(owned.ClaimedAt) && entry.ReleasedAt == nil {
-			return true, nil
+	held := false
+	err := session.ledger.Locked(ctx, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error {
+		entries, err := tx.ForRunAll(ctx, session.runID)
+		if err != nil {
+			return err
 		}
+		now := session.clock()
+		for _, entry := range entries {
+			if claimsclient.KeyForEntry(entry) == key {
+				held = entry.ClaimedAt.Equal(owned.ClaimedAt) && entry.ReleasedAt == nil && entry.ExpiresAt.After(now)
+			}
+		}
+		return nil
+	})
+	return held, err
+}
+
+func (session *backlogClaimSession) clock() time.Time {
+	if session.now != nil {
+		return session.now()
 	}
-	return false, nil
+	return time.Now()
 }

@@ -136,52 +136,123 @@ func TestRepeatedProviderContentionIsTypedOwnershipDrift(t *testing.T) {
 	}
 }
 
-// leaseStealingProvider hands item 7's ledger lease to another run while this
-// run's provider claim marker is being written, then reports the marker won.
-type leaseStealingProvider struct {
+// leaseLosingProvider runs during on item 7 while this run's provider claim
+// marker is being written, then reports that the marker won.
+type leaseLosingProvider struct {
 	backlogIssueProvider
-	ledger   *claimsclient.File
-	released *[]string
+	during     func(context.Context, providers.ClaimWorkItemRequest) error
+	releaseErr error
+	released   *[]string
 }
 
-func (p leaseStealingProvider) ClaimWorkItem(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.ClaimResult, error) {
+func (p leaseLosingProvider) ClaimWorkItem(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.ClaimResult, error) {
 	if req.ID == "7" {
-		key := claimsclient.Key{ExternalID: req.ID}
-		if err := p.ledger.ReleaseScoped(ctx, key, req.RunID); err != nil {
+		if err := p.during(ctx, req); err != nil {
 			return providers.ClaimResult{}, err
-		}
-		if ok, _, err := p.ledger.ClaimScoped(ctx, key, "run-other", "curate", time.Hour); err != nil || !ok {
-			return providers.ClaimResult{}, errors.Join(err, errors.New("steal refused"))
 		}
 	}
 	return providers.ClaimResult{Claimed: true, Item: providers.WorkItem{ID: req.ID}}, nil
 }
 
-func (p leaseStealingProvider) ReleaseWorkItemClaim(_ context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+func (p leaseLosingProvider) ReleaseWorkItemClaim(_ context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
 	*p.released = append(*p.released, req.ID+"@"+req.RunID)
-	return providers.WorkItem{ID: req.ID}, nil
+	return providers.WorkItem{ID: req.ID}, p.releaseErr
+}
+
+func newLeaseLossSession(t *testing.T, now *time.Time) (*backlogClaimSession, *claimsclient.File, *[]string, *bytes.Buffer) {
+	t.Helper()
+	ledger, err := claimsclient.NewFile(claimsclient.FileConfig{
+		LedgerPath: filepath.Join(t.TempDir(), "claims.json"),
+		Options:    []localscheduler.LedgerOption{localscheduler.WithLedgerClock(func() time.Time { return *now })},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	var released []string
+	session := &backlogClaimSession{
+		env:    backlogQueryEnv{repo: providers.RepositoryRef{Provider: providers.ProviderADO, Project: "example-project"}, stderr: &stderr},
+		ledger: ledger, runID: "run-1", workflow: "curate", leaseDuration: time.Hour,
+		now: func() time.Time { return *now },
+	}
+	// Item 8's longer lease outlives the expiry case's clock jump.
+	for id, lease := range map[string]time.Duration{"7": time.Hour, "8": 3 * time.Hour} {
+		if ok, _, err := ledger.ClaimScoped(t.Context(), claimsclient.Key{ExternalID: id}, "run-1", "curate", lease); err != nil || !ok {
+			t.Fatalf("seed claim %s: ok=%v err=%v", id, ok, err)
+		}
+	}
+	for _, id := range []string{"7", "8"} {
+		item := providers.WorkItem{ID: id}
+		session.claimed = append(session.claimed, item)
+		session.newlyClaimed = append(session.newlyClaimed, item)
+	}
+	return session, ledger, &released, &stderr
+}
+
+func stealLease(ledger *claimsclient.File) func(context.Context, providers.ClaimWorkItemRequest) error {
+	return func(ctx context.Context, req providers.ClaimWorkItemRequest) error {
+		key := claimsclient.Key{ExternalID: req.ID}
+		if err := ledger.ReleaseScoped(ctx, key, req.RunID); err != nil {
+			return err
+		}
+		if ok, _, err := ledger.ClaimScoped(ctx, key, "run-other", "curate", time.Hour); err != nil || !ok {
+			return errors.Join(err, errors.New("steal refused"))
+		}
+		return nil
+	}
 }
 
 func TestConfirmProviderClaimsRetractsMarkerWhenLeaseLostMidClaim(t *testing.T) {
-	var released []string
-	var stderr bytes.Buffer
-	session, ledger := newReadyHistorySession(t, readyHistoryProvider{}, &stderr, "7", "8")
-	session.env.issueProvider = leaseStealingProvider{ledger: ledger, released: &released}
+	for _, tc := range []struct {
+		name  string
+		lose  func(*claimsclient.File, *time.Time) func(context.Context, providers.ClaimWorkItemRequest) error
+		other int
+	}{
+		{name: "replaced", lose: func(l *claimsclient.File, _ *time.Time) func(context.Context, providers.ClaimWorkItemRequest) error {
+			return stealLease(l)
+		}, other: 1},
+		{name: "expired", lose: func(_ *claimsclient.File, now *time.Time) func(context.Context, providers.ClaimWorkItemRequest) error {
+			return func(context.Context, providers.ClaimWorkItemRequest) error { *now = now.Add(2 * time.Hour); return nil }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			session, ledger, released, stderr := newLeaseLossSession(t, &now)
+			session.env.issueProvider = leaseLosingProvider{during: tc.lose(ledger, &now), released: released}
 
-	if err := session.confirmProviderClaims(t.Context(), 0); err != nil {
-		t.Fatalf("confirmProviderClaims: %v (stderr %q)", err, stderr.String())
+			if err := session.confirmProviderClaims(t.Context(), 0); err != nil {
+				t.Fatalf("confirmProviderClaims: %v (stderr %q)", err, stderr.String())
+			}
+			if len(session.claimed) != 1 || session.claimed[0].ID != "8" || len(session.newlyClaimed) != 1 || session.newlyClaimed[0].ID != "8" {
+				t.Fatalf("claimed = %+v newlyClaimed = %+v, want only item 8", session.claimed, session.newlyClaimed)
+			}
+			if len(*released) != 1 || (*released)[0] != "7@run-1" {
+				t.Fatalf("released markers = %v, want this run's marker on item 7 retracted", *released)
+			}
+			if len(session.refusals) != 1 || session.refusals[0].itemID != "7" || session.refusals[0].source != claimRefusalLedger {
+				t.Fatalf("refusals = %+v, want item 7 refused by the ledger", session.refusals)
+			}
+			mine, err := ledger.ForRunAll(t.Context(), "run-1")
+			if err != nil || len(mine) != 1 || mine[0].ExternalID != "8" {
+				t.Fatalf("run-1 leases = %+v, %v; want only item 8", mine, err)
+			}
+			if holders, err := ledger.ForRunAll(t.Context(), "run-other"); err != nil || len(holders) != tc.other {
+				t.Fatalf("new holder's leases = %+v, %v; want %d untouched", holders, err, tc.other)
+			}
+		})
 	}
-	if len(session.claimed) != 1 || session.claimed[0].ID != "8" || len(session.newlyClaimed) != 1 || session.newlyClaimed[0].ID != "8" {
-		t.Fatalf("claimed = %+v newlyClaimed = %+v, want only item 8", session.claimed, session.newlyClaimed)
+}
+
+func TestConfirmProviderClaimsFailsWhenLostLeaseMarkerCannotBeRetracted(t *testing.T) {
+	now := time.Now()
+	session, ledger, released, _ := newLeaseLossSession(t, &now)
+	session.env.issueProvider = leaseLosingProvider{during: stealLease(ledger), released: released, releaseErr: errors.New("provider unavailable")}
+
+	err := session.confirmProviderClaims(t.Context(), 0)
+	if err == nil || !strings.Contains(err.Error(), "retract provider claim on item 7") {
+		t.Fatalf("confirmProviderClaims = %v, want the failed retraction to fail the stage", err)
 	}
-	if len(released) != 1 || released[0] != "7@run-1" {
-		t.Fatalf("released markers = %v, want this run's marker on item 7 retracted", released)
-	}
-	if len(session.refusals) != 1 || session.refusals[0].itemID != "7" || session.refusals[0].source != claimRefusalLedger {
-		t.Fatalf("refusals = %+v, want item 7 refused by the ledger", session.refusals)
-	}
-	holders, err := ledger.ForRunAll(t.Context(), "run-other")
-	if err != nil || len(holders) != 1 || holders[0].ExternalID != "7" {
-		t.Fatalf("new holder's lease = %+v, %v; want it untouched", holders, err)
+	if len(session.claimed) != 2 || len(session.refusals) != 0 {
+		t.Fatalf("claimed = %+v refusals = %+v, want item 7 kept for the stage's rollback", session.claimed, session.refusals)
 	}
 }
