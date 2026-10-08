@@ -183,8 +183,19 @@ func TestAzureReplayShutdownBoundsStalledUploadAndReplaysAfterRestart(t *testing
 }
 
 func TestAzureReplaySpoolReplaysAfterRestartAndSkipsMalformed(t *testing.T) {
-	dir := t.TempDir()
-	cfg := azureReplayConfig{dir: dir, maxAge: 72 * time.Hour, maxBytes: 1 << 20}
+	t.Run("single-directory", func(t *testing.T) {
+		dir := t.TempDir()
+		testReplayRestartSkipsMalformed(t, azureReplayConfig{dir: dir, maxAge: 72 * time.Hour, maxBytes: 1 << 20}, dir, "")
+	})
+	// Here the manifest lives outside the stream directory, so reopening it
+	// cannot advance the coalesced stamp by itself.
+	t.Run("stream-directory", func(t *testing.T) {
+		root := t.TempDir()
+		testReplayRestartSkipsMalformed(t, azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: 72 * time.Hour, maxBytes: 1 << 20}, root, "journal")
+	})
+}
+
+func testReplayRestartSkipsMalformed(t *testing.T, cfg azureReplayConfig, root, stream string) {
 	unavailable := errors.New("fixture destination unavailable")
 	first, err := newAzureReplaySpool(cfg, func(context.Context, []byte) error { return unavailable })
 	if err != nil {
@@ -199,9 +210,13 @@ func TestAzureReplaySpoolReplaysAfterRestartAndSkipsMalformed(t *testing.T) {
 	if err := first.close(closeCtx); !errors.Is(err, unavailable) {
 		t.Fatalf("close error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "00000000000000000000-poison.ndjson"), []byte("not a replay file"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// Publish in the manifest's last stamped directory tick (#6893): restart
+	// must still discover and count the file without waiting for the audit.
+	coalesceReplayDirectoryStamp(t, root, stream, func() {
+		if err := os.WriteFile(filepath.Join(cfg.dir, "00000000000000000000-poison.ndjson"), []byte("not a replay file"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	delivered := make(chan []byte, 1)
 	second, err := newAzureReplaySpool(cfg, func(_ context.Context, body []byte) error {

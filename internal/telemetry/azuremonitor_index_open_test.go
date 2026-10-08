@@ -17,6 +17,12 @@ func BenchmarkAzureReplayIndexOpen(b *testing.B) {
 		for _, warm := range []bool{false, true} {
 			b.Run(fmt.Sprintf("files=%d/warm=%t", count, warm), func(b *testing.B) {
 				fixture := newReplayIndexOpenFixture(b, count)
+				// Measure a settled backlog; a just-seeded directory stamp is
+				// deliberately rescanned on open (#6893).
+				settled := time.Now().Add(-time.Hour)
+				if err := os.Chtimes(filepath.Join(fixture.root, "journal"), settled, settled); err != nil {
+					b.Fatal(err)
+				}
 				b.ReportAllocs()
 				b.ResetTimer()
 				b.StopTimer()
