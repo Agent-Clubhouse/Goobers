@@ -98,9 +98,10 @@ func settleStalledEngineRun(
 // journal activity, and the journal has stayed silent since: had any worker
 // taken the cancellation, the engine's cancel arm would have journaled the
 // run's terminal by now. Graceful-drain downtime is credited exactly as it is
-// for the stall itself. The instance log is consulted only for a run silent
-// for twice its timeout, the earliest a cancellation could have gone a full
-// timeout unanswered.
+// for the stall itself. The cancellation is dated on its own, never from the
+// stall: a maximum-duration breach cancels a run that was active moments
+// before. The instance log is consulted only once the journal has been silent
+// for a full timeout, the least a cancellation after it could have waited.
 func engineCancelUnhonoured(
 	deps *stalledSweepDeps,
 	cancels *engineCancelHistory,
@@ -113,7 +114,7 @@ func engineCancelUnhonoured(
 		return false, nil
 	}
 	lastActivity := events[len(events)-1].Time
-	if lastActivity.IsZero() || !lastActivity.Before(now.Add(-(2*runTimeout + deps.drainedDowntimeSince(lastActivity)))) {
+	if lastActivity.IsZero() || !lastActivity.Before(now.Add(-runTimeout)) {
 		return false, nil
 	}
 	requested, ok, err := cancels.firstRequestAfter(runID, lastActivity)

@@ -28,6 +28,7 @@ type stalledEngineSweepFixture struct {
 	released []string
 	// nothingOpen gives the guards an open-workflow scan that finds nothing.
 	nothingOpen bool
+	maxDuration time.Duration
 }
 
 const stalledEngineSweepTimeout = 45 * time.Minute
@@ -79,7 +80,7 @@ func (f *stalledEngineSweepFixture) sweep(t *testing.T, fake *fakeEngineWorkflow
 		context.Background(), f.layout, nil, nil, guards, f.log,
 		&stalledSweepDeps{CloseEngineRun: closeTerminatedEngineRun(writer)}, nil,
 		func(runID, _ string) { f.released = append(f.released, runID) },
-		now, stalledEngineSweepTimeout, 0,
+		now, stalledEngineSweepTimeout, f.maxDuration,
 	)
 }
 
@@ -261,4 +262,41 @@ func TestSweepStalledRunsHoldsEngineRunUntilTerminationIsConfirmed(t *testing.T)
 			}
 		})
 	}
+}
+
+// TestSweepStalledRunsTerminatesOverAgeEngineRunOneTimeoutAfterItsCancel: a
+// maximum-duration breach cancels a run that was active moments before, so the
+// wait for an unanswered cancellation is dated from the cancellation itself,
+// not from twice the stall timeout of journal silence.
+func TestSweepStalledRunsTerminatesOverAgeEngineRunOneTimeoutAfterItsCancel(t *testing.T) {
+	f := newStalledEngineSweepFixture(t)
+	f.maxDuration = 2 * time.Hour
+	lastActivity := f.started.Add(f.maxDuration - 5*time.Minute)
+	stage := liveOpenBatch(f.runID, "goobers", lastActivity).Ops[1]
+	stage.Time = lastActivity
+	writer := f.writer(t)
+	if _, err := writer.Emit(context.Background(), livejournal.EmitRequest{RunID: f.runID, Gaggle: "goobers", Ops: []livejournal.Op{stage}}); err != nil {
+		t.Fatalf("emit stage activity: %v", err)
+	}
+	writer.CloseIdle(-time.Hour)
+
+	cancelledAt := f.started.Add(f.maxDuration + time.Minute)
+	first := &fakeEngineWorkflows{status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}
+	if err := f.sweep(t, first, f.writer(t), cancelledAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, cancelled := first.snapshot(); len(cancelled) != 1 || len(first.terminated) != 0 {
+		t.Fatalf("cancelled %v terminated %v, want the over-age run cancelled first", cancelled, first.terminated)
+	}
+
+	// One timeout after the cancellation the journal has been silent for
+	// well under two timeouts, yet the cancellation has gone unanswered.
+	second := &fakeEngineWorkflows{status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}
+	if err := f.sweep(t, second, f.writer(t), cancelledAt.Add(stalledEngineSweepTimeout+time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.terminated) != 1 || len(f.released) != 1 {
+		t.Fatalf("terminated %v released %v, want the run terminated one timeout after its cancellation", second.terminated, f.released)
+	}
+	assertWatchdogPhase(t, f.layout.RunsDir(), f.runID, journal.PhaseAborted)
 }
