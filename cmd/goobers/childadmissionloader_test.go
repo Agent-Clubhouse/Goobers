@@ -52,7 +52,7 @@ func newPinnedChildFixture(t *testing.T, editConfig ...func(string)) pinnedChild
 		t.Fatal(err)
 	}
 	// Pin with the existing daemon compiler, not the new loader's implementation.
-	machines, digests, _, _, err := compileSchedulerMachinesWithProgress(layout, cfg, set, goobers, instructions, nil, nil)
+	machines, digests, _, _, err := compileSchedulerMachinesWithProgress(layout, cfg, set, goobers, instructions, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
