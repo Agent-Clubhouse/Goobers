@@ -766,6 +766,9 @@ func (u *upSession) prepare() int {
 		return daemonStartupFailure(u.ctx, err, func() {
 			printValidationIssues(u.stderr, validationReportFromError(err))
 			pf(u.stderr, "error: initialize daemon scheduler: %v\n", err)
+			if errors.Is(err, instance.ErrInvalidConfig) {
+				instance.WriteInvalidConfigScope(u.stderr, u.l.ConfigDir(), validationReportFromError(err))
+			}
 		})
 	}
 	pf(u.stdout, "startup: scheduler initialized\n")

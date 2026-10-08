@@ -1377,6 +1377,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		printValidationIssues(stderr, report)
 		if errors.Is(err, instance.ErrInvalidConfig) {
 			pf(stderr, "error: config directory failed validation\n")
+			instance.WriteInvalidConfigScope(stderr, l.ConfigDir(), report)
 			return 1
 		}
 		pf(stderr, "error: %v\n", err)
