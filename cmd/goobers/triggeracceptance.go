@@ -20,6 +20,9 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
+// defaultChildPruneBudget bounds one sweep's child-retention pass.
+const defaultChildPruneBudget = 250 * time.Millisecond
+
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
@@ -34,6 +37,9 @@ type durableTriggerService struct {
 	children        childExecutionLauncher
 	observeChild    childStartObserver
 	childCursor     string
+	// pruneBudget bounds each sweep's child-retention pass so it cannot stall dispatch;
+	// zero means defaultChildPruneBudget.
+	pruneBudget time.Duration
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a
@@ -141,7 +147,11 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	// Child custody shares the ordinary queue database. Retention must run
 	// even while no scheduler is attached; otherwise inactive installations
 	// retain terminal lineages and cancellation fences indefinitely.
-	pruneCtx, cancelPrune := context.WithTimeout(ctx, 250*time.Millisecond)
+	budget := s.pruneBudget
+	if budget <= 0 {
+		budget = defaultChildPruneBudget
+	}
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, budget)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
 	cancelPrune()
 	if s.childFamilies != nil {
