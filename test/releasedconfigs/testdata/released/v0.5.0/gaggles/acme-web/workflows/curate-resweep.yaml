@@ -1,0 +1,88 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: curate-resweep
+spec:
+  gaggle: acme-web
+  displayName: Scheduled backlog re-sweep
+  triggers:
+    - type: schedule
+      schedule: "47 4 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+    maxRunsPerDay: 1
+  start: query-resweep
+  tasks:
+    - name: query-resweep
+      type: deterministic
+      goal: Recheck blocked dependencies and select bounded ready-item drift reviews without claiming forward work.
+      run:
+        command: ["goobers", "backlog-query", "--claim", "--resweep"]
+      inputs:
+        curation: "true"
+        trustLabel: "goobers:approved"
+        excludeLabels: "goobers:ready"
+        parkLabels: "goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
+        filterParkLabels: "true"
+        # Forward candidates reserve capacity but are never claimed here.
+        maxItems: "20"
+        resweepMaxItems: "5"
+        resweepReadyLabel: "goobers:ready"
+        resultFile: "claimed-items.json"
+        staleAfterDays: "90"
+        staleAutoClose: "false"
+        reconcileMetadata: "false"
+      capabilities:
+        - github:issues:write
+        - github:pr:write
+      policyActions:
+        - claim-backlog-items
+        - close-issue
+      expectedOutputs:
+        - claimed-items
+      next: surface-duplicates
+    - name: surface-duplicates
+      type: deterministic
+      goal: Surface bounded duplicate evidence for the selected re-sweep batch.
+      run:
+        command: ["goobers", "backlog-dedupe"]
+      inputs:
+        resultFile: "dedupe-candidates.json"
+        maxCandidates: "20"
+      capabilities:
+        - github:issues:read
+      expectedOutputs:
+        - dedupe-candidates
+      next: curate
+    - name: curate
+      type: agentic
+      goober: curator
+      goal: >-
+        Recheck the selected ready and dependency-recheck items for drift using
+        the deterministic staleness signals and duplicate evidence.
+        Treat in-flight re-sweep items and unclaimed candidates as read-only,
+        except for narrowly scoped roadmap maintenance on directly linked tracking parents.
+        Preserve unchanged items. Explain every mutation in an issue comment.
+      capabilities:
+        - github:issues:write
+        - github:milestones:write
+        - agent:model
+      policyActions:
+        - assign-milestone
+        - close-issue
+        - comment-on-issue
+        - create-issue
+        - edit-issue
+        - label-issue
+      next: release-claim
+    - name: release-claim
+      type: deterministic
+      goal: Release this run's claim leases and provider claim markers.
+      run:
+        command: ["goobers", "backlog-query", "--release"]
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - release-backlog-claim
