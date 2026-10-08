@@ -42,16 +42,27 @@ func WriteSnapshotPatch(ctx context.Context, repository, base, snapshot string, 
 	// (e.g. diff=csharp hunk headers) cannot make a pod's digest differ from
 	// the host mirror's recomputation (#6306).
 	err = recoveryGitWithEnv(ctx, hermetic, io.MultiWriter(destination, digest), hermeticPatchEnvironment(),
-		"-c", "core.attributesFile="+os.DevNull, "-c", "core.quotePath=true", "-c", "diff.suppressBlankEmpty=false",
-		"diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv",
-		"--no-color", "--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/",
-		"--unified=3", "--inter-hunk-context=0",
-		"--diff-algorithm=myers", "--no-indent-heuristic", "--ignore-submodules=none",
-		"--submodule=short", "-O", os.DevNull, base, snapshot, "--")
+		snapshotPatchDiffArgs(base, snapshot)...)
 	if err != nil {
 		return "", fmt.Errorf("capture recovery patch: %w", err)
 	}
 	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+}
+
+// gitNullOrderFile is Git's own spelling of the null device. Git resolves a
+// relative -O path against the repository prefix, so os.DevNull ("NUL" on
+// Windows) became "<prefix>/NUL" and failed (#6297). "/dev/null" is absolute
+// to Git on every platform and Git for Windows maps it to the null device.
+const gitNullOrderFile = "/dev/null"
+
+func snapshotPatchDiffArgs(base, snapshot string) []string {
+	return []string{
+		"-c", "core.attributesFile=" + os.DevNull, "-c", "core.quotePath=true", "-c", "diff.suppressBlankEmpty=false",
+		"diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv",
+		"--no-color", "--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/",
+		"--unified=3", "--inter-hunk-context=0",
+		"--diff-algorithm=myers", "--no-indent-heuristic", "--ignore-submodules=none",
+		"--submodule=short", "-O", gitNullOrderFile, base, snapshot, "--"}
 }
 
 // hermeticPatchRepository creates a temporary bare repository that borrows
