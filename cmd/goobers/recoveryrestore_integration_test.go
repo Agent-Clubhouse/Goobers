@@ -239,6 +239,9 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 		if err := json.Unmarshal(data, &result); err != nil || !result.Resumed || result.ResumedFromRun != record.RunID || result.RestoredCommit == "" {
 			t.Fatalf("resume result = %+v, %v", result, err)
 		}
+		if result.Provenance == nil || *result.Provenance != *record.Provenance() {
+			t.Fatalf("resume provenance = %+v, want %+v", result.Provenance, record.Provenance())
+		}
 		if err := os.Remove(filepath.Join(destination, recoveryResumeResultFile)); err != nil {
 			t.Fatal(err)
 		}
