@@ -8371,10 +8371,12 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 
 // TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff pins #5334: a
 // repo-readonly reviewer gate is a detached checkout of the pinned base, and a
-// scratch gate has no repo checkout at all, so recordReviewerDiff's empty
-// result in either cannot prove the agentic subject committed nothing. The
-// reviewer must run — whether or not the subject actually committed — instead
-// of the #415 empty-diff fast-fail parking it.
+// scratch gate has no repo checkout at all, so their own checkout's empty diff
+// cannot prove the agentic subject committed nothing, and a subject that did
+// commit must reach the reviewer instead of the #415 empty-diff fast-fail
+// parking it. Since #5414 such a gate reads base...<run branch> from the
+// managed mirror, so a subject that truly committed nothing is OBSERVED as
+// empty and fails closed without a reviewer.
 func TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -8427,8 +8429,14 @@ func TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
+			if !tc.commit {
+				if reviewer.called || res.Phase == journal.PhaseCompleted {
+					t.Fatalf("reviewer called=%t, phase=%q; a %s gate reads the run branch from the mirror (#5414), so an observed empty diff must fail closed", reviewer.called, res.Phase, tc.workspace)
+				}
+				return
+			}
 			if !reviewer.called {
-				t.Fatalf("reviewer was NOT invoked — a %s gate cannot observe the run branch, so its empty diff must not fast-fail", tc.workspace)
+				t.Fatalf("reviewer was NOT invoked — a %s gate's own checkout cannot observe the run branch, so a real commit must reach the reviewer", tc.workspace)
 			}
 			if res.Phase != journal.PhaseCompleted {
 				t.Fatalf("phase = %q, want completed on the reviewer's pass", res.Phase)

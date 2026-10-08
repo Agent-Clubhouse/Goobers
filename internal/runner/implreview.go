@@ -145,6 +145,25 @@ func (r *Runner) reviewerDiff(ctx context.Context, in StartInput, gateName, work
 	return r.cfg.Worktrees.RunBranchDiff(ctx, repoURL, baseRef, branch)
 }
 
+// reviewerDiffObservesRunBranch reports whether reviewerDiff read the run
+// branch rather than a detached base checkout, i.e. whether an empty result
+// is evidence that the run committed nothing (#5334, #5414).
+func (r *Runner) reviewerDiffObservesRunBranch(in StartInput, gateName string, wt *worktree.Worktree) bool {
+	if wt != nil {
+		if wt.Branch != "" {
+			return true
+		}
+		if in.pinnedWorkspace != nil {
+			return false
+		}
+	} else if ReviewsImplementation(in.Machine, gateName) {
+		if own, _ := onBranchRunWorktree(in); own != nil {
+			return true
+		}
+	}
+	return r.readsRunBranchFromMirror(in, gateName)
+}
+
 // onBranchRunWorktree returns the run's own on-branch worktree when the run
 // branch lives outside the shared mirror's per-stage worktrees, with the lock
 // that serializes the run's stages on it.

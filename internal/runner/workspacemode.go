@@ -48,7 +48,7 @@ func gateWorkspaceMode(g apiv1.Gate) apiv1.WorkspaceMode {
 //
 // And the empty diff is positive evidence only when it was read from the run
 // branch (#5334): the gate's worktree sits on it, or runBranchObserved says
-// reviewerDiff read base...<run branch> from the managed mirror. A
+// reviewerDiff read it from elsewhere (reviewerDiffObservesRunBranch). A
 // repo-readonly gate's own checkout is a detached checkout of the pinned base,
 // so its diff is empty by construction and says nothing about the subject's
 // commits. Mirrors the engine's captureGateDiff Observed rule.

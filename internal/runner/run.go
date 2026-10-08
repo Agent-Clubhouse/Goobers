@@ -4681,7 +4681,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			} else {
 				// A nil pointer (no error — that returned early above) means
 				// the diff the reviewer was handed is zero-length vs. base.
-				emptyDiff = emptyReviewerDiffIsEvidence(in.Machine, subjectStage, g, r.readsRunBranchFromMirror(in, g.Name))
+				emptyDiff = emptyReviewerDiffIsEvidence(in.Machine, subjectStage, g, r.reviewerDiffObservesRunBranch(in, g.Name, wt))
 			}
 		}
 	}

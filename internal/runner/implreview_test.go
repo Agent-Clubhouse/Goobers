@@ -267,3 +267,27 @@ func TestReviewerDiffReadsPinnedWorkspaceForScratchReviewer(t *testing.T) {
 		t.Fatalf("scratch reviewer in a pinned run did not get the pinned branch's diff:\n%s", diff)
 	}
 }
+
+// TestReviewerDiffObservesRunBranchOnlyWhenItReadsIt keeps #5334 alongside
+// #5414: an empty diff fails closed only when it was read from the run branch,
+// never from a detached reviewer checkout nothing else stood in for.
+func TestReviewerDiffObservesRunBranchOnlyWhenItReadsIt(t *testing.T) {
+	m := implementCheckReviewMachine(t, apiv1.WorkspaceRepoReadOnly)
+	r := &Runner{}
+	detached := &worktree.Worktree{}
+	for _, tc := range []struct {
+		name string
+		in   StartInput
+		wt   *worktree.Worktree
+		want bool
+	}{
+		{name: "on-branch worktree", in: StartInput{Machine: m}, wt: &worktree.Worktree{Branch: "goobers/run"}, want: true},
+		{name: "detached checkout with no mirror", in: StartInput{Machine: m}, wt: detached, want: false},
+		{name: "detached checkout in a pinned run", in: StartInput{Machine: m, pinnedWorkspace: &worktree.Worktree{Branch: "goobers/run"}}, wt: detached, want: false},
+		{name: "scratch reviewer in a pinned run", in: StartInput{Machine: m, pinnedWorkspace: &worktree.Worktree{Branch: "goobers/run"}, pinnedStage: &sync.Mutex{}}, wt: nil, want: true},
+	} {
+		if got := r.reviewerDiffObservesRunBranch(tc.in, "review", tc.wt); got != tc.want {
+			t.Errorf("%s: reviewerDiffObservesRunBranch = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
