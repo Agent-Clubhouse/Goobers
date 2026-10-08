@@ -179,6 +179,14 @@ type fakeGitHubServer struct {
 	issueEventQuotaLimit     int
 	issueEventQuotaRemaining int
 	issueEventQuotaDrain     int
+	// issueEventWindow, when > 0, makes the repository-wide issue-events
+	// endpoint serve only the newest issueEventWindow events, as a provider
+	// that stops serving old repository history does (#6986). The per-issue
+	// events endpoint still serves an issue's complete history unless
+	// hideItemEvents is set.
+	issueEventWindow  int
+	hideItemEvents    bool
+	itemEventRequests int
 	// globalQuotaLimit/globalQuotaRemaining, when globalQuotaLimit > 0, stamp
 	// X-RateLimit-Limit/-Remaining on EVERY response this server serves —
 	// unlike issueEventQuotaLimit/Remaining above, which is scoped to the
@@ -962,6 +970,9 @@ func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Requ
 	for i, event := range s.issueEvents {
 		newestFirst[len(s.issueEvents)-1-i] = event
 	}
+	if s.issueEventWindow > 0 && len(newestFirst) > s.issueEventWindow {
+		newestFirst = newestFirst[:s.issueEventWindow]
+	}
 	perPage := 30
 	if pp, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && pp > 0 {
 		if pp > 100 {
@@ -1028,6 +1039,20 @@ func (s *fakeGitHubServer) issueEventRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.issueEventRequests
+}
+
+// setIssueEventWindow limits the repository-wide issue-events endpoint to the
+// newest window events and, with hideItem, empties the per-issue history too.
+func (s *fakeGitHubServer) setIssueEventWindow(window int, hideItem bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueEventWindow, s.hideItemEvents = window, hideItem
+}
+
+func (s *fakeGitHubServer) itemEventRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.itemEventRequests
 }
 
 func (s *fakeGitHubServer) resetIssueEventRequestCount() {
@@ -1164,9 +1189,10 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+		s.itemEventRequests++
 		out := make([]map[string]any, 0)
 		for _, event := range s.issueEvents {
-			if event.number != num {
+			if event.number != num || s.hideItemEvents {
 				continue
 			}
 			out = append(out, map[string]any{
