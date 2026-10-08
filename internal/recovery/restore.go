@@ -64,6 +64,12 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	if err := recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", record.BaseSHA, currentMain); err != nil {
 		return "", fmt.Errorf("retained checkpoint is stale: its base is not an ancestor of current main: %w", ErrIncompatibleSnapshot)
 	}
+	return applySnapshotTree(ctx, repository, record, currentMain, maxPatchBytes)
+}
+
+// applySnapshotTree only prepares a tree in a private index. Callers validate
+// the record, protected paths and their own ancestry contract before entering.
+func applySnapshotTree(ctx context.Context, repository string, record Record, currentMain string, maxPatchBytes int64) (string, error) {
 	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-restore-*")
 	if err != nil {
 		return "", err

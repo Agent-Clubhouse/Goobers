@@ -13,6 +13,27 @@ type ChildWorkflowStatusRequest struct {
 	InvocationKey string `json:"invocationKey"`
 }
 
+// ChildWorkflowResolveRequest chooses disposition of an exact terminal result.
+type ChildWorkflowResolveRequest struct {
+	InvocationKey         string `json:"invocationKey"`
+	Action                string `json:"action"`
+	ResultRef             string `json:"resultRef"`
+	ExpectedRequestDigest string `json:"expectedRequestDigest,omitempty"`
+}
+
+// ChildWorkflowResolutionResponse acknowledges a request, separately from its
+// verified application. The parent runner yields before editing its workspace.
+type ChildWorkflowResolutionResponse struct {
+	InvocationKey string     `json:"invocationKey"`
+	Action        string     `json:"action"`
+	ResultRef     string     `json:"resultRef"`
+	RequestedAt   time.Time  `json:"requestedAt"`
+	Applied       bool       `json:"applied"`
+	RequestDigest string     `json:"requestDigest"`
+	PlanPublished bool       `json:"planPublished"`
+	AppliedAt     *time.Time `json:"appliedAt,omitempty"`
+}
+
 // ChildWorkflowDiagnostic is a bounded, source-free authoring refusal.
 type ChildWorkflowDiagnostic struct {
 	Code    string `json:"code"`
@@ -36,23 +57,25 @@ type ChildWorkflowValidationResponse struct {
 // ChildWorkflowResponse reports durable custody, not a claim that execution began.
 // Result/workspace references do not themselves grant access to those resources.
 type ChildWorkflowResponse struct {
-	ChildID               string    `json:"childId"`
-	AcceptanceID          string    `json:"acceptanceId"`
-	RunID                 string    `json:"runId"`
-	InvocationKey         string    `json:"invocationKey"`
-	Sequence              int       `json:"sequence"`
-	State                 string    `json:"state"`
-	Duplicate             bool      `json:"duplicate,omitempty"`
-	SourceDigest          string    `json:"sourceDigest"`
-	CanonicalDigest       string    `json:"canonicalDigest"`
-	ConfigDigest          string    `json:"configDigest"`
-	PolicyDigest          string    `json:"policyDigest"`
-	WorkflowDigest        string    `json:"workflowDigest"`
-	CancellationRequested bool      `json:"cancellationRequested"`
-	ResultRef             string    `json:"resultRef,omitempty"`
-	WorkspaceRef          string    `json:"workspaceRef,omitempty"`
-	AcceptedAt            time.Time `json:"acceptedAt"`
-	UpdatedAt             time.Time `json:"updatedAt"`
+	ChildID               string                           `json:"childId"`
+	AcceptanceID          string                           `json:"acceptanceId"`
+	RunID                 string                           `json:"runId"`
+	InvocationKey         string                           `json:"invocationKey"`
+	Sequence              int                              `json:"sequence"`
+	State                 string                           `json:"state"`
+	Duplicate             bool                             `json:"duplicate,omitempty"`
+	SourceDigest          string                           `json:"sourceDigest"`
+	CanonicalDigest       string                           `json:"canonicalDigest"`
+	ConfigDigest          string                           `json:"configDigest"`
+	PolicyDigest          string                           `json:"policyDigest"`
+	WorkflowDigest        string                           `json:"workflowDigest"`
+	CancellationRequested bool                             `json:"cancellationRequested"`
+	Acknowledged          bool                             `json:"acknowledged"`
+	ResultRef             string                           `json:"resultRef,omitempty"`
+	WorkspaceRef          string                           `json:"workspaceRef,omitempty"`
+	AcceptedAt            time.Time                        `json:"acceptedAt"`
+	UpdatedAt             time.Time                        `json:"updatedAt"`
+	Disposition           *ChildWorkflowResolutionResponse `json:"disposition,omitempty"`
 }
 
 // MaxChildWorkflowSourceBytes caps decoded UTF-8 proposal bytes at admission.
@@ -66,4 +89,5 @@ const (
 	ValidatePath = "/api/v1/runs/{run}/child-workflows/validate"
 	StartPath    = "/api/v1/runs/{run}/child-workflows/start"
 	StatusPath   = "/api/v1/runs/{run}/child-workflows/status"
+	ResolvePath  = "/api/v1/runs/{run}/child-workflows/resolve"
 )

@@ -119,7 +119,11 @@ func (r *Runner) continueChildWait(ctx context.Context, tf *taskFrame, attempt i
 	if r.cfg.ChildHandoff == nil || r.cfg.ChildParentCapacity == nil {
 		return fmt.Errorf("runner: child wait requires host custody and capacity services")
 	}
-	if err := r.cfg.ChildHandoff.Yield(ctx, record.Request, ChildWorkspaceCustody{Path: workspace.path, RepoRef: tf.in.RepoRef}); err != nil {
+	dispositionIssue, err := r.yieldChildCustody(ctx, tf, attempt, class, record.Request, ChildWorkspaceCustody{Path: workspace.path, RepoRef: tf.in.RepoRef})
+	if err != nil {
+		if ctx.Err() != nil {
+			return errors.Join(errChildWaitDrain, ctx.Err())
+		}
 		return err
 	}
 	suspension, err := r.cfg.ChildParentCapacity.SuspendChildParent(ctx, tf.in.RunID)
@@ -133,6 +137,7 @@ func (r *Runner) continueChildWait(ctx context.Context, tf *taskFrame, attempt i
 		}
 		return err
 	}
+	completion.DispositionIssue = dispositionIssue
 	pointer, err := recordChildCompletion(tf, attempt, class, record, completion)
 	if err != nil {
 		return err
@@ -238,7 +243,7 @@ func resumeChildCapacity(ctx context.Context, suspension ChildParentSuspension, 
 }
 
 func recordChildCompletion(tf *taskFrame, attempt int, class journal.AttemptClass, record childWaitRecord, completion ChildHandoffCompletion) (apiv1.ContextPointer, error) {
-	if len(completion.Summary) > 16<<10 || len(completion.References) > 64 || len(completion.ResultRef) > 1024 || len(completion.WorkspaceRef) > 1024 {
+	if len(completion.DispositionIssue) > 1024 || len(completion.Summary) > 16<<10 || len(completion.References) > 64 || len(completion.ResultRef) > 1024 || len(completion.WorkspaceRef) > 1024 {
 		return apiv1.ContextPointer{}, fmt.Errorf("runner: child completion exceeds its bound")
 	}
 	data, err := json.Marshal(struct {

@@ -99,6 +99,13 @@ func (s *Store) AcknowledgeChild(ctx context.Context, identity ChildIdentity, ex
 	if !c.AcknowledgedAt.IsZero() {
 		return nil
 	}
+	var disposition string
+	if err := tx.QueryRowContext(ctx, `SELECT disposition_digest FROM child_lineages WHERE child_id=?`, c.ChildID).Scan(&disposition); err != nil {
+		return err
+	}
+	if disposition != "" {
+		return ErrTransition
+	} // Only verified disposition completion releases this slot.
 	if now.Before(c.UpdatedAt) {
 		return ErrTransition
 	}

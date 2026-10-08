@@ -69,6 +69,13 @@ func newHandoffDaemonFixtureConfig(t *testing.T, configure func(*instance.Config
 	return handoffDaemonFixture{host, service, queue, run, env, child, origin.Binding(grant.ExpiresAt)}
 }
 
+func recordDaemonHandoffWait(t *testing.T, f handoffDaemonFixture, request runner.ChildHandoffRequest) {
+	t.Helper()
+	if err := f.run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": runner.ChildWaitKind, "childWait": map[string]any{"version": 1, "parentRunId": f.env.RunID, "request": request, "policyAttempts": 0, "infrastructureFailures": 0}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDaemonChildHandoffSelectsAcceptedWaitAndVerifiedCompletion(t *testing.T) {
 	f := newHandoffDaemonFixture(t)
 	request, err := f.host.Await(t.Context(), f.env)
@@ -101,17 +108,32 @@ func TestDaemonChildHandoffSelectsAcceptedWaitAndVerifiedCompletion(t *testing.T
 	if request, err := f.host.observe(t.Context(), f.service, f.env); err != nil || request.RequestID != "" {
 		t.Fatal("terminal child without disposition caused repeated yield", request, err)
 	}
-	for _, action := range []string{"merge", "replace", "discard"} {
-		unsupported := request
-		unsupported.Action = action
-		unsupported.RequestID = childHandoffRequestDigest(unsupported)
-		if err := f.host.Yield(t.Context(), unsupported, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err == nil {
-			t.Fatalf("unavailable disposition %q accepted", action)
-		}
+	if _, err := f.queue.RequestChildDisposition(t.Context(), triggerqueue.ChildDispositionRequest{Identity: f.child.Identity, Action: "discard", ResultRef: result.ResultRef, Authority: f.grant}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	disposition, err := f.host.Await(t.Context(), f.env)
+	if err != nil || disposition.Action != "discard" {
+		t.Fatal(disposition, err)
+	}
+	if err := f.host.Yield(t.Context(), disposition, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err == nil {
+		t.Fatal("custody effect accepted before durable wait marker")
+	}
+	recordDaemonHandoffWait(t, f, disposition)
+	changed := disposition
+	changed.Action = "merge"
+	changed.RequestID = childHandoffRequestDigest(changed)
+	if _, _, err := f.host.parkedParent(changed); err == nil {
+		t.Fatal("different receipt accepted under parked origin")
+	}
+	if err := f.host.Yield(t.Context(), disposition, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err != nil {
+		t.Fatal(err)
 	}
 	child, err := f.queue.GetChild(t.Context(), f.child.Identity)
-	if err != nil || !child.AcknowledgedAt.IsZero() {
-		t.Fatal("completion released unresolved custody", child, err)
+	if err != nil || child.AcknowledgedAt.IsZero() {
+		t.Fatal("verified disposition did not release slot", child, err)
+	}
+	if err := f.host.Yield(t.Context(), disposition, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err != nil {
+		t.Fatal("disposition retry lost custody", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,11 +13,42 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
-func (h *daemonChildHandoff) yieldedWorkspace(service *daemonCredentialService, custody runner.ChildWorkspaceCustody, repoURL string) (childworkflow.YieldedWorkspace, error) {
-	policy, err := childSnapshotPolicy(custody.Path, h.layout.Root, service.config)
-	return childworkflow.YieldedWorkspace{Path: custody.Path, RepoURL: repoURL, RepositoryKey: childRepoKey(custody.RepoRef), Policy: policy}, err
+func (h *daemonChildHandoff) yieldedWorkspace(ctx context.Context, service *daemonCredentialService, coordinator *childworkflow.WorkspaceCoordinator, child triggerqueue.ChildRecord, action string, custody runner.ChildWorkspaceCustody, repoURL string) (childworkflow.YieldedWorkspace, error) {
+	parent := childworkflow.YieldedWorkspace{Path: custody.Path, RepoURL: repoURL, RepositoryKey: childRepoKey(custody.RepoRef)}
+	if action == "wait" {
+		policy, err := childSnapshotPolicy(custody.Path, h.layout.Root, service.config)
+		parent.Policy = policy
+		return parent, err
+	}
+	result, err := coordinator.ReadResult(ctx, child, repoURL)
+	if err != nil || result.Snapshot == nil {
+		return parent, err
+	}
+	fork, err := coordinator.RetainedFork(ctx, child, repoURL)
+	if err != nil {
+		return parent, err
+	}
+	parent.RepositoryKey, parent.Policy = fork.Record.RepositoryKey, fork.Policy
+	if action != "discard" {
+		current, err := childSnapshotPolicy(custody.Path, h.layout.Root, service.config)
+		if err != nil {
+			return parent, err
+		}
+		// Preserve the immutable capture policy, but never apply it across a
+		// newly protected credential path introduced by current configuration.
+		for _, name := range current.ExcludedPaths {
+			covered := slices.ContainsFunc(fork.Policy.ExcludedPaths, func(prior string) bool {
+				return strings.EqualFold(name, prior) || strings.HasPrefix(strings.ToLower(name), strings.ToLower(prior)+"/")
+			})
+			if !covered {
+				return parent, childworkflow.ErrAuthorityChanged
+			}
+		}
+	}
+	return parent, nil
 }
 
 // Configured file credentials (including tagged private keys/wrapping stores)

@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract/childworkflowwire"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/pathutil"
 	"github.com/goobers/goobers/internal/safeio"
 )
@@ -55,11 +56,11 @@ func ChildWorkflowToolNames(access *ChildWorkflowAccess, run string) []string {
 	if access == nil || access.Validate(run) != nil {
 		return nil
 	}
-	return []string{"validate_child_workflow", "start_child_workflow", "get_child_workflow"}
+	return []string{"validate_child_workflow", "start_child_workflow", "get_child_workflow", "resolve_child_workflow"}
 }
 
 func isChildWorkflowTool(name string) bool {
-	return name == "validate_child_workflow" || name == "start_child_workflow" || name == "get_child_workflow"
+	return name == "validate_child_workflow" || name == "start_child_workflow" || name == "get_child_workflow" || name == "resolve_child_workflow"
 }
 
 const childWorkflowTimeout = 10 * time.Second // HTTP server budget is eight seconds.
@@ -102,6 +103,13 @@ func (s *Server) callChildWorkflowTool(name string, raw json.RawMessage) (map[st
 	case "get_child_workflow":
 		var response childworkflowwire.ChildWorkflowResponse
 		err = s.tools.callChildWorkflow(ctx, childworkflowwire.StatusPath, "", childworkflowwire.ChildWorkflowStatusRequest{InvocationKey: args["invocationKey"]}, &response)
+		if err != nil {
+			return nil, err
+		}
+		result = response
+	case "resolve_child_workflow":
+		var response childworkflowwire.ChildWorkflowResolutionResponse
+		err = s.tools.callChildWorkflow(ctx, childworkflowwire.ResolvePath, "", childworkflowwire.ChildWorkflowResolveRequest{InvocationKey: args["invocationKey"], Action: args["action"], ResultRef: args["resultRef"], ExpectedRequestDigest: args["expectedRequestDigest"]}, &response)
 		if err != nil {
 			return nil, err
 		}
@@ -178,7 +186,7 @@ func (t *Toolset) callChildWorkflow(ctx context.Context, path, key string, body,
 		return errors.New("child workflow response exceeded its bound or could not be read")
 	}
 	expected := http.StatusOK
-	if path == childworkflowwire.StartPath {
+	if path == childworkflowwire.StartPath || path == childworkflowwire.ResolvePath {
 		expected = http.StatusAccepted
 	}
 	if response.StatusCode != expected {
@@ -225,6 +233,9 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 	if name == "get_child_workflow" {
 		required = []string{"invocationKey"}
 	}
+	if name == "resolve_child_workflow" {
+		required = []string{"invocationKey", "action", "resultRef"}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	opening, err := decoder.Token()
 	if err != nil || opening != json.Delim('{') {
@@ -237,7 +248,8 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 			return nil, errors.New("invalid child workflow arguments")
 		}
 		field, ok := key.(string)
-		if !ok || !childArgumentAllowed(field, required) {
+		allowed := childArgumentAllowed(field, required) || name == "resolve_child_workflow" && field == "expectedRequestDigest"
+		if !ok || !allowed {
 			return nil, errors.New("unknown child workflow argument")
 		}
 		if _, duplicate := values[field]; duplicate {
@@ -255,8 +267,10 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return nil, errors.New("one child workflow argument object required")
 	}
-	if len(values) != len(required) {
-		return nil, errors.New("missing child workflow argument")
+	for _, field := range required {
+		if values[field] == "" {
+			return nil, errors.New("missing child workflow argument")
+		}
 	}
 	if key, ok := values["invocationKey"]; ok && !validChildInvocationKey(key) {
 		return nil, errors.New("invocationKey must be at most 256 bytes without padding or control characters")
@@ -264,7 +278,23 @@ func childWorkflowArgs(name string, raw json.RawMessage) (map[string]string, err
 	if len(values["sourceFile"]) > 4096 {
 		return nil, errors.New("sourceFile path is too long")
 	}
+	if name == "resolve_child_workflow" {
+		if err := validResolutionArguments(values); err != nil {
+			return nil, err
+		}
+	}
 	return values, nil
+}
+
+func validResolutionArguments(values map[string]string) error {
+	if expected := values["expectedRequestDigest"]; expected != "" && !blobstore.ValidDigest(expected) {
+		return errors.New("expectedRequestDigest must identify the exact prior choice")
+	}
+	action := values["action"]
+	if (action != "merge" && action != "replace" && action != "discard") || !blobstore.ValidDigest(values["resultRef"]) {
+		return errors.New("resolution requires merge, replace or discard and the exact terminal resultRef digest")
+	}
+	return nil
 }
 
 func childArgumentAllowed(field string, required []string) bool {
