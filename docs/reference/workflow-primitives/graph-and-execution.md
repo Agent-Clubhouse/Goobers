@@ -77,6 +77,13 @@ Declares scalar outputs or artifacts that later states rely on. Shell stages
 that emit scalar outputs use an `inputs.resultFile` contract; kind-backed and
 agentic stages emit through their executors/harnesses.
 
+Through DSL 3.0 the declaration is advisory (`VER003`). From `dslVersion: "3.1"`
+a shell stage that reports success without every declared key fails with
+`missing_expected_outputs`; the diagnostic names the result file and the
+missing keys, never the file contents. The result file must be a flat JSON
+object (UTF-8, optional byte-order mark). Kind-backed and agentic stages keep
+their own output contracts.
+
 ### `outbox`
 
 Exports declared workspace-relative files or directories into the durable run
