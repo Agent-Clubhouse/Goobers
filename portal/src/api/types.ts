@@ -1483,6 +1483,8 @@ export interface TelemetryCostRunAggregate {
   runId: string;
   gaggle?: string;
   workflow?: string;
+  triggerKind?: string;
+  triggerRef?: string;
   status?: string;
   startedAt: string;
   usageAttempts: number;

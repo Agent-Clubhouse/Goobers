@@ -1445,7 +1445,7 @@ export function ExternalCostBreakdown({
                   shellLabel={`${openRuns.label} run comparison`}
                   shellClassName="external-cost-run-table-wrap"
                   className="external-cost-run-table"
-                  columns={["Run", "Started", "Attempts", "AIC", "Models"]}
+                  columns={["Run", "Workflow / trigger", "Started", "Attempts", "AIC", "Models"]}
                 >
                   {openRuns.runs.map((run) => (
                     <tr key={run.runId}>
@@ -1457,6 +1457,10 @@ export function ExternalCostBreakdown({
                         >
                           {run.runId}
                         </a>
+                      </td>
+                      <td>
+                        <strong>{externalCostRunWorkflow(run)}</strong>
+                        <small className="data-table-meta">{externalCostRunTrigger(run)}</small>
                       </td>
                       <td>
                         <Timestamp value={run.startedAt} />
@@ -1480,6 +1484,16 @@ export function ExternalCostBreakdown({
       )}
     </section>
   );
+}
+
+function externalCostRunWorkflow(run: TelemetryCostRunAggregate): string {
+  if (!run.workflow) return "Workflow unavailable";
+  return run.gaggle ? `${run.gaggle} / ${run.workflow}` : run.workflow;
+}
+
+function externalCostRunTrigger(run: TelemetryCostRunAggregate): string {
+  if (!run.triggerKind) return "Trigger unavailable";
+  return run.triggerRef ? `${run.triggerKind} · ${run.triggerRef}` : run.triggerKind;
 }
 
 function ExternalCostHeading({ statusMessage }: { statusMessage?: string }) {

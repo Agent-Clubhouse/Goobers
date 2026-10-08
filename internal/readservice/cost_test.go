@@ -34,7 +34,8 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 				CostBases:     []string{telemetry.CostBasisVendorReported},
 			}},
 			Runs: []rollup.CostRunAggregate{{
-				RunID: "run-1", Gaggle: "core", Workflow: "implementation", Status: "completed", StartedAt: since.Add(time.Hour),
+				RunID: "run-1", Gaggle: "core", Workflow: "implementation", TriggerKind: "schedule", TriggerRef: "nightly",
+				Status: "completed", StartedAt: since.Add(time.Hour),
 				UsageAttempts: 3, MeasuredAttempts: 3,
 				NanoAIU: &nanoAIU, CostUSD: &costUSD,
 				BillingModels: []string{telemetry.BillingModelAICredits},
@@ -83,6 +84,7 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 	}
 	if len(item.Runs) != 1 || item.Runs[0].RunID != "run-1" ||
 		item.Runs[0].Gaggle != "core" || item.Runs[0].Workflow != "implementation" ||
+		item.Runs[0].TriggerKind != "schedule" || item.Runs[0].TriggerRef != "nightly" ||
 		item.Runs[0].Status != "completed" ||
 		len(item.Runs[0].NativeTotals) != 1 || item.Runs[0].NativeTotals[0].Unit != "aiCredits" {
 		t.Fatalf("runs = %+v", item.Runs)
@@ -141,6 +143,11 @@ func TestTelemetryCostsEmptyCollectionsSerializeAsArrays(t *testing.T) {
 	for _, field := range []string{"nativeTotals", "normalizedTotals", "billingModels", "costBases", "models"} {
 		if bytes.Contains(data, []byte(`"`+field+`":null`)) {
 			t.Fatalf("%s serialized as null: %s", field, data)
+		}
+	}
+	for _, field := range []string{"gaggle", "workflow", "triggerKind", "triggerRef", "status"} {
+		if bytes.Contains(data, []byte(`"`+field+`":`)) {
+			t.Fatalf("unknown run %s was not omitted: %s", field, data)
 		}
 	}
 }
