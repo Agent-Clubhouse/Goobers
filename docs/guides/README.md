@@ -8,6 +8,7 @@ cannot leave it outside the documented navigation surfaces.
 
 - [Azure DevOps authentication](ado-authentication.md)
 - [Azure DevOps limitations](ado-limitations.md)
+- [Diagnose an instance with the Goobers agent toolkit](agent-toolkit-diagnostics.md)
 - [Onboard an arbitrary repository (tiers 1-2)](arbitrary-repo-onboarding.md)
 - [Coordinate a shared backlog with assignees](assignment-aware-backlogs.md)
 - [Export tenant telemetry directly to Azure Monitor](azure-monitor.md)
