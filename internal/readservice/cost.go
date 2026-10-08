@@ -94,6 +94,8 @@ type TelemetryCostRunAggregate struct {
 	RunID                  string                        `json:"runId"`
 	Gaggle                 string                        `json:"gaggle,omitempty"`
 	Workflow               string                        `json:"workflow,omitempty"`
+	TriggerKind            string                        `json:"triggerKind,omitempty"`
+	TriggerRef             string                        `json:"triggerRef,omitempty"`
 	Status                 string                        `json:"status,omitempty"`
 	StartedAt              time.Time                     `json:"startedAt"`
 	UsageAttempts          int                           `json:"usageAttempts"`
@@ -109,6 +111,22 @@ type TelemetryCostRunAggregate struct {
 	BillingModels          []string                      `json:"billingModels"`
 	CostBases              []string                      `json:"costBases"`
 	Models                 []TelemetryCostModelAggregate `json:"models"`
+}
+
+// Classification renders the run's gaggle, workflow, and trigger for human
+// output, omitting whatever older telemetry did not record.
+func (r TelemetryCostRunAggregate) Classification() string {
+	workflow := strings.Trim(r.Gaggle+"/"+r.Workflow, "/")
+	trigger := strings.TrimSpace(r.TriggerKind + " " + r.TriggerRef)
+	switch {
+	case workflow == "" && trigger == "":
+		return "unclassified"
+	case trigger == "":
+		return workflow
+	case workflow == "":
+		return "trigger " + trigger
+	}
+	return workflow + "; trigger " + trigger
 }
 
 // TelemetryCostAmount names a unit explicitly so clients never guess whether
@@ -257,7 +275,8 @@ func projectCostRun(source rollup.CostRunAggregate) TelemetryCostRunAggregate {
 		native = nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases)
 	}
 	return TelemetryCostRunAggregate{
-		RunID: source.RunID, Gaggle: source.Gaggle, Workflow: source.Workflow, Status: source.Status, StartedAt: source.StartedAt,
+		RunID: source.RunID, Gaggle: source.Gaggle, Workflow: source.Workflow,
+		TriggerKind: source.TriggerKind, TriggerRef: source.TriggerRef, Status: source.Status, StartedAt: source.StartedAt,
 		UsageAttempts: source.UsageAttempts, MeasuredAttempts: source.MeasuredAttempts,
 		InputTokens: source.InputTokens, OutputTokens: source.OutputTokens,
 		CacheReadTokens: source.CacheReadTokens, CacheWriteTokens: source.CacheWriteTokens,
