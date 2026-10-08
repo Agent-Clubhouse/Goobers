@@ -1501,6 +1501,8 @@ has been delivered — the daemon picks it up and begins draining on its
 next sweep. With no live daemon for this instance, fails fast with a
 clear message rather than hanging. Exit codes: 0 = shutdown requested,
 1 = no live daemon found, 2 = usage/IO error.
+A supervisor restarts the daemon at boot or logon; to keep work paused,
+see docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -4110,6 +4112,8 @@ terminal outcome later. Exit codes:
 0 = cancelled or engine cancellation requested, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
+To pause a workflow or gaggle before cancelling its runs, see
+docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -4795,6 +4799,8 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 With --runs-only, skip workflow health and provider-backed status queries and return
 only the bounded run table, without recovery decoration; combine it with --json and
 --limit for fast operator probes. A ready, current status projection is required.
+The workflow summary's A/D/MAX column shows active, desired, and maximum runs;
+see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
