@@ -1,6 +1,9 @@
 package runner
 
-import apiv1 "github.com/goobers/goobers/api/v1alpha1"
+import (
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/workflow"
+)
 
 // taskWorkspaceMode resolves the effective workspace for a stage.
 //
@@ -31,4 +34,25 @@ func gateWorkspaceMode(g apiv1.Gate) apiv1.WorkspaceMode {
 		return mode
 	}
 	return apiv1.WorkspaceRepo
+}
+
+// emptyReviewerDiffIsEvidence reports whether an agentic gate's empty
+// reviewer diff licenses the #415 empty-diff fast-fail.
+//
+// Only an AGENTIC subject qualifies: an agent whose deliverable is its
+// committed work produced nothing to review, so a repass can only re-observe
+// the same emptiness. A deterministic subject (e.g. merge-review's
+// gather-sibling-context, whose reviewer judges PRs from its outputs) is never
+// expected to commit, so the reviewer must still run against its evidence.
+//
+// And the empty diff is positive evidence only when the gate's worktree sits
+// on the run branch (#5334): a repo-readonly gate is a detached checkout of
+// the pinned base, so its diff is empty by construction and says nothing about
+// the subject's commits. Mirrors the engine's captureGateDiff Observed rule.
+func emptyReviewerDiffIsEvidence(m *workflow.Machine, subjectStage string, g apiv1.Gate) bool {
+	if !gateWorkspaceMode(g).IsWritableRepo() {
+		return false
+	}
+	subjectTask, ok := m.Task(subjectStage)
+	return ok && subjectTask.Type == apiv1.TaskAgentic
 }
