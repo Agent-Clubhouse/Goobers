@@ -7518,6 +7518,11 @@ func agenticGateMachine(t *testing.T) *workflow.Machine {
 // that was supposed to commit work but produced nothing.
 func agenticImplementGateMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
+	return agenticImplementGateMachineWithWorkspace(t, "")
+}
+
+func agenticImplementGateMachineWithWorkspace(t *testing.T, gateWorkspace apiv1.WorkspaceMode) *workflow.Machine {
+	t.Helper()
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -7529,7 +7534,7 @@ func agenticImplementGateMachine(t *testing.T) *workflow.Machine {
 			{
 				Name:      "review",
 				Evaluator: apiv1.EvaluatorAgentic,
-				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Workspace: gateWorkspace},
 				Branches: map[string]string{
 					"pass":          workflow.TerminalComplete,
 					"needs-changes": "implement",
@@ -8361,6 +8366,74 @@ func TestRunnerDeterministicSubjectEmptyDiffStillReviews(t *testing.T) {
 	}
 	if !reviewer.called {
 		t.Fatal("reviewer was NOT invoked — a deterministic subject's empty diff must still reach the reviewer (the merge-review case)")
+	}
+}
+
+// TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff pins #5334: a
+// repo-readonly reviewer gate is a detached checkout of the pinned base, and a
+// scratch gate has no repo checkout at all, so recordReviewerDiff's empty
+// result in either cannot prove the agentic subject committed nothing. The
+// reviewer must run — whether or not the subject actually committed — instead
+// of the #415 empty-diff fast-fail parking it.
+func TestRunnerRepoReadonlyGateDoesNotFastFailUnobservedDiff(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		workspace apiv1.WorkspaceMode
+		commit    bool
+	}{
+		{name: "repo-readonly-subject-committed", workspace: apiv1.WorkspaceRepoReadOnly, commit: true},
+		{name: "repo-readonly-subject-committed-nothing", workspace: apiv1.WorkspaceRepoReadOnly, commit: false},
+		{name: "scratch-subject-committed", workspace: apiv1.WorkspaceScratch, commit: true},
+		{name: "scratch-subject-committed-nothing", workspace: apiv1.WorkspaceScratch, commit: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var coder invoke.Goober = &noCommitSuccessGoober{}
+			if tc.commit {
+				coder = &committingSuccessGoober{t: t}
+			}
+			reviewer := &capturingReviewer{}
+			instanceRoot := t.TempDir()
+			wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+			if err != nil {
+				t.Fatalf("new worktree manager: %v", err)
+			}
+			fixtureRepo := newFixtureRepo(t)
+			r, err := New(Config{
+				NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+					return &stubDeterministic{}, nil
+				},
+				NewAgentic: func(gooberName string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+					if gooberName == "reviewer" {
+						return reviewer, nil
+					}
+					return coder, nil
+				},
+				Worktrees:    wtMgr,
+				ScratchDir:   filepath.Join(instanceRoot, "scratch"),
+				RunsDir:      filepath.Join(instanceRoot, "runs"),
+				RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			machine := agenticImplementGateMachineWithWorkspace(t, tc.workspace)
+			res, err := r.Start(context.Background(), StartInput{
+				RunID:   "run-readonly-review-" + tc.name,
+				Machine: machine,
+				Gaggle:  "acme-web",
+				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if !reviewer.called {
+				t.Fatalf("reviewer was NOT invoked — a %s gate cannot observe the run branch, so its empty diff must not fast-fail", tc.workspace)
+			}
+			if res.Phase != journal.PhaseCompleted {
+				t.Fatalf("phase = %q, want completed on the reviewer's pass", res.Phase)
+			}
+		})
 	}
 }
 
