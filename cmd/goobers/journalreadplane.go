@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/goobers/goobers/internal/engineoperator"
 
@@ -115,7 +116,12 @@ func (s *daemonRunJournalService) ConflictTouches(ctx context.Context, request j
 	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
 		return journalclient.ConflictTouchResponse{}, gaggleMismatch("a conflict-history read")
 	}
-	touches, err := s.crossRun().ConflictTouches(ctx, journalclient.ConflictTouchRequest{
+	if err := s.requireWindowedLiveReads(request.Since, "a conflict-history read"); err != nil {
+		return journalclient.ConflictTouchResponse{}, err
+	}
+	// Candidate runs come from the live read model (last activity since the
+	// window opens); only those journals are opened, never every run's.
+	touches, err := s.crossRun().ConflictTouchesFromReads(ctx, s.reads, journalclient.ConflictTouchRequest{
 		RunID:  request.RunID,
 		Gaggle: request.Gaggle,
 		Since:  request.Since,
@@ -124,6 +130,20 @@ func (s *daemonRunJournalService) ConflictTouches(ctx context.Context, request j
 		return journalclient.ConflictTouchResponse{}, err
 	}
 	return journalclient.ConflictTouchResponse{Touches: touches}, nil
+}
+
+// requireWindowedLiveReads refuses a windowed cross-run scan that has no live
+// read model to narrow its candidates with, or no window: falling back to the
+// offline directory scan is the defect this plane exists to avoid.
+func (s *daemonRunJournalService) requireWindowedLiveReads(since time.Time, what string) error {
+	if since.IsZero() {
+		return httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
+			"since is required; an unbounded "+what+" is refused", nil)
+	}
+	if s.reads == nil {
+		return errors.New(what + ": the daemon's live read model is not attached")
+	}
+	return nil
 }
 
 // UnpushedWork answers the stranded-diff question for the items the asking run
@@ -144,7 +164,10 @@ func (s *daemonRunJournalService) UnpushedWork(ctx context.Context, request jour
 	if len(itemIDs) == 0 {
 		return journalclient.UnpushedWorkResponse{}, nil
 	}
-	work, err := s.crossRun().UnpushedWork(ctx, journalclient.UnpushedWorkRequest{
+	if err := s.requireWindowedLiveReads(request.Since, "a prior-unpushed-work read"); err != nil {
+		return journalclient.UnpushedWorkResponse{}, err
+	}
+	work, err := s.crossRun().UnpushedWorkFromReads(ctx, s.reads, journalclient.UnpushedWorkRequest{
 		RunID:              request.RunID,
 		Gaggle:             request.Gaggle,
 		Since:              request.Since,

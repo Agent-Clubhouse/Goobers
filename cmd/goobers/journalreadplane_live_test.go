@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -154,5 +155,239 @@ func TestDaemonEscalationCandidatesRefusesWithoutLiveReads(t *testing.T) {
 	service := newDaemonRunJournalService(layout, nil)
 	if _, err := service.EscalationCandidates(context.Background(), journalclient.EscalationCandidatesRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}); err == nil {
 		t.Fatal("daemon served escalation candidates without a live read model (silent offline fallback)")
+	}
+}
+
+// --- conflict-touches / unpushed-work / run-phase / branch-ownership (#6968) ---
+
+// seedLiveAskingRun creates a schema-valid asking run the read model can project.
+func seedLiveAskingRun(t *testing.T, layout instance.Layout) {
+	t.Helper()
+	run, err := journal.Create(layout.ForGaggle(crossRunTestGaggle).RunsDir(), journal.RunIdentity{
+		RunID: "asking-run", Workflow: "implementation", WorkflowVersion: 1, Gaggle: crossRunTestGaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// staleClock stamps a run's events well before any window the tests ask about.
+func staleClock() journal.Option {
+	at := time.Now().Add(-72 * time.Hour)
+	return journal.WithClock(func() time.Time { at = at.Add(time.Second); return at })
+}
+
+// corruptJournal appends an unparseable line, so any reader that opens and
+// decodes the run's events fails on it.
+func corruptJournal(t *testing.T, layout instance.Layout, gaggle, runID string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(layout.ForGaggle(gaggle).RunsDir(), runID, "events.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{not json\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertWindowedLists(t *testing.T, spy *spyEscalationReads) {
+	t.Helper()
+	if len(spy.lists) == 0 {
+		t.Fatal("the live read model was never asked to list runs")
+	}
+	for _, o := range spy.lists {
+		if o.Gaggle != crossRunTestGaggle || o.Since.IsZero() || !o.OrderByActivity {
+			t.Fatalf("list options = %+v, want a gaggle-scoped, windowed, activity-ordered query", o)
+		}
+	}
+}
+
+func seedConflictFixture(t *testing.T) instance.Layout {
+	t.Helper()
+	layout := crossRunTestLayout(t)
+	seedLiveAskingRun(t, layout)
+	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflict-a", "internal/a.go", false)
+	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflict-b", "internal/b.go", false)
+	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflict-old", "internal/old.go", false, staleClock())
+	seedConflictRunWith(t, layout, "other-gaggle", "conflict-theirs", "internal/theirs.go", false)
+	return layout
+}
+
+func TestDaemonConflictTouchesUsesLiveReadModel(t *testing.T) {
+	layout := seedConflictFixture(t)
+	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
+	service := newDaemonRunJournalService(layout, nil)
+	service.reads = spy
+	since := time.Now().UTC().Add(-24 * time.Hour)
+	ask := journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}
+
+	// Parity first, over several windows (all, recent only, none).
+	for _, window := range []time.Duration{-96 * time.Hour, -24 * time.Hour, -time.Minute, time.Hour} {
+		ask.Since = time.Now().UTC().Add(window)
+		live, err := service.ConflictTouches(context.Background(), ask)
+		if err != nil {
+			t.Fatalf("window %v: %v", window, err)
+		}
+		file, err := journalclient.NewFileCrossRun(layout).ConflictTouches(context.Background(), ask)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(live.Touches, file) {
+			t.Fatalf("window %v: live = %+v, file = %+v", window, live.Touches, file)
+		}
+	}
+	ask.Since = since
+	live, err := service.ConflictTouches(context.Background(), ask)
+	if err != nil || len(live.Touches) != 2 || live.Touches[0].RunID != "conflict-a" || live.Touches[1].RunID != "conflict-b" {
+		t.Fatalf("touches = %+v, err = %v; want conflict-a then conflict-b", live.Touches, err)
+	}
+	assertWindowedLists(t, spy)
+
+	// A run with no activity inside the window is never opened: corrupt its
+	// journal and the daemon route still answers, while the directory scan fails.
+	corruptJournal(t, layout, crossRunTestGaggle, "conflict-old")
+	again, err := service.ConflictTouches(context.Background(), ask)
+	if err != nil || !reflect.DeepEqual(again.Touches, live.Touches) {
+		t.Fatalf("after corrupting a non-candidate: %+v, %v", again.Touches, err)
+	}
+	if _, err := journalclient.NewFileCrossRun(layout).ConflictTouches(context.Background(), ask); err == nil {
+		t.Fatal("control failed: the directory scan did not touch the corrupted run")
+	}
+}
+
+func TestDaemonUnpushedWorkUsesLiveReadModel(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedLiveAskingRun(t, layout)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-1", "42", "first diff for item 42", false)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-2", "42", "second diff for item 42", false)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-old", "42", "ancient diff", false, staleClock())
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "other-item", "99", "diff for item 99", false)
+	seedStrandedDiffRunWith(t, layout, "other-gaggle", "theirs", "42", "foreign diff", false)
+	claimItemForRun(t, layout, "42", "asking-run")
+
+	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
+	service := newDaemonRunJournalService(layout, nil)
+	service.reads = spy
+	ask := journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}
+
+	for _, window := range []time.Duration{-96 * time.Hour, -24 * time.Hour, time.Hour} {
+		ask.Since = time.Now().UTC().Add(window)
+		live, err := service.UnpushedWork(context.Background(), ask)
+		if err != nil {
+			t.Fatalf("window %v: %v", window, err)
+		}
+		fileAsk := ask
+		fileAsk.ItemIDs = []string{"42"}
+		file, err := journalclient.NewFileCrossRun(layout).UnpushedWork(context.Background(), fileAsk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(live.Work, file) {
+			t.Fatalf("window %v: live = %+v, file = %+v", window, live.Work, file)
+		}
+	}
+	ask.Since = time.Now().UTC().Add(-24 * time.Hour)
+	live, err := service.UnpushedWork(context.Background(), ask)
+	if err != nil || live.Work == nil || (live.Work.RunID != "prior-1" && live.Work.RunID != "prior-2") {
+		t.Fatalf("work = %+v, err = %v; want a fresh prior run for item 42", live.Work, err)
+	}
+	assertWindowedLists(t, spy)
+
+	corruptJournal(t, layout, crossRunTestGaggle, "prior-old")
+	corruptJournal(t, layout, crossRunTestGaggle, "other-item") // fresh, so it IS a candidate: skipped with a warning, not fatal
+	again, err := service.UnpushedWork(context.Background(), ask)
+	if err != nil || !reflect.DeepEqual(again.Work, live.Work) {
+		t.Fatalf("after corrupting runs: %+v, %v", again.Work, err)
+	}
+}
+
+// The unpushed-work scan reports a failure it cannot localise; prove the
+// non-candidate corruption above is irrelevant by making the offline scan
+// observe it (it warns on every unreadable run it opens).
+func TestDaemonUnpushedWorkDoesNotOpenNonCandidateJournals(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedLiveAskingRun(t, layout)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior", "42", "diff", false)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-old", "42", "ancient", false, staleClock())
+	claimItemForRun(t, layout, "42", "asking-run")
+	reads := liveEscalationReads(t, layout)
+	corruptJournal(t, layout, crossRunTestGaggle, "prior-old")
+
+	var warnings []string
+	file := journalclient.NewFileCrossRun(layout)
+	file.Warn = func(msg string) { warnings = append(warnings, msg) }
+	ask := journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, ItemIDs: []string{"42"}, Since: time.Now().Add(-24 * time.Hour)}
+
+	if _, err := file.UnpushedWorkFromReads(context.Background(), reads, ask); err != nil || len(warnings) != 0 {
+		t.Fatalf("narrowed scan: err=%v warnings=%v; want none (the corrupt run is outside the window)", err, warnings)
+	}
+	if _, err := file.UnpushedWork(context.Background(), ask); err != nil || len(warnings) == 0 {
+		t.Fatalf("control: err=%v warnings=%v; the directory scan should have hit the corrupt run", err, warnings)
+	}
+}
+
+func TestDaemonWindowedRoutesRefuseWithoutLiveReadsOrWindow(t *testing.T) {
+	layout := seedConflictFixture(t)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior", "42", "diff", false)
+	claimItemForRun(t, layout, "42", "asking-run")
+	service := newDaemonRunJournalService(layout, nil)
+	since := time.Now().Add(-time.Hour)
+
+	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
+		t.Fatal("conflict touches served without a live read model (silent offline fallback)")
+	}
+	if _, err := service.UnpushedWork(context.Background(), journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
+		t.Fatal("unpushed work served without a live read model (silent offline fallback)")
+	}
+	service.reads = liveEscalationReads(t, layout)
+	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}); err == nil {
+		t.Fatal("an unbounded conflict-history read was served")
+	}
+	if _, err := service.UnpushedWork(context.Background(), journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}); err == nil {
+		t.Fatal("an unbounded unpushed-work read was served")
+	}
+}
+
+// RunPhase and BranchOwnership were reviewed for the same defect (#6968): both
+// resolve one run directory by id and read that single journal. Corrupting an
+// unrelated run proves neither enumerates the others, and the answers match
+// the file-backed reader.
+func TestDaemonRunPhaseAndBranchOwnershipReadOnlyTheTargetJournal(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedLiveAskingRun(t, layout)
+	seedBranchOwningRun(t, layout, crossRunTestGaggle, "owner", "implementation", "goobers/implementation/owner")
+	seedBranchOwningRun(t, layout, crossRunTestGaggle, "bystander", "implementation", "goobers/implementation/bystander")
+	corruptJournal(t, layout, crossRunTestGaggle, "bystander")
+	service := newDaemonRunJournalService(layout, nil)
+	ctx := context.Background()
+	file := journalclient.NewFileCrossRun(layout)
+
+	phase, err := service.RunPhase(ctx, journalclient.RunPhaseRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, TargetRunID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPhase, err := file.RunPhase(ctx, "owner")
+	if err != nil || phase.Phase != string(wantPhase) || phase.RunID != "owner" {
+		t.Fatalf("phase = %+v, file = %q, %v", phase, wantPhase, err)
+	}
+
+	req := journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle, TargetRunID: "owner",
+		Workflow: "implementation", Branch: "goobers/implementation/owner",
+	}
+	got, err := service.BranchOwnership(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := file.BranchOwnership(ctx, req)
+	if err != nil || got.Owner == nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("ownership = %+v, file = %+v, %v", got, want, err)
 	}
 }

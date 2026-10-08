@@ -222,16 +222,90 @@ func journalQuiescentBefore(runDir string, since time.Time) bool {
 	return info.ModTime().Before(since.Add(-journalClockSlack))
 }
 
+// RunLister is the slice of the daemon's live, read-model-backed run reader
+// the cross-run scans narrow their candidate set with.
+type RunLister interface {
+	ListRuns(ctx context.Context, options readservice.RunListOptions) (readservice.RunList, error)
+}
+
+// runCandidate is one run directory a cross-run scan will inspect.
+type runCandidate struct {
+	dir  string
+	name string
+}
+
+// runListPageLimit is the read model's maximum page size.
+const runListPageLimit = 200
+
+// activeRunCandidates names the run directories that can hold an event at or
+// after since, using the read model (an indexed query on the gaggle's
+// last-activity axis) instead of listing the runs directory.
+//
+// It is a superset of what the directory scan would open after its own
+// journalQuiescentBefore prune: a run with an event timestamped at or after
+// since has last activity at or after since, and the window is widened by the
+// same journalClockSlack the file prune uses. Candidates come back in
+// ascending run-id order, the order os.ReadDir yields, so tie-breaks (newest
+// diff wins, first seen on a tie) are identical. Requires a gaggle and a
+// since: an unbounded window would be every run.
+func (f *FileCrossRun) activeRunCandidates(ctx context.Context, reads RunLister, gaggle string, since time.Time) ([]runCandidate, error) {
+	if reads == nil {
+		return nil, errors.New("journalclient: a live read model is required to narrow the run set")
+	}
+	if gaggle == "" || since.IsZero() {
+		return nil, errors.New("journalclient: a gaggle and a since are required to narrow the run set")
+	}
+	runDirs, err := f.scoped(gaggle).RunDirs()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	cursor := ""
+	for {
+		page, err := reads.ListRuns(ctx, readservice.RunListOptions{
+			Gaggle:          gaggle,
+			Since:           since.Add(-journalClockSlack),
+			OrderByActivity: true,
+			ShowNoWork:      true,
+			Limit:           runListPageLimit,
+			Cursor:          cursor,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("journalclient: list active runs: %w", err)
+		}
+		for _, run := range page.Runs {
+			ids = append(ids, run.ID)
+		}
+		if page.NextCursor == "" || len(page.Runs) == 0 {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	sort.Strings(ids)
+	candidates := make([]runCandidate, 0, len(ids))
+	for _, id := range ids {
+		for _, runsDir := range runDirs {
+			dir := filepath.Join(runsDir, id)
+			if info, err := os.Lstat(dir); err == nil && info.IsDir() {
+				candidates = append(candidates, runCandidate{dir: dir, name: id})
+				break
+			}
+		}
+	}
+	return candidates, nil
+}
+
 // ConflictTouches implements CrossRun over the gaggle's run directories. Runs
 // whose journal went quiet before req.Since are pruned by a stat before any
-// journal is opened.
+// journal is opened. It lists every run directory, so it is the same-host and
+// offline path; the daemon uses ConflictTouchesFromReads.
 func (f *FileCrossRun) ConflictTouches(ctx context.Context, req ConflictTouchRequest) ([]ConflictTouch, error) {
 	layout := f.scoped(req.Gaggle)
 	runDirs, err := layout.RunDirs()
 	if err != nil {
 		return nil, err
 	}
-	byRun := make(map[string]map[string]struct{})
+	var candidates []runCandidate
 	for _, runsDir := range runDirs {
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
@@ -244,48 +318,71 @@ func (f *FileCrossRun) ConflictTouches(ctx context.Context, req ConflictTouchReq
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			if !entry.IsDir() {
+			if entry.IsDir() {
+				candidates = append(candidates, runCandidate{dir: filepath.Join(runsDir, entry.Name()), name: entry.Name()})
+			}
+		}
+	}
+	return f.conflictTouchesFrom(ctx, candidates, req)
+}
+
+// ConflictTouchesFromReads answers ConflictTouches without listing the run
+// directories: the live read model names the runs whose journal saw activity
+// since req.Since, and only those journals are opened. Results are identical to
+// ConflictTouches (see activeRunCandidates for why the candidate set is a
+// superset of every run that can contribute).
+func (f *FileCrossRun) ConflictTouchesFromReads(ctx context.Context, reads RunLister, req ConflictTouchRequest) ([]ConflictTouch, error) {
+	candidates, err := f.activeRunCandidates(ctx, reads, req.Gaggle, req.Since)
+	if err != nil {
+		return nil, err
+	}
+	return f.conflictTouchesFrom(ctx, candidates, req)
+}
+
+func (f *FileCrossRun) conflictTouchesFrom(ctx context.Context, candidates []runCandidate, req ConflictTouchRequest) ([]ConflictTouch, error) {
+	byRun := make(map[string]map[string]struct{})
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if journalQuiescentBefore(candidate.dir, req.Since) {
+			continue
+		}
+		reader, err := journal.OpenRead(candidate.dir)
+		if err != nil {
+			continue
+		}
+		events, err := reader.Events()
+		if err != nil {
+			return nil, err
+		}
+		for _, event := range events {
+			if !event.KnownSchema() ||
+				event.Type != journal.EventArtifactRecorded ||
+				event.Ref == nil ||
+				event.Time.Before(req.Since) ||
+				!strings.HasSuffix(event.Name, ConflictArtifactSuffix) {
 				continue
 			}
-			if journalQuiescentBefore(filepath.Join(runsDir, entry.Name()), req.Since) {
-				continue
-			}
-			reader, err := journal.OpenRead(filepath.Join(runsDir, entry.Name()))
-			if err != nil {
-				continue
-			}
-			events, err := reader.Events()
+			data, err := reader.ArtifactBytes(*event.Ref)
 			if err != nil {
 				return nil, err
 			}
-			for _, event := range events {
-				if !event.KnownSchema() ||
-					event.Type != journal.EventArtifactRecorded ||
-					event.Ref == nil ||
-					event.Time.Before(req.Since) ||
-					!strings.HasSuffix(event.Name, ConflictArtifactSuffix) {
-					continue
-				}
-				data, err := reader.ArtifactBytes(*event.Ref)
-				if err != nil {
-					return nil, err
-				}
-				var artifact conflictArtifact
-				if err := json.Unmarshal(data, &artifact); err != nil {
-					return nil, fmt.Errorf("decode conflict artifact for run %s: %w", entry.Name(), err)
-				}
-				if artifact.Code != ConflictArtifactCode || len(artifact.ConflictingFiles) == 0 {
-					continue
-				}
-				files := byRun[entry.Name()]
-				if files == nil {
-					files = make(map[string]struct{})
-					byRun[entry.Name()] = files
-				}
-				for _, path := range artifact.ConflictingFiles {
-					if path != "" {
-						files[path] = struct{}{}
-					}
+			var artifact conflictArtifact
+			if err := json.Unmarshal(data, &artifact); err != nil {
+				return nil, fmt.Errorf("decode conflict artifact for run %s: %w", candidate.name, err)
+			}
+			if artifact.Code != ConflictArtifactCode || len(artifact.ConflictingFiles) == 0 {
+				continue
+			}
+			files := byRun[candidate.name]
+			if files == nil {
+				files = make(map[string]struct{})
+				byRun[candidate.name] = files
+			}
+			for _, path := range artifact.ConflictingFiles {
+				if path != "" {
+					files[path] = struct{}{}
 				}
 			}
 		}
@@ -463,20 +560,18 @@ type unpushedDiffArtifact struct {
 // UnpushedWork implements CrossRun. Best-effort per candidate run (a corrupt
 // or foreign directory is skipped with a warning) but never silent about a
 // failure it cannot localize: a runs-root that cannot be listed is an error.
+// It lists every run directory, so it is the same-host and offline path; the
+// daemon uses UnpushedWorkFromReads.
 func (f *FileCrossRun) UnpushedWork(ctx context.Context, req UnpushedWorkRequest) (*UnpushedWork, error) {
 	if len(req.ItemIDs) == 0 {
 		return nil, nil
-	}
-	limit := req.MaxInlineDiffBytes
-	if limit <= 0 {
-		limit = DefaultMaxInlineDiffBytes
 	}
 	layout := f.scoped(req.Gaggle)
 	runDirs, err := layout.RunDirs()
 	if err != nil {
 		return nil, err
 	}
-	var best *UnpushedWork
+	var candidates []runCandidate
 	for _, runsDir := range runDirs {
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
@@ -489,22 +584,59 @@ func (f *FileCrossRun) UnpushedWork(ctx context.Context, req UnpushedWorkRequest
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			if !entry.IsDir() || entry.Name() == req.RunID {
-				continue
-			}
-			if journalQuiescentBefore(filepath.Join(runsDir, entry.Name()), req.Since) {
-				continue
-			}
-			candidate := f.unpushedWorkFromRun(filepath.Join(runsDir, entry.Name()), req.ItemIDs, req.Since, limit)
-			if candidate == nil {
-				continue
-			}
-			if best == nil || candidate.RecordedAt.After(best.RecordedAt) {
-				best = candidate
+			if entry.IsDir() {
+				candidates = append(candidates, runCandidate{dir: filepath.Join(runsDir, entry.Name()), name: entry.Name()})
 			}
 		}
 	}
-	return best, nil
+	work := f.unpushedWorkFrom(ctx, candidates, req)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return work, nil
+}
+
+// UnpushedWorkFromReads answers UnpushedWork without listing the run
+// directories: the live read model names the runs with journal activity since
+// req.Since, and only those journals are opened. Results are identical to
+// UnpushedWork.
+func (f *FileCrossRun) UnpushedWorkFromReads(ctx context.Context, reads RunLister, req UnpushedWorkRequest) (*UnpushedWork, error) {
+	if len(req.ItemIDs) == 0 {
+		return nil, nil
+	}
+	candidates, err := f.activeRunCandidates(ctx, reads, req.Gaggle, req.Since)
+	if err != nil {
+		return nil, err
+	}
+	work := f.unpushedWorkFrom(ctx, candidates, req)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return work, nil
+}
+
+func (f *FileCrossRun) unpushedWorkFrom(ctx context.Context, candidates []runCandidate, req UnpushedWorkRequest) *UnpushedWork {
+	limit := req.MaxInlineDiffBytes
+	if limit <= 0 {
+		limit = DefaultMaxInlineDiffBytes
+	}
+	var best *UnpushedWork
+	for _, c := range candidates {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if c.name == req.RunID || journalQuiescentBefore(c.dir, req.Since) {
+			continue
+		}
+		candidate := f.unpushedWorkFromRun(c.dir, req.ItemIDs, req.Since, limit)
+		if candidate == nil {
+			continue
+		}
+		if best == nil || candidate.RecordedAt.After(best.RecordedAt) {
+			best = candidate
+		}
+	}
+	return best
 }
 
 // unpushedWorkFromRun inspects one run journal for a stranded diff matching
