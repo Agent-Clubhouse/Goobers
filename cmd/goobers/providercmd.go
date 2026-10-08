@@ -110,10 +110,27 @@ type claimsLockTimeoutError struct {
 	Operation    string
 	Timeout      time.Duration
 	WaitDuration time.Duration
+	// Holder is the operation that announced itself as owning the lock when
+	// the wait gave up (#6968); nil when no holder record was readable.
+	Holder        *lock.Holder
+	HolderHeldFor time.Duration
+}
+
+func newClaimsLockTimeoutError(lockPath, operation string, timeout time.Duration, started time.Time) *claimsLockTimeoutError {
+	err := &claimsLockTimeoutError{Operation: operation, Timeout: timeout, WaitDuration: time.Since(started)}
+	if holder, ok := lock.ReadHolder(lockPath); ok {
+		err.Holder = &holder
+		err.HolderHeldFor = time.Since(holder.AcquiredAt)
+	}
+	return err
 }
 
 func (e *claimsLockTimeoutError) Error() string {
-	return fmt.Sprintf("claims lock operation %q timed out after %s", e.Operation, e.WaitDuration)
+	msg := fmt.Sprintf("claims lock operation %q timed out after %s", e.Operation, e.WaitDuration)
+	if e.Holder != nil {
+		msg += fmt.Sprintf(" (held by %q pid %d for %s)", e.Holder.Operation, e.Holder.PID, e.HolderHeldFor.Round(time.Millisecond))
+	}
+	return msg
 }
 
 type journaledClaimsLockTimeoutError struct {
@@ -963,24 +980,18 @@ func acquireClaimLock(lockPath, operation string, timeout time.Duration, started
 		held, err := lock.TryAcquire(lockPath)
 		switch {
 		case err == nil:
+			// Best effort: the record only lets a timed-out waiter name us.
+			_ = held.Announce(operation)
 			return held, nil
 		case !errors.Is(err, lock.ErrHeld):
 			return nil, fmt.Errorf("acquire claims lock: %w", err)
 		}
-		if waited := time.Since(started); waited >= timeout {
-			return nil, &claimsLockTimeoutError{
-				Operation:    operation,
-				Timeout:      timeout,
-				WaitDuration: waited,
-			}
+		if time.Since(started) >= timeout {
+			return nil, newClaimsLockTimeoutError(lockPath, operation, timeout, started)
 		}
 		select {
 		case <-timer.C:
-			return nil, &claimsLockTimeoutError{
-				Operation:    operation,
-				Timeout:      timeout,
-				WaitDuration: time.Since(started),
-			}
+			return nil, newClaimsLockTimeoutError(lockPath, operation, timeout, started)
 		case <-retry.C:
 		}
 	}
@@ -1018,20 +1029,26 @@ func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext,
 	if err != nil {
 		return fmt.Errorf("open instance log for claim lock timeout: %w", err)
 	}
+	runner := map[string]any{
+		"operation":    timeoutErr.Operation,
+		"pid":          os.Getpid(),
+		"waitDuration": timeoutErr.WaitDuration.String(),
+		"timeout":      timeoutErr.Timeout.String(),
+		"retryable":    true,
+		"failureClass": "infra",
+	}
+	if holder := timeoutErr.Holder; holder != nil {
+		runner["holderOperation"] = holder.Operation
+		runner["holderPid"] = holder.PID
+		runner["holderHeldFor"] = timeoutErr.HolderHeldFor.String()
+	}
 	if err := log.Append(journal.Event{
 		Type:     journal.EventClaimLockTimeout,
 		Gaggle:   eventContext.Gaggle,
 		Workflow: eventContext.Workflow,
 		RunID:    eventContext.RunID,
 		Error:    journal.ErrorDetailFor(claimsLockTimeoutCode, timeoutErr),
-		Runner: map[string]any{
-			"operation":    timeoutErr.Operation,
-			"pid":          os.Getpid(),
-			"waitDuration": timeoutErr.WaitDuration.String(),
-			"timeout":      timeoutErr.Timeout.String(),
-			"retryable":    true,
-			"failureClass": "infra",
-		},
+		Runner:   runner,
 	}); err != nil {
 		_ = log.Close()
 		return fmt.Errorf("append claim lock timeout event: %w", err)
