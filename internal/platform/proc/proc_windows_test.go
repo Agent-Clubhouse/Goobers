@@ -209,7 +209,7 @@ func TestKillIsIdempotentAfterJobClose(t *testing.T) {
 
 func TestIdentifyDescendantsIgnoresUnreadableParentage(t *testing.T) {
 	started := time.Unix(123, 0)
-	got := identifyDescendantsWithStartTime(10, map[int][]int{
+	got := identifyDescendantsWithStartTime(10, processLifetime{}, map[int][]int{
 		10: {20, 30},
 		20: {40},
 	}, func(pid int) (time.Time, bool) {
@@ -220,6 +220,69 @@ func TestIdentifyDescendantsIgnoresUnreadableParentage(t *testing.T) {
 	})
 	if len(got) != 1 || got[0].pid != 20 || !got[0].startTime.Equal(started) {
 		t.Fatalf("identifyDescendantsWithStartTime = %+v, want only pid 20", got)
+	}
+}
+
+// A recycled pid makes processes its previous holder created read as children
+// of the tree; one that started before its recorded parent is not ours, and
+// neither is anything below it or below a pid with no readable identity (#6744).
+func TestIdentifyDescendantsRejectsStaleParentage(t *testing.T) {
+	base := time.Unix(1000, 0)
+	starts := map[int]time.Time{
+		10: base,
+		20: base.Add(time.Second),      // real child of root
+		30: base.Add(-time.Hour),       // stale: predates root
+		31: base.Add(time.Second),      // below a stale entry
+		40: base.Add(2 * time.Second),  // real grandchild of 20
+		41: base.Add(time.Millisecond), // stale: predates 20
+		60: base.Add(3 * time.Second),  // below unreadable 50
+		70: base,                       // started in the same tick as root
+	}
+	got := identifyDescendantsWithStartTime(10, processLifetime{start: base}, map[int][]int{
+		10: {20, 30, 50, 70},
+		20: {40, 41},
+		30: {31},
+		40: {20, 10}, // cyclic parentage from recycled pids (#3922)
+		50: {60},
+	}, func(pid int) (time.Time, bool) {
+		started, ok := starts[pid]
+		return started, ok
+	})
+	assertDescendantPIDs(t, got, starts, 20, 70, 40)
+}
+
+// Kill re-snapshots after terminating the root. Its real orphans were created
+// before it exited; a recorded child that started afterwards was created by a
+// later holder of its pid.
+func TestIdentifyDescendantsRejectsChildrenAfterRootExit(t *testing.T) {
+	base := time.Unix(1000, 0)
+	exited := base.Add(time.Minute)
+	starts := map[int]time.Time{
+		20: base.Add(time.Second),       // orphan of the original root
+		30: exited.Add(time.Second),     // created by a later holder of pid 10
+		40: exited.Add(time.Hour),       // grandchild through the orphan
+		50: exited,                      // created in the root's final tick
+		60: exited.Add(2 * time.Second), // below the later holder's child
+	}
+	got := identifyDescendantsWithStartTime(10, processLifetime{start: base, exit: exited}, map[int][]int{
+		10: {20, 30, 50},
+		20: {40},
+		30: {60},
+	}, func(pid int) (time.Time, bool) {
+		started, ok := starts[pid]
+		return started, ok
+	})
+	assertDescendantPIDs(t, got, starts, 20, 50, 40)
+}
+
+func assertDescendantPIDs(t *testing.T, got []processIdentity, starts map[int]time.Time, want ...int) {
+	t.Helper()
+	ok := len(got) == len(want)
+	for i := 0; ok && i < len(want); i++ {
+		ok = got[i].pid == want[i] && got[i].startTime.Equal(starts[want[i]])
+	}
+	if !ok {
+		t.Fatalf("identifyDescendantsWithStartTime = %+v, want pids %v", got, want)
 	}
 }
 
@@ -447,7 +510,8 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if wslPID <= 0 {
 		t.Fatalf("WSL process did not record its pid within 10s: launcher=%d alive=%t, marker=%q, error=%v", cmd.Process.Pid, Alive(cmd.Process.Pid), markerData, markerErr)
 	}
-	if !Alive(wslPID) {
+	wslStart, ok := startTime(wslPID)
+	if !ok {
 		t.Fatalf("WSL process %d exited before tree termination", wslPID)
 	}
 	// Starting wsl.exe and its brokered descendants are asynchronous. Wait for
@@ -456,7 +520,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	var guestDescendants []processIdentity
 	for time.Now().Before(deadline) {
 		var snapshotErr error
-		guestDescendants, snapshotErr = snapshotDescendants(wslPID)
+		guestDescendants, snapshotErr = snapshotDescendants(wslPID, processLifetime{start: wslStart})
 		if snapshotErr != nil {
 			t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
 		}
@@ -475,7 +539,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	var brokeredDescendant processIdentity
 	for brokeredDescendant.pid == 0 && time.Now().Before(deadline) {
 		var snapshotErr error
-		guestDescendants, snapshotErr = snapshotDescendants(wslPID)
+		guestDescendants, snapshotErr = snapshotDescendants(wslPID, processLifetime{start: wslStart})
 		if snapshotErr != nil {
 			t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
 		}
