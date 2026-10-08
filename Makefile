@@ -36,8 +36,8 @@ COMMIT  := $(COMMIT)
 DATE    := $(DATE)
 PKG     := github.com/goobers/goobers/internal/version
 LDFLAGS := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
-ifneq ($(filter none unknown,$(COMMIT) $(DATE)),)
-$(warning build provenance unavailable (COMMIT=$(COMMIT) DATE=$(DATE)): goobers --version will report an unidentifiable binary; pass VERSION=, COMMIT= and DATE= explicitly)
+ifneq ($(filter dev none unknown,$(VERSION) $(COMMIT) $(DATE)),)
+$(warning build provenance unavailable (VERSION=$(VERSION) COMMIT=$(COMMIT) DATE=$(DATE)): goobers --version will report an unidentifiable binary; pass VERSION=, COMMIT= and DATE= explicitly)
 endif
 
 # Discover command binaries from cmd/*.

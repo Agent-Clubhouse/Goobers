@@ -72,7 +72,7 @@ func TestMakefileBuildMetadataResolvesFromGit(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 	cmd := exec.Command(makeBin, "-s", "--no-print-directory",
-		"--eval=print-build-metadata: ; @echo [$(COMMIT)] [$(DATE)]", "print-build-metadata")
+		"--eval=print-build-metadata: ; @echo [$(VERSION)] [$(COMMIT)] [$(DATE)]", "print-build-metadata")
 	cmd.Dir = root
 	cmd.Env = withoutBuildMetadataEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
@@ -83,9 +83,15 @@ func TestMakefileBuildMetadataResolvesFromGit(t *testing.T) {
 	if strings.Contains(got, "build provenance unavailable") {
 		t.Errorf("make warned about lost provenance in a git checkout:\n%s", got)
 	}
-	want := regexp.MustCompile(`\[[0-9a-f]{4,}\] \[\d{4}-\d{2}-\d{2}T[^\]]+\]`)
-	if !want.MatchString(got) {
-		t.Errorf("make resolved build metadata %q; want a git commit and ISO commit date", strings.TrimSpace(got))
+	want := regexp.MustCompile(`\[([^\]\s]+)\] \[([0-9a-f]{4,})\] \[\d{4}-\d{2}-\d{2}T[^\]]+\]`)
+	match := want.FindStringSubmatch(got)
+	if match == nil {
+		t.Fatalf("make resolved build metadata %q; want a git version, commit and ISO commit date", strings.TrimSpace(got))
+	}
+	// `git describe --always` yields a tag or embeds the abbreviated commit; it
+	// never yields the `dev` fallback.
+	if version := match[1]; version == buildMetadataVars["VERSION"] {
+		t.Errorf("make resolved VERSION to the %q fallback in a git checkout", version)
 	}
 }
 
