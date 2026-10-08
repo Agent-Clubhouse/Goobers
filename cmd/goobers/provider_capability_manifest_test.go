@@ -43,7 +43,9 @@ func TestProviderCapabilityManifestCoversCommandImplementations(t *testing.T) {
 
 		declared := make(map[capability.Capability]bool, len(entry.Capabilities))
 		for _, use := range entry.Capabilities {
-			declared[use.Capability] = true
+			for _, accepted := range use.AcceptedCapabilities() {
+				declared[accepted] = true
+			}
 		}
 		if missing := undeclaredCapabilityUses(used, declared); len(missing) > 0 {
 			t.Errorf("built-in subcommand %q uses capabilities absent from its manifest: %v", name, missing)

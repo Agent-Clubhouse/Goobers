@@ -61,6 +61,21 @@ type CapabilityUse struct {
 	// configs (the ed11ae81 class; see the package comment).
 	sinceDSL string
 	untilDSL string
+
+	// alternatives are capabilities that satisfy this use in place of
+	// Capability. Each pair is an explicit, reviewed per-command statement
+	// (ADR 0002 forbids implicit aliases). It exists so a command can move to
+	// a new capability without rejecting configs that already declare the
+	// one it used before: when pr-select moved from github:pr:write to
+	// provider:pr:write, existing configs declaring github:pr:write stopped
+	// validating (v0.6.0-alpha.3).
+	alternatives []capability.Capability
+}
+
+// AcceptedCapabilities returns every capability that satisfies this use:
+// Capability first, then its explicitly accepted alternatives.
+func (u CapabilityUse) AcceptedCapabilities() []capability.Capability {
+	return append([]capability.Capability{u.Capability}, u.alternatives...)
 }
 
 // RequiresExactCapability reports whether a separately brokered credential
@@ -113,6 +128,12 @@ type Command struct {
 
 func required(cap capability.Capability, consequence string) CapabilityUse {
 	return CapabilityUse{Capability: cap, Consequence: consequence}
+}
+
+// requiredAnyOf requires cap or one of alternatives; see
+// CapabilityUse.alternatives.
+func requiredAnyOf(cap capability.Capability, alternatives []capability.Capability, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, alternatives: alternatives}
 }
 
 func requiredExact(cap capability.Capability, consequence string) CapabilityUse {
@@ -361,7 +382,11 @@ var commands = map[string]Command{
 		ResultFile:         "selected-pr.json",
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
-			required(capability.ProviderPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+			// github:pr:write was the requirement through v0.6.0-alpha.2 and
+			// stays accepted so configs written against it keep loading.
+			// pr-select uses whichever of the two the stage declared.
+			requiredAnyOf(capability.ProviderPRWrite, []capability.Capability{capability.GitHubPRWrite},
+				"the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},
 	},
 	"advisory-pr-select": {

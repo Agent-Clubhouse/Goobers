@@ -579,14 +579,23 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			for _, use := range builtinManifest.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
 				// Most requirements accept an explicitly subsuming capability,
 				// but separately brokered credentials must be declared exactly.
-				satisfied := anyCapabilitySatisfies(t.Capabilities, use.Capability)
-				if use.RequiresExactCapability() {
-					satisfied = hasExactCapability(t.Capabilities, use.Capability)
+				// An explicitly accepted alternative (CapabilityUse.alternatives)
+				// satisfies the use the same way.
+				satisfied := false
+				for _, accepted := range use.AcceptedCapabilities() {
+					if use.RequiresExactCapability() {
+						satisfied = satisfied || hasExactCapability(t.Capabilities, accepted)
+					} else {
+						satisfied = satisfied || anyCapabilitySatisfies(t.Capabilities, accepted)
+					}
 				}
 				if !satisfied {
 					var credential string
 					if use.RequiresExactCapability() {
 						credential = fmt.Sprintf(" (requires %s)", capability.CredentialEnvVar(string(use.Capability)))
+					}
+					for _, alternative := range use.AcceptedCapabilities()[1:] {
+						credential += fmt.Sprintf(" (or %q)", alternative)
 					}
 					problems = append(problems, fmt.Sprintf(
 						"task %q invokes built-in subcommand %q but does not declare capability %q%s; %s",

@@ -49,7 +49,7 @@ off to a task.
 | `edit-issue` | `github:issues:write` | Edit issue content or metadata. |
 | `escalate-pr` | `github:pr:write` | Mark a PR for human escalation. |
 | `fan-out-remediation` | `github:pr:write` | Create or update remediation routing after merge/reconciliation. |
-| `flag-foundation-coupling` | `provider:pr:write` | Mark a PR as coupled to foundational work. |
+| `flag-foundation-coupling` | `provider:pr:write` (or `github:pr:write`, accepted for configs written before v0.6.0-alpha.3) | Mark a PR as coupled to foundational work. |
 | `flag-scope-drift` | `github:pr:write` | Mark detected overlap or scope drift. |
 | `label-issue` | `github:issues:write` | Add or remove ordinary issue labels. |
 | `merge-pr` | `github:pr:merge` | Merge a pull request. |

@@ -14,27 +14,59 @@ import (
 
 type policyActionContract struct {
 	requiredCapabilities []capability.Capability
+	// alternatives names, per required capability, the capabilities that
+	// explicitly satisfy it instead (mirrors providerstage's CapabilityUse
+	// alternatives for the command that prescribes the action).
+	alternatives map[capability.Capability][]capability.Capability
+}
+
+// heldBy reports whether grants hold required or one of its alternatives.
+func (c policyActionContract) heldBy(grants map[string]bool, required capability.Capability) bool {
+	if grants[string(required)] {
+		return true
+	}
+	for _, alternative := range c.alternatives[required] {
+		if grants[string(alternative)] {
+			return true
+		}
+	}
+	return false
+}
+
+// describe names required plus its accepted alternatives for an error.
+func (c policyActionContract) describe(required capability.Capability) string {
+	text := fmt.Sprintf("%q", required)
+	for _, alternative := range c.alternatives[required] {
+		text += fmt.Sprintf(" (or %q)", alternative)
+	}
+	return text
 }
 
 var policyActionContracts = map[string]policyActionContract{
-	"approve-issue":                 {requiredCapabilities: []capability.Capability{capability.GitHubIssuesApprove}},
-	"assign-milestone":              {requiredCapabilities: []capability.Capability{capability.GitHubMilestonesWrite}},
-	"claim-backlog-items":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"cancel-pending-ci":             {requiredCapabilities: []capability.Capability{capability.ProviderCICancel}},
-	"clear-healed-demotions":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"clear-healed-escalations":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"clear-remediation":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"close-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"close-issues":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
-	"comment-on-issue":              {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"create-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"delete-branch":                 {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},
-	"demote-pr":                     {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"edit-issue":                    {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"escalate-pr":                   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"fan-out-remediation":           {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"flag-foundation-coupling":      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
+	"approve-issue":            {requiredCapabilities: []capability.Capability{capability.GitHubIssuesApprove}},
+	"assign-milestone":         {requiredCapabilities: []capability.Capability{capability.GitHubMilestonesWrite}},
+	"claim-backlog-items":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"cancel-pending-ci":        {requiredCapabilities: []capability.Capability{capability.ProviderCICancel}},
+	"clear-healed-demotions":   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"clear-healed-escalations": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"clear-remediation":        {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"close-issue":              {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"close-issues":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"close-pr":                 {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
+	"comment-on-issue":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"create-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"delete-branch":            {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},
+	"demote-pr":                {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"edit-issue":               {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"escalate-pr":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"fan-out-remediation":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	// github:pr:write stays accepted: it was the requirement through
+	// v0.6.0-alpha.2, and pr-select (the only command prescribing this
+	// action) accepts it too.
+	"flag-foundation-coupling": {
+		requiredCapabilities: []capability.Capability{capability.ProviderPRWrite},
+		alternatives:         map[capability.Capability][]capability.Capability{capability.ProviderPRWrite: {capability.GitHubPRWrite}},
+	},
 	"flag-scope-drift":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
@@ -215,7 +247,7 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 				continue
 			}
 			for _, required := range contract.requiredCapabilities {
-				if taskCapabilities[string(required)] {
+				if contract.heldBy(taskCapabilities, required) {
 					problems = append(problems, fmt.Sprintf(
 						"task %q grants capability %q for goober %q conditional policy action %q, but policyActions does not declare it",
 						task.Name, required, task.Goober, action))
@@ -267,10 +299,10 @@ func gooberPolicyActionProblems(name string, goober apiv1.GooberSpec, known []st
 			}
 			grants := toSet(goober.Capabilities)
 			for _, required := range contract.requiredCapabilities {
-				if !grants[string(required)] {
+				if !contract.heldBy(grants, required) {
 					problems = append(problems, fmt.Sprintf(
-						"goober %q policy action %q requires capability %q, but the goober does not grant it",
-						name, action, required))
+						"goober %q policy action %q requires capability %s, but the goober does not grant it",
+						name, action, contract.describe(required)))
 				}
 			}
 		}
@@ -282,10 +314,10 @@ func missingPolicyActionCapabilities(task apiv1.Task, action string, contract po
 	declared := toSet(task.Capabilities)
 	var problems []string
 	for _, required := range contract.requiredCapabilities {
-		if !declared[string(required)] {
+		if !contract.heldBy(declared, required) {
 			problems = append(problems, fmt.Sprintf(
-				"task %q policy action %q requires capability %q, but the task does not declare it",
-				task.Name, action, required))
+				"task %q policy action %q requires capability %s, but the task does not declare it",
+				task.Name, action, contract.describe(required)))
 		}
 	}
 	return problems
