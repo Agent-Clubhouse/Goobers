@@ -542,6 +542,13 @@ type gateEvidence struct {
 	// validation evidence withheld (runner.ReviewerContextPointers, #5901).
 	// Nil means the gate's upstream pointers are used unchanged.
 	ReviewerPointers []apiv1.ContextPointer
+	// RequireDiff widens that fast-fail to every gate that reviews
+	// implementation work (#5414, runner.RequiresReviewerDiff): an agentic
+	// subject, or a gate only reachable through a writable agentic task even
+	// when deterministic stages sit between them. It is also what licenses
+	// ReviewGoober to read the run's committed diff for a reviewer whose own
+	// workspace is not on the run branch.
+	RequireDiff bool
 }
 
 // collectGateEvidence gathers the above. A free function over the walk's state
@@ -569,6 +576,7 @@ func collectGateEvidence(
 	if ev.SubjectAgentic {
 		ev.ReviewerPointers = reviewerContextPointers(rec, m, subjectStage, pointers)
 	}
+	ev.RequireDiff = runner.RequiresReviewerDiff(m, g.Name, subjectStage)
 	if !ev.SubjectAgentic || instructionAddendum != "" {
 		return ev, nil
 	}

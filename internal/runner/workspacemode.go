@@ -39,20 +39,22 @@ func gateWorkspaceMode(g apiv1.Gate) apiv1.WorkspaceMode {
 // emptyReviewerDiffIsEvidence reports whether an agentic gate's empty
 // reviewer diff licenses the #415 empty-diff fast-fail.
 //
-// Only an AGENTIC subject qualifies: an agent whose deliverable is its
-// committed work produced nothing to review, so a repass can only re-observe
-// the same emptiness. A deterministic subject (e.g. merge-review's
-// gather-sibling-context, whose reviewer judges PRs from its outputs) is never
-// expected to commit, so the reviewer must still run against its evidence.
+// Only a gate that requires a diff qualifies (RequiresReviewerDiff): an
+// AGENTIC subject, whose deliverable is its committed work, or an
+// implementation-review gate (#5414). A deterministic subject with no
+// implementer upstream (e.g. merge-review's gather-sibling-context, whose
+// reviewer judges PRs from its outputs) is never expected to commit, so the
+// reviewer must still run against its evidence.
 //
-// And the empty diff is positive evidence only when the gate's worktree sits
-// on the run branch (#5334): a repo-readonly gate is a detached checkout of
-// the pinned base, so its diff is empty by construction and says nothing about
-// the subject's commits. Mirrors the engine's captureGateDiff Observed rule.
-func emptyReviewerDiffIsEvidence(m *workflow.Machine, subjectStage string, g apiv1.Gate) bool {
-	if !gateWorkspaceMode(g).IsWritableRepo() {
+// And the empty diff is positive evidence only when it was read from the run
+// branch (#5334): the gate's worktree sits on it, or runBranchObserved says
+// reviewerDiff read base...<run branch> from the managed mirror. A
+// repo-readonly gate's own checkout is a detached checkout of the pinned base,
+// so its diff is empty by construction and says nothing about the subject's
+// commits. Mirrors the engine's captureGateDiff Observed rule.
+func emptyReviewerDiffIsEvidence(m *workflow.Machine, subjectStage string, g apiv1.Gate, runBranchObserved bool) bool {
+	if !gateWorkspaceMode(g).IsWritableRepo() && !runBranchObserved {
 		return false
 	}
-	subjectTask, ok := m.Task(subjectStage)
-	return ok && subjectTask.Type == apiv1.TaskAgentic
+	return RequiresReviewerDiff(m, g.Name, subjectStage)
 }

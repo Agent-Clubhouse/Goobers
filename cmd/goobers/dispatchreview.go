@@ -124,3 +124,17 @@ func recordPodReviewerDiff(ctx context.Context, workspace, runsDir, stage string
 	}
 	return &apiv1.ContextPointer{Name: stage + ".diff", Integrity: ref.Integrity, Artifact: &artifact}, nil
 }
+
+// missingReviewerDiffError explains why a review whose gate judges
+// implementation work (#5414) has no diff to judge, so the run fails closed
+// with the actual cause instead of handing a reviewer a tree that does not
+// carry the run's work. A pod reviewer that is not on the run branch (a
+// repo-readonly checkout is detached at base; scratch has none) cannot see
+// the run's commits at all; a writable one saw them and they were empty.
+func missingReviewerDiffError(stage string) error {
+	mode := apiv1.WorkspaceMode(strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace)))
+	if !mode.IsWritableRepo() {
+		return fmt.Errorf("reviewer diff: gate %q reviews implementation work but its %q workspace is not on the run branch, so the run's committed diff is not visible to it; declare `workspace: repo` on the gate's agentic block", stage, mode)
+	}
+	return fmt.Errorf("reviewer diff: gate %q reviews implementation work but %s...HEAD is empty: the implementation committed nothing to review", stage, stageBaseBranch())
+}

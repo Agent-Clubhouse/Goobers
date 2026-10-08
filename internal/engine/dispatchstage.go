@@ -125,6 +125,13 @@ type DispatchStageInput struct {
 	// every history recorded before it — task dispatches all — decodes with
 	// Review false and replays through the task path unchanged.
 	Review bool `json:"review,omitempty"`
+	// RequireDiff marks a Review whose gate must judge a non-empty run diff
+	// (#5414, gateEvidence.RequireDiff): the pod fails the review closed when
+	// the diff evidence it computes is empty rather than asking a reviewer to
+	// judge a tree that does not carry the run's work. Additive and
+	// omitempty, so a history recorded before it decodes false and replays
+	// unchanged.
+	RequireDiff bool `json:"requireDiff,omitempty"`
 	// OwningWorkflowID is the id of the Temporal workflow execution whose
 	// activity is creating this pod — the one execution whose liveness
 	// decides whether the attempt is still being driven.
@@ -205,7 +212,7 @@ func gatePodAttempt(gateDispatches map[string]int, gate string) int {
 // #3844's instance-root refusal list is command-keyed and a gate declares
 // no command, so there is nothing of it to apply here; the pod entrypoint's
 // backstop still stands for anything a reviewer's harness might spawn.
-func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, requireDiff bool, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
 	workspace := g.EffectiveWorkspace()
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
@@ -230,6 +237,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		WorkspaceDelta:   workspaceDelta,
 		WorkspaceBranch:  workspaceBranch,
 		Review:           true,
+		RequireDiff:      requireDiff,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}).Get(ctx, &result)
 	placementAttempt := podAttempt
@@ -607,6 +615,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// The completion contract rides the attempt into the kit writer, which
 		// stamps it as agentickit.Kit.Mode inside the verified claim check.
 		attempt.Review = input.Review
+		attempt.ReviewRequiresDiff = input.Review && input.RequireDiff
 	}
 
 	// A goobers-CLI stage needs the run's operational identity to do its job:

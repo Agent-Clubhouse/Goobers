@@ -137,6 +137,8 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		}
 		if pointer != nil {
 			kit.Envelope.ContextPointers = append(kit.Envelope.ContextPointers, *pointer)
+		} else if kit.ReviewRequiresDiff {
+			return fail("reviewer_diff_missing", missingReviewerDiffError(os.Getenv(dispatcher.EnvStage)))
 		}
 	}
 

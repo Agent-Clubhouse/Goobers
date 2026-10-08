@@ -4667,7 +4667,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		// evidence-pointer mechanism (env.ContextPointers), resolved into the
 		// reviewer's workspace like any other evidence pointer.
 		if g.Evaluator == apiv1.EvaluatorAgentic {
-			ptr, derr := r.recordReviewerDiff(ctx, jr, ex, in, g.Name, wt)
+			ptr, derr := r.recordReviewerDiff(ctx, jr, ex, in, g.Name, workspaceBranch, wt)
 			if derr != nil {
 				err = fmt.Errorf("runner: gate %q: reviewer diff evidence: %w", g.Name, derr)
 				span.Fail(err)
@@ -4680,8 +4680,8 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 				}
 			} else {
 				// A nil pointer (no error — that returned early above) means
-				// this gate's worktree has a zero-length diff vs. base.
-				emptyDiff = emptyReviewerDiffIsEvidence(in.Machine, subjectStage, g)
+				// the diff the reviewer was handed is zero-length vs. base.
+				emptyDiff = emptyReviewerDiffIsEvidence(in.Machine, subjectStage, g, r.readsRunBranchFromMirror(in, g.Name))
 			}
 		}
 	}
@@ -4946,17 +4946,10 @@ func priorSubjectCompletion(events []journal.Event, subjectStage string) int {
 // diff is computed by the runner from the actual commits — never self-reported
 // by the implementer's model — so the reviewer judges the real change with the
 // same content-addressed integrity as any other artifact. Returns (nil, nil)
-// when the gate has no repository worktree or the branch carries no change vs.
-// base (nothing to attach).
-func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
-	if wt == nil {
-		return nil, nil
-	}
-	baseRef := in.RepoRef.Branch
-	if baseRef == "" {
-		baseRef = "main"
-	}
-	diff, err := wt.Diff(ctx, baseRef)
+// when there is no diff to read (reviewerDiff) or the branch carries no change
+// vs. base (nothing to attach).
+func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, gateName, workspaceBranch string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+	diff, err := r.reviewerDiff(ctx, in, gateName, workspaceBranch, wt)
 	if err != nil {
 		return nil, err
 	}

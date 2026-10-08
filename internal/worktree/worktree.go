@@ -734,6 +734,13 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 // repository-local diff drivers, presentation, hunk, or heuristic settings.
 // Those settings can vary between otherwise identical runner environments.
 func evidenceDiffArgs(baseRef string) []string {
+	return evidenceDiffRangeArgs(baseRef, "HEAD")
+}
+
+// evidenceDiffRangeArgs is evidenceDiffArgs for baseRef...headRef, so a diff
+// read from the mirror (Manager.RunBranchDiff) is byte-identical to the one a
+// worktree on that branch reports.
+func evidenceDiffRangeArgs(baseRef, headRef string) []string {
 	return []string{
 		"-c", "diff.algorithm=myers",
 		"-c", "diff.compactionHeuristic=false",
@@ -758,7 +765,7 @@ func evidenceDiffArgs(baseRef string) []string {
 		// so os.DevNull ("NUL" on Windows) is not portable (#6297). Git treats
 		// "/dev/null" as absolute everywhere and maps it on Windows.
 		"-O/dev/null",
-		baseRef + "...HEAD",
+		baseRef + "..." + headRef,
 	}
 }
 

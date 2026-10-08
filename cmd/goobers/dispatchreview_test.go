@@ -463,3 +463,55 @@ func TestReviewPodKeepsTheHarnessInfrastructureClass(t *testing.T) {
 		})
 	}
 }
+
+// #5414 on the pod path: a review kit whose gate reviews implementation work
+// fails closed — non-retryable, before any reviewer session — when the pod
+// has no run diff to hand it, and names why: a scratch (or detached
+// repo-readonly) reviewer cannot see the run branch at all.
+func TestReviewPodFailsClosedWithoutARequiredDiff(t *testing.T) {
+	endpoint, _ := fakeBlobPlane(t)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvRunID, "run-review-diff")
+	t.Setenv(dispatcher.EnvStage, "review")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+	t.Setenv(dispatcher.EnvStageCapabilities, "")
+	t.Setenv(dispatcher.EnvCheckoutCapability, "")
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceScratch))
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+	t.Chdir(t.TempDir())
+	sessions := 0
+	installFakeHarness(t, func(context.Context, harness.RunRequest) error {
+		sessions++
+		return nil
+	})
+	kit := &agentickit.Kit{
+		Envelope:           apiv1.InvocationEnvelope{RunID: "run-review-diff", TaskID: "run-review-diff:review", Goober: "coder", Goal: "gate: review"},
+		Mode:               agentickit.ModeReview,
+		ReviewRequiresDiff: true,
+		Goobers:            map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessCopilot}},
+		Instructions:       map[string]string{"coder": "review the change"},
+	}
+	data, digest, err := agentickit.Marshal(kit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&dispatcher.BlobClient{BaseURL: endpoint, Token: "pod-token"}).Put(context.Background(), digest, data); err != nil {
+		t.Fatalf("publish kit: %v", err)
+	}
+	t.Setenv(dispatcher.EnvAgenticKitDigest, digest)
+
+	got := runAgenticStage(context.Background(), &strings.Builder{}, &strings.Builder{})
+	if got.Verdict != nil || got.Result.Error == nil || got.Result.Error.Code != "reviewer_diff_missing" {
+		t.Fatalf("outcome = %+v (verdict %+v), want a reviewer_diff_missing failure and no verdict", got.Result, got.Verdict)
+	}
+	if got.Result.Error.Retryable {
+		t.Fatal("a reviewer that cannot see the run diff will not see it on retry either")
+	}
+	if !strings.Contains(got.Result.Error.Message, "workspace: repo") {
+		t.Fatalf("message = %q, want the remedy named", got.Result.Error.Message)
+	}
+	if sessions != 0 {
+		t.Fatalf("reviewer sessions = %d, want none", sessions)
+	}
+}
