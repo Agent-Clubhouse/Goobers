@@ -127,7 +127,7 @@ func TestIntegrationChildWaitRetainsParentWorkspaceAndRetryAllowance(t *testing.
 	if !ParkedOnChild(events) {
 		t.Fatal("active wait has no durable marker")
 	}
-	if _, stalled, err := inspectStalledCandidate(run.Dir(), frame.in.RunID, time.Now().Add(24*time.Hour), time.Second); err != nil || stalled {
+	if _, stalled, err := inspectStalledCandidate(run.Dir(), frame.in.RunID, time.Now().Add(24*time.Hour), time.Second, nil); err != nil || stalled {
 		t.Fatalf("child wait treated as stalled: %v %v", stalled, err)
 	}
 	if _, err := fork.config.Worktrees.FinalizeRun(t.Context(), frame.in.RunID); err != nil {
