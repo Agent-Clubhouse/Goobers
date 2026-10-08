@@ -982,6 +982,32 @@ func copilotDeclaresTool(declared []string, target string) bool {
 	return false
 }
 
+// copilotGitHubMCPRegistrationArg chooses how the built-in GitHub MCP server
+// registers its tool catalog for a session that declares the github group.
+//
+// `--add-github-mcp-toolset=issues` registers only the CLI's read-only issue
+// subset: issue_write and add_issue_comment stay listed in --available-tools
+// but are never reachable, so a stage granted github:issues:write analyzes,
+// then cannot file anything (#5552). MEASURED against Copilot CLI 1.0.93:
+// neither the issues toolset nor per-tool --add-github-mcp-tool registration
+// exposes the write tools; only --enable-all-github-mcp-tools does. The
+// --available-tools allowlist still scopes the model-visible set, so the full
+// catalog is registered only when the invocation holds a GitHub write
+// capability the github group serves; read-only invocations keep the subset.
+func copilotGitHubMCPRegistrationArg(capabilities []string) string {
+	for _, req := range capabilityToolRequirements {
+		if req.group != "github" || strings.HasSuffix(req.capability, ":read") {
+			continue
+		}
+		for _, capability := range capabilities {
+			if strings.EqualFold(strings.TrimSpace(capability), req.capability) {
+				return "--enable-all-github-mcp-tools"
+			}
+		}
+	}
+	return "--add-github-mcp-toolset=issues"
+}
+
 func copilotConstraintConflict(args []string) string {
 	for _, arg := range args {
 		if arg == "--available-tools" || strings.HasPrefix(arg, "--available-tools=") ||
@@ -1115,7 +1141,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	argv = withCopilotNoRemoteExport(argv)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
-			argv = append(argv, "--add-github-mcp-toolset=issues")
+			argv = append(argv, copilotGitHubMCPRegistrationArg(req.Envelope.Capabilities))
 		}
 		argv = append(argv,
 			"--available-tools="+strings.Join(copilotAvailableTools(req), ","),
