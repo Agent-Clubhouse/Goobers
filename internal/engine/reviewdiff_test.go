@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 )
 
 // readonlyImplementationReviewSpec is the #5414 shape: an agentic implementer,
@@ -88,5 +89,17 @@ func TestReadonlyImplementationReviewEmptyDiffFailsClosed(t *testing.T) {
 	}
 	if res := laneResult(t, env); res.Status != StatusEscalated {
 		t.Fatalf("status = %q, want escalated", res.Status)
+	}
+}
+
+// The pod surrenders #415's mechanical empty-diff verdict for a writable
+// implementation reviewer that saw nothing (#5414); the engine's surrender
+// validation must accept it in both disposition vocabularies.
+func TestSurrenderedEmptyDiffVerdictValidates(t *testing.T) {
+	for _, structured := range []bool{false, true} {
+		v := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, structured)
+		if err := validateSurrenderedVerdict(v); err != nil {
+			t.Fatalf("structured=%t: %v", structured, err)
+		}
 	}
 }

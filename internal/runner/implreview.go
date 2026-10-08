@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow"
@@ -117,6 +118,16 @@ func (r *Runner) reviewerDiff(ctx context.Context, in StartInput, gateName, work
 	if wt != nil && (wt.Branch != "" || in.pinnedWorkspace != nil) {
 		return wt.Diff(ctx, baseRef)
 	}
+	if wt == nil && ReviewsImplementation(in.Machine, gateName) {
+		// A scratch reviewer in a run whose branch lives in its own worktree
+		// (a pinned project workspace, or a child run's admitted fork) reads
+		// it there, under the same lock its stages hold.
+		if own, lock := onBranchRunWorktree(in); own != nil {
+			lock.Lock()
+			defer lock.Unlock()
+			return own.Diff(ctx, baseRef)
+		}
+	}
 	if !r.readsRunBranchFromMirror(in, gateName) {
 		if wt == nil {
 			return nil, nil
@@ -134,11 +145,24 @@ func (r *Runner) reviewerDiff(ctx context.Context, in StartInput, gateName, work
 	return r.cfg.Worktrees.RunBranchDiff(ctx, repoURL, baseRef, branch)
 }
 
+// onBranchRunWorktree returns the run's own on-branch worktree when the run
+// branch lives outside the shared mirror's per-stage worktrees, with the lock
+// that serializes the run's stages on it.
+func onBranchRunWorktree(in StartInput) (*worktree.Worktree, sync.Locker) {
+	if in.pinnedWorkspace != nil && in.pinnedStage != nil {
+		return in.pinnedWorkspace, in.pinnedStage
+	}
+	if in.childWorkspace != nil && in.childWorkspace.worktree != nil {
+		return in.childWorkspace.worktree, &in.childWorkspace.stage
+	}
+	return nil, nil
+}
+
 // readsRunBranchFromMirror reports whether reviewerDiff may read the run
 // branch from the shared mirror: only for an implementation-review gate, and
 // only where the run branch lives in this runner's own managed mirror (not a
-// pinned project workspace, whose reviewer is already on the branch, nor a
-// child run's separate fork).
+// pinned project workspace or a child run's separate fork, which reviewerDiff
+// reads in place).
 func (r *Runner) readsRunBranchFromMirror(in StartInput, gateName string) bool {
 	if r.cfg.Worktrees == nil || r.cfg.RepoCloneURL == nil {
 		return false

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -228,5 +229,41 @@ func TestRunnerImplementationReviewEmptyDiffFailsClosed(t *testing.T) {
 	}
 	if reviewer.called {
 		t.Fatal("reviewer was invoked on an empty implementation diff")
+	}
+}
+
+// TestReviewerDiffReadsPinnedWorkspaceForScratchReviewer guards the pinned
+// arm of #5414: production always sets ScratchDir, so a scratch reviewer in a
+// pinned-workspace run has no worktree of its own, and the run branch lives
+// in the pinned checkout rather than the shared mirror. Its diff must come
+// from there, never read as "empty" and fail the review closed.
+func TestReviewerDiffReadsPinnedWorkspaceForScratchReviewer(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	in.Machine = implementCheckReviewMachine(t, apiv1.WorkspaceScratch)
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := r.cfg.Worktrees.AcquirePinned(context.Background(), worktree.PinnedOptions{
+		RepoURL: repoURL, RunID: in.RunID, BaseRef: "main", Branch: "goobers/test/" + in.RunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Release() }()
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+	if err := os.WriteFile(filepath.Join(lease.Worktree.Path, "impl.txt"), []byte("pinned-5414\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, lease.Worktree.Path, "add", "-A")
+	runGit(t, lease.Worktree.Path, "commit", "-m", "implement")
+
+	diff, err := r.reviewerDiff(context.Background(), in, "review", "", nil)
+	if err != nil {
+		t.Fatalf("reviewerDiff: %v", err)
+	}
+	if !strings.Contains(string(diff), "pinned-5414") {
+		t.Fatalf("scratch reviewer in a pinned run did not get the pinned branch's diff:\n%s", diff)
 	}
 }

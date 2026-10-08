@@ -138,7 +138,14 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		if pointer != nil {
 			kit.Envelope.ContextPointers = append(kit.Envelope.ContextPointers, *pointer)
 		} else if kit.ReviewRequiresDiff {
-			return fail("reviewer_diff_missing", missingReviewerDiffError(os.Getenv(dispatcher.EnvStage)))
+			verdict, err := missingReviewerDiff(kit.Envelope, os.Getenv(dispatcher.EnvStage))
+			if err != nil {
+				return fail("reviewer_diff_missing", err)
+			}
+			return stageOutcome{
+				Result:  apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "empty-diff verdict surrendered"},
+				Verdict: verdict,
+			}
 		}
 	}
 

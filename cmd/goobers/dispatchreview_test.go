@@ -515,3 +515,17 @@ func TestReviewPodFailsClosedWithoutARequiredDiff(t *testing.T) {
 		t.Fatalf("reviewer sessions = %d, want none", sessions)
 	}
 }
+
+// A writable pod reviewer that saw an empty run branch answers with #415's
+// mechanical verdict, the same one ReviewGoober synthesizes, so the engine
+// routes it through the gate's declared outcomes instead of failing the run.
+func TestMissingReviewerDiffOnAWritableReviewerIsTheEmptyDiffVerdict(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+	verdict, err := missingReviewerDiff(apiv1.InvocationEnvelope{}, "review")
+	if err != nil || verdict == nil {
+		t.Fatalf("missingReviewerDiff = %+v, %v; want the empty-diff verdict", verdict, err)
+	}
+	if verdict.Decision != apiv1.VerdictFail || !strings.Contains(verdict.Rationale, "no committed changes") {
+		t.Fatalf("verdict = %+v, want the mechanical empty-diff fail", verdict)
+	}
+}
