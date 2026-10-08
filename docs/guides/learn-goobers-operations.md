@@ -161,6 +161,9 @@ Debug in this order:
 5. validate before starting another run.
 
 Do not edit scheduler state, run journals, or pinned graph files by hand.
+To have a coding agent gather and cite this evidence for you, install the
+read-only
+[agent toolkit diagnostic skills](agent-toolkit-diagnostics.md).
 Chapter 2 contains the full
 [testing and debugging ladder](learn-workflow-authoring.md#11-test-at-the-smallest-useful-layer).
 
