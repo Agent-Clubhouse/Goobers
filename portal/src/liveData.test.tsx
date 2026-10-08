@@ -1391,7 +1391,7 @@ describe("live page integration", () => {
       await settle();
     });
     expect(
-      screen.getByRole("heading", { name: "Run 01JZ441DAEMONAPI" }),
+      screen.getByRole("heading", { name: "#3088 · Operator status progress" }),
     ).toBeInTheDocument();
     const visibleReads = getRun.mock.calls.length;
 
