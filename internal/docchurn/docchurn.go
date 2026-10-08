@@ -210,7 +210,7 @@ func writeDigest(digest docsChurnDigest, resultFile string, stdout io.Writer) er
 	}
 	out = append(out, '\n')
 	if resultFile != "" {
-		if err := os.WriteFile(resultFile, out, 0o644); err != nil {
+		if err := durability.WriteFileAtomic(resultFile, out, 0o644); err != nil {
 			return fmt.Errorf("write result file %q: %w", resultFile, err)
 		}
 		return nil
@@ -278,11 +278,7 @@ func writeWatermark(path string, wm docsWatermark) error {
 		return err
 	}
 	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return durability.ReplaceFile(tmp, path)
+	return durability.WriteFileAtomic(path, data, 0o644)
 }
 
 func revParse(git Git, repo, rev string) (string, error) {
