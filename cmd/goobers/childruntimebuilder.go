@@ -56,7 +56,7 @@ func buildChildRuntime(ctx context.Context, layout instance.Layout, cfg *instanc
 	// Source already passed schema, pinned parent policy and current permission
 	// checks. Keep the archive untouched and compile only this generated machine.
 	set.Workflows = []apiv1.Workflow{*start.Proposal.Workflow.DeepCopy()}
-	definitions, err := build(layout, set, report)
+	definitions, err := build(layout, start.Envelope.ConfigGeneration, set, report)
 	if err != nil {
 		return preparedChildRuntime{}, err
 	}

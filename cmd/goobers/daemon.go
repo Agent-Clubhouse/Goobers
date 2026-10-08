@@ -530,9 +530,7 @@ func webhookTriggerSignalsAndBackoff(workflowName string, trigger apiv1.Trigger)
 }
 
 func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefinitions, error) {
-	l := input.Layout
-
-	l, generation, err := retainOptionalExecutionGeneration(l, input.Generations)
+	l, generation, err := schedulerExecutionGeneration(input)
 	if err != nil {
 		return nil, err
 	}
@@ -875,10 +873,11 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	}, nil
 }
 
-func schedulerGenerationBuilder(input schedulerDefinitionsInput) func(instance.Layout, *instance.ConfigSet, *validate.Report) (*schedulerDefinitions, error) {
-	return func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
+func schedulerGenerationBuilder(input schedulerDefinitionsInput) generationDefinitionBuilder {
+	return func(pinned instance.Layout, generation string, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
 		pinnedInput := input
 		pinnedInput.Layout = pinned
+		pinnedInput.PinnedGeneration = generation
 		pinnedInput.Definitions = pinnedSet
 		pinnedInput.Validation = pinnedReport
 		pinnedInput.StartupProgress = nil
@@ -2105,6 +2104,9 @@ type schedulerDefinitionsInput struct {
 	CredentialStores credentials.StoreResolver
 	StartupProgress  func(string)
 	Generations      []*configgeneration.Retainer
+	// PinnedGeneration names the admitted generation whose retained tree is
+	// Layout's config directory; the build reuses it instead of re-retaining.
+	PinnedGeneration string
 }
 
 // retainedLegacyRunnerInput names the dependencies for this construction boundary.

@@ -33,12 +33,15 @@ func TestChildRuntimeBuilderUsesRetainedSourceWithoutCatalogRegistration(t *test
 			t.Error(err)
 		}
 	})
-	build := func(layout instance.Layout, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
+	build := func(layout instance.Layout, generation string, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
 		if len(set.Workflows) != 1 || set.Workflows[0].Name != proposal.Workflow.Name {
 			t.Fatal("named parent catalog leaked into generated runtime")
 		}
+		if generation != a.ConfigGeneration {
+			t.Fatalf("child runtime built for generation %q, want admitted %q", generation, a.ConfigGeneration)
+		}
 		return buildSchedulerDefinitions(schedulerDefinitionsInput{Layout: layout, Config: f.cfg, Definitions: set, Validation: report,
-			RunnerRegistry: newDaemonRunnerRegistry(), ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer}})
+			RunnerRegistry: newDaemonRunnerRegistry(), ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer}, PinnedGeneration: generation})
 	}
 	start := childExecutionStart{Proposal: proposal, childExecutionRef: childExecutionRef{Envelope: childworkflow.ChildStartEnvelope{
 		Backend: childworkflow.BackendRunner, ConfigGeneration: a.ConfigGeneration, Gaggle: a.Origin.Gaggle, Workflow: proposal.Workflow.Name, WorkflowDigest: proposal.Machine.Digest(),
