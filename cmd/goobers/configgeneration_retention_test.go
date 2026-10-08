@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 )
 
 func TestGenerationPruningProtectsRetainedJournalsAndExternalHistories(t *testing.T) {
@@ -128,4 +130,71 @@ func TestDirectEngineInputPublishesGenerationBeforeDispatch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(directory), "external-owner")); err != nil {
 		t.Fatalf("external history has no durable retention owner: %v", err)
 	}
+}
+
+// A pinned rebuild must reuse the run's admitted generation. Re-retaining its
+// extracted tree is not byte-stable (Windows reads mode bits back differently),
+// and the fresh identity failed every later CLI stage after restart (#5445).
+func TestPinnedGenerationRebuildReusesAdmittedGeneration(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainer, err := newExecutionGenerationRetainer(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := retainer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	pinned, admitted, err := retainExecutionGeneration(t.Context(), layout, retainer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := retainedGenerationNames(t, layout)
+	// Simulate an extraction whose re-capture differs only in mode bits.
+	drifted := filepath.Join(t.TempDir(), "config")
+	if err := os.CopyFS(drifted, os.DirFS(pinned.ConfigDir())); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(drifted, "manifest.yaml"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := loadConfigDirectory(drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := schedulerGenerationBuilder(schedulerDefinitionsInput{
+		Layout: layout, Config: cfg, RunnerRegistry: newDaemonRunnerRegistry(),
+		ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer},
+	})
+	definitions, err := build(layout.WithConfigDir(drifted), admitted, set, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definitions.Runners["example"] == nil {
+		t.Fatal("pinned rebuild produced no runner for the run's gaggle")
+	}
+	if after := retainedGenerationNames(t, layout); !slices.Equal(after, before) {
+		t.Fatalf("pinned rebuild minted a new generation instead of reusing %s: before=%v after=%v", admitted, before, after)
+	}
+}
+
+func retainedGenerationNames(t *testing.T, layout instance.Layout) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(layout.Root, "config-generations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
 }
