@@ -1163,6 +1163,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 						return err
 					}
 					review = GateReviewResult{Verdict: surrendered, Reviewed: true}
+					if ev.RequireDiff && gate.IsEmptyDiffVerdict(surrendered) {
+						// The pod's #5414 empty-diff short-circuit: no reviewer
+						// ran, and it must force escalation as ReviewGoober's does.
+						review.Reviewed = false
+						review.EmptyDiff = true
+					}
 					return nil
 				}
 				attemptEnv := env
