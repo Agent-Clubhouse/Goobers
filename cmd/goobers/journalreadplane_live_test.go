@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,8 +14,10 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // liveEscalationReads builds the daemon-shaped reader: a readservice.Local
@@ -225,6 +228,7 @@ func TestDaemonConflictTouchesUsesLiveReadModel(t *testing.T) {
 	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
 	service := newDaemonRunJournalService(layout, nil)
 	service.reads = spy
+	service.definitions = crossRunTestDefinitions(t)
 	since := time.Now().UTC().Add(-24 * time.Hour)
 	ask := journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}
 
@@ -275,6 +279,7 @@ func TestDaemonUnpushedWorkUsesLiveReadModel(t *testing.T) {
 	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
 	service := newDaemonRunJournalService(layout, nil)
 	service.reads = spy
+	service.definitions = crossRunTestDefinitions(t)
 	ask := journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}
 
 	for _, window := range []time.Duration{-96 * time.Hour, -24 * time.Hour, time.Hour} {
@@ -319,13 +324,14 @@ func TestDaemonUnpushedWorkDoesNotOpenNonCandidateJournals(t *testing.T) {
 	claimItemForRun(t, layout, "42", "asking-run")
 	reads := liveEscalationReads(t, layout)
 	corruptJournal(t, layout, crossRunTestGaggle, "prior-old")
+	workflows := []string{"implementation"}
 
 	var warnings []string
 	file := journalclient.NewFileCrossRun(layout)
 	file.Warn = func(msg string) { warnings = append(warnings, msg) }
 	ask := journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, ItemIDs: []string{"42"}, Since: time.Now().Add(-24 * time.Hour)}
 
-	if _, err := file.UnpushedWorkFromReads(context.Background(), reads, ask); err != nil || len(warnings) != 0 {
+	if _, err := file.UnpushedWorkFromReads(context.Background(), reads, workflows, ask); err != nil || len(warnings) != 0 {
 		t.Fatalf("narrowed scan: err=%v warnings=%v; want none (the corrupt run is outside the window)", err, warnings)
 	}
 	if _, err := file.UnpushedWork(context.Background(), ask); err != nil || len(warnings) == 0 {
@@ -338,6 +344,7 @@ func TestDaemonWindowedRoutesRefuseWithoutLiveReadsOrWindow(t *testing.T) {
 	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior", "42", "diff", false)
 	claimItemForRun(t, layout, "42", "asking-run")
 	service := newDaemonRunJournalService(layout, nil)
+	service.definitions = crossRunTestDefinitions(t)
 	since := time.Now().Add(-time.Hour)
 
 	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
@@ -347,6 +354,14 @@ func TestDaemonWindowedRoutesRefuseWithoutLiveReadsOrWindow(t *testing.T) {
 		t.Fatal("unpushed work served without a live read model (silent offline fallback)")
 	}
 	service.reads = liveEscalationReads(t, layout)
+	service.definitions = nil
+	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
+		t.Fatal("conflict touches served without workflow definitions (unfiltered scan)")
+	}
+	if _, err := service.UnpushedWork(context.Background(), journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
+		t.Fatal("unpushed work served without workflow definitions (unfiltered scan)")
+	}
+	service.definitions = crossRunTestDefinitions(t)
 	if _, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle}); err == nil {
 		t.Fatal("an unbounded conflict-history read was served")
 	}
@@ -389,5 +404,167 @@ func TestDaemonRunPhaseAndBranchOwnershipReadOnlyTheTargetJournal(t *testing.T) 
 	want, err := file.BranchOwnership(ctx, req)
 	if err != nil || got.Owner == nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("ownership = %+v, file = %+v, %v", got, want, err)
+	}
+}
+
+// crossRunTestDefinitions is the daemon's definition registry for the windowed
+// routes' workflow filter (#6968): "implementation" can both strand a diff
+// (writable agentic task) and record a base-sync conflict (syncBase task);
+// "remediation" can only strand a diff; "merge-review" and "researcher" can
+// neither (an agentic gate and a read-only agentic task).
+func crossRunTestDefinitions(t *testing.T) *interventionDefinitionRegistry {
+	t.Helper()
+	agentic := func(name string, mode apiv1.WorkspaceMode, next string) apiv1.Task {
+		return apiv1.Task{Name: name, Type: apiv1.TaskAgentic, Goober: "dev", Goal: name, Workspace: mode, Next: next}
+	}
+	deterministic := func(name string, syncBase bool) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: syncBase}, Next: workflow.TerminalComplete,
+		}
+	}
+	specs := map[string]apiv1.WorkflowSpec{
+		"implementation": {Start: "implement", Tasks: []apiv1.Task{agentic("implement", "", "sync-base"), deterministic("sync-base", true)}},
+		"remediation":    {Start: "remediate", Tasks: []apiv1.Task{agentic("remediate", apiv1.WorkspaceRepo, workflow.TerminalComplete)}},
+		"researcher":     {Start: "research", Tasks: []apiv1.Task{agentic("research", apiv1.WorkspaceRepoReadOnly, workflow.TerminalComplete)}},
+		"merge-review": {
+			Start: "select", Tasks: []apiv1.Task{func() apiv1.Task { task := deterministic("select", false); task.Next = "review"; return task }()},
+			Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceRepo},
+				Branches: map[string]string{"pass": workflow.TerminalComplete, "fail": workflow.TargetAbort, "needs-changes": workflow.TargetAbort},
+			}},
+		},
+	}
+	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(specs))
+	for name, spec := range specs {
+		spec.Gaggle = crossRunTestGaggle
+		spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}
+		machine, err := workflow.Compile(workflow.Definition{Name: name, Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+		if err != nil {
+			t.Fatalf("compile %s: %v", name, err)
+		}
+		machines[localscheduler.WorkflowIdentity{Gaggle: crossRunTestGaggle, Workflow: name}] = machine
+	}
+	return newInterventionDefinitionRegistry(interventionDefinitionSet{machines: machines})
+}
+
+// seedBystanderRuns writes a schema-valid, projectable run of workflow whose
+// journal is corrupted afterwards: any reader that opens it fails.
+func seedBystanderRuns(t *testing.T, layout instance.Layout, workflowName string, count int) []string {
+	t.Helper()
+	ids := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("%s-%03d", workflowName, i)
+		run, err := journal.Create(layout.ForGaggle(crossRunTestGaggle).RunsDir(), journal.RunIdentity{
+			RunID: id, Workflow: workflowName, WorkflowVersion: 1, Gaggle: crossRunTestGaggle,
+			Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// Runs of workflows that cannot record the artifacts a route reads are never
+// listed as candidates and never opened, however many are recently active, and
+// the answers stay equal to the full directory scan (#6968 follow-up).
+func TestDaemonWindowedRoutesConsiderOnlyContributingWorkflows(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedLiveAskingRun(t, layout)
+	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflict-a", "internal/a.go", false)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-1", "42", "diff for item 42", false)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-old", "42", "ancient", false, staleClock())
+	claimItemForRun(t, layout, "42", "asking-run")
+	var bystanders []string
+	for _, name := range []string{"merge-review", "researcher"} {
+		bystanders = append(bystanders, seedBystanderRuns(t, layout, name, 30)...)
+	}
+
+	spy := &spyEscalationReads{Local: liveEscalationReads(t, layout)}
+	service := newDaemonRunJournalService(layout, nil)
+	service.reads = spy
+	service.definitions = crossRunTestDefinitions(t)
+	for _, id := range bystanders {
+		corruptJournal(t, layout, crossRunTestGaggle, id)
+	}
+	ctx := context.Background()
+	file := journalclient.NewFileCrossRun(layout)
+
+	since := time.Now().UTC().Add(-24 * time.Hour)
+	conflicts, err := service.ConflictTouches(ctx, journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since})
+	if err != nil || len(conflicts.Touches) != 1 || conflicts.Touches[0].RunID != "conflict-a" {
+		t.Fatalf("conflict touches = %+v, err = %v; want conflict-a despite 60 corrupt bystanders", conflicts.Touches, err)
+	}
+	assertListedOnly(t, spy, "implementation")
+	spy.lists = nil
+	work, err := service.UnpushedWork(ctx, journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since})
+	if err != nil || work.Work == nil || work.Work.RunID != "prior-1" {
+		t.Fatalf("unpushed work = %+v, err = %v; want prior-1 despite 60 corrupt bystanders", work.Work, err)
+	}
+	assertListedOnly(t, spy, "implementation", "remediation")
+
+	// Control: the directory scan does open the bystanders and trips on them.
+	if _, err := file.ConflictTouches(ctx, journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since}); err == nil {
+		t.Fatal("control failed: the directory scan never opened a corrupted bystander")
+	}
+}
+
+// With the bystanders intact, the filtered daemon answers equal the directory
+// scan's over several windows.
+func TestDaemonWindowedRoutesParityWithBystanderWorkflows(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedLiveAskingRun(t, layout)
+	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflict-a", "internal/a.go", false)
+	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflict-b", "internal/b.go", false)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-1", "42", "diff for item 42", false)
+	seedBystanderRuns(t, layout, "merge-review", 25)
+	claimItemForRun(t, layout, "42", "asking-run")
+	service := newDaemonRunJournalService(layout, nil)
+	service.reads = liveEscalationReads(t, layout)
+	service.definitions = crossRunTestDefinitions(t)
+	file := journalclient.NewFileCrossRun(layout)
+	ctx := context.Background()
+	for _, window := range []time.Duration{-96 * time.Hour, -24 * time.Hour, time.Hour} {
+		since := time.Now().UTC().Add(window)
+		gotC, err := service.ConflictTouches(ctx, journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantC, err := file.ConflictTouches(ctx, journalclient.ConflictTouchRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since})
+		if err != nil || !reflect.DeepEqual(gotC.Touches, wantC) {
+			t.Fatalf("window %v: conflicts = %+v, file = %+v, %v", window, gotC.Touches, wantC, err)
+		}
+		gotU, err := service.UnpushedWork(ctx, journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantU, err := file.UnpushedWork(ctx, journalclient.UnpushedWorkRequest{RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: since, ItemIDs: []string{"42"}})
+		if err != nil || !reflect.DeepEqual(gotU.Work, wantU) {
+			t.Fatalf("window %v: unpushed = %+v, file = %+v, %v", window, gotU.Work, wantU, err)
+		}
+	}
+}
+
+func assertListedOnly(t *testing.T, spy *spyEscalationReads, workflows ...string) {
+	t.Helper()
+	assertWindowedLists(t, spy)
+	want := map[string]bool{}
+	for _, name := range workflows {
+		want[name] = true
+	}
+	got := map[string]bool{}
+	for _, o := range spy.lists {
+		if !want[o.Workflow] {
+			t.Fatalf("listed workflow %q, want only %v", o.Workflow, workflows)
+		}
+		got[o.Workflow] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("listed workflows %v, want exactly %v", got, want)
 	}
 }

@@ -1114,6 +1114,7 @@ func (u *upSession) configureAPI() int {
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
 	journalService.reads = u.reads
+	journalService.definitions = u.setup.Interventions
 	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	u.apiHandlerOpts = append(u.apiHandlerOpts,
