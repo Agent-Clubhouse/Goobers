@@ -4604,7 +4604,8 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	// agentic gate with no committed change, passes "" through to Evaluate,
 	// which treats that as "no digest to compare" and never short-circuits.
 	var diffDigest string
-	// emptyDiff (#415) is set below only for an agentic gate whose AGENTIC
+	// emptyDiff (#415) is set below only for an agentic gate on a writable
+	// repo worktree whose AGENTIC
 	// subject stage committed no change — recordReviewerDiff returns a nil
 	// pointer for a zero-length diff. Passed to Evaluate so the reviewer gate
 	// fast-fails that empty diff on review-1 instead of looping repasses over
@@ -4677,17 +4678,10 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 				if ptr.Artifact != nil {
 					diffDigest = ptr.Artifact.Digest
 				}
-			} else if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic {
-				// A nil pointer (no error — that returned early above) means the
-				// run branch has a zero-length diff. Fast-fail it (#415) only
-				// when the subject stage is AGENTIC: an agent whose deliverable
-				// is its committed work produced nothing to review, so a repass
-				// can only re-observe the same emptiness. A deterministic
-				// subject (e.g. merge-review's gather-sibling-context, whose
-				// reviewer judges PRs from its outputs, not a run-branch commit)
-				// is never expected to commit — its empty diff is normal, and
-				// the reviewer must still run against its actual evidence.
-				emptyDiff = true
+			} else {
+				// A nil pointer (no error — that returned early above) means
+				// this gate's worktree has a zero-length diff vs. base.
+				emptyDiff = emptyReviewerDiffIsEvidence(in.Machine, subjectStage, g)
 			}
 		}
 	}
