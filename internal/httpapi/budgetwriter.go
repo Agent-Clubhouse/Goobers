@@ -121,13 +121,20 @@ func (b *budgetWriter) preempt() bool {
 // and logs the expiry with its route and how long the handler had run.
 // handlerDone runs when the handler goroutine ends, however it ends — it is
 // where the caller returns the admission slot the abandoned handler still holds.
+// It runs before the handler's completion is signalled, so a request that did
+// not hit its budget has released its slot by the time this function returns
+// (#6926).
 func serveWithBudgetAnswer(logger *log.Logger, route string, budget time.Duration, w http.ResponseWriter, request *http.Request, handler http.HandlerFunc, handlerDone func()) {
 	bw := newBudgetWriter(w)
 	started := time.Now()
 	finished := make(chan any, 1) // the handler's panic value, or nil
 	go func() {
-		defer handlerDone()
-		defer func() { finished <- recover() }()
+		var outcome any
+		defer func() {
+			handlerDone()
+			finished <- outcome
+		}()
+		defer func() { outcome = recover() }()
 		handler(bw, request)
 	}()
 	timer := time.NewTimer(budget)
