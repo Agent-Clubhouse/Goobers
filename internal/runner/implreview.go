@@ -48,7 +48,7 @@ func ReviewsImplementation(m *workflow.Machine, gateName string) bool {
 	if len(implementers) == 0 {
 		return false
 	}
-	return graphReaches(graph, gateName, nil) && !graphReaches(graph, gateName, implementers)
+	return graphReaches(m.Parallel, graph, gateName, nil) && !graphReaches(m.Parallel, graph, gateName, implementers)
 }
 
 // RequiresReviewerDiff reports whether an agentic gate evaluating subjectStage
@@ -75,31 +75,97 @@ func commitsToRunBranch(t apiv1.Task) bool {
 
 // graphReaches reports whether target is reachable from the graph's start
 // without entering any node in blocked.
-func graphReaches(graph workflow.Graph, target string, blocked map[string]bool) bool {
-	if graph.Start == "" || blocked[graph.Start] {
-		return false
-	}
-	next := make(map[string][]string, len(graph.Nodes))
+//
+// A parallel's join is not entered by any single branch: the runtime waits for
+// every branch to settle, so the join is reachable only when EVERY branch can
+// reach it without entering blocked. Otherwise a deterministic sibling branch
+// would make a join look reachable around an implementer in another branch
+// that the join in fact always waits for.
+func graphReaches(parallel func(string) (apiv1.Parallel, bool), graph workflow.Graph, target string, blocked map[string]bool) bool {
+	r := graphReachability{parallel: parallel, next: make(map[string][]string, len(graph.Nodes)), joins: map[string]bool{}, active: map[string]bool{}}
 	for _, e := range graph.Edges {
-		next[e.Source] = append(next[e.Source], e.Target)
+		r.next[e.Source] = append(r.next[e.Source], e.Target)
 	}
-	seen := map[string]bool{graph.Start: true}
-	queue := []string{graph.Start}
+	for _, node := range graph.Nodes {
+		if node.Kind != workflow.GraphNodeParallel {
+			continue
+		}
+		if p, ok := parallel(node.ID); ok && p.Join != "" {
+			r.joins[p.Join] = true
+		}
+	}
+	return r.visit(graph.Start, blocked)[target]
+}
+
+type graphReachability struct {
+	parallel func(string) (apiv1.Parallel, bool)
+	next     map[string][]string
+	joins    map[string]bool
+	active   map[string]bool // parallels on the current recursion stack
+}
+
+// visit returns every node reachable from start without entering blocked.
+func (r graphReachability) visit(start string, blocked map[string]bool) map[string]bool {
+	seen := map[string]bool{}
+	if start == "" || blocked[start] {
+		return seen
+	}
+	seen[start] = true
+	queue := []string{start}
 	for len(queue) > 0 {
 		node := queue[0]
 		queue = queue[1:]
-		if node == target {
-			return true
+		targets := r.next[node]
+		if join, ok := r.joinAfterAllBranches(node, blocked); ok {
+			targets = append(append([]string(nil), targets...), join)
 		}
-		for _, to := range next[node] {
+		for _, to := range targets {
 			if to == "" || seen[to] || blocked[to] {
+				continue
+			}
+			if r.joins[to] && !r.isJoinOf(node, to) {
+				// Branch terminals' converging edges: only the parallel itself
+				// admits its join, once every branch reaches it.
 				continue
 			}
 			seen[to] = true
 			queue = append(queue, to)
 		}
 	}
+	return seen
+}
+
+// joinAfterAllBranches returns node's join when node is a parallel every one
+// of whose branches reaches that join without entering blocked.
+func (r graphReachability) joinAfterAllBranches(node string, blocked map[string]bool) (string, bool) {
+	p, ok := r.parallel(node)
+	if !ok || p.Join == "" || r.active[node] {
+		return "", false
+	}
+	r.active[node] = true
+	defer delete(r.active, node)
+	for _, branch := range p.Branches {
+		if !r.branchReachesJoin(branch.Start, p.Join, blocked) {
+			return "", false
+		}
+	}
+	return p.Join, true
+}
+
+func (r graphReachability) branchReachesJoin(start, join string, blocked map[string]bool) bool {
+	for node := range r.visit(start, blocked) {
+		for _, to := range r.next[node] {
+			if to == join {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+func (r graphReachability) isJoinOf(node, join string) bool {
+	p, ok := r.parallel(node)
+	return ok && p.Join == join
 }
 
 // reviewerDiff reads the patch an agentic gate's reviewer is handed as

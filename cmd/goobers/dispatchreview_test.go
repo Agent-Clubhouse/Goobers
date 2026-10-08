@@ -469,6 +469,36 @@ func TestReviewPodKeepsTheHarnessInfrastructureClass(t *testing.T) {
 // has no run diff to hand it, and names why: a scratch (or detached
 // repo-readonly) reviewer cannot see the run branch at all.
 func TestReviewPodFailsClosedWithoutARequiredDiff(t *testing.T) {
+	got, sessions := runScratchReviewPod(t, true)
+	if got.Verdict != nil || got.Result.Error == nil || got.Result.Error.Code != "reviewer_diff_missing" {
+		t.Fatalf("outcome = %+v (verdict %+v), want a reviewer_diff_missing failure and no verdict", got.Result, got.Verdict)
+	}
+	if got.Result.Error.Retryable {
+		t.Fatal("a reviewer that cannot see the run diff will not see it on retry either")
+	}
+	if !strings.Contains(got.Result.Error.Message, "workspace: repo") {
+		t.Fatalf("message = %q, want the remedy named", got.Result.Error.Message)
+	}
+	if sessions != 0 {
+		t.Fatalf("reviewer sessions = %d, want none", sessions)
+	}
+}
+
+// A review whose subject implements nothing (e.g. a repo-readonly agentic
+// research task) is dispatched without ReviewRequiresDiff, so the same
+// diff-less scratch pod must run the reviewer rather than fail closed.
+func TestReviewPodWithoutARequiredDiffRunsTheReviewer(t *testing.T) {
+	got, sessions := runScratchReviewPod(t, false)
+	if got.Result.Error != nil && got.Result.Error.Code == "reviewer_diff_missing" {
+		t.Fatalf("outcome = %+v, want the reviewer to run without a required diff", got.Result)
+	}
+	if sessions != 1 {
+		t.Fatalf("reviewer sessions = %d, want 1", sessions)
+	}
+}
+
+func runScratchReviewPod(t *testing.T, requiresDiff bool) (stageOutcome, int) {
+	t.Helper()
 	endpoint, _ := fakeBlobPlane(t)
 	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
 	t.Setenv(dispatcher.EnvPodToken, "pod-token")
@@ -488,7 +518,7 @@ func TestReviewPodFailsClosedWithoutARequiredDiff(t *testing.T) {
 	kit := &agentickit.Kit{
 		Envelope:           apiv1.InvocationEnvelope{RunID: "run-review-diff", TaskID: "run-review-diff:review", Goober: "coder", Goal: "gate: review"},
 		Mode:               agentickit.ModeReview,
-		ReviewRequiresDiff: true,
+		ReviewRequiresDiff: requiresDiff,
 		Goobers:            map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessCopilot}},
 		Instructions:       map[string]string{"coder": "review the change"},
 	}
@@ -502,18 +532,7 @@ func TestReviewPodFailsClosedWithoutARequiredDiff(t *testing.T) {
 	t.Setenv(dispatcher.EnvAgenticKitDigest, digest)
 
 	got := runAgenticStage(context.Background(), &strings.Builder{}, &strings.Builder{})
-	if got.Verdict != nil || got.Result.Error == nil || got.Result.Error.Code != "reviewer_diff_missing" {
-		t.Fatalf("outcome = %+v (verdict %+v), want a reviewer_diff_missing failure and no verdict", got.Result, got.Verdict)
-	}
-	if got.Result.Error.Retryable {
-		t.Fatal("a reviewer that cannot see the run diff will not see it on retry either")
-	}
-	if !strings.Contains(got.Result.Error.Message, "workspace: repo") {
-		t.Fatalf("message = %q, want the remedy named", got.Result.Error.Message)
-	}
-	if sessions != 0 {
-		t.Fatalf("reviewer sessions = %d, want none", sessions)
-	}
+	return got, sessions
 }
 
 // A writable pod reviewer that saw an empty run branch answers with #415's

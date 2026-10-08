@@ -5,8 +5,12 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gate"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // readonlyImplementationReviewSpec is the #5414 shape: an agentic implementer,
@@ -97,6 +101,98 @@ func TestReadonlyImplementationReviewEmptyDiffFailsClosed(t *testing.T) {
 	}
 	if res := laneResult(t, env); res.Status != StatusEscalated {
 		t.Fatalf("status = %q, want escalated", res.Status)
+	}
+}
+
+// readonlyResearchReviewSpec is a repo-readonly agentic research task reviewed
+// by a non-writable reviewer: the subject is agentic but implements nothing,
+// so there is no run diff to retrieve or require.
+func readonlyResearchReviewSpec(reviewer apiv1.WorkspaceMode) apiv1.WorkflowSpec {
+	spec := laneSpec()
+	spec.Tasks[0].Workspace = apiv1.WorkspaceRepoReadOnly
+	spec.Gates[0].Agentic.Workspace = reviewer
+	return spec
+}
+
+// TestReadonlyResearchReviewIsNotProbedOrFailedClosed: a review of a
+// non-implementing agentic subject must run the reviewer on its own workspace,
+// without a writable run-branch probe and without an empty-diff fast-fail.
+func TestReadonlyResearchReviewIsNotProbedOrFailedClosed(t *testing.T) {
+	for _, reviewer := range []apiv1.WorkspaceMode{apiv1.WorkspaceRepoReadOnly, apiv1.WorkspaceScratch} {
+		t.Run(string(reviewer), func(t *testing.T) {
+			reviews := 0
+			inv := &fakeInvoker{
+				invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+					return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+				},
+				review: func(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+					reviews++
+					return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+				},
+			}
+			ws := testWorkspaces(t)
+			ws.scriptDiff("review", nil)
+			env := laneEnv(t, inv, ws)
+			env.ExecuteWorkflow(Run, runInput("gated", readonlyResearchReviewSpec(reviewer)))
+
+			if res := laneResult(t, env); res.Status != StatusCompleted {
+				t.Fatalf("status = %q, want completed", res.Status)
+			}
+			if reviews != 1 {
+				t.Fatalf("reviewer invoked %d time(s), want 1", reviews)
+			}
+			var modes []apiv1.WorkspaceMode
+			for _, req := range ws.provisioned() {
+				if req.Stage == "review" {
+					modes = append(modes, req.Mode)
+				}
+			}
+			if len(modes) != 1 || modes[0] != reviewer {
+				t.Fatalf("review workspaces = %v, want only the reviewer's own %s workspace (no writable probe)", modes, reviewer)
+			}
+		})
+	}
+}
+
+// TestPlacedGateRequiresDiffOnlyForImplementationReview is the pod side of the
+// same rule: the attempt's ReviewRequiresDiff (which makes the pod fail closed
+// with reviewer_diff_missing) is set for a scratch implementation review and
+// not for a scratch review of a read-only agentic research task.
+func TestPlacedGateRequiresDiffOnlyForImplementationReview(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		subject apiv1.WorkspaceMode
+		want    bool
+	}{
+		{name: "writable implementer", subject: "", want: true},
+		{name: "read-only research", subject: apiv1.WorkspaceRepoReadOnly, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := placedGateSpec()
+			spec.Tasks[0].Workspace = tc.subject
+			spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+			spec.Gates[0].Branches["pass"] = wf.TerminalComplete
+			spec.Tasks = spec.Tasks[:1]
+			in := projectionInput("placed-gate-requires-diff-"+string(tc.subject), spec)
+			in.DSLVersion = "3.0"
+			in.GateGooberCapabilities = map[string][]string{"reviewer": {"agent:model"}}
+			in.Placements = []PinnedPlacement{remoteGatePin()}
+			surrenders := surrenderStore(t)
+			putSurrendered(t, surrenders, in.RunID, "review", 1, reviewSurrender(apiv1.Verdict{Decision: apiv1.VerdictPass}))
+			fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-agentic", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+			executeForProjection(t, in, &Activities{
+				Goober: refusingReviewer(t), Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders,
+			}, false)
+
+			attempts, _ := fake.recorded()
+			if len(attempts) != 1 || attempts[0].Stage != "review" {
+				t.Fatalf("attempts = %+v, want exactly the gate's review attempt", attempts)
+			}
+			if got := attempts[0].ReviewRequiresDiff; got != tc.want {
+				t.Fatalf("ReviewRequiresDiff = %t, want %t", got, tc.want)
+			}
+		})
 	}
 }
 

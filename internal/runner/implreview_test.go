@@ -104,6 +104,7 @@ func TestReviewsImplementationClassifiesByDominance(t *testing.T) {
 			t.Fatal("a repo-readonly agentic task commits nothing and must not make its review an implementation review")
 		}
 	})
+
 }
 
 // committingCoder is an agentic goober fake that commits a change in its
@@ -289,5 +290,45 @@ func TestReviewerDiffObservesRunBranchOnlyWhenItReadsIt(t *testing.T) {
 		if got := r.reviewerDiffObservesRunBranch(tc.in, "review", tc.wt); got != tc.want {
 			t.Errorf("%s: reviewerDiffObservesRunBranch = %t, want %t", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestGraphReachesJoinOnlyThroughEveryBranch is #5414's static fan-in rule: a
+// join runs only after EVERY branch settles, so a deterministic sibling
+// branch must not make the review after the join look reachable around an
+// implementer in another branch. (Compile rule 9 forbids writable-repo branch
+// stages today, so the graph is built by hand.)
+func TestGraphReachesJoinOnlyThroughEveryBranch(t *testing.T) {
+	graph := workflow.Graph{
+		Start: "fanout",
+		Nodes: []workflow.GraphNode{
+			{ID: "fanout", Kind: workflow.GraphNodeParallel},
+			{ID: "left", Kind: workflow.GraphNodeAgentic},
+			{ID: "right", Kind: workflow.GraphNodeDeterministic},
+			{ID: "join", Kind: workflow.GraphNodeDeterministic},
+			{ID: "review", Kind: workflow.GraphNodeGate},
+		},
+		Edges: []workflow.GraphEdge{
+			{Source: "fanout", Target: "left", Branch: "left"},
+			{Source: "fanout", Target: "right", Branch: "right"},
+			{Source: "left", Target: "join"},
+			{Source: "right", Target: "join"},
+			{Source: "join", Target: "review"},
+		},
+	}
+	parallel := func(name string) (apiv1.Parallel, bool) {
+		if name != "fanout" {
+			return apiv1.Parallel{}, false
+		}
+		return apiv1.Parallel{Name: "fanout", Join: "join", Branches: []apiv1.Branch{{Name: "left", Start: "left"}, {Name: "right", Start: "right"}}}, true
+	}
+	if !graphReaches(parallel, graph, "review", nil) {
+		t.Fatal("review after the join must be reachable when nothing is blocked")
+	}
+	if graphReaches(parallel, graph, "review", map[string]bool{"left": true}) {
+		t.Fatal("the join waits for the implementer branch, so the review must not be reachable around it")
+	}
+	if !graphReaches(parallel, graph, "right", map[string]bool{"left": true}) {
+		t.Fatal("a sibling branch's own stages stay reachable while another branch is blocked")
 	}
 }
