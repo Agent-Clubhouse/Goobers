@@ -33,7 +33,9 @@ func (a *Activities) probeRunBranchDiff(ctx context.Context, env apiv1.Invocatio
 	if err != nil {
 		return nil, err
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
 	out := captureGateDiff(ctx, ws, apiv1.WorkspaceRepo, probeEnv)
+	// Removed synchronously here, not deferred to the caller: the reviewer's
+	// own workspace shares this RunID+Stage key and is provisioned next.
+	removeWorkspace(ctx, env.TaskID, ws)
 	return &out, nil
 }

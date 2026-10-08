@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -62,6 +63,13 @@ func TestReadonlyImplementationReviewIsHandedTheRunDiff(t *testing.T) {
 	}
 	if len(modes) != 2 || modes[0] != apiv1.WorkspaceRepo || modes[1] != apiv1.WorkspaceRepoReadOnly {
 		t.Fatalf("review workspaces = %v, want the run-branch probe then the reviewer's own read-only workspace", modes)
+	}
+	// Both share the RunID+Stage key, so the probe must be gone before the
+	// reviewer's workspace is provisioned.
+	got := ws.lifecycleOf("review")
+	want := []string{"provision review", "remove review", "provision review", "remove review"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("review workspace lifecycle = %v, want %v (probe removed before the reviewer's workspace is provisioned)", got, want)
 	}
 }
 
