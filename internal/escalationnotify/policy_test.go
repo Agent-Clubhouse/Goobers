@@ -432,6 +432,54 @@ func TestTerminalNotifierRoutesByPhase(t *testing.T) {
 	}
 }
 
+// labeledPoster is a fakePoster whose item carries labels, so it satisfies
+// gate.WorkItemReader.
+type labeledPoster struct {
+	fakePoster
+	labels []string
+}
+
+func (f *labeledPoster) GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error) {
+	return providers.WorkItem{Labels: f.labels}, nil
+}
+
+// TestEscalatedFailureCommentNamesParkingLabel covers #5430 end to end through
+// the terminal circuit breaker: a merge-review escalation parked
+// goobers:merge-escalated is told to remove that label, and once the breaker
+// trips the needs-human it applies is named too.
+func TestEscalatedFailureCommentNamesParkingLabel(t *testing.T) {
+	poster := &labeledPoster{labels: []string{providers.LabelMergeEscalated}}
+	state := newFakeState()
+	state.items["run-1"] = []Item{{ItemID: "pr/42", Repo: webRepo}}
+	p := &Policy{Poster: poster, RunsDir: t.TempDir(), State: state}
+	notify := p.TerminalNotifier(nil)
+	lastComment := func() string {
+		for i := len(poster.updates) - 1; i >= 0; i-- {
+			if poster.updates[i].Comment != "" {
+				return poster.updates[i].Comment
+			}
+		}
+		t.Fatal("no failure-streak comment posted")
+		return ""
+	}
+
+	if err := notify("run-1", journal.PhaseEscalated, "park-review"); err != nil {
+		t.Fatalf("escalated: %v", err)
+	}
+	body := lastComment()
+	if !strings.Contains(body, "Remove `goobers:merge-escalated` and re-approve to retry.") || strings.Contains(body, providers.LabelNeedsHuman) {
+		t.Fatalf("below-threshold comment = %q, want merge-escalated named and no needs-human", body)
+	}
+
+	state.streaks["web#pr/42"] = FailureStreakThreshold - 1
+	if err := notify("run-1", journal.PhaseEscalated, "park-review"); err != nil {
+		t.Fatalf("escalated at threshold: %v", err)
+	}
+	if body := lastComment(); !strings.Contains(body, "Remove `goobers:needs-human` and `goobers:merge-escalated` and re-approve to retry.") {
+		t.Fatalf("threshold comment = %q, want both park labels named", body)
+	}
+}
+
 func TestTerminalNotifierJoinsErrors(t *testing.T) {
 	p, _, state := newTestPolicy(t)
 	state.itemsErr = errors.New("item repository unknown")

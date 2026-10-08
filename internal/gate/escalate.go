@@ -109,7 +109,84 @@ func runCommentMarker(runID string, seq uint64) string {
 
 const failureStreakMarker = "<!-- goobers:failure-streak"
 
-func failureStreakBody(count int, stage, latestRunID, latestRunURL string) string {
+// HumanParkLabels are the labels that hold an item for a human decision and
+// that an operator removes to send it back to automated retry: needs-human
+// (the circuit breaker, blocked handler and curator park) and merge-escalated
+// (merge review and pr-remediation escalating a PR, #5430). The failure-streak
+// comment names whichever of these actually holds the item instead of a fixed
+// needs-human, which told the operator of every merge-review escalation to
+// remove a label the PR did not carry.
+var HumanParkLabels = []string{providers.LabelNeedsHuman, providers.LabelMergeEscalated}
+
+// WorkItemReader is the optional Commenter extension UpsertFailureComment
+// uses to read the item's current labels. A poster without it (or a failed
+// read) yields a hedged instruction rather than a guessed label.
+type WorkItemReader interface {
+	GetWorkItem(ctx context.Context, repository providers.RepositoryRef, itemID string) (providers.WorkItem, error)
+}
+
+// failurePark is the human-park state the failure-streak comment reports.
+// Labels are the park labels known to hold the item; Complete is false when
+// the item's labels could not be read, so Labels may be missing some.
+type failurePark struct {
+	Labels   []string
+	Complete bool
+}
+
+// resolveFailurePark combines the park labels the caller is applying now with
+// the human-park labels the item already carries.
+func resolveFailurePark(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, applying []string) failurePark {
+	var present []string
+	complete := false
+	if reader, ok := poster.(WorkItemReader); ok {
+		if item, err := reader.GetWorkItem(ctx, repository, itemID); err == nil {
+			present, complete = item.Labels, true
+		}
+	}
+	var labels []string
+	for _, park := range HumanParkLabels {
+		if label, ok := matchLabel(present, park); ok {
+			labels = append(labels, label)
+		} else if _, ok := matchLabel(applying, park); ok {
+			labels = append(labels, park)
+		}
+	}
+	return failurePark{Labels: labels, Complete: complete}
+}
+
+func matchLabel(labels []string, want string) (string, bool) {
+	for _, label := range labels {
+		if strings.EqualFold(label, want) {
+			return label, true
+		}
+	}
+	return "", false
+}
+
+func codeList(labels []string) string {
+	quoted := make([]string, len(labels))
+	for i, label := range labels {
+		quoted[i] = "`" + label + "`"
+	}
+	return strings.Join(quoted, " and ")
+}
+
+// retryInstruction tells the operator how to send the item back to retry,
+// naming only labels known to hold it.
+func (p failurePark) retryInstruction() string {
+	switch {
+	case len(p.Labels) > 0 && p.Complete:
+		return fmt.Sprintf("Remove %s and re-approve to retry.", codeList(p.Labels))
+	case len(p.Labels) > 0:
+		return fmt.Sprintf("Remove %s (and any other human park label on this item: %s) and re-approve to retry.", codeList(p.Labels), codeList(HumanParkLabels))
+	case p.Complete:
+		return fmt.Sprintf("No human park label (%s) is on this item, so no label removal is needed to retry.", codeList(HumanParkLabels))
+	default:
+		return fmt.Sprintf("If a human park label (%s) is on this item, remove it and re-approve to retry.", codeList(HumanParkLabels))
+	}
+}
+
+func failureStreakBody(count int, stage, latestRunID, latestRunURL string, park failurePark) string {
 	stageInfo := ""
 	if stage != "" {
 		stageInfo = fmt.Sprintf(" at stage `%s`", stage)
@@ -117,9 +194,9 @@ func failureStreakBody(count int, stage, latestRunID, latestRunURL string) strin
 	return fmt.Sprintf(
 		"Goobers: **%d consecutive terminal failure(s)**%s. Latest run: [`%s`](%s). "+
 			"Classification: **genuine/work failure** (infra/transient failures are excluded from this streak). "+
-			"Remove `%s` and re-approve to retry.\n\n"+
+			"%s\n\n"+
 			"<!-- goobers:failure-streak data-count=\"%d\" -->",
-		count, stageInfo, latestRunID, latestRunURL, providers.LabelNeedsHuman, count,
+		count, stageInfo, latestRunID, latestRunURL, park.retryInstruction(), count,
 	)
 }
 
@@ -154,9 +231,11 @@ func ParseFailureStreakCount(body string) (int, bool) {
 // UpsertFailureComment creates or updates the single failure-streak tracking
 // comment on an item. Instead of posting one comment per failed run (which
 // buries the issue thread), it maintains one rolling comment with the current
-// count.
-func UpsertFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count int, stage, runID, runURL string) error {
-	body := failureStreakBody(count, stage, runID, runURL)
+// count. applying lists park labels the caller is adding in the same
+// transition (the circuit breaker's needs-human at threshold), which the item's
+// current labels do not show yet.
+func UpsertFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count int, stage, runID, runURL string, applying []string) error {
+	body := failureStreakBody(count, stage, runID, runURL, resolveFailurePark(ctx, poster, repository, itemID, applying))
 	comments, err := poster.ListComments(ctx, repository, itemID)
 	if err != nil {
 		return fmt.Errorf("list comments for failure upsert: %w", err)
