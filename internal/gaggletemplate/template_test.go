@@ -286,3 +286,103 @@ func TestLockAndStatusLegacyAndManaged(t *testing.T) {
 		t.Fatalf("status=%+v", status)
 	}
 }
+
+func TestPublishRecoveryBranches(t *testing.T) {
+	t.Run("existing backup blocks publish and is preserved", func(t *testing.T) {
+		parent := t.TempDir()
+		target, candidate := filepath.Join(parent, "orders"), filepath.Join(parent, ".candidate")
+		base := trackedFixture(t, target)
+		if err := base.Write(candidate); err != nil {
+			t.Fatal(err)
+		}
+		backup := filepath.Join(parent, ".template-backup-orders")
+		if err := os.Mkdir(backup, 0755); err != nil {
+			t.Fatal(err)
+		}
+		err := Publish(target, candidate, base)
+		if err == nil || !strings.Contains(err.Error(), "recovery required") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, statErr := os.Stat(backup); statErr != nil {
+			t.Fatalf("backup removed: %v", statErr)
+		}
+	})
+
+	t.Run("digest mismatch leaves target untouched", func(t *testing.T) {
+		parent := t.TempDir()
+		target, candidate := filepath.Join(parent, "orders"), filepath.Join(parent, ".candidate")
+		base := trackedFixture(t, target)
+		if err := base.Write(candidate); err != nil {
+			t.Fatal(err)
+		}
+		edit := filepath.Join(target, "new.md")
+		if err := os.WriteFile(edit, []byte("concurrent"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		err := Publish(target, candidate, base)
+		if err == nil || !strings.Contains(err.Error(), "changed during operation") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, statErr := os.Stat(edit); statErr != nil {
+			t.Fatalf("edit lost: %v", statErr)
+		}
+		if _, statErr := os.Stat(filepath.Join(parent, ".template-backup-orders")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatal("backup created on mismatch")
+		}
+	})
+
+	t.Run("candidate rename failure rolls back target", func(t *testing.T) {
+		parent := t.TempDir()
+		target := filepath.Join(parent, "orders")
+		base := trackedFixture(t, target)
+		err := Publish(target, filepath.Join(parent, "missing-candidate"), base)
+		if err == nil {
+			t.Fatal("publish succeeded without candidate")
+		}
+		restored, readErr := ReadTree(target)
+		if readErr != nil {
+			t.Fatalf("target not restored: %v", readErr)
+		}
+		if restored.Digest() != base.Digest() {
+			t.Fatal("restored target differs from original")
+		}
+		if _, statErr := os.Stat(filepath.Join(parent, ".template-backup-orders")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatal("backup left behind after rollback")
+		}
+	})
+
+	t.Run("success replaces target and removes backup", func(t *testing.T) {
+		parent := t.TempDir()
+		target, candidate := filepath.Join(parent, "orders"), filepath.Join(parent, ".candidate")
+		base := trackedFixture(t, target)
+		next := Tree{"new.md": {Data: []byte("new"), Mode: 0644}}
+		if err := next.Write(candidate); err != nil {
+			t.Fatal(err)
+		}
+		if err := Publish(target, candidate, base); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadTree(target)
+		if err != nil || got.Digest() != next.Digest() {
+			t.Fatalf("target not replaced: %v", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(parent, ".template-backup-orders")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatal("backup not removed")
+		}
+	})
+
+	t.Run("new target is created when absent", func(t *testing.T) {
+		parent := t.TempDir()
+		target, candidate := filepath.Join(parent, "orders"), filepath.Join(parent, ".candidate")
+		next := Tree{"a.md": {Data: []byte("a"), Mode: 0644}}
+		if err := next.Write(candidate); err != nil {
+			t.Fatal(err)
+		}
+		if err := Publish(target, candidate, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadTree(target); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
