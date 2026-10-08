@@ -98,7 +98,7 @@ type CIChecksArtifactMetadata struct {
 	AnnotationsDropped          int  `json:"annotationsDropped,omitempty"`
 	ChecksDropped               int  `json:"checksDropped,omitempty"`
 	// RetryFailedChecksError records #4750's mechanical rerun call failing to
-	// even be attempted (transport error, or a permission gap like #4751) —
+	// even be attempted (transport error, or a credential without Actions write, #4751) —
 	// evidence only; it never changes the reported ciStatus.
 	RetryFailedChecksError string `json:"retryFailedChecksError,omitempty"`
 }
@@ -572,7 +572,7 @@ func addCIPollCarry(outcome apiv1.ResultEnvelope, cfg CIPollConfig) apiv1.Result
 
 // ciPollFailureOutcome reports the normal terminal "failing" outcome.
 // retryErr, when non-nil, is #4750's mechanical rerun call failing (a
-// transport error, or the actions:write permission gap tracked in #4751) —
+// transport error, or a credential missing Actions write, #4751) —
 // recorded as evidence on the artifact/summary, not surfaced as a distinct
 // error or failure mode: per design, a retry that cannot even be attempted is
 // exactly as good as a workflow that never declared retryFailedChecksMaxAttempts,
@@ -633,7 +633,7 @@ type CIFailureRerunner interface {
 // Deliberately best-effort, like annotation enrichment
 // (failingCheckAnnotations): the retry is an enhancement over today's
 // behavior, never a new way to fail. A rerun call that errors (a transport
-// failure, or the actions:write permission gap tracked in #4751) is reported
+// failure, or a credential missing Actions write, #4751) is reported
 // back as retried=false plus the error so the caller can record it as
 // evidence — it must fall straight through to the exact same terminal
 // "failing" outcome a workflow that never declared retryFailedChecksMaxAttempts
