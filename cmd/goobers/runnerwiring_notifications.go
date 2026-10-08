@@ -162,12 +162,20 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 
 // GetWorkItem implements gate.WorkItemReader so the failure-streak comment
 // names the park label the item actually carries (#5430). It routes exactly
-// like ListComments, except that an ADO pull request is refused: its number is
-// not a Boards work-item id, so reading one would report an unrelated item's
-// labels as the PR's.
+// like ListComments, except that an ADO pull request's labels are read from
+// the PR on its code repository: its number is not a Boards work-item id.
 func (c *escalationCommenter) GetWorkItem(ctx context.Context, repository providers.RepositoryRef, itemID string) (providers.WorkItem, error) {
-	if repository.Provider == providers.ProviderADO && strings.HasPrefix(itemID, "pr/") {
-		return providers.WorkItem{}, fmt.Errorf("read labels of ADO pull request %s: not supported", itemID)
+	if repository.Provider == providers.ProviderADO && strings.HasPrefix(itemID, pullRequestClaimPrefix) {
+		provider, err := newConfiguredADOProvider(c.layout.Root, repository)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+		}
+		pullID := blockedLookupID(itemID)
+		labels, err := provider.PullRequestLabelNames(ctx, repository, pullID)
+		if err != nil {
+			return providers.WorkItem{}, err
+		}
+		return providers.WorkItem{ID: pullID, Labels: labels}, nil
 	}
 	itemID = blockedLookupID(itemID)
 	if repository.Provider == providers.ProviderADO {
