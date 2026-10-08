@@ -251,7 +251,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 				return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
 			}
 			if workspaceBranch != "" {
-				return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+				return nil, readOnlyRebindError(in, stageName, workspaceBranch)
 			}
 			in.pinnedStage.Lock()
 			if err := r.preparePinnedStage(ctx, in, false, ""); err != nil {
@@ -275,7 +275,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
 		}
 		if workspaceBranch != "" {
-			return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+			return nil, readOnlyRebindError(in, stageName, workspaceBranch)
 		}
 		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 		if err != nil {

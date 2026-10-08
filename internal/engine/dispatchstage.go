@@ -656,10 +656,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// The rebound branch and the base sync are stamped on exactly the same
 		// arm as the delta, and for one reason: they all describe what happens
 		// to a WRITABLE run branch. A repo-readonly stage is detached at the
-		// pinned base on every substrate — the local runner ignores a rebound
-		// branch for it (createStageWorkspace's read-only arm passes Branch:
-		// "") — so stamping either here would be the pod quietly reading
-		// something the self runner does not.
+		// pinned base on every substrate — the local runner refuses one on a
+		// rebound branch (createStageWorkspace's read-only arm), and
+		// `goobers validate` rejects that ordering statically (WS002) — so
+		// stamping either here would be the pod quietly reading something the
+		// self runner does not.
 		attempt.WorkspaceBranch = strings.TrimSpace(input.WorkspaceBranch)
 		// SyncBase is already pinned inside input.Run (apiv1.DeterministicRun,
 		// #813) and travels with it; it is lifted onto the attempt because the

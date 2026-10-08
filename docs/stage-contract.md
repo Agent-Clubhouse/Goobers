@@ -138,6 +138,14 @@ from `implementation` — must operate on the PR's own head branch. An agentic
 stage and a gate evaluator cannot check anything out for themselves, so the
 rebinding is the only way to reach them.
 
+A `workspace: repo-readonly` stage or agentic gate cannot follow a rebound
+branch: its checkout is detached at the pinned base, so the runner refuses to
+create it once the branch has been rebound. `goobers validate` rejects such a
+stage when it is reachable from a deterministic stage that declares
+`workspaceBranch` in `expectedOutputs` or runs `goobers gather-pr-context` or
+`goobers gather-sibling-context` (WS002). Move the read-only stage before the
+rebinding stage, or give it `workspace: repo`.
+
 Constraints:
 
 - The branch must already exist on the remote, and must live in the run-branch
