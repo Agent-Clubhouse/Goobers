@@ -111,10 +111,12 @@ func TestIntegrationCaptureSnapshotRetainsFilteredAndHiddenTrackedBytes(t *testi
 	recoveryTestGit(t, repository, "add", "large.lfs")
 	recoveryTestGit(t, repository, "commit", "-m", "pointer")
 	head := recoveryTestGit(t, repository, "rev-parse", "HEAD")
-	// Capture must neither run the filter nor fail because it is unavailable.
-	recoveryTestGit(t, repository, "config", "filter.pointer.clean", "false")
+	// Setup index writes may refresh entries through the working filter, so
+	// finish them before making the filter fail.
 	writeRestoreFixture(t, repository, "hidden.txt", "edited\n")
 	recoveryTestGit(t, repository, "update-index", "--assume-unchanged", "hidden.txt")
+	// Capture must neither run the filter nor fail because it is unavailable.
+	recoveryTestGit(t, repository, "config", "filter.pointer.clean", "false")
 	snapshot, err := CaptureSnapshot(context.Background(), repository, "run-filtered", storageTestRecord().CreatedAt)
 	if err != nil {
 		t.Fatal(err)
