@@ -63,6 +63,48 @@ func TestADOListWorkItemsFiltersByTagsInWIQL(t *testing.T) {
 	}
 }
 
+// TestADOListWorkItemsUpdatedSinceUsesTimePrecision pins #6877: WIQL compares
+// [System.ChangedDate] at day granularity unless timePrecision=true is sent,
+// so an UpdatedSince filter must request time precision with a full UTC
+// timestamp literal, and an unfiltered list must not.
+func TestADOListWorkItemsUpdatedSinceUsesTimePrecision(t *testing.T) {
+	var gotQuery, gotPrecision string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode WIQL: %v", err)
+		}
+		gotQuery = body.Query
+		gotPrecision = r.URL.Query().Get("timePrecision")
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Name: "repo", Project: "project"}
+	since := time.Date(2026, 7, 15, 13, 45, 30, 0, time.FixedZone("PDT", -7*60*60))
+	if _, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{Repository: repo, UpdatedSince: &since}); err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if gotPrecision != "true" {
+		t.Fatalf("timePrecision = %q, want \"true\"", gotPrecision)
+	}
+	if want := "[System.ChangedDate] >= '2026-07-15T20:45:30Z'"; !strings.Contains(gotQuery, want) {
+		t.Fatalf("query = %q, want it to contain %q", gotQuery, want)
+	}
+
+	if _, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{Repository: repo}); err != nil {
+		t.Fatalf("ListWorkItems without UpdatedSince: %v", err)
+	}
+	if gotPrecision != "" {
+		t.Fatalf("timePrecision = %q without UpdatedSince, want it omitted", gotPrecision)
+	}
+}
+
 func TestADOClaimFailsWhenWrittenBreadcrumbIsNotVisible(t *testing.T) {
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
