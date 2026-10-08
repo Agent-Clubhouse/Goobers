@@ -309,6 +309,13 @@ The automated gate reads the normalized status and error classification of
 
 The gate receives the preceding result's `status`, error classification, and
 scalar outputs. It does not read the preceding stage's result file directly.
+
+Local run workcopies are linked worktrees of a mirror that keeps project
+branches as `refs/heads/*`; `refs/remotes/origin/*` does not exist there.
+Write `git diff --check main...HEAD`, not `origin/main...HEAD`. A git command
+that exits 128 on an unknown revision is classified `infra` by
+`failure-class`, so a wrong ref takes the gate's `infra` branch instead of
+repeatedly re-running `implement`.
 After a failure branch, a deterministic consumer may bind a preserved scalar
 with a qualified `inputsFrom` entry such as
 `validationState: local-ci.validationState`; the full result remains available

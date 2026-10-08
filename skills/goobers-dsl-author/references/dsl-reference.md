@@ -216,8 +216,12 @@ Automated checks currently include `status-equals`, `failure-class`,
 `output-equals`, `output-not-equals`, `output-numeric-gte`,
 `output-numeric-lte`, `output-numeric-lt`, `output-matches`, `ci-status`,
 `land-outcome`, and `queue-outcome`. `failure-class` takes no parameters: it
-returns `pass` for success, `infra` for a retryable failure, and `fail` for
-every other status. Use only outcomes and parameters accepted by the target
+returns `pass` for success, `infra` for a retryable or recognized
+infrastructure failure (including a git command that exits 128 on a revision
+the checkout does not have), and `fail` for every other status. Local run
+workcopies keep project branches as `refs/heads/*` without `origin/*`
+remote-tracking refs, so name a base as `main...HEAD` in stage commands. Use
+only outcomes and parameters accepted by the target
 release. Agentic gates must cover `pass`, `fail`, and `needs-changes`. Human
 gates may be present in a schema before a runner supports them, so always
 confirm them with `goobers validate`.
