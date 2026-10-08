@@ -909,9 +909,15 @@
           "examples": ["8Gi", "4Gi"]
         },
         "podTmpfsSize": {
-          "description": "Size of the memory-backed /tmp tmpfs on a Linux stage pod whose runner class carries tmp:ephemeral, as a Kubernetes quantity. Unset keeps the dispatcher default of 512Mi. The size is added to the container memory limit, so raise it only as far as the stages' real temp needs. Go build caches (GOCACHE) are placed on disk-backed pod storage, not here.",
+          "description": "Size limit of the /tmp volume on a stage pod whose runner class carries tmp:ephemeral, as a Kubernetes quantity. Unset keeps the dispatcher default: 512Mi when the volume is memory-backed, 4Gi when podTmpMedium is disk. A memory-backed size is added to the container memory limit, so raise it only as far as the stages' real temp needs. Go build caches (GOCACHE) are placed on disk-backed pod storage, not here.",
           "type": "string",
-          "examples": ["1Gi"]
+          "examples": ["1Gi", "8Gi"]
+        },
+        "podTmpMedium": {
+          "description": "Storage backing the /tmp volume of a Linux stage pod whose runner class carries tmp:ephemeral. memory (the default) mounts a tmpfs whose size is added to the container memory limit. disk mounts a node-disk emptyDir with the podTmpfsSize limit; it consumes ephemeral storage under the runner's disk ceiling instead of memory. Choose disk when stages run real builds, because Go's build work directory and test temp directories land under TMPDIR. Windows stage pods are always disk-backed.",
+          "type": "string",
+          "enum": ["memory", "disk"],
+          "examples": ["disk"]
         },
         "podEgressProxy": {
           "description": "Forward proxy stamped into stage pods whose runner class carries network:allowlist, for deterministic and agentic stages alike (HTTPS_PROXY, HTTP_PROXY, NO_PROXY and their lowercase spellings). Needed because such pods cannot dial module registries directly and a stage pod does not inherit the daemon's proxy environment. A stage's own run.env value wins.",

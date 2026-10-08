@@ -126,6 +126,13 @@ func TestAzureReplayHealthReportsDeliveryFailureAndRecovery(t *testing.T) {
 
 // Last-success, last-failure and class survive a restart in a private,
 // bounded sidecar; the active-failure flag does not.
+//
+// This asserts what a completed shutdown persists, not how quickly shutdown
+// finishes (#6740). Each close therefore runs to completion rather than under
+// a wall-clock deadline that slow file I/O can exhaust, and the first spool is
+// closed only after its manifest initialization has finished so close does
+// not race the initializer. A completed close also releases the manifest
+// before TempDir cleanup.
 func TestAzureReplayDeliveryStatusSurvivesRestart(t *testing.T) {
 	root := t.TempDir()
 	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20}
@@ -133,12 +140,17 @@ func TestAzureReplayDeliveryStatusSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A first attempt that succeeded makes the manifest ready immediately; a
+	// failed one would retry indefinitely, so fail rather than wait.
+	<-first.index.firstAttempt
+	if first.index.firstErr != nil {
+		t.Fatal(first.index.firstErr)
+	}
+	<-first.index.ready
 	success := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	first.delivery.succeeded(success)
 	first.delivery.failed(success.Add(time.Minute), azureDeliveryRejected, true)
-	closeCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	if err = first.close(closeCtx); err != nil {
+	if err = first.close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "status-journal.json")
@@ -158,9 +170,9 @@ func TestAzureReplayDeliveryStatusSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = second.close(closeCtx)
+		if err := second.close(t.Context()); err != nil {
+			t.Error(err)
+		}
 	}()
 	got := second.stats()
 	if !got.LastSuccess.Equal(success) || !got.LastFailure.Equal(success.Add(time.Minute)) ||

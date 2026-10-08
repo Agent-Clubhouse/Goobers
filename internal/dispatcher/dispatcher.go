@@ -81,6 +81,12 @@ const (
 // to half the node's RAM, which no runner ceiling ever accounted for.
 var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 
+// DefaultDiskTmpSizeLimit is the tmp:ephemeral sizeLimit when the operator
+// selects a disk-backed volume (Config.TmpDiskBacked) and configures no size.
+// It is larger than the tmpfs default because it costs node disk, not pod
+// memory, and Go's build work directory and t.TempDir() land there.
+var DefaultDiskTmpSizeLimit = resource.MustParse("4Gi")
+
 // Config is the dispatcher's per-instance wiring.
 type Config struct {
 	// NetworkNoneHostAliases carries verified Service IPs for pure pod rendering.
@@ -196,8 +202,14 @@ type Config struct {
 	// stamping; the pod resolves the actual secret through the credential
 	// plane instead, exactly as every other pod capability does.
 	ExternalTelemetryConnectors map[string]externaltelemetry.ConnectorConfig
-	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
+	// TmpfsSizeLimit overrides the tmp:ephemeral volume's default size
+	// (DefaultTmpfsSizeLimit, or DefaultDiskTmpSizeLimit when TmpDiskBacked);
+	// zero uses the default.
 	TmpfsSizeLimit resource.Quantity
+	// TmpDiskBacked mounts a Linux pod's tmp:ephemeral /tmp as a node-disk
+	// emptyDir instead of a memory tmpfs (runner.podTmpMedium "disk", #6758),
+	// so its size is not added to the container memory limit.
+	TmpDiskBacked bool
 	// PodEgressProxy is stamped into stage pods whose runner class carries
 	// network:allowlist (#6748); a stage's own env wins. Zero stamps nothing.
 	PodEgressProxy *instance.PodEgressProxyConfig
@@ -240,10 +252,13 @@ func (c Config) ownerLabel() string {
 }
 
 func (c Config) tmpfsSizeLimit() resource.Quantity {
-	if c.TmpfsSizeLimit.IsZero() {
-		return DefaultTmpfsSizeLimit.DeepCopy()
+	if !c.TmpfsSizeLimit.IsZero() {
+		return c.TmpfsSizeLimit
 	}
-	return c.TmpfsSizeLimit
+	if c.TmpDiskBacked {
+		return DefaultDiskTmpSizeLimit.DeepCopy()
+	}
+	return DefaultTmpfsSizeLimit.DeepCopy()
 }
 
 func (c Config) heldPodRetention() time.Duration {
