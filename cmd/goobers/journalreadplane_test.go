@@ -155,6 +155,7 @@ func TestDaemonUnpushedWorkDerivesItemsFromTheLedger(t *testing.T) {
 
 	service := newDaemonRunJournalService(layout, nil)
 	service.reads = liveEscalationReads(t, layout)
+	service.definitions = crossRunTestDefinitions(t)
 	ctx := context.Background()
 	since := time.Now().UTC().Add(-24 * time.Hour)
 
@@ -200,6 +201,7 @@ func TestDaemonConflictTouchesStaysInsideTheGaggle(t *testing.T) {
 
 	service := newDaemonRunJournalService(layout, nil)
 	service.reads = liveEscalationReads(t, layout)
+	service.definitions = crossRunTestDefinitions(t)
 	response, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{
 		RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: time.Now().UTC().Add(-24 * time.Hour),
 	})
