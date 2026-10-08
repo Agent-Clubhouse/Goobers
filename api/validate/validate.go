@@ -377,6 +377,7 @@ const (
 	errorUnknownRestriction       WarningCode = "CAP005"
 	errorRepoHandoff              WarningCode = "WF022"
 	errorGateRunsOn               WarningCode = "WF023"
+	errorReadOnlyAfterRebind      WarningCode = "WS002"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -3044,6 +3045,7 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
 			continue
 		}
+		addReadOnlyAfterRebindFindings(r, indexed, machine)
 		safetyOptions := workflowsafety.Options{BinaryIdentity: version.Version + ":" + version.Commit}
 		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
 			safetyOptions.GaggleRunControls = gaggle.Spec.RunControls
@@ -3059,6 +3061,19 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 				Message: finding.Message(), Safety: &details,
 			})
 		}
+	}
+}
+
+// addReadOnlyAfterRebindFindings reports WS002: a repo-readonly stage the
+// compiled machine can reach from a stage that rebinds the run's workspace
+// branch. The runner refuses to create that workspace on a rebound branch, so
+// the stage fails on every run that rebinds — after the stages before it have
+// already been paid for — while nothing else in validation notices (#5390).
+func addReadOnlyAfterRebindFindings(r *Report, indexed indexedWorkflow, machine *wf.Machine) {
+	w := indexed.definition
+	for _, finding := range wf.ReadOnlyWorkspacesAfterRebind(machine) {
+		line, col := safetyPosition(indexed, finding.Stage)
+		r.addLocated(errorReadOnlyAfterRebind, Error, indexed.file, line, col, "Workflow", w.Name, "%s", finding.Message(w.Name))
 	}
 }
 

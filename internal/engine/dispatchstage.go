@@ -656,10 +656,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// The rebound branch and the base sync are stamped on exactly the same
 		// arm as the delta, and for one reason: they all describe what happens
 		// to a WRITABLE run branch. A repo-readonly stage is detached at the
-		// pinned base on every substrate — the local runner ignores a rebound
-		// branch for it (createStageWorkspace's read-only arm passes Branch:
-		// "") — so stamping either here would be the pod quietly reading
-		// something the self runner does not.
+		// pinned base on every substrate — the local runner refuses one on a
+		// rebound branch (createStageWorkspace's read-only arm), and
+		// `goobers validate` rejects that ordering statically (WS002) — so
+		// stamping either here would be the pod quietly reading something the
+		// self runner does not.
 		attempt.WorkspaceBranch = strings.TrimSpace(input.WorkspaceBranch)
 		// SyncBase is already pinned inside input.Run (apiv1.DeterministicRun,
 		// #813) and travels with it; it is lifted onto the attempt because the
@@ -818,9 +819,10 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 //   - The pod's own session failed (ResultFailure, no verdict): the failure
 //     is returned as an ERROR — the self arm's ReviewGoober does the same
 //     when Goober.Review errors — classed by the pod's own Retryable
-//     marking, so a substrate fault (kit, credential, checkout, context)
-//     retries on a fresh pod under the gate's evaluator retry bound and a
-//     harness failure fails the run. The two kit-FETCH codes are classed
+//     marking, so a substrate fault (kit, credential, checkout, context) or
+//     a reviewer session that ended without a verdict (#5543) retries on a
+//     fresh pod under the gate's evaluator retry bound, and a harness
+//     refusal fails the run. The two kit-FETCH codes are classed
 //     here regardless of that marking; see reviewKitFetchFailure (#3888).
 //   - No verdict on a successful session: refused. Nothing to route on.
 //   - An empty Decision, or a verdict the shared verdict schema rejects:
