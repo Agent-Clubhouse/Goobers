@@ -1533,7 +1533,7 @@ func (u *upSession) startScheduler() int {
 			u.setup.LegacyRunner,
 			u.engineGuards,
 			u.setup.InstanceLog,
-			stalledSweepDependencies(u.setup, drainedDowntime),
+			stalledSweepDependencies(u.setup, drainedDowntime, u.liveJournals),
 			u.setup.TerminalNotifier,
 			u.sched.ReleaseRun,
 			now,
@@ -2364,7 +2364,7 @@ func readDrainedDowntime(log *journal.InstanceLog, stderr io.Writer) []daemonDow
 	return cleanDaemonDowntime(events)
 }
 
-func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime) *stalledSweepDeps {
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, live *livejournal.Writer) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
@@ -2386,6 +2386,7 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		// projector never re-reads the run (#5278).
 		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
 		DrainedDowntime:        drainedDowntime,
+		CloseEngineRun:         closeTerminatedEngineRun(live),
 	}
 }
 

@@ -49,6 +49,17 @@ type stalledSweepDeps struct {
 	// these intervals that falls after its last activity. Time the daemon was
 	// up, and downtime after a crash or a forced drain, still count.
 	DrainedDowntime []daemonDowntime
+	// CloseEngineRun writes the terminal of an engine run whose workflow the
+	// sweep terminated (#5407) through the live journal plane. nil leaves such
+	// a run unterminated and reported, since nothing else will close it.
+	CloseEngineRun func(ctx context.Context, identity journal.RunIdentity, cause string, at time.Time) error
+}
+
+func (d *stalledSweepDeps) closeEngineRun() func(context.Context, journal.RunIdentity, string, time.Time) error {
+	if d == nil {
+		return nil
+	}
+	return d.CloseEngineRun
 }
 
 func (d *stalledSweepDeps) prepareTerminal() stalledTerminalPreparer {
@@ -386,6 +397,7 @@ func sweepStalledRuns(
 	// scheduler journal when persisted (#1166, #1414).
 	var sweepErrs []error
 	terminalizers := make(map[string]*runner.Runner)
+	cancels := &engineCancelHistory{log: log}
 	for _, runDir := range candidates {
 		runsDir := filepath.Dir(runDir)
 		entryName := filepath.Base(runDir)
@@ -464,37 +476,14 @@ func sweepStalledRuns(
 		// The phase differs from the runner-driven neighbour below, which
 		// this sweep escalates: the engine reports what actually happened
 		// to its workflow, and what happened is a cancellation.
+		//
+		// A cancellation that no worker ever picks up is escalated to a
+		// server-side terminate one stall timeout after it was first
+		// requested; see settleStalledEngineRun.
 		if identity.EngineDriven() {
-			if err := guards.cancel(ctx, identity.RunID); err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err))
-				continue
+			if err := settleStalledEngineRun(ctx, guards, log, deps, cancels, release, identity, events, now, runTimeout, runMaxDuration, durationExceeded); err != nil {
+				sweepErrs = append(sweepErrs, err)
 			}
-			if log != nil {
-				message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
-				if durationExceeded {
-					message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
-				}
-				appendErr := log.Append(journal.Event{
-					Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
-					Runner: map[string]any{
-						"kind":   journal.RunnerAnnotationRunRecovery,
-						"reason": message,
-						"action": journal.RecoveryActionEngineCancelRequested,
-						"driver": string(identity.Driver),
-					},
-				})
-				if appendErr != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, appendErr))
-				}
-			}
-			// Deliberately no `release`: a cancellation is a REQUEST, and
-			// the run's scheduler slot belongs to whoever learns the
-			// outcome. For a run this daemon seeded at startup that is
-			// reattachEngineRun's goroutine, still waiting on the workflow
-			// and releasing when it closes; a run started during this
-			// daemon's life has no reconciled slot to release at all.
-			// Freeing it here, on a request that has not landed yet, is the
-			// same duplicate-admission hazard from the other end.
 			continue
 		}
 
