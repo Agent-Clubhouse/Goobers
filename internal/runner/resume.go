@@ -415,6 +415,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// the walkState is built above, so they are filled in rather than rebuilt
 	// into a second StartInput (#4235).
 	ws.in.Item, ws.in.RunControls = item, runControls
+	f.seedGateBudgets(in.Machine)
 	if completedGate != nil {
 		next, res, advance, gerr := r.gateTransition(ctx, ws, *completedGate)
 		if gerr != nil {
@@ -463,7 +464,6 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return res, nil
 	}
 
-	f.seedGateBudgets(in.Machine)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -908,13 +908,11 @@ func (r *Runner) replayFinishedTask(ctx context.Context, f *resumeFrame, startSt
 	if ws.parallel != nil {
 		switch f.lastResult.Status {
 		case apiv1.ResultFailure:
-			if !t.ContinueOnError {
-				if _, nextIsGate := ws.in.Machine.Gate(t.Next); !nextIsGate {
-					ws.parallel.markCurrentFailed()
-					ws.lastResult.Outputs = nil
-					*startState = workflow.TargetJoin
-					return Result{}, true, nil
-				}
+			if failsParallelBranch(ws.in.Machine, t, isInvalidHandoffFailure(f.lastResult)) {
+				ws.parallel.markCurrentFailed()
+				ws.lastResult.Outputs = nil
+				*startState = workflow.TargetJoin
+				return Result{}, true, nil
 			}
 		case apiv1.ResultNoWork:
 			ws.parallel.markCurrentNoOutput()
@@ -1158,6 +1156,22 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 		case journal.EventGatePaused, journal.EventGateStarted, journal.EventGateEvaluated:
 			return "", false
 		case journal.EventRunnerAnnotation:
+			if e.Runner["kind"] == handoffValidationRetryAnnotationKind && e.Stage == subjectStage {
+				if _, ok := invalidHandoffRetryFromResult(subject); !ok {
+					return "", false
+				}
+				// An escalated annotation never reroutes: recovery replays the
+				// consumer's result so the escalation is re-applied instead.
+				target, ok := invalidHandoffPrunedProducer(e)
+				if !ok {
+					return "", false
+				}
+				switch target {
+				case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+					return "", false
+				}
+				return target, true
+			}
 			if e.Runner["kind"] != retryDecisionKind || e.Stage != subjectStage {
 				continue
 			}
@@ -1455,18 +1469,13 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 				},
 			}})
 		case journal.EventRunnerAnnotation:
-			kind, _ := e.Runner["kind"].(string)
-			if kind != "learning.episode.injected" || e.Ref == nil {
+			if pruned, ok := pruneInvalidHandoffPointers(out, branchPointers, e); ok {
+				out = pruned
 				continue
 			}
-			record(e.Branch, []apiv1.ContextPointer{{
-				Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
-				Integrity: e.Ref.Integrity,
-				Artifact: &apiv1.ArtifactPointer{
-					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
-					MediaType: "application/json", Integrity: e.Ref.Integrity,
-				},
-			}})
+			if pointer, ok := learningEpisodePointer(e); ok {
+				record(e.Branch, []apiv1.ContextPointer{pointer})
+			}
 		case journal.EventParallelFinished:
 			spec, ok := machine.Parallel(e.Parallel)
 			if ok && e.Target == spec.Join {
@@ -1487,6 +1496,23 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 		}
 	}
 	return out
+}
+
+// learningEpisodePointer returns the context pointer journaled by a
+// learning-episode injection annotation.
+func learningEpisodePointer(e journal.Event) (apiv1.ContextPointer, bool) {
+	kind, _ := e.Runner["kind"].(string)
+	if kind != "learning.episode.injected" || e.Ref == nil {
+		return apiv1.ContextPointer{}, false
+	}
+	return apiv1.ContextPointer{
+		Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
+		Integrity: e.Ref.Integrity,
+		Artifact: &apiv1.ArtifactPointer{
+			Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+			MediaType: "application/json", Integrity: e.Ref.Integrity,
+		},
+	}, true
 }
 
 func runnerUint64(value any) uint64 {
@@ -1605,10 +1631,8 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			lastStage[event.Branch] = event
 			switch event.Status {
 			case string(apiv1.ResultFailure):
-				if taskKnown && !task.ContinueOnError {
-					if _, nextIsGate := machine.Gate(task.Next); !nextIsGate {
-						branch.failed = true
-					}
+				if taskKnown && failsParallelBranch(machine, task, isInvalidHandoffFailureEvent(event)) {
+					branch.failed = true
 				}
 			case string(apiv1.ResultNoWork):
 				branch.noOutput = true
@@ -1650,6 +1674,9 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			// correction is journaled and not dispatched, and the repass's
 			// derived-integrity downgrade silently disappears.
 			if branch == nil {
+				continue
+			}
+			if replayInvalidHandoffAnnotation(branch, event) {
 				continue
 			}
 			kind, _ := event.Runner["kind"].(string)
@@ -1798,7 +1825,9 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		if target == event.Target {
 			transition.task = task
 			transition.gate = gate
-			transition.aggregate = false
+			// An invalid-handoff escalation has no task or gate to replay; it
+			// escalates the run directly like an aggregate terminal.
+			transition.aggregate = task == nil && gate == nil
 			break
 		}
 	}
@@ -1899,6 +1928,19 @@ func isInterruptedAttemptMarker(e journal.Event) bool {
 func gateRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			gateName := "handoff.validation:" + e.Stage
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			seed[gateName] = n
+			continue
+		}
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
@@ -1960,6 +2002,20 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 func targetRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			if n > seed[target] {
+				seed[target] = n
+			}
+			continue
+		}
 		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra || e.Verdict == gate.OutcomeTimeout {
 			continue
 		}

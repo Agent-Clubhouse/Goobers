@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mutationreceipt"
@@ -516,6 +517,10 @@ type Config struct {
 	// schema-bound JSON handoffs for agentic stages. Nil preserves historical
 	// behavior.
 	HandoffSchemaLoader HandoffSchemaLoader
+	// RerouteInvalidHandoffs sends an invalid schema-bound JSON handoff back to
+	// the producer stage for a bounded retry. False preserves validation-only
+	// behavior.
+	RerouteInvalidHandoffs bool
 	// LookPathFunc resolves an executable name to a full path, exactly like
 	// exec.LookPath (#1380's ciCommand preflight — a name containing a path
 	// separator is tried directly, PATH is not consulted, matching what
@@ -1719,13 +1724,11 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			if ws.parallel != nil {
 				switch result.Status {
 				case apiv1.ResultFailure:
-					if !t.ContinueOnError {
-						if _, nextIsGate := ws.in.Machine.Gate(t.Next); !nextIsGate {
-							ws.parallel.markCurrentFailed()
-							ws.lastResult.Outputs = nil
-							ws.state = workflow.TargetJoin
-							continue
-						}
+					if failsParallelBranch(ws.in.Machine, t, isInvalidHandoffFailure(result)) {
+						ws.parallel.markCurrentFailed()
+						ws.lastResult.Outputs = nil
+						ws.state = workflow.TargetJoin
+						continue
 					}
 				case apiv1.ResultNoWork:
 					ws.parallel.markCurrentNoOutput()
@@ -2444,6 +2447,9 @@ func (r *Runner) preTaskOutcome(ctx context.Context, ws *walkState, t apiv1.Task
 		// reason survives a crash and is available as the prior result.
 		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
 		return t.Name, Result{}, true, nil, true
+	}
+	if retry, ok := invalidHandoffRetryFromResult(result); ok {
+		return r.invalidHandoffOutcome(ctx, ws, t, retry)
 	}
 	if isOutboxExportFailure(result) {
 		terminal, err := r.finishStageFailure(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, result.Error)
@@ -4011,8 +4017,12 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
-		if ctx, err = r.handoffValidationContext(ctx, jr, in.Machine, t, attempt, class, env.ContextPointers); err != nil {
+		var handoffReport *handoffcheck.Report
+		if ctx, handoffReport, err = r.handoffValidationContext(ctx, jr, in.Machine, t, attempt, class, env.ContextPointers); err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
+		}
+		if result, ok := invalidHandoffResult(t, handoffReport, r.cfg.RerouteInvalidHandoffs); ok {
+			return result, nil, nil, nil
 		}
 		agentInvocation = newGooberInvocation(ag, workspace.ActivateAssetPathGuard, jr, in.RunID, t.Name, attempt, t.Goober)
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
