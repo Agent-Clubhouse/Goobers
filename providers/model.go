@@ -38,6 +38,7 @@ const (
 	LabelNeedsHuman       = lifecycle.LabelNeedsHuman
 	LabelNeedsRemediation = lifecycle.LabelNeedsRemediation
 	LabelBlockedOnSibling = lifecycle.LabelBlockedOnSibling
+	LabelMergeEscalated   = lifecycle.LabelMergeEscalated
 	LabelNominated        = "goobers:nominated"
 	LabelAutoClose        = "goobers:auto-close"
 	LabelStale            = "stale"

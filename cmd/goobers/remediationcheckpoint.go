@@ -24,7 +24,7 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-const remediationEscalatedLabel = "goobers:merge-escalated"
+const remediationEscalatedLabel = providers.LabelMergeEscalated
 
 const siblingOverlapLookback = 30 * 24 * time.Hour
 
