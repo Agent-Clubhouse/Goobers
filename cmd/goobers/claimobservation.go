@@ -77,12 +77,13 @@ func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, it
 		return providers.ClaimResult{}, listErr
 	}
 	key := session.claimKey(item)
+	var owned claimsclient.Entry
 	found := false
 	for _, entry := range entries {
 		if claimsclient.KeyForEntry(entry) != key {
 			continue
 		}
-		found = true
+		found, owned = true, entry
 		if !entry.SharedDeadline.IsZero() {
 			labels := providers.GitHubSharedClaimVisibility{Provider: session.env.ghIssueProvider, Repository: session.env.backlogRepo}
 			result, err := confirmSharedClaimVisibility(ctx, entry, stageSharedClaimResolver(session.env.layout), labels, session.env.stderr)
@@ -92,8 +93,45 @@ func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, it
 	if !found {
 		return providers.ClaimResult{}, fmt.Errorf("claim confirmation requires an owned lease for item %s", item.ID)
 	}
-	result, err := session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
-		Repository: session.env.backlogRepo, ID: item.ID, RunID: session.runID,
-	})
-	return result, err
+	request := providers.ClaimWorkItemRequest{Repository: session.env.backlogRepo, ID: item.ID, RunID: session.runID}
+	result, err := session.env.issueProvider.ClaimWorkItem(ctx, request)
+	if err != nil || !result.Claimed {
+		return result, err
+	}
+	// The pre-IO snapshot is unlocked, so the lease can change hands while the
+	// marker is written. A provider marker must only mirror a ledger grant:
+	// re-read the lease and retract the marker if it is no longer this one.
+	held, err := session.leaseStillHeld(ctx, owned)
+	if err != nil || held {
+		return result, err
+	}
+	if _, releaseErr := session.env.issueProvider.ReleaseWorkItemClaim(ctx, request); releaseErr != nil {
+		pf(session.env.stderr, "warning: could not retract the provider claim on item %s after its ledger lease was lost: %v\n", item.ID, releaseErr)
+	}
+	return providers.ClaimResult{}, &ledgerLeaseLostError{itemID: item.ID}
+}
+
+// ledgerLeaseLostError reports that this run's ledger lease ended or passed to
+// another run while its provider claim marker was being written.
+type ledgerLeaseLostError struct{ itemID string }
+
+func (e *ledgerLeaseLostError) Error() string {
+	return fmt.Sprintf("ledger lease for item %s was lost while its provider claim was written", e.itemID)
+}
+
+// leaseStillHeld reports whether owned is still this run's unreleased lease
+// incarnation. ClaimedAt identifies the incarnation: renewals keep it, and a
+// replacement or re-grant after expiry never does.
+func (session *backlogClaimSession) leaseStillHeld(ctx context.Context, owned claimsclient.Entry) (bool, error) {
+	entries, err := session.ledger.ForRunAll(ctx, session.runID)
+	if err != nil {
+		return false, err
+	}
+	key := claimsclient.KeyForEntry(owned)
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == key && entry.ClaimedAt.Equal(owned.ClaimedAt) && entry.ReleasedAt == nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }

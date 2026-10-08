@@ -49,8 +49,12 @@ type ClaimEntry struct {
 	ExternalID   string            `json:"externalId,omitempty"`
 	RunID        string            `json:"runId"`
 	Workflow     string            `json:"workflow"`
-	ClaimedAt    time.Time         `json:"claimedAt"`
-	ExpiresAt    time.Time         `json:"expiresAt"`
+	// ClaimedAt is when this lease incarnation was first granted. A live
+	// same-run renewal is continuous ownership and keeps it; RenewedAt records
+	// the latest such renewal so history stays ordered by real acquisition.
+	ClaimedAt time.Time `json:"claimedAt"`
+	RenewedAt time.Time `json:"renewedAt,omitzero"`
+	ExpiresAt time.Time `json:"expiresAt"`
 	// SharedDeadline marks admission that must not be renewed through the
 	// local-only path, including after the ledger is reopened on restart.
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
@@ -61,6 +65,28 @@ type ClaimEntry struct {
 
 // expired reports whether the lease is no longer live at now.
 func (e ClaimEntry) expired(now time.Time) bool { return !e.ExpiresAt.After(now) }
+
+// LastGrantedAt is the most recent time the current lease term began: the
+// latest renewal, or the original grant when it was never renewed.
+func (e ClaimEntry) LastGrantedAt() time.Time {
+	if e.RenewedAt.After(e.ClaimedAt) {
+		return e.RenewedAt
+	}
+	return e.ClaimedAt
+}
+
+// continueLease carries a live same-run lease's incarnation into its renewal:
+// the original grant time and the lease-specific provider observation. A
+// replacement or expired lease must never inherit the prior owner's state.
+func continueLease(prev ClaimEntry, hadPrev bool, entry ClaimEntry, now time.Time) ClaimEntry {
+	if !hadPrev || prev.RunID != entry.RunID || prev.expired(now) || prev.ReleasedAt != nil {
+		return entry
+	}
+	entry.ClaimedAt = prev.ClaimedAt
+	entry.RenewedAt = now
+	entry.Verification = prev.Verification
+	return entry
+}
 
 // ClaimLedger is the authoritative, atomic, lease-based source of truth for
 // exactly-once backlog-item processing (SCH-020/BL-005). A provider-visible
@@ -386,6 +412,8 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 			ClaimedAt:  now,
 			ExpiresAt:  now.Add(leaseDuration),
 		}
+		prev, hadPrev := previous[claim.storageKey]
+		entry = continueLease(prev, hadPrev, entry, now)
 		l.entries[claim.storageKey] = entry
 		l.recordHistory(claim.storageKey, entry)
 		acquired = append(acquired, entry)
@@ -476,12 +504,8 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		SharedDeadline: deadline,
 		SharedOwner:    owner,
 	}
-	// A live same-owner renewal is continuous ownership, not a new provider
-	// observation. Retain its original as-of timestamp; replacement or expired
-	// leases must never inherit the prior owner's verification.
-	if hadPrev && prev.RunID == runID && !prev.expired(now) && prev.ReleasedAt == nil {
-		entry.Verification = prev.Verification
-	}
+	// A live same-owner renewal is continuous ownership, not a new grant.
+	entry = continueLease(prev, hadPrev, entry, now)
 	if err := l.storeClaim(storageKey, entry); err != nil {
 		return false, "", err
 	}
@@ -939,7 +963,7 @@ func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]Claim
 		if !active {
 			var newest time.Time
 			for _, entry := range history {
-				activity := entry.ClaimedAt
+				activity := entry.LastGrantedAt()
 				if entry.ReleasedAt != nil {
 					activity = *entry.ReleasedAt
 				}

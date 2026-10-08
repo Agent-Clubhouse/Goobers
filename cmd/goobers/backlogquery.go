@@ -1504,6 +1504,9 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 	for index := start; index < len(session.claimed); {
 		item := session.claimed[index]
 		result, err := session.confirmProviderClaim(ctx, item)
+		if session.dropLostLease(index, err) {
+			continue
+		}
 		if err != nil {
 			session.recordCurrentClaimObservation(ctx, item, result, err)
 			return fmt.Errorf("%s: %w", item.ID, err)
@@ -1527,6 +1530,9 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		} else if retired {
 			retiredHolder := result.ClaimedBy
 			result, err = session.confirmProviderClaim(ctx, item)
+			if session.dropLostLease(index, err) {
+				continue
+			}
 			if err != nil {
 				session.recordCurrentClaimObservation(ctx, item, result, err)
 				return fmt.Errorf("%s: %w", item.ID, err)
@@ -1565,6 +1571,21 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
 	}
 	return nil
+}
+
+// dropLostLease stops this run from processing the claimed item at index when
+// its ledger lease was lost mid-confirmation. The ledger entry is no longer
+// this run's to release, so only the session's bookkeeping is unwound.
+func (session *backlogClaimSession) dropLostLease(index int, err error) bool {
+	var lost *ledgerLeaseLostError
+	if !errors.As(err, &lost) {
+		return false
+	}
+	session.refusals = append(session.refusals, claimRefusal{itemID: lost.itemID, source: claimRefusalLedger})
+	session.forgetNewClaim(lost.itemID)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	pf(session.env.stderr, "warning: %v; stopped this run from processing it\n", err)
+	return true
 }
 
 func mergeProviderConfirmedClaim(current, confirmed providers.WorkItem) providers.WorkItem {

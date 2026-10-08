@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -132,5 +133,55 @@ func TestRepeatedProviderContentionIsTypedOwnershipDrift(t *testing.T) {
 	if !errors.As(drift, &coded) || coded.Code() != "provider_ledger_ownership_mismatch" ||
 		!strings.Contains(drift.Error(), "item 7") || !strings.Contains(drift.Error(), "provider-owner") {
 		t.Fatalf("typed drift is not actionable: %v", drift)
+	}
+}
+
+// leaseStealingProvider hands item 7's ledger lease to another run while this
+// run's provider claim marker is being written, then reports the marker won.
+type leaseStealingProvider struct {
+	backlogIssueProvider
+	ledger   *claimsclient.File
+	released *[]string
+}
+
+func (p leaseStealingProvider) ClaimWorkItem(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.ClaimResult, error) {
+	if req.ID == "7" {
+		key := claimsclient.Key{ExternalID: req.ID}
+		if err := p.ledger.ReleaseScoped(ctx, key, req.RunID); err != nil {
+			return providers.ClaimResult{}, err
+		}
+		if ok, _, err := p.ledger.ClaimScoped(ctx, key, "run-other", "curate", time.Hour); err != nil || !ok {
+			return providers.ClaimResult{}, errors.Join(err, errors.New("steal refused"))
+		}
+	}
+	return providers.ClaimResult{Claimed: true, Item: providers.WorkItem{ID: req.ID}}, nil
+}
+
+func (p leaseStealingProvider) ReleaseWorkItemClaim(_ context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+	*p.released = append(*p.released, req.ID+"@"+req.RunID)
+	return providers.WorkItem{ID: req.ID}, nil
+}
+
+func TestConfirmProviderClaimsRetractsMarkerWhenLeaseLostMidClaim(t *testing.T) {
+	var released []string
+	var stderr bytes.Buffer
+	session, ledger := newReadyHistorySession(t, readyHistoryProvider{}, &stderr, "7", "8")
+	session.env.issueProvider = leaseStealingProvider{ledger: ledger, released: &released}
+
+	if err := session.confirmProviderClaims(t.Context(), 0); err != nil {
+		t.Fatalf("confirmProviderClaims: %v (stderr %q)", err, stderr.String())
+	}
+	if len(session.claimed) != 1 || session.claimed[0].ID != "8" || len(session.newlyClaimed) != 1 || session.newlyClaimed[0].ID != "8" {
+		t.Fatalf("claimed = %+v newlyClaimed = %+v, want only item 8", session.claimed, session.newlyClaimed)
+	}
+	if len(released) != 1 || released[0] != "7@run-1" {
+		t.Fatalf("released markers = %v, want this run's marker on item 7 retracted", released)
+	}
+	if len(session.refusals) != 1 || session.refusals[0].itemID != "7" || session.refusals[0].source != claimRefusalLedger {
+		t.Fatalf("refusals = %+v, want item 7 refused by the ledger", session.refusals)
+	}
+	holders, err := ledger.ForRunAll(t.Context(), "run-other")
+	if err != nil || len(holders) != 1 || holders[0].ExternalID != "7" {
+		t.Fatalf("new holder's lease = %+v, %v; want it untouched", holders, err)
 	}
 }

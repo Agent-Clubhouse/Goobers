@@ -93,6 +93,7 @@ type ClaimEntry struct {
 	RunID          string            `json:"runId"`
 	Workflow       string            `json:"workflow"`
 	ClaimedAt      time.Time         `json:"claimedAt"`
+	RenewedAt      time.Time         `json:"renewedAt,omitzero"`
 	ExpiresAt      time.Time         `json:"expiresAt"`
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
