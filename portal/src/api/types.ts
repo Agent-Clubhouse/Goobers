@@ -1063,6 +1063,35 @@ export interface OperatorRunSummary {
   potentialBlockers: string[];
   /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
   diagnosticsLimitations?: string[];
+  /** Implementation reliability projection (#5313); absent on older daemons. */
+  reliability?: RunReliability;
+}
+
+/** A retry target's consumed/remaining count; null counts are unknown, never zero. */
+export interface ReliabilityBudget {
+  kind: string;
+  consumed: number | null;
+  remaining: number | null;
+  evidence: "journal" | "terminalCause" | "unknown";
+}
+
+/** Implementation reliability state; missing evidence is reported as "unknown". */
+export interface RunReliability {
+  state: string;
+  currentStage?: string;
+  currentAttempt?: number;
+  failure: { classification: string; evidenceRule: string; code?: string };
+  budgets: ReliabilityBudget[];
+  latestVerdict: string;
+  acceptance: { state: string; digest?: string };
+  retained: {
+    branch?: string;
+    branchSha?: string;
+    pullRequest?: { provider: string; kind: string; id: string; url?: string };
+    recoveryRunId?: string;
+  };
+  nextAction: string;
+  humanInterventionReason?: string;
 }
 
 export interface ChildHistoryItem {

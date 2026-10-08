@@ -257,6 +257,8 @@ type OperatorRunSummary struct {
 	// construction sites cannot leak a JSON `null` into a consumer that expects
 	// an array; absent means "nothing the reader could not see".
 	DiagnosticsLimitations []string `json:"diagnosticsLimitations,omitempty"`
+	// Reliability is the implementation reliability projection (#5313).
+	Reliability *RunReliability `json:"reliability,omitempty"`
 }
 
 // OperatorIssue identifies the claimed work item displayed in status.
@@ -1239,6 +1241,7 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 			causeStatus = "recorded"
 		}
 	}
+	summary = withTerminalCauseReliability(summary, cause)
 	var escalation *EscalationCause
 	if summary.Phase == journal.PhaseEscalated {
 		escalation = cause

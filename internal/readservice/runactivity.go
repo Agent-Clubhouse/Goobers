@@ -6,5 +6,5 @@ func withRunActivity(summary RunSummary, activity readmodel.StageActivity) RunSu
 	summary.ActiveStages = activity.Active
 	summary.ActivityTruncated = activity.Truncated
 	summary.WaitingForGate = activity.WaitingForGate
-	return summary
+	return withRunReliability(summary)
 }

@@ -114,7 +114,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 			InjectedInputs:     append([]journal.InputRef(nil), row.Operator.InjectedInputs...),
 		}
 	}
-	return RunSummary{
+	return withRunReliability(RunSummary{
 		EngineFallback:    row.Operator.EngineFallback,
 		RequiredMCP:       row.Operator.RequiredMCP,
 		RetryBackoff:      row.Operator.RetryBackoff,
@@ -149,7 +149,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		TerminalReason:   terminalReasonFromReadModel(row),
 		Operator:         operatorFromReadModel(row, observedAt),
 		Stages:           row.Stages,
-	}
+	})
 }
 
 // terminalReasonFromReadModel degrades the terminal-cause projection to what

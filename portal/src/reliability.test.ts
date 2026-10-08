@@ -1,0 +1,58 @@
+import { describe, expect, it } from "vitest";
+import type { RunReliability } from "./api/types";
+import { reliabilitySummary } from "./reliability";
+
+function reliability(overrides: Partial<RunReliability>): RunReliability {
+  return {
+    state: "active",
+    failure: { classification: "none", evidenceRule: "no-error-recorded" },
+    budgets: [
+      { kind: "implementation-review", consumed: 0, remaining: null, evidence: "journal" },
+      { kind: "ci-poll", consumed: null, remaining: null, evidence: "unknown" },
+    ],
+    latestVerdict: "unknown",
+    acceptance: { state: "unknown" },
+    retained: {},
+    nextAction: "finish implement",
+    ...overrides,
+  };
+}
+
+describe("reliabilitySummary", () => {
+  it("renders an active run with unknown budgets as ? rather than zero", () => {
+    expect(reliabilitySummary(reliability({ currentStage: "implement", currentAttempt: 1 }))).toBe(
+      "Reliability active implement attempt 1; failure none (no-error-recorded); " +
+        "budgets implementation-review 0 used/? left, ci-poll ? used/? left; " +
+        "verdict unknown; acceptance unknown; next finish implement",
+    );
+  });
+
+  it("renders a retrying run's classified failure and backoff action", () => {
+    const line = reliabilitySummary(
+      reliability({
+        state: "retrying",
+        failure: { classification: "infra", evidenceRule: "latestError.causes.class", code: "workspace_failed" },
+        nextAction: "wait for retry backoff on implement",
+      }),
+    );
+    expect(line).toContain("Reliability retrying;");
+    expect(line).toContain("failure infra (latestError.causes.class)");
+    expect(line).toContain("next wait for retry backoff on implement");
+  });
+
+  it("renders an escalated run's recorded budget and human-intervention reason", () => {
+    const line = reliabilitySummary(
+      reliability({
+        state: "escalated",
+        failure: { classification: "escalation", evidenceRule: "terminalCause.classification" },
+        budgets: [{ kind: "local-infra", consumed: 1, remaining: 2, evidence: "terminalCause" }],
+        latestVerdict: "escalate",
+        nextAction: "human intervention required",
+        humanInterventionReason: "reviewer requested a human decision",
+      }),
+    );
+    expect(line).toContain("budgets local-infra 1 used/2 left");
+    expect(line).toContain("verdict escalate");
+    expect(line.endsWith("needs human: reviewer requested a human decision")).toBe(true);
+  });
+});

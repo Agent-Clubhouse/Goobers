@@ -400,16 +400,7 @@ func newWireFixtures() wireFixtures {
 			WorkspaceBranchSHA:    "abc123",
 			HistoricalRepassCount: 2,
 		},
-		Operator: readservice.OperatorRunSummary{
-			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
-			DisplayTitle:      "Implement #673: Improve operator status",
-			CurrentStage:      "review",
-			Liveness:          "terminal",
-			Trajectory:        "terminal",
-			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
-			NextTransition:    "",
-			PotentialBlockers: []string{},
-		},
+		Operator: wireOperatorRunSummary(),
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -1040,6 +1031,39 @@ func int64Pointer(value int64) *int64 {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+// wireOperatorRunSummary is the run-summary fixture's operator projection,
+// including the #5313 reliability projection.
+func wireOperatorRunSummary() readservice.OperatorRunSummary {
+	return readservice.OperatorRunSummary{
+		Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
+		DisplayTitle:      "Implement #673: Improve operator status",
+		CurrentStage:      "review",
+		Liveness:          "terminal",
+		Trajectory:        "terminal",
+		Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+		NextTransition:    "",
+		PotentialBlockers: []string{},
+		Reliability: &readservice.RunReliability{
+			State:        string(journal.PhaseEscalated),
+			CurrentStage: "review",
+			Failure:      readservice.ReliabilityFailure{Classification: "escalation", EvidenceRule: "terminalCause.classification", Code: "review-escalated"},
+			Budgets: []readservice.ReliabilityBudget{
+				{Kind: "implementation-review", Consumed: intPointer(2), Remaining: intPointer(1), Evidence: "terminalCause"},
+				{Kind: "ci-poll", Evidence: "unknown"},
+			},
+			LatestVerdict:           "escalate",
+			Acceptance:              readservice.ReliabilityAcceptance{State: "unknown"},
+			Retained:                readservice.ReliabilityRetainedRefs{Branch: "goobers/implementation/run-122", BranchSHA: "abc123", RecoveryRunID: "run-122"},
+			NextAction:              "human intervention required",
+			HumanInterventionReason: "reviewer requested a human decision",
+		},
+	}
 }
 
 func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequest, OperatorMessageSubmitResponse) {
