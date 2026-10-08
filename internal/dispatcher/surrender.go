@@ -239,11 +239,12 @@ func (g PlaneSurrenderGate) Confirmed(ctx context.Context, attempt Attempt) (boo
 
 // RecoveryConfirmed reads the supervisor's durable custody acknowledgment;
 // mere presence of a legacy surrendered result does not establish recovery.
+// It reads the physical attempt's document, the key the pod surrendered under.
 func (g PlaneSurrenderGate) RecoveryConfirmed(ctx context.Context, attempt Attempt) (bool, error) {
 	if g.Plane == nil {
 		return false, errors.New("dispatcher: surrender gate has no plane")
 	}
-	result, err := ReadSurrenderedResult(ctx, g.Plane, attempt.RunID, attempt.Stage, attempt.Number)
+	result, err := ReadSurrenderedResult(ctx, g.Plane, attempt.RunID, attempt.Stage, attempt.IdentityAttempt())
 	if err != nil {
 		return false, err
 	}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -1002,6 +1003,14 @@ func classifyDispatchError(err error) error {
 	var label *dispatcher.LabelOverrideError
 	if errors.As(err, &selection) || errors.As(err, &skew) || errors.As(err, &restriction) || errors.As(err, &label) {
 		return classifySeamError(err)
+	}
+	// A held prior attempt pod defers the retry until its deadline (#6750).
+	var live *dispatcher.PriorAttemptLiveError
+	if errors.As(err, &live) {
+		return temporal.NewApplicationErrorWithOptions(err.Error(), FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
+			Details: []interface{}{live.RetryAt},
+			Cause:   temporal.NewApplicationError(live.Error(), failureTypePriorAttemptLive),
+		})
 	}
 	return classifySeamError(invoke.InfrastructureFailure(err))
 }
