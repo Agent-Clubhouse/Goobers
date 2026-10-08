@@ -56,6 +56,21 @@ func overlapReviewSpec(check string, params map[string]string, overlapOutcome, o
 				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
 				Branches: map[string]string{"pass": "notify", "needs-changes": "", "fail": "@abort", BranchEscalate: "apply-verdict"},
 			},
+			{
+				Name: "mixed-complete-review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{"pass": "apply-verdict", "fail": ""},
+			},
+			{
+				Name: "mixed-abort-review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{"pass": "elect-lander", "fail": "@abort"},
+			},
+			{
+				Name: "visible-review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{"pass": "apply-verdict", "fail": "@escalate"},
+			},
 		},
 	}
 }
@@ -82,6 +97,11 @@ func TestCheckSiblingOverlapSequencing(t *testing.T) {
 		// apply-verdict is a runner-forced escalation records state.
 		{name: "overlap through unknown task terminates", check: "output-equals", params: notOverlapping, outcome: "fail", target: "notify", wantWarn: true},
 		{name: "overlap through silent review terminates", check: "output-equals", params: notOverlapping, outcome: "fail", target: "silent-review", wantWarn: true},
+		// One sequencing outcome does not cover a sibling outcome that still
+		// terminates silently (#5592 merge-review finding).
+		{name: "overlap through mixed review completes silently", check: "output-equals", params: notOverlapping, outcome: "fail", target: "mixed-complete-review", wantWarn: true},
+		{name: "overlap through mixed review aborts silently", check: "output-equals", params: notOverlapping, outcome: "fail", target: "mixed-abort-review", wantWarn: true},
+		{name: "overlap review sequences or escalates", check: "output-equals", params: notOverlapping, outcome: "fail", target: "visible-review"},
 		{name: "overlap routed through elect-lander", check: "output-equals", params: notOverlapping, outcome: "fail", target: "elect-lander"},
 		{name: "overlap routed through review", check: "output-equals", params: notOverlapping, outcome: "fail", target: "review"},
 		{name: "overlap routed to apply-verdict", check: "output-equals", params: overlapping, outcome: "pass", target: "apply-verdict"},
@@ -110,14 +130,115 @@ func TestCheckSiblingOverlapSequencing(t *testing.T) {
 	}
 }
 
-// TestShippedMergeReviewWorkflowsSequenceSiblingOverlap holds every shipped
-// merge-review graph to the #5592 rule.
-func TestShippedMergeReviewWorkflowsSequenceSiblingOverlap(t *testing.T) {
-	for _, path := range []string{
-		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "merge-review.yaml"),
-		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "workflows", "merge-review.yaml"),
-		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web-claude", "workflows", "merge-review.yaml"),
+// TestCheckSiblingOverlapSequencingLoopsAndParallels pins the all-paths walk
+// through loops and parallel arms, where one sequencing route must not hide a
+// silent one.
+func TestCheckSiblingOverlapSequencingLoopsAndParallels(t *testing.T) {
+	notOverlapping := map[string]string{"key": "hasSiblingOverlap", "equals": "false"}
+	reviewGate := func(name string, branches map[string]string) apiv1.Gate {
+		return apiv1.Gate{Name: name, Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "reviewer"}, Branches: branches}
+	}
+	plainTask := func(name, next string) apiv1.Task {
+		return apiv1.Task{Name: name, Type: apiv1.TaskDeterministic, Goal: name, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: next}
+	}
+	tests := []struct {
+		name      string
+		target    string
+		tasks     []apiv1.Task
+		gates     []apiv1.Gate
+		parallels []apiv1.Parallel
+		wantWarn  bool
+	}{
+		{
+			name: "loop whose only exit is silent", target: "loop-gate", wantWarn: true,
+			tasks: []apiv1.Task{plainTask("loop-task", "loop-gate")},
+			gates: []apiv1.Gate{reviewGate("loop-gate", map[string]string{"retry": "loop-task", "done": "@abort"})},
+		},
+		{
+			name: "loop whose exit sequences", target: "loop-gate",
+			tasks: []apiv1.Task{plainTask("loop-task", "loop-gate")},
+			gates: []apiv1.Gate{reviewGate("loop-gate", map[string]string{"retry": "loop-task", "done": "apply-verdict"})},
+		},
+		{
+			// A silent loop reached first through one arm must not be
+			// remembered as sequencing when reached again through another.
+			name: "parallel arms share a silent loop", target: "par", wantWarn: true,
+			tasks: []apiv1.Task{plainTask("loop-task", "loop-gate"), plainTask("join", "")},
+			gates: []apiv1.Gate{reviewGate("loop-gate", map[string]string{"retry": "loop-task", "done": "@abort"})},
+			parallels: []apiv1.Parallel{{
+				Name: "par", FailurePolicy: apiv1.BranchContinueOnError, Join: "join",
+				Branches: []apiv1.Branch{{Name: "a", Start: "loop-gate"}, {Name: "b", Start: "loop-task"}},
+			}},
+		},
+		{
+			name: "all_or_nothing arm sequences", target: "par",
+			tasks: []apiv1.Task{plainTask("join", ""), plainTask("other", "@join"), {Name: "arm-verdict", Type: apiv1.TaskDeterministic, Goal: "v", Run: &apiv1.DeterministicRun{Command: []string{"goobers", "apply-verdict"}}, Next: "@join"}},
+			parallels: []apiv1.Parallel{{
+				Name: "par", FailurePolicy: apiv1.BranchAllOrNothing, Join: "join", OnFailure: "@abort",
+				Branches: []apiv1.Branch{{Name: "a", Start: "other"}, {Name: "b", Start: "arm-verdict"}},
+			}},
+		},
+		{
+			// An arm that aborts ends the run before a later arm sequences.
+			name: "continue_on_error arm aborts beside sequencing arm", target: "par", wantWarn: true,
+			tasks: []apiv1.Task{plainTask("join", ""), {Name: "arm-verdict", Type: apiv1.TaskDeterministic, Goal: "v", Run: &apiv1.DeterministicRun{Command: []string{"goobers", "apply-verdict"}}, Next: "@join"}},
+			gates: []apiv1.Gate{reviewGate("arm-gate", map[string]string{"pass": "@join", "fail": "@abort"})},
+			parallels: []apiv1.Parallel{{
+				Name: "par", FailurePolicy: apiv1.BranchContinueOnError, Join: "join",
+				Branches: []apiv1.Branch{{Name: "a", Start: "arm-gate"}, {Name: "b", Start: "arm-verdict"}},
+			}},
+		},
+		{
+			name: "fail_fast arm sequences but failure route is silent", target: "par", wantWarn: true,
+			tasks: []apiv1.Task{plainTask("join", ""), {Name: "arm-verdict", Type: apiv1.TaskDeterministic, Goal: "v", Run: &apiv1.DeterministicRun{Command: []string{"goobers", "apply-verdict"}}, Next: "@join"}},
+			gates: []apiv1.Gate{reviewGate("arm-gate", map[string]string{"pass": "@join", "fail": "@abort"})},
+			parallels: []apiv1.Parallel{{
+				Name: "par", FailurePolicy: apiv1.BranchFailFast, Join: "join", OnFailure: "@abort",
+				Branches: []apiv1.Branch{{Name: "a", Start: "arm-gate"}, {Name: "b", Start: "arm-verdict"}},
+			}},
+		},
+		{
+			name: "arm reaching join unsequenced with silent join", target: "par", wantWarn: true,
+			tasks: []apiv1.Task{plainTask("join", ""), plainTask("other", "@join"), plainTask("other2", "@join")},
+			parallels: []apiv1.Parallel{{
+				Name: "par", FailurePolicy: apiv1.BranchContinueOnError, Join: "join",
+				Branches: []apiv1.Branch{{Name: "a", Start: "other"}, {Name: "b", Start: "other2"}},
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := overlapReviewSpec("output-equals", notOverlapping, "fail", tt.target)
+			spec.Tasks = append(spec.Tasks, tt.tasks...)
+			spec.Gates = append(spec.Gates, tt.gates...)
+			spec.Parallels = append(spec.Parallels, tt.parallels...)
+			problems := CheckSiblingOverlapSequencing(Definition{Name: "merge-review", Version: 1, Spec: spec})
+			if got := len(problems) == 1; got != tt.wantWarn || len(problems) > 1 {
+				t.Fatalf("problems = %v, want warning = %v", problems, tt.wantWarn)
+			}
+		})
+	}
+}
+
+// TestShippedWorkflowsSequenceSiblingOverlap holds every shipped workflow
+// graph to the #5592 rule, so a hasSiblingOverlap gate added to any of them is
+// checked.
+func TestShippedWorkflowsSequenceSiblingOverlap(t *testing.T) {
+	var paths []string
+	for _, pattern := range []string{
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "*", "workflows", "*.yaml"),
+		filepath.Join("..", "..", "config-examples", "gaggles", "*", "workflows", "*.yaml"),
 	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %s: %v", pattern, err)
+		}
+		paths = append(paths, matches...)
+	}
+	if len(paths) == 0 {
+		t.Fatal("found no shipped workflows")
+	}
+	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)

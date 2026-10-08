@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"fmt"
-	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -55,10 +54,13 @@ var sequencingPolicyActions = []string{
 // before reaching them makes the selector pick and silently terminate on the
 // same PR on every tick while remediation stays idle forever.
 //
-// The analysis is structural and conservative: an unresolvable target, an
-// "@escalate" (operator-visible) or "@join" target, or any reachable
-// sequencing stage on some path suppresses the finding. Only a branch whose
-// every path ends at completion or "@abort" is reported.
+// The analysis is structural: every normally reachable path from the overlap
+// outcome must reach a sequencing stage or become operator-visible
+// ("@escalate"). A single silent path (completion or "@abort" before any
+// sequencing stage) is reported even when sibling gate outcomes do sequence,
+// because the selector can take that path on every tick. Runner-forced
+// escalation branches are not normal routes and are ignored; an unresolvable
+// target is reported elsewhere and treated as not provably silent.
 func CheckSiblingOverlapSequencing(def Definition) []string {
 	g := newOverlapGraph(def.Spec)
 	var problems []string
@@ -71,7 +73,7 @@ func CheckSiblingOverlapSequencing(def Definition) []string {
 		if !ok {
 			continue
 		}
-		if g.reachesSequencing(target, map[string]bool{}) {
+		if g.alwaysSequences(target) {
 			continue
 		}
 		problems = append(problems, fmt.Sprintf(
@@ -143,47 +145,101 @@ func newOverlapGraph(spec apiv1.WorkflowSpec) overlapGraph {
 	return g
 }
 
-// reachesSequencing reports whether some path from state reaches a
-// sequencing stage, or a target this analysis cannot prove silent.
-func (g overlapGraph) reachesSequencing(state string, visited map[string]bool) bool {
-	switch state {
+type overlapVisit struct {
+	state    string
+	inBranch bool
+}
+
+// alwaysSequences reports whether every normally reachable path from target
+// reaches a sequencing stage or an operator-visible terminal.
+//
+// It is the greatest fixpoint of the per-state rule: every state starts
+// "sequences" and is demoted once some normal successor is silent, until
+// nothing changes. A loop therefore only fails through a silent exit, and the
+// result does not depend on visit order. inBranch marks evaluation inside a
+// parallel arm, where "@join" hands control to the join instead of proving
+// anything.
+func (g overlapGraph) alwaysSequences(target string) bool {
+	safe := map[overlapVisit]bool{}
+	for _, inBranch := range []bool{false, true} {
+		for name := range g.tasks {
+			safe[overlapVisit{name, inBranch}] = true
+		}
+		for name := range g.gates {
+			safe[overlapVisit{name, inBranch}] = true
+		}
+		for name := range g.parallels {
+			safe[overlapVisit{name, inBranch}] = true
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for key, ok := range safe {
+			if ok && !g.stateSequences(key, safe) {
+				safe[key] = false
+				changed = true
+			}
+		}
+	}
+	return g.targetSequences(target, false, safe)
+}
+
+func (g overlapGraph) targetSequences(target string, inBranch bool, safe map[overlapVisit]bool) bool {
+	switch target {
 	case TerminalComplete, TargetAbort:
 		return false
-	case TargetEscalate, TargetJoin:
+	case TargetEscalate:
+		return true
+	case TargetJoin:
+		return !inBranch
+	}
+	result, known := safe[overlapVisit{target, inBranch}]
+	// A dangling reference is reported elsewhere; do not guess here.
+	return result || !known
+}
+
+func (g overlapGraph) stateSequences(key overlapVisit, safe map[overlapVisit]bool) bool {
+	next := func(target string) bool { return g.targetSequences(target, key.inBranch, safe) }
+	if task, ok := g.tasks[key.state]; ok {
+		return isSequencingTask(task) || next(task.Next)
+	}
+	if gate, ok := g.gates[key.state]; ok {
+		for outcome, target := range gate.Branches {
+			// A runner-forced escalation is not a route the overlap takes.
+			if outcome != BranchEscalate && !next(target) {
+				return false
+			}
+		}
 		return true
 	}
-	if visited[state] {
+	parallel := g.parallels[key.state]
+	// fail_fast can abandon a sequencing arm and skip the join, so its
+	// failure route must sequence on its own.
+	if parallel.FailurePolicy == apiv1.BranchFailFast && parallel.OnFailure != "" && !next(parallel.OnFailure) {
 		return false
 	}
-	visited[state] = true
-	if task, ok := g.tasks[state]; ok {
-		return isSequencingTask(task) || g.reachesSequencing(task.Next, visited)
-	}
-	if gate, ok := g.gates[state]; ok {
-		for _, outcome := range slices.Sorted(maps.Keys(gate.Branches)) {
-			// A runner-forced escalation is not a route the overlap takes.
-			if outcome == BranchEscalate {
-				continue
-			}
-			if g.reachesSequencing(gate.Branches[outcome], visited) {
-				return true
-			}
+	// An arm that can end the run silently (rather than reach "@join")
+	// aborts its unsettled siblings, so no other arm can cover it.
+	covered := false
+	for _, branch := range parallel.Branches {
+		if branch.Start == "" {
+			continue
 		}
-		return false
-	}
-	if parallel, ok := g.parallels[state]; ok {
-		targets := []string{parallel.Join, parallel.OnFailure}
-		for _, branch := range parallel.Branches {
-			targets = append(targets, branch.Start)
+		if !g.targetSequences(branch.Start, false, safe) {
+			return false
 		}
-		for _, target := range targets {
-			if target != "" && g.reachesSequencing(target, visited) {
-				return true
-			}
-		}
-		return false
+		// Otherwise every arm settles, so one that always sequences
+		// covers the run.
+		covered = covered || g.targetSequences(branch.Start, true, safe)
 	}
-	// A dangling reference is reported elsewhere; do not guess here.
+	if covered {
+		return true
+	}
+	for _, target := range []string{parallel.Join, parallel.OnFailure} {
+		if target != "" && !next(target) {
+			return false
+		}
+	}
 	return true
 }
 
