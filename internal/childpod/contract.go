@@ -18,7 +18,6 @@ import (
 const (
 	MaxBundleBytes   = 16 << 20
 	MaxContractBytes = 24 << 20
-	Command          = "__dispatch-child-exec"
 )
 
 // Carrier is the bounded tree and its complete independent object custody.
