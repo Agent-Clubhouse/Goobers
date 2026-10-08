@@ -2245,9 +2245,18 @@ attribution footer or a review-thread response marker) on a line of its
 own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
-identity, such a comment is that person's and counts as human. Comments
-landing mid-remediation after the brief snapshot can be masked by
-Goobers' response until the human comments again (accepted v1 limit).
+identity, such a comment is that person's and counts as human.
+
+Remediation responses carry a feedback-ack frontier: the newest
+timestamp in the feedback snapshot the run assessed, to the second. Such
+a response acknowledges only human comments within that second or
+earlier, so feedback that lands after the snapshot stays fresh until a
+run assesses it; comments sharing the frontier's second count as
+assessed, and edits never re-route. Azure DevOps verdict thread comments
+carry an empty frontier and acknowledge nothing. A Goobers comment
+without a frontier keeps the legacy rule (it acknowledges every earlier
+human comment); PRs whose newest human comment only such a comment
+acknowledges are listed as unboundAcknowledged in the result.
 
 Inputs: maxPullRequests (default 20), headPrefixes (default the branch
 namespace), base (default the gaggle base branch), excludeLabels (labels
