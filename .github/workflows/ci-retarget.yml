@@ -1,0 +1,56 @@
+name: CI base retarget
+
+# Re-runs CI (ci.yml) when a pull request is retargeted onto main (#6360).
+#
+# A retarget is a `pull_request: edited` event with `changes.base`. CI itself
+# does not trigger on `edited` (#7017): every CI run, even one whose jobs all
+# skip, adds a newer CI check suite to the head SHA, and a PR whose newest CI
+# suite came from a title/body edit stays BLOCKED despite a green required
+# check. Edits therefore land here instead. A title/body edit skips this
+# workflow's only job, so it creates no CI suite, cancels no CI run, and never
+# reports the required `make ci` context. A retarget dispatches ci.yml on the
+# PR head branch; that full run (the manual-dispatch profile) publishes the
+# required check on the head SHA again, so the newest CI suite is a fresh run
+# rather than the pre-retarget one. Like any manual dispatch, it validates the
+# head tree, not GitHub's merge with the new base: PR-base inputs such as the
+# cmd/goobers growth baseline and design-delivery context are unavailable.
+#
+# A fork head cannot be dispatched from this repository, so a retargeted fork
+# PR fails this (non-required) check and needs a new push to re-run CI.
+#
+# Pinned by TestCIRunsOnBaseRetargetNotMetadataEdits (test/ci).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [edited]
+
+permissions:
+  contents: read
+
+# No concurrency group: every title/body edit also starts a run here, and a
+# shared cancelling group would let an edit made right after a retarget cancel
+# the pending dispatch. Repeated retargets each dispatch CI, whose own per-ref
+# concurrency cancels the stale dispatched run.
+
+jobs:
+  dispatch-ci:
+    name: dispatch CI after a base retarget
+    if: ${{ github.event.changes.base }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch CI on the pull request head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$HEAD_REPO" != "$GH_REPO" ]; then
+            echo "::error::head branch is in fork $HEAD_REPO and cannot be dispatched; push a new commit to re-run CI against the new base"
+            exit 1
+          fi
+          gh workflow run ci.yml --ref "$HEAD_REF"

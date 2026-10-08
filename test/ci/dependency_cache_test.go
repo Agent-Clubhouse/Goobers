@@ -130,14 +130,20 @@ func (j ciJob) stepIndex(name string) int {
 
 func loadCIWorkflow(t *testing.T) ciWorkflow {
 	t.Helper()
+	return loadWorkflowFile(t, "ci.yml")
+}
+
+// loadWorkflowFile parses one file under .github/workflows.
+func loadWorkflowFile(t *testing.T, name string) ciWorkflow {
+	t.Helper()
 	root := moduleRoot(t)
-	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", name))
 	if err != nil {
-		t.Fatalf("read CI workflow: %v", err)
+		t.Fatalf("read workflow %s: %v", name, err)
 	}
 	var workflow ciWorkflow
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
-		t.Fatalf("parse CI workflow: %v", err)
+		t.Fatalf("parse workflow %s: %v", name, err)
 	}
 	return workflow
 }
