@@ -182,6 +182,22 @@ export function attentionSeverity(
   return "warning";
 }
 
+/**
+ * The run's canonical title (#5429): the stage-published display title when
+ * present, else the claimed work item as `#number<separator>title`. Undefined
+ * when the run has neither, so callers choose their own run-ID fallback.
+ */
+export function runWorkTitle(run: RunSummary, separator = " "): string | undefined {
+  const operator = run.operator;
+  if (operator?.displayTitle) {
+    return operator.displayTitle;
+  }
+  if (operator?.issue) {
+    return `#${operator.issue.number}${operator.issue.title ? `${separator}${operator.issue.title}` : ""}`;
+  }
+  return undefined;
+}
+
 function sameWorkItem(left: RunSummary, right: RunSummary): boolean {
   if (left.gaggle !== right.gaggle) {
     return false;

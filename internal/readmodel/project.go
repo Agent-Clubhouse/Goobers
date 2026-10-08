@@ -115,6 +115,7 @@ type OperatorFacts struct {
 	EngineFallback        *EngineFallback
 	IssueNumber           string
 	IssueTitle            string
+	DisplayTitle          string
 	LastHeartbeatAt       *time.Time
 	PullRequest           *journal.ExternalRef
 	ProviderClaimRecorded bool
@@ -689,6 +690,9 @@ func projectOperatorStageOutputs(operator *OperatorFacts, event journal.Event) {
 			operator.IssueNumber = id
 			operator.IssueTitle = title
 		}
+	}
+	if title, ok := StageDisplayTitle(event); ok {
+		operator.DisplayTitle = title
 	}
 	if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
 		operator.ResumedFromRunID = source
