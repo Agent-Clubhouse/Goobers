@@ -49,7 +49,9 @@ func TestIntegrationDaemonChildHandoffCapturesOnceWithoutMutatingParent(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	recordDaemonHandoffWait(t, f, request)
+	if err := f.run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": runner.ChildWaitKind, "childWait": map[string]any{"version": 1, "parentRunId": f.env.RunID, "request": request, "policyAttempts": 0, "infrastructureFailures": 0}}}); err != nil {
+		t.Fatal(err)
+	}
 	custody := runner.ChildWorkspaceCustody{Path: parent, RepoRef: f.host.project}
 	if err := f.host.Yield(t.Context(), request, custody); err != nil {
 		t.Fatal(err)
