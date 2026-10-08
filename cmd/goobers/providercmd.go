@@ -339,8 +339,15 @@ func providerBaseBranch() string {
 const providerCommandMargin = time.Second
 
 // stageTimeout reports the wall-clock budget the shell executor is enforcing
-// on this stage: its declared timeout input, or the executor default.
+// on this stage: the effective deadline it injected (#5572), else its
+// declared timeout input, else the executor default. The injected value comes
+// first because it is the clock that actually kills the stage — a task's
+// timeoutSeconds or the runner's configured default is never visible as an
+// input, so reading only inputs.timeout budgeted a 5m stage as if it had 10m.
 func stageTimeout() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(executor.StageTimeoutEnvVar)); err == nil && d > 0 {
+		return d
+	}
 	if s := providerInput(executor.InputTimeout, ""); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {
 			return d
