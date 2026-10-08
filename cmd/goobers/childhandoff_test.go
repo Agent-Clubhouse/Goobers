@@ -69,6 +69,13 @@ func newHandoffDaemonFixtureConfig(t *testing.T, configure func(*instance.Config
 	return handoffDaemonFixture{host, service, queue, run, env, child, origin.Binding(grant.ExpiresAt)}
 }
 
+func recordDaemonHandoffWait(t *testing.T, f handoffDaemonFixture, request runner.ChildHandoffRequest) {
+	t.Helper()
+	if err := f.run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": runner.ChildWaitKind, "childWait": map[string]any{"version": 1, "parentRunId": f.env.RunID, "request": request, "policyAttempts": 0, "infrastructureFailures": 0}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDaemonChildHandoffSelectsAcceptedWaitAndVerifiedCompletion(t *testing.T) {
 	f := newHandoffDaemonFixture(t)
 	request, err := f.host.Await(t.Context(), f.env)
