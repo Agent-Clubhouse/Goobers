@@ -994,18 +994,29 @@ func copilotDeclaresTool(declared []string, target string) bool {
 // --available-tools allowlist still scopes the model-visible set, so the full
 // catalog is registered only when the invocation holds a GitHub write
 // capability the github group serves; read-only invocations keep the subset.
+// The SDK-controlled session applies the same decision through
+// copilotGitHubMCPToolConfig.
 func copilotGitHubMCPRegistrationArg(capabilities []string) string {
+	if copilotGitHubNeedsFullCatalog(capabilities) {
+		return "--enable-all-github-mcp-tools"
+	}
+	return "--add-github-mcp-toolset=issues"
+}
+
+// copilotGitHubNeedsFullCatalog reports whether the invocation holds a GitHub
+// write capability served by the github tool group.
+func copilotGitHubNeedsFullCatalog(capabilities []string) bool {
 	for _, req := range capabilityToolRequirements {
 		if req.group != "github" || strings.HasSuffix(req.capability, ":read") {
 			continue
 		}
 		for _, capability := range capabilities {
 			if strings.EqualFold(strings.TrimSpace(capability), req.capability) {
-				return "--enable-all-github-mcp-tools"
+				return true
 			}
 		}
 	}
-	return "--add-github-mcp-toolset=issues"
+	return false
 }
 
 func copilotConstraintConflict(args []string) string {
