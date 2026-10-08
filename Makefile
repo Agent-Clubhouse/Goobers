@@ -22,11 +22,23 @@
 .DEFAULT_GOAL := help
 
 # ---- Build metadata (injected into internal/version via -ldflags) -----------
-VERSION ?= $(shell git describe --tags --match=v[0-9]* --always --dirty 2>/dev/null || echo dev)
-COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
+# The git probes deliberately contain no shell syntax (no `2>/dev/null`, `||`,
+# or quoting): GNU Make then runs git directly instead of through SHELL, so the
+# same lines resolve under sh and under a shell-less Windows make that would
+# otherwise route them through cmd.exe, where `/dev/null` and `%` break and the
+# fallbacks silently win (#5388). Fallbacks are applied by Make via $(or ...).
+VERSION ?= $(or $(shell git describe --tags --match=v[0-9]* --always --dirty),dev)
+COMMIT  ?= $(or $(shell git rev-parse --short HEAD),none)
+DATE    ?= $(or $(shell git log -1 --format=%cI),unknown)
+# Expand each probe once rather than on every reference.
+VERSION := $(VERSION)
+COMMIT  := $(COMMIT)
+DATE    := $(DATE)
 PKG     := github.com/goobers/goobers/internal/version
 LDFLAGS := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
+ifneq ($(filter none unknown,$(COMMIT) $(DATE)),)
+$(warning build provenance unavailable (COMMIT=$(COMMIT) DATE=$(DATE)): goobers --version will report an unidentifiable binary; pass VERSION=, COMMIT= and DATE= explicitly)
+endif
 
 # Discover command binaries from cmd/*.
 CMDS := $(notdir $(wildcard cmd/*))
