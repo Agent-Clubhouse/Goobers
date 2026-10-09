@@ -134,6 +134,41 @@ This remains internal runtime preparation. Public execution stays disabled until
 an isolated backend and its supported parent/child execution shape are qualified.
 The tool and local disposition do not implement delegated PR publication.
 
+## Contained worker authority and recovery
+
+Daemon startup connects the retained child launcher to the existing Temporal
+worker transport when a shared pod signing key, Temporal client, surrender store
+and live journal writer are available. Missing dependencies leave accepted work
+queued. The backend requires pinned Linux image runner placement; it never
+substitutes an executor on the daemon host. Public opt-in remains gated pending
+the complete supported parent/child journey below.
+
+Each physical attempt receives a separately signed generated-child identity
+bound to its run and immutable execution contract. Its dedicated HTTP owners
+permit only declared artifacts, model credentials under current policy, bounded
+observations, result surrender and read-only parent execution monitoring.
+Ordinary pod, human and provider mutation permissions are not inherited. A child
+observes the parent's real claim deadlines without acquiring or renewing claims.
+
+The driver lends its journal handle to the remote observation owner while it
+runs. A lost dispatch reply parks the exact attempt: no retry, finished stage,
+review verdict or terminal run is invented. Recovery rejoins the retained worker
+identity and requires stopped-writer evidence before importing its result or
+starting another attempt. Cancellation revokes execution and credentials while
+allowing the original unresolved worker to finish bounded teardown writes.
+Cancelling an escalated child settles its invocation without rewriting the
+existing escalation history.
+
+Migrations 10–11 add bounded child artifact bytes and per-contract read
+membership after disposition version 9. These use the child custody reservation
+and retention lifecycle; guessed digests and sibling-attempt artifacts are not
+readable. Older binaries refuse the newer schema. Back up before upgrading.
+
+Signed HTTP tests cover factory dispatch, credentials, execution monitoring,
+artifact transport, journal observations, surrender and recovery after a lost
+reply. They use an in-process worker transport; they do not certify a live
+Kubernetes/Temporal deployment or delegated PR publication.
+
 ## Remaining delivery gates
 
 Public parent→child→result execution still requires a qualified isolated backend,

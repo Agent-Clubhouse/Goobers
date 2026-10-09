@@ -31,13 +31,9 @@ func (l *childCredentialLease) finish(ctx context.Context) error {
 }
 
 func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Context, pinned pinnedStage, requestedStage ...string) (context.Context, *childCredentialLease, error) {
-	var attempt *childAttemptCustody
-	if principal, ok := httpapi.PrincipalFromContext(ctx); ok && principal.Issuer == httpapi.GeneratedChildPrincipalIssuer {
-		a, err := s.childAttempt(ctx)
-		if err != nil || len(requestedStage) != 1 || a.contract.Identity.RunID != pinned.identity.RunID || a.contract.Stage != requestedStage[0] || a.active(ctx) != nil || a.custody(ctx) != nil {
-			return nil, nil, credentialPlaneError(http.StatusForbidden, "child_attempt_unavailable", "child credentials require the active signed physical attempt and host writer custody")
-		}
-		attempt = &a
+	attempt, err := s.childCredentialAttempt(ctx, pinned.identity, requestedStage)
+	if err != nil {
+		return nil, nil, err
 	}
 	if pinned.identity.Child == nil {
 		return ctx, &childCredentialLease{release: func() {}}, nil
@@ -97,6 +93,18 @@ func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Contex
 		}
 	}
 	return childCtx, lease, nil
+}
+
+func (s *daemonCredentialService) childCredentialAttempt(ctx context.Context, id journal.RunIdentity, stage []string) (*childAttemptCustody, error) {
+	principal, ok := httpapi.PrincipalFromContext(ctx)
+	if !ok || principal.Issuer != httpapi.GeneratedChildPrincipalIssuer {
+		return nil, nil
+	}
+	a, err := s.childAttempt(ctx)
+	if err != nil || len(stage) != 1 || a.contract.Identity.RunID != id.RunID || a.contract.Stage != stage[0] || a.active(ctx) != nil || a.custody(ctx) != nil {
+		return nil, credentialPlaneError(http.StatusForbidden, "child_attempt_unavailable", "child credentials require the active signed physical attempt and host writer custody")
+	}
+	return &a, nil
 }
 
 func sameChildCeiling(a, b credentials.ChildCeiling) bool {

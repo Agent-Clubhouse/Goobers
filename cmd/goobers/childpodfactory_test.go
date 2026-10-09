@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,9 +20,11 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -98,16 +104,44 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blobs := childpod.ScopedBlobs{Queue: s.childQueue, Identity: f.child.Identity}
+	s.childCredentials = launcher.credentialCeiling
+	s.Replace(credentialPlaneDefinitionsFromSet(f.parent.applied))
+	s.log, _, err = journal.OpenInstanceLog(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.log.Close() })
+	s.buildSources = func(credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
+		resolver, err := credentials.NewResolverWithExpiring(nil, nil, map[string]credentials.ResolveFunc{
+			"agent:model": func(context.Context) (string, error) { return "test-model-credential", nil },
+		}, nil)
+		return resolver, []credentials.Grant{{Capability: "agent:model", Ref: "agent:model"}}, err
+	}
+	key, err := podauth.NewSignedKey([]byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := podauth.NewAuthenticator(key, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var server *httptest.Server
+	var workerToken string
 	journals := childFactoryJournals(t, s)
 	worker := &factoryWorkerClient{lostReply: len(lost) > 0 && lost[0]}
 	worker.execute = func(ctx context.Context, in engine.ChildDispatchInput) (engine.ChildDispatchResult, error) {
 		a := in.Attempt
+		var err error
+		workerToken, err = key.MintChildPod(a.RunID, a.ChildExecutionDigest, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		remoteBlobs := &dispatcher.BlobClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
 		if resume {
 			if !journals.IsOpen(a.RunID) {
 				t.Fatal("child driver did not lend its journal before dispatch")
 			}
-			_, err := journals.Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "child-worker-heartbeat", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
+			_, err := (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "child-worker-heartbeat", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
 			if err != nil {
 				t.Fatal("remote observation could not use the driver-owned journal", err)
 			}
@@ -115,7 +149,7 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		if a.Stage != "check" || a.PodAttempt < 2 || a.Envelope == nil || a.Envelope.Workspace != "" {
 			t.Fatal("incorrect physical child request", a)
 		}
-		raw, err := blobs.Get(ctx, a.ChildExecutionDigest)
+		raw, err := remoteBlobs.Get(ctx, a.ChildExecutionDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -134,7 +168,17 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		if contract.Identity.Child == nil || *contract.Identity.Child != start.Lineage || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
 			t.Fatal("custody changed", contract)
 		}
-		raw, err = blobs.Get(ctx, a.KitDigest)
+		owned, stop, err := remoteChildExecutionFence(ctx, server.URL, workerToken, contract)
+		if err != nil {
+			t.Fatal("startup execution observer refused worker", err)
+		}
+		defer stop()
+		credentialClient := &dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
+		resolved, err := credentialClient.ResolveStage(owned, a.RunID, a.Stage, []string{"agent:model"})
+		if err != nil || len(resolved.Credentials) != 1 || resolved.Credentials[0].Value != "test-model-credential" {
+			t.Fatal("startup credential owner refused worker", resolved, err)
+		}
+		raw, err = remoteBlobs.Get(owned, a.KitDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +194,7 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		scoped := childpod.ChildAttemptBlobs{Store: blobs, ContractDigest: a.ChildExecutionDigest}
+		scoped := remoteBlobs
 		if err = scoped.Put(ctx, ref.Digest, output); err != nil {
 			t.Fatal(err)
 		}
@@ -159,16 +203,26 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		if err = scoped.Put(ctx, digest, carrier); err != nil {
 			t.Fatal(err)
 		}
-		surrendered := dispatcher.SurrenderedResult{ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
+		surrendered := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
 		data, _ := json.Marshal(surrendered)
-		if err = plane.Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
+		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			t.Fatal(err)
 		}
 		return engine.ChildDispatchResult{Report: dispatcher.Report{Runner: "isolated", ChildCreateAttempted: true, ChildPodUID: "exact-worker-uid", WorkspaceWritersStopped: true, SurrenderConfirmed: true}}, nil
 	}
 	previousKey := s.config.API.PodTokenKeyFile
 	s.config.API.PodTokenKeyFile = "configured-host-key"
-	s.installChildPodFactories(worker, plane, journals)
+	observe := childObservationFunc(func(context.Context, httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
+		return httpapi.ClaimListResponse{ClaimVisibility: "local", ObservedAt: time.Now()}, nil
+	})
+	opts := s.installChildPodPlane(worker, plane, journals, observe, nil)
+	opts = append(opts, httpapi.WithAuthenticator(auth))
+	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server = httptest.NewServer(handler)
+	t.Cleanup(server.Close)
 	s.config.API.PodTokenKeyFile = previousKey
 	if s.childExecutors == nil {
 		t.Fatal("production factories not installed")
@@ -210,7 +264,7 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 			}
 			// The original physical attempt can still return its observations
 			// after the driver has parked. Recovery must use that attempt.
-			_, err = journals.Emit(t.Context(), livejournal.EmitRequest{RunID: f.writer.identity.RunID, Gaggle: f.writer.identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "after-park", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: "check", Attempt: 1}}}})
+			_, err = (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Emit(t.Context(), livejournal.EmitRequest{RunID: f.writer.identity.RunID, Gaggle: f.writer.identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "after-park", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: "check", Attempt: 1}}}})
 			if err != nil {
 				t.Fatal("pending worker lost final journal custody", err)
 			}

@@ -79,3 +79,15 @@ func (r *Runner) validateChildExecution(in StartInput) error {
 	}
 	return nil
 }
+
+// parkChildTaskDispatch leaves this exact attempt open for the original
+// worker's final observations. Stop the local heartbeat and release local
+// leases while retaining the workspace; no retry or terminal outcome is written.
+func parkChildTaskDispatch(tf taskFrame, heartbeat stageHeartbeat, attempt int, class journal.AttemptClass, mutations []mutationFact, cleanup func(bool) error) error {
+	heartbeatErr := finishTaskDispatch(tf.jr, heartbeat, tf.t.Name, attempt, class, mutations, nil)
+	var cleanupErr error
+	if cleanup != nil {
+		cleanupErr = cleanup(true)
+	}
+	return errors.Join(heartbeatErr, cleanupErr)
+}

@@ -57,18 +57,25 @@ func (p childExecutionPlane) List(ctx context.Context, req httpapi.ClaimListRequ
 	if err != nil {
 		return refuse()
 	}
-	if response.ClaimVisibility != "local" && response.ClaimVisibility != "shared" {
+	if !childExecutionResponseMatches(response, parent) {
 		return refuse()
-	}
-	for _, entries := range [][]httpapi.ClaimEntry{response.Entries, response.History} {
-		for _, entry := range entries {
-			if entry.RunID != parent {
-				return refuse()
-			}
-		}
 	}
 	if lease.finish(ctx) != nil {
 		return refuse()
 	}
 	return response, nil
+}
+
+func childExecutionResponseMatches(response httpapi.ClaimListResponse, parent string) bool {
+	if response.ClaimVisibility != "local" && response.ClaimVisibility != "shared" {
+		return false
+	}
+	for _, entries := range [][]httpapi.ClaimEntry{response.Entries, response.History} {
+		for _, entry := range entries {
+			if entry.RunID != parent {
+				return false
+			}
+		}
+	}
+	return true
 }

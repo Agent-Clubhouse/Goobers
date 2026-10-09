@@ -1905,6 +1905,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 }
 
 func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (apiv1.ResultEnvelope, Result, bool, error) {
+	humanRerun := ws.rerun != nil && ws.rerun.stage == t.Name
 	startAttempt := int32(1)
 	var firstClass journal.AttemptClass
 	var instructionAddendum string
@@ -1920,7 +1921,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		instructionAddendum = ws.retryInstructionAddendum
 		ws.retryInstructionAddendum = ""
 	}
-	if ws.rerun != nil && ws.rerun.stage == t.Name {
+	if humanRerun {
 		taskRerun = ws.rerun
 		startAttempt = int32(ws.rerun.attempt)
 		firstClass = journal.AttemptHuman
@@ -1955,25 +1956,19 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			replacementConsumesPolicy: ws.resume.class != journal.AttemptInfra,
 		}
 		interruptedClass := journal.AttemptInfra
-		if ws.rerun != nil && ws.rerun.stage == t.Name {
+		if humanRerun {
 			interruptedClass = ws.resume.class
 		}
-		var interruptedBudgetResult apiv1.ResultEnvelope
-		if t.Type == apiv1.TaskAgentic {
-			limits, err := workflow.TaskLimits(ws.in.Machine, t)
-			if err != nil {
-				return apiv1.ResultEnvelope{}, Result{}, true, fmt.Errorf("project stage %q limits: %w", t.Name, err)
-			}
-			if usageBudgetConfigured(limits) {
-				interruptedBudgetResult = interruptedStageBudgetFailure(limits)
-				resumedResult = &interruptedBudgetResult
-			}
+		var err error
+		resumedResult, err = interruptedTaskBudgetResult(ws.in.Machine, t)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, Result{}, true, err
 		}
 		if !ws.resume.recorded {
 			errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
 			runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
 			if resumedResult != nil {
-				errorDetail = errorDetailFrom(interruptedBudgetResult)
+				errorDetail = errorDetailFrom(*resumedResult)
 				runnerDetail = nil
 			}
 			if err := ws.jr.Append(journal.Event{
@@ -1993,7 +1988,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		}
 		if resumedResult == nil {
 			startAttempt = int32(ws.resume.attempt) + 1
-			if ws.rerun != nil && ws.rerun.stage == t.Name {
+			if humanRerun {
 				firstClass = journal.AttemptHuman
 			} else {
 				firstClass = journal.AttemptInfra
@@ -2032,6 +2027,12 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			taskRerun, infraFailedAttemptCommittedWork, resumeAccounting,
 		)
 	}
+	return r.completeTaskStep(ctx, ws, t, result, produced, err)
+}
+
+// completeTaskStep publishes outcomes only after the physical dispatch has
+// returned custody; a parked child remains running with its attempt open.
+func (r *Runner) completeTaskStep(ctx context.Context, ws *walkState, t apiv1.Task, result apiv1.ResultEnvelope, produced []apiv1.ContextPointer, err error) (apiv1.ResultEnvelope, Result, bool, error) {
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
 		ws.rerun = nil
 	}
@@ -3389,14 +3390,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err)
 		}
 	}
-	policyMaxAttempts := int32(1)
-	var backoff time.Duration
-	if t.Retry != nil {
-		if t.Retry.MaxAttempts > 0 {
-			policyMaxAttempts = t.Retry.MaxAttempts
-		}
-		backoff = time.Duration(t.Retry.BackoffSeconds) * time.Second
-	}
+	policyMaxAttempts, backoff := taskRetryPolicy(t.Retry)
 	// The infrastructure budget includes its triggering failure, so it can add
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
 	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
@@ -3496,16 +3490,8 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		}
 		result, mutations, cleanup, dispatchErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
 		if in.Child != nil && errors.Is(dispatchErr, invoke.ErrChildCustodyPending) {
-			// Keep this exact stage attempt open for its original worker's
-			// final observations. Stop only the local heartbeat and release
-			// local leases; no retry, budget outcome or terminal event yet.
-			heartbeatErr := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, nil)
-			var cleanupErr error
-			if cleanup != nil {
-				cleanupErr = cleanup(true)
-			}
 			span.Fail(dispatchErr)
-			return result, nil, errors.Join(dispatchErr, heartbeatErr, cleanupErr)
+			return result, nil, errors.Join(dispatchErr, parkChildTaskDispatch(tf, heartbeat, int(attempt), class, mutations, cleanup))
 		}
 		if t.Type == apiv1.TaskAgentic {
 			applyTaskUsageBudget(usageLimits, &usage, cumulativeUsage, &result, &dispatchErr)

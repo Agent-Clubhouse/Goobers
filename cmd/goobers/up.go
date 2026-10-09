@@ -1113,6 +1113,7 @@ func (u *upSession) configureAPI() int {
 	u.cancelPlane.engine = newDaemonEngineCancelService(u.l, u.setup.Interventions, u.engineClient, u.engineGuards, u.setup.InstanceLog)
 	claimPlane := newDaemonClaimService(u.l, u.setup.InstanceLog, u.recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
+	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(u.engineClient.Temporal(), surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
 	journalService.reads = u.reads
 	journalService.definitions = u.setup.Interventions
@@ -1128,7 +1129,6 @@ func (u *upSession) configureAPI() int {
 		httpapi.WithCredentialService(u.credentialPlane),
 		httpapi.WithChildWorkflowService(u.credentialPlane.children.HTTPService()),
 		httpapi.WithBlobService(u.credentialPlane.childBlobPlane(u.blobStore)),
-		httpapi.WithGeneratedChildBlobService(u.credentialPlane.childBlobPlane(u.blobStore)),
 		httpapi.WithRecoveryService(recoveryDeliveryService{layout: u.l, setup: u.setup}),
 		httpapi.WithSurrenderService(surrenderStore),
 		httpapi.WithStateService(statePlane),
