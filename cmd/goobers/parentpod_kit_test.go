@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 )
 
 func TestParentKitUsesRetainedSourceAndModelOnlyCredentials(t *testing.T) {
+	t.Setenv("PARENT_TEST_MODEL_TOKEN", "parent-test-secret-must-not-be-in-kit")
 	f := containedParentFixture(t)
 	run, env := configuredChildStage(t, f)
 	reader, err := journal.OpenReadOnly(run.Dir())
@@ -58,12 +60,18 @@ func TestParentKitUsesRetainedSourceAndModelOnlyCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if bytes.Contains(raw, []byte("parent-test-secret-must-not-be-in-kit")) {
+		t.Fatal("materialized model credential escaped into kit")
+	}
 	var kit agentickit.Kit
 	if err := json.Unmarshal(raw, &kit); err != nil {
 		t.Fatal(err)
 	}
 	if kit.Envelope.Workspace != "" || !reflect.DeepEqual(kit.Envelope.ChildWorkflowOrigin, env.ChildWorkflowOrigin) || kit.Envelope.ConfigGeneration != id.ConfigGeneration {
 		t.Fatal("parent kit lost retained invocation authority")
+	}
+	if len(kit.Grants) != 1 {
+		t.Fatalf("expected exactly one model grant, got %d", len(kit.Grants))
 	}
 	for _, grant := range kit.Grants {
 		if grant.Capability != "agent:model" {

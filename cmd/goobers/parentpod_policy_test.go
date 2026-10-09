@@ -30,6 +30,8 @@ func containedParentFixture(t *testing.T, change ...func(string) string) pinnedC
 		}
 		delete(doc, "runner")
 		doc["schemaVersion"] = 2
+		grants, _ := doc["credentials"].([]any)
+		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": "claude-code", "token": map[string]any{"env": "PARENT_TEST_MODEL_TOKEN"}})
 		doc["engine"] = map[string]any{"hostPort": "temporal:7233"}
 		doc["api"] = map[string]any{"podTokenKeyFile": filepath.Join(root, "pod-key")}
 		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": "ghcr.io/example/parent:1", "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "capabilities": []string{"isolated-parent"}}}}
