@@ -305,16 +305,15 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	return PreflightInfo{Version: version}, nil
 }
 
-// buildClaudeArgv assembles the claude CLI invocation with every flag ahead
-// of a "--" terminator and the prompt last. Every shipped instructions.md
-// opens with YAML frontmatter, so the prompt routinely begins with "-"; a
-// CLI parser that scans all argv positions for option-shaped tokens would
-// otherwise misparse it regardless of where in argv it sits. Putting the
-// prompt behind "--" as the final element is the only placement immune to
-// that, since everything after "--" is taken as a literal. It returns the
-// argv plus the indices of the prompt and the "--session-id" flag token,
-// both of which the completion-recovery path rewrites in place.
-func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID, prompt string) (argv []string, promptArg, sessionSelectorArg int) {
+// buildClaudeArgv assembles the claude CLI invocation. The prompt is NOT an
+// argv element (#6871): it travels on stdin, which `claude -p` reads as the
+// prompt under its default `--input-format text`. Keeping the prompt out of
+// argv bounds the command line to control metadata, so a large prompt cannot
+// exceed the Windows CreateProcess command-line limit, and a prompt opening
+// with YAML frontmatter ("---") can never be misparsed as an option (#2090).
+// It returns the argv plus the index of the "--session-id" flag token, which
+// the completion-recovery path rewrites to "--resume" in place.
+func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID string) (argv []string, sessionSelectorArg int) {
 	argv = append(argv, baseCommand...)
 	argv = append(argv, "-p")
 	argv = append(argv, extra...)
@@ -328,10 +327,7 @@ func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID, prom
 	}
 	sessionSelectorArg = len(argv)
 	argv = append(argv, "--session-id", sessionID)
-	argv = append(argv, "--")
-	promptArg = len(argv)
-	argv = append(argv, prompt)
-	return argv, promptArg, sessionSelectorArg
+	return argv, sessionSelectorArg
 }
 
 func (c *ClaudeAdapter) runner() ProcessRunner {
@@ -377,7 +373,11 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		return Outcome{}, fmt.Errorf("harness: claude-code: write prompt: %w", err)
 	}
 
-	baseCommand := resolveHarnessCommand(c.Command)
+	// The prompt is delivered on stdin, so resolve like a stdio client: npm's
+	// PowerShell shim would route stdin through its buffering, re-encoding
+	// $input enumerator, while the multiline-argv truncation that motivates
+	// it cannot arise without a prompt in argv.
+	baseCommand := resolveStdioHarnessCommand(c.Command)
 	extra := c.ExtraArgs
 	if extra == nil {
 		extra = claudeExtraArgs(req.Tools)
@@ -410,7 +410,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: create session id: %w", err)
 	}
-	argv, promptArg, sessionSelectorArg := buildClaudeArgv(baseCommand, extra, req.Model, options["effort"], sessionID, prompt)
+	argv, sessionSelectorArg := buildClaudeArgv(baseCommand, extra, req.Model, options["effort"], sessionID)
 
 	env, err := buildCredentialEnv(ctx, credentialEnvConfig{
 		adapterName:                    c.Name(),
@@ -455,7 +455,6 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}
 		argv = wrapped
-		promptArg += shift
 		sessionSelectorArg += shift
 	}
 
@@ -476,6 +475,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		Command:                      argv,
 		Dir:                          req.Workspace,
 		Env:                          env,
+		Stdin:                        []byte(prompt),
 		Timeout:                      req.Timeout,
 		MaxTranscriptBytes:           req.MaxTranscriptBytes,
 		StdoutCapture:                initialCapture,
@@ -511,12 +511,11 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 				recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 				prompts = append(prompts, recoveryPrompt)
 				recoveryArgv := append([]string(nil), argv...)
-				recoveryArgv[promptArg] = recoveryPrompt
 				recoveryArgv[sessionSelectorArg] = "--resume"
 				recoveryCapture := &claudeTerminalCapture{}
 				captures = append(captures, recoveryCapture)
 				recovery, recoveryErr := runClaudeCompletionRepair(
-					ctx, runner, req, recoveryArgv, env, remaining, recoveryCapture, agentTelemetry,
+					ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, recoveryCapture, agentTelemetry,
 				)
 				invocationResults = append(invocationResults, recovery)
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
@@ -576,6 +575,7 @@ func runClaudeCompletionRepair(
 	runner ProcessRunner,
 	req RunRequest,
 	argv, env []string,
+	prompt string,
 	timeout time.Duration,
 	capture *claudeTerminalCapture,
 	telemetry *adapterAgentEmitter,
@@ -584,6 +584,7 @@ func runClaudeCompletionRepair(
 		Command:                      argv,
 		Dir:                          req.Workspace,
 		Env:                          env,
+		Stdin:                        []byte(prompt),
 		Timeout:                      timeout,
 		MaxTranscriptBytes:           req.MaxTranscriptBytes,
 		StdoutCapture:                capture,
