@@ -80,6 +80,9 @@ func TestProductionChildFactoryUsesRetainedKitAndScopedSurrender(t *testing.T) {
 func TestProductionChildFactoryDrivesActualGeneratedRunner(t *testing.T) {
 	testProductionChildFactory(t, true)
 }
+func TestProductionChildFactoryParksActualRunnerAfterLostReply(t *testing.T) {
+	testProductionChildFactory(t, true, true)
+}
 func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 	t.Helper()
 	f := newChildKitFixture(t, true)
@@ -185,6 +188,41 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 			t.Fatal(err)
 		}
 		result, err := isolated.Resume(t.Context(), runner.ResumeInput{RunID: f.writer.identity.RunID, Machine: start.Proposal.Machine, GooberDigest: f.writer.identity.GooberDigest})
+		if worker.lostReply {
+			if !errors.Is(err, invoke.ErrChildCustodyPending) || result.Phase != journal.PhaseRunning || worker.starts != 1 {
+				t.Fatal("uncertain child retried or terminalized", result, err, worker.starts)
+			}
+			rd, err := journal.OpenReadOnly(recorder.Dir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := rd.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if event.Type == journal.EventRunFinished || event.Type == journal.EventStageFinished {
+					t.Fatal("uncertain child invented completion", event)
+				}
+			}
+			if journals.IsOpen(f.writer.identity.RunID) {
+				t.Fatal("parked driver did not release journal loan")
+			}
+			// The original physical attempt can still return its observations
+			// after the driver has parked. Recovery must use that attempt.
+			_, err = journals.Emit(t.Context(), livejournal.EmitRequest{RunID: f.writer.identity.RunID, Gaggle: f.writer.identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "after-park", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: "check", Attempt: 1}}}})
+			if err != nil {
+				t.Fatal("pending worker lost final journal custody", err)
+			}
+			journals.CloseIdle(0)
+			if err := s.reconcileChildPodCustody(t.Context(), rd); err != nil {
+				t.Fatal("original worker recovery failed", err)
+			}
+			if worker.starts != 1 || worker.gets != 1 {
+				t.Fatal("recovery launched a replacement", worker.starts, worker.gets)
+			}
+			return
+		}
 		if err != nil || result.Phase != journal.PhaseCompleted || worker.starts != 1 {
 			t.Fatal("actual generated runner failed", result, err, worker.starts)
 		}

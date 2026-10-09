@@ -10,6 +10,11 @@ import (
 // termination of every process writer registered by the actual runtime.
 var ErrWorkspaceNotQuiescent = errors.New("invoke: workspace writers have not acknowledged termination")
 
+// ErrChildCustodyPending is returned only by the host's contained dispatcher
+// when an accepted physical attempt still needs exact stop/return recovery.
+// It is neither a stage failure nor permission to start another worker.
+var ErrChildCustodyPending = errors.New("invoke: child physical execution custody requires reconciliation")
+
 type workspaceQuiescenceKey struct{}
 
 // WorkspaceQuiescence is host-owned evidence, never an envelope field or model

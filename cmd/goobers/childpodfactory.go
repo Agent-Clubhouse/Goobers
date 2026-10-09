@@ -36,6 +36,17 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 		factory := childPodFactory{service: s, start: start, runtime: runtime, client: client, surrenders: surrenders}
 		return runner.ChildExecutionFactories{
 			BorrowJournal: journals.Adopt,
+			VerifyTerminalCustody: func(jr *journal.Run) error {
+				reader, err := journal.OpenReadOnly(jr.Dir())
+				if err != nil {
+					return errors.Join(invoke.ErrChildCustodyPending, err)
+				}
+				pending, _, err := s.pendingChildPodScopes(context.Background(), reader)
+				if err != nil || len(pending) != 0 {
+					return errors.Join(invoke.ErrChildCustodyPending, err)
+				}
+				return nil
+			},
 			NewDeterministic: func(rec runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Deterministic, error) {
 				return factory.executor(rec, "")
 			},
@@ -176,6 +187,9 @@ func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelop
 	}
 	if out.ObservedUsageReported {
 		invoke.ReportAgentUsage(ctx, out.ObservedUsage)
+	}
+	if blobs.started && custodyErr != nil {
+		callErr = errors.Join(callErr, custodyErr, invoke.ErrChildCustodyPending)
 	}
 	return out, callErr
 }

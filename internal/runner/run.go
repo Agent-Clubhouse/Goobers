@@ -438,11 +438,12 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
-	childExecution      *journal.RunIdentity
-	childBorrowJournal  func(string, string, *journal.Run) (func(), error)
-	ChildHandoff        ChildHandoff
-	ChildParentCapacity ChildParentCapacity
-	SelfExecutionDenied bool
+	childExecution       *journal.RunIdentity
+	childBorrowJournal   func(string, string, *journal.Run) (func(), error)
+	childTerminalCustody func(*journal.Run) error
+	ChildHandoff         ChildHandoff
+	ChildParentCapacity  ChildParentCapacity
+	SelfExecutionDenied  bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
@@ -2034,6 +2035,9 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
 		ws.rerun = nil
 	}
+	if ws.in.Child != nil && errors.Is(err, invoke.ErrChildCustodyPending) {
+		return result, Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: ws.steps}, true, err
+	}
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, t.Name, ws.steps); stalled {
 		return result, stalledResult, true, stalledErr
 	}
@@ -2150,6 +2154,9 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 			ctx, ws.jr, ws.gateEval, ws.ex, ws.in, g, ws.lastStage, gateSubject,
 			gatePointers, ws.fanIn, instructionAddendum, ws.workspaceBranch, knownOutcome,
 		)
+	}
+	if ws.in.Child != nil && errors.Is(err, invoke.ErrChildCustodyPending) {
+		return gr, false, Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: ws.steps}, true, errors.Join(err, removeErr)
 	}
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, g.Name, ws.steps); stalled {
 		return gr, false, stalledResult, true, stalledErr
@@ -2975,6 +2982,11 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 }
 
 func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string, causes ...*journal.TerminalCause) (Result, error) {
+	if r.cfg.childExecution != nil && r.cfg.childTerminalCustody != nil {
+		if err := r.cfg.childTerminalCustody(jr); err != nil {
+			return Result{Phase: journal.PhaseRunning, FinalState: finalState, Steps: steps}, err
+		}
+	}
 	var supplied *journal.TerminalCause
 	if len(causes) > 0 {
 		supplied = causes[0]
@@ -3483,6 +3495,18 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
 		result, mutations, cleanup, dispatchErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
+		if in.Child != nil && errors.Is(dispatchErr, invoke.ErrChildCustodyPending) {
+			// Keep this exact stage attempt open for its original worker's
+			// final observations. Stop only the local heartbeat and release
+			// local leases; no retry, budget outcome or terminal event yet.
+			heartbeatErr := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, nil)
+			var cleanupErr error
+			if cleanup != nil {
+				cleanupErr = cleanup(true)
+			}
+			span.Fail(dispatchErr)
+			return result, nil, errors.Join(dispatchErr, heartbeatErr, cleanupErr)
+		}
 		if t.Type == apiv1.TaskAgentic {
 			applyTaskUsageBudget(usageLimits, &usage, cumulativeUsage, &result, &dispatchErr)
 			dispatchErr = declaredArtifactRetryError(dispatchErr, result, policyAttempts < policyMaxAttempts)
@@ -4661,7 +4685,11 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 					err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
 				}
 			}
-			removeErr = r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.Remove(ctx))
+			if in.Child != nil && errors.Is(err, invoke.ErrChildCustodyPending) {
+				removeErr = workspace.finishDispatch(ctx, true)
+			} else {
+				removeErr = r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.Remove(ctx))
+			}
 		}()
 		wt = workspace.worktree
 

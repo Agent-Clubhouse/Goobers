@@ -16,6 +16,9 @@ type ChildExecutionFactories struct {
 	// owners for the complete run, including gaps between stage attempts.
 	// Release must wait for in-flight emits before the driver closes its handle.
 	BorrowJournal func(runID, gaggle string, jr *journal.Run) (func(), error)
+	// VerifyTerminalCustody refuses terminalization while a physical attempt
+	// remains unresolved, including an ownerless watchdog recovery path.
+	VerifyTerminalCustody func(*journal.Run) error
 }
 
 // ForChildExecution constructs an independent driver for exactly one admitted
@@ -34,6 +37,7 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	cfg := r.cfg
 	cfg.childExecution = &id
 	cfg.childBorrowJournal = factories.BorrowJournal
+	cfg.childTerminalCustody = factories.VerifyTerminalCustody
 	cfg.NewDeterministic, cfg.NewAgentic = factories.NewDeterministic, factories.NewAgentic
 	cfg.Escalation, cfg.ClaimedItems = nil, nil
 	cfg.Blocked, cfg.Failed, cfg.ExistingFix = nil, nil, nil
