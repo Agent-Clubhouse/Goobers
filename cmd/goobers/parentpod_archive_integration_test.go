@@ -87,6 +87,11 @@ func verifyParentArchiveDaemonRestoration(t *testing.T, reader *journal.Reader, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	guard, err := recoveryCleanupOption(restorer.layout, restorer.config, restorer.worktrees.Root, restorer.cloneURL, journal.NewRegistryScrubber(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard(restorer.worktrees)
 	for _, mode := range []string{"survived", "removed", "partial"} {
 		if err := runner.RecordParentArchiveRetirement(writer, checkout.Branch, ref); err != nil {
 			t.Fatal(mode, err)
@@ -94,6 +99,7 @@ func verifyParentArchiveDaemonRestoration(t *testing.T, reader *journal.Reader, 
 		archive, seq := latestParentArchive(t, reader)
 		if mode == "survived" {
 			verifyUnavailableParentArchive(t, reader, restorer, writer, archive, seq, record)
+			verifyRetiredParentCleanupRefusals(t, reader, restorer, writer, archive, checkout, record)
 		}
 		wrong := archive
 		wrong.ContractDigest = journal.Digest([]byte("foreign"))
@@ -157,6 +163,37 @@ func verifyParentArchiveDaemonRestoration(t *testing.T, reader *journal.Reader, 
 		if got, err := os.ReadFile(filepath.Join(checkout.Path, "source.txt")); err != nil || string(got) != "ordinary dirty\n" {
 			t.Fatal(mode, "working state lost", string(got), err)
 		}
+	}
+}
+
+func verifyRetiredParentCleanupRefusals(t *testing.T, reader *journal.Reader, restorer parentArchiveRestorer, writer *journal.Run, archive runner.ParentWorkspaceArchive, checkout *worktree.Worktree, record recovery.Record) {
+	t.Helper()
+	c := archive.Custody.Workspace
+	target := worktree.CleanupTarget{Path: checkout.Path, WorktreeID: c.WorkspaceID, OwnerRunID: c.OwnerRunID, RepositoryDigest: c.RepositoryDigest, StartRef: c.StartRef, BaseRef: record.BaseSHA, RetainOnCleanup: true}
+	check := func() error {
+		handled, err := retiredParentCleanup(t.Context(), restorer.layout, restorer.config, restorer.worktrees, reader, record.RepositoryKey, target)
+		if !handled {
+			t.Fatal("retired checkout fell back to ordinary capture")
+		}
+		return err
+	}
+	if err := check(); err == nil {
+		t.Fatal("cleanup accepted a nonterminal owner")
+	}
+	if err := writer.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout.Path, "source.txt"), []byte("intervening edit\\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := check(); err == nil {
+		t.Fatal("cleanup discarded changes after archive capture")
+	}
+	if err := os.WriteFile(filepath.Join(checkout.Path, "source.txt"), []byte("ordinary dirty\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := check(); err != nil {
+		t.Fatal("unchanged retired checkout rejected", err)
 	}
 }
 

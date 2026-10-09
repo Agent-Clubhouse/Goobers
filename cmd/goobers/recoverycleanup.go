@@ -83,6 +83,10 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
+	retired, err := retiredParentCleanup(ctx, layout, cfg, manager, reader, key, target)
+	if err != nil {
+		return err
+	}
 	captureAt, terminal, err := recoveryCaptureWindow(ctx, reader, identity.StartedAt)
 	if err != nil {
 		return err
@@ -111,6 +115,9 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	request.BaseRef = baseRef
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
+	}
+	if retired {
+		return nil
 	}
 	if !terminal && !target.RetainOnCleanup {
 		return nil
