@@ -133,6 +133,19 @@ func (p *parallelExec) recordCurrentPointer(pointer apiv1.ContextPointer) {
 	p.recordCurrent(nil, []apiv1.ContextPointer{pointer})
 }
 
+func (p *parallelExec) removeCurrentStageArtifactPointers(stage string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current := p.currentLocked()
+	if current == nil {
+		return
+	}
+	before := len(current.pointers)
+	current.pointers = removeStageArtifactPointers(current.pointers, stage)
+	removed := before - len(current.pointers)
+	current.artifacts = max(0, current.artifacts-removed)
+}
+
 func (p *parallelExec) markCurrentFailed() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

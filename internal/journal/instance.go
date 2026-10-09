@@ -73,12 +73,19 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return nil, RecoverReport{}, fmt.Errorf("journal: stat instance log: %w", statErr)
 	}
-	events, tornBytes, err := readEvents(path)
+	// Recover the last sequence and torn-tail size from a BOUNDED tail read, not
+	// a full parse of the journal. Open runs under the journal lock that every
+	// Append needs, and callers open the log per operation, so a full read of a
+	// multi-hundred-MiB journal stalled every writer (and the claims lock held
+	// above them) for seconds while allocating several GiB. Append has always
+	// allocated from the tail; the full read remains the fallback when the tail
+	// cannot establish a sequence.
+	highest, tornBytes, _, err := sequenceFromTailOrFull(path)
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
 	report := RecoverReport{TornBytes: tornBytes}
-	report.LastSeq = highestEventSeq(events)
+	report.LastSeq = highest
 	if err := truncateTornTail(path, tornBytes); err != nil {
 		return nil, RecoverReport{}, err
 	}
@@ -138,7 +145,7 @@ func (l *InstanceLog) Append(ev Event) error {
 	// a full re-read (#1914). The read stays under the same cross-process lock,
 	// because it is the sequence allocator and not merely an optimization
 	// (§2.2, §14.11).
-	highest, tornBytes, bytesRead, err := l.allocateSeqFromTail(path)
+	highest, tornBytes, bytesRead, err := sequenceFromTailOrFull(path)
 	if err != nil {
 		return err
 	}
@@ -237,7 +244,7 @@ func (l *InstanceLog) reopenFile(path string) error {
 	return nil
 }
 
-// allocateSeqFromTail reads the journal's tail to find the highest committed
+// sequenceFromTailOrFull reads the journal's tail to find the highest committed
 // sequence, falling back to a full read when the bounded scan cannot establish
 // it. Returns the sequence, the torn-tail size, and how many bytes were read.
 //
@@ -245,7 +252,7 @@ func (l *InstanceLog) reopenFile(path string) error {
 // determine the highest sequence", and the only correct response to that is to
 // read more — never to allocate from zero, which would duplicate every sequence
 // in the journal (#530).
-func (l *InstanceLog) allocateSeqFromTail(path string) (highest uint64, tornBytes, bytesRead int, err error) {
+func sequenceFromTailOrFull(path string) (highest uint64, tornBytes, bytesRead int, err error) {
 	// bytesRead is what was ACTUALLY read, not the budget. Reporting the budget
 	// would make the §14.11 bound assert nothing: on any journal smaller than the
 	// budget it would report the whole file and look unchanged, which is exactly

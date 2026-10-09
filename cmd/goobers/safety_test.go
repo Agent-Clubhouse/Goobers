@@ -33,9 +33,32 @@ func safetyDemo(t *testing.T) (string, string) {
 		replaceInFile(t, gagglePath, "your-org", "acme")
 		replaceInFile(t, gagglePath, "your-repo", "widgets")
 	}
-	replaceInFile(t, path, `command: ["true"]`, `command: ["never-execute-safety-analysis"]`)
+	// SAF006 reports an unknown stage only when an obligation depends on it
+	// (#5842): here the custom stage is the sole possible change in a
+	// rejection cycle. Repair by removing the cycle, not by making the stage
+	// a known non-changing command (that would be SAF005).
+	workflow := strings.Replace(deterministicWorkflowYAML, `        command: ["true"]
+`, `        command: ["never-execute-safety-analysis"]
+      next: verify
+  gates:
+    - name: verify
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: ""
+        fail: `+safetyDemoCycle+`
+`, 1)
+	if err := os.WriteFile(path, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return root, path
 }
+
+const (
+	safetyDemoCycle    = "local-ci"
+	safetyDemoRepaired = `"@abort"`
+)
 
 func TestSafetyCompatibilityFilterPreservesOtherOutput(t *testing.T) {
 	for _, code := range workflowsafety.Codes() {
@@ -213,7 +236,7 @@ func TestSafetyDaemonWarningsClearAfterAcceptedReload(t *testing.T) {
 	if len(before) != 1 || before[0].Safety == nil {
 		t.Fatalf("advisory unavailable through persistent instance API: %+v", before)
 	}
-	replaceInFile(t, workflowPath, `command: ["never-execute-safety-analysis"]`, `command: ["true"]`)
+	replaceInFile(t, workflowPath, "fail: "+safetyDemoCycle, "fail: "+safetyDemoRepaired)
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
 	waitForDefinitionsReload(t, address, initial.Freshness.DefinitionsLoadedAt)
 	_, repaired, err := instance.LoadConfigDir(layout.ConfigDir())
@@ -233,7 +256,7 @@ func TestSafetyDaemonWarningsClearAfterAcceptedReload(t *testing.T) {
 	}
 
 	repairedAt := readDaemonHealth(t, address).Freshness.DefinitionsLoadedAt
-	replaceInFile(t, workflowPath, `command: ["true"]`, `command: ["never-execute-safety-analysis"]`)
+	replaceInFile(t, workflowPath, "fail: "+safetyDemoRepaired, "fail: "+safetyDemoCycle)
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
 	waitForDefinitionsReload(t, address, repairedAt)
 	if got := readSafetyWarnings(t, address); !reflect.DeepEqual(got, before) {

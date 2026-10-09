@@ -185,7 +185,7 @@ var inputSchemas = map[string][]Input{
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"pr-select": schema(
-		stringsIn("assignee", "author", "authorScope", "base", "headPrefix", "requestedReviewer", "requireOptInLabel", "selfIdentity"),
+		stringsIn("assignee", "author", "authorScope", "base", "headPrefix", "requestedReviewer", "requireOptInLabel", "selfIdentity", "titlePredicate"),
 		booleansIn("allowPendingChecks", "respectAssignee"), stringListsIn("excludeLabels", "headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),

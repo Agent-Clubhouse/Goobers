@@ -258,6 +258,9 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	if !apiv1.ValidRunID(id.RunID) {
 		return nil, fmt.Errorf("journal: invalid run id %q", id.RunID)
 	}
+	if err := id.ValidateChildLineage(); err != nil {
+		return nil, err
+	}
 	cfg := newConfig(opts...)
 	finalDir := filepath.Join(runsDir, id.RunID)
 	runsDir = filepath.Dir(finalDir)
@@ -587,6 +590,12 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are
 // assigned by the journal — any values set by the caller are overwritten.
 func (r *Run) Append(ev Event) error {
+	return r.appendPrepared(ev, nil)
+}
+
+// appendPrepared binds sequence-dependent runner metadata while holding the
+// same lock that stamps and commits the event. Ordinary Append is unchanged.
+func (r *Run) appendPrepared(ev Event, prepare func(*Event, uint64) error) error {
 	r.mu.Lock()
 	var observedSeq uint64
 	defer func() {
@@ -597,6 +606,14 @@ func (r *Run) Append(ev Event) error {
 	}()
 	if r.closed {
 		return ErrClosed
+	}
+	if prepare != nil {
+		if ev.Branch == 0 {
+			ev.Branch = r.branch
+		}
+		if err := prepare(&ev, r.seq+1); err != nil {
+			return err
+		}
 	}
 
 	if err := r.append(ev); err != nil {

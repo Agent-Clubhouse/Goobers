@@ -84,7 +84,7 @@ const (
 	LargeRepoDefaultStageTimeout = "4h"
 	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
 	LargeRepoStalledRunTimeout = "6h"
-	// LargeRepoMaxRunDuration is the preset's total run-age limit.
+	// LargeRepoMaxRunDuration is the preset's active execution-time limit.
 	LargeRepoMaxRunDuration = "24h"
 )
 
@@ -416,13 +416,20 @@ type RunnerConfig struct {
 	// which one is in force at startup rather than letting a green config
 	// imply a protection that is not there.
 	StageMemoryLimit string `json:"stageMemoryLimit,omitempty" yaml:"stageMemoryLimit,omitempty"`
-	// PodTmpfsSize sizes the memory-backed /tmp tmpfs of a Linux stage pod
-	// whose runner class carries tmp:ephemeral, as a Kubernetes quantity
-	// ("1Gi"). Empty keeps the dispatcher default (512Mi). The size is added to
-	// the container's memory limit (dispatcher design section 5), so raise it
-	// only as far as the stages' real temp needs. Go build caches no longer
-	// live there; see dispatcher.LinuxGoBuildCachePath.
+	// PodTmpfsSize sizes the tmp:ephemeral /tmp volume of a stage pod, as a
+	// Kubernetes quantity ("1Gi"). Empty keeps the dispatcher default: 512Mi
+	// when the volume is memory-backed, 4Gi when PodTmpMedium is "disk". A
+	// memory-backed size is added to the container's memory limit (dispatcher
+	// design section 5), so raise it only as far as the stages' real temp
+	// needs. Go build caches no longer live there; see
+	// dispatcher.LinuxGoBuildCachePath.
 	PodTmpfsSize string `json:"podTmpfsSize,omitempty" yaml:"podTmpfsSize,omitempty"`
+	// PodTmpMedium selects what backs a Linux stage pod's tmp:ephemeral /tmp
+	// volume: "memory" (the default, a tmpfs budgeted into the memory limit)
+	// or "disk" (a node-disk emptyDir that counts against the runner's disk
+	// ceiling). Windows stage pods are always disk-backed. Choose "disk" when
+	// stages run real builds: Go's $WORK and t.TempDir() land under TMPDIR.
+	PodTmpMedium PodTmpMedium `json:"podTmpMedium,omitempty" yaml:"podTmpMedium,omitempty"`
 	// PodEgressProxy is the forward proxy the dispatcher stamps (HTTPS_PROXY,
 	// HTTP_PROXY, NO_PROXY and their lowercase spellings) into stage pods whose
 	// runner class carries network:allowlist, for deterministic and agentic
@@ -1600,7 +1607,8 @@ type RunConditions struct {
 	// StalledRunTimeout is the maximum period a running journal may remain
 	// silent before the daemon escalates it. Empty defaults to 45 minutes.
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
-	// MaxRunDuration is the maximum total wall-clock age of a run. Empty
+	// MaxRunDuration is the maximum active execution time of a run: its age
+	// less time the host spent suspended and durable child waits. Empty
 	// disables the limit.
 	MaxRunDuration string `json:"maxRunDuration,omitempty" yaml:"maxRunDuration,omitempty"`
 	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
@@ -2093,7 +2101,7 @@ func (c RunConditions) StalledRunTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
-// MaxRunDurationDuration resolves the optional total run-age limit.
+// MaxRunDurationDuration resolves the optional active execution-time limit.
 func (c RunConditions) MaxRunDurationDuration() (time.Duration, error) {
 	if c.MaxRunDuration == "" {
 		return 0, nil

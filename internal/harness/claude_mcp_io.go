@@ -11,19 +11,11 @@ import (
 // tool names to req.Tools so Claude admits and preapproves them.
 // Sets GoobersIORegistered so the shared prompt renderer only mentions
 // goobers-io tools once this adapter has actually registered them (#2774).
-func goobersIOClaudeToolNames() []string {
-	out := make([]string, len(goobersIOTools))
-	for i, name := range goobersIOTools {
-		out[i] = "mcp__" + goobersIOServerName + "__" + name
-	}
-	return out
-}
-
 func withAutoGoobersIOClaude(req RunRequest, selfBin string) RunRequest {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return req
 	}
-	req.Tools = appendMissing(req.Tools, goobersIOClaudeToolNames()...)
+	req.Tools = appendMissing(req.Tools, prefixedGoobersIOTools(req, "mcp__"+goobersIOServerName+"__")...)
 	req.GoobersIORegistered = true
 	return req
 }

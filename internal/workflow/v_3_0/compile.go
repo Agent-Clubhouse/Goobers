@@ -601,17 +601,8 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 				problems = append(problems, unknownSubcommand(t.Name, subcommand))
 			}
 			for _, use := range builtinManifest.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
-				// Most requirements accept an explicitly subsuming capability,
-				// but separately brokered credentials must be declared exactly.
-				satisfied := anyCapabilitySatisfies(t.Capabilities, use.Capability)
-				if use.RequiresExactCapability() {
-					satisfied = hasExactCapability(t.Capabilities, use.Capability)
-				}
-				if !satisfied {
-					var credential string
-					if use.RequiresExactCapability() {
-						credential = fmt.Sprintf(" (requires %s)", capability.CredentialEnvVar(string(use.Capability)))
-					}
+				if !builtinCapabilityUseSatisfied(t.Capabilities, use) {
+					credential := builtinCapabilityUseHint(use)
 					problems = append(problems, fmt.Sprintf(
 						"task %q invokes built-in subcommand %q but does not declare capability %q%s; %s",
 						t.Name, subcommand, use.Capability, credential, use.Consequence,
@@ -910,4 +901,32 @@ func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
 		}
 	}
 	return problems
+}
+
+// builtinCapabilityUseSatisfied reports whether declared satisfies use. Most
+// requirements accept an explicitly subsuming capability, but separately
+// brokered credentials must be declared exactly. An explicitly accepted
+// alternative (CapabilityUse.alternatives) satisfies the use the same way.
+func builtinCapabilityUseSatisfied(declared []string, use providerstage.CapabilityUse) bool {
+	for _, accepted := range use.AcceptedCapabilities() {
+		if use.RequiresExactCapability() {
+			if hasExactCapability(declared, accepted) {
+				return true
+			}
+		} else if anyCapabilitySatisfies(declared, accepted) {
+			return true
+		}
+	}
+	return false
+}
+
+func builtinCapabilityUseHint(use providerstage.CapabilityUse) string {
+	var hint string
+	if use.RequiresExactCapability() {
+		hint = fmt.Sprintf(" (requires %s)", capability.CredentialEnvVar(string(use.Capability)))
+	}
+	for _, alternative := range use.AcceptedCapabilities()[1:] {
+		hint += fmt.Sprintf(" (or %q)", alternative)
+	}
+	return hint
 }

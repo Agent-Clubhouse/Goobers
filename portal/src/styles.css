@@ -3250,6 +3250,33 @@ summary:focus-visible {
   color: var(--ink);
 }
 
+.configuration-warning-dismissed {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.configuration-warning-dismissed > header {
+  align-items: center;
+  background: var(--panel);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.configuration-warning-dismissed > .configuration-warning-list {
+  border-top: 1px solid var(--line);
+}
+
+.configuration-warning-dismissed-scope {
+  color: var(--muted);
+  font-size: var(--font-label);
+  overflow-wrap: anywhere;
+}
+
 .filter-bar {
   align-items: end;
   border-bottom: 1px solid var(--line);
@@ -6409,6 +6436,13 @@ code,
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.run-secondary-id {
+  color: var(--muted-strong);
+  font-size: var(--font-ui);
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
 }
 
 .run-stale-state {
@@ -12742,3 +12776,7 @@ select {
     min-width: 44px;
   }
 }
+
+.child-activity { overflow-wrap: anywhere; }
+.child-activity ul { padding-inline-start: 1.25rem; }
+.child-activity li + li { margin-top: 8px; }

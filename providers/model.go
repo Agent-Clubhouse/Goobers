@@ -38,6 +38,7 @@ const (
 	LabelNeedsHuman       = lifecycle.LabelNeedsHuman
 	LabelNeedsRemediation = lifecycle.LabelNeedsRemediation
 	LabelBlockedOnSibling = lifecycle.LabelBlockedOnSibling
+	LabelMergeEscalated   = lifecycle.LabelMergeEscalated
 	LabelNominated        = "goobers:nominated"
 	LabelAutoClose        = "goobers:auto-close"
 	LabelStale            = "stale"
@@ -1188,6 +1189,17 @@ type ListPullRequestsRequest struct {
 	// caller — it only needs to know whether an open PR exists, not its
 	// check state, so it sets this too rather than duplicating the knob.
 	SkipCheckState bool `json:"skipCheckState,omitempty"`
+	// TitlePredicate restricts to PRs whose title matches a restricted CEL
+	// expression over fields["title"] (see fieldpredicate.CompileTitlePredicate),
+	// applied client-side alongside HeadPrefix and the identity filters. A nil
+	// or zero predicate leaves the list unfiltered.
+	TitlePredicate *fieldpredicate.Predicate `json:"-"`
+}
+
+// MatchesTitle applies the request's opt-in title predicate to one pull
+// request title.
+func (r ListPullRequestsRequest) MatchesTitle(title string) (bool, error) {
+	return r.TitlePredicate.Matches(fieldpredicate.Fields{fieldpredicate.TitleField: title})
 }
 
 // MatchesIdentityFields applies the request's opt-in identity filters to one
@@ -1198,6 +1210,19 @@ func (r ListPullRequestsRequest) MatchesIdentityFields(author string, assignees,
 		(r.RequestedReviewer == "" || slices.Contains(requestedReviewers, r.RequestedReviewer))
 }
 
+// MatchesSummary applies the request's opt-in identity and title filters to
+// one pull request summary.
+func (r ListPullRequestsRequest) MatchesSummary(pr PullRequestSummary) (bool, error) {
+	if !r.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+		return false, nil
+	}
+	matched, err := r.MatchesTitle(pr.Title)
+	if err != nil {
+		return false, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.Number, err)
+	}
+	return matched, nil
+}
+
 // PullRequestSummary is one PR as merge-review's selection stage sees it —
 // enough to filter eligibility (draft, labels, CI) without a second round-trip
 // per candidate. ListPullRequests returns open PRs; bounded terminal-PR queries
@@ -1206,6 +1231,7 @@ type PullRequestSummary struct {
 	ID                 string   `json:"id"`
 	Number             int      `json:"number"`
 	URL                string   `json:"url"`
+	Title              string   `json:"title,omitempty"`
 	Author             string   `json:"author,omitempty"`
 	Assignees          []string `json:"assignees,omitempty"`
 	RequestedReviewers []string `json:"requestedReviewers,omitempty"`

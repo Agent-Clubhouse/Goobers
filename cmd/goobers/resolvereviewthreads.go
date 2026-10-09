@@ -77,8 +77,10 @@ type reviewThreadPublication struct {
 	earlier []apiv1.ReviewThreadPublication
 	pass    string
 	reused  map[string]string
-	stdout  io.Writer
-	stderr  io.Writer
+	// ack is the feedback-ack marker every reply carries (#6918).
+	ack    string
+	stdout io.Writer
+	stderr io.Writer
 }
 
 func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
@@ -127,7 +129,7 @@ func newReviewThreadPublication(root string, stdout, stderr io.Writer) (*reviewT
 	p := &reviewThreadPublication{
 		root: root, runID: runID, pullID: brief.SelectedNumber, publishedHead: publishedHead,
 		snapshot: brief.FeedbackSnapshot, threads: threads, responses: responses, stdout: stdout, stderr: stderr,
-		prePublishHead: strings.TrimSpace(brief.GatherPRContext.HeadSHA),
+		prePublishHead: strings.TrimSpace(brief.GatherPRContext.HeadSHA), ack: remediationFeedbackAck(brief),
 	}
 	if brief.FeedbackSnapshot != nil {
 		p.prePublishHead = brief.FeedbackSnapshot.HeadSHA
@@ -277,7 +279,7 @@ func (p *reviewThreadPublication) endStaleHead(live string) int {
 	}
 	reason := fmt.Sprintf("stale head: PR #%s moved from this run's published head %s to %s", p.pullID, p.publishedHead, live)
 	pf(p.stdout, "no work: %s; no further review-thread replies published, claim released\n", reason)
-	p.receipt.Status = apiv1.ReviewThreadPublicationStale
+	p.receipt.ResolutionStatus = apiv1.ReviewThreadPublicationStale
 	p.receipt.StaleInput = staleReasonHead
 	p.receipt.NoWork = true
 	p.receipt.NoWorkReason = reason
@@ -298,7 +300,7 @@ func (p *reviewThreadPublication) endStaleHead(live string) int {
 func (p *reviewThreadPublication) reportStale(reasons []feedbackStaleReason, unresolved int) int {
 	pf(p.stdout, "PR #%s: feedback changed since it was gathered (%s); no further review-thread replies published\n",
 		p.pullID, describeStaleReasons(reasons))
-	p.receipt.Status = apiv1.ReviewThreadPublicationStale
+	p.receipt.ResolutionStatus = apiv1.ReviewThreadPublicationStale
 	p.receipt.UnresolvedThreadCount = strconv.Itoa(unresolved)
 	p.receipt.StaleInput = staleInputCode(reasons)
 	p.receipt.StaleReasons = reasons
@@ -367,7 +369,7 @@ func (p *reviewThreadPublication) listThreads(ctx context.Context, what string) 
 
 func (p *reviewThreadPublication) reply(ctx context.Context, response reviewThreadDisposition, entry *apiv1.ReviewThreadReceipt) (providers.PullRequestReviewThreads, int, bool) {
 	thread := p.threads[response.ThreadID]
-	body := renderReviewThreadReply(p.runID, p.pass, p.publishedHead, response)
+	body := withFeedbackAck(renderReviewThreadReply(p.runID, p.pass, p.publishedHead, response), p.ack)
 	if _, err := p.mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
 		Repository: p.repo, PullID: p.pullID, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
 	}); err != nil {
@@ -434,7 +436,7 @@ func (p *reviewThreadPublication) finish(ctx context.Context) int {
 	if code, stop := p.checkHead(verifiedHead.HeadSHA, "while review threads were reconciled"); stop {
 		return code
 	}
-	p.receipt.Status = apiv1.ReviewThreadPublicationComplete
+	p.receipt.ResolutionStatus = apiv1.ReviewThreadPublicationComplete
 	if err := p.persistReceipt(); err != nil {
 		pf(p.stderr, "error: %v\n", err)
 		return 2

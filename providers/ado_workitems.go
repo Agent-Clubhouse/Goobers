@@ -93,6 +93,15 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	if err != nil {
 		return nil, err
 	}
+	if req.UpdatedSince != nil {
+		// WIQL compares date literals at day granularity unless the query
+		// opts into time precision, which would drop UpdatedSince's
+		// time-of-day (#6877).
+		endpoint, err = addQuery(endpoint, url.Values{"timePrecision": []string{"true"}})
+		if err != nil {
+			return nil, err
+		}
+	}
 	boundedScan := req.Cursor != "" || req.PageInfo != nil
 	// candidateLimit is what WIQL's $top actually requests — req.Limit,
 	// unless a post-WIQL filter could reject a candidate (#2067), in which
@@ -1158,6 +1167,11 @@ func adoWorkItemFields(item adoWorkItem) fieldpredicate.Fields {
 			float32, float64:
 			fields[name] = value
 		}
+	}
+	// "title" is the provider-neutral title key GitHub and Gitea also project;
+	// ADO reference names are always dotted, so it cannot shadow a native field.
+	if title, ok := item.Fields["System.Title"].(string); ok {
+		fields[fieldpredicate.TitleField] = title
 	}
 	return fields
 }

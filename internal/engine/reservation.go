@@ -158,3 +158,49 @@ func AbandonReservation(in RunInput, startedAt, finishedAt time.Time, cause stri
 	req.Ops = ops
 	return req, nil
 }
+
+// TerminatedRunErrorCode is the run_failed cause code recorded when the daemon
+// terminated an engine run's workflow because the engine never honoured the
+// stall sweep's cancellation (#5407).
+const TerminatedRunErrorCode = "engine_workflow_terminated"
+
+// Emit keys of the daemon-authored closure. They are fixed per run, so a
+// retried closure deduplicates instead of appending a second terminal.
+const (
+	terminatedRunCauseKey    = "daemon/engine-terminated/cause"
+	terminatedRunFinishedKey = "daemon/engine-terminated/run.finished"
+)
+
+// TerminatedRunClosure builds the batch that CLOSES the journal of an
+// engine run whose workflow the daemon terminated.
+//
+// Cancellation is the engine's own stop: its cancel arm journals run_failed and
+// run.finished(aborted). That arm is workflow code, so it only runs when a
+// worker picks the cancellation up. A worker that cannot poll (the versioned
+// routing outage in #5407) never does, and a terminated workflow runs no code
+// at all — nothing on the engine side will ever write this run's terminal. The
+// daemon writes it instead, in the cancel arm's shape, only after Temporal has
+// confirmed the workflow is closed.
+//
+// The batch carries no Open header: it is only ever applied to a journal that
+// already exists (the reservation, or anything the workflow wrote after it).
+func TerminatedRunClosure(runID, gaggle string, at time.Time, cause string) livejournal.EmitRequest {
+	return livejournal.EmitRequest{
+		RunID:  runID,
+		Gaggle: gaggle,
+		Ops: []livejournal.Op{
+			{Kind: livejournal.OpAppend, Key: terminatedRunCauseKey, Time: at, Event: &journal.Event{
+				Type:  journal.EventError,
+				Error: &journal.ErrorDetail{Code: "run_failed", Message: cause},
+			}},
+			{Kind: livejournal.OpAppend, Key: terminatedRunFinishedKey, Time: at, Event: &journal.Event{
+				Type: journal.EventRunFinished, Status: string(journal.PhaseAborted), Disposition: journal.RunDispositionProduced,
+				TerminalCause: &journal.TerminalCause{
+					Schema: journal.TerminalCauseSchema, Phase: journal.PhaseAborted,
+					Classification: journal.TerminalInfrastructureFailure, SelectorKind: "condition",
+					Code: TerminatedRunErrorCode, Message: cause, CausalEmitKey: terminatedRunCauseKey,
+				},
+			}},
+		},
+	}
+}

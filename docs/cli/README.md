@@ -27,8 +27,9 @@
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
-| [`goobers workflow`](#goobers-workflow) | inspect workflows |
+| [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+| [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
 
 ## Advanced operator commands
 
@@ -1217,7 +1218,8 @@ running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
 --wait-for-daemon optionally waits up to 30s for a concurrently starting
 daemon's read API; recovery may still be running when the portal opens.
-Use --wait-for-daemon=<duration> to choose another bound.
+Use --wait-for-daemon=<duration> to choose another bound. A daemon that
+reports its startup budget or progress extends that bound (up to 1h).
 --listen overrides the full bind address (host:port) and takes the place
 of --port when given; binding a non-loopback host requires api.auth to be
 configured in instance.yaml (SEC-043) — there is no insecure override.
@@ -3332,9 +3334,18 @@ attribution footer or a review-thread response marker) on a line of its
 own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
-identity, such a comment is that person's and counts as human. Comments
-landing mid-remediation after the brief snapshot can be masked by
-Goobers' response until the human comments again (accepted v1 limit).
+identity, such a comment is that person's and counts as human.
+
+Remediation responses carry a feedback-ack frontier: the newest
+timestamp in the feedback snapshot the run assessed, to the second. Such
+a response acknowledges only human comments within that second or
+earlier, so feedback that lands after the snapshot stays fresh until a
+run assesses it; comments sharing the frontier's second count as
+assessed, and edits never re-route. Azure DevOps verdict thread comments
+carry an empty frontier and acknowledge nothing. A Goobers comment
+without a frontier keeps the legacy rule (it acknowledges every earlier
+human comment); PRs whose newest human comment only such a comment
+acknowledges are listed as unboundAcknowledged in the result.
 
 Inputs: maxPullRequests (default 20), headPrefixes (default the branch
 namespace), base (default the gaggle base branch), excludeLabels (labels
@@ -5072,9 +5083,10 @@ verified when the workflow is absent from the live reconciled config.
 In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +
 GOOBERS_GAGGLE) the query is answered by the daemon's bounded
 defect-aggregate plane instead of a local rollup file. That plane serves
-only --aggregate stage-failure-rate, error-signature, gate-noise and
-credit-assignment with --format candidate-findings, error signatures are
-normalized by the daemon before they cross, and the read is contained to
+only --aggregate stage-failure-rate, error-signature, gate-noise,
+credit-assignment and ci-check-failure with --format candidate-findings,
+error signatures are normalized by the daemon before they cross, and the
+read is contained to
 the stage's own gaggle. Anything outside that — another --format, another
 aggregate, --learning-action, a path argument, or a threshold governing an
 unserved family — is refused rather than answered narrowly. Off the plane,
@@ -5513,12 +5525,12 @@ $ goobers worker --task-queue goobers-engine --drain-timeout 60s
 
 ## `goobers workflow`
 
-inspect workflows
+inspect workflows and validate child proposals
 
 ~~~text
-Usage: goobers workflow show [flags] <name> [path]
+Usage: goobers workflow <show | validate-child> [flags]
 
-Show the named workflow as a text DAG or Graphviz DOT (default path ".").
+Show a workflow DAG or validate a generated child proposal against its configured parent.
 
 Workflow
 
@@ -5542,6 +5554,32 @@ kinds, and transition targets as a text DAG or Graphviz DOT
 ~~~console
 $ goobers workflow show default-implement
 $ goobers workflow show default-implement --dot
+~~~
+
+## `goobers workflow validate-child`
+
+validate a child proposal against its configured parent
+
+~~~text
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+
+Validate one generated child Workflow against an opted-in parent stage in
+the instance's current active config/ tree (default path "."). The parent
+supplies policy; child grants are also bounded by the parent's stage capabilities.
+The proposal must pin DSL 3.1 and declare only a plain manual trigger.
+
+This is advisory current-config validation, not durable run admission. It
+does not start or queue work, resolve credentials, invoke a model, or refresh
+workflowSource. --backend selects the validation target (default runner).
+Config digests identify declarative validation inputs, not an execution archive.
+--json emits child-workflow-validation/v1 diagnostics and digests.
+Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml
 ~~~
 
 ## `goobers workspace`

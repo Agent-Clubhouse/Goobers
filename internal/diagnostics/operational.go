@@ -56,6 +56,7 @@ func collectOperationalEvidence(root string) *OperationalEvidence {
 	}
 	result.Coverage = "retained-window"
 	latest := make(map[string]OperationalObservation)
+	unsupportedSchema := false
 	for _, event := range events {
 		if !event.KnownSchema() || event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != "goobers.fleet.heartbeat" {
 			continue
@@ -66,7 +67,10 @@ func collectOperationalEvidence(root string) *OperationalEvidence {
 		}
 		schema, ok := attrs["schemaVersion"].(float64)
 		if !ok || schema != 1 {
-			result.Gaps = append(result.Gaps, "An unsupported diagnostic schema was omitted.")
+			if !unsupportedSchema {
+				unsupportedSchema = true
+				result.Gaps = append(result.Gaps, "An unsupported diagnostic schema was omitted.")
+			}
 			continue
 		}
 		observation := projectOperationalObservation(attrs)

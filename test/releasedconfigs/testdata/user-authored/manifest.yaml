@@ -1,0 +1,9 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: user-authored
+spec:
+  instance:
+    name: user-authored
+    environment: dev
+  gaggles: [acme]

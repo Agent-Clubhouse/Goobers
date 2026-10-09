@@ -1041,6 +1041,8 @@ export interface LineageRun {
 
 export interface OperatorRunSummary {
   issue?: { number: string; title?: string; labels?: string[] };
+  /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
+  displayTitle?: string;
   currentStage?: string;
   lastHeartbeatAt?: string;
   heartbeatAgeMillis?: number;
@@ -1062,7 +1064,16 @@ export interface OperatorRunSummary {
   diagnosticsLimitations?: string[];
 }
 
+export interface ChildActivity {
+  status: "recorded" | "unavailable";
+  parent?: { runId: string; workflow: string; stageOccurrence: string };
+  waits: Array<{ runId: string; stage: string; branch: number; action: "wait" | "merge" | "replace" | "discard"; since: string; sequence: number }>;
+  parked: boolean;
+}
+
 export interface RunDetail extends RunSummary {
+  /** Durable journal projection; absent on older daemons or without child activity. */
+  childActivity?: ChildActivity;
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
   agentProgress?: AgentProgressSummary[];
@@ -1483,6 +1494,8 @@ export interface TelemetryCostRunAggregate {
   runId: string;
   gaggle?: string;
   workflow?: string;
+  triggerKind?: string;
+  triggerRef?: string;
   status?: string;
   startedAt: string;
   usageAttempts: number;
@@ -2024,4 +2037,72 @@ export interface ReadState {
 /** Every read response carries one, when served from the read model. */
 export interface WithReadState {
   readState?: ReadState;
+}
+
+/** Stage-grant-only child operations. Human session credentials do not authorize these. */
+export interface ChildWorkflowSourceRequest {
+  source: string;
+}
+
+export interface ChildWorkflowStatusRequest {
+  invocationKey: string;
+}
+
+export interface ChildWorkflowResolveRequest {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  expectedRequestDigest?: string;
+}
+
+export interface ChildWorkflowResolutionResponse {
+  invocationKey: string;
+  action: "merge" | "replace" | "discard";
+  resultRef: string;
+  requestedAt: string;
+  requestDigest: string;
+  planPublished: boolean;
+  applied: boolean;
+  appliedAt?: string;
+}
+
+export interface ChildWorkflowDiagnostic {
+  code: string;
+  stage?: string;
+  field?: string;
+  message: string;
+}
+
+export interface ChildWorkflowValidationResponse {
+  valid: boolean;
+  advisory: boolean;
+  sourceDigest?: string;
+  canonicalDigest?: string;
+  configDigest?: string;
+  policyDigest?: string;
+  workflowDigest?: string;
+  diagnostics: readonly ChildWorkflowDiagnostic[];
+}
+
+/** Acceptance reports custody, not that execution has begun. */
+export interface ChildWorkflowResponse {
+  acknowledged: boolean;
+  childId: string;
+  acceptanceId: string;
+  runId: string;
+  invocationKey: string;
+  sequence: number;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  duplicate?: boolean;
+  sourceDigest: string;
+  canonicalDigest: string;
+  configDigest: string;
+  policyDigest: string;
+  workflowDigest: string;
+  cancellationRequested: boolean;
+  resultRef?: string;
+  workspaceRef?: string;
+  disposition?: ChildWorkflowResolutionResponse;
+  acceptedAt: string;
+  updatedAt: string;
 }

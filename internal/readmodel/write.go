@@ -13,8 +13,9 @@ import (
 )
 
 // Advance when changed projection semantics require replay of unchanged
-// journals. Store open marks the projection unready while older rows remain.
-const currentProjectionVersion = 5
+// journals. Daemon startup re-projects every row older than this before it
+// attaches the store (EnsureReady).
+const currentProjectionVersion = 6
 
 // UpsertRun writes a projection in ONE transaction.
 //

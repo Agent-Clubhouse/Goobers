@@ -256,9 +256,9 @@ var v30Interpreter = versionedInterpreter{
 	gateLimits:                      v30.GateLimits,
 }
 
-// v31Interpreter carries DSL 3.0 forward and adds only the named-artifact
-// contract surface. Runtime lowering/resolution intentionally remains out of
-// scope for this version.
+// v31Interpreter carries DSL 3.0 forward and adds named-artifact contracts.
+// Child-workflow policy is validated by the router; its execution remains
+// explicitly unsupported until the child lifecycle is implemented.
 var v31Interpreter = versionedInterpreter{
 	compile:                         compileV31,
 	checkWarnings:                   v30.CheckWarnings,
@@ -411,6 +411,14 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	config := compileConfig{}
 	for _, opt := range opts {
 		opt(&config)
+	}
+	if problems := childWorkflowProblems(def, config.goobers, config.goobersSet); len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
+	for _, diagnostic := range CheckFeatureSupport(def, usedChildWorkflowFeatures(def), config.allowPreviewFeatures) {
+		if diagnostic.Blocking {
+			return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, diagnostic.Message)
+		}
 	}
 	return interpreter.compile(def, config)
 }

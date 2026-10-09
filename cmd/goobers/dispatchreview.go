@@ -31,6 +31,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -123,4 +124,23 @@ func recordPodReviewerDiff(ctx context.Context, workspace, runsDir, stage string
 		MediaType: "text/x-diff", Integrity: ref.Integrity,
 	}
 	return &apiv1.ContextPointer{Name: stage + ".diff", Integrity: ref.Integrity, Artifact: &artifact}, nil
+}
+
+// missingReviewerDiff is what a review kit whose gate judges implementation
+// work (#5414) surrenders when the pod has no run diff to hand its reviewer.
+// A writable reviewer saw the run branch and it carried nothing against base:
+// that is #415's empty diff, and the pod answers with the same mechanical
+// verdict the worker's ReviewGoober and the local runner synthesize, so the
+// engine routes it through the gate's declared outcomes on every substrate.
+// A pod reviewer that is NOT on the run branch (a repo-readonly checkout is
+// detached at base; scratch has none) cannot see the run's commits at all,
+// so no verdict about them is honest: the review fails closed naming the
+// remedy instead.
+func missingReviewerDiff(env apiv1.InvocationEnvelope, stage string) (*apiv1.Verdict, error) {
+	mode := apiv1.WorkspaceMode(strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace)))
+	if !mode.IsWritableRepo() {
+		return nil, fmt.Errorf("reviewer diff: gate %q reviews implementation work but its %q workspace is not on the run branch, so the run's committed diff is not visible to it; declare `workspace: repo` on the gate's agentic block", stage, mode)
+	}
+	verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
+	return &verdict, nil
 }

@@ -32,6 +32,10 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
+		if childWorkflowRoute(route.ID) {
+			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
+			operation["x-goobers-stage-grant"] = "goobers-child"
+		}
 		if route.Capability != "" {
 			operation["x-goobers-capability"] = route.Capability
 		}
@@ -131,6 +135,9 @@ func openAPIParameters(route Route) []map[string]any {
 	}
 	if routeRequiresIdempotency(route.ID) {
 		maxLength := 200
+		if route.ID == RouteChildWorkflowStart {
+			maxLength = MaxChildWorkflowInvocationKeyBytes
+		}
 		if route.ID == RouteTriggerIngest {
 			maxLength = 128
 		}
@@ -174,7 +181,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
-		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit:
+		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart:
 		return true
 	default:
 		return false
@@ -197,6 +204,12 @@ func openAPIRequestBody(route Route) map[string]any {
 	}
 	schema := map[string]any{"type": "object", "additionalProperties": true}
 	switch route.ID {
+	case RouteChildWorkflowValidate, RouteChildWorkflowStart:
+		schema = schemaRef("ChildWorkflowSourceRequest")
+	case RouteChildWorkflowStatus:
+		schema = schemaRef("ChildWorkflowStatusRequest")
+	case RouteChildWorkflowResolve:
+		schema = schemaRef("ChildWorkflowResolveRequest")
 	case RouteTriggerIngest:
 		schema = schemaRef("TriggerRequest")
 	case RouteCancelRun:
@@ -250,6 +263,12 @@ func openAPIResponses(route Route) map[string]any {
 	}
 	successSchema := map[string]any{"type": "object", "additionalProperties": true}
 	switch route.ID {
+	case RouteChildWorkflowValidate:
+		successSchema = schemaRef("ChildWorkflowValidationResponse")
+	case RouteChildWorkflowStart, RouteChildWorkflowStatus:
+		successSchema = schemaRef("ChildWorkflowResponse")
+	case RouteChildWorkflowResolve:
+		successSchema = schemaRef("ChildWorkflowResolutionResponse")
 	case RouteDiscovery:
 		successSchema = schemaRef("DiscoveryDocument")
 	case RouteCapabilities:
@@ -286,6 +305,13 @@ func openAPIResponses(route Route) map[string]any {
 	responses := map[string]any{
 		"200":     successResponse,
 		"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
+	}
+	if childWorkflowRoute(route.ID) {
+		if route.ID == RouteChildWorkflowStart || route.ID == RouteChildWorkflowResolve {
+			delete(responses, "200")
+			responses["202"] = jsonResponse("Durable custody accepted; execution may still be queued", successSchema)
+		}
+		return responses
 	}
 	if route.Method != http.MethodGet && route.Method != http.MethodHead {
 		responses["202"] = jsonResponse("Request accepted", successSchema)
@@ -355,7 +381,7 @@ func mergeSchemaProperties(left, right map[string]any) map[string]any {
 func openAPISchemas(authenticated bool) map[string]any {
 	return mergeSchemaProperties(
 		mergeSchemaProperties(openAPIDiscoverySchemas(), openAPIRemoteReadSchemas()),
-		openAPIOperationSchemas(authenticated),
+		mergeSchemaProperties(openAPIOperationSchemas(authenticated), openAPIChildWorkflowSchemas()),
 	)
 }
 

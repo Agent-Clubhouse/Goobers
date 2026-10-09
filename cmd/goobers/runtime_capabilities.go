@@ -513,14 +513,7 @@ func init() {
 			withSynopsis(synopsisByID["signal"]).
 			withHelp("fire an external signal to subscribed workflows", signalHelp).
 			withExamples("goobers signal deploy-approved"),
-		coreGroupCommand(
-			"workflow",
-			runWorkflow,
-			coreSubcommand("workflow show", "show", apicontract.ActionReadOnlyNavigation, runWorkflowShow).
-				withSynopsis(synopsisByID["workflow show"]).
-				withHelp("show a workflow as a text DAG", workflowShowHelp).
-				withExamples("goobers workflow show default-implement", "goobers workflow show default-implement --dot"),
-		).withHelp("inspect workflows", workflowHelp),
+		workflowCommands(),
 		groupCommand(
 			"runs",
 			runRuns,

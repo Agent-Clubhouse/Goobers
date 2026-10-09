@@ -4,8 +4,8 @@
 > Area: DSL, agent tools, execution, workspaces, journal, Portal
 > Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
 
-> Design approved for incremental delivery on 2026-10-06. Implementation and
-> delivery notes below describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
+> Design approved for incremental delivery on 2026-10-06. The incremental delivery
+> ledger records landed slices. Later implementation notes describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
 > not behavior shipped on main. The [Fleet authentication extension](https://github.com/Agent-Clubhouse/Goobers/pull/6865)
 > remains a separate draft. Design approval does not approve merging that implementation snapshot.
 
@@ -14,6 +14,26 @@ Companions: `interactive-factory-operations.md`,
 `gaggle-events-and-durable-start-queues.md`, and
 `source-owned-backlog-workbench.md`. The generated design index links each as it
 enters the review stack. Stable work IDs below do not require numbered issues.
+
+## Incremental delivery ledger
+
+The [landing plan](../hitl-advanced-workflows-landing-plan.md) splits the snapshot
+into independently reviewed changes. Keep this design approved until the full
+journey and its enabled backends are qualified.
+
+| Slice | Scope included in this slice | Remaining boundary |
+| --- | --- | --- |
+| [LAND-C01 / #6880](https://github.com/Agent-Clubhouse/Goobers/pull/6880) / HAW-CHD-001 and validation portion of HAW-CHD-002 | **Merged in #6880** (`7ba3f512c15c3c509ab62a962b4f532dc74ebc18`). Preview DSL 3.1 opt-in, bounded proposal checks and `goobers workflow validate-child` against the configured parent; typed diagnostics, policy identity and publication ceilings | Validation is advisory. Runtime admission, credentials, child starts, durable waits and workspace handoff are not enabled; both runtimes explicitly refuse opted-in execution. |
+| [LAND-C02a / #6881](https://github.com/Agent-Clubhouse/Goobers/pull/6881) / identity prerequisite of HAW-CHD-003 | **Merged in #6881** (`caad196059ca85c3c06b708483892130c29e2963`). Journal-bound stage occurrence and attempt identities, carried through the runner invocation and agent dispatch kit; retries/recovery retain an occurrence, revisits and parallel branches get distinct occurrences | Identity alone grants no child authority. Public runtime entry points continue to refuse child-enabled execution until admission, custody and launch wiring are qualified. Temporal projection ordinals are never presented as committed journal identities. |
+| [LAND-C02b / #6882](https://github.com/Agent-Clubhouse/Goobers/pull/6882) / admission portion of HAW-CHD-002–003 | **Merged in #6882** (`1ba12acdd9a9b94f69849598ff9eab382f53895a`). Stage-bound grants, exact retained proposals, transactional lineage/receipt acceptance, bounded retention and completion reservation, HTTP/MCP adapters, policy reload fencing | Internal admission only. Public child execution remains refused; no workspace capture, launcher, durable wait or result disposition is enabled. See the [admission boundary](../guides/child-workflow-admission.md). |
+| [LAND-C03 / LAND-C04 foundation / #6915](https://github.com/Agent-Clubhouse/Goobers/pull/6915) | Separate parent snapshot/fork and result custody, process-writer evidence, queued launcher/reconciler, durable serial-parent wait and recovery | Public execution remains refused. Isolated backend qualification, result disposition, parallel-parent execution and Portal lineage remain pending. See the [custody and wait boundary](../guides/child-workflow-admission.md#workspace-and-wait-foundation). |
+| [LAND-C05 local disposition / #6916](https://github.com/Agent-Clubhouse/Goobers/pull/6916) | Durable merge/replace/discard requests, exact-revision adoption, bounded history, stopped-writer application and crash reconciliation | Public execution, delegated PR publication and Portal controls remain pending. See [parent result disposition](../guides/child-workflow-admission.md#parent-result-disposition). |
+| [LAND-C06a contained worker transport / #6947](https://github.com/Agent-Clubhouse/Goobers/pull/6947) | Private portable workspace carrier, dispatcher pod containment, writer-stop/surrender evidence and custody-aware orphan cleanup | Public execution remains disabled. Exact signed attempt/blob authority, host factory, returned-tree application and recovery remain follow-ups. See [contained transport boundary](../guides/contained-child-transport.md). |
+
+| LAND-C06c / delegated publication portion of LAND-C05 | Canonical host push/PR stages, immutable bounded publication intent, create-only provider effects and parent publication status | Public activation and Portal qualification remain pending; stopped-child human reconciliation is LAND-H06. See [child workflow publication](../guides/child-workflow-publication.md). |
+
+The later implementation notes in this document remain evidence from the reference
+snapshot; they are not a claim that those later slices have landed on main.
 
 ## 1. User journey
 

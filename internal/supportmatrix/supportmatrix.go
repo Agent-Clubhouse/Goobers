@@ -194,10 +194,13 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 			{Level: LevelPreview, SinceVersion: "v0.4.0"},
 		},
 	},
+	// DSL 3.1 landed on main after the v0.5.0 release branch was cut (#6133,
+	// 2026-09-30); v0.5.0 shipped without it. Its preview entry therefore
+	// targets NextPlannedRelease, the first release line that will carry it.
 	V31DSLVersion: {
 		Level: LevelPreview,
 		History: []SupportTransition{
-			{Level: LevelPreview, SinceVersion: "v0.5.0"},
+			{Level: LevelPreview, SinceVersion: "v0.6.0"},
 		},
 	},
 })
@@ -366,7 +369,7 @@ type Platform struct {
 // mirrors the `go` directive in go.mod (the language version the module targets);
 // TestMinGoVersionMatchesGoMod guards the two against drift so the declared
 // surface can never quietly diverge from what the module actually compiles with.
-const minGoVersion = "1.26.6"
+const minGoVersion = "1.26.9"
 
 // platforms is the declared OS/arch support matrix. Linux and macOS are release
 // gates (primary CI + the self-host runner + developer machines); Windows is

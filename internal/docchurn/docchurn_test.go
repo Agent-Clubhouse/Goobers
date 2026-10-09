@@ -76,7 +76,7 @@ func TestRunUsesOverlapAndParsesGitResponses(t *testing.T) {
 			args: []string{"log", "-z", "--no-color", "--format=%H\x1e%s\x1e%b", "base..head"},
 			out:  "head\x1esubject\x1ebody\x00",
 		},
-		gitCall{args: []string{"diff", "--no-renames", "--name-only", "base", "head"}, out: "src/x.go\ndocs/guide.md\n"},
+		gitCall{args: []string{"diff", "--no-renames", "--name-only", "-z", "base", "head"}, out: "src/x.go\x00docs/guide.md\x00"},
 	)
 	opts := baseOptions(t, git)
 	opts.WatermarkPath = path
@@ -152,7 +152,7 @@ func TestRunReportsEveryGitFailureWithoutAdvancingWatermark(t *testing.T) {
 				{args: []string{"rev-parse", "--verify", "HEAD^{commit}"}, out: "head"},
 				{args: []string{"rev-list", "-1", "--before=2026-10-05T11:00:00Z", "HEAD"}, out: "base"},
 				{args: []string{"log", "-z", "--no-color", "--format=%H\x1e%s\x1e%b", "base..head"}},
-				{args: []string{"diff", "--no-renames", "--name-only", "base", "head"}, err: errors.New("diff failed")},
+				{args: []string{"diff", "--no-renames", "--name-only", "-z", "base", "head"}, err: errors.New("diff failed")},
 			},
 			want: "list changed files in repo: diff failed",
 		},
@@ -184,7 +184,7 @@ func successfulGit(t *testing.T) Git {
 		gitCall{args: []string{"rev-parse", "--verify", "HEAD^{commit}"}, out: "head"},
 		gitCall{args: []string{"rev-list", "-1", "--before=2026-10-05T11:00:00Z", "HEAD"}},
 		gitCall{args: []string{"log", "-z", "--no-color", "--format=%H\x1e%s\x1e%b", "head"}},
-		gitCall{args: []string{"diff", "--no-renames", "--name-only", emptyTreeObject, "head"}},
+		gitCall{args: []string{"diff", "--no-renames", "--name-only", "-z", emptyTreeObject, "head"}},
 	)
 }
 
@@ -298,6 +298,15 @@ func TestWriteWatermarkExactAtomicContents(t *testing.T) {
 	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("temporary watermark remains after replace: %v", err)
 	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("temporary file %q remains after atomic write", e.Name())
+		}
+	}
 }
 
 func TestRunResultFileFailureDoesNotAdvanceWatermark(t *testing.T) {
@@ -309,5 +318,20 @@ func TestRunResultFileFailureDoesNotAdvanceWatermark(t *testing.T) {
 	}
 	if _, err := os.Stat(opts.WatermarkPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("watermark exists after result-file failure: %v", err)
+	}
+}
+
+func TestChangedFilesReturnsPathsVerbatim(t *testing.T) {
+	git := scriptedGit(t, gitCall{
+		args: []string{"diff", "--no-renames", "--name-only", "-z", "base", "head"},
+		out:  "docs/café.md\x00 spaced name.md \x00dir/new\nline.md\x00",
+	})
+	got, err := changedFiles(git, "repo", "base", "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{" spaced name.md ", "dir/new\nline.md", "docs/café.md"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changedFiles = %q, want %q", got, want)
 	}
 }

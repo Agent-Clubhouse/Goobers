@@ -61,9 +61,21 @@ type restartManagerProcessInfo struct {
 // Configure-only caller that never routed through newTree), in which case kill
 // degrades to terminating the lone pid.
 type Tree struct {
-	pid    int
-	job    windows.Handle
-	closed bool
+	pid int
+	// root keeps the root's process object, and so its pid, from being
+	// recycled while kill still walks the recorded parentage below it; its
+	// lifetime bounds which recorded children are real (#6744).
+	root      windows.Handle
+	startTime time.Time
+	job       windows.Handle
+	closed    bool
+}
+
+// processLifetime is a process's creation time and, once it has exited, its
+// exit time. A zero field is unknown and does not bound anything.
+type processLifetime struct {
+	start time.Time
+	exit  time.Time
 }
 
 type processIdentity struct {
@@ -137,29 +149,41 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 		return nil, fmt.Errorf("proc: set job kill-on-close limit: %w", err)
 	}
 
-	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(t.pid))
+	proc, err := windows.OpenProcess(
+		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		false,
+		uint32(t.pid),
+	)
 	if err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("proc: open child %d: %w", t.pid, err)
 	}
-	defer func() { _ = windows.CloseHandle(proc) }()
+	// An unreadable start leaves the zero time, which only waives the
+	// lower parentage bound for the root's direct children.
+	t.startTime, _ = handleStartTime(proc)
 	if err := windows.AssignProcessToJobObject(job, proc); err != nil {
+		_ = windows.CloseHandle(proc)
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("proc: assign child %d to job: %w", t.pid, err)
 	}
 	t.job = job
 	if err := resumeProcess(t.pid); err != nil {
+		_ = windows.CloseHandle(proc)
 		_ = windows.CloseHandle(job)
 		t.job = 0
 		return nil, err
 	}
+	t.root = proc
 
 	// The seam has no explicit Close (a unix tree owns no resource), so release
 	// the job handle when the Tree is dropped rather than leaking one handle per
 	// stage. Closing the last handle also reaps any process still in the job
 	// (KILL_ON_JOB_CLOSE) — the intended teardown, harmless once the tree has
 	// already exited.
-	runtime.SetFinalizer(t, func(t *Tree) { _ = windows.CloseHandle(t.job) })
+	runtime.SetFinalizer(t, func(t *Tree) {
+		_ = windows.CloseHandle(t.job)
+		_ = windows.CloseHandle(t.root)
+	})
 	return t, nil
 }
 
@@ -224,7 +248,7 @@ func (t *Tree) kill() error {
 		t.closed = true
 		return terminatePID(t.pid)
 	}
-	descendants, snapshotErr := snapshotDescendants(t.pid)
+	descendants, snapshotErr := snapshotDescendants(t.pid, t.rootLifetime())
 	targets := make([]terminationTarget, 0, len(descendants))
 	// Pin verified process objects while the job is still active. WSL teardown
 	// can reject new PROCESS_TERMINATE opens even though an escaped descendant
@@ -272,7 +296,7 @@ func (t *Tree) kill() error {
 			break
 		}
 		var snapshotErr2 error
-		descendants, snapshotErr2 = snapshotDescendants(t.pid)
+		descendants, snapshotErr2 = snapshotDescendants(t.pid, t.rootLifetime())
 		if snapshotErr2 != nil {
 			snapshotErr = errors.Join(snapshotErr, snapshotErr2)
 			break
@@ -290,10 +314,30 @@ func (t *Tree) kill() error {
 		}
 		targets[i].close()
 	}
+	_ = windows.CloseHandle(t.root)
+	t.root = 0
 	return errors.Join(snapshotErr, terminateErr)
 }
 
-func snapshotDescendants(root int) ([]processIdentity, error) {
+// rootLifetime reads the root's lifetime through the pinned handle; without
+// one only the recorded creation time is known.
+func (t *Tree) rootLifetime() processLifetime {
+	lifetime := processLifetime{start: t.startTime}
+	if t.root == 0 {
+		return lifetime
+	}
+	var code uint32
+	if err := windows.GetExitCodeProcess(t.root, &code); err != nil || code == stillActive {
+		return lifetime
+	}
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(t.root, &creation, &exit, &kernel, &user); err == nil {
+		lifetime.exit = time.Unix(0, exit.Nanoseconds())
+	}
+	return lifetime
+}
+
+func snapshotDescendants(root int, rootLifetime processLifetime) ([]processIdentity, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return nil, fmt.Errorf("proc: snapshot process tree: %w", err)
@@ -320,30 +364,70 @@ func snapshotDescendants(root int) ([]processIdentity, error) {
 	for _, process := range processes {
 		children[process.parent] = append(children[process.parent], process.pid)
 	}
-	return identifyDescendants(root, children), nil
+	return identifyDescendants(root, rootLifetime, children), nil
 }
 
-func identifyDescendants(root int, children map[int][]int) []processIdentity {
-	return identifyDescendantsWithStartTime(root, children, startTime)
+func identifyDescendants(root int, rootLifetime processLifetime, children map[int][]int) []processIdentity {
+	return identifyDescendantsWithStartTime(root, rootLifetime, children, startTime)
 }
 
-func identifyDescendantsWithStartTime(root int, children map[int][]int, readStartTime func(int) (time.Time, bool)) []processIdentity {
-	// The walk is shared with the unix collectors and is cycle-safe: a
-	// Windows entry's parent pid is its creator's pid at creation time and
-	// survives that creator's exit, so a recycled pid can make the recorded
-	// parentage point back into the subtree and an unguarded walk never
-	// terminates (#3922).
+// identifyDescendantsWithStartTime walks the snapshot's parentage from root
+// and returns the descendants whose identity could be read.
+//
+// A Windows entry's ParentProcessID is its creator's pid at creation time and
+// is never cleared when that creator exits. Once the pid is recycled, every
+// process the OLD holder created — often long-lived services started at boot
+// and running as another user — reads as a child of whatever process now holds
+// the number, including one in this tree. Kill then tried to terminate those
+// unrelated processes and reported the access-denied refusal as a failed tree
+// teardown (#6744). A process cannot be created before its creator exists, so
+// a recorded child that started before its recorded parent's identity is stale
+// parentage, and neither it nor anything below it belongs to the tree. A pid
+// whose start time cannot be read has no identity to bound its own children,
+// so the walk does not descend through it.
+//
+// The root is the one node whose identity is recorded rather than read during
+// the walk, and Kill re-snapshots after terminating it. Its real children were
+// all created while it ran, so once it has exited, a recorded child that
+// started after its exit was created by a later holder of its pid. A zero
+// bound in rootLifetime is unknown and waives that check.
+//
+// The walk is cycle-safe for the same reason (#3922): recycled pids can make
+// the recorded parentage point back into the subtree.
+func identifyDescendantsWithStartTime(root int, rootLifetime processLifetime, children map[int][]int, readStartTime func(int) (time.Time, bool)) []processIdentity {
+	type node struct {
+		pid      int
+		lifetime processLifetime
+	}
+	visited := map[int]bool{root: true}
+	queue := []node{{pid: root, lifetime: rootLifetime}}
 	var descendants []processIdentity
-	for _, pid := range collectDescendants(root, children) {
-		// ParentProcessID is stale once the creator exits; an unreadable pid is
-		// not safe proof that the original tree still owns that process.
-		started, ok := readStartTime(pid)
-		if !ok {
-			continue
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		for _, pid := range children[parent.pid] {
+			if visited[pid] {
+				continue
+			}
+			visited[pid] = true
+			started, ok := readStartTime(pid)
+			if !ok || !parent.lifetime.contains(started) {
+				continue
+			}
+			descendants = append(descendants, processIdentity{pid: pid, startTime: started})
+			queue = append(queue, node{pid: pid, lifetime: processLifetime{start: started}})
 		}
-		descendants = append(descendants, processIdentity{pid: pid, startTime: started})
 	}
 	return descendants
+}
+
+// contains reports whether a child started at started could have been created
+// by a process with this lifetime.
+func (l processLifetime) contains(started time.Time) bool {
+	if started.Before(l.start) {
+		return false
+	}
+	return l.exit.IsZero() || !started.After(l.exit)
 }
 
 // terminateExitWait bounds how long a terminated process is waited on. The

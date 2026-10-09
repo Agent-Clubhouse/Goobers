@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/hostedprogress"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -101,33 +102,44 @@ func TestRunFlagArgsPassesGithubProgressForms(t *testing.T) {
 	}
 }
 
-// TestRunWaitReporterPublishFailedIsOneShot pins the degraded-path contract:
-// when the hosted-progress publisher's first attempt fails the reporter must
-// warn exactly once and continue observing without publishing. Otherwise a
-// warm publisher failure (rate limit, transient 5xx) would emit one warning
-// per journal event and drown out the actual run progress.
-func TestRunWaitReporterPublishFailedIsOneShot(t *testing.T) {
-	var progress synchronizedBuffer
-	reporter := newRunWaitReporter("degraded", &progress)
-	reporter.publishContext = context.Background()
-	reporter.publish = func(context.Context, []journal.Event) error {
-		return errors.New("stub publisher failure")
-	}
-	started := reporter.lastHeartbeat
-	reporter.observe([]journal.Event{{
-		Seq: 1, Type: journal.EventRunStarted, Time: started,
-	}}, started)
-	reporter.observe([]journal.Event{{
-		Seq: 2, Type: journal.EventStageStarted, Stage: "build", Attempt: 1,
-		Time: started,
-	}}, started)
-
-	output := progress.String()
-	if got := strings.Count(output, "GitHub progress publishing stopped"); got != 1 {
-		t.Fatalf("degraded warnings = %d, want exactly one:\n%s", got, output)
-	}
-	if !reporter.publishFailed {
-		t.Fatal("publishFailed latch must remain set after a failed publish")
+// TestRunWaitReporterPublishFailureWarnsOnce pins the degraded-path
+// contract: a transient publish failure warns exactly once and publishing
+// continues (the publisher backs off and retries, #6876); a permanent
+// failure warns once and stops publishing. Otherwise a warm publisher
+// failure (rate limit, transient 5xx) would emit one warning per journal
+// event and drown out the actual run progress.
+func TestRunWaitReporterPublishFailureWarnsOnce(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err       error
+		warning   string
+		wantCalls int
+	}{
+		"transient": {errors.New("stub publisher failure"), "GitHub progress publish failed, retrying", 3},
+		"permanent": {&hostedprogress.PermanentError{Err: errors.New("HTTP 401")}, "GitHub progress publishing stopped", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var progress synchronizedBuffer
+			reporter := newRunWaitReporter("degraded", &progress)
+			reporter.publishContext = context.Background()
+			calls := 0
+			reporter.publish = func(context.Context, []journal.Event) error {
+				calls++
+				return tc.err
+			}
+			started := reporter.lastHeartbeat
+			for seq := uint64(1); seq <= 3; seq++ {
+				reporter.observe([]journal.Event{{
+					Seq: seq, Type: journal.EventStageStarted, Stage: "build", Attempt: int(seq),
+					Time: started,
+				}}, started)
+			}
+			if got := strings.Count(progress.String(), tc.warning); got != 1 {
+				t.Fatalf("warnings = %d, want exactly one %q:\n%s", got, tc.warning, progress.String())
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("publish calls = %d, want %d", calls, tc.wantCalls)
+			}
+		})
 	}
 }
 

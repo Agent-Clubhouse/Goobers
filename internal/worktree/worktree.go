@@ -218,6 +218,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if err != nil {
 		return nil, err
 	}
+	return m.createInMirror(ctx, opts, repoDir, false)
+}
+
+// createInMirror shares normal provisioning with already-verified child
+// snapshots. Child retries preserve owned work instead of adopting and resetting.
+func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDir string, preserveChild bool) (_ *Worktree, retErr error) {
 	cleanupBaseRef := resolvedCleanupBaseRef(ctx, repoDir, opts.BaseRef)
 	key := repoKey(opts.RepoURL)
 	directory := worktreeDirectoryName(opts.RunID)
@@ -235,24 +241,18 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		}
 	}()
 
+	if preserveChild {
+		if existing, found, err := m.existingChildWorktree(ctx, key, repoDir, path, opts); found || err != nil {
+			return existing, err
+		}
+	}
 	if err := m.prepareBranchAcquisition(ctx, key, repoDir, path, opts); err != nil {
 		return nil, err
 	}
 
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
-	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
-		refs := []string{opts.BaseRef}
-		if existingBranch {
-			refs[0] = opts.Branch
-			if opts.SyncBase {
-				refs = append(refs, opts.BaseRef)
-			}
-		}
-		for _, ref := range refs {
-			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
-				return nil, err
-			}
-		}
+	if err := m.preflightCreatePathLength(ctx, opts, path, repoDir, existingBranch); err != nil {
+		return nil, err
 	}
 
 	if _, err := os.Stat(path); err == nil {
@@ -711,10 +711,37 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if wt.pinned {
 		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
 	}
-	// Evidence artifacts must not depend on repository-local diff drivers,
-	// presentation, hunk, or heuristic settings. Those settings can vary
-	// between otherwise identical runner environments.
-	args := []string{
+	args := evidenceDiffArgs(baseRef)
+	var out []byte
+	var err error
+	if wt.partialMirror {
+		// On a blobless mirror the merge-base side of the diff can name blobs
+		// no checkout ever materialized (a rebound PR branch's checkout brings
+		// only its own tip), so the diff spawns a promisor blob fetch: it
+		// needs the credential environment, and its failure must classify
+		// through IsTransientProvisionError like every other promisor fetch.
+		out, err = wt.manager.remoteGitOutput(ctx, wt.repoURL, wt.Path, args...)
+	} else {
+		out, err = rawGitOutput(ctx, wt.Path, nil, args...)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return out, nil
+}
+
+// evidenceDiffArgs keeps Diff's evidence bytes independent of
+// repository-local diff drivers, presentation, hunk, or heuristic settings.
+// Those settings can vary between otherwise identical runner environments.
+func evidenceDiffArgs(baseRef string) []string {
+	return evidenceDiffRangeArgs(baseRef, "HEAD")
+}
+
+// evidenceDiffRangeArgs is evidenceDiffArgs for baseRef...headRef, so a diff
+// read from the mirror (Manager.RunBranchDiff) is byte-identical to the one a
+// worktree on that branch reports.
+func evidenceDiffRangeArgs(baseRef, headRef string) []string {
+	return []string{
 		"-c", "diff.algorithm=myers",
 		"-c", "diff.compactionHeuristic=false",
 		"-c", "diff.indentHeuristic=false",
@@ -734,25 +761,12 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 		"--inter-hunk-context=0",
 		"--no-indent-heuristic",
 		"--submodule=short",
-		"-O" + os.DevNull,
-		baseRef + "...HEAD",
+		// Git resolves a relative order file against the repository prefix,
+		// so os.DevNull ("NUL" on Windows) is not portable (#6297). Git treats
+		// "/dev/null" as absolute everywhere and maps it on Windows.
+		"-O/dev/null",
+		baseRef + "..." + headRef,
 	}
-	var out []byte
-	var err error
-	if wt.partialMirror {
-		// On a blobless mirror the merge-base side of the diff can name blobs
-		// no checkout ever materialized (a rebound PR branch's checkout brings
-		// only its own tip), so the diff spawns a promisor blob fetch: it
-		// needs the credential environment, and its failure must classify
-		// through IsTransientProvisionError like every other promisor fetch.
-		out, err = wt.manager.remoteGitOutput(ctx, wt.repoURL, wt.Path, args...)
-	} else {
-		out, err = rawGitOutput(ctx, wt.Path, nil, args...)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
-	}
-	return out, nil
 }
 
 // HasCommitsAheadOf reports whether HEAD contains commits not reachable from
@@ -1221,4 +1235,23 @@ func samePathOnDisk(a, b string) bool {
 	aInfo, aErr := os.Stat(a)
 	bInfo, bErr := os.Stat(b)
 	return aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo)
+}
+
+func (m *Manager) preflightCreatePathLength(ctx context.Context, opts CreateOptions, path, repoDir string, existingBranch bool) error {
+	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
+		refs := []string{opts.BaseRef}
+		if existingBranch {
+			refs[0] = opts.Branch
+			if opts.SyncBase {
+				refs = append(refs, opts.BaseRef)
+			}
+		}
+		for _, ref := range refs {
+			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

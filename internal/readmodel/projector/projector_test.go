@@ -751,6 +751,37 @@ func TestStopIsIdempotentAndDrainsCleanly(t *testing.T) {
 	stop()
 }
 
+// blockingPendingIntake parks the scheduled drain inside Pending until it is
+// cancelled, standing in for a drain that holds an intake connection.
+type blockingPendingIntake struct {
+	*fakeIntake
+	entered  chan struct{}
+	once     sync.Once
+	returned atomic.Bool
+}
+
+func (b *blockingPendingIntake) Pending(ctx context.Context, _ int) ([]intake.Marker, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-ctx.Done()
+	b.returned.Store(true)
+	return nil, ctx.Err()
+}
+
+// TestStopWaitsForInFlightScheduledDrain pins #6715: callers close the intake
+// store as soon as stop returns, so stop must not return while the drain
+// schedule is still inside an intake call. A leaked call keeps the database
+// file open, which on Windows blocks removing it.
+func TestStopWaitsForInFlightScheduledDrain(t *testing.T) {
+	watermarks := &blockingPendingIntake{fakeIntake: newFakeIntake(), entered: make(chan struct{})}
+	projector := New(newFakeStore(), watermarks, Options{Interval: time.Nanosecond})
+	stop := projector.Start(context.Background())
+	<-watermarks.entered
+	stop()
+	if !watermarks.returned.Load() {
+		t.Fatal("stop returned while the scheduled drain was still inside intake Pending")
+	}
+}
+
 // projectionFor builds a minimal terminal projection.
 func projectionFor(runID string, seq uint64) Projection {
 	startedAt := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)

@@ -38,7 +38,7 @@ func TestRunCancelPendingCIWritesExactResultShapes(t *testing.T) {
 		{
 			name:       "empty",
 			provider:   &fakePendingCICancelProvider{result: providers.CancelPendingChecksResult{Examined: 0}},
-			wantJSON:   "{\n  \"status\": \"no-pending-checks\",\n  \"examined\": 0,\n  \"headSha\": \"abc123\",\n  \"pullNumber\": \"42\"\n}\n",
+			wantJSON:   "{\n  \"cancelStatus\": \"no-pending-checks\",\n  \"examined\": 0,\n  \"headSha\": \"abc123\",\n  \"pullNumber\": \"42\"\n}\n",
 			wantStdout: "no pending CI runs remain for PR #42 at abc123\n",
 		},
 		{
@@ -48,7 +48,7 @@ func TestRunCancelPendingCIWritesExactResultShapes(t *testing.T) {
 				Canceled: []string{"run-1"},
 				Skipped:  []string{"run-2", "run-3"},
 			}},
-			wantJSON:   "{\n  \"status\": \"completed\",\n  \"examined\": 4,\n  \"canceled\": [\n    \"run-1\"\n  ],\n  \"skipped\": [\n    \"run-2\",\n    \"run-3\"\n  ],\n  \"headSha\": \"abc123\",\n  \"pullNumber\": \"42\"\n}\n",
+			wantJSON:   "{\n  \"cancelStatus\": \"completed\",\n  \"examined\": 4,\n  \"canceled\": [\n    \"run-1\"\n  ],\n  \"skipped\": [\n    \"run-2\",\n    \"run-3\"\n  ],\n  \"headSha\": \"abc123\",\n  \"pullNumber\": \"42\"\n}\n",
 			wantStdout: "canceled 1 pending CI run(s) for PR #42 at abc123\n",
 		},
 	}

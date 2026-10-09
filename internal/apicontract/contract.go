@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 )
 
 // Versioned V1 route paths.
@@ -71,12 +73,13 @@ const (
 	// (decision 005 R4 as amended by Goobers#4001, the blocker-1 half of
 	// #3996): the FIXED set of derived, threshold-crossing aggregates the
 	// `defect-nomination` and `work-nomination` lanes' `telemetry-query`
-	// stage needs — stage-failure-rate, gate-noise, credit-assignment, and a
-	// NORMALIZED, REDACTED error-signature aggregate.
+	// stage needs — stage-failure-rate, gate-noise, credit-assignment,
+	// ci-check-failure (admitted for #6707, pod-placed test-suite-quality), and
+	// a NORMALIZED, REDACTED error-signature aggregate.
 	//
 	// It is a query route in the sense that the DAEMON queries: the client
-	// names a gaggle, a bounded window, which of four aggregate families it
-	// wants, and bounded numeric thresholds. It cannot name a table, a path,
+	// names a gaggle, a bounded window, which of the admitted aggregate
+	// families it wants, and bounded numeric thresholds. It cannot name a table, a path,
 	// a connector, or a projection. Everything outside that closed parameter
 	// set is refused rather than ignored, and the raw rollup rows behind the
 	// aggregates never cross the boundary.
@@ -260,6 +263,12 @@ const (
 	// The route stamps request identity and the authenticated principal; body
 	// fields are data only and cannot carry execution authority.
 	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
+
+	// ChildWorkflow paths are stage-grant-only operations scoped to one parent run.
+	ChildWorkflowValidatePath = childworkflowwire.ValidatePath
+	ChildWorkflowStartPath    = childworkflowwire.StartPath
+	ChildWorkflowStatusPath   = childworkflowwire.StatusPath
+	ChildWorkflowResolvePath  = childworkflowwire.ResolvePath
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.
@@ -369,6 +378,10 @@ const (
 	RouteJournalMergeAuthority       RouteID = "journalMergeAuthority"
 	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
 	RouteOperatorMessageSubmit       RouteID = "operatorMessageSubmit"
+	RouteChildWorkflowValidate       RouteID = "childWorkflowValidate"
+	RouteChildWorkflowStart          RouteID = "childWorkflowStart"
+	RouteChildWorkflowStatus         RouteID = "childWorkflowStatus"
+	RouteChildWorkflowResolve        RouteID = "childWorkflowResolve"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -458,6 +471,43 @@ const (
 	// (cost_test.go clientAbort) does not bound it — the pod-side consumer
 	// owns its own retry-on-infra-budget discipline (DS7/#3361).
 	CredentialResolveBudget = 45 * time.Second
+	// JournalScanBudget covers the journal plane's cross-run scans that walk
+	// many per-run journals rather than answer one indexed question — today
+	// the decomposition escalation-candidates scan, which reads GetRun (and
+	// RunEvents for stage escalations) for every escalated run in the gaggle.
+	// On the production instance that is hundreds of runs on a CIFS share
+	// where each per-run read costs tens of milliseconds or more, so the scan
+	// cannot fit MutationBudget's 8s (#4342 follow-up). The route is called by
+	// stage pods, never the portal, so the portal's 10s client abort does not
+	// bound it; the journalclient round-trip timeout must stay above it
+	// (journalclient.DefaultHTTPTimeout, pinned by test).
+	JournalScanBudget = 60 * time.Second
+	// RecoveryArchiveMaxBytes is the largest verified recovery archive the
+	// publish route carries. The pod-side publisher, the daemon's upload cap
+	// and the download client all derive from this one size.
+	RecoveryArchiveMaxBytes int64 = 512 << 20
+	// RecoveryPublishMinThroughput is the slowest sustained rate, in bytes per
+	// second, at which a maximum-size archive must still land. The daemon
+	// stores archives on a network share (Azure Files over CIFS in production),
+	// where a workspace archive (a full checkout plus .git) writes at low
+	// single-digit MiB/s, so this is deliberately conservative.
+	RecoveryPublishMinThroughput int64 = 2 << 20
+	// RecoveryPublishOverhead is the fixed allowance on top of the transfer for
+	// the server's verification pass, fsync and durable-custody rename.
+	RecoveryPublishOverhead = 60 * time.Second
+	// RecoveryPublishBudget covers POST /v1/runs/{run}/recovery: transfer of a
+	// maximum-size archive at the minimum throughput (512 MiB / 2 MiB/s =
+	// 256s) plus the fixed overhead, 316s in all. It was BlobBudget (60s)
+	// which, with the 5s write-deadline margin, cut every real workspace
+	// upload at 65s. It exceeds BlobBudget on purpose; the stage-pod publisher
+	// is the only caller, never the portal.
+	RecoveryPublishBudget = time.Duration(RecoveryArchiveMaxBytes/RecoveryPublishMinThroughput)*time.Second + RecoveryPublishOverhead
+	// RecoveryDownloadBudget covers GET /v1/runs/{run}/recovery, which streams
+	// the same maximum-size archive back to a resuming run. It is derived the
+	// same way as the publish budget (size cap at the minimum throughput plus
+	// the fixed overhead) rather than borrowing BlobBudget, which cannot carry
+	// a full workspace archive from a network share.
+	RecoveryDownloadBudget = RecoveryPublishBudget
 )
 
 var v1Routes = []Route{
@@ -502,8 +552,8 @@ var v1Routes = []Route{
 	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
-	{ID: RouteRunRecovery, Method: http.MethodGet, Path: RunRecoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
-	{ID: RouteRunRecoveryPublish, Method: http.MethodPost, Path: RunRecoveryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: BlobBudget},
+	{ID: RouteRunRecovery, Method: http.MethodGet, Path: RunRecoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: RecoveryDownloadBudget},
+	{ID: RouteRunRecoveryPublish, Method: http.MethodPost, Path: RunRecoveryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: RecoveryPublishBudget},
 	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteTelemetryCosts, Method: http.MethodGet, Path: TelemetryCostsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
@@ -616,10 +666,14 @@ var v1Routes = []Route{
 	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: JournalScanBudget},
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowValidate, Method: http.MethodPost, Path: ChildWorkflowValidatePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowStart, Method: http.MethodPost, Path: ChildWorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowStatus, Method: http.MethodPost, Path: ChildWorkflowStatusPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowResolve, Method: http.MethodPost, Path: ChildWorkflowResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{

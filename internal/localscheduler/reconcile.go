@@ -44,21 +44,27 @@ func ActiveRunCountsByWorkflowDirsContext(ctx context.Context, runsDirs []string
 	return counts, err
 }
 
-func activeRuns(runsDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+func activeRuns(runsDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
 	return activeRunsContext(context.Background(), runsDirs)
 }
 
-func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
 	counts := map[WorkflowIdentity]int{}
-	runs := map[string]WorkflowIdentity{}
+	runs := map[string]reconciledRun{}
 	for _, runsDir := range runsDirs {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		err := visitActiveRunsContext(ctx, runsDir, func(id journal.RunIdentity) {
-			identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-			counts[identity]++
-			runs[id.RunID] = identity
+		err := visitActiveRunStatesContext(ctx, runsDir, func(id journal.RunIdentity, rd *journal.Reader) error {
+			run, err := reconciledRunState(ctx, rd, id)
+			if err != nil {
+				return err
+			}
+			if !run.suspended {
+				counts[run.identity]++
+			}
+			runs[id.RunID] = run
+			return nil
 		})
 		if err != nil {
 			return nil, nil, err
@@ -67,9 +73,9 @@ func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIden
 	return counts, runs, nil
 }
 
-func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
 	counts := map[WorkflowIdentity]int{}
-	runs := map[string]WorkflowIdentity{}
+	runs := map[string]reconciledRun{}
 	for _, runDir := range runDirs {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -92,14 +98,19 @@ func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowI
 		if err != nil {
 			continue
 		}
-		identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-		counts[identity]++
-		runs[id.RunID] = identity
+		run, err := reconciledRunState(ctx, rd, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !run.suspended {
+			counts[run.identity]++
+		}
+		runs[id.RunID] = run
 	}
 	return counts, runs, nil
 }
 
-func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(journal.RunIdentity)) error {
+func visitActiveRunStatesContext(ctx context.Context, runsDir string, visit func(journal.RunIdentity, *journal.Reader) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -164,10 +175,31 @@ func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(jour
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		visit(id)
+		if err := visit(id, rd); err != nil {
+			return err
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Parked parents remain owned for cleanup and same-run continuation, but do
+// not consume runnable capacity. Invalid wait markers conservatively retain
+// capacity; the runner refuses their recovery instead of guessing quiescence.
+func reconciledRunState(ctx context.Context, rd *journal.Reader, id journal.RunIdentity) (reconciledRun, error) {
+	run := reconciledRunFor(id)
+	if id.Child != nil {
+		return run, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return run, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return run, err
+	}
+	run.suspended = journal.ParkedOnChild(events)
+	return run, ctx.Err()
 }

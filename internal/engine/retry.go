@@ -65,7 +65,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	maxAttempts := policyMaxAttempts + runner.DefaultMaxInfrastructureAttempts - 1
 
 	var usageBudget runner.StageUsageBudget
-	var policyAttempts, infrastructureFailures int32
+	var policyAttempts, infrastructureFailures, priorAttemptDeferrals int32
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
@@ -127,7 +127,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				// Worker-loss timeouts may hide an attempt that already spent
 				// budget. Require usage in that case even though the activity
 				// could not report it; pre-execution failures remain retryable.
-				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLossTimeout(err), &res, &err)
+				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLoss(err), &res, &err)
 			}
 			if err == nil {
 				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {
@@ -164,6 +164,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 							Base:      activityResult.WorkspaceDeltaBase,
 							Tip:       activityResult.WorkspaceDeltaTip,
 							Unchanged: activityResult.WorkspaceDeltaUnchanged,
+
+							PushedBranches: pushedBranches(activityResult.Mutations),
 						}
 					}
 					return res, nil
@@ -201,7 +203,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			rec.workspaceRevisionRefused(ctx, t.Name, int(attempt), class, rejection, attemptIdentityFromError(err))
 			return apiv1.ResultEnvelope{}, rejection
 		}
-		failureClass, cerr := ClassifyDispatchFailure(err)
+		failureClass, cerr := classifyAttemptFailure(ctx, t, err)
 		if cerr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
@@ -209,7 +211,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			identity = attemptIdentityFromError(err)
 		}
 		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity)
-		if isWorkerLossTimeout(err) && len(t.PolicyActions) > 0 {
+		if isWorkerLoss(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}
 
@@ -217,7 +219,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		shouldRetry := policyAttempts < policyMaxAttempts
 		nextRetryClass = journal.AttemptPolicy
 		if failureClass == journal.AttemptInfra {
-			infrastructureFailures++
+			chargeInfraFailure(err, &infrastructureFailures, &priorAttemptDeferrals, &maxAttempts)
 			retryLimit, retryCount = runner.DefaultMaxInfrastructureAttempts, infrastructureFailures
 			shouldRetry = infrastructureFailures < runner.DefaultMaxInfrastructureAttempts
 			nextRetryClass = journal.AttemptInfra
@@ -303,7 +305,9 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //     activity never began. StartToClose and Heartbeat are policy-classed
 //     because the worker may have been lost after the stage committed an
 //     external effect; a task
-//     declaring policyActions is therefore stopped before retry;
+//     declaring policyActions is therefore stopped before retry. The stage
+//     retry loop alone reclassifies a heartbeat loss on a stage without
+//     policyActions as infrastructure (classifyAttemptFailure, #6750);
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
@@ -326,14 +330,6 @@ func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
 		return journal.AttemptPolicy, nil
 	}
 	return "", fmt.Errorf("unclassifiable attempt failure (refusing a silent %q default): %w", journal.AttemptInfra, err)
-}
-
-func isWorkerLossTimeout(err error) bool {
-	var timeoutErr *temporal.TimeoutError
-	if !errors.As(err, &timeoutErr) {
-		return false
-	}
-	return timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE || timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_HEARTBEAT
 }
 
 // recordAttemptArtifacts commits the three attempt-scoped artifacts an

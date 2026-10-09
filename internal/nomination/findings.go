@@ -65,7 +65,8 @@ type Findings struct {
 	// Counts is the number of findings parsed per tool.
 	Counts map[Tool]int
 	// Problems names sections the parser could not read completely (a
-	// truncated golangci-lint JSON document, an unparseable test2json line).
+	// truncated golangci-lint JSON document, an unparseable test2json line, a
+	// tool that timed out or was killed before it finished).
 	// A problem loses findings, never invents them: a nomination naming a
 	// lost finding files unapproved.
 	Problems []string
@@ -74,7 +75,7 @@ type Findings struct {
 // Section headers the collect-repo-signals stage prints around each tool's
 // raw output: "=== <name> ===" or "=== <name> (exit <n>) ===".
 var (
-	sectionHeader = regexp.MustCompile(`^=== (.+?)(?: \(exit -?\d+\))? ===$`)
+	sectionHeader = regexp.MustCompile(`^=== (.+?)(?: \(exit (-?\d+)\))? ===$`)
 	// vetDiagnostic is one go vet line: "<file>.go:<line>:<col>: <text>". A
 	// leading "./" (go vet's shape when run inside a package directory) is
 	// trimmed so the path compares to the clean relative path the artifact
@@ -91,14 +92,73 @@ const (
 // ParseSignals parses the raw collect-repo-signals stdout: the go vet
 // diagnostics, the golangci-lint JSON issues, and the go test -json fail
 // events, each under its fixed section header. Unknown sections are ignored.
+//
+// A tool section whose header records that the tool was stopped before it
+// finished (stoppedReason) is not read at all: its output is whatever the
+// tool printed before it was killed — a cold module download, a final line
+// cut mid-diagnostic, an empty golangci-lint document written on a deadline
+// — and none of it is a finding the run can stand behind. The section is
+// named as a problem instead, so a timed-out tool reads as "could not be
+// checked", never as "checked and clean" or as findings to approve.
 func ParseSignals(stdout []byte) *Findings {
 	f := &Findings{byKey: map[string]Finding{}, Counts: map[Tool]int{}}
-	sections, problems, err := splitSections(stdout)
+	sections, exits, problems, err := splitSections(stdout)
 	f.Problems = append(f.Problems, problems...)
 	if err != nil {
 		f.Problems = append(f.Problems, "stdout could not be read to the end: "+err.Error())
 	}
-	for _, line := range strings.Split(sections[sectionVet], "\n") {
+	for _, name := range []string{sectionVet, sectionLint, sectionTest} {
+		body, ok := sections[name]
+		if !ok {
+			continue
+		}
+		if code, recorded := exits[name]; recorded {
+			if reason := stoppedReason(name, code); reason != "" {
+				f.Problems = append(f.Problems, fmt.Sprintf("%s: the tool %s (exit %d), so its output is incomplete and none of its findings can be confirmed", name, reason, code))
+				continue
+			}
+		}
+		switch name {
+		case sectionVet:
+			f.parseVet(body)
+		case sectionLint:
+			f.parseLint(body)
+		case sectionTest:
+			f.parseTest(body)
+		}
+	}
+	return f
+}
+
+// Exit statuses that mean a tool was stopped rather than finishing:
+// timeout(1) reports 124 when its time limit fires, a shell reports 128+n
+// for a process killed by signal n (timeout -k's SIGKILL is 137) and Go's
+// os/exec reports -1, and golangci-lint exits 4 when its own --timeout
+// deadline is exceeded.
+const (
+	exitTimeout     = 124
+	exitSignalBase  = 128
+	exitLintTimeout = 4
+)
+
+// stoppedReason names why a tool section's exit status shows the tool was
+// stopped before it finished, or "" when the status is a completed run
+// (with or without findings).
+func stoppedReason(section string, code int) string {
+	switch {
+	case code == exitTimeout:
+		return "timed out"
+	case code > exitSignalBase, code < 0:
+		return "was killed by a signal"
+	case section == sectionLint && code == exitLintTimeout:
+		return "exceeded its own deadline"
+	}
+	return ""
+}
+
+// parseVet reads the go vet diagnostics of its section.
+func (f *Findings) parseVet(body string) {
+	for _, line := range strings.Split(body, "\n") {
 		m := vetDiagnostic.FindStringSubmatch(strings.TrimRight(line, "\r"))
 		if m == nil {
 			continue
@@ -109,10 +169,11 @@ func ParseSignals(stdout []byte) *Findings {
 		}
 		f.add(Finding{Tool: ToolVet, Path: m[1], Line: lineNo, Rule: m[4]})
 	}
-	if body, ok := sections[sectionLint]; ok {
-		f.parseLint(body)
-	}
-	for _, line := range strings.Split(sections[sectionTest], "\n") {
+}
+
+// parseTest reads the test2json fail events of its section.
+func (f *Findings) parseTest(body string) {
+	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -131,11 +192,11 @@ func ParseSignals(stdout []byte) *Findings {
 		}
 		f.add(Finding{Tool: ToolTest, Package: event.Package, Test: event.Test})
 	}
-	return f
 }
 
 // splitSections cuts stdout at its section headers and returns each named
-// section's body (the text between its header and the next). The stage
+// section's body (the text between its header and the next) and, for a
+// header that records one, the tool's exit status. The stage
 // prints every header exactly once, so the first section of a name is the
 // tool's; a later line that looks like the same header is text a tool
 // echoed (the trailing section prints failing tests' raw output, which a
@@ -143,8 +204,9 @@ func ParseSignals(stdout []byte) *Findings {
 // repeat is recorded as a problem and the text after it is discarded up to
 // the next header. A line the scanner cannot buffer ends the scan; what was
 // read stands and the error is reported as a parse problem.
-func splitSections(stdout []byte) (map[string]string, []string, error) {
+func splitSections(stdout []byte) (map[string]string, map[string]int, []string, error) {
 	sections := map[string]string{}
+	exits := map[string]int{}
 	var problems []string
 	scanner := bufio.NewScanner(bytes.NewReader(stdout))
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -166,6 +228,9 @@ func splitSections(stdout []byte) (map[string]string, []string, error) {
 				continue
 			}
 			current = m[1]
+			if code, err := strconv.Atoi(m[2]); err == nil {
+				exits[current] = code
+			}
 			continue
 		}
 		if current != "" {
@@ -174,7 +239,7 @@ func splitSections(stdout []byte) (map[string]string, []string, error) {
 		}
 	}
 	flush()
-	return sections, problems, scanner.Err()
+	return sections, exits, problems, scanner.Err()
 }
 
 // findingOf is the finding a pointer of kind finding names — the exact

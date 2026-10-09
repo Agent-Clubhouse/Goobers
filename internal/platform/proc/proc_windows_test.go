@@ -3,6 +3,8 @@
 package proc
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -209,7 +211,7 @@ func TestKillIsIdempotentAfterJobClose(t *testing.T) {
 
 func TestIdentifyDescendantsIgnoresUnreadableParentage(t *testing.T) {
 	started := time.Unix(123, 0)
-	got := identifyDescendantsWithStartTime(10, map[int][]int{
+	got := identifyDescendantsWithStartTime(10, processLifetime{}, map[int][]int{
 		10: {20, 30},
 		20: {40},
 	}, func(pid int) (time.Time, bool) {
@@ -220,6 +222,69 @@ func TestIdentifyDescendantsIgnoresUnreadableParentage(t *testing.T) {
 	})
 	if len(got) != 1 || got[0].pid != 20 || !got[0].startTime.Equal(started) {
 		t.Fatalf("identifyDescendantsWithStartTime = %+v, want only pid 20", got)
+	}
+}
+
+// A recycled pid makes processes its previous holder created read as children
+// of the tree; one that started before its recorded parent is not ours, and
+// neither is anything below it or below a pid with no readable identity (#6744).
+func TestIdentifyDescendantsRejectsStaleParentage(t *testing.T) {
+	base := time.Unix(1000, 0)
+	starts := map[int]time.Time{
+		10: base,
+		20: base.Add(time.Second),      // real child of root
+		30: base.Add(-time.Hour),       // stale: predates root
+		31: base.Add(time.Second),      // below a stale entry
+		40: base.Add(2 * time.Second),  // real grandchild of 20
+		41: base.Add(time.Millisecond), // stale: predates 20
+		60: base.Add(3 * time.Second),  // below unreadable 50
+		70: base,                       // started in the same tick as root
+	}
+	got := identifyDescendantsWithStartTime(10, processLifetime{start: base}, map[int][]int{
+		10: {20, 30, 50, 70},
+		20: {40, 41},
+		30: {31},
+		40: {20, 10}, // cyclic parentage from recycled pids (#3922)
+		50: {60},
+	}, func(pid int) (time.Time, bool) {
+		started, ok := starts[pid]
+		return started, ok
+	})
+	assertDescendantPIDs(t, got, starts, 20, 70, 40)
+}
+
+// Kill re-snapshots after terminating the root. Its real orphans were created
+// before it exited; a recorded child that started afterwards was created by a
+// later holder of its pid.
+func TestIdentifyDescendantsRejectsChildrenAfterRootExit(t *testing.T) {
+	base := time.Unix(1000, 0)
+	exited := base.Add(time.Minute)
+	starts := map[int]time.Time{
+		20: base.Add(time.Second),       // orphan of the original root
+		30: exited.Add(time.Second),     // created by a later holder of pid 10
+		40: exited.Add(time.Hour),       // grandchild through the orphan
+		50: exited,                      // created in the root's final tick
+		60: exited.Add(2 * time.Second), // below the later holder's child
+	}
+	got := identifyDescendantsWithStartTime(10, processLifetime{start: base, exit: exited}, map[int][]int{
+		10: {20, 30, 50},
+		20: {40},
+		30: {60},
+	}, func(pid int) (time.Time, bool) {
+		started, ok := starts[pid]
+		return started, ok
+	})
+	assertDescendantPIDs(t, got, starts, 20, 50, 40)
+}
+
+func assertDescendantPIDs(t *testing.T, got []processIdentity, starts map[int]time.Time, want ...int) {
+	t.Helper()
+	ok := len(got) == len(want)
+	for i := 0; ok && i < len(want); i++ {
+		ok = got[i].pid == want[i] && got[i].startTime.Equal(starts[want[i]])
+	}
+	if !ok {
+		t.Fatalf("identifyDescendantsWithStartTime = %+v, want pids %v", got, want)
 	}
 }
 
@@ -273,26 +338,135 @@ func TestProcessTreeHelper(t *testing.T) {
 // deliberately terminates this helper before its test returns.
 func runWSLProcessHelper(t *testing.T, marker string) {
 	t.Helper()
-	_, _ = os.Stderr.WriteString("WSL helper: starting wsl.exe\n")
-	cmd := exec.Command("wsl.exe", "-e", "sh", "-c", "sleep 90")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start WSL launcher: %v", err)
+	var cmd *exec.Cmd
+	var failures []string
+	for attempt := 1; cmd == nil && attempt <= wslLauncherAttempts; attempt++ {
+		var err error
+		if cmd, err = startReadyWSLGuest(attempt); err != nil {
+			_, _ = os.Stderr.WriteString("WSL helper: " + err.Error() + "\n")
+			failures = append(failures, err.Error())
+			if attempt < wslLauncherAttempts {
+				time.Sleep(time.Duration(attempt) * time.Second) // Back off before relaunching a launcher that failed to initialize.
+			}
+		}
+	}
+	if cmd == nil {
+		t.Fatalf("WSL launcher never reached guest readiness in %d attempts: %s", wslLauncherAttempts, strings.Join(failures, "; "))
 	}
 	defer func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}()
-	_, _ = os.Stderr.WriteString("WSL helper: started launcher PID " + strconv.Itoa(cmd.Process.Pid) + "\n")
 	if err := os.WriteFile(marker, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
 		t.Fatalf("record WSL launcher PID: %v", err)
 	}
 	_, _ = os.Stderr.WriteString("WSL helper: recorded launcher PID\n")
-	// An early launcher exit is a setup failure, even if its exit code is zero.
-	// The parent must observe a live WSL subtree before testing termination.
+	// An exit after guest readiness is a real early exit, even with a zero
+	// exit code: the parent must observe a live WSL subtree before testing
+	// termination.
 	err := cmd.Wait()
 	t.Fatalf("WSL launcher exited before tree termination: %v", err)
+}
+
+const (
+	// wsl.exe can die during its own startup, before it ever reaches the WSL
+	// service (hosted runners have reported STATUS_DLL_INIT_FAILED,
+	// 0xc0000142, within milliseconds of launch: #6157, #6158). That is
+	// launcher setup, not the tree under test, so a bounded number of
+	// relaunches is allowed before the guest proves it is running.
+	wslLauncherAttempts = 3
+	wslGuestReady       = "goobers-wsl-guest-ready"
+	wslReadyTimeout     = 60 * time.Second
+	// wslRequireGuestEnv turns a host whose WSL never runs a guest command
+	// from a skip into a failure, for hosts that must have a working distro.
+	wslRequireGuestEnv = "GOOBERS_REQUIRE_WSL_GUEST"
+)
+
+// requireFunctionalWSL probes whether WSL can run a guest command at all. A
+// host with wsl.exe but no usable distro (hosted Windows runners exit with
+// 0xffffffff on every launch) cannot exercise WSL descendants, so the test
+// skips with the probe's diagnostics unless wslRequireGuestEnv demands WSL.
+// The probe retries like the helper so one launcher startup failure is not
+// mistaken for a non-functional WSL; it also boots the distro, so the timed
+// helper launch below does not pay for a cold start.
+func requireFunctionalWSL(t *testing.T) {
+	t.Helper()
+	var failures []string
+	for attempt := 1; attempt <= wslLauncherAttempts; attempt++ {
+		failure := probeWSLGuest()
+		if failure == "" {
+			return
+		}
+		failures = append(failures, fmt.Sprintf("attempt %d/%d: %s", attempt, wslLauncherAttempts, failure))
+		if attempt < wslLauncherAttempts {
+			time.Sleep(time.Duration(attempt) * time.Second) // Back off before relaunching a launcher that failed to initialize.
+		}
+	}
+	msg := "WSL is installed but never ran a guest command: " + strings.Join(failures, "; ")
+	if os.Getenv(wslRequireGuestEnv) == "1" {
+		t.Fatalf("%s (%s=1 requires a functional WSL distro)", msg, wslRequireGuestEnv)
+	}
+	t.Skipf("%s (set %s=1 to fail instead)", msg, wslRequireGuestEnv)
+}
+
+// probeWSLGuest runs one guest command and returns why it did not run, or ""
+// once the guest printed the readiness line.
+func probeWSLGuest() string {
+	ctx, cancel := context.WithTimeout(context.Background(), wslReadyTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-e", "sh", "-c", "echo "+wslGuestReady)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	if strings.Contains(string(out), wslGuestReady) {
+		return ""
+	}
+	// wsl.exe reports its own errors in UTF-16; dropping the NULs keeps the
+	// ASCII diagnostics readable.
+	return fmt.Sprintf("wait=%v, output=%q", err, strings.TrimSpace(strings.ReplaceAll(string(out), "\x00", "")))
+}
+
+// startReadyWSLGuest launches wsl.exe and returns once the guest command has
+// printed its readiness line, so the launcher PID is only published for a WSL
+// subtree that actually started. A launcher that exits first is reaped and
+// reported so the caller can relaunch it.
+func startReadyWSLGuest(attempt int) (*exec.Cmd, error) {
+	_, _ = fmt.Fprintf(os.Stderr, "WSL helper: starting wsl.exe (attempt %d/%d)\n", attempt, wslLauncherAttempts)
+	stdout, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("create WSL launcher stdout pipe: %w", err)
+	}
+	cmd := exec.Command("wsl.exe", "-e", "sh", "-c", "echo "+wslGuestReady+"; exec sleep 90")
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = os.Stderr
+	startErr := cmd.Start()
+	_ = stdoutWriter.Close()
+	if startErr != nil {
+		_ = stdout.Close()
+		return nil, fmt.Errorf("start WSL launcher: %w", startErr)
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "WSL helper: started launcher PID %d\n", cmd.Process.Pid)
+	// Echo the launcher's output for diagnostics. The read ends at the
+	// readiness line or when the launcher, the only writer, exits.
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		_, _ = os.Stdout.WriteString(scanner.Text() + "\n")
+		if strings.TrimSpace(scanner.Text()) == wslGuestReady {
+			_, _ = os.Stderr.WriteString("WSL helper: guest is running\n")
+			// Keep draining so the launcher never writes into a closed pipe.
+			go func() {
+				_, _ = io.Copy(os.Stdout, stdout)
+				_ = stdout.Close()
+			}()
+			return cmd, nil
+		}
+	}
+	_ = stdout.Close()
+	exitErr := errors.Join(cmd.Wait(), scanner.Err())
+	if exitErr == nil {
+		exitErr = errors.New("exit status 0")
+	}
+	return nil, fmt.Errorf("launcher PID %d exited before guest readiness (attempt %d/%d): %w",
+		cmd.Process.Pid, attempt, wslLauncherAttempts, exitErr)
 }
 
 func TestKillTerminatesEscapedDescendants(t *testing.T) {
@@ -385,6 +559,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
 		t.Fatalf("WSL integration was explicitly required but wsl.exe is unavailable: %v", err)
 	}
+	requireFunctionalWSL(t)
 
 	marker := filepath.Join(t.TempDir(), "wsl.pid")
 	// Keep helper startup errors rather than reducing every setup failure to a
@@ -430,7 +605,9 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	var wslPID int
 	var markerData []byte
 	var markerErr error
-	deadline := time.Now().Add(10 * time.Second)
+	// The helper publishes the PID only after the guest is running, which can
+	// include a cold distro boot and launcher relaunches (#6157).
+	deadline := time.Now().Add(wslReadyTimeout)
 	for time.Now().Before(deadline) {
 		markerData, markerErr = os.ReadFile(marker)
 		if markerErr == nil {
@@ -445,9 +622,10 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if wslPID <= 0 {
-		t.Fatalf("WSL process did not record its pid within 10s: launcher=%d alive=%t, marker=%q, error=%v", cmd.Process.Pid, Alive(cmd.Process.Pid), markerData, markerErr)
+		t.Fatalf("WSL process did not record its pid within %s: launcher=%d alive=%t, marker=%q, error=%v", wslReadyTimeout, cmd.Process.Pid, Alive(cmd.Process.Pid), markerData, markerErr)
 	}
-	if !Alive(wslPID) {
+	wslStart, ok := startTime(wslPID)
+	if !ok {
 		t.Fatalf("WSL process %d exited before tree termination", wslPID)
 	}
 	// Starting wsl.exe and its brokered descendants are asynchronous. Wait for
@@ -456,7 +634,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	var guestDescendants []processIdentity
 	for time.Now().Before(deadline) {
 		var snapshotErr error
-		guestDescendants, snapshotErr = snapshotDescendants(wslPID)
+		guestDescendants, snapshotErr = snapshotDescendants(wslPID, processLifetime{start: wslStart})
 		if snapshotErr != nil {
 			t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
 		}
@@ -475,7 +653,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	var brokeredDescendant processIdentity
 	for brokeredDescendant.pid == 0 && time.Now().Before(deadline) {
 		var snapshotErr error
-		guestDescendants, snapshotErr = snapshotDescendants(wslPID)
+		guestDescendants, snapshotErr = snapshotDescendants(wslPID, processLifetime{start: wslStart})
 		if snapshotErr != nil {
 			t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
 		}

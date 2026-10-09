@@ -26,6 +26,10 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 // snapshotted Item and workflow Definition); RepoRef is not journaled, so the
 // caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
+	// OnRecoveryOwned runs with journal and cancellation ownership acquired,
+	// before stage effects. The context observes operator interruption. Other
+	// callback errors leave execution suspended.
+	OnRecoveryOwned func(context.Context) error
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
 	// Machine is the compiled workflow (#9) this run was walking. When nil,
@@ -142,6 +146,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	if err := refuseChildWorkflowResume(in.Machine, dir); err != nil {
+		return Result{}, err
+	}
 
 	// A fresh registrar/scrubber per resume, exactly like Start — a run's
 	// secrets have no business outliving one process's handling of it.
@@ -151,8 +158,25 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowChildJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend recovered child journal: %w", err)
+	}
+	defer releaseJournal()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		if in.OnRecoveryOwned != nil {
+			if err := in.OnRecoveryOwned(stalledAttemptContext(ctx)); err != nil {
+				if request, ok := stalledRequestFromContext(ctx); ok {
+					_, state, inspectErr := runPhaseAndState(dir)
+					if inspectErr != nil {
+						return Result{}, inspectErr
+					}
+					return r.finishStalled(in.RunID, jr, state, 0, request)
+				}
+				return Result{}, err
+			}
+		}
 		return r.resumeOwned(ctx, in, jr, registrar, dir)
 	})
 }
@@ -168,6 +192,9 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	}
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
+	}
+	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+		return Result{}, err
 	}
 	in.Target = strings.TrimSpace(in.Target)
 	if in.Target == "" && !in.Complete {
@@ -195,6 +222,11 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowChildJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend resumed child journal: %w", err)
+	}
+	defer releaseJournal()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
 		rd, err := journal.OpenRead(dir)
@@ -349,6 +381,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if res, refused, verr := r.verifyResumePin(jr, &in, rd, id); refused || verr != nil {
 		return res, verr
 	}
+	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+		return Result{}, err
+	}
 	if err := resetRetryBackoffOnResume(jr, events); err != nil {
 		return Result{}, fmt.Errorf("runner: clear retry backoff on resume: %w", err)
 	}
@@ -370,7 +405,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		seedEvents = events
 	}
 
-	f, err := r.newResumeFrame(ctx, jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	f, err := r.newResumeFrame(ctx, jr, rd, in, id, registrar, events, seedEvents, rerun, humanProgress)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
 	}
@@ -406,6 +441,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	// the walkState is built above, so they are filled in rather than rebuilt
 	// into a second StartInput (#4235).
 	ws.in.Item, ws.in.RunControls = item, runControls
+	f.seedGateBudgets(in.Machine)
 	if completedGate != nil {
 		next, res, advance, gerr := r.gateTransition(ctx, ws, *completedGate)
 		if gerr != nil {
@@ -454,7 +490,6 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return res, nil
 	}
 
-	f.seedGateBudgets(in.Machine)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -655,7 +690,7 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 // have been resolved, so resumeOwned fills those two in.
 func (r *Runner) newResumeFrame(
 	ctx context.Context,
-	jr *journal.Run, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
+	jr *journal.Run, rd *journal.Reader, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
 ) (*resumeFrame, error) {
 	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
@@ -667,13 +702,14 @@ func (r *Runner) newResumeFrame(
 	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
 		branch = activeParallel.current().id
 	}
-	startIn, err := r.restoreResumeWorkspaceRevision(ctx, StartInput{
+	startIn, err := r.restoreExecutionWorkspace(ctx, rd, id, StartInput{
 		instanceID:       id.InstanceID,
 		configGeneration: id.ConfigGeneration,
 		RunID:            in.RunID,
 		Machine:          in.Machine,
 		GooberDigest:     in.GooberDigest,
 		Gaggle:           id.Gaggle,
+		Child:            id.Child,
 		Trigger:          id.Trigger,
 		RepoRef:          in.RepoRef,
 		// RequiredCapabilities is intentionally nil on resume: a run only reaches
@@ -847,6 +883,9 @@ func (f *resumeFrame) attemptContext(machine *workflow.Machine, stage string) *r
 	if _, isTask := machine.Task(stage); !isTask || f.concurrentResume {
 		return nil
 	}
+	if restored, ok := recoverChildTaskContext(f.segment, stage); ok {
+		return restored
+	}
 	if attempt := interruptedAttempt(f.segment, stage); attempt > 0 {
 		return &resumeContext{
 			stage:                  stage,
@@ -899,13 +938,11 @@ func (r *Runner) replayFinishedTask(ctx context.Context, f *resumeFrame, startSt
 	if ws.parallel != nil {
 		switch f.lastResult.Status {
 		case apiv1.ResultFailure:
-			if !t.ContinueOnError {
-				if _, nextIsGate := ws.in.Machine.Gate(t.Next); !nextIsGate {
-					ws.parallel.markCurrentFailed()
-					ws.lastResult.Outputs = nil
-					*startState = workflow.TargetJoin
-					return Result{}, true, nil
-				}
+			if failsParallelBranch(ws.in.Machine, t, isInvalidHandoffFailure(f.lastResult)) {
+				ws.parallel.markCurrentFailed()
+				ws.lastResult.Outputs = nil
+				*startState = workflow.TargetJoin
+				return Result{}, true, nil
 			}
 		case apiv1.ResultNoWork:
 			ws.parallel.markCurrentNoOutput()
@@ -1149,6 +1186,22 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 		case journal.EventGatePaused, journal.EventGateStarted, journal.EventGateEvaluated:
 			return "", false
 		case journal.EventRunnerAnnotation:
+			if e.Runner["kind"] == handoffValidationRetryAnnotationKind && e.Stage == subjectStage {
+				if _, ok := invalidHandoffRetryFromResult(subject); !ok {
+					return "", false
+				}
+				// An escalated annotation never reroutes: recovery replays the
+				// consumer's result so the escalation is re-applied instead.
+				target, ok := invalidHandoffPrunedProducer(e)
+				if !ok {
+					return "", false
+				}
+				switch target {
+				case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+					return "", false
+				}
+				return target, true
+			}
 			if e.Runner["kind"] != retryDecisionKind || e.Stage != subjectStage {
 				continue
 			}
@@ -1446,18 +1499,13 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 				},
 			}})
 		case journal.EventRunnerAnnotation:
-			kind, _ := e.Runner["kind"].(string)
-			if kind != "learning.episode.injected" || e.Ref == nil {
+			if pruned, ok := pruneInvalidHandoffPointers(out, branchPointers, e); ok {
+				out = pruned
 				continue
 			}
-			record(e.Branch, []apiv1.ContextPointer{{
-				Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
-				Integrity: e.Ref.Integrity,
-				Artifact: &apiv1.ArtifactPointer{
-					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
-					MediaType: "application/json", Integrity: e.Ref.Integrity,
-				},
-			}})
+			if pointer, ok := learningEpisodePointer(e); ok {
+				record(e.Branch, []apiv1.ContextPointer{pointer})
+			}
 		case journal.EventParallelFinished:
 			spec, ok := machine.Parallel(e.Parallel)
 			if ok && e.Target == spec.Join {
@@ -1478,6 +1526,23 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 		}
 	}
 	return out
+}
+
+// learningEpisodePointer returns the context pointer journaled by a
+// learning-episode injection annotation.
+func learningEpisodePointer(e journal.Event) (apiv1.ContextPointer, bool) {
+	kind, _ := e.Runner["kind"].(string)
+	if kind != "learning.episode.injected" || e.Ref == nil {
+		return apiv1.ContextPointer{}, false
+	}
+	return apiv1.ContextPointer{
+		Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
+		Integrity: e.Ref.Integrity,
+		Artifact: &apiv1.ArtifactPointer{
+			Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+			MediaType: "application/json", Integrity: e.Ref.Integrity,
+		},
+	}, true
 }
 
 func runnerUint64(value any) uint64 {
@@ -1596,10 +1661,8 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			lastStage[event.Branch] = event
 			switch event.Status {
 			case string(apiv1.ResultFailure):
-				if taskKnown && !task.ContinueOnError {
-					if _, nextIsGate := machine.Gate(task.Next); !nextIsGate {
-						branch.failed = true
-					}
+				if taskKnown && failsParallelBranch(machine, task, isInvalidHandoffFailureEvent(event)) {
+					branch.failed = true
 				}
 			case string(apiv1.ResultNoWork):
 				branch.noOutput = true
@@ -1641,6 +1704,9 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			// correction is journaled and not dispatched, and the repass's
 			// derived-integrity downgrade silently disappears.
 			if branch == nil {
+				continue
+			}
+			if replayInvalidHandoffAnnotation(branch, event) {
 				continue
 			}
 			kind, _ := event.Runner["kind"].(string)
@@ -1789,7 +1855,9 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		if target == event.Target {
 			transition.task = task
 			transition.gate = gate
-			transition.aggregate = false
+			// An invalid-handoff escalation has no task or gate to replay; it
+			// escalates the run directly like an aggregate terminal.
+			transition.aggregate = task == nil && gate == nil
 			break
 		}
 	}
@@ -1890,6 +1958,19 @@ func isInterruptedAttemptMarker(e journal.Event) bool {
 func gateRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			gateName := "handoff.validation:" + e.Stage
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			seed[gateName] = n
+			continue
+		}
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
@@ -1951,6 +2032,20 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 func targetRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
+			target, _ := e.Runner["target"].(string)
+			n, ok := runnerInt(e.Runner["repassAttempt"])
+			if target == "" || !ok {
+				continue
+			}
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			if n > seed[target] {
+				seed[target] = n
+			}
+			continue
+		}
 		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra || e.Verdict == gate.OutcomeTimeout {
 			continue
 		}
@@ -2187,12 +2282,13 @@ func interruptedAttemptMutated(events []journal.Event, stageName string, attempt
 }
 
 func policyAttemptsBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	yielded := childYieldedAttempts(events, stageName)
 	var attempts int32
 	for _, event := range events {
 		if event.Type != journal.EventStageStarted ||
 			event.Stage != stageName ||
 			event.Attempt >= interruptedAttempt ||
-			event.AttemptClass == journal.AttemptInfra {
+			event.AttemptClass == journal.AttemptInfra || yielded[event.Attempt] {
 			continue
 		}
 		attempts++
@@ -2235,4 +2331,26 @@ func resumeItem(rd *journal.Reader, id journal.RunIdentity) (*apiv1.BacklogItem,
 		return &item, nil
 	}
 	return nil, nil
+}
+
+// refuseChildWorkflowResume checks the supplied or pinned definition without
+// repairing the journal or claiming execution. Existing resume code retains
+// ownership of malformed/missing-journal diagnostics and terminalization.
+func refuseChildWorkflowResume(machine *workflow.Machine, dir string) error {
+	if machine != nil {
+		return workflow.RefuseChildWorkflowExecution(machine.Def.Spec)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		return nil
+	}
+	id, err := rd.Identity()
+	if err != nil {
+		return nil
+	}
+	machine, err = PinnedWorkflowMachine(rd, id)
+	if err != nil {
+		return nil
+	}
+	return workflow.RefuseChildWorkflowExecution(machine.Def.Spec)
 }

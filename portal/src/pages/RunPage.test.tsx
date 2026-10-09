@@ -16,12 +16,15 @@ import { populatedDaemonFixtures } from "../test/daemonFixtures";
 
 const portalStyles = readFileSync("src/styles.css", "utf8");
 
+// 01JZ441DAEMONAPI has claimed work, so its heading names the work item (#5428).
+const claimedRunHeading = "#3088 · Operator status progress";
+
 const canonicalRuns = [
-  ["01JZ441DAEMONAPI", "Running"],
-  ["01JZ455ESCALATE", "Completed"],
-  ["01JZ400FAILED", "Failed"],
-  ["01JZ300ABORTED", "Aborted"],
-  ["01JZ402DASHBOARD", "Escalated"],
+  ["01JZ441DAEMONAPI", "Running", claimedRunHeading],
+  ["01JZ455ESCALATE", "Completed", "Run 01JZ455ESCALATE"],
+  ["01JZ400FAILED", "Failed", "Run 01JZ400FAILED"],
+  ["01JZ300ABORTED", "Aborted", "Run 01JZ300ABORTED"],
+  ["01JZ402DASHBOARD", "Escalated", "Run 01JZ402DASHBOARD"],
 ] as const;
 
 beforeEach(() => {
@@ -33,12 +36,22 @@ afterEach(() => {
 });
 
 describe("run detail", () => {
-  it.each(canonicalRuns)("deep-links %s with canonical %s status", async (runId, status) => {
+  it("shows recorded child waits on the run page and navigates to the child", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!detail) throw new Error("Expected run fixture");
+    detail.childActivity = { status: "recorded", parked: true, waits: [{ runId: "01JZ400FAILED", stage: "implement", branch: 0, action: "merge", since: "2026-10-09T15:00:00Z", sequence: 7 }] };
+    renderRun(detail.id, new FixtureDaemonClient(fixtures));
+    expect(await screen.findByRole("heading", { name: "Child workflows" })).toBeInTheDocument();
+    expect(screen.getByText(/Awaiting merge of child changes/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open child 01JZ400FAILED" }));
+    expect(window.location.hash).toBe("#/run/01JZ400FAILED");
+  });
+
+  it.each(canonicalRuns)("deep-links %s with canonical %s status", async (runId, status, heading) => {
     renderRun(runId);
 
-    expect(
-      await screen.findByRole("heading", { name: `Run ${runId}` }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
     expect(screen.getByText(status, { selector: ".status-badge" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "What this run did" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Execution graph" })).not.toBeInTheDocument();
@@ -462,7 +475,7 @@ describe("run detail", () => {
     });
     renderRun("01JZ441DAEMONAPI", client);
 
-    await screen.findByRole("heading", { name: "Run 01JZ441DAEMONAPI" });
+    await screen.findByRole("heading", { name: claimedRunHeading });
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Reveal run files" })).not.toBeInTheDocument();
     });
@@ -1287,7 +1300,7 @@ describe("run detail", () => {
     }
     const client = new LiveFixtureClient(fixtures);
     renderRun(runId, client);
-    await screen.findByRole("heading", { name: `Run ${runId}` });
+    await screen.findByRole("heading", { name: claimedRunHeading });
     await openRunTab("Diagnostics");
 
     expect(
@@ -1469,7 +1482,7 @@ describe("run detail", () => {
     const runId = "01JZ441DAEMONAPI";
     const client = new LiveFixtureClient(populatedDaemonFixtures());
     renderRun(runId, client);
-    await screen.findByRole("heading", { name: `Run ${runId}` });
+    await screen.findByRole("heading", { name: claimedRunHeading });
     await openRunTab("Diagnostics");
 
     client.holdRefresh();
@@ -1481,7 +1494,7 @@ describe("run detail", () => {
     // The refresh is genuinely pending (not yet resolved), and the run
     // detail must stay fully visible without any busy banner appearing.
     expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: claimedRunHeading })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
 
@@ -1489,7 +1502,7 @@ describe("run detail", () => {
 
     expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
     expect(screen.getByText("Unable to refresh this run.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: claimedRunHeading })).toBeInTheDocument();
     expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
 
     client.holdRefresh();
@@ -1499,14 +1512,14 @@ describe("run detail", () => {
     });
 
     expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: claimedRunHeading })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
 
     act(() => client.failRefresh(new Error("Still unable to refresh this run.")));
 
     expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
     expect(screen.getByText("Still unable to refresh this run.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: claimedRunHeading })).toBeInTheDocument();
   });
 
   it("keeps repasses on one graph node and exposes attempts in sequence", async () => {
@@ -1607,7 +1620,9 @@ describe("run detail", () => {
       throw new Error("Expected active run fixture.");
     }
     const longId = "01JZ441DAEMONAPI-EXTREMELY-LONG-RUN-IDENTIFIER";
-    fixtures.runDetails = { [longId]: { ...original, id: longId } };
+    fixtures.runDetails = {
+      [longId]: { ...original, id: longId, operator: { ...original.operator!, issue: undefined } },
+    };
     fixtures.runEvents = {
       [longId]: {
         ...fixtures.runEvents?.["01JZ441DAEMONAPI"]!,
@@ -1660,6 +1675,60 @@ describe("run detail", () => {
     );
     expect(screen.queryByRole("link", { name: /View core \/ implementation in/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Workflow pin")).not.toBeInTheDocument();
+    expect(document.querySelector(".run-secondary-id")).toBeNull();
+    expect(screen.queryByText("Claimed work")).not.toBeInTheDocument();
+  });
+
+  it("headlines claimed work while keeping the run ID secondary and copyable (#5428)", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!detail) {
+      throw new Error("Expected active run fixture.");
+    }
+    detail.trigger = { kind: "manual", ref: detail.workflow };
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+
+    renderRun("01JZ441DAEMONAPI", new FixtureDaemonClient(fixtures));
+
+    const heading = await screen.findByRole("heading", { name: claimedRunHeading });
+    expect(heading).toHaveAttribute("title", claimedRunHeading);
+    expect(screen.queryByRole("heading", { name: "Run 01JZ441DAEMONAPI" })).not.toBeInTheDocument();
+    expect(document.querySelector(".run-secondary-id")).toHaveTextContent(/^Run 01JZ441DAEMONAPI/);
+    expect(screen.getByText("Claimed work").nextElementSibling).toHaveTextContent(/^#3088$/);
+    expect(screen.getByText("Claimed work").nextElementSibling).toHaveAttribute(
+      "title",
+      claimedRunHeading,
+    );
+    expect(screen.getByText("Trigger").nextElementSibling).toHaveTextContent(
+      /^manual · implementation$/,
+    );
+    await user.click(screen.getByRole("button", { name: "Copy full run ID" }));
+    expect(writeText).toHaveBeenCalledWith("01JZ441DAEMONAPI");
+  });
+
+  it("prefers a published display title and keeps long titles fully readable (#5428)", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!detail?.operator) {
+      throw new Error("Expected active run fixture with an operator summary.");
+    }
+    const displayTitle = `Investigate #3088: ${"Operator status progress across every gaggle ".repeat(4).trim()}`;
+    detail.operator.displayTitle = displayTitle;
+
+    renderRun("01JZ441DAEMONAPI", new FixtureDaemonClient(fixtures));
+
+    const heading = await screen.findByRole("heading", { name: displayTitle });
+    expect(heading).toHaveTextContent(displayTitle);
+    expect(heading).toHaveAttribute("title", displayTitle);
+    expect(screen.queryByRole("heading", { name: claimedRunHeading })).not.toBeInTheDocument();
+    // Narrow layouts hide the heading description, so the secondary run ID
+    // must live outside it to stay visible and readable.
+    const secondary = document.querySelector(".run-secondary-id");
+    expect(secondary).toHaveTextContent(/^Run 01JZ441DAEMONAPI/);
+    expect(secondary?.closest(".run-heading > div > p")).toBeNull();
+    expect(portalStyles).toMatch(/\.run-heading > div > p\s*\{\s*display:\s*none;/);
+    expect(portalStyles).toMatch(/\.run-heading-title h1\s*\{[^}]*overflow-wrap:\s*anywhere/s);
   });
 
   it("surfaces the coded failure reason and reveals its exact failing event", async () => {

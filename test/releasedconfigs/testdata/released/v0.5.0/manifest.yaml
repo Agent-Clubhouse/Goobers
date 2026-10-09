@@ -1,0 +1,76 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: acme-instance
+spec:
+  instance:
+    name: acme
+    environment: dev
+  # portal:
+  #   brand:
+  #     # Human-readable deployment name shown in the sidebar and browser tab.
+  #     name: "Acme Ops"
+  #     # One-line tagline shown under the brand name.
+  #     tagline: "AI workforce platform"
+  #     # Single-character mark shown in the topbar.
+  #     scopeMark: "A"
+  #     # Optional same-origin assets served from <instance-root>/assets/.
+  #     logoUrl: "/assets/logo.svg"
+  #     faviconUrl: "/assets/favicon.ico"
+  #   theme:
+  #     # Optional accent token overrides for light and dark mode.
+  #     accentLight: "#6847d9"
+  #     accentDark: "#a98cff"
+  #     accentSoftLight: "#eee9ff"
+  #     accentSoftDark: "#2c2445"
+  #     accentInkLight: "#4c2db8"
+  #     accentInkDark: "#c5b4ff"
+  #   support:
+  #     # Optional support hooks shown in the sidebar footer.
+  #     docsUrl: "https://acme.example/docs/goobers"
+  #     issuesUrl: "https://acme.example/support"
+  #     chatUrl: "slack://channel/C000EXAMPLE"
+  #     links:
+  #       - label: "Runbooks"
+  #         url: "https://acme.example/runbooks"
+  #       - label: "On-call"
+  #         url: "https://acme.example/oncall"
+  # Named, reusable connections. Never put an inline token here (CFG-009,
+  # SEC-010). Connections and secretRef are accepted but not yet used to source
+  # credentials: tokens come from instance.yaml repos[] and credentials[], and
+  # a Key Vault secret is read through instance.yaml secretStores (see
+  # docs/guides/secret-stores.md).
+  connections:
+    - name: github-main
+      type: repo
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: acme-kv
+    - name: github-backlog
+      type: backlog
+      provider: github
+      secretRef:
+        name: github-pat
+        keyVault: acme-kv
+  # Gaggles included in this instance's desired state. Each must have a Gaggle
+  # object under gaggles/<name>/.
+  gaggles:
+    - acme-web
+    # Fleet posture (#2777): claude-code adoption alongside Copilot, not a
+    # conversion — acme-web's Copilot config above is untouched. Additive
+    # parallel gaggle working the same reference repo under claude-code, so
+    # the shipped fleet exercises both harnesses rather than leaving one
+    # undogfooded. In a real instance manifest, running both is optional —
+    # this listing just proves neither one costs the other.
+    - acme-web-claude
+    # Polyglot reference (PLY-4 / #1093): a C#/.NET gaggle sharing the same
+    # connections + workflow machinery, differing only in its declared .NET CI
+    # command and `dotnet@9` runtime requirement.
+    - dotnet-service
+    # Java/Maven reference (TSN-2 / #2169), using the same polyglot seams with
+    # its declared Maven CI command and `java@21` runtime requirement.
+    - java-service
+    # Python reference (TSN-3 / #2170): exercises Python 3.12 admission, pytest
+    # as the gaggle CI command, and the allowlisted Python environment.
+    - python-service

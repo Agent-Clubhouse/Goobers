@@ -23,7 +23,7 @@ unexpected warnings, including unrecognized safety codes.
 | SAF003 | Rework's `contextFrom` excludes the rejecting gate's full verdict. |
 | SAF004 | Terminal no-work bypasses an explicitly declared recovery obligation. |
 | SAF005 | A known rejection cycle has no subject-changing effect. |
-| SAF006 | Custom behavior, an invalid advisory annotation, parallel joins, or an analysis bound prevents complete coverage. |
+| SAF006 | Custom behavior blocks proving a reachable obligation, or an invalid advisory annotation, parallel joins, or an analysis bound prevents complete coverage. |
 | SAF007 | An advisory was suppressed, with its original code and reason retained for inspection. |
 
 Findings include the gaggle, workflow, stage, YAML location where available,
@@ -44,9 +44,16 @@ or the dashboard to inspect those advisories.
 The versioned command-effect catalog recognizes exact argv forms, not stage
 names, comments, prompts or capability grants. It recognizes the runner's
 implicit diff in a writable subject workspace, explicit
-`git diff <base>...HEAD` artifacts, empty successful `git diff --check`,
+`git diff <base>...HEAD` artifacts, empty successful `git diff --check`
+and `git diff --check <base>...HEAD` validation (never a patch artifact),
 selected-PR context, `apply-verdict [--gate <name>]`, terminal no-work
-selectors and explicit `remediation-checkpoint --escalate`.
+selectors and explicit `remediation-checkpoint --escalate`. Other built-in
+stage commands, such as `open-pr`, `merge-pr`, `post-merge` and the
+built-in `ci-poll` kind, are recognized in their supported argv forms
+without claiming publication, parking or delivery. `issue-close-out` is
+recognized only with a static supported `status` input; its issue parks do
+not discharge a pending PR rejection. Catalog effects are static wiring
+knowledge, not proof of live delivery or safety.
 
 A publisher on another branch or for another gate does not satisfy a
 rejection. `continueOnError` on publication includes a failed-publication
@@ -55,6 +62,15 @@ Budget-exhaustion paths use the production repass budget helper,
 including the separate infrastructure budget and configured escalation
 branch. Known non-changing cycles are not called infinite loops.
 Unknown agents and scripts are not assumed unable to make progress.
+A custom deterministic stage whose effects are neither cataloged nor asserted
+is reported with `SAF006` only when it prevents proving a concrete obligation
+on a reachable path: patch evidence for a code review it precedes (after the
+last known subject change, or since PR selection while that PR is not bound
+to the workspace), publication of a rejection that is pending when it
+runs, or a subject change in a rejection cycle it belongs to. Context
+gathering, polling, cleanup and other stages no obligation depends on stay
+silent; at most one `SAF006` is reported per stage, naming the first blocked
+obligation found.
 Empty queues and intentional human parks do not imply a recovery defect.
 
 Read-only evidence is deliberately qualified: a detached base checkout is

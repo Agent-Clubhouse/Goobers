@@ -157,6 +157,7 @@ _goobers_completion()
         workflow)
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
+                validate-child) flags+=" --gaggle --parent --stage --backend --json" ;;
             esac
             ;;
         runs)
@@ -403,7 +404,7 @@ _goobers_completion()
             ;;
         workflow)
             if (( COMP_CWORD == 2 )); then
-                candidates="show"
+                candidates="show validate-child"
             elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete workflows 2>/dev/null)"

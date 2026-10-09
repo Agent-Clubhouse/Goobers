@@ -42,16 +42,18 @@ import (
 
 // fakeEngineWorkflows records what the daemon asked the engine to do.
 type fakeEngineWorkflows struct {
-	mu        sync.Mutex
-	described []string
-	awaited   []string
-	cancelled []string
+	mu         sync.Mutex
+	described  []string
+	awaited    []string
+	cancelled  []string
+	terminated []string
 
-	notFound    bool
-	describeErr error
-	cancelErr   error
-	status      enumspb.WorkflowExecutionStatus
-	getErr      error
+	notFound     bool
+	terminateErr error
+	describeErr  error
+	cancelErr    error
+	status       enumspb.WorkflowExecutionStatus
+	getErr       error
 	// gate, when non-nil, blocks Get until closed — standing in for a
 	// workflow that is still executing while the daemon holds the attachment.
 	gate chan struct{}
@@ -69,6 +71,7 @@ type fakeEngineWorkflows struct {
 func (f *fakeEngineWorkflows) DescribeWorkflowExecution(_ context.Context, workflowID, _ string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 	f.mu.Lock()
 	f.described = append(f.described, workflowID)
+	status := f.status
 	f.mu.Unlock()
 	if f.notFound || (len(f.workflowIDs) > 0 && !f.knownWorkflowID(workflowID)) {
 		return nil, serviceerror.NewNotFound("workflow not found")
@@ -76,7 +79,6 @@ func (f *fakeEngineWorkflows) DescribeWorkflowExecution(_ context.Context, workf
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}
-	status := f.status
 	if status == enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED {
 		status = enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING
 	}
@@ -101,6 +103,19 @@ func (f *fakeEngineWorkflows) CancelWorkflow(_ context.Context, workflowID, _ st
 		return serviceerror.NewNotFound("workflow not found")
 	}
 	return f.cancelErr
+}
+
+// TerminateWorkflow closes the fake's workflow on the server side: every
+// later describe reports it terminated, with no worker involved.
+func (f *fakeEngineWorkflows) TerminateWorkflow(_ context.Context, workflowID, _, _ string, _ ...any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminated = append(f.terminated, workflowID)
+	if f.terminateErr != nil {
+		return f.terminateErr
+	}
+	f.status = enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED
+	return nil
 }
 
 // knownWorkflowID reports whether workflowID is one the fake actually hosts.
@@ -396,7 +411,7 @@ func TestSweepStalledRunsCancelsEngineDrivenRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	createDriverRun(t, layout.RunsDir(), "stalled-engine-run", "implementation", "", journal.DriverEngine, now.Add(-2*time.Hour), nil)
+	createDriverRun(t, layout.RunsDir(), "stalled-engine-run", "implementation", "", journal.DriverEngine, now.Add(-time.Hour), nil)
 	createDriverRun(t, layout.RunsDir(), "stalled-runner-run", "implementation", "", "", now.Add(-2*time.Hour), nil)
 
 	fake := &fakeEngineWorkflows{}
@@ -450,7 +465,7 @@ func TestSweepStalledRunsRefusesEngineRunWithoutEngineClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	createDriverRun(t, layout.RunsDir(), "orphan-engine-run", "implementation", "", journal.DriverEngine, now.Add(-2*time.Hour), nil)
+	createDriverRun(t, layout.RunsDir(), "orphan-engine-run", "implementation", "", journal.DriverEngine, now.Add(-time.Hour), nil)
 
 	err = sweepStalledRuns(
 		context.Background(), layout, nil, runRunner, nil, nil,

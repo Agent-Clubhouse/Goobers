@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/pathutil"
 )
 
 // defaultReadLineCap bounds a range-less read_input call — large enough for
@@ -27,14 +29,20 @@ const maxGrepMatches = 200
 
 // Toolset implements the generic tools against a fixed Config, loaded once
 // at process start. It never re-reads Config or talks to the journal —
-// every call is a plain, local filesystem operation scoped to Workspace.
+// artifact I/O stays workspace-scoped; optional child operations use only the
+// trusted endpoint and grant captured at startup.
 type Toolset struct {
-	cfg Config
+	cfg            Config
+	childTransport http.RoundTripper
 }
 
 // NewToolset builds a Toolset from an already-loaded, already-validated
 // Config.
 func NewToolset(cfg Config) *Toolset {
+	if cfg.ChildWorkflows != nil {
+		access := *cfg.ChildWorkflows
+		cfg.ChildWorkflows = &access
+	}
 	return &Toolset{cfg: cfg}
 }
 
@@ -57,10 +65,10 @@ func (t *Toolset) GetRunInfo() RunInfo {
 }
 
 // resolveInWorkspace resolves rel against the workspace root using the same
-// no-follow-anywhere-in-the-chain discipline as resolveRooted (see its doc
+// no-follow-anywhere-in-the-chain discipline as pathutil.ResolveRootedPath (see its doc
 // comment) — this is just that logic scoped to t.cfg.Workspace.
 func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string, error) {
-	return resolveRooted(t.cfg.Workspace, rel, createMissingDirs)
+	return pathutil.ResolveRootedPath(t.cfg.Workspace, rel, createMissingDirs)
 }
 
 // PublishOutput writes the task's single declared control target: artifactFile

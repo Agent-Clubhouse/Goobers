@@ -72,6 +72,12 @@ type Kit struct {
 	// Mode is the completion contract this stage owes (invoke | review);
 	// empty reads as invoke. See Mode.
 	Mode Mode `json:"mode,omitempty"`
+	// ReviewRequiresDiff is set on a review kit whose gate reviews
+	// implementation work (#5414): the pod fails the review closed when the
+	// run diff it computes for the reviewer is empty, instead of asking the
+	// reviewer to judge a checkout that does not carry the run's commits.
+	// Omitted (false) in every kit that predates it.
+	ReviewRequiresDiff bool `json:"reviewRequiresDiff,omitempty"`
 	// Goobers are the specs the executor routes on, keyed by goober name.
 	Goobers map[string]apiv1.GooberSpec `json:"goobers"`
 	// Instructions are each goober's system instructions.

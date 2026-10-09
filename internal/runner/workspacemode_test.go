@@ -267,6 +267,38 @@ func TestPinnedWorkspaceBacksRepositoryStagesButHonorsScratch(t *testing.T) {
 	}
 }
 
+func TestPinnedWorkspaceFallsBackForScratchWhenScratchDirMissing(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	r.cfg.ScratchDir = ""
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := r.cfg.Worktrees.AcquirePinned(context.Background(), worktree.PinnedOptions{
+		RepoURL: repoURL, RunID: in.RunID, BaseRef: "main", Branch: "goobers/test/" + in.RunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Release() }()
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+
+	workspace, err := r.createStageWorkspace(context.Background(), in, "scratch", apiv1.WorkspaceScratch, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.path != lease.Worktree.Path {
+		t.Fatalf("stage path = %q, want legacy pinned workspace %q", workspace.path, lease.Worktree.Path)
+	}
+	if workspace.worktree != lease.Worktree {
+		t.Fatalf("stage worktree = %+v, want pinned lease %+v", workspace.worktree, lease.Worktree)
+	}
+	if err := workspace.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPinnedWorkspaceHonorsReboundBranchAndSyncBase(t *testing.T) {
 	r, in := readOnlyWorkspaceRunner(t)
 	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)

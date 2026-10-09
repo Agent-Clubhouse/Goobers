@@ -1,0 +1,169 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"slices"
+
+	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
+)
+
+type childCredentialLease struct {
+	ceiling credentials.ChildCeiling
+	release func()
+	verify  func(context.Context) error
+}
+
+func (l *childCredentialLease) finish(ctx context.Context) error {
+	if l.verify == nil {
+		return nil
+	}
+	if err := l.verify(ctx); err != nil {
+		return credentialPlaneError(http.StatusForbidden, "child_credentials_revoked", "child delegation was revoked before credentials could be returned")
+	}
+	return nil
+}
+
+func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Context, pinned pinnedStage, requestedStage ...string) (context.Context, *childCredentialLease, error) {
+	attempt, err := s.childCredentialAttempt(ctx, pinned.identity, requestedStage)
+	if err != nil {
+		return nil, nil, err
+	}
+	if pinned.identity.Child == nil {
+		return ctx, &childCredentialLease{release: func() {}}, nil
+	}
+	refuse := func() (context.Context, *childCredentialLease, error) {
+		return nil, nil, credentialPlaneError(http.StatusForbidden, "child_credentials_unavailable", "child source, current delegation or credential custody could not be verified")
+	}
+	if s.childCredentials == nil {
+		return refuse()
+	}
+	dir, err := s.layout.FindRunDir(pinned.identity.RunID)
+	if err != nil {
+		return refuse()
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return refuse()
+	}
+	stored, err := runner.PinnedChildCredentials(reader, pinned.identity)
+	if err != nil || stored == nil {
+		return refuse()
+	}
+	lease, err := s.childCredentials(ctx, pinned.identity)
+	if err != nil {
+		return refuse()
+	}
+	if lease == nil || lease.release == nil || lease.verify == nil {
+		return refuse()
+	}
+	if !sameChildCeiling(*stored, lease.ceiling) {
+		lease.release()
+		return refuse()
+	}
+	effective := lease.ceiling
+	if attempt != nil {
+		effective = lease.ceiling.ModelOnly()
+		if !sameChildCeiling(effective, attempt.contract.Ceiling) {
+			lease.release()
+			return refuse()
+		}
+	}
+	childCtx, err := credentials.WithChildCeiling(ctx, effective)
+	if err != nil {
+		lease.release()
+		return refuse()
+	}
+	if attempt != nil {
+		verify := lease.verify
+		lease.verify = func(ctx context.Context) error {
+			if err := attempt.active(ctx); err != nil {
+				return err
+			}
+			if err := attempt.custody(ctx); err != nil {
+				return err
+			}
+			return verify(ctx)
+		}
+	}
+	return childCtx, lease, nil
+}
+
+func (s *daemonCredentialService) childCredentialAttempt(ctx context.Context, id journal.RunIdentity, stage []string) (*childAttemptCustody, error) {
+	principal, ok := httpapi.PrincipalFromContext(ctx)
+	if !ok || principal.Issuer != httpapi.GeneratedChildPrincipalIssuer {
+		return nil, nil
+	}
+	a, err := s.childAttempt(ctx)
+	if err != nil || len(stage) != 1 || a.contract.Identity.RunID != id.RunID || a.contract.Stage != stage[0] || a.active(ctx) != nil || a.custody(ctx) != nil {
+		return nil, credentialPlaneError(http.StatusForbidden, "child_attempt_unavailable", "child credentials require the active signed physical attempt and host writer custody")
+	}
+	return &a, nil
+}
+
+func sameChildCeiling(a, b credentials.ChildCeiling) bool {
+	return a.Version == b.Version && a.AllowPublication == b.AllowPublication && slices.Equal(a.AllowedKeys, b.AllowedKeys)
+}
+
+// credentialCeiling independently resolves exact accepted provenance. Its live
+// authority lease stays held until the caller finishes token materialization;
+// a config reload cannot publish revocation in the middle of issuance.
+func (l *queuedChildLauncher) credentialCeiling(ctx context.Context, id journal.RunIdentity) (*childCredentialLease, error) {
+	ref, err := l.retainedChildIdentity(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	a, release, err := l.acquire(ctx, ref.Envelope)
+	if err != nil {
+		return nil, err
+	}
+	source, err := l.queue.ChildProposal(ctx, ref.Child.Identity)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	proposal, err := childworkflow.ValidateRetainedStart(a, ref.Envelope, source.Source)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return &childCredentialLease{ceiling: proposal.CredentialCeiling(), release: release, verify: func(ctx context.Context) error { _, err := l.retainedChildIdentity(ctx, id); return err }}, nil
+}
+
+func (l *queuedChildLauncher) retainedChildIdentity(ctx context.Context, id journal.RunIdentity) (childExecutionRef, error) {
+	return retainedChildExecutionRef(ctx, l.queue, id, true)
+}
+
+// retainedChildExecutionRef verifies accepted provenance without granting new effects.
+// Teardown callers may inspect a cancelled execution; credentials require current authority.
+func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, id journal.RunIdentity, requireCurrent bool) (childExecutionRef, error) {
+	if id.Child == nil || queue == nil {
+		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
+	}
+	identity := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: id.Gaggle, ParentRunID: id.Child.ParentRunID}, StageOccurrence: id.Child.StageOccurrence, InvocationKey: id.Child.InvocationKey}
+	receipt, err := queue.ChildStart(ctx, identity)
+	if err != nil {
+		return childExecutionRef{}, err
+	}
+	if receipt.State != triggerqueue.Dispatching && receipt.State != triggerqueue.Dispatched {
+		return childExecutionRef{}, errors.New("child execution has no claimed start")
+	}
+	service := durableTriggerService{queue: queue}
+	ref, err := service.childReference(ctx, receipt)
+	if err != nil {
+		return childExecutionRef{}, err
+	}
+	if ref.Child.RunID != id.RunID || ref.Lineage != *id.Child || ref.Envelope.WorkflowDigest != id.WorkflowDigest || ref.Envelope.Workflow != id.Workflow || ref.Envelope.ConfigGeneration != id.ConfigGeneration {
+		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
+	}
+	if requireCurrent && (ref.Child.CancellationRequested || ref.Child.State.Terminal()) {
+		return childExecutionRef{}, triggerqueue.ErrParentCancelled
+	}
+	return ref, nil
+}

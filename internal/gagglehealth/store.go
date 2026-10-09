@@ -117,9 +117,10 @@ func (s *Store) Append(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapsho
 		return apiv1.GaggleHealthSnapshot{}, err
 	}
 	s.events = candidate
-	if err := s.writeSnapshot(snapshot); err != nil {
-		return apiv1.GaggleHealthSnapshot{}, err
-	}
+	// The journal is authoritative and the projection is rebuilt on Open and
+	// rewritten on the next Append, so a failed projection write must not
+	// report the committed event as failed.
+	_ = s.writeSnapshot(snapshot)
 	return snapshot, nil
 }
 

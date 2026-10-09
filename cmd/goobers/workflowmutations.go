@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // configReloadHandle is the narrow slice of *configReloader the workflow
@@ -217,18 +218,13 @@ func (s *workflowMutationService) ImportGaggle(_ context.Context, input apiv1.Ga
 	}, nil
 }
 
-// writeWorkflowSourceAtomically writes content to a sibling tmp file and
-// renames it over path so a reader never observes a torn write. Extracted to
+// writeWorkflowSourceAtomically writes content to a hidden sibling tmp file,
+// fsyncs it, and renames it over path so a reader never observes a torn write. Extracted to
 // share the same rename-then-swap contract between the initial edit and the
 // on-rejection rollback.
 func writeWorkflowSourceAtomically(path string, content []byte, mode os.FileMode) error {
-	tmp := path + ".tmp-" + fmt.Sprint(time.Now().UnixNano())
-	if err := os.WriteFile(tmp, content, mode); err != nil {
+	if err := durability.WriteFileAtomic(path, content, mode); err != nil {
 		return fmt.Errorf("write workflow source %s: %w", path, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace workflow source %s: %w", path, err)
 	}
 	return nil
 }

@@ -64,6 +64,12 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	if err := recoveryGit(ctx, repository, io.Discard, "merge-base", "--is-ancestor", record.BaseSHA, currentMain); err != nil {
 		return "", fmt.Errorf("retained checkpoint is stale: its base is not an ancestor of current main: %w", ErrIncompatibleSnapshot)
 	}
+	return applySnapshotTree(ctx, repository, record, currentMain, maxPatchBytes)
+}
+
+// applySnapshotTree only prepares a tree in a private index. Callers validate
+// the record, protected paths and their own ancestry contract before entering.
+func applySnapshotTree(ctx context.Context, repository string, record Record, currentMain string, maxPatchBytes int64) (string, error) {
 	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-restore-*")
 	if err != nil {
 		return "", err
@@ -72,6 +78,17 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 	environment, err := snapshotEnvironment(ctx, repository, directory, currentMain)
 	if err != nil {
 		return "", err
+	}
+	// Git's three-way add/add path can write working files even with --cached.
+	// Isolate its worktree and process directory as well as its index.
+	privateWorktree := filepath.Join(directory, "worktree")
+	if err := os.Mkdir(privateWorktree, 0o700); err != nil {
+		return "", err
+	}
+	for index, value := range environment {
+		if strings.HasPrefix(value, "GIT_WORK_TREE=") {
+			environment[index] = "GIT_WORK_TREE=" + privateWorktree
+		}
 	}
 	if err := recoveryGitWithEnv(ctx, repository, io.Discard, environment, "read-tree", currentMain); err != nil {
 		return "", err
@@ -106,7 +123,7 @@ func applyRetainedPatch(ctx context.Context, repository, directory string, envir
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if err := recoveryGitIO(ctx, repository, io.Discard, file, environment,
+	if err := recoveryGitIO(ctx, filepath.Join(directory, "worktree"), io.Discard, file, environment,
 		"apply", "--cached", "--3way", "--binary", "--whitespace=nowarn", "-"); err != nil {
 		return fmt.Errorf("retained patch cannot be applied cleanly to current main: %w: %w", ErrIncompatibleSnapshot, err)
 	}

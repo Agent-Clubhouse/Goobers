@@ -90,8 +90,20 @@ func acquireExclude(ctx context.Context, path string) (*lock.Handle, error) {
 	}
 }
 
+type excludeTempFile interface {
+	Name() string
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+var (
+	createExcludeTemp  = func(dir, pattern string) (excludeTempFile, error) { return os.CreateTemp(dir, pattern) }
+	replaceExcludeFile = durability.ReplaceFile
+)
+
 func replaceExclude(path string, data []byte) error {
-	file, err := os.CreateTemp(filepath.Dir(path), "exclude-*")
+	file, err := createExcludeTemp(filepath.Dir(path), "exclude-*")
 	if err != nil {
 		return err
 	}
@@ -107,5 +119,5 @@ func replaceExclude(path string, data []byte) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return durability.ReplaceFile(file.Name(), path)
+	return replaceExcludeFile(file.Name(), path)
 }

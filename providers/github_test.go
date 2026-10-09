@@ -1582,6 +1582,48 @@ func TestGitHubProviderRerunFailedChecksAggregatesErrors(t *testing.T) {
 	if !reflect.DeepEqual(reran, []string{"301", "302"}) {
 		t.Fatalf("rerun requests = %v, want [301 302] — one run's failure must not stop the others", reran)
 	}
+	if !errors.Is(err, errCIRerunPermissionDenied) || !strings.Contains(err.Error(), "Actions: Read and write") {
+		t.Fatalf("error = %v, want the Actions write permission gap named", err)
+	}
+}
+
+// TestGitHubProviderRerunFailedChecksNamesOnlyPermission403s pins #4751's
+// classification: a 403 whose body says the token cannot access the resource
+// (fine-grained PAT or App installation) names the missing Actions write
+// grant, while an unrelated 403 such as a rate limit stays a plain error.
+func TestGitHubProviderRerunFailedChecksNamesOnlyPermission403s(t *testing.T) {
+	for _, tc := range []struct {
+		message        string
+		wantPermission bool
+	}{
+		{message: "Resource not accessible by personal access token", wantPermission: true},
+		{message: "Resource not accessible by integration", wantPermission: true},
+		{message: "API rate limit exceeded", wantPermission: false},
+	} {
+		t.Run(tc.message, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, map[string]interface{}{"workflow_runs": []map[string]interface{}{
+					{"id": 401, "status": "completed", "conclusion": "failure", "head_sha": "reviewed"},
+				}})
+			})
+			mux.HandleFunc("/repos/acme/app/actions/runs/401/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				writeJSON(t, w, map[string]string{"message": tc.message})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+			err := provider.RerunFailedChecks(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "reviewed")
+			if err == nil {
+				t.Fatal("expected an error from the 403'd rerun call")
+			}
+			if got := errors.Is(err, errCIRerunPermissionDenied); got != tc.wantPermission {
+				t.Fatalf("permission gap classified = %v, want %v (err = %v)", got, tc.wantPermission, err)
+			}
+		})
+	}
 }
 
 // TestGitHubProviderCheckDetailsDoesNotFallBackOnUnrelated403 guards

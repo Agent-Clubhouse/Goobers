@@ -25,7 +25,22 @@ import (
 // sidesteps this package's lack of a typed HTTP-status error to match against
 // (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
-	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, restOpenPullRequestHooks{
+	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, githubOpenPullRequestHooks())
+}
+
+// CreatePullRequest only attempts creation. It never updates an existing PR or
+// handles an ambiguous response with another mutation; its caller owns recovery.
+func (p *GitHubProvider) CreatePullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestResult{}, err
+	}
+	hooks := githubOpenPullRequestHooks()
+	hooks.isCreateRaceError = nil
+	return createRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, hooks, req.Title, withRunIDFooter(req.Body, req.RunID))
+}
+
+func githubOpenPullRequestHooks() restOpenPullRequestHooks {
+	return restOpenPullRequestHooks{
 		title: func(req PullRequestRequest) string { return req.Title },
 		createBody: func(req PullRequestRequest, title, body string) interface{} {
 			return map[string]interface{}{
@@ -37,7 +52,7 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 			}
 		},
 		isCreateRaceError: IsPullRequestAlreadyExistsError,
-	})
+	}
 }
 
 // FindPullRequestByBranch looks up an open PR for head/base, returning
@@ -855,6 +870,13 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		if !req.MatchesIdentityFields(pr.User.Login, githubUserLogins(pr.Assignees), githubUserLogins(pr.RequestedReviewers)) {
 			continue
 		}
+		titleMatched, err := req.MatchesTitle(pr.Title)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.Number, err)
+		}
+		if !titleMatched {
+			continue
+		}
 		var checkState CheckState
 		if !req.SkipCheckState {
 			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
@@ -1576,10 +1598,11 @@ func (p *GitHubProvider) CancelPendingChecks(ctx context.Context, req CancelPend
 // per run; this is the correct mechanical behavior for "retry what's red; not
 // a partial implementation of per-check retry.
 //
-// Requires the Actions:write permission, which provider:pr:write does not
-// grant today (see #4751) — this call 403s until that credential gap is
-// closed, same failure shape as any other provider write the token lacks
-// scope for.
+// Requires the credential to carry Actions: Read and write — more than the
+// Actions: Read a poll-only provider:pr:write credential needs. A 403 whose
+// body says the resource is not accessible to the token is wrapped with
+// errCIRerunPermissionDenied so the evidence recorded by ci-poll names the
+// missing grant instead of a bare status code (#4751).
 func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryRef, headSHA string) error {
 	if err := requireOwnerRepo(repo); err != nil {
 		return err
@@ -1609,6 +1632,9 @@ func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryR
 			continue
 		}
 		if err := p.do(ctx, http.MethodPost, endpoint, nil, nil); err != nil {
+			if isResourceNotAccessibleError(err) {
+				err = fmt.Errorf("%w: %w", errCIRerunPermissionDenied, err)
+			}
 			rerunErrs = append(rerunErrs, fmt.Errorf("rerun failed jobs for actions run %s: %w", id, err))
 			continue
 		}
@@ -1619,6 +1645,22 @@ func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryR
 		})
 	}
 	return errors.Join(rerunErrs...)
+}
+
+// errCIRerunPermissionDenied marks a rerun-failed-jobs call GitHub refused
+// because the credential lacks the Actions write permission (#4751).
+var errCIRerunPermissionDenied = errors.New("credential lacks the GitHub Actions write permission needed to rerun failed jobs; grant Actions: Read and write to the provider:pr:write credential (see docs/guides/github-token-scopes.md)")
+
+// isResourceNotAccessibleError reports whether err is GitHub's 403 for a
+// token missing a repository permission — "Resource not accessible by
+// personal access token" for a fine-grained PAT, "... by integration" for a
+// GitHub App installation token. Deliberately narrow, like
+// IsForbiddenPATError: rate-limit and SSO 403s carry different bodies.
+func isResourceNotAccessibleError(err error) bool {
+	var responseErr *providerResponseError
+	return errors.As(err, &responseErr) &&
+		responseErr.statusCode == http.StatusForbidden &&
+		strings.Contains(responseErr.body, "Resource not accessible by")
 }
 
 func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo RepositoryRef, checkRunID int64) ([]CheckAnnotation, error) {

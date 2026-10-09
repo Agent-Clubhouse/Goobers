@@ -83,7 +83,11 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
-	Subject string
+	// GeneratedChild is populated only by the signed generated-worker authenticator.
+	GeneratedChild *GeneratedChildPrincipal
+	// ChildWorkflow is populated only by the stage-grant authenticator.
+	ChildWorkflow *ChildWorkflowPrincipal
+	Subject       string
 	// Issuer identifies the trust domain that authenticated Subject.
 	Issuer string
 	// Name is a human-readable display claim when the issuer provides one.
@@ -149,6 +153,14 @@ func (p Principal) HasRole(required Role) bool {
 // implementation). Pod principals hold no instance roles: authorization for
 // them is plane-scoped, not role-ranked.
 const PodPrincipalIssuer = "goobers/pod"
+
+// GeneratedChildPrincipalIssuer is separate from ordinary pod and human authority.
+const GeneratedChildPrincipalIssuer = "goobers/generated-child"
+
+// GeneratedChildPrincipal binds authentication to one immutable execution contract.
+type GeneratedChildPrincipal struct {
+	ContractDigest string
+}
 
 // WorkerPrincipalIssuer identifies a resident worker's short-lived
 // config-observability credential. It carries neither instance roles nor a run
@@ -422,6 +434,29 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if principal.Issuer == GeneratedChildPrincipalIssuer {
+			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
+				return errors.New("generated child contract unavailable")
+			}
+			// Each permitted handler requires a separately installed exact-attempt
+			// owner. A missing owner never falls back to ordinary pod authority.
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialResolvePath {
+				return nil
+			}
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.ClaimListPath {
+				return nil
+			}
+			if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
+				return nil
+			}
+			if request.Method == http.MethodPost && surrenderPlanePath(request.URL.Path) {
+				return nil
+			}
+			return authorizeWorkerBlob(request)
+		}
+		if principal.Issuer == ChildWorkflowPrincipalIssuer {
+			return authorizeChildWorkflow(request, principal)
+		}
 		if principal.Issuer == CredentialGrantPrincipalIssuer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
 				return nil
@@ -535,7 +570,12 @@ func PrincipalFromRequest(request *http.Request) (Principal, bool) {
 	if request == nil {
 		return Principal{}, false
 	}
-	principal, ok := request.Context().Value(principalContextKey{}).(Principal)
+	return PrincipalFromContext(request.Context())
+}
+
+// PrincipalFromContext returns only the identity established by authentication.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
 	return principal, ok
 }
 
@@ -588,46 +628,60 @@ type Router struct {
 	// letting a handler run against subsystems recovery has not finished
 	// opening yet.
 	recoveryGate func() bool
+	// recoveryHints, when set, decorates the recovery gate's 503 with the
+	// daemon's startup hints (#6895).
+	recoveryHints func(http.Header)
+
+	// budgetLog records requests whose budget expired before the handler wrote
+	// a response (#6890). nil disables the log, never the 503.
+	budgetLog *log.Logger
 }
 
 // ensureAdmission creates the controller on first use.
 func (r *Router) ensureAdmission() {
-	r.admissionOnce.Do(func() { r.admission = newAdmissionController() })
+	r.admissionOnce.Do(func() { r.admission = newAdmissionController(classLimits) })
 }
 
 type handlerConfig struct {
-	events                  eventSource
-	authenticator           Authenticator
-	interventions           InterventionService
-	interventionContext     context.Context
-	runRevealer             func(context.Context, string) error
-	workflowMutations       WorkflowMutationService
-	gaggleBundles           GaggleBundleService
-	claims                  ClaimService
-	triggers                TriggerService
-	escalations             EscalationService
-	cancels                 CancelService
-	journal                 JournalService
-	runJournal              RunJournalService
-	operatorMessages        OperatorMessageService
-	credentials             CredentialService
-	blobs                   blobstore.Store
-	recovery                RecoveryService
-	surrenders              SurrenderService
-	state                   StateService
-	telemetryDefects        TelemetryDefectAggregateService
-	podRunGaggle            func(context.Context, string) (string, error)
-	configDigest            func() string
-	workerConfigDivergence  func(journal.Event) error
-	instanceReadiness       InstanceReadinessService
-	portalAssets            http.Handler
-	recoveryGate            func() bool
-	discoveryIdentity       DiscoveryIdentity
-	telemetryReadsAvailable bool
-	workItemsAvailable      bool
-	activeClaimsAvailable   bool
-	configAuthoring         ConfigAuthoringReader
-	trustedProxies          []string
+	events                    eventSource
+	authenticator             Authenticator
+	interventions             InterventionService
+	interventionContext       context.Context
+	runRevealer               func(context.Context, string) error
+	workflowMutations         WorkflowMutationService
+	gaggleBundles             GaggleBundleService
+	claims                    ClaimService
+	generatedChildExecution   ChildExecutionObserver
+	triggers                  TriggerService
+	escalations               EscalationService
+	cancels                   CancelService
+	journal                   JournalService
+	generatedChildJournal     JournalService
+	runJournal                RunJournalService
+	childWorkflows            ChildWorkflowService
+	operatorMessages          OperatorMessageService
+	credentials               CredentialService
+	generatedChildCredentials CredentialService
+	blobs                     blobstore.Store
+	generatedChildBlobs       blobstore.Store
+	recovery                  RecoveryService
+	surrenders                SurrenderService
+	generatedChildSurrenders  SurrenderService
+	state                     StateService
+	telemetryDefects          TelemetryDefectAggregateService
+	podRunGaggle              func(context.Context, string) (string, error)
+	configDigest              func() string
+	workerConfigDivergence    func(journal.Event) error
+	instanceReadiness         InstanceReadinessService
+	portalAssets              http.Handler
+	recoveryGate              func() bool
+	recoveryHints             func(http.Header)
+	discoveryIdentity         DiscoveryIdentity
+	telemetryReadsAvailable   bool
+	workItemsAvailable        bool
+	activeClaimsAvailable     bool
+	configAuthoring           ConfigAuthoringReader
+	trustedProxies            []string
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -768,6 +822,19 @@ func WithRecoveryGate(ready func() bool) HandlerOption {
 			return errors.New("http API recovery gate predicate is required")
 		}
 		c.recoveryGate = ready
+		return nil
+	}
+}
+
+// WithRecoveryHints sets headers on every recovery-gate refusal, so a client
+// waiting out a long recovery can see the daemon's startup budget and
+// progress (#6895). It has no effect without WithRecoveryGate.
+func WithRecoveryHints(set func(http.Header)) HandlerOption {
+	return func(c *handlerConfig) error {
+		if set == nil {
+			return errors.New("http API recovery hints function is required")
+		}
+		c.recoveryHints = set
 		return nil
 	}
 }
@@ -1001,6 +1068,9 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 	// whether it would otherwise have authenticated.
 	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
 		w.Header().Set(HeaderRetryAfterSeconds, strconv.Itoa(NotReadyRetryAfterSeconds))
+		if r.recoveryHints != nil {
+			r.recoveryHints(w.Header())
+		}
 		writeError(w, http.StatusServiceUnavailable, CodeRecovering, "daemon is completing crash recovery")
 		return
 	}
@@ -1032,9 +1102,8 @@ func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc
 	// Shed at admission rather than accept-and-timeout: queue wait counts
 	// against the budget, so a saturated class that accepts work it cannot
 	// finish burns the caller's whole budget and returns nothing anyway.
-	if release, admitted := r.admission.admit(route.Cost); admitted {
-		defer release()
-	} else {
+	release, admitted := r.admission.admit(route.Cost)
+	if !admitted {
 		writeAdmissionRefusal(w, route.Cost)
 		return
 	}
@@ -1044,8 +1113,13 @@ func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc
 	if budget, bounded := routeBudget(route.ID); bounded {
 		bounded, cancel := withBudget(w, request, budget)
 		defer cancel()
-		request = bounded
+		// The slot is returned when the handler goroutine ends, not when the
+		// response does: a handler abandoned at its budget still occupies the
+		// capacity the class limit is protecting (#6890).
+		serveWithBudgetAnswer(r.budgetLog, string(route.ID), budget, writeDeadlineMargin, w, bounded, handler, release)
+		return
 	}
+	defer release()
 	handler(w, request)
 }
 
@@ -1095,6 +1169,8 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
+	router.recoveryHints = config.recoveryHints
+	router.budgetLog = errorLog
 	discovery, err := registerDiscoveryRoutes(router, config)
 	if err != nil {
 		return nil, fmt.Errorf("register API discovery routes: %w", err)
@@ -1238,7 +1314,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
-	registerBlobPlaneRoutes(router, config.blobs, errorLog)
+	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{
 		http.MethodGet: apicontract.RouteRunRecovery, http.MethodPost: apicontract.RouteRunRecoveryPublish,
 	}, map[apicontract.RouteID]http.HandlerFunc{

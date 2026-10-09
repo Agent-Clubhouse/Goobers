@@ -118,7 +118,8 @@
                   "not": {
                     "anyOf": [
                       { "required": ["artifactSlots"] },
-                      { "required": ["artifactInputs"] }
+                      { "required": ["artifactInputs"] },
+                      { "required": ["childWorkflows"] }
                     ]
                   }
                 }
@@ -178,7 +179,7 @@
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
-        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum active execution time of a run (its age less host suspension and durable child waits), expressed as a Go duration. Omit to disable." }
       }
     },
     "trigger": {
@@ -290,6 +291,18 @@
               }
             }
           ]
+        },
+        "childWorkflows": {
+          "type": "object",
+          "description": "DSL 3.1 preview policy for bounded child-workflow proposals. Omission disables child tools. Execution remains refused until the child runtime is implemented.",
+          "additionalProperties": false,
+          "required": ["allowedGoobers"],
+          "properties": {
+            "allowedGoobers": { "type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S" }, "description": "Existing Goober names in this workflow's gaggle that a child may use." },
+            "allowedCapabilities": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/task/properties/capabilities/items" }, "description": "Registered stage capabilities a child may request. Omitted or empty grants none; enclosing policy still limits actual authority." },
+            "maxChildren": { "type": "integer", "minimum": 1, "maximum": 32, "default": 4, "description": "Maximum child invocations per stage occurrence; default four, hard ceiling 32, one unfinished child at a time." },
+            "allowPRPublication": { "type": "boolean", "default": false, "description": "Whether a child submission may request PR publication, further constrained by enclosing publication policy." }
+          }
         },
         "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for an agentic task. Deterministic tasks use run.workspace instead." },
         "outbox": {
@@ -570,7 +583,7 @@
         },
         {
           "if": { "properties": { "type": { "const": "deterministic" } } },
-          "then": { "required": ["run"], "not": { "required": ["goober"] } }
+          "then": { "required": ["run"], "not": { "anyOf": [{ "required": ["goober"] }, { "required": ["childWorkflows"] }] } }
         },
         {
           "if": { "properties": { "onTimeout": { "const": "salvage" } }, "required": ["onTimeout"] },

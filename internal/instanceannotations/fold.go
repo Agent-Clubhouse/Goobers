@@ -100,9 +100,11 @@ func (f *Fold) apply(events []journal.Event) {
 			project, _ := event.Runner["project"].(string)
 			name, _ := event.Runner["name"].(string)
 			kind, _ := event.Runner["kind"].(string)
+			purpose, _ := event.Runner["purpose"].(string)
 			f.itemRepos[key] = ItemRepository{
 				Repository: providers.RepositoryRef{Provider: providers.ProviderKind(provider), Owner: owner, Project: project, Name: name},
 				Kind:       kind,
+				Purpose:    purpose,
 			}
 			run, keyedItem, ok := strings.Cut(key, "#")
 			if ok && run != "" {
@@ -177,10 +179,12 @@ func (f *Fold) AllItemRepositories(schedulerDir, runID string) (map[string]ItemR
 	return maps.Clone(f.itemReposByRun[runID]), nil
 }
 
-// ItemRepository retains the selection-time repository and item kind.
+// ItemRepository retains the selection-time repository, item kind and the
+// claim's declared selection purpose ("" for an ordinary work claim).
 type ItemRepository struct {
 	Repository providers.RepositoryRef
 	Kind       string
+	Purpose    string
 }
 
 // ItemRepositoryAnnotation identifies a durable selection-time ownership record.

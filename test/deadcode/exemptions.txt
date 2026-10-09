@@ -26,7 +26,6 @@ github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lo
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow/v_2_0.CheckGaggleFeatureSupport # Next-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2046).
 github.com/goobers/goobers/internal/workflow/v_2_0.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
-github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
 github.com/goobers/goobers/providers.WithGiteaHTTPClient # Public Gitea HTTP-client injection option retained for external provider consumers and custom transports.
 github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea retry option retained for external provider consumers; mirrors WithADOMaxRateLimitRetries.

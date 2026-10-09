@@ -32,6 +32,7 @@ import (
 	"github.com/goobers/goobers/internal/portalassets"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/startuphint"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -42,6 +43,9 @@ const (
 
 var (
 	dashboardAttachTimeout = 30 * time.Second
+	// dashboardAttachLimit caps how far a starting daemon's advertised budget
+	// and progress can extend dashboardAttachTimeout (#5515).
+	dashboardAttachLimit   = time.Hour
 	launchDashboardBrowser = openDashboardBrowser
 	launchRunDirectory     = openFilesystemPath
 )
@@ -250,7 +254,8 @@ const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--listen=<
 	"port is %d; --port=auto increments from there until a port is available.\n" +
 	"--wait-for-daemon optionally waits up to 30s for a concurrently starting\n" +
 	"daemon's read API; recovery may still be running when the portal opens.\n" +
-	"Use --wait-for-daemon=<duration> to choose another bound.\n" +
+	"Use --wait-for-daemon=<duration> to choose another bound. A daemon that\n" +
+	"reports its startup budget or progress extends that bound (up to 1h).\n" +
 	"--listen overrides the full bind address (host:port) and takes the place\n" +
 	"of --port when given; binding a non-loopback host requires api.auth to be\n" +
 	"configured in instance.yaml (SEC-043) — there is no insecure override.\n" +
@@ -627,8 +632,10 @@ func daemonAPIScheme(config *instance.Config) string {
 
 func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme, configuredAddress string, timeout time.Duration, lockPath string) (*url.URL, error) {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+	// A daemon still in startup answers 503 with its startup budget and
+	// progress; first boot can take far longer than timeout, so those hints
+	// extend the wait the same way they extend a resident worker's (#5515).
+	bound := startuphint.NewBound(time.Now(), timeout, dashboardAttachLimit)
 	var lastErr error
 	lastLocation := scheme + "://" + configuredAddress
 	for {
@@ -661,6 +668,9 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme,
 				if requestErr == nil {
 					if response.StatusCode != http.StatusOK {
 						lastErr = fmt.Errorf("health endpoint returned %s", response.Status)
+						if response.StatusCode == http.StatusServiceUnavailable {
+							bound.Observe(time.Now(), startuphint.Parse(response.Header))
+						}
 					} else {
 						var health readservice.Health
 						switch decodeErr := json.NewDecoder(response.Body).Decode(&health); {
@@ -708,12 +718,14 @@ func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme,
 				}
 			}
 		}
+		if !time.Now().Before(bound.Deadline()) {
+			return nil, fmt.Errorf("timed out after %s waiting for live `goobers up` daemon API at %s: %w",
+				time.Since(bound.Start()).Round(time.Millisecond), lastLocation, lastErr)
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-deadline.C:
-			return nil, fmt.Errorf("timed out after %s waiting for live `goobers up` daemon API at %s: %w", timeout, lastLocation, lastErr)
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(min(100*time.Millisecond, time.Until(bound.Deadline()))):
 		}
 	}
 }

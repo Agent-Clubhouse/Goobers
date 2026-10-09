@@ -14,13 +14,18 @@ import (
 // CLI recognizes an older daemon by it.
 func TestRecoveryGateRefusalIsRetryable(t *testing.T) {
 	ready := false
-	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithRecoveryGate(func() bool { return ready }))
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(),
+		WithRecoveryGate(func() bool { return ready }),
+		WithRecoveryHints(func(h http.Header) { h.Set("Goobers-Startup-Progress", "9") }))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, InstancePath, nil))
+	if got := response.Header().Get("Goobers-Startup-Progress"); got != "9" {
+		t.Fatalf("recovering startup hint = %q, want the hint the daemon supplied (#6895)", got)
+	}
 	var envelope ErrorEnvelope
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("recovering body %q: %v", response.Body.String(), err)
@@ -35,7 +40,7 @@ func TestRecoveryGateRefusalIsRetryable(t *testing.T) {
 	ready = true
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, InstancePath, nil))
-	if response.Code == http.StatusServiceUnavailable || response.Header().Get(HeaderRetryAfterSeconds) != "" {
+	if response.Code == http.StatusServiceUnavailable || response.Header().Get(HeaderRetryAfterSeconds) != "" || response.Header().Get("Goobers-Startup-Progress") != "" {
 		t.Fatalf("ready answer = %d Retry-After=%q, want the route served without a retry hint",
 			response.Code, response.Header().Get(HeaderRetryAfterSeconds))
 	}

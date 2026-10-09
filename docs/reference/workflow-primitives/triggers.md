@@ -73,7 +73,7 @@ an autonomous consumer normally begins with a deterministic
 | `selector` | no | Map whose keys are required backlog labels. Values are reserved and currently ignored for matching. |
 | `trustLabel` | no | Maintainer-applied label that classifies directly triggered content as maintainer integrity. Valid only here. |
 | `labelPredicate` | no | CEL expression over `labels`, ANDed with `selector`. |
-| `fieldPredicate` | no | CEL expression over provider-native scalar `fields`, ANDed with the other filters. |
+| `fieldPredicate` | no | CEL expression over provider-native scalar `fields` plus the normalized `fields["title"]`, ANDed with the other filters. |
 
 All backlog-item triggers in one workflow must use the same `trustLabel`.
 
@@ -91,6 +91,22 @@ triggers:
     labelPredicate: '!("tracking" in labels)'
     fieldPredicate: 'fields["number"] > 100'
 ```
+
+Every backlog provider projects the item title as `fields["title"]` (Azure
+DevOps keeps `System.Title` as well). Besides scalar comparisons, a string field
+supports `contains`, `startsWith` and `endsWith`, which are case-sensitive, and
+`containsIgnoreCase`, `startsWithIgnoreCase` and `endsWithIgnoreCase`, which
+compare lowercased text. The argument must be a string literal:
+
+```yaml
+fieldPredicate: 'fields["title"].startsWithIgnoreCase("[ui]") && !fields["title"].contains("WIP")'
+```
+
+These operations are additive: existing predicates and configs without a
+predicate select exactly what they did before. A title predicate fails closed
+when an item has no title (an Azure DevOps item without a string
+`System.Title`), and other CEL functions such as `matches` remain validation
+errors.
 
 ## `signal`
 

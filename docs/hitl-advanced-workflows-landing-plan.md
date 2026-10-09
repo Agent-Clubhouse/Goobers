@@ -1,0 +1,342 @@
+# Human operations and advanced workflows: incremental landing plan
+
+Status: proposed execution plan, 2026-10-06. Design approval is separate from
+implementation acceptance. Every implementation slice below needs its own review
+and green required CI before landing on main.
+
+## 1. Sources and disposition of the current PRs
+
+| Review artifact | Intended disposition |
+| --- | --- |
+| [Child workflows design #6803](https://github.com/Agent-Clubhouse/Goobers/pull/6803) | Merged to main in `6c30300d4a83b198dd09c0fa919d5c85c9b2ae15`. |
+| [HITL design #6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) | Refreshed against main after the other three designs merged; Jeff’s requested-changes review remains open. Auto-merge is off; review resolution and passing CI on the refreshed head are required. |
+| [Events/queues design #6805](https://github.com/Agent-Clubhouse/Goobers/pull/6805) | Merged to main in `1141d5db1cc5c45e6aa46f0dbfb3a3a0e5ce6f95`. |
+| [Backlog design #6806](https://github.com/Agent-Clubhouse/Goobers/pull/6806) | Merged to main in `24481a5c9c59bf26f8d6800ad801ada6e5a10b10`. |
+| [Implementation review #6807](https://github.com/Agent-Clubhouse/Goobers/pull/6807) | Keep as a draft reference snapshot. Extract reviewed slices; do not merge wholesale. Close as superseded only when all intended behavior is accounted for by landed work or explicit deferrals. |
+| [Fleet authentication design #6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) | Remains a separate draft requiring design acceptance. Rebase its documentation onto main after the four designs, preserving the supplied outbound-only Agent contract. Its approval is not implied by merging the four workstream designs. |
+
+The 159 local checkpoint branches preserve development history, not a promised
+159-PR delivery sequence. Use their commits and tests as evidence; reorganize the
+changes into independently verifiable delivery slices. Keep a permanent reference
+to source commit `fa34a754148ea3076bfd04fe4976a5a461b063f2` for #6807 and
+`fdda5e21426264e7f423ef2a4cedb01cbfdf1eee` for the Fleet design correction.
+
+## 2. Inventory and integration risk
+
+Compared with original base `04198152b63d228a9714ae2f92a7dca079ba5213`, the
+implementation reference changes 1,319 files. As of main
+`00d7ef3dfcd2f94c3549a305c770d17e5226f477`, main independently changed 585 files;
+71 paths overlap the implementation reference. Overlap identifies required review,
+not necessarily a textual conflict or evidence of a bug.
+
+Largest implementation areas by changed file count:
+
+| Area | Files | Landing consideration |
+| --- | ---: | --- |
+| `cmd/goobers` | 244 | Reconcile daemon wiring and existing refactors; extract reusable packages and justify growth per actual slice. |
+| `internal/triggerqueue` | 138 | Separate shared storage primitives from child, session, event, restart and workbench records. Each record type owns migration/retention/recovery. |
+| `portal/src` | 69 | Port onto Jeff's merged shared components and current main's locality/filter fixes. |
+| `internal/runner` | 62 | Preserve main's execution fixes; qualify stage restart and child custody separately. |
+| `internal/httpapi` | 54 | Attach each route to its owner slice, auth checks and production service adapter. |
+| `internal/apicontract` | 54 | Regenerate contracts for each actual API slice, never copy the final generated snapshot wholesale. |
+| `internal/workbenchservice` | 46 | Split reads, native edits, PR proposals and relationship curation. |
+| `internal/childworkflow` | 35 | Separate authoring/admission, execution, workspace results and lifecycle qualification. |
+| `internal/workbench` | 32 | Keep source ownership and portable relationships together with provider support. |
+| `internal/interactiveaccess` | 31 | Land exact credential and human authorization boundaries before interactive effects. |
+
+An initial integration inventory must classify every source change as retained,
+adapted to current main, already supplied by main, superseded, or intentionally
+deferred. Record that disposition per path/hunk when extracting each PR. Snapshot
+file counts include tests and generated files and are not an estimate of production
+code volume. A path may be changed by several slices; package ownership alone is
+not sufficient to extract working PRs.
+
+Do not replace current main's versions of shared files with snapshot copies. The
+highest-risk overlaps are daemon/runner wiring, provider interfaces, auth routing,
+recovery/worktrees, DSL feature registration, schemas and generated Portal contracts.
+
+Concrete main changes that extraction must preserve include Jeff's Portal foundation
+`08206257c` (#6704), workspace-preparation retry budgets `a8d98dfe3` (#6666),
+worktree collision handling `e8cac054d`, recovery-label cleanup `703d195dd` and
+`e74068dfc`, and semantic mutation receipts/lineage `414697166` (#6517).
+These are integration inputs, not commits to revert or replace with older snapshot
+versions. Recheck the list against main when each delivery branch is created.
+
+## 3. Branch and review strategy
+
+1. Start each delivery train at current main, using `codex/haw-<slice>` branches.
+2. Prefer independent PRs directly against main. Use a short stack only for a real
+   code dependency; limit active depth to roughly two or three reviewable slices.
+3. Each PR description names its stable task IDs, predecessor, included behavior,
+   unavailable behavior, production callers, tests and rollback/recovery impact.
+4. Keep adjacent changes together only when separating them would leave a broken
+   build, unused production code, an unwired recovery path or misleading capability.
+   Large rows below must split further; they are delivery units, not a quota of one PR.
+5. After a parent lands, retarget/restack dependents onto the landed main commit and
+   rerun required checks. The repository uses squash merges, so preserve source
+   mappings independently of commit ancestry.
+6. Regenerate schema/CRD/deepcopy/API/Portal/CLI outputs from the extracted source
+   in each PR. Preserve current main's features and do not carry checkpoint-specific
+   generated outputs or growth justifications blindly into a new merge base.
+7. Finalize the PR description before the last validation run. In the current CI
+   workflow, a later description-only edit creates a skipped check suite that can
+   leave the required aggregate marked “expected” despite a successful full run.
+   Observed on #6806: rerunning the older aggregate alone did not release the
+   rule. Reopening the unchanged PR and passing a fresh full run restored normal
+   protected auto-merge. Do not edit metadata again while waiting.
+
+A typical code PR should fit one behavior and one failure/recovery story. Aim for
+hundreds of handwritten production lines where practical; separate generated/test
+volume in the review summary. Exceeding that guideline requires an explicit
+cohesion reason and may produce additional PRs. No four giant workstream merges.
+
+## 4. Delivery order and proposed PR boundaries
+
+Priorities stay: child workflows, HITL, broader event/queue systems, backlog UI.
+Shared prerequisites land only as far as the earlier feature needs them. The table
+is an initial decomposition into about thirty delivery units; exact PR count is
+set during extraction and may grow. Stable design tasks can span several PRs.
+
+### Wave 0 — reconcile foundations
+
+| ID | Boundary / likely files | Dependencies and acceptance |
+| --- | --- | --- |
+| LAND-F01 | Current-main integration inventory; adopt Jeff's shared Portal primitives in subsequent UI slices | Compare the 71 overlapping paths, identify equivalent main work, and record extraction ownership. No bulk implementation import. |
+| LAND-F02 | Minimum durable admission/storage needed by children: `internal/triggerqueue`, `internal/startintent`, owned journal/API fields | Existing starts keep their behavior; admitted identities are idempotent, migrations and bounded retention have real callers. Include the first necessary consumer, not unused general framework code. |
+| LAND-F03 | Shared authority/identity and scoped credential primitives required by the next slice | Preserve existing auth planes; reject cross-gaggle/target access and secret exposure. Introduce only the fields/routes consumed in that slice. |
+
+### Wave 1 — child workflows
+
+| ID | Boundary / likely files | Dependencies and acceptance |
+| --- | --- | --- |
+| LAND-C01 | Opt-in DSL, authoring/proposal validation and CLI/tool contracts: `internal/childworkflow`, workflow/API schemas, `internal/mcpio` | F01–F03 as needed; allow only existing Goobers/capabilities. Invalid proposals, recursion and unauthorized publication are refused. Feature lifecycle/version rules pass. |
+| LAND-C02 | Stage-scoped admission and durable lineage: child queue records, stage grants, HTTP/MCP production handlers | C01; one unfinished child per stage, independent parallel-stage children, parent cancellation/admission race and reload narrowing tests. |
+| LAND-C03 | Isolated workspace and retained artifact/result custody: worktree/recovery/child storage | C02; fork the intended parent state, enforce quotas, retain unresolved writers, and recover after crashes without overwriting the parent. |
+| LAND-C04 | First supported local child execution, durable parent wait and cancellation: launcher/runner/scheduler wiring | C02–C03; actual parent→child→result path, restart recovery, stopped-writer evidence and confirmed cancellation. Include registered reconcilers in the same slice. |
+| LAND-C05 | Parent result disposition and delegated PR publication: `internal/childpublication`, workspace handoff | C04; merge/replace/discard and uncertain publication recover safely. Publication requires the parent's upfront grant. |
+| LAND-C06 | Contained/pod child execution and remote authority: `internal/childpod`, podauth/dispatcher/blob plane | C03–C05; qualify the configured pod capability shape, token isolation, reconnect and worker-loss recovery. This may need several PRs. |
+| LAND-C07 | Parent/child Portal projection and end-to-end acceptance | C04–C06; use current Portal components. Show durable wait, child links, blocked/uncertain state and cancellation outcome. Only advertise qualified execution shapes. |
+
+The first connected extraction refines these rows without enabling a host-process
+fallback: #6915 contains custody and the minimum durable wait/launcher owners,
+#6916 adds local result disposition, and #6947 adds isolated worker transport.
+Both #6916 and #6947 depend on #6915 and can be reviewed independently. They do
+not complete the executing parent/child journey. The exact signed attempt,
+bounded artifact access, retained kit, host factory and uncertain-worker recovery
+must be connected and qualified before enabling execution. Delegated publication
+uses that contained host factory, so the publication portion of C05 follows the
+necessary C06 slices. C07 remains the final projection and journey acceptance.
+
+Human intervention on a child uses the common HITL restart work in H03; do not
+copy a separate child-only human auth/session implementation into Wave 1. Child
+normal execution and result handoff can land first while unsupported human restart
+is explicitly unavailable. Recovery required for each enabled execution shape
+must land with that shape, not wait for C07.
+
+### Wave 2 — human operations
+
+| ID | Boundary / likely files | Dependencies and acceptance |
+| --- | --- | --- |
+| LAND-H01 | Explicit interactive credentials, human grants and exact-target source access: `internal/interactiveaccess`, instance/config and API capabilities | F03; missing config stays non-interactive, no credential fallback, permission narrowing and human/service distinction tested. |
+| LAND-H02 | Direct-mode browser authentication, if delivering direct Portal access | H01; new work missing from #6807. Login/callback/logout/token lifecycle and browser→daemon authorization must be exercised. Fleet-only deployments instead require the A-series below. |
+| LAND-H03 | Run intervention and affected-stage restart with fresh allowance: `internal/intervention`, `internal/restartintent`, runner/queue/HTTP wiring | H01 and selected auth mode; immutable history, exact stage occurrence, prior context, fresh retry/repass budget, queued dispatch, cancellation and recovery. Include child restart epochs as a separately reviewable dependent PR if needed. |
+| LAND-H04 | Attributed shared agent sessions and bounded durable turns: `internal/sessioning`, `internal/interactivesession`, session records and runtime | H01; two users, per-turn authority, disconnect, duplicate input, worker loss and retained uncertainty. API, actual runner and minimal usable Portal controls travel together. |
+| LAND-H05 | Backlog field edits and needs-human resolution through typed source tools | H01/H04; bring forward only the provider operations needed for this journey. Verify the blocker is resolved before clearance; do not require the full backlog workbench. |
+| LAND-H06 | Selected-PR repair, receipt inspection and publication reconciliation: sessionops/provider/queue/host adapters | H04; exact selected repo/PR/head, policy checks, isolated workspace, no silent retarget, uncertain effect handling. Split provider adapters from UI only when the exposed surface remains honest. |
+| LAND-H07 | Integrated attention and shared-session Portal experience; local/Temporal qualification by supported shape | H03–H06; gate unsupported backends explicitly. Exercise human input→actual agent action→observed recovery using Jeff's shared UI foundation. |
+
+### Fleet authentication track within HITL
+
+These are additional implementation requirements from draft #6865, not code
+already present in #6807 and not an instruction to reimplement a production Fleet
+service in this repository.
+
+| ID | Boundary | Dependencies and acceptance |
+| --- | --- | --- |
+| LAND-A01 | Review/land #6865 and align security/instance/portal/deployment requirements | Separate design acceptance; preserve the owner's supplied production Agent v2 contract. |
+| LAND-A02 | Typed delegated principals and protected Agent→daemon loopback provenance | A01/H01; outbound-only Agent, same host/pod network namespace, literal `127.0.0.1:8085`, no public Fleet port. Production Agent compatibility fixtures required. |
+| LAND-A03 | Exact connection/registration/request delegation and durable replay/command admission | A02/F02; production Entra delegated identity, negotiate/challenge/ready, reliable resume, 30-second presence/90-second expiry, 401/403/404 termination and 409 supersession. Do not replace deployed signing/wire formats. |
+| LAND-A04 | Fleet permission leases, executor enforcement, revocation and confirmed cancellation | A03/H03–H04; preserve initiating user and service; stale connection/lease cannot create effects. Socket closure never proves work stopped. Supported executor tests and live qualification required. |
+| LAND-A05 | Explicit workload-identity enrollment/runtime for a headless cloud service | Separate HAW-AUTH-010 dependency on supported Fleet behavior. Agree the external service work and ownership first; no arbitrary app credential substitution. Fleet-only headless readiness stays blocked until qualified. |
+
+Direct browser login is not a prerequisite for fleet-only deployment. Conversely,
+shipping direct login does not establish Agent/workload enrollment support. Select
+the deployment being qualified in each PR and in release acceptance.
+
+### Wave 3 — broader durable starts, events and shared reads
+
+| ID | Boundary / likely files | Dependencies and acceptance |
+| --- | --- | --- |
+| LAND-E01 | Normalize remaining start sources: manual/detached, schedules including demand-sized starts, signals, direct engine, sessions/restarts | F02 and source-specific owners; no launch bypasses custody, exact replay, capacity handling, configuration retention and uncertain launch recovery. Split by start source; do not bundle all adapters into one large PR. |
+| LAND-E02 | Gaggle-scoped event receipts and workflow outbox: `internal/eventing`, `internal/eventpublication` | E01 as needed; no-match success, bounded payload/retention, producer authority, durable emit identity and causal limits. |
+| LAND-E03 | Subscriptions, matching and configurable debounce: eventexecution/localscheduler/queue records | E02; all/latest semantics, crash recovery, scoped fan-out, loop budgets and no cross-gaggle delivery. |
+| LAND-E04 | Authenticated external ingress and queue controls: `internal/eventingress`, `internal/startcontrol`, HTTP/Portal | E01–E03; admission denial, visibility, cancellation/deadlines and verified terminal outcomes. Service ingress auth remains distinct from human Fleet identity. |
+| LAND-E05 | Shared provider reads and throttling: `internal/apireadcache`, typed ADO plans and GH/ADO adapters | H01; cache by exact visibility, bound storage and request rates, share only safe reads, invalidate confirmed writes, test partial/paged responses and quota backoff. |
+
+### Wave 4 — backlog browsing and visuals
+
+| ID | Boundary / likely files | Dependencies and acceptance |
+| --- | --- | --- |
+| LAND-B01 | Source-owned item/objective/relationship model and reads: workbench/workbenchprovider/workbenchgraph | H01/E05; configured external repositories, explicit link authority and rebuildable projections. No private authoritative objective store. |
+| LAND-B02 | Portal browsing and organization visuals with explicit edit capabilities | B01; item links, related items, objectives, empty/partial/unavailable states, keyboard/mobile behavior; current Portal component conventions. |
+| LAND-B03 | Native edits and selected supported provider relationships | B01/H05; exact target and revision, source confirmation, partial effects and refresh. Reuse earlier HITL typed edit services. |
+| LAND-B04 | PR-governed Markdown/manifest proposals and curation suggestions | B01/B03; separate code/wiki/workflow repos, explicit human acceptance, no direct protected-branch writes, pending PR reconciliation. Split provider adapters as needed. |
+| LAND-B05 | End-to-end workbench acceptance and operator docs | B02–B04; browser→authorized mutation→provider receipt→rebuilt graph. Keep unsupported provider shapes explicit; no implied progress scoring. |
+
+## 5. Gates for every implementation PR
+
+- Build and use current main's abstractions; preserve Jeff's Portal foundation and
+  all independently landed fixes. No blanket snapshot merge to resolve conflicts.
+- Include a real production caller for new operations, recovery exits and pruning.
+  If wiring cannot land yet, keep the unsupported capability unavailable and do
+  not claim that journey delivered.
+- Exercise the meaningful failure path: crash/retry/race/revocation/uncertain
+  external effect appropriate to the slice. Avoid tests that only repeat structs.
+- Run focused tests during extraction, then `make ci` and the repository's required
+  hosted gate against the actual PR head. Do not reuse snapshot test results as
+  evidence for a rebased or reshaped implementation.
+- Honor DSL compatibility and schema structural guards. Document storage versions,
+  replay/retention limits, downgrade refusal and operational rollback consequences.
+- Regenerate documentation/contracts and update the accepted design's delivery
+  ledger with actual merged PRs. Keep design status approved until the entire
+  claimed scope is delivered; do not mark implemented from partial unit tests.
+- Keep live provider, Kubernetes, Temporal, Entra and external Fleet qualification
+  distinct from fake-adapter and unit coverage. Unqualified modes remain disabled
+  or clearly unavailable.
+
+Required CI for the design merges is also enforced; approved prose does not bypass
+the repository's `make ci (fmt-check · vet · build · test · lint)` merge rule.
+
+## 6. First extraction and next decisions
+
+Start with F01 and a narrowly scoped C01: the snapshot has an advisory
+`goobers workflow validate-child` command (`cmd/goobers/childworkflow.go`) backed
+by `internal/childworkflow` proposal validation. Extract the opt-in/configuration
+shape, bounded proposal validation, current capability checks, typed diagnostics
+and that actual CLI caller. It must not grant credentials or start a child; runtime
+admission must repeat validation later. Verify on current main that the dependency
+closure is small enough before fixing this as the first implementation PR.
+
+### First-slice dependency audit
+
+Initial inspection of the pinned snapshot identifies this extraction boundary:
+
+| Source | Treatment in the first validation PR |
+| --- | --- |
+| `cmd/goobers/childworkflow.go`, command registration/help and focused CLI tests | Real caller: offline validation only, with structured diagnostics and distinct usage/invalid exit codes. Reuse main’s harness admission. |
+| `internal/childworkflow/{cli,configured,proposal,credential_ceiling}.go` and focused tests | Extract validation portions only. Do not copy the package’s runtime, journal authority, HTTP service, workspace or submission files. |
+| `api/v1alpha1/workflow_types.go` and schema/compiler feature registration | Add bounded `ChildWorkflowPolicy`, agentic-stage opt-in and DSL constraints; regenerate corresponding outputs. DSL 3.1 already exists on main. |
+| `internal/credentials/child_ceiling.go` | Audit/split the pure validation definitions from execution enforcement. The validator consumes the publication ceiling; runtime credential filtering belongs with the first executing consumer. |
+| `internal/capability/capability.go` snapshot change | Its new `event:publish` capability belongs to the later event wave. Do not import it merely because the validator imports the existing capability package. |
+
+Keep the first command explicitly advisory: bounded bytes/states, one Workflow,
+existing Goobers, gaggle and capability ceilings, no recursion, publication limits,
+and current placement support. It must not resolve secrets or queue/launch work.
+Runtime admission revalidates the immutable run inputs; a successful offline check
+is not an authorization receipt. Confirm compilation and focused CLI behavior
+against current main during extraction before declaring this boundary ready.
+
+Then extract only the F02 storage/identity prerequisites consumed by C02 child
+admission. Follow with the actual lifecycle rather than importing all 138 changed
+triggerqueue files. If the validator's dependency closure requires an additional
+shared contract slice, document it explicitly and keep a real caller in the same
+review boundary.
+
+During extraction, record for each PR: stable task IDs, snapshot commits/hunks,
+current-main equivalents, prerequisites, excluded follow-ups and acceptance proof.
+Create numbered backlog items and backlink the accepted designs as the units
+become dispatchable; identifiers here are planning references, not invented issue
+numbers or assertions that issues have been filed.
+
+The remaining product decision is which HITL deployment to qualify first: direct
+browser sign-in, production Fleet with supported delegated enrollment, or a fully
+headless Fleet service that also requires A05. Child workflow delivery can proceed
+while that is decided. External Fleet workload identity and local provenance need
+an agreed compatibility contract; no estimated completion date is credible before
+that boundary is confirmed.
+
+Completion means each accepted capability is implemented, integrated, tested and
+documented on main, with qualified deployment shapes and every snapshot item
+accounted for. It does not mean merging #6807 or preserving its original branch
+boundaries.
+
+### Extraction record: first child slices
+
+These records describe the extracted changes, not completion of the broader design.
+Verify each linked PR's merged state before treating its scope as delivered.
+
+| Slice | Review | Source and disposition | Acceptance boundary |
+| --- | --- | --- | --- |
+| LAND-C01 | Merged [#6880](https://github.com/Agent-Clubhouse/Goobers/pull/6880) as `7ba3f512c15c3c509ab62a962b4f532dc74ebc18` | Retains validation portions of `918fbd376`, `89a1032a3`, `a04dc1cc4` and `451574e98`: `api` policy/schema, compiler feature checks, runtime refusal, `internal/childworkflow/{cli,configured,proposal}.go`, thin CLI registration/help and tests. Adapts the later credential-ceiling checks into pure validation, including Copilot model-auth publication refusal and Goober policy identity. Regenerates actual CLI/CRD outputs; updates Windows coverage and the exact CLI growth ledger. | Advisory validation only; no secret resolution, queue admission or runtime launch. The current-main harness admission and runner/engine behavior are preserved. |
+| LAND-C02a | Merged [#6881](https://github.com/Agent-Clubhouse/Goobers/pull/6881) as `caad196059ca85c3c06b708483892130c29e2963` | Retains `e9192d29e`'s `api` invocation/schema/completeness, `internal/journal/{childorigin,run}.go`, runner task-start/envelope/parallel wiring, engine dispatch-copy and agent-kit tests; adapts onto current main without replacing shared files. Carries the later metadata-key comment and adds checkpoint-failure qualification. | Atomic committed stage identity, branch/revisit separation, retry/recovery continuity and transport copy isolation. No new durable store or pruning obligation: metadata is added to existing stage-start events under the existing run-retention lifecycle. No child start or human restart surface is enabled. |
+
+C02 is intentionally split: C02a establishes occurrence identity before the child
+grant/admission handlers. Later C02 slices own the active grant fence, one-child
+admission, cancellation races and retained configuration. Neither the offline
+validator nor the stage-origin envelope is an authorization receipt. The general
+queue, runtime credential isolation, workspace and Portal snapshot changes remain
+assigned to their owning later slices.
+
+## 7. Traceability to design tasks
+
+This mapping assigns review boundaries; it does not mark tasks implemented or
+replace their detailed acceptance criteria. An ID appearing in several slices is
+complete only when all its required evidence has landed. Keep these HAW IDs in
+PR descriptions and link actual merges back to the design ledgers.
+
+| Existing design task | Landing units |
+| --- | --- |
+| HAW-CHD-001 | C01: opt-in, schema and compiler admission |
+| HAW-CHD-002 | C01–C02: proposal validation and runtime authority |
+| HAW-CHD-003 | F02/C02: durable child admission, lineage and retention |
+| HAW-CHD-004 | C03/C06: snapshot custody and compatible execution |
+| HAW-CHD-005 | C04/C06: real agent tools, submit/await/result and durable continuation |
+| HAW-CHD-006 | C04/C06: wait-aware permits/timers and family cancellation |
+| HAW-CHD-007 | C05: result disposition and delegated publication |
+| HAW-CHD-008 | C07/H03/H07: visible lineage and common human intervention |
+| HAW-CHD-009 | C06–C07: shipped authoring skill and backend qualification |
+| HAW-HITL-001 | F03/H01/H03–H04: versioned policy, operation, session and attention contracts |
+| HAW-HITL-002 | H01 and selected authentication track: credentials and human grants |
+| HAW-HITL-003 | H04: durable session ledger and admission |
+| HAW-HITL-004 | H04: session coordinator and harness continuation |
+| HAW-HITL-005 | H03/H05/H07: canonical attention and resolution projection |
+| HAW-HITL-006 | H05/B03: typed item resolution and confirmed effects |
+| HAW-HITL-007 | H03: local stage restart and allowance epochs |
+| HAW-HITL-008 | H03/H07: Temporal continuation and occurrence-bound decisions |
+| HAW-HITL-009 | C04/H03/H07: child capacity, continuation and family settlement |
+| HAW-HITL-010 | H04/H06/H07 plus selected auth: shared Portal sessions and actions |
+| HAW-HITL-011 | H05–H07: CLI/tool parity and integrated backend/provider evidence |
+| HAW-HITL-012 | H07 and each owning slice: operator docs, migrations and release gates |
+| HAW-EVT-001 | F02/E02/E04: envelopes, scoped auth, receipts and migrations |
+| HAW-EVT-002 | F02/C02/H03/H04/E01: common start admission and all source adapters |
+| HAW-EVT-003 | E03: routing revisions and configurable debounce |
+| HAW-EVT-004 | F02/C04/E01: idempotent launch and fenced recovery |
+| HAW-EVT-005 | F02/C04/E01/E04: fair queues, capacity, cancellation and deadlines |
+| HAW-EVT-006 | E02–E03: workflow outbox and chain/fan-out limits |
+| HAW-EVT-007 | F02/E02/E04 and every store owner: pruning, pins, tombstones and inspection |
+| HAW-EVT-008 | E05: provider read coordination, visibility and stale-write fences |
+| HAW-EVT-009 | E01–E05: migration/shadow comparison, backend parity and staged rollout |
+| HAW-BKL-001 | B01: source, identity and edge contracts |
+| HAW-BKL-002 | E05/B01: bounded source ingestion on shared reads |
+| HAW-BKL-003 | B01: rebuildable graph and bounded API |
+| HAW-BKL-004 | H05/B03: native relationship contracts; reconcile existing #5245 work |
+| HAW-BKL-005 | H05/B03: authorized source edits and receipts |
+| HAW-BKL-006 | B02: browsing, objectives and navigation |
+| HAW-BKL-007 | B03–B04: editing and PR-governed repository metadata |
+| HAW-BKL-008 | B04: creation/curation suggestions and explicit acceptance |
+| HAW-BKL-009 | B05: integrated recovery and operator guide |
+| HAW-AUTH-001 | A01: separate Fleet design acceptance and configuration contract |
+| HAW-AUTH-002 | A02: typed principals and protected loopback provenance |
+| HAW-AUTH-003 | A03: production protocol fixtures and connection-bound delegation |
+| HAW-AUTH-004 | A03/F02: durable replay, admission and pruning |
+| HAW-AUTH-005 | A04/H01: Fleet policy ceiling and command authorization leases |
+| HAW-AUTH-006 | A04/H03/H04: executor enforcement, revocation and cancellation |
+| HAW-AUTH-007 | A04/H07: audit, capabilities, streams and operator guidance |
+| HAW-AUTH-008 | A04/H07: production-compatible Fleet qualification |
+| HAW-AUTH-009 | H02: separate direct browser sign-in |
+| HAW-AUTH-010 | A05: separately supported headless workload identity |
+
+Unit names in this table omit the common `LAND-` prefix. Fleet tasks remain
+conditional on acceptance of draft #6865. The current state of referenced provider
+work, including #5245, must be inspected when its slice is extracted; a reference
+is not evidence that the dependency is merged or qualified.

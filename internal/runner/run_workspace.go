@@ -32,6 +32,10 @@ type stageWorkspace struct {
 	// treating a pruned path as unexpectedly deleted.
 	sparse  []string
 	release func()
+	// retainedChild verifies custody instead of deleting the shared child fork.
+	retainedChild func(context.Context) error
+	// validateReadOnly checks an immutable stage view before accepting output.
+	validateReadOnly func(context.Context) error
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -139,6 +143,9 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 		}
 	}
 	if w.worktree != nil {
+		if w.retainedChild != nil {
+			return errors.Join(firstErr, w.retainedChild(ctx))
+		}
 		if err := w.worktree.Remove(ctx, worktree.RemoveOptions{}); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -206,6 +213,12 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
+	if in.heldChildWorkspace != nil {
+		return in.heldChildWorkspace, nil
+	}
+	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
+		return r.createChildStageWorkspace(ctx, in, stageName, mode, syncBase, workspaceBranch)
+	}
 	if err := selectedWorkspaceUnsupported(in, mode); err != nil {
 		return nil, err
 	}
@@ -215,6 +228,18 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			return nil, fmt.Errorf("create scratch workspace: syncBase requires a repo workspace")
 		}
 
+		if r.cfg.ScratchDir == "" && in.pinnedWorkspace != nil {
+			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, false, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, release: in.pinnedStage.Unlock}, nil
+		}
 		if r.cfg.ScratchDir == "" {
 			return nil, fmt.Errorf("create scratch workspace: runner ScratchDir is required")
 		}
@@ -228,7 +253,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 				return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
 			}
 			if workspaceBranch != "" {
-				return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+				return nil, readOnlyRebindError(in, stageName, workspaceBranch)
 			}
 			in.pinnedStage.Lock()
 			if err := r.preparePinnedStage(ctx, in, false, ""); err != nil {
@@ -252,7 +277,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
 		}
 		if workspaceBranch != "" {
-			return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+			return nil, readOnlyRebindError(in, stageName, workspaceBranch)
 		}
 		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 		if err != nil {
@@ -390,6 +415,11 @@ func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase
 }
 
 func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
+	if in.Child != nil {
+		// Child admission owns its separate managed fork. Pure scratch child
+		// machines need no project lease either.
+		return nil, nil
+	}
 	if !r.cfg.PinnedWorkspace {
 		return nil, nil
 	}
@@ -555,4 +585,15 @@ func worktreeWarningEvent(stage string, wt *worktree.Worktree) (journal.Event, b
 		Stage:  stage,
 		Runner: map[string]any{"kind": "worktree.warnings", "warnings": wt.Warnings},
 	}, true
+}
+
+func (w *stageWorkspace) ValidateAfterInvocation(ctx context.Context, invocation *gooberInvocation) error {
+	var err error
+	if w.validateReadOnly != nil {
+		err = w.validateReadOnly(ctx)
+	}
+	if invocation != nil && invocation.materializedAssets() {
+		err = errors.Join(err, w.ValidateReservedPaths(ctx))
+	}
+	return err
 }

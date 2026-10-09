@@ -61,6 +61,10 @@
       ".github/workflows/ci.yml#windows-smoke/Windows CLI runtime:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows CI scope policy:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows bounded diagnostic history:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows child proposal validation:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows child admission authority:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows child custody and waits:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows child stage identities:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows containment and journals:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows credential files:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows durable state services:go-modules",
@@ -152,7 +156,22 @@
       "uncovered-build-tags:go-modules",
       "validate-configs:go-modules",
       "vet:go-modules",
-      "workflow-inventory:go-modules"
+      "workflow-inventory:go-modules",
+      ".github/workflows/ci.yml#checks/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#cmdgoobers-growth/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#darwin-build/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#deadcode/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#deploy-reference/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#integration/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#lint/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#linux-validation/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#preflight/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#sandbox/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#shipped/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#unit/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#unit-linux-coverage/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#vulnerability-scan/Record CI diagnostics:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Record CI diagnostics:go-modules"
     ]
   },
   {
@@ -290,7 +309,22 @@
       ".github/workflows/ci.yml#vulnerability-scan/Set up Go:github-actions",
       ".github/workflows/ci.yml#windows-smoke/Checkout:github-actions",
       ".github/workflows/ci.yml#windows-smoke/Set up Go:github-actions",
-      ".github/workflows/ci.yml#windows-smoke/Upload Windows validation evidence:github-actions"
+      ".github/workflows/ci.yml#windows-smoke/Upload Windows validation evidence:github-actions",
+      ".github/workflows/ci.yml#checks/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#cmdgoobers-growth/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#darwin-build/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#deadcode/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#deploy-reference/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#integration/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#lint/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#linux-validation/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#preflight/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#sandbox/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#shipped/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#unit/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#unit-linux-coverage/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#vulnerability-scan/Upload CI diagnostics:github-actions",
+      ".github/workflows/ci.yml#windows-smoke/Upload CI diagnostics:github-actions"
     ]
   },
   {

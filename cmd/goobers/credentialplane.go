@@ -11,6 +11,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/childpublication"
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
@@ -19,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -100,9 +103,14 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 // daemonCredentialService is the credential plane over the daemon's own
 // credential wiring. It implements httpapi.CredentialService.
 type daemonCredentialService struct {
-	layout instance.Layout
-	config *instance.Config
-	stores credentials.StoreResolver
+	childPublisher func(childpublication.Target, string, httpapi.MintedCredential, string) (childpublication.Publisher, error)
+	// Installed before serving. Current child authority lease spans materialization.
+	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
+	childExecutors   childExecutorProvider
+	childPodRecovery func(context.Context, *journal.Reader, string, childPodScope) error
+	layout           instance.Layout
+	config           *instance.Config
+	stores           credentials.StoreResolver
 	// shared is the instance-global exact-value scrubber registry. Every
 	// value the plane materializes is registered here (the Injector registers
 	// each value before returning it), which is what makes later journal/log
@@ -113,7 +121,10 @@ type daemonCredentialService struct {
 	// grants signs and admits stage credential-refresh grants (Goobers#6120,
 	// credentialrefresh.go). Nil disables mid-stage refresh: no grant is
 	// minted and the refresh route answers 503.
-	grants *stageGrantIssuer
+	grants        *stageGrantIssuer
+	children      *childworkflow.Runtime
+	childQueue    *triggerqueue.Store
+	childDispatch *daemonTriggerService
 
 	// buildSources overrides gaggle credential-source construction in tests;
 	// nil uses buildCredentials — the same composition the runner wiring uses.
@@ -209,6 +220,11 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, err
 	}
 	defer pinned.release()
+	ctx, childLease, err := s.applyChildCredentialCeiling(ctx, pinned, request.Stage)
+	if err != nil {
+		return stageResolution{}, err
+	}
+	defer childLease.release()
 	if mode.deterministicOnly && !pinned.profile.deterministic {
 		return stageResolution{}, credentialPlaneError(http.StatusForbidden, "credential_refresh_agentic_stage",
 			fmt.Sprintf("stage %q is not a deterministic task; mid-stage credential refresh serves deterministic stages only", request.Stage))
@@ -230,6 +246,9 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 	}
 	resolved, err := s.mintStageCredentials(ctx, pinned, requested)
 	if err != nil {
+		return stageResolution{}, err
+	}
+	if err := childLease.finish(ctx); err != nil {
 		return stageResolution{}, err
 	}
 	if err := s.journalResolution(pinned, request, mode, requested, resolved.materialized); err != nil {
@@ -359,6 +378,7 @@ func gateRequestedCapabilities(profile stageProfile, request httpapi.CredentialR
 // registered with the shared scrubber registry inside Materialize, BEFORE
 // this returns.
 func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinned pinnedStage, requested []string) (stageResolution, error) {
+	requested = credentials.FilterChildCredentialKeys(ctx, requested)
 	connectorCredential, err := s.stageConnectorCredential(ctx, pinned.profile, requested)
 	if err != nil {
 		return stageResolution{}, err

@@ -345,6 +345,32 @@ the correct outcome when the underlying git capture itself failed — a
 missing ref/object, lock contention, or an unsafe-repository refusal — not
 just when the recovery inventory is full.
 
+One case is not deferred: a cleanup target whose checkout directory no
+longer exists. Nothing is left in it to capture, so a handoff that reads it
+could never succeed on retry. For a linked run worktree the abandoned
+preparation branch lives in the shared repository rather than the checkout,
+so it is still handed to the inventory from there (a failure doing so is
+deferred like any other capture failure). The cleanup then proceeds — the
+worktree registration is pruned and its markers retired — and the instance
+journal records a `recovery-cleanup-target-missing` annotation naming the
+worktree and whether a shared repository was available. Entries that older
+builds left deferred this way drain on the next reap pass after upgrade;
+targets already quarantined as `cleanup-retained` stay in operator review.
+Only the cleanup's existing selection (crash orphan, abandoned or
+cleanup-pending) decides which targets are examined, so a live run's
+worktree is never selected by this rule.
+
+The same applies when the checkout directory still exists but holds nothing
+a capture could read: it is empty, or its only entry is a `.git` file naming
+a worktree admin directory that was already pruned. On Windows,
+`git worktree remove` can delete the checkout and its admin entry yet fail to
+unlink the directory itself while another process still holds it, leaving
+exactly this shell; every git command there fails "not a git repository", so
+deferring could never succeed. The annotation's `checkout` field is `missing`
+for a vanished directory and `empty` for this shell. A directory that lost its
+git metadata but still holds any other file is not settled: it may be the
+only copy of uncommitted work, so it stays deferred for an operator.
+
 The wrapped failure carries three pieces of evidence an operator needs, all
 preserved in the error chain and in whatever journal/log surfaces it (both
 pass through the instance journal's scrubber, so nothing beyond this bounded,

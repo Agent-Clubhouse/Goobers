@@ -48,6 +48,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
+	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+		return Result{}, err
+	}
 	if in.Stage == "" {
 		return Result{}, fmt.Errorf("runner: Stage is required")
 	}
@@ -143,6 +146,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Machine:          in.Machine,
 			GooberDigest:     in.GooberDigest,
 			Gaggle:           id.Gaggle,
+			Child:            id.Child,
 			Trigger:          id.Trigger,
 			RepoRef:          in.RepoRef,
 			Item:             item,
@@ -154,7 +158,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 				branch = owner.id
 			}
 		}
-		startIn, err = r.restoreResumeWorkspaceRevision(ctx, startIn, events, activeParallel, parallelStart, branch)
+		startIn, err = r.restoreExecutionWorkspace(ctx, rd, id, startIn, events, activeParallel, parallelStart, branch)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
 		}

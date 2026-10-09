@@ -78,6 +78,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	if err != nil {
 		return "", err
 	}
+	kit.ReviewRequiresDiff = attempt.Review && attempt.ReviewRequiresDiff
 	data, digest, err := agentickit.Marshal(kit)
 	if err != nil {
 		return "", err
@@ -125,6 +126,10 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		return nil, err
 	}
 	defer release()
+	return w.buildSnapshotKit(l, snapshot, env, mode)
+}
+
+func (w agenticKitWriter) buildSnapshotKit(l instance.Layout, snapshot *workerConfigSnapshot, env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	if snapshot.configDir != "" {
 		l = l.WithConfigDir(snapshot.configDir)
 	}

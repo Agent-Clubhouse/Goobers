@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -19,9 +20,13 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
+// defaultChildPruneBudget bounds one sweep's child-retention pass.
+const defaultChildPruneBudget = 250 * time.Millisecond
+
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
+	childFamilies   *childFamilyLifecycle
 	queue           *triggerqueue.Store
 	dispatch        *daemonTriggerService
 	sweepMu         sync.Mutex
@@ -29,6 +34,12 @@ type durableTriggerService struct {
 	bootUncertain   map[string]bool
 	auditLog        *journal.InstanceLog
 	observe         func(context.Context, triggerqueue.Record) (bool, error)
+	children        childExecutionLauncher
+	observeChild    childStartObserver
+	childCursor     string
+	// pruneBudget bounds each sweep's child-retention pass so it cannot stall dispatch;
+	// zero means defaultChildPruneBudget.
+	pruneBudget time.Duration
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a
@@ -57,7 +68,10 @@ func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTrigg
 		return nil, nil, nil, err
 	}
 	triggers.observe = acceptedTriggerObserver(layout)
+	triggers.observeChild = acceptedChildObserver(layout)
 	triggers.auditLog = auditLog
+	triggers.childFamilies = &childFamilyLifecycle{layout: layout, queue: triggers.queue, runners: runners}
+	cancels.fenceChildren = triggers.childFamilies.Fence
 	return triggers, state, cancels, nil
 }
 
@@ -92,7 +106,13 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
 	}
-	record, duplicate, err := s.queue.Accept(ctx, request.RequestID, request.Actor, payload, s.dispatch.now())
+	record, duplicate, err := s.queue.AcceptAdmitted(ctx, request.RequestID, request.Actor, payload, s.dispatch.now(), func() error {
+		return s.dispatch.validateTriggerTarget(request)
+	})
+	var refusal *httpapi.InterventionError
+	if errors.As(err, &refusal) {
+		return httpapi.TriggerResponse{}, err
+	}
 	if errors.Is(err, triggerqueue.ErrConflict) {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusConflict, "trigger_request_conflict", "request key belongs to another trigger", nil)
 	}
@@ -130,10 +150,23 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 func (s *durableTriggerService) Drain(ctx context.Context) error {
 	s.sweepMu.Lock()
 	defer s.sweepMu.Unlock()
-	if s.dispatch.triggerer() == nil {
-		return nil
+	// Child custody shares the ordinary queue database. Retention must run
+	// even while no scheduler is attached; otherwise inactive installations
+	// retain terminal lineages and cancellation fences indefinitely.
+	budget := s.pruneBudget
+	if budget <= 0 {
+		budget = defaultChildPruneBudget
 	}
-	reconcileErr := s.reconcileObserved(ctx)
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, budget)
+	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
+	cancelPrune()
+	if s.childFamilies != nil {
+		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
+	}
+	if s.dispatch.triggerer() == nil && s.children == nil {
+		return pruneErr
+	}
+	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
 	records, err := s.queue.Pending(ctx, 100)
 	if err != nil {
 		return errors.Join(reconcileErr, err)
@@ -150,6 +183,24 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 }
 
 func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueue.Record) error {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)
+	}
+	// Generated children require their own pinned-definition launcher. Never
+	// treat a generated workflow's display name as a catalog trigger, even if
+	// an envelope also contains an ordinary request. Retain durable custody.
+	if header.Kind == childworkflow.ChildStartKind {
+		return s.drainChild(ctx, record)
+	}
+	if header.Kind != "" {
+		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)
+	}
+	if s.dispatch.triggerer() == nil {
+		return nil
+	}
 	var payload acceptedTriggerPayload
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)

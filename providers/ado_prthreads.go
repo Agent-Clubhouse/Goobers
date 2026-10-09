@@ -468,6 +468,7 @@ func (p *ADOProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pu
 		ID:                 pullID,
 		Number:             poll.Number,
 		URL:                poll.URL,
+		Title:              poll.Title,
 		Author:             poll.Author,
 		RequestedReviewers: poll.RequestedReviewers,
 		State:              poll.State,

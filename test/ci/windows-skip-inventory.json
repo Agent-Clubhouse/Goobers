@@ -20,9 +20,9 @@
     },
     {
       "package": "api/validate",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child-workflow origin schema validation runs in the Windows child stage identities step; other schema tests remain in the Linux unit shards."
     },
     {
       "package": "cmd/config-sync",
@@ -62,9 +62,9 @@
     },
     {
       "package": "internal/agentickit",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child-workflow origin round-trip and credential-free dispatch-kit validation run in the Windows child stage identities step; remaining kit tests run on Linux."
     },
     {
       "package": "internal/apicontract",
@@ -524,9 +524,9 @@
     },
     {
       "package": "internal/localscheduler",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission, durable wait capacity and recovered parked-parent accounting run in the Windows child custody and waits step; the remaining scheduler suite runs on Linux."
     },
     {
       "package": "internal/mcpconfig",
@@ -536,9 +536,9 @@
     },
     {
       "package": "internal/mcpio",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
     },
     {
       "package": "internal/mergepolicy",
@@ -638,9 +638,9 @@
     },
     {
       "package": "internal/podauth",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
     },
     {
       "package": "internal/planehttp",
@@ -742,7 +742,7 @@
       "package": "internal/runner",
       "coverage": "partial",
       "category": "cost",
-      "reason": "Whole package exceeds 30min on Windows (PR #2364 measurement). Entered by named tests in the 'Windows journal OTLP export' step."
+      "reason": "Whole package exceeds 30min on Windows (PR #2364 measurement). Named tests exercise journal OTLP, child stage identity, child custody/credential refusal and durable wait projection in the Windows gate."
     },
     {
       "package": "internal/runnercap",
@@ -815,6 +815,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/startuphint",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Header encoding and parsing only; no Windows-specific seam identified. Runs on the Linux unit shards."
     },
     {
       "package": "internal/stateclient",
@@ -932,6 +938,12 @@
     },
     {
       "package": "internal/triggerqueue",
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
+    },
+    {
+      "package": "internal/truncate",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -1244,6 +1256,12 @@
     },
     {
       "package": "test/providers",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "test/releasedconfigs",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."

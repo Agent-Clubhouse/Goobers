@@ -110,6 +110,59 @@ describe("runs history page", () => {
     expect(window.location.hash).toBe("#/runs?gaggle=core&workflow=implementation&status=active");
   });
 
+  it("renders a published display title verbatim instead of reconstructing one", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const run = fixtures.runs.runs.find((candidate) => candidate.id === "01JZ441DAEMONAPI");
+    if (!run?.operator) {
+      throw new Error("fixture run 01JZ441DAEMONAPI has no operator summary");
+    }
+    run.operator.displayTitle = "Investigate #3088: Operator status progress";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(row.querySelector(".row-title")).toHaveTextContent(
+      /^Investigate #3088: Operator status progress$/,
+    );
+    expect(row.querySelector(".row-title")).toHaveAttribute(
+      "title",
+      "Investigate #3088: Operator status progress",
+    );
+    expect(row.querySelector(".row-subtitle")).toHaveTextContent("01JZ441DAEMONAPI");
+  });
+
+  it("omits a trigger ref that repeats the workflow but keeps distinct refs (#5428)", async () => {
+    window.location.hash = "#/runs?status=all";
+    const fixtures = populatedDaemonFixtures();
+    const claimed = fixtures.runs.runs.find((run) => run.id === "01JZ441DAEMONAPI");
+    const unclaimed = fixtures.runs.runs.find(
+      (run) => !run.operator?.issue && !run.operator?.displayTitle,
+    );
+    if (!claimed || !unclaimed) {
+      throw new Error("Expected claimed and unclaimed run fixtures.");
+    }
+    claimed.trigger = { kind: "manual", ref: claimed.workflow };
+    unclaimed.trigger = { kind: "item", ref: "queue-item-7" };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const claimedRow = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    const claimedContext = `${claimed.gaggle} / ${claimed.workflow} · 01JZ441DAEMONAPI`;
+    expect(claimedRow.querySelector(".row-title")).toHaveTextContent(
+      /^#3088 · Operator status progress$/,
+    );
+    expect(claimedRow.querySelector(".row-subtitle")).toHaveTextContent(
+      new RegExp(`^${claimedContext}$`),
+    );
+    expect(claimedRow.querySelector(".row-subtitle")).toHaveAttribute("title", claimedContext);
+
+    const unclaimedRow = screen.getByRole("link", { name: `Open run ${unclaimed.id}` });
+    const unclaimedContext = `${unclaimed.gaggle} / ${unclaimed.workflow} · queue-item-7`;
+    expect(unclaimedRow.querySelector(".row-title")).toHaveTextContent(new RegExp(`^${unclaimed.id}$`));
+    expect(unclaimedRow.querySelector(".row-subtitle")).toHaveTextContent(
+      new RegExp(`^${unclaimedContext}$`),
+    );
+    expect(unclaimedRow.querySelector(".row-subtitle")).toHaveAttribute("title", unclaimedContext);
+  });
+
   it("identifies runs by their work item while retaining the run ID", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 

@@ -25,6 +25,8 @@ import (
 // reconcile sweep keys on (dispatcher §5: label + sweep, NOT a cross-namespace
 // ownerReference).
 const (
+	// EnvChildExecutionDigest names the host-published isolated child contract.
+	EnvChildExecutionDigest = "GOOBERS_CHILD_EXECUTION_DIGEST"
 	// LabelManagedBy marks every pod this dispatcher creates; the orphan
 	// sweep lists by it.
 	LabelManagedBy = "app.kubernetes.io/managed-by"
@@ -345,6 +347,7 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // stage-spec vars because a stage rewriting its own command/capabilities is
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
+	EnvChildExecutionDigest,
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvArtifactPublication,
@@ -415,7 +418,7 @@ var DispatcherPlaneEnv = []string{
 var runContextEnv = []string{
 	executorRepoProviderEnv, executorRepoBaseURLEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
-	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv,
+	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
 }
 
 // The executor package owns these names; they are restated rather than imported
@@ -432,6 +435,11 @@ const (
 	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
 	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
 	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
+	// executorStageTimeoutEnv restates executor.StageTimeoutEnvVar: the
+	// deadline dispatch-exec enforces, stamped for goobers-CLI stages so a
+	// provider command budgets against it rather than a default (#5572).
+	// EnvStageTimeout itself is privileged and never reaches the stage.
+	executorStageTimeoutEnv = "GOOBERS_EFFECTIVE_STAGE_TIMEOUT"
 	// executorInputKindKey, executorKindExternalTelemetry and
 	// executorInputTelemetryConnector restate executor.InputKind (itself
 	// boundedwait.InputKind), executor.KindExternalTelemetry, and
@@ -1217,6 +1225,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		// supply the name) and why an empty value and an absent one are two
 		// different facts on the far side.
 		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: literalPodEnv(providerBotLogin(cfg, attempt))})
+		env = append(env, corev1.EnvVar{Name: executorStageTimeoutEnv, Value: attempt.stageTimeout().String()})
 	}
 	if stamp := externalTelemetryConnectorStamp(cfg, attempt); stamp != "" {
 		env = append(env, corev1.EnvVar{Name: ExternalTelemetryConnectorEnv, Value: literalPodEnv(stamp)})
@@ -1490,10 +1499,11 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 
 // stampResources sets requests from the stage's runsOn minimums and limits
 // from the runner ceiling (dsl-3.0.md D2), with the tmpfs budget rule of
-// dispatcher §5: when a Linux tmp:ephemeral tmpfs is mounted, its explicit
-// sizeLimit is ADDED to the container memory limit — memory-backed emptyDir
-// usage counts against the limit, and a ceiling that never accounted for it
-// turns a full /tmp into an unattributed OOM.
+// dispatcher §5: when a memory-backed Linux tmp:ephemeral tmpfs is mounted,
+// its explicit sizeLimit is ADDED to the container memory limit — memory-
+// backed emptyDir usage counts against the limit, and a ceiling that never
+// accounted for it turns a full /tmp into an unattributed OOM. A disk-backed
+// /tmp (Config.TmpDiskBacked) costs no memory and is not budgeted here.
 func stampResources(cfg Config, attempt Attempt, runner RunnerSpec, container *corev1.Container, class map[string]bool, windows bool) {
 	requests := corev1.ResourceList{}
 	for name, minimum := range map[corev1.ResourceName]string{
@@ -1521,7 +1531,7 @@ func stampResources(cfg Config, attempt Attempt, runner RunnerSpec, container *c
 			limits[name] = quantity
 		}
 	}
-	if !windows && class[string(runnercap.RestrictionTmpEphemeral)] {
+	if budgetsTmpfsMemory(cfg, class, windows) {
 		if memory, ok := limits[corev1.ResourceMemory]; ok {
 			budgeted := memory.DeepCopy()
 			tmpfs := cfg.tmpfsSizeLimit()
@@ -1537,11 +1547,17 @@ func stampResources(cfg Config, attempt Attempt, runner RunnerSpec, container *c
 	}
 }
 
+// budgetsTmpfsMemory reports whether the pod mounts a memory-backed
+// tmp:ephemeral tmpfs whose size must be added to the memory limit.
+func budgetsTmpfsMemory(cfg Config, class map[string]bool, windows bool) bool {
+	return !windows && !cfg.TmpDiskBacked && class[string(runnercap.RestrictionTmpEphemeral)]
+}
+
 // stampVolumes mounts the writable workspace (always), the tmp:ephemeral
 // volume at the platform temp path (decision 006: Linux /tmp memory-backed
-// with an EXPLICIT sizeLimit; Windows the profile-nested temp,
-// node-disk-backed — memory-backed emptyDir is a Linux mechanism), and the
-// writable HOME a Linux fs-readonly pod needs.
+// with an EXPLICIT sizeLimit unless Config.TmpDiskBacked selects node disk;
+// Windows the profile-nested temp, node-disk-backed — memory-backed emptyDir
+// is a Linux mechanism), and the writable HOME a Linux fs-readonly pod needs.
 func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *corev1.Container, class map[string]bool, windows bool) {
 	workspace := corev1.Volume{
 		Name:         "workspace",
@@ -1574,29 +1590,7 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 	container.WorkingDir = workspacePath
 
 	if class[string(runnercap.RestrictionTmpEphemeral)] {
-		tmpfs := cfg.tmpfsSizeLimit()
-		tmp := corev1.Volume{
-			Name: "tmp",
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
-				SizeLimit: &tmpfs,
-			}},
-		}
-		tmpPath := LinuxTmpPath
-		if windows {
-			tmpPath = WindowsTmpPath
-		} else {
-			tmp.EmptyDir.Medium = corev1.StorageMediumMemory
-		}
-		spec.Volumes = append(spec.Volumes, tmp)
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "tmp", MountPath: tmpPath})
-		if windows {
-			container.Env = append(container.Env,
-				corev1.EnvVar{Name: "TMP", Value: tmpPath},
-				corev1.EnvVar{Name: "TEMP", Value: tmpPath},
-			)
-		} else {
-			container.Env = append(container.Env, corev1.EnvVar{Name: "TMPDIR", Value: tmpPath})
-		}
+		stampTmpVolume(cfg, spec, container, windows)
 	}
 
 	if !windows && class[string(runnercap.RestrictionFSReadonly)] {
@@ -1645,6 +1639,36 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 		return env.Name == "GOCACHE"
 	})
 	container.Env = append(container.Env, corev1.EnvVar{Name: "GOCACHE", Value: buildCachePath})
+}
+
+// stampTmpVolume mounts the tmp:ephemeral volume with an explicit sizeLimit
+// and points the platform temp variables at it. Linux /tmp is a memory tmpfs
+// unless Config.TmpDiskBacked selects a node-disk emptyDir (#6758): Go's $WORK
+// and t.TempDir() land under TMPDIR, and a tmpfs big enough for a real build
+// costs pod memory.
+func stampTmpVolume(cfg Config, spec *corev1.PodSpec, container *corev1.Container, windows bool) {
+	size := cfg.tmpfsSizeLimit()
+	tmp := corev1.Volume{
+		Name: "tmp",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			SizeLimit: &size,
+		}},
+	}
+	if windows {
+		spec.Volumes = append(spec.Volumes, tmp)
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "tmp", MountPath: WindowsTmpPath})
+		container.Env = append(container.Env,
+			corev1.EnvVar{Name: "TMP", Value: WindowsTmpPath},
+			corev1.EnvVar{Name: "TEMP", Value: WindowsTmpPath},
+		)
+		return
+	}
+	if !cfg.TmpDiskBacked {
+		tmp.EmptyDir.Medium = corev1.StorageMediumMemory
+	}
+	spec.Volumes = append(spec.Volumes, tmp)
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "tmp", MountPath: LinuxTmpPath})
+	container.Env = append(container.Env, corev1.EnvVar{Name: "TMPDIR", Value: LinuxTmpPath})
 }
 
 // stampSecurity applies the restriction bindings by OS (decisions 006/007,

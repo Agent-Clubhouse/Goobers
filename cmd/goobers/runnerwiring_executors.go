@@ -565,6 +565,7 @@ type agenticExecutorInput struct {
 	ArtifactRecorder runner.ArtifactRecorder
 	SecretRegistrar  runner.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
+	ChildWorkflows   harness.ChildWorkflowAccessProvider
 
 	// Local runner only; worker pods do not inherit daemon-host paths.
 	GuardedCredentialPaths []string
@@ -634,6 +635,7 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 		harness.WithSkills(harnessName, workflow.ResolvedSkillFiles(spec, input.SkillPackages)),
 		harness.WithMCPServers(spec.MCPServers),
 		harness.WithTools(spec.Tools),
+		harness.WithChildWorkflowAccess(input.ChildWorkflows),
 	}
 	if spec.TimeoutSeconds > 0 {
 		opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))

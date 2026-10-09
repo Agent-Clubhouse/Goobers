@@ -80,9 +80,17 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"own. With identityMode=dedicated, an unmarked comment by the credential's\n" +
 	"own identity (its login; its identity id on Azure DevOps) is Goobers' own\n" +
 	"too. With identityMode=shared, for Goobers running as a person's own\n" +
-	"identity, such a comment is that person's and counts as human. Comments\n" +
-	"landing mid-remediation after the brief snapshot can be masked by\n" +
-	"Goobers' response until the human comments again (accepted v1 limit).\n\n" +
+	"identity, such a comment is that person's and counts as human.\n\n" +
+	"Remediation responses carry a feedback-ack frontier: the newest\n" +
+	"timestamp in the feedback snapshot the run assessed, to the second. Such\n" +
+	"a response acknowledges only human comments within that second or\n" +
+	"earlier, so feedback that lands after the snapshot stays fresh until a\n" +
+	"run assesses it; comments sharing the frontier's second count as\n" +
+	"assessed, and edits never re-route. Azure DevOps verdict thread comments\n" +
+	"carry an empty frontier and acknowledge nothing. A Goobers comment\n" +
+	"without a frontier keeps the legacy rule (it acknowledges every earlier\n" +
+	"human comment); PRs whose newest human comment only such a comment\n" +
+	"acknowledges are listed as unboundAcknowledged in the result.\n\n" +
 	"Inputs: maxPullRequests (default 20), headPrefixes (default the branch\n" +
 	"namespace), base (default the gaggle base branch), excludeLabels (labels\n" +
 	"that hard-exclude a PR from the scan), unparkLabels (park labels a fresh\n" +
@@ -121,7 +129,11 @@ type prCommentWatchResult struct {
 	BotID        string                  `json:"botId,omitempty"`
 	IdentityMode string                  `json:"identityMode"`
 	PRs          []prCommentWatchLabeled `json:"prs,omitempty"`
-	Integrity    string                  `json:"integrity"` // apiintegrity.Unapproved
+	// UnboundAcknowledged lists scanned PRs whose newest human comment counts
+	// as addressed only through a Goobers comment with no feedback-ack
+	// frontier (legacy rule), i.e. no assessed snapshot proves it was seen.
+	UnboundAcknowledged []int  `json:"unboundAcknowledged,omitempty"`
+	Integrity           string `json:"integrity"` // apiintegrity.Unapproved
 }
 
 // prCommentWatchSettings are the stage inputs, parsed and defaulted.
@@ -256,7 +268,10 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 	if err != nil {
 		return fmt.Errorf("list comments: %w", err)
 	}
-	triggering, fresh := latestUnaddressedHumanComment(comments, classifier)
+	triggering, fresh, unbound := latestUnaddressedHumanComment(comments, classifier)
+	if unbound {
+		result.UnboundAcknowledged = append(result.UnboundAcknowledged, pr.Number)
+	}
 	if !fresh {
 		return nil
 	}
@@ -282,39 +297,69 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 	return nil
 }
 
-// latestUnaddressedHumanComment reports the newest human comment when it is
-// newer than Goobers' newest comment (a missing Goobers comment compares as
+// prCommentMark is a position in the watermark order: timestamp, then list
+// position. Providers return comments oldest-first (Azure DevOps by publish
+// time, thread id, then comment id), so position breaks timestamp ties and
+// orders comments with no timestamp.
+type prCommentMark struct {
+	at  time.Time
+	idx int
+}
+
+func (m prCommentMark) after(o prCommentMark) bool {
+	return m.at.After(o.at) || (m.at.Equal(o.at) && m.idx > o.idx)
+}
+
+// prCommentAckMark is how far one Goobers comment acknowledges human feedback,
+// and whether a feedback-ack frontier bounds it (#6918). A bound comment
+// covers every human comment within the frontier's second, wherever it sits
+// in the list; a "none" or unreadable frontier covers nothing. An unbound
+// comment keeps the legacy rule and covers everything before itself.
+func prCommentAckMark(c providers.Comment, at time.Time, idx, n int) (prCommentMark, bool) {
+	frontier, bound := parseFeedbackAck(c.Body)
+	switch {
+	case !bound:
+		return prCommentMark{at: at, idx: idx}, false
+	case frontier.IsZero():
+		return prCommentMark{idx: -1}, true
+	default:
+		return prCommentMark{at: frontier.Add(time.Second - time.Nanosecond), idx: n}, true
+	}
+}
+
+// latestUnaddressedHumanComment reports the newest human comment and whether
+// it is fresh: past every Goobers acknowledgement (a PR with none compares as
 // zero time). classifier decides each comment's origin; automation comments
-// take part in neither watermark. Providers return comments oldest-first
-// (Azure DevOps by publish time, thread id, then comment id), so list position
-// breaks timestamp ties and orders comments with no timestamp.
-func latestUnaddressedHumanComment(comments []providers.Comment, classifier prCommentClassifier) (providers.Comment, bool) {
-	var human providers.Comment
-	humanAt, ownAt := time.Time{}, time.Time{}
-	humanIdx, ownIdx := -1, -1
+// take part in neither watermark. unbound reports a newest human comment that
+// only an unbound (legacy, frontier-less) Goobers comment acknowledges, so the
+// result can say the acknowledgement rests on no assessed snapshot.
+func latestUnaddressedHumanComment(comments []providers.Comment, classifier prCommentClassifier) (human providers.Comment, fresh, unbound bool) {
+	humanMark, ack, boundAck := prCommentMark{idx: -1}, prCommentMark{idx: -1}, prCommentMark{idx: -1}
 	for i, c := range comments {
-		at := time.Time{}
+		mark := prCommentMark{idx: i}
 		if c.CreatedAt != nil {
-			at = *c.CreatedAt
+			mark.at = *c.CreatedAt
 		}
 		switch classifier.origin(c) {
 		case prCommentFromGoobers:
-			if at.After(ownAt) || (at.Equal(ownAt) && i > ownIdx) {
-				ownAt, ownIdx = at, i
+			covers, bound := prCommentAckMark(c, mark.at, i, len(comments))
+			if covers.after(ack) {
+				ack = covers
+			}
+			if bound && covers.after(boundAck) {
+				boundAck = covers
 			}
 		case prCommentFromHuman:
-			if at.After(humanAt) || (at.Equal(humanAt) && i > humanIdx) {
-				human, humanAt, humanIdx = c, at, i
+			if mark.after(humanMark) {
+				human, humanMark = c, mark
 			}
 		}
 	}
-	if humanIdx == -1 {
-		return providers.Comment{}, false
+	if humanMark.idx == -1 {
+		return providers.Comment{}, false, false
 	}
-	if humanAt.Equal(ownAt) {
-		return human, humanIdx > ownIdx
-	}
-	return human, humanAt.After(ownAt)
+	fresh = humanMark.after(ack)
+	return human, fresh, !fresh && humanMark.after(boundAck)
 }
 
 // toLowerSet lowercases a slice into a membership set for case-insensitive

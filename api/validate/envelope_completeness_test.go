@@ -110,6 +110,7 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
+		ChildWorkflowOrigin:                 &apiv1.ChildWorkflowOrigin{StageOccurrence: journal.StageAttemptID("run-123", 0, "implement", 2), AttemptID: journal.StageAttemptID("run-123", 0, "implement", 4)},
 		TaskID:                              "implement",
 		ArtifactPublication:                 &apiv1.ArtifactPublication{Stage: "implement", Visit: 1, Slots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.json", MaxSize: 100}}},
 		Attempt:                             1,
@@ -299,7 +300,7 @@ func completeReviewThreadPublication() apiv1.ReviewThreadPublication {
 		SelectedNumber:         "42",
 		PublishedHeadSHA:       strings.Repeat("a", 40),
 		FeedbackSnapshotDigest: "sha256:" + strings.Repeat("f", 64),
-		Status:                 apiv1.ReviewThreadPublicationStale,
+		ResolutionStatus:       apiv1.ReviewThreadPublicationStale,
 		ResumedFromReceipt:     true,
 		Restoration:            apiv1.ReviewThreadRestorationUnsupported,
 		UnresolvedThreadCount:  "1",
@@ -704,6 +705,9 @@ var completenessOmissions = map[reflect.Type]map[string]string{
 	},
 	reflect.TypeOf(apiv1.OperatorMessageContent{}): {
 		"Text": "content permits exactly one variant; the complete event fixture exercises the bounded artifact-reference variant",
+	},
+	reflect.TypeOf(apiv1.Verdict{}): {
+		"Synthesized": "schema forbids findings on a synthesized verdict; TestSynthesizedVerdictSchema validates the synthesized variant",
 	},
 }
 

@@ -99,16 +99,20 @@ func overPrivilegeWarnings(task apiv1.Task) []string {
 	}
 	requiredSet := map[capability.Capability]bool{}
 	var requiredOrder []capability.Capability
+	accepted := map[capability.Capability]bool{}
 	for _, use := range required {
 		if !requiredSet[use.Capability] {
 			requiredSet[use.Capability] = true
 			requiredOrder = append(requiredOrder, use.Capability)
 		}
+		for _, alternative := range use.AcceptedCapabilities() {
+			accepted[alternative] = true
+		}
 	}
 	var warnings []string
 	for _, declared := range task.Capabilities {
 		held := capability.Capability(declared)
-		if requiredSet[held] {
+		if accepted[held] {
 			continue
 		}
 		strictlySubsumesAll := true

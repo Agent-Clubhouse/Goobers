@@ -259,6 +259,8 @@ func TestAzureMonitorJournalReplaySurvivesRestartWithStableScrubbedIdentity(t *t
 	var available atomic.Bool
 	var failedMu sync.Mutex
 	var failedPayload string
+	rejected := make(chan struct{})
+	var rejectOnce sync.Once
 	delivered := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reader, err := gzip.NewReader(r.Body)
@@ -276,6 +278,7 @@ func TestAzureMonitorJournalReplaySurvivesRestartWithStableScrubbedIdentity(t *t
 			}
 			failedMu.Unlock()
 			w.WriteHeader(http.StatusServiceUnavailable)
+			rejectOnce.Do(func() { close(rejected) })
 			return
 		}
 		delivered <- string(body)
@@ -302,6 +305,21 @@ func TestAzureMonitorJournalReplaySurvivesRestartWithStableScrubbedIdentity(t *t
 		Kind: "run", JournalID: "0af7651916cd43dd8448eb211c80319c", RunID: "0af7651916cd43dd8448eb211c80319c",
 		Seq: 1, Time: time.Now(), Body: scrubber.Scrub([]byte(`{"type":"auth.failed","detail":"` + secret + `"}`)),
 	})
+	// Shutdown is deliberately bounded and abandons work still queued when its
+	// deadline expires. Wait for durable admission and the replay worker's
+	// failed attempt first, so a slow index start cannot turn this into a
+	// shutdown-cancelled admission instead of an unavailable destination.
+	select {
+	case <-rejected:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("replay worker never attempted the unavailable destination: %+v", first.JournalExportStats())
+	}
+	for deadline := time.Now().Add(10 * time.Second); first.JournalExportStats().AzureReplay.Retried == 0; {
+		if time.Now().After(deadline) {
+			t.Fatalf("rejected delivery was not recorded as a retry: %+v", first.JournalExportStats())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	if err := first.Shutdown(shutdown); err != nil {
 		cancel()

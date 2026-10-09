@@ -61,6 +61,17 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "update", req.Repository)
 		return p.adoPullRequestResult(req.Repository, out), nil
 	}
+	return p.CreatePullRequest(ctx, req)
+}
+
+// CreatePullRequest only attempts creation; an existing PR or uncertain response
+// is left for the caller's read-only reconciliation, never a fallback update.
+func (p *ADOProvider) CreatePullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
+	if err := requireRepo(req.Repository); err != nil {
+		return PullRequestResult{}, err
+	}
+	head := strings.TrimPrefix(req.Head, "refs/heads/")
+	base := strings.TrimPrefix(req.Base, "refs/heads/")
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
 		return PullRequestResult{}, err
@@ -479,11 +490,19 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		if !req.MatchesIdentityFields(author, nil, requestedReviewers) {
 			continue
 		}
+		titleMatched, err := req.MatchesTitle(pr.Title)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.PullRequestID, err)
+		}
+		if !titleMatched {
+			continue
+		}
 		labels := adoLabelNames(pr.Labels)
 		out = append(out, PullRequestSummary{
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
 			URL:                p.pullRequestWebURL(req.Repository, pr),
+			Title:              pr.Title,
 			Author:             author,
 			RequestedReviewers: requestedReviewers,
 			Head:               head,

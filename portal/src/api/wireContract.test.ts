@@ -13,6 +13,12 @@ const checkedErrorEnvelope: ApiErrorEnvelope = checkedFixtures.errorEnvelope;
 describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
+      "childWorkflowSource",
+      "childWorkflowResolve",
+      "childWorkflowResolution",
+      "childWorkflowStatus",
+      "childWorkflowValidation",
+      "childWorkflow",
       "triggerRequest",
       "triggerResponse",
       "triggerStatus",
@@ -48,6 +54,9 @@ describe("Go daemon wire contract", () => {
       "eventInvalidation",
       "errorEnvelope",
     ]);
+    expect(checkedFixtures.childWorkflowValidation).toMatchObject({ valid: false, advisory: true });
+    expect(checkedFixtures.childWorkflow).toMatchObject({ state: "queued", invocationKey: "inspect-1", cancellationRequested: false });
+    expect(checkedFixtures.childWorkflow).not.toHaveProperty("source");
     expect(checkedFixtures.health.apiVersion).toBe("v1");
     expect(checkedFixtures.triggerResponse).toMatchObject({ state: "accepted", duplicate: true });
     expect(checkedFixtures.triggerResponse).not.toHaveProperty("runId");

@@ -112,8 +112,9 @@ func (owned *schedulerObservation) open(ctx context.Context, l instance.Layout, 
 		}
 		// §6.6 step 2: build it by rebuild-from-journals on first start.
 		// A completed store is kept and updated incrementally by the writer
-		// seam; an unready store is rebuilt synchronously before attachment.
-		if err := buildReadModelIfNeeded(ctx, readStore, state, l); err != nil {
+		// seam; an unready store is rebuilt synchronously before attachment,
+		// and a ready one re-projects only rows from older rules (#6895).
+		if err := buildReadModelIfNeeded(ctx, readStore, state, l, options.startupProgress); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
 			_ = readStore.Close()
 		} else {
