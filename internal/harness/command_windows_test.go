@@ -147,7 +147,7 @@ func TestResolvedHarnessCommandPreservesBackticksInPrompt(t *testing.T) {
 	}
 }
 
-func TestCopilotWindowsShimQuotedPromptUsesStdin(t *testing.T) {
+func TestCopilotWindowsShimPromptUsesStdin(t *testing.T) {
 	directory := t.TempDir()
 	cmdPath := filepath.Join(directory, "copilot.cmd")
 	psPath := filepath.Join(directory, "copilot.ps1")
@@ -212,7 +212,10 @@ func TestCopilotWindowsShimQuotedPromptUsesStdin(t *testing.T) {
 	}
 }
 
-func TestCopilotWindowsCustomBatchLauncherKeepsPromptArgv(t *testing.T) {
+// A custom batch launcher receives the prompt on stdin like the direct CLI
+// (#6871): no launcher falls back to an argv prompt, whose size cmd.exe caps
+// at 8,191 characters.
+func TestCopilotWindowsCustomBatchLauncherReceivesPromptOnStdin(t *testing.T) {
 	directory := t.TempDir()
 	launcherPath := filepath.Join(directory, "copilot-launcher.cmd")
 	if err := os.WriteFile(launcherPath, []byte("@echo off\r\n"), 0o755); err != nil {
@@ -240,11 +243,14 @@ func TestCopilotWindowsCustomBatchLauncherKeepsPromptArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(runner.lastReq.Stdin) != 0 {
-		t.Fatalf("custom launcher received stdin prompt unexpectedly: %q", runner.lastReq.Stdin)
+	if runner.lastReq.Command[0] != launcherPath {
+		t.Fatalf("command[0] = %q, want custom launcher %q", runner.lastReq.Command[0], launcherPath)
 	}
-	prompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+	prompt, ok := copilotSentPrompt(runner.lastReq)
 	if !ok || !strings.Contains(prompt, `"quoted"`) {
-		t.Fatalf("custom launcher prompt arg = %q, %v; command=%v", prompt, ok, runner.lastReq.Command)
+		t.Fatalf("custom launcher stdin prompt = %q, %v; command=%v", prompt, ok, runner.lastReq.Command)
+	}
+	if strings.Contains(strings.Join(runner.lastReq.Command, " "), `"quoted"`) {
+		t.Fatalf("custom launcher argv carries prompt content: %v", runner.lastReq.Command)
 	}
 }

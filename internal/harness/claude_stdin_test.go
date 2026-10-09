@@ -18,10 +18,10 @@ import (
 
 const claudeStdinReceiverSentinel = "claude-stdin-receiver"
 
-// claudeStdinFixtures are goal payloads that defeat argv transport: sizes
-// at and beyond the cmd.exe (8,191) and CreateProcess (32,767) limits, plus
+// promptStdinFixtures are goal payloads, shared by the adapter stdin tests,
+// that defeat argv transport: sizes at and beyond the cmd.exe (8,191) and CreateProcess (32,767) limits, plus
 // content a shell or shim would split, re-encode, or reinterpret.
-func claudeStdinFixtures() map[string]string {
+func promptStdinFixtures() map[string]string {
 	return map[string]string{
 		"ascii-8192":   strings.Repeat("a", 8192),
 		"ascii-32768":  strings.Repeat("b", 32768),
@@ -37,7 +37,7 @@ func claudeStdinFixtures() map[string]string {
 // control metadata regardless of prompt size or content.
 func TestClaudeAdapterSendsPromptsOnStdinNotArgv(t *testing.T) {
 	stubClaudeCredentialsHome(t)
-	for name, payload := range claudeStdinFixtures() {
+	for name, payload := range promptStdinFixtures() {
 		t.Run(name, func(t *testing.T) {
 			workspace := t.TempDir()
 			runner := &claudeSequenceRunner{
@@ -69,7 +69,7 @@ func TestClaudeAdapterSendsPromptsOnStdinNotArgv(t *testing.T) {
 				t.Fatalf("repair stdin = %q, want the completion-repair prompt", runner.reqs[1].Stdin)
 			}
 			for i, req := range runner.reqs {
-				assertClaudeArgvCarriesNoPrompt(t, req.Command, string(req.Stdin))
+				assertArgvCarriesNoPrompt(t, req.Command, string(req.Stdin))
 				if i == 1 && commandOptionValue(req.Command, "--resume") != commandOptionValue(runner.reqs[0].Command, "--session-id") {
 					t.Fatalf("repair did not resume the initial session: %v", req.Command)
 				}
@@ -78,7 +78,7 @@ func TestClaudeAdapterSendsPromptsOnStdinNotArgv(t *testing.T) {
 	}
 }
 
-func assertClaudeArgvCarriesNoPrompt(t *testing.T, argv []string, prompt string) {
+func assertArgvCarriesNoPrompt(t *testing.T, argv []string, prompt string) {
 	t.Helper()
 	// cmd.exe's 8,191-character limit is the tightest launcher bound.
 	if serialized := strings.Join(argv, " "); len(serialized) >= 8191 {
@@ -97,7 +97,7 @@ func assertClaudeArgvCarriesNoPrompt(t *testing.T, argv []string, prompt string)
 // digest — for both the initial and the resumed completion-repair turn.
 func TestClaudeAdapterStdinReachesRealProcess(t *testing.T) {
 	stubClaudeCredentialsHome(t)
-	for name, payload := range claudeStdinFixtures() {
+	for name, payload := range promptStdinFixtures() {
 		t.Run(name, func(t *testing.T) {
 			workspace := filepath.Join(t.TempDir(), strings.Repeat("long-workspace-segment-", 6))
 			if err := os.MkdirAll(workspace, 0o755); err != nil {

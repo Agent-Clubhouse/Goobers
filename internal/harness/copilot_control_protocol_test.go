@@ -65,7 +65,7 @@ func testCopilotControlledProtocol(t *testing.T, probeResult string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	// The stage argv carries the usage-file capture a >=1.0.81 CLI gets (#5636).
-	result, err := runner.Run(ctx, ProcessRequest{Command: []string{"copilot", "-p=private model prompt", "--session-id", "owned-test-session", "--allow-all-tools", "--usage-output-file", ".goobers/copilot-usage-1/usage.json"}, Dir: req.Workspace, Env: baseEnv(nil, nil), StdoutCapture: capture, Timeout: 2 * time.Second})
+	result, err := runner.Run(ctx, ProcessRequest{Stdin: []byte("private model prompt"), Command: []string{"copilot", "-p=", "--session-id", "owned-test-session", "--allow-all-tools", "--usage-output-file", ".goobers/copilot-usage-1/usage.json"}, Dir: req.Workspace, Env: baseEnv(nil, nil), StdoutCapture: capture, Timeout: 2 * time.Second})
 	finishErr := finalizeControlledCopilot(ctx, runner)
 	var out Outcome
 	applyControlledCopilotUsage(&out, runner)

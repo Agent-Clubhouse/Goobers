@@ -46,6 +46,7 @@ cannot leave it outside the documented navigation surfaces.
 - [GitHub webhook triggers](github-webhooks.md)
 - [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)
 - [Copilot launcher session contract](harness-launcher-contract.md)
+- [Harness prompt transport: prompts on stdin, not argv](harness-prompt-transport.md)
 - [Identify active and historical instance roots](instance-identity.md)
 - [Choose where an instance and its config live](instance-placement.md)
 - [Back up and restore an instance root](instance-restore-contract.md)

@@ -373,10 +373,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		return Outcome{}, fmt.Errorf("harness: claude-code: write prompt: %w", err)
 	}
 
-	// The prompt is delivered on stdin, so resolve like a stdio client: npm's
-	// PowerShell shim would route stdin through its buffering, re-encoding
-	// $input enumerator, while the multiline-argv truncation that motivates
-	// it cannot arise without a prompt in argv.
+	// Stdin carries the prompt (#6871), so skip npm's PowerShell shim.
 	baseCommand := resolveStdioHarnessCommand(c.Command)
 	extra := c.ExtraArgs
 	if extra == nil {
