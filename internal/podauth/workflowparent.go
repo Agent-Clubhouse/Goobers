@@ -1,8 +1,9 @@
 package podauth
 
 import (
-	"github.com/goobers/goobers/internal/httpapi"
 	"time"
+
+	"github.com/goobers/goobers/internal/httpapi"
 )
 
 // WorkflowParentPodPrefix identifies the separate signed parent token domain.
