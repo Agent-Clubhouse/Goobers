@@ -17,11 +17,13 @@ import (
 )
 
 // Claimability observation bounds per retained poll: candidates kept from the
-// poll page, provider-metered shared lease reads, and total duration.
+// poll page, provider-metered shared lease reads, total duration, and the
+// bytes read from each local state file (the state plane's own value cap).
 const (
 	backlogClaimCandidateLimit  = 20
 	backlogClaimSharedReadLimit = 10
 	backlogClaimTimeout         = 5 * time.Second
+	backlogClaimSourceMaxBytes  = stateclient.MaxValueBytes
 )
 
 // backlogClaimTarget is the admission identity of a counter's polled items.
@@ -144,8 +146,8 @@ func daemonBacklogClaimProbe(setup *schedulerSetup) backlogClaimProbe {
 	layout := instance.NewLayout(setup.Root)
 	return func(ctx context.Context, now time.Time, target backlogClaimTarget, evidence backlogPollObservation) claimability.Result {
 		sources := claimability.Sources{
-			Local: func(context.Context) (claimability.LocalSnapshot, error) {
-				return readClaimabilityLedger(layout)
+			Local: func(ctx context.Context) (claimability.LocalSnapshot, error) {
+				return readClaimabilityLedger(ctx, layout)
 			},
 			Blocked: func(ctx context.Context) (claimability.BlockedSnapshot, error) {
 				return readClaimabilityBlocked(ctx, layout, target.repo)
@@ -159,10 +161,16 @@ func daemonBacklogClaimProbe(setup *schedulerSetup) backlogClaimProbe {
 	}
 }
 
-// readClaimabilityLedger opens the ledger file read-only; the ledger replaces
-// it atomically, so an unlocked read is one consistent revision.
-func readClaimabilityLedger(layout instance.Layout) (claimability.LocalSnapshot, error) {
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+// readClaimabilityLedger reads the ledger file read-only within the byte cap
+// and the observation deadline; the ledger replaces it atomically, so an
+// unlocked read is one consistent revision.
+func readClaimabilityLedger(ctx context.Context, layout instance.Layout) (claimability.LocalSnapshot, error) {
+	path := filepath.Join(layout.SchedulerDir(), claimLedgerFileName)
+	data, err := claimability.ReadFile(ctx, path, backlogClaimSourceMaxBytes)
+	if err != nil {
+		return claimability.LocalSnapshot{}, err
+	}
+	ledger, err := localscheduler.ParseClaimLedger(path, data)
 	if err != nil {
 		return claimability.LocalSnapshot{}, err
 	}
@@ -170,16 +178,22 @@ func readClaimabilityLedger(layout instance.Layout) (claimability.LocalSnapshot,
 }
 
 // readClaimabilityBlocked classifies learned dependency blocks for the polled
-// repository. A record for the same repository name under a different or
-// missing scope is treated as unscoped: admission may migrate or apply it.
+// repository from the same file the held state store serves, read within the
+// byte cap and the observation deadline. A record for the same repository
+// name under a different or missing scope is treated as unscoped: admission
+// may migrate or apply it.
 func readClaimabilityBlocked(ctx context.Context, layout instance.Layout, repo providers.RepositoryRef) (claimability.BlockedSnapshot, error) {
-	store, err := heldStateStore(layout)
+	relative, err := stateclient.KeyRelativePath(stateclient.KeyBlockedRecords)
 	if err != nil {
 		return claimability.BlockedSnapshot{}, err
 	}
-	value, err := store.Get(ctx, stateclient.KeyBlockedRecords)
+	data, err := claimability.ReadFile(ctx, filepath.Join(layout.SchedulerDir(), relative), backlogClaimSourceMaxBytes)
 	if err != nil {
 		return claimability.BlockedSnapshot{}, err
+	}
+	value := stateclient.Value{}
+	if data != nil {
+		value = stateclient.Value{Data: data, ETag: stateclient.ETagFor(data)}
 	}
 	records, err := decodeBlockedRecords(value)
 	if err != nil {

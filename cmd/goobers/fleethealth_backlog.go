@@ -160,19 +160,25 @@ func (s *backlogHealthSampler) observeSource(ctx context.Context, aggregate *bac
 	if !evidence.complete || held {
 		return
 	}
+	if s.retainAge(identity, source, evidence, sample, retained) {
+		aggregate.attention = true
+		aggregate.claimableAttention = aggregate.claimableAttention || known && claim.Available > 0
+	}
+}
+
+// retainAge carries the source's pending age forward and reports whether it
+// has reached the attention threshold.
+func (s *backlogHealthSampler) retainAge(identity localscheduler.WorkflowIdentity, source backlogObservationReader, evidence backlogPollObservation, sample backlogSourceSample, retained map[localscheduler.WorkflowIdentity]backlogAge) bool {
 	age := s.ages[identity]
 	if age.source != source || age.since.IsZero() || evidence.observedAt.Before(age.observed) || evidence.observedAt.Sub(age.observed) > time.Minute {
 		age = backlogAge{source: source, since: evidence.observedAt}
 	}
-	if sample.progress.After(age.since) && !sample.progress.After(now) {
+	if sample.progress.After(age.since) && !sample.progress.After(sample.now) {
 		age.since = sample.progress
 	}
 	age.observed = evidence.observedAt
 	retained[identity] = age
-	if now.Sub(age.since) >= sample.threshold {
-		aggregate.attention = true
-		aggregate.claimableAttention = aggregate.claimableAttention || known && claim.Available > 0
-	}
+	return sample.now.Sub(age.since) >= sample.threshold
 }
 
 // writeBacklogCondition projects covered source evidence into the closed wire

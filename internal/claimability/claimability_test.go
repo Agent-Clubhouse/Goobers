@@ -207,6 +207,58 @@ func TestObserveBoundsAndFailuresPreserveUnknown(t *testing.T) {
 	}
 }
 
+// TestObserveSourceIgnoringDeadlineIsUnknownAtTimeout proves an accessor that
+// ignores its context cannot stretch the observation past its bound.
+func TestObserveSourceIgnoringDeadlineIsUnknownAtTimeout(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	release := make(chan struct{})
+	defer close(release)
+	slow := func(context.Context) (LocalSnapshot, error) {
+		<-release
+		return LocalSnapshot{}, nil
+	}
+	limits := testLimits
+	limits.Timeout = 20 * time.Millisecond
+	done := make(chan Result, 1)
+	go func() {
+		done <- Observe(t.Context(), now, Policy{}, []Candidate{{ID: "1"}}, false, Sources{Local: slow, Blocked: blockedSource(BlockedSnapshot{})}, limits)
+	}()
+	select {
+	case got := <-done:
+		if got.Unknown != 1 || got.Complete {
+			t.Fatalf("over-time source: %+v", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("observation waited on a source past its deadline")
+	}
+}
+
+func TestReadFileBoundsBytesAndDeadline(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, size int) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, bytes.Repeat([]byte("x"), size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	const limit = 3*readChunkBytes + 7
+	if data, err := ReadFile(t.Context(), write("fits", limit), limit); err != nil || len(data) != limit {
+		t.Fatalf("at cap: %d %v", len(data), err)
+	}
+	if _, err := ReadFile(t.Context(), write("over", limit+1), limit); !errors.Is(err, ErrSourceTooLarge) {
+		t.Fatalf("over cap: %v", err)
+	}
+	if data, err := ReadFile(t.Context(), filepath.Join(dir, "missing"), limit); err != nil || data != nil {
+		t.Fatalf("missing: %q %v", data, err)
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := ReadFile(cancelled, write("late", 10), limit); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expired deadline: %v", err)
+	}
+}
+
 type cancelOnRead struct {
 	store  sharedclaim.Store
 	cancel context.CancelFunc

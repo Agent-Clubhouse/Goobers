@@ -298,7 +298,9 @@ admission transaction's ownership confirmation can settle it. Observation never
 acquires, renews or releases a claim, takes no claim or state lock, and writes
 no ledger, blocked record or shared lease. It reads at most 10 shared leases per
 poll, each request reserved through the daemon's provider quota with no retries,
-and stops after 5 seconds. Cancellation, timeouts, truncated candidates,
+reads at most 8 MiB from each of the local claim ledger and blocked-record
+files, and stops after 5 seconds even if a source read has not returned.
+Cancellation, timeouts, oversized local sources, truncated candidates,
 continuation pages, unreadable sources, workflows whose admission identity
 cannot be derived statically (including a backlog on another provider than the
 polled project), and replacement counters after a reload remain

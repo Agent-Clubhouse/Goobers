@@ -14,8 +14,12 @@
 package claimability
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -133,6 +137,9 @@ func Observe(ctx context.Context, now time.Time, policy Policy, candidates []Can
 	return result
 }
 
+// readSource runs one accessor but returns no later than ctx's deadline, so an
+// accessor that ignores its context cannot stretch the observation bound; its
+// late result is discarded and the source is Unknown.
 func readSource[T any](ctx context.Context, read func(context.Context) (T, error)) (T, error) {
 	var zero T
 	if read == nil {
@@ -141,11 +148,60 @@ func readSource[T any](ctx context.Context, read func(context.Context) (T, error
 	if err := ctx.Err(); err != nil {
 		return zero, err
 	}
-	value, err := read(ctx)
-	if err == nil {
-		err = ctx.Err()
+	type outcome struct {
+		value T
+		err   error
 	}
-	return value, err
+	done := make(chan outcome, 1)
+	go func() {
+		value, err := read(ctx)
+		done <- outcome{value: value, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	case got := <-done:
+		if got.err == nil {
+			got.err = ctx.Err()
+		}
+		return got.value, got.err
+	}
+}
+
+// ErrSourceTooLarge reports a local source file over its byte cap.
+var ErrSourceTooLarge = errors.New("claimability source exceeds its size limit")
+
+const readChunkBytes = 64 << 10
+
+// ReadFile reads at most maxBytes from path, checking ctx between chunks. A
+// missing file is empty; a larger file is ErrSourceTooLarge, so an oversized
+// or slow source makes the observation Unknown instead of unbounded.
+func ReadFile(ctx context.Context, path string, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	var buf bytes.Buffer
+	limited := io.LimitReader(file, maxBytes+1)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		_, err := io.CopyN(&buf, limited, readChunkBytes)
+		if int64(buf.Len()) > maxBytes {
+			return nil, fmt.Errorf("%w: %s", ErrSourceTooLarge, path)
+		}
+		if errors.Is(err, io.EOF) {
+			return buf.Bytes(), ctx.Err()
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 type observer struct {

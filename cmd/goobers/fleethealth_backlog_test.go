@@ -286,6 +286,33 @@ func TestDaemonBacklogClaimProbeReadsRealClaimPlaneReadOnly(t *testing.T) {
 	}
 }
 
+// TestDaemonBacklogClaimProbeOversizedSourcesAreUnknown proves the daemon
+// probe never decodes a ledger or blocked-record file over its byte cap.
+func TestDaemonBacklogClaimProbeOversizedSourcesAreUnknown(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "o", Name: "r"}
+	target := backlogClaimTarget{policy: claimability.Policy{Gaggle: "g", Provider: "github"}, window: DefaultClaimLease, repo: repo}
+	blockedRelative, err := stateclient.KeyRelativePath(stateclient.KeyBlockedRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{claimLedgerFileName, blockedRelative} {
+		root := t.TempDir()
+		layout := instance.NewLayout(root)
+		path := filepath.Join(layout.SchedulerDir(), name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		oversized := append([]byte("{}"), bytes.Repeat([]byte(" "), backlogClaimSourceMaxBytes)...)
+		if err := os.WriteFile(path, oversized, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := daemonBacklogClaimProbe(&schedulerSetup{Root: root})(t.Context(), time.Now().UTC(), target, backlogPollObservation{count: 1, complete: true, candidates: []claimability.Candidate{{ID: "free"}}})
+		if got.Unknown != 1 || got.Complete {
+			t.Errorf("oversized %s: %+v", name, got)
+		}
+	}
+}
+
 func TestBacklogPollRetainsBoundedCandidatesAndDropsThemOnFailure(t *testing.T) {
 	var observation backlogPollObservation
 	for i := range backlogClaimCandidateLimit + 1 {
