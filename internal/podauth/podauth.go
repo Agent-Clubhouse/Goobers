@@ -306,22 +306,10 @@ func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal,
 	if IsCredentialGrant(token) {
 		return a.authenticateGrant(token)
 	}
-	if strings.HasPrefix(token, workerSurrenderTokenPrefix) {
-		return a.authenticateWorkerSurrender(token)
-	}
-	if strings.HasPrefix(token, workerBlobTokenPrefix) {
-		return a.authenticateWorkerBlob(token)
-	}
-	if strings.HasPrefix(token, workerTokenPrefix) {
-		verifier, ok := a.verifier.(interface{ verifyWorkerConfigDigest(string) (string, error) })
-		if !ok {
-			return nil, ErrUnknownToken
+	for _, kind := range workerTokenKinds {
+		if strings.HasPrefix(token, kind.prefix) {
+			return a.authenticateWorker(kind, token)
 		}
-		workerID, err := verifier.verifyWorkerConfigDigest(token)
-		if err != nil {
-			return nil, err
-		}
-		return &httpapi.Principal{Subject: "worker:" + workerID, Issuer: httpapi.WorkerPrincipalIssuer}, nil
 	}
 	if !isPodToken(token) {
 		return a.fallback.Authenticate(request)
