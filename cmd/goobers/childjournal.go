@@ -30,6 +30,11 @@ func (p childJournalPlane) Emit(ctx context.Context, req livejournal.EmitRequest
 	if err != nil {
 		return livejournal.EmitResponse{}, err
 	}
+	for _, op := range req.Ops {
+		if op.Event != nil && op.Event.Type == journal.EventStageHeartbeat && a.active(ctx) != nil {
+			return livejournal.EmitResponse{}, childJournalRefusal()
+		}
+	}
 	return p.writer.Emit(livejournal.WithRequestBlobStore(ctx, a.blobs), req)
 }
 
@@ -149,7 +154,7 @@ func childObservationEvent(e journal.Event) error {
 		return childJournalRefusal()
 	}
 	switch e.Type {
-	case journal.EventAgentLifecycle, journal.EventAgentMessage, journal.EventAgentProgress, journal.EventError:
+	case journal.EventAgentLifecycle, journal.EventAgentMessage, journal.EventAgentProgress, journal.EventError, journal.EventStageHeartbeat:
 		if len(e.Runner) != 0 {
 			return childJournalRefusal()
 		}

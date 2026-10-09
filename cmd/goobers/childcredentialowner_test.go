@@ -197,4 +197,16 @@ func testCancelledChildJournalCustody(t *testing.T, s *daemonCredentialService, 
 	if got, err := blobs.Get(t.Context(), journal.Digest(data)); err != nil || !bytes.Equal(got, data) {
 		t.Fatal("journal did not publish into child custody", string(got), err)
 	}
+	heartbeat := livejournal.Op{Kind: livejournal.OpAppend, Key: "heartbeat/1", Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: "check", Attempt: 1}}
+	if out := request(heartbeat); out.Code != http.StatusOK {
+		t.Fatal("active cancelled worker cannot report shutdown heartbeat", out.Code, out.Body)
+	}
+	if err := writer.Append(journal.Event{Type: journal.EventStageFinished, Stage: "check", Attempt: 1, Status: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	before = writer.Seq()
+	heartbeat.Key = "heartbeat/2"
+	if out := request(heartbeat); out.Code != http.StatusForbidden || writer.Seq() != before {
+		t.Fatal("finished attempt extended heartbeat", out.Code, out.Body)
+	}
 }
