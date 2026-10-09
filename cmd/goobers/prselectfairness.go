@@ -425,7 +425,7 @@ func runBranchOriginRunID(head string) string {
 		return ""
 	}
 	for _, r := range id {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 			return ""
 		}
 	}
