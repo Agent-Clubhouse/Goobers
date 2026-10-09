@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -70,7 +71,7 @@ func (p *childStagePod) publicationProvider(target childpublication.Target, key 
 	if ado, ok := provider.(*providers.ADOProvider); ok {
 		providers.WithADOMaxRateLimitRetries(0)(ado)
 	}
-	attribution := providers.Attribution{Schema: 1, Goobers: true, InstanceID: p.identity.InstanceID, Gaggle: p.identity.Gaggle, Workflow: p.identity.Workflow, Task: target.Stage, Goober: "deterministic", Run: p.identity.RunID, Action: "child-publication:" + p.identity.Child.ParentRunID + ":" + p.identity.Child.StageOccurrence}
+	attribution := providers.Attribution{Schema: 1, Goobers: true, InstanceID: p.identity.InstanceID, Gaggle: p.identity.Gaggle, Workflow: p.identity.Workflow, Task: target.Stage, Goober: "deterministic", Run: p.identity.RunID, Action: strings.Join([]string{"child-publication", p.identity.Child.ParentRunID, p.identity.Child.StageOccurrence}, ":")}
 	if configured, ok := provider.(providers.AttributionConfigurer); ok {
 		configured.SetAttribution(attribution)
 	}
