@@ -279,7 +279,7 @@ func (p *reviewThreadPublication) endStaleHead(live string) int {
 	}
 	reason := fmt.Sprintf("stale head: PR #%s moved from this run's published head %s to %s", p.pullID, p.publishedHead, live)
 	pf(p.stdout, "no work: %s; no further review-thread replies published, claim released\n", reason)
-	p.receipt.Status = apiv1.ReviewThreadPublicationStale
+	p.receipt.ResolutionStatus = apiv1.ReviewThreadPublicationStale
 	p.receipt.StaleInput = staleReasonHead
 	p.receipt.NoWork = true
 	p.receipt.NoWorkReason = reason
@@ -300,7 +300,7 @@ func (p *reviewThreadPublication) endStaleHead(live string) int {
 func (p *reviewThreadPublication) reportStale(reasons []feedbackStaleReason, unresolved int) int {
 	pf(p.stdout, "PR #%s: feedback changed since it was gathered (%s); no further review-thread replies published\n",
 		p.pullID, describeStaleReasons(reasons))
-	p.receipt.Status = apiv1.ReviewThreadPublicationStale
+	p.receipt.ResolutionStatus = apiv1.ReviewThreadPublicationStale
 	p.receipt.UnresolvedThreadCount = strconv.Itoa(unresolved)
 	p.receipt.StaleInput = staleInputCode(reasons)
 	p.receipt.StaleReasons = reasons
@@ -436,7 +436,7 @@ func (p *reviewThreadPublication) finish(ctx context.Context) int {
 	if code, stop := p.checkHead(verifiedHead.HeadSHA, "while review threads were reconciled"); stop {
 		return code
 	}
-	p.receipt.Status = apiv1.ReviewThreadPublicationComplete
+	p.receipt.ResolutionStatus = apiv1.ReviewThreadPublicationComplete
 	if err := p.persistReceipt(); err != nil {
 		pf(p.stderr, "error: %v\n", err)
 		return 2

@@ -12,7 +12,7 @@
     "selectedNumber",
     "publishedHeadSha",
     "feedbackSnapshotDigest",
-    "status",
+    "resolutionStatus",
     "resumedFromReceipt",
     "restoration",
     "staleInput",
@@ -47,7 +47,7 @@
       "type": "string",
       "description": "snapshotDigest of the feedback the replies answer; empty for a run gathered before feedback snapshots existed."
     },
-    "status": {
+    "resolutionStatus": {
       "enum": ["in_progress", "complete", "partial", "failed", "stale"],
       "description": "complete only when every intended mutation was read back after publication; in_progress while publication runs (left behind only by an interrupted attempt); partial or failed when an error stopped publication with or without verified mutations; stale when the head or the feedback changed."
     },
@@ -71,7 +71,7 @@
     "staleReasons": {
       "type": "array",
       "items": {"$ref": "#/$defs/staleReason"},
-      "description": "Every structured stale reason when status is stale."
+      "description": "Every structured stale reason when resolutionStatus is stale."
     },
     "threads": {
       "type": "array",
