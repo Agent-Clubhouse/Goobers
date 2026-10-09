@@ -394,6 +394,12 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	}
 	cfg.IssueOwnershipAssignees = input.IssueOwnershipAssignees
 	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
+	cloneURL := cfg.RepoCloneURL
+	if cloneURL == nil {
+		cloneURL = runner.DefaultRepoCloneURL
+	}
+	cfg.RestoreParentArchive = (parentArchiveRestorer{layout: input.Layout, config: input.Config, worktrees: cfg.Worktrees, cloneURL: cloneURL}).restore
+
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {

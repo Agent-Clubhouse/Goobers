@@ -50,6 +50,40 @@ func PlanRetainedParentRestore(ctx context.Context, repository string, record Re
 	return PrepareParentApplication(ctx, repository, expected, before, after, working, operation, record.CreatedAt, maxBytes)
 }
 
+// VerifyRetainedParentCheckout recognizes a surviving checkout after a crash
+// between retirement acknowledgement and removal, or after completed apply.
+// Matching HEAD alone is insufficient: the index and working tree must both
+// match the retained state under its original exclusion policy.
+func VerifyRetainedParentCheckout(ctx context.Context, repository string, record Record, maxBytes int64) error {
+	state, err := ReadRetainedParentState(ctx, repository, record)
+	if err != nil {
+		return err
+	}
+	current, err := CaptureChildSnapshot(ctx, repository, record.RepositoryKey, record.RunID, record.CreatedAt, record.RetainUntil, state.Policy)
+	if err != nil {
+		return err
+	}
+	if current.Record.BaseSHA != state.HeadSHA {
+		return ErrWorkspaceChanged
+	}
+	index, err := WritePortableGitState(ctx, repository, current, true, io.Discard, maxBytes)
+	if err != nil {
+		return err
+	}
+	staged, err := snapshotObject(ctx, repository, state.IndexSHA+"^{tree}")
+	if err != nil {
+		return err
+	}
+	working, err := portableParentRevision(ctx, repository, current, record.SnapshotSHA, maxBytes)
+	if err != nil {
+		return err
+	}
+	if index.TreeSHA != staged || current.TreeSHA != working.TreeSHA {
+		return ErrWorkspaceChanged
+	}
+	return CheckChildSnapshotCurrent(ctx, repository, current)
+}
+
 func requireParentRestoreCheckout(ctx context.Context, repository, head string) error {
 	current, err := snapshotObject(ctx, repository, "HEAD^{commit}")
 	if err != nil {

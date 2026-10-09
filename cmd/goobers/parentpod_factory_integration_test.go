@@ -320,6 +320,6 @@ func testParentFactoryCustody(t *testing.T, lost, committed bool) {
 	}
 	if committed {
 		key := (providers.RepositoryRef{Provider: providers.ProviderKind(env.RepoRef.Provider), URL: env.RepoRef.BaseURL, Owner: env.RepoRef.Owner, Project: env.RepoRef.Project, Name: env.RepoRef.Name}).CanonicalKey()
-		verifyLatestParentCleanupArchive(t, reader, repo, key, held)
+		verifyLatestParentCleanupArchive(t, reader, repo, key, held, parentArchiveRestorer{layout: layout, config: f.cfg, worktrees: manager, cloneURL: childRepoCloneURL}, checkout)
 	}
 }

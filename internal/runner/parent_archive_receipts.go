@@ -42,17 +42,27 @@ func RecordParentArchiveRetirement(rec OwnedJournalRecorder, branch string, arch
 // intent and successful reacquisition of the original managed checkout hold.
 // Only the exact outstanding retirement can become runnable again.
 func RecordParentArchiveRestoration(rec OwnedJournalRecorder, archive ParentWorkspaceArchive, retirementSeq uint64) error {
-	state, err := ownedParentArchiveState(rec, archive.Custody.Workspace.Branch)
-	if err != nil {
+	pending, err := ParentArchiveRestorationPending(rec, archive, retirementSeq)
+	if err != nil || !pending {
 		return err
 	}
+	return rec.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": ParentContributionRestoredKind, "archive": archive, "retirementSeq": retirementSeq}})
+}
+
+// ParentArchiveRestorationPending verifies the exact owned retirement before
+// the host imports or mutates anything. A completed identical request is a no-op.
+func ParentArchiveRestorationPending(rec OwnedJournalRecorder, archive ParentWorkspaceArchive, retirementSeq uint64) (bool, error) {
+	state, err := ownedParentArchiveState(rec, archive.Custody.Workspace.Branch)
+	if err != nil {
+		return false, err
+	}
 	if state.retiredAt == 0 && retirementSeq != 0 && state.restoredRetirement == retirementSeq && reflect.DeepEqual(archive, state.archive) {
-		return nil
+		return false, nil
 	}
 	if state.retiredAt == 0 || state.retiredAt != retirementSeq || !reflect.DeepEqual(archive, state.archive) {
-		return errors.New("parent restoration differs from outstanding retirement")
+		return false, errors.New("parent restoration differs from outstanding retirement")
 	}
-	return rec.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": ParentContributionRestoredKind, "archive": archive, "retirementSeq": retirementSeq}})
+	return true, nil
 }
 
 func ownedParentArchiveState(rec OwnedJournalRecorder, branch string) (parentWorkspaceState, error) {
