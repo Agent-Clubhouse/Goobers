@@ -287,19 +287,20 @@ func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDi
 	pid := os.Getpid()
 	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
 	mk := marker{
-		RepositoryDigest: RepositoryDigest(opts.RepoURL),
-		RunID:            opts.RunID,
-		OwnerRunID:       opts.OwnerRunID,
-		Gaggle:           opts.Gaggle,
-		Directory:        directory,
-		BaseRef:          cleanupBaseRef,
-		Branch:           opts.Branch,
-		RetainOnCleanup:  opts.RetainOnCleanup,
-		Writer:           m.writerIdentity,
-		PID:              pid,
-		PIDStartedAt:     startedAt,
-		CreatedAt:        time.Now(),
-		Status:           statusActive,
+		RepositoryDigest:  RepositoryDigest(opts.RepoURL),
+		RunID:             opts.RunID,
+		OwnerRunID:        opts.OwnerRunID,
+		Gaggle:            opts.Gaggle,
+		Directory:         directory,
+		BaseRef:           cleanupBaseRef,
+		Branch:            opts.Branch,
+		RetainOnCleanup:   opts.RetainOnCleanup,
+		ParentRestoreHead: opts.parentRestoreHead,
+		Writer:            m.writerIdentity,
+		PID:               pid,
+		PIDStartedAt:      startedAt,
+		CreatedAt:         time.Now(),
+		Status:            statusActive,
 	}
 	// Persist ownership before git creates the directory so a crash during
 	// worktree add never leaves an opaque hash that cleanup cannot resolve.
@@ -402,7 +403,8 @@ func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDi
 	}
 
 	mk.StartRef = startRef
-	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
+	mk.ParentRestoreHead = ""
+	if err := m.persistCreatedWorktree(key, opts, mk); err != nil {
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 

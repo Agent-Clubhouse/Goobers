@@ -119,6 +119,12 @@ func (m *Manager) adoptParentRestore(ctx context.Context, key, repository, path 
 	if err := ensureParentRestoreBranch(ctx, repository, opts); err != nil {
 		return nil, err
 	}
+	if mk.ParentRestoreHead != "" || ownership.ParentRestoreHead != "" {
+		if err := m.completeParentMaterialization(ctx, path, opts.parentRestoreHead, opts.RepoURL); err != nil {
+			return nil, err
+		}
+		mk.ParentRestoreHead, ownership.ParentRestoreHead = "", ""
+	}
 	// Archive authority and exact branch ownership supersede an interrupted
 	// cleanup transition. Reestablish the hold before returning the checkout;
 	// never reset its partially restored index or working files.

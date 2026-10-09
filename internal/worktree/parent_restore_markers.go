@@ -32,5 +32,19 @@ func (wt *Worktree) parentRestoreMarkers(opts CreateOptions) (marker, marker, er
 	if err := archivedStageMarkers(primary, ownership, custody, filepath.Base(wt.Path)); err != nil {
 		return marker{}, marker{}, err
 	}
+	for _, mk := range []marker{primary, ownership} {
+		if mk.ParentRestoreHead != "" && mk.ParentRestoreHead != opts.parentRestoreHead {
+			return marker{}, marker{}, errors.New("parent restore materialization belongs to another archive")
+		}
+	}
 	return primary, ownership, nil
+}
+
+func (m *Manager) persistCreatedWorktree(key string, opts CreateOptions, mk marker) error {
+	if opts.parentRestoreHead != "" {
+		if err := writeMarker(m.ownershipPath(key, mk.Directory), mk); err != nil {
+			return err
+		}
+	}
+	return writeMarker(m.markerPath(key, opts.RunID), mk)
 }
