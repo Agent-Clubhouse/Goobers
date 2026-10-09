@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/decisiongate"
 )
 
 // credentialplane.go implements the daemon write API's credential plane
@@ -79,6 +80,15 @@ type CredentialGrantDelivery struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
+// PublicationLeakScreenDelivery carries an explicitly opted-in publication
+// screen over the authenticated plane so its model key never enters a pod spec.
+type PublicationLeakScreenDelivery struct {
+	Settings decisiongate.Settings `json:"settings"`
+	BaseURL  string                `json:"baseUrl"`
+	APIKey   string                `json:"apiKey"`
+	Model    string                `json:"model"`
+}
+
 // MintedCredential is one resolved credential value. ExpiresAt is present
 // when the backing source states an expiry (GitHub App installation tokens
 // do); absent means the source stated none — the consumer must still treat
@@ -101,13 +111,16 @@ type MintedCredential struct {
 // scheme from the token's shape. It is empty for every other provider.
 //
 // Grant is present only when the request asked for one and the stage is a
-// deterministic task with at least one expiring credential.
+// deterministic task with at least one expiring credential. PublicationLeakScreen
+// is present only for a deterministic publication stage when the instance has
+// explicitly enabled the shadow screen.
 type CredentialResolveResponse struct {
-	RunID          string                   `json:"runId"`
-	Stage          string                   `json:"stage"`
-	Credentials    []MintedCredential       `json:"credentials"`
-	RepoAuthScheme string                   `json:"repoAuthScheme,omitempty"`
-	Grant          *CredentialGrantDelivery `json:"grant,omitempty"`
+	RunID                 string                         `json:"runId"`
+	Stage                 string                         `json:"stage"`
+	Credentials           []MintedCredential             `json:"credentials"`
+	RepoAuthScheme        string                         `json:"repoAuthScheme,omitempty"`
+	Grant                 *CredentialGrantDelivery       `json:"grant,omitempty"`
+	PublicationLeakScreen *PublicationLeakScreenDelivery `json:"publicationLeakScreen,omitempty"`
 }
 
 // CredentialService is the daemon-side credential plane. Implementations

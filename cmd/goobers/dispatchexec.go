@@ -806,9 +806,10 @@ func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.Minted
 // stage whose credentials expire — the credential-refresh grant the plane
 // minted for it (Goobers#6120).
 type podStageCredentials struct {
-	creds  []dispatcher.MintedCredential
-	scheme string
-	grant  *dispatcher.CredentialGrant
+	creds                 []dispatcher.MintedCredential
+	scheme                string
+	grant                 *dispatcher.CredentialGrant
+	publicationLeakScreen *dispatcher.PublicationLeakScreen
 }
 
 // resolveDeclaredStageCredentials is resolveStageCredentialsWithScheme for a
@@ -833,7 +834,10 @@ func resolveDeclaredStageCredentials(ctx context.Context) (podStageCredentials, 
 	if err != nil {
 		return podStageCredentials{}, err
 	}
-	return podStageCredentials{creds: resolution.Credentials, scheme: resolution.RepoAuthScheme, grant: resolution.Grant}, nil
+	return podStageCredentials{
+		creds: resolution.Credentials, scheme: resolution.RepoAuthScheme, grant: resolution.Grant,
+		publicationLeakScreen: resolution.PublicationLeakScreen,
+	}, nil
 }
 
 // env renders the child's credential environment: stageCredentialEnv plus,
@@ -842,6 +846,10 @@ func resolveDeclaredStageCredentials(ctx context.Context) (podStageCredentials, 
 // process.
 func (c podStageCredentials) env() []string {
 	env := stageCredentialEnv(c.creds, c.scheme)
+	if c.publicationLeakScreen != nil {
+		encoded, _ := json.Marshal(c.publicationLeakScreen)
+		env = append(env, dispatcher.EnvPublicationLeakScreen+"="+string(encoded))
+	}
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	if c.grant == nil || c.grant.Token == "" || daemonAPI == "" {
 		return env
@@ -857,6 +865,12 @@ func (c podStageCredentials) env() []string {
 
 // withGrant adds the grant to the values the stage's scrubber redacts.
 func (c podStageCredentials) withGrant(creds []dispatcher.MintedCredential) []dispatcher.MintedCredential {
+	if c.publicationLeakScreen != nil && c.publicationLeakScreen.APIKey != "" {
+		creds = append(append([]dispatcher.MintedCredential{}, creds...), dispatcher.MintedCredential{
+			Capability: dispatcher.EnvPublicationLeakScreen,
+			Value:      c.publicationLeakScreen.APIKey,
+		})
+	}
 	if c.grant == nil || c.grant.Token == "" {
 		return creds
 	}

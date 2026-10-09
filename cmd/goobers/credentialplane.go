@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -181,7 +184,40 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 	if request.Grant {
 		response.Grant = s.mintPodStageGrant(request, resolved)
 	}
+	response.PublicationLeakScreen = s.publicationLeakScreenDelivery(request, resolved)
 	return response, nil
+}
+
+func (s *daemonCredentialService) publicationLeakScreenDelivery(request httpapi.CredentialResolveRequest, resolved stageResolution) *httpapi.PublicationLeakScreenDelivery {
+	if s.config == nil {
+		return nil
+	}
+	settings := s.config.DecisionGate
+	if !resolved.profile.deterministic || settings == nil ||
+		settings.EffectiveMode() != decisiongate.ModeShadow || !settings.PublicationLeakScreen ||
+		!publicationCapability(request.Capabilities) {
+		return nil
+	}
+	delivery := &httpapi.PublicationLeakScreenDelivery{
+		Settings: *settings,
+		BaseURL:  strings.TrimSpace(os.Getenv(settings.BaseURLEnv)),
+		APIKey:   strings.TrimSpace(os.Getenv(settings.KeyEnv)),
+		Model:    strings.TrimSpace(os.Getenv(settings.ModelEnv)),
+	}
+	if s.shared != nil && delivery.APIKey != "" {
+		s.shared.Register([]byte(delivery.APIKey))
+	}
+	return delivery
+}
+
+func publicationCapability(names []string) bool {
+	for _, name := range names {
+		switch capability.Capability(name) {
+		case capability.ProviderPRWrite, capability.GitHubPRWrite, capability.ADOPRWrite, capability.GitHubIssuesWrite:
+			return true
+		}
+	}
+	return false
 }
 
 // stageResolveMode distinguishes a stage-start resolve from a mid-stage
