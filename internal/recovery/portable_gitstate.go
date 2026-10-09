@@ -43,8 +43,16 @@ func WritePortableGitState(ctx context.Context, repository string, snapshot Chil
 	if err != nil {
 		return PortableSnapshot{}, err
 	}
-	state := snapshot
+	// Changes during capture are not a coherent HEAD/index/worktree tuple.
+	if err := CheckChildSnapshotCurrent(ctx, repository, snapshot); err != nil {
+		return PortableSnapshot{}, err
+	}
+	return writePortableTree(ctx, repository, snapshot, tree, destination, maxBytes)
+}
+
+func writePortableTree(ctx context.Context, repository string, state ChildSnapshot, tree string, destination io.Writer, maxBytes int64) (PortableSnapshot, error) {
 	state.TreeSHA = tree
+	var err error
 	state.Record.SnapshotSHA, err = portableRoot(ctx, repository, state)
 	if err != nil {
 		return PortableSnapshot{}, err
@@ -55,10 +63,6 @@ func WritePortableGitState(ctx context.Context, repository string, snapshot Chil
 	}
 	state.Record.PatchDigest, err = WriteSnapshotPatch(ctx, repository, state.Record.BaseSHA, state.Record.SnapshotSHA, io.Discard)
 	if err != nil {
-		return PortableSnapshot{}, err
-	}
-	// Changes during capture are not a coherent HEAD/index/worktree tuple.
-	if err := CheckChildSnapshotCurrent(ctx, repository, snapshot); err != nil {
 		return PortableSnapshot{}, err
 	}
 	return WritePortableSnapshot(ctx, repository, state, destination, maxBytes)

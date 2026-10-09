@@ -3,6 +3,7 @@
 package recovery
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,6 +86,58 @@ func TestIntegrationParentRetentionKeepsLatestCommitIndexAndWorkingState(t *test
 	}
 	if _, err := ReadRetainedParentState(t.Context(), restored, record); err != nil {
 		t.Fatal("archive depended on removed checkout", err)
+	}
+	verifyParentArchiveRestoration(t, restored, record, state)
+}
+
+func verifyParentArchiveRestoration(t *testing.T, restored string, record Record, state RetainedParentState) {
+	t.Helper()
+	recoveryTestGit(t, restored, "checkout", "-b", "restored-parent", record.BaseSHA)
+	if _, err := PlanRetainedParentRestore(t.Context(), restored, record, "restore-parent", 1<<20); err == nil {
+		t.Fatal("restore accepted a checkout at the wrong HEAD")
+	}
+	recoveryTestGit(t, restored, "reset", "--hard", state.HeadSHA)
+	childSnapshotWrite(t, restored, "intervening.txt", "new owner work")
+	if _, err := PlanRetainedParentRestore(t.Context(), restored, record, "restore-parent", 1<<20); err == nil {
+		t.Fatal("restore accepted an already modified checkout")
+	}
+	if err := os.Remove(filepath.Join(restored, "intervening.txt")); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanRetainedParentRestore(t.Context(), restored, record, "restore-parent", 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replay uses serialized host intent, never fresh planning against partially
+	// restored files. HEAD must remain the archived ordinary-stage commit.
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable ChildApplyPlan
+	if err := json.Unmarshal(data, &durable); err != nil {
+		t.Fatal(err)
+	}
+	simulateParentApplicationBoundary(t, restored, durable, "files")
+	for range 2 {
+		if err := ApplyChildApplication(t.Context(), restored, durable); err != nil {
+			t.Fatal("resume archive restoration", err)
+		}
+	}
+	if got := recoveryTestGit(t, restored, "rev-parse", "HEAD"); got != state.HeadSHA {
+		t.Fatal("restore replaced real ancestry", got)
+	}
+	if got := recoveryTestGit(t, restored, "show", ":tracked.txt"); got != "latest staging" {
+		t.Fatal("restore flattened staging", got)
+	}
+	for name, want := range map[string]string{"tracked.txt": "latest working files\n", "private/committed": "original repository value\n", "untracked.bin": "\x00\xff"} {
+		data, err := os.ReadFile(filepath.Join(restored, name))
+		if err != nil || string(data) != want {
+			t.Fatalf("restored %s = %q: %v", name, data, err)
+		}
+	}
+	if got := recoveryTestGit(t, restored, "ls-files", "untracked.bin", "private/token"); got != "" {
+		t.Fatal("restore staged untracked or excluded runtime files", got)
 	}
 }
 
