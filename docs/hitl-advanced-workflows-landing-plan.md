@@ -117,6 +117,16 @@ set during extraction and may grow. Stable design tasks can span several PRs.
 | LAND-C06 | Contained/pod child execution and remote authority: `internal/childpod`, podauth/dispatcher/blob plane | C03–C05; qualify the configured pod capability shape, token isolation, reconnect and worker-loss recovery. This may need several PRs. |
 | LAND-C07 | Parent/child Portal projection and end-to-end acceptance | C04–C06; use current Portal components. Show durable wait, child links, blocked/uncertain state and cancellation outcome. Only advertise qualified execution shapes. |
 
+The first connected extraction refines these rows without enabling a host-process
+fallback: #6915 contains custody and the minimum durable wait/launcher owners,
+#6916 adds local result disposition, and #6947 adds isolated worker transport.
+Both #6916 and #6947 depend on #6915 and can be reviewed independently. They do
+not complete the executing parent/child journey. The exact signed attempt,
+bounded artifact access, retained kit, host factory and uncertain-worker recovery
+must be connected and qualified before enabling execution. Delegated publication
+uses that contained host factory, so the publication portion of C05 follows the
+necessary C06 slices. C07 remains the final projection and journey acceptance.
+
 Human intervention on a child uses the common HITL restart work in H03; do not
 copy a separate child-only human auth/session implementation into Wave 1. Child
 normal execution and result handoff can land first while unsupported human restart

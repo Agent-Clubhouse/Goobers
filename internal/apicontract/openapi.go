@@ -208,6 +208,8 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("ChildWorkflowSourceRequest")
 	case RouteChildWorkflowStatus:
 		schema = schemaRef("ChildWorkflowStatusRequest")
+	case RouteChildWorkflowResolve:
+		schema = schemaRef("ChildWorkflowResolveRequest")
 	case RouteTriggerIngest:
 		schema = schemaRef("TriggerRequest")
 	case RouteCancelRun:
@@ -265,6 +267,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("ChildWorkflowValidationResponse")
 	case RouteChildWorkflowStart, RouteChildWorkflowStatus:
 		successSchema = schemaRef("ChildWorkflowResponse")
+	case RouteChildWorkflowResolve:
+		successSchema = schemaRef("ChildWorkflowResolutionResponse")
 	case RouteDiscovery:
 		successSchema = schemaRef("DiscoveryDocument")
 	case RouteCapabilities:
@@ -303,7 +307,7 @@ func openAPIResponses(route Route) map[string]any {
 		"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
 	}
 	if childWorkflowRoute(route.ID) {
-		if route.ID == RouteChildWorkflowStart {
+		if route.ID == RouteChildWorkflowStart || route.ID == RouteChildWorkflowResolve {
 			delete(responses, "200")
 			responses["202"] = jsonResponse("Durable custody accepted; execution may still be queued", successSchema)
 		}
