@@ -44,9 +44,16 @@ or the dashboard to inspect those advisories.
 The versioned command-effect catalog recognizes exact argv forms, not stage
 names, comments, prompts or capability grants. It recognizes the runner's
 implicit diff in a writable subject workspace, explicit
-`git diff <base>...HEAD` artifacts, empty successful `git diff --check`,
+`git diff <base>...HEAD` artifacts, empty successful `git diff --check`
+and `git diff --check <base>...HEAD` validation (never a patch artifact),
 selected-PR context, `apply-verdict [--gate <name>]`, terminal no-work
-selectors and explicit `remediation-checkpoint --escalate`.
+selectors and explicit `remediation-checkpoint --escalate`. Other built-in
+stage commands, such as `open-pr`, `merge-pr`, `post-merge` and the
+built-in `ci-poll` kind, are recognized in their supported argv forms
+without claiming publication, parking or delivery. `issue-close-out` is
+recognized only with a static supported `status` input; its issue parks do
+not discharge a pending PR rejection. Catalog effects are static wiring
+knowledge, not proof of live delivery or safety.
 
 A publisher on another branch or for another gate does not satisfy a
 rejection. `continueOnError` on publication includes a failed-publication
