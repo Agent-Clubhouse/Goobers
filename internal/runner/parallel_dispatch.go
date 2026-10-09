@@ -83,7 +83,7 @@ func (p *parallelDispatch) accept(result parallelBranchResult) {
 		p.failFast = true
 		p.cancel(errParallelFailFast)
 	}
-	if (p.firstErr != nil || p.terminalTriggered || p.failFast) && p.next < len(p.queue) {
+	if !p.draining && (p.firstErr != nil || p.terminalTriggered || p.failFast) && p.next < len(p.queue) {
 		if err := p.cancelQueued(); err != nil && p.firstErr == nil {
 			p.firstErr = err
 		}

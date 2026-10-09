@@ -44,6 +44,10 @@ type Executor struct {
 // exclusive stage workspace lease throughout this method. No local fallback
 // exists; missing isolation, transport or journal custody refuses execution.
 func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher.SurrenderedResult, report dispatcher.Report, err error) {
+	request.Attempt, err = normalizeAttempt(request.Attempt)
+	if err != nil {
+		return out, report, err
+	}
 	if err = e.validate(ctx, request); err != nil {
 		return out, report, err
 	}
@@ -137,7 +141,7 @@ func (e *Executor) validate(ctx context.Context, r Request) error {
 }
 
 func makeContract(ctx context.Context, r Request) (Contract, *recovery.ChildSnapshot, error) {
-	c := Contract{ParentOrigin: r.ParentOrigin, ParentBranch: r.ParentBranch, KitDigest: r.Attempt.KitDigest, Version: 1, Identity: r.Identity, Stage: r.Attempt.Stage, Attempt: r.Attempt.Number, PodAttempt: r.Attempt.PodAttempt, StartedAt: r.StartedAt, Ceiling: r.Ceiling}
+	c := Contract{ParentOrigin: r.ParentOrigin, ParentBranch: r.ParentBranch, ChildBranch: r.ChildBranch, KitDigest: r.Attempt.KitDigest, Version: 1, Identity: r.Identity, Stage: r.Attempt.Stage, Attempt: r.Attempt.Number, PodAttempt: r.Attempt.PodAttempt, StartedAt: r.StartedAt, Ceiling: r.Ceiling}
 	if err := c.Validate(); err != nil {
 		return c, nil, err
 	}

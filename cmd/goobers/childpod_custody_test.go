@@ -92,7 +92,7 @@ func publishChildPodContract(t *testing.T, f *actualChildFixture, id journal.Run
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := childPodStarted(reader, stage, attempt, false)
+	event, err := childPodStarted(reader, stage, attempt, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

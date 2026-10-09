@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -24,6 +25,7 @@ func TestParallelDispatchDrainsWritersBeforeReturning(t *testing.T) {
 		{name: "journal failure wins", first: parallelBranchResult{err: workerFailure}, settleErr: journalFailure, wantErr: journalFailure, wantCause: journalFailure},
 		{name: "worker failure", first: parallelBranchResult{err: workerFailure}, wantErr: workerFailure, wantCause: workerFailure},
 		{name: "pause preserves queued work", first: parallelBranchResult{paused: true}, wantPaused: true},
+		{name: "uncertain custody preserves queued work", first: parallelBranchResult{paused: true, status: journal.BranchCancelled, err: invoke.ErrChildCustodyPending}, wantErr: invoke.ErrChildCustodyPending, wantCause: invoke.ErrChildCustodyPending, wantPaused: true},
 		{name: "fail fast", first: parallelBranchResult{status: journal.BranchFailed}, wantCause: errParallelFailFast},
 		{name: "terminal", first: parallelBranchResult{terminalTarget: "blocked"}, wantCause: errParallelTerminal},
 	} {
@@ -92,5 +94,13 @@ func TestParallelDispatchRetainedTerminalNeverLaunches(t *testing.T) {
 	}
 	if err := p.run(); err != nil || p.next != 1 || context.Cause(ctx) != nil {
 		t.Fatal("retained terminal reconciliation changed", err, p.next)
+	}
+}
+
+func TestParallelInvocationRetainsCustodyErrorDuringDrain(t *testing.T) {
+	var result parallelBranchResult
+	err := errors.Join(errChildWaitDrain, invoke.ErrChildCustodyPending)
+	if !parallelInvocationFailed(err, &result) || !result.paused || !errors.Is(result.err, invoke.ErrChildCustodyPending) {
+		t.Fatal("drain hid uncertain writer custody", result)
 	}
 }

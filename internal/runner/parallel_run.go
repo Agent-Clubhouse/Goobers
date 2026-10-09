@@ -565,12 +565,7 @@ func (r *Runner) runParallelBranch(
 				firstClass = ""
 				resumeAccounting = nil
 			}
-			if errors.Is(err, errChildWaitDrain) {
-				result.status, result.paused = journal.BranchCancelled, true
-				return result
-			}
-			if err = taskDispatchError(task.Name, stageResult, err); err != nil {
-				result.status, result.err = journal.BranchFailed, err
+			if parallelInvocationFailed(taskDispatchError(task.Name, stageResult, err), &result) {
 				return result
 			}
 			if !replayed {
@@ -695,8 +690,7 @@ func (r *Runner) runParallelBranch(
 					return result
 				}
 			}
-			if err != nil {
-				result.status, result.err = journal.BranchFailed, err
+			if parallelInvocationFailed(err, &result) {
 				return result
 			}
 			retryClass, _, retryable := retryFailureClassForGateResult(g, result.lastResult, gr.Outcome)

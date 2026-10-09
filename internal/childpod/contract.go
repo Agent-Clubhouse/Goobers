@@ -35,6 +35,7 @@ type WorkspaceInput struct {
 type Request struct {
 	ParentOrigin *apiv1.ChildWorkflowOrigin
 	ParentBranch int
+	ChildBranch  int
 	Identity     journal.RunIdentity
 	Attempt      dispatcher.Attempt
 	Eligible     []dispatcher.RunnerSpec
@@ -54,6 +55,7 @@ type Carrier struct {
 type Contract struct {
 	ParentOrigin   *apiv1.ChildWorkflowOrigin `json:"parentOrigin,omitempty"`
 	ParentBranch   int                        `json:"parentBranch,omitempty"`
+	ChildBranch    int                        `json:"childBranch,omitempty"`
 	ContextDigests []string                   `json:"contextDigests,omitempty"`
 	KitDigest      string                     `json:"kitDigest,omitempty"`
 	Version        int                        `json:"version"`
@@ -168,12 +170,12 @@ func decode(data []byte, digest string, out any) error {
 
 func (c Contract) validateOwner() error {
 	if c.ParentOrigin == nil {
-		if c.ParentBranch != 0 || c.Identity.Child == nil {
+		if c.ParentBranch != 0 || c.Identity.Child == nil || c.ChildBranch < 0 || c.ChildBranch > 128 {
 			return fmt.Errorf("isolated contract has no child owner")
 		}
 		return c.Identity.ValidateChildLineage()
 	}
-	if c.Identity.Child != nil || !apiv1.ValidRunID(c.Identity.RunID) || c.Identity.InstanceID == "" || c.Identity.Gaggle == "" || c.Identity.Workflow == "" || c.ParentBranch < 0 || c.ParentBranch > 128 {
+	if c.ChildBranch != 0 || c.Identity.Child != nil || !apiv1.ValidRunID(c.Identity.RunID) || c.Identity.InstanceID == "" || c.Identity.Gaggle == "" || c.Identity.Workflow == "" || c.ParentBranch < 0 || c.ParentBranch > 128 {
 		return fmt.Errorf("invalid isolated parent owner")
 	}
 	for _, digest := range []string{c.Identity.ConfigGeneration, c.Identity.WorkflowDigest, c.Identity.GooberDigest} {
