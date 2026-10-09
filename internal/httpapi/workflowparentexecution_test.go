@@ -1,11 +1,12 @@
 package httpapi
 
 import (
-	"github.com/goobers/goobers/internal/apicontract"
-	"github.com/goobers/goobers/internal/journal"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestWorkflowParentExecutionObserverNeverFallsBack(t *testing.T) {

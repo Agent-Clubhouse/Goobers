@@ -2,12 +2,12 @@ package childworkflow
 
 import (
 	"bytes"
-	"github.com/goobers/goobers/internal/triggerqueue"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 func TestContainedGrantLostDeliveryKeepsExactGrantAndRevocation(t *testing.T) {
