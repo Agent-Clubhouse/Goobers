@@ -69,6 +69,33 @@ name: CI
 
 on:
   workflow_dispatch:
+    # Set together, and only, by ci-retarget.yml when a pull request is
+    # retargeted onto main (#6360, #7017): every job then checks out GitHub's
+    # merge of the PR head onto its new base (merge_sha), base-aware checks
+    # read base_sha/head_sha, and the run shares the PR's concurrency group.
+    # scope verifies the four values before anything relies on them. Left
+    # empty, a manual dispatch validates the dispatched commit as before.
+    inputs:
+      pr_number:
+        description: Retargeted pull request number (set by ci-retarget.yml).
+        required: false
+        type: string
+        default: ''
+      base_sha:
+        description: The pull request's new base SHA (set by ci-retarget.yml).
+        required: false
+        type: string
+        default: ''
+      head_sha:
+        description: The pull request's head SHA (set by ci-retarget.yml).
+        required: false
+        type: string
+        default: ''
+      merge_sha:
+        description: GitHub's merge of head_sha onto base_sha (set by ci-retarget.yml).
+        required: false
+        type: string
+        default: ''
   push:
     branches: [main]
   pull_request:
@@ -76,10 +103,11 @@ on:
     # No `edited`: any CI run, even one whose jobs all skip, adds a newer CI
     # check suite to the head SHA, and a PR whose newest CI suite came from a
     # title/body edit stays BLOCKED despite a green required check (#7017;
-    # #5491: edit runs also cancelled the push run). A base retarget is an
-    # `edited` event too, so it does not re-run CI until the next push; #7044
-    # tracks re-validating the new merge result. Design delivery re-evaluates
-    # body edits in design-delivery.yml. Pinned by TestCIIgnoresPullRequestEdits.
+    # #5491: edit runs also cancelled the push run). A base retarget (#6360)
+    # changes the merge result, so ci-retarget.yml handles `edited` and, only
+    # when `changes.base` is set, dispatches this workflow with the new merge
+    # (see workflow_dispatch inputs). Design delivery re-evaluates body edits
+    # in design-delivery.yml. Pinned by TestCIRetargetValidatesNewMergeNotMetadataEdits.
     types: [opened, synchronize, reopened]
   merge_group:
     branches: [main]
@@ -90,9 +118,11 @@ permissions:
   contents: read
   pull-requests: read
 
-# One in-flight run per ref; newer pushes cancel stale runs.
+# One in-flight run per ref; newer pushes cancel stale runs. A retarget
+# dispatch joins its pull request's group, so it replaces the old-base run and
+# a later push replaces it.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -118,8 +148,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.merge_sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      # A retarget dispatch must validate exactly the PR head merged onto a
+      # main commit: the checks attach to the dispatched commit, so it must be
+      # head_sha, and merge_sha must be the two-parent merge of base_sha and
+      # head_sha. The values are all empty (plain dispatch) or all checked.
+      - name: Verify retarget dispatch inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          MERGE_SHA: ${{ inputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR_NUMBER$BASE_SHA$HEAD_SHA$MERGE_SHA" ]; then
+            exit 0
+          fi
+          sha='^[0-9a-f]{40}$'
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ && "$BASE_SHA" =~ $sha && "$HEAD_SHA" =~ $sha && "$MERGE_SHA" =~ $sha ]]; then
+            echo "::error::retarget dispatch needs pr_number and full base/head/merge SHAs together"
+            exit 1
+          fi
+          if [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::head_sha $HEAD_SHA is not the dispatched commit $GITHUB_SHA"
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$MERGE_SHA" ] ||
+            [ "$(git rev-list --parents -n 1 "$MERGE_SHA")" != "$MERGE_SHA $BASE_SHA $HEAD_SHA" ]; then
+            echo "::error::merge_sha $MERGE_SHA is not the checked-out merge of $BASE_SHA and $HEAD_SHA"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$BASE_SHA" refs/remotes/origin/main; then
+            echo "::error::base_sha $BASE_SHA is not a commit of main"
+            exit 1
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -178,6 +244,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -244,6 +312,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.merge_sha }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -254,8 +323,8 @@ jobs:
 
       - name: Enforce cmd/goobers growth ratchet
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'HEAD' }}
-          HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || '' }}
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.base_sha || 'HEAD' }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || inputs.head_sha || '' }}
         run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF" -head-ref "$HEAD_REF"
 
       - name: Record CI diagnostics
@@ -292,6 +361,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -345,15 +416,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.merge_sha }}
           # The design-delivery gate compares the pinned PR base documents.
           fetch-depth: 0
 
       - name: Collect design delivery context
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || inputs.pr_number
         uses: ./.github/actions/design-delivery-context
         with:
-          pr-number: ${{ github.event.pull_request.number }}
-          base-revision: ${{ github.event.pull_request.base.sha }}
+          pr-number: ${{ github.event.pull_request.number || inputs.pr_number }}
+          base-revision: ${{ github.event.pull_request.base.sha || inputs.base_sha }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Go
@@ -463,7 +535,7 @@ jobs:
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
         env:
-          GOOBERS_DESIGN_DELIVERY_CONTEXT: ${{ github.event_name == 'pull_request' && format('{0}/design-delivery-context.json', runner.temp) || '' }}
+          GOOBERS_DESIGN_DELIVERY_CONTEXT: ${{ (github.event_name == 'pull_request' || inputs.pr_number) && format('{0}/design-delivery-context.json', runner.temp) || '' }}
         run: go run ./test/ci group checks
 
       - name: Record CI diagnostics
@@ -492,6 +564,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -542,6 +616,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -616,6 +692,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -719,6 +797,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.merge_sha }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -886,6 +965,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.merge_sha }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -1051,6 +1131,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.merge_sha }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -1105,6 +1186,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -1838,6 +1921,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       # Platform-scoped Go cache (setup-go keys by runner OS/arch), so the
       # windows leg neither shares nor evicts the ubuntu/macos caches.
@@ -2113,6 +2198,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -2170,6 +2257,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.merge_sha }}
           persist-credentials: false
 
       - name: Set up Go
@@ -2195,6 +2283,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -2271,6 +2361,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e

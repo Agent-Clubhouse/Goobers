@@ -7,15 +7,15 @@ import (
 
 // Frozen qualification candidates must not depend on the moving main ref's
 // cancellable CI run. Dispatch uses the same matrix on a dedicated branch;
-// no separate, weaker validation workflow or arbitrary checkout input exists.
+// no separate, weaker validation workflow exists, and the only checkout input
+// is a retarget merge that scope verifies.
 func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 	t.Parallel()
 	w := loadCIWorkflow(t)
-	dispatch, ok := w.On["workflow_dispatch"]
-	if !ok || len(dispatch.Content) != 0 {
-		t.Fatal("CI must support manual dispatch without checkout/skip inputs")
-	}
-	if w.Concurrency.Group != "ci-${{ github.workflow }}-${{ github.ref }}" || !w.Concurrency.CancelInProgress {
+	// The only inputs are ci-retarget.yml's optional merge inputs (#7017);
+	// left empty, a dispatch validates the dispatched commit.
+	assertRetargetDispatchInputs(t, w)
+	if w.Concurrency.Group != "ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}" || !w.Concurrency.CancelInProgress {
 		t.Fatal("CI concurrency must isolate frozen refs while preserving same-ref cancellation")
 	}
 	if !maps.Equal(w.Permissions, map[string]string{"actions": "read", "contents": "read", "pull-requests": "read"}) {
@@ -39,8 +39,8 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 			t.Errorf("required job %s must remain fail-closed with inherited read-only permissions", id)
 		}
 		checkout := job.stepUsing(t, "actions/checkout@")
-		if ref := checkout.with("ref"); ref != "" && ref != "${{ github.sha }}" {
-			t.Errorf("required job %s must check out the dispatched event SHA, not %q", id, ref)
+		if ref := checkout.with("ref"); ref != "${{ inputs.merge_sha }}" || renderTemplate(t, ref, ctx) != "" {
+			t.Errorf("required job %s must check out the dispatched event SHA unless a retarget merge is given, not %q", id, ref)
 		}
 		if checkout.If != "" || checkout.ContinueOnError || checkout.with("repository") != "" {
 			t.Errorf("required job %s must unconditionally check out this repository", id)
