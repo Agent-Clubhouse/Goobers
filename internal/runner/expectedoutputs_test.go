@@ -89,6 +89,11 @@ func TestEnforceExpectedOutputs(t *testing.T) {
 			wantMsg: []string{"agent result", `"prNumber"`},
 		},
 		{name: "agentic stage on dsl 3.0 stays advisory", version: supportmatrix.V3DSLVersion, task: agentic, status: apiv1.ResultSuccess, outputs: partial},
+		{name: "salvaged agentic timeout is runner-synthesized", version: supportmatrix.V31DSLVersion, task: agentic, status: apiv1.ResultSuccess, outputs: SalvagedResult().Outputs},
+		{
+			name: "preserved committed work is runner-synthesized", version: supportmatrix.V31DSLVersion, task: agentic,
+			status: apiv1.ResultSuccess, outputs: preserveCommittedWorkOnInfraRetry(apiv1.ResultEnvelope{Status: apiv1.ResultFailure}).Outputs,
+		},
 		{name: "built-in kind with every key succeeds", version: supportmatrix.V31DSLVersion, task: withKind(shell, "ci-poll"), status: apiv1.ResultSuccess, outputs: complete},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

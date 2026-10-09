@@ -8,6 +8,19 @@ import (
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 )
 
+// preservedCommittedWorkOutput marks the success preserveCommittedWorkOnInfraRetry
+// synthesizes from an infrastructure-failed attempt's committed work.
+const preservedCommittedWorkOutput = "preservedCommittedWork"
+
+// runnerSynthesizedSuccess reports whether the runner, not the stage, produced
+// this success: a salvaged agentic timeout (#724) or committed work preserved
+// across an infrastructure failure. The stage never reported its outputs, and
+// local-ci and review verify the committed diff downstream, so expectedOutputs
+// does not apply.
+func runnerSynthesizedSuccess(result apiv1.ResultEnvelope) bool {
+	return result.Outputs[SalvagedOnTimeoutOutput] == true || result.Outputs[preservedCommittedWorkOutput] == true
+}
+
 // MissingExpectedOutputsCode is the stage error code for a successful shell
 // stage that did not emit a key it declared in expectedOutputs (#5175).
 const MissingExpectedOutputsCode = "missing_expected_outputs"
@@ -19,7 +32,7 @@ const MissingExpectedOutputsCode = "missing_expected_outputs"
 // Non-success results are returned unchanged: they already fail or report no
 // work, and their own diagnostics stay authoritative.
 func EnforceExpectedOutputs(dslVersion string, task apiv1.Task, result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
-	if result.Status != apiv1.ResultSuccess || !v30.EnforcesExpectedOutputs(dslVersion, task) {
+	if result.Status != apiv1.ResultSuccess || !v30.EnforcesExpectedOutputs(dslVersion, task) || runnerSynthesizedSuccess(result) {
 		return result
 	}
 	var missing []string
