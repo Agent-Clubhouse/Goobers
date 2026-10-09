@@ -25,6 +25,9 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 	if client == nil || s.config == nil || s.config.API.PodTokenKeyFile == "" || surrenders == nil || journals == nil {
 		return
 	}
+	s.parentRecovery = func(ctx context.Context, id journal.RunIdentity) error {
+		return (&parentStagePod{service: s, identity: id, client: client, surrenders: surrenders}).reconcile(ctx)
+	}
 	s.childPodRecovery = func(ctx context.Context, reader *journal.Reader, digest string, scope childPodScope) error {
 		return s.recoverChildPod(ctx, reader, digest, scope, client, surrenders)
 	}

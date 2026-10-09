@@ -107,6 +107,7 @@ type daemonCredentialService struct {
 	// Installed before serving. Current child authority lease spans materialization.
 	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
 	childExecutors   childExecutorProvider
+	parentRecovery   func(context.Context, journal.RunIdentity) error
 	childPodRecovery func(context.Context, *journal.Reader, string, childPodScope) error
 	layout           instance.Layout
 	config           *instance.Config

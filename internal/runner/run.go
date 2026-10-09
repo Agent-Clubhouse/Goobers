@@ -3455,7 +3455,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
-		if err := tf.recordTaskStarted(int(attempt), class); err != nil {
+		if err := tf.recordTaskStartedWithRecovery(int(attempt), class, policyAttempts, infrastructureFailures, cumulativeUsage); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
