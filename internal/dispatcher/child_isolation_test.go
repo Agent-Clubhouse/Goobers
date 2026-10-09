@@ -258,3 +258,41 @@ func TestOrphanDisposalRetainsPhysicalIdentityAndIsolation(t *testing.T) {
 		}
 	}
 }
+
+type workflowParentMinter struct{ childMinter }
+
+func (workflowParentMinter) MintWorkflowParentPod(string, string, time.Duration) (string, error) {
+	return "parent", nil
+}
+
+func TestWorkflowParentTokenCannotDowngradeAuthority(t *testing.T) {
+	for _, scenario := range []string{"signed", "child-only", "ordinary-only", "caller", "missing-contract", "invalid-contract"} {
+		t.Run(scenario, func(t *testing.T) {
+			a := testAttempt()
+			a.WorkflowParent = true
+			a.ChildExecutionDigest = "sha256:" + strings.Repeat("a", 64)
+			a.PodToken = ""
+			d := &Dispatcher{cfg: Config{TokenMinter: workflowParentMinter{}}}
+			switch scenario {
+			case "child-only":
+				d.cfg.TokenMinter = childMinter{}
+			case "ordinary-only":
+				d.cfg.TokenMinter = &mintOnce{}
+			case "caller":
+				a.PodToken = "caller"
+			case "missing-contract":
+				a.ChildExecutionDigest = ""
+			case "invalid-contract":
+				a.ChildExecutionDigest = "not-a-contract"
+			}
+			err := d.mintAttemptToken(&a)
+			if scenario == "signed" {
+				if err != nil || a.PodToken != "parent" {
+					t.Fatal(a.PodToken, err)
+				}
+			} else if !errors.Is(err, ErrChildIsolation) {
+				t.Fatalf("parent acquired broader authority: %q, %v", a.PodToken, err)
+			}
+		})
+	}
+}

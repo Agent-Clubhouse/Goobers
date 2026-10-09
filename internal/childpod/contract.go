@@ -9,6 +9,8 @@ import (
 	"slices"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -31,12 +33,14 @@ type WorkspaceInput struct {
 // Request is assembled from the accepted source, committed stage attempt and
 // pinned run identity. No mutable-name lookup belongs in this adapter.
 type Request struct {
-	Identity  journal.RunIdentity
-	Attempt   dispatcher.Attempt
-	Eligible  []dispatcher.RunnerSpec
-	Workspace *WorkspaceInput
-	Ceiling   credentials.ChildCeiling
-	StartedAt time.Time
+	ParentOrigin *apiv1.ChildWorkflowOrigin
+	ParentBranch int
+	Identity     journal.RunIdentity
+	Attempt      dispatcher.Attempt
+	Eligible     []dispatcher.RunnerSpec
+	Workspace    *WorkspaceInput
+	Ceiling      credentials.ChildCeiling
+	StartedAt    time.Time
 }
 
 // Carrier is the bounded tree and its complete independent object custody.
@@ -48,16 +52,18 @@ type Carrier struct {
 // Contract binds every pod input to its exact accepted child and attempt.
 // Credentials and host filesystem paths are deliberately absent.
 type Contract struct {
-	ContextDigests []string                 `json:"contextDigests,omitempty"`
-	KitDigest      string                   `json:"kitDigest,omitempty"`
-	Version        int                      `json:"version"`
-	Identity       journal.RunIdentity      `json:"identity"`
-	Stage          string                   `json:"stage"`
-	Attempt        int                      `json:"attempt"`
-	PodAttempt     int                      `json:"podAttempt"`
-	StartedAt      time.Time                `json:"startedAt"`
-	Ceiling        credentials.ChildCeiling `json:"ceiling"`
-	Workspace      *Carrier                 `json:"workspace,omitempty"`
+	ParentOrigin   *apiv1.ChildWorkflowOrigin `json:"parentOrigin,omitempty"`
+	ParentBranch   int                        `json:"parentBranch,omitempty"`
+	ContextDigests []string                   `json:"contextDigests,omitempty"`
+	KitDigest      string                     `json:"kitDigest,omitempty"`
+	Version        int                        `json:"version"`
+	Identity       journal.RunIdentity        `json:"identity"`
+	Stage          string                     `json:"stage"`
+	Attempt        int                        `json:"attempt"`
+	PodAttempt     int                        `json:"podAttempt"`
+	StartedAt      time.Time                  `json:"startedAt"`
+	Ceiling        credentials.ChildCeiling   `json:"ceiling"`
+	Workspace      *Carrier                   `json:"workspace,omitempty"`
 }
 
 // Output returns a tree bound to its input contract. Pod commit history is
@@ -81,7 +87,7 @@ func (c Contract) Validate() error {
 	if c.KitDigest != "" && !blobstore.ValidDigest(c.KitDigest) {
 		return fmt.Errorf("invalid isolated child kit digest")
 	}
-	if c.Version != 1 || c.Identity.Child == nil || c.Identity.ValidateChildLineage() != nil || c.Stage == "" || len(c.Stage) > 256 || c.Attempt < 1 || c.PodAttempt < 1 || c.StartedAt.IsZero() {
+	if c.Version != 1 || c.validateOwner() != nil || c.Stage == "" || len(c.Stage) > 256 || c.Attempt < 1 || c.PodAttempt < 1 || c.StartedAt.IsZero() {
 		return fmt.Errorf("invalid isolated child contract identity")
 	}
 	if err := c.Ceiling.Validate(); err != nil {
@@ -150,4 +156,23 @@ func decode(data []byte, digest string, out any) error {
 		return fmt.Errorf("noncanonical isolated child document")
 	}
 	return nil
+}
+
+func (c Contract) validateOwner() error {
+	if c.ParentOrigin == nil {
+		if c.ParentBranch != 0 || c.Identity.Child == nil {
+			return fmt.Errorf("isolated contract has no child owner")
+		}
+		return c.Identity.ValidateChildLineage()
+	}
+	if c.Identity.Child != nil || !apiv1.ValidRunID(c.Identity.RunID) || c.Identity.InstanceID == "" || c.Identity.Gaggle == "" || c.Identity.Workflow == "" || c.ParentBranch < 0 || c.ParentBranch > 128 {
+		return fmt.Errorf("invalid isolated parent owner")
+	}
+	for _, digest := range []string{c.Identity.ConfigGeneration, c.Identity.WorkflowDigest, c.Identity.GooberDigest} {
+		if !blobstore.ValidDigest(digest) {
+			return fmt.Errorf("invalid isolated parent source")
+		}
+	}
+	_, err := journal.ChildWorkflowOriginForEvent(c.Identity.RunID, journal.Event{Type: journal.EventStageStarted, Stage: c.Stage, Branch: c.ParentBranch, Seq: uint64(c.PodAttempt), Runner: map[string]any{journal.ChildWorkflowOccurrenceKey: c.ParentOrigin.StageOccurrence, journal.ChildWorkflowAttemptKey: c.ParentOrigin.AttemptID}})
+	return err
 }

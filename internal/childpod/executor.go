@@ -62,6 +62,9 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 	binder, canBind := e.Blobs.(interface {
 		BindContract(context.Context, string) error
 	})
+	if !canBind && request.ParentOrigin != nil {
+		return out, report, fmt.Errorf("parent contract custody binding unavailable")
+	}
 	if canBind {
 		if err = binder.BindContract(ctx, digest); err != nil {
 			return out, report, err
@@ -118,6 +121,9 @@ func (e *Executor) validate(ctx context.Context, r Request) error {
 	if r.Attempt.RunID != r.Identity.RunID || r.Attempt.Gaggle != r.Identity.Gaggle || r.Attempt.Workflow != r.Identity.Workflow || r.Attempt.InstanceID != r.Identity.InstanceID || r.Attempt.ChildExecutionDigest != "" || r.Attempt.PodAttempt < 1 {
 		return fmt.Errorf("child attempt does not match pinned run identity")
 	}
+	if err := validateParentRequest(r); err != nil {
+		return err
+	}
 	if r.Attempt.Agentic && !blobstore.ValidDigest(r.Attempt.KitDigest) {
 		return fmt.Errorf("child agentic kit was not published under retained source authority")
 	}
@@ -131,7 +137,7 @@ func (e *Executor) validate(ctx context.Context, r Request) error {
 }
 
 func makeContract(ctx context.Context, r Request) (Contract, *recovery.ChildSnapshot, error) {
-	c := Contract{KitDigest: r.Attempt.KitDigest, Version: 1, Identity: r.Identity, Stage: r.Attempt.Stage, Attempt: r.Attempt.Number, PodAttempt: r.Attempt.PodAttempt, StartedAt: r.StartedAt, Ceiling: r.Ceiling}
+	c := Contract{ParentOrigin: r.ParentOrigin, ParentBranch: r.ParentBranch, KitDigest: r.Attempt.KitDigest, Version: 1, Identity: r.Identity, Stage: r.Attempt.Stage, Attempt: r.Attempt.Number, PodAttempt: r.Attempt.PodAttempt, StartedAt: r.StartedAt, Ceiling: r.Ceiling}
 	if err := c.Validate(); err != nil {
 		return c, nil, err
 	}
@@ -148,12 +154,17 @@ func makeContract(ctx context.Context, r Request) (Contract, *recovery.ChildSnap
 	if r.Workspace != nil {
 		// This ancestry check binds the managed checkout to its accepted fork,
 		// independently of whatever commits a prior child stage created.
-		if _, err := recovery.CaptureChildResult(ctx, r.Workspace.Path, r.Identity.RunID, r.Workspace.Fork, r.StartedAt, r.StartedAt.AddDate(0, 0, 30)); err != nil {
-			return c, nil, err
+		if r.ParentOrigin == nil {
+			if _, err := recovery.CaptureChildResult(ctx, r.Workspace.Path, r.Identity.RunID, r.Workspace.Fork, r.StartedAt, r.StartedAt.AddDate(0, 0, 30)); err != nil {
+				return c, nil, err
+			}
 		}
 		carrier, snapshot, err := CaptureCarrier(ctx, r.Workspace.Path, r.Workspace.Fork.Record.RepositoryKey, r.Identity.RunID, r.StartedAt, r.Workspace.Fork.Policy)
 		if err != nil {
 			return c, nil, err
+		}
+		if r.ParentOrigin != nil && (snapshot.Record.SnapshotSHA != r.Workspace.Fork.Record.SnapshotSHA || snapshot.IndexDigest != r.Workspace.Fork.IndexDigest) {
+			return c, nil, recovery.ErrWorkspaceChanged
 		}
 		c.Workspace, expected = &carrier, &snapshot
 	}
@@ -241,4 +252,14 @@ func (e *Executor) receive(ctx context.Context, request Request, contract Contra
 		}
 	}
 	return out, nil
+}
+
+func validateParentRequest(r Request) error {
+	if r.Attempt.WorkflowParent != (r.ParentOrigin != nil) || (r.ParentOrigin != nil && (!r.Attempt.Agentic || r.Attempt.Review || r.Identity.Child != nil)) {
+		return fmt.Errorf("isolated attempt role differs from custody owner")
+	}
+	if r.ParentOrigin != nil && (r.Attempt.Envelope == nil || !reflect.DeepEqual(r.ParentOrigin, r.Attempt.Envelope.ChildWorkflowOrigin)) {
+		return fmt.Errorf("parent origin differs from invocation custody")
+	}
+	return nil
 }

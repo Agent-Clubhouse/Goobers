@@ -83,6 +83,8 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
+	// WorkflowParent binds a contained parent to its separately signed contract.
+	WorkflowParent *WorkflowParentPrincipal
 	// GeneratedChild is populated only by the signed generated-worker authenticator.
 	GeneratedChild *GeneratedChildPrincipal
 	// ChildWorkflow is populated only by the stage-grant authenticator.
@@ -433,6 +435,9 @@ func RequireRoles() Authorizer {
 				return nil
 			}
 			return errors.New("only an authenticated worker may report config divergence")
+		}
+		if principal.Issuer == WorkflowParentPrincipalIssuer {
+			return errors.New("contained parent route owner unavailable")
 		}
 		if principal.Issuer == GeneratedChildPrincipalIssuer {
 			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
