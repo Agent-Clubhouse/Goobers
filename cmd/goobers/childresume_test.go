@@ -63,8 +63,13 @@ func TestChildDrainRecoveryCannotResumeCancelledOrSettledFamily(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = f.launcher.Result(t.Context(), ref); !errors.Is(err, expected) {
-				t.Fatal(err)
+			result, err := f.launcher.Result(t.Context(), ref)
+			if settled {
+				if !errors.Is(err, expected) {
+					t.Fatal(err)
+				}
+			} else if err != nil || result.State != triggerqueue.ChildCancelled || result.ResultRef == "" {
+				t.Fatal("cancelled recovery did not retain a terminal result", result, err)
 			}
 			f.wg.Wait()
 			if f.executor.calls.Load() != 0 {

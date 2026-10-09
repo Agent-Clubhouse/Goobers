@@ -263,6 +263,13 @@ func (l *queuedChildLauncher) Result(ctx context.Context, ref childExecutionRef)
 		if err := l.reconcile(ctx, rd); err != nil {
 			return childExecutionResult{}, err
 		}
+		cancelled, err := l.finishCancelledChild(ctx, rd)
+		if err != nil {
+			return childExecutionResult{}, err
+		}
+		if cancelled {
+			return l.result(ctx, ref, rd)
+		}
 		events, err := rd.Events()
 		if err != nil {
 			return childExecutionResult{}, err
