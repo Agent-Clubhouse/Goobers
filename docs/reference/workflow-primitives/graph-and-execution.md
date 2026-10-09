@@ -103,6 +103,76 @@ outcome plus stable hashes and explicit omission/truncation markers. Put raw
 logs in durable artifact storage and reference them from that manifest; a
 runner-local path alone is not portable evidence.
 
+Outbox is export-only. Later stages in the same run do not receive outbox
+files, and untracked workspace files do not survive between stages. To pass a
+file from one stage to a later stage, see
+[Stage-to-stage fan-in](#stage-to-stage-fan-in).
+
+#### Local outbox mirror (`outboxMirrorPath`)
+
+`outboxMirrorPath` can be set on a task, a workflow, or a gaggle. It names an
+absolute or `~/` root on the runner host that receives a copy of each exported
+outbox file after the copy is written to the journal. The most specific value
+wins: the task value overrides the workflow value, and the workflow value
+overrides the gaggle default. The gaggle value only applies to workflows and
+tasks that do not set their own.
+
+Each mirrored file is written to:
+
+```text
+<outboxMirrorPath>/<run-id>/<stage>/attempt-<N>/occurrence-<S>/<declared workspace-relative path>
+```
+
+- `<stage>` is the task name. Parallel-branch stages use the same layout.
+- `attempt-<N>` is the retry attempt and starts at 1. A gate repass that
+  re-enters the task starts again at `attempt-1`.
+- `occurrence-<S>` is the journal sequence number of the export batch. It is
+  unique within the run, so a repass never overwrites an earlier copy. Use
+  the run journal's `artifact.recorded` events to find a specific occurrence,
+  not the directory order.
+- The declared workspace-relative path is kept as-is, including hidden
+  directories. For example, `outbox: [.goobers/panel]` writes
+  `.../occurrence-<S>/.goobers/panel/<name>.md`.
+
+The mirror path is the same as the journal's
+`artifacts/outbox/<stage>/attempt-<N>/occurrence-<S>/...` path with the
+`artifacts/outbox/` prefix replaced by `<run-id>/`. The journal is the source
+of truth, and the mirror is a convenience copy for host tools. Reading the
+mirror back into a later stage is outside the run contract.
+
+### Stage-to-stage fan-in
+
+Use artifacts, not outbox, when one stage consumes files that earlier stages
+produced, such as a review panel whose governor reads every reviewer's
+report. Each producer publishes one artifact with `inputs.artifactFile` (or
+`inputs.artifactManifestFile`). Its artifact pointers, named
+`<stage>.artifact[<i>]`, are added to the context passed to later linear
+stages and to parallel joins. Agentic consumers get these artifacts in their
+workspace under `.goobers/context/` and through the `goobers-io` read tools
+(see [Goobers IO MCP](../../guides/goobers-io-mcp.md)). Use `contextFrom` on
+the consumer to limit what it receives to the named producers:
+
+```yaml
+- name: review-security
+  type: agentic
+  goober: reviewer
+  goal: Review the change through a security lens.
+  workspace: repo-readonly
+  inputs:
+    artifactFile: report.md
+  next: review-performance
+# ... one stage per reviewer ...
+- name: govern
+  type: agentic
+  goober: governor
+  goal: Adjudicate the panel's reports.
+  workspace: repo-readonly
+  contextFrom: [review-security, review-performance]
+```
+
+The reports are stored in the run journal and never committed, so they do not
+change the diff the panel is reviewing.
+
 ## Placement primitive: `runsOn` (DSL 3.0)
 
 `runsOn` appears on gaggles, tasks, and agentic gates.
@@ -169,7 +239,7 @@ narrower scope overriding the broader one.
 | --- | --- |
 | `maxRepasses` | Bounds how often gates may route back to an already completed stage. A non-human gate may override it. |
 | `stalledRunTimeout` | Positive Go duration after which a silent running journal is escalated. |
-| `maxRunDuration` | Positive Go duration bounding total run age; empty disables this bound. |
+| `maxRunDuration` | Positive Go duration bounding active execution time: run age less time the host spent suspended and durable child waits. Empty disables this bound. |
 
 `maxRunDuration` requires daemon-backed execution. Without a live daemon,
 `goobers run` rejects the selected workflow before dispatch if its effective

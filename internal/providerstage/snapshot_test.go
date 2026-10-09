@@ -43,6 +43,8 @@ type snapshotCapabilityUse struct {
 	UnlessFlags []string              `json:"unlessFlags,omitempty"`
 	SinceDSL    string                `json:"sinceDSL,omitempty"`
 	UntilDSL    string                `json:"untilDSL,omitempty"`
+	// Alternatives sorts last so existing rows render byte-identically.
+	Alternatives []capability.Capability `json:"alternatives,omitempty"`
 }
 
 // snapshotCommand mirrors Command plus its manifest key.
@@ -72,16 +74,17 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 		uses := make([]snapshotCapabilityUse, 0, len(entry.Capabilities))
 		for _, use := range entry.Capabilities {
 			uses = append(uses, snapshotCapabilityUse{
-				Capability:  use.Capability,
-				Consequence: use.Consequence,
-				Optional:    use.optional,
-				Exact:       use.exact,
-				Flag:        use.flag,
-				FlagValue:   use.flagValue,
-				AnyFlags:    use.anyFlags,
-				UnlessFlags: use.unlessFlags,
-				SinceDSL:    use.sinceDSL,
-				UntilDSL:    use.untilDSL,
+				Capability:   use.Capability,
+				Consequence:  use.Consequence,
+				Optional:     use.optional,
+				Exact:        use.exact,
+				Flag:         use.flag,
+				FlagValue:    use.flagValue,
+				AnyFlags:     use.anyFlags,
+				UnlessFlags:  use.unlessFlags,
+				SinceDSL:     use.sinceDSL,
+				UntilDSL:     use.untilDSL,
+				Alternatives: use.alternatives,
 			})
 		}
 		entries = append(entries, snapshotCommand{
@@ -301,6 +304,11 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 			entry := table["backlog-dedupe"]
 			entry.sinceDSL = "3.0"
 			table["backlog-dedupe"] = entry
+		}},
+		{"accepted alternative removed", func(table map[string]Command) {
+			entry := table["pr-select"]
+			entry.Capabilities[0].alternatives = nil
+			table["pr-select"] = entry
 		}},
 		{"command retired at a DSL version", func(table map[string]Command) {
 			entry := table["backlog-dedupe"]

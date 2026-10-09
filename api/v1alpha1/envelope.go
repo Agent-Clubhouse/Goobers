@@ -570,6 +570,12 @@ type Verdict struct {
 	Evidence []ArtifactPointer `json:"evidence,omitempty"`
 	// Findings enumerate specific issues the evaluator found.
 	Findings []Finding `json:"findings,omitempty"`
+	// Synthesized is true when the runner produced this verdict without
+	// invoking the reviewer (#5894): an empty-diff fast-fail or an
+	// unchanged-repass short-circuit. Findings are absent on such a verdict
+	// because no review ran, so a zero finding count must not be read as a
+	// clean review. Never set on a reviewer-produced verdict.
+	Synthesized bool `json:"synthesized,omitempty"`
 	// Summary is a human-readable summary of the review.
 	Summary string `json:"summary,omitempty"`
 	// HeadSHA is the PR head commit this verdict was computed against

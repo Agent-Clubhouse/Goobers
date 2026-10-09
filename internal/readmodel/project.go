@@ -115,6 +115,7 @@ type OperatorFacts struct {
 	EngineFallback        *EngineFallback
 	IssueNumber           string
 	IssueTitle            string
+	DisplayTitle          string
 	LastHeartbeatAt       *time.Time
 	PullRequest           *journal.ExternalRef
 	ProviderClaimRecorded bool
@@ -123,6 +124,7 @@ type OperatorFacts struct {
 	ReviewRationale       string
 	ReviewReasonCode      apiv1.VerdictReasonCode
 	ReviewFindings        []apiv1.Finding
+	ReviewSynthesized     bool
 	ReviewProblem         string
 	PROpenerStage         string
 	ResumedFromRunID      string
@@ -473,6 +475,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				row.Operator.ReviewRationale = ""
 				row.Operator.ReviewReasonCode = ""
 				row.Operator.ReviewFindings = nil
+				row.Operator.ReviewSynthesized = false
 				row.Operator.ReviewProblem = ""
 			}
 			// An executed gate that selects a reserved terminal target is itself
@@ -640,6 +643,7 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 		}
 		projection.Run.Operator.ReviewReasonCode = verdict.ReasonCode
 		projection.Run.Operator.ReviewFindings = verdict.Findings
+		projection.Run.Operator.ReviewSynthesized = verdict.Synthesized
 		projection.Run.Operator.ReviewRationale = verdict.Rationale
 		if projection.Run.Operator.ReviewRationale == "" {
 			projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Summary)
@@ -686,6 +690,9 @@ func projectOperatorStageOutputs(operator *OperatorFacts, event journal.Event) {
 			operator.IssueNumber = id
 			operator.IssueTitle = title
 		}
+	}
+	if title, ok := StageDisplayTitle(event); ok {
+		operator.DisplayTitle = title
 	}
 	if source, ok := event.Outputs["resumedFromRun"].(string); ok && source != "" {
 		operator.ResumedFromRunID = source

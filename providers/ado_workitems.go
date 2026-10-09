@@ -1168,6 +1168,11 @@ func adoWorkItemFields(item adoWorkItem) fieldpredicate.Fields {
 			fields[name] = value
 		}
 	}
+	// "title" is the provider-neutral title key GitHub and Gitea also project;
+	// ADO reference names are always dotted, so it cannot shadow a native field.
+	if title, ok := item.Fields["System.Title"].(string); ok {
+		fields[fieldpredicate.TitleField] = title
+	}
 	return fields
 }
 

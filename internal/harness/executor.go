@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -456,7 +457,7 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	}
 	out, _, _, err := e.run(ctx, ModeReview, env, e.verdictPath)
 	if err != nil {
-		return apiv1.Verdict{}, err
+		return apiv1.Verdict{}, classifyReviewSessionError(err)
 	}
 	if err := e.validator.ValidateEnvelope("verdict", out.Payload); err != nil {
 		validationErr := fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
@@ -468,6 +469,9 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
 	}
 	verdict = undeclaredDeferralAsNeedsChanges(verdict, env.ReviewerDeferralAllowed)
+	// Only the runner may mark a verdict synthesized (#5894); a reviewer
+	// that claims it would make its own review read as one that never ran.
+	verdict.Synthesized = false
 	verdict.Evidence, err = e.liftArtifacts(ctx, env, verdict.Evidence)
 	if err != nil {
 		if _, summary, ok := declaredArtifactFailure(err); ok {
@@ -944,6 +948,43 @@ func classifyHarnessRunError(runErr, wrapped error) error {
 	default:
 		return wrapped
 	}
+}
+
+// classifyReviewSessionError marks a reviewer session that ENDED without a
+// verdict — its harness process exited non-zero, or it ran out its session
+// timeout — as an invoke.InfrastructureFailure, the same class
+// classifyHarnessRunError already gives a session that exited cleanly without
+// writing one (ErrNoCompletion). All three say only that the reviewer never
+// answered, not anything about the change under review, and a reviewer never
+// publishes, so a fresh session is safe; the gate's declared evaluator retry
+// bound (retry.maxAttempts) is what decides whether it gets one (#5543).
+// Without this, a declared retry was inert for the two most common transient
+// reviewer failures.
+//
+// Failures that WOULD recur are left unmarked and still fail fast: a verdict
+// the schema refused, a required MCP server the harness rejected, an
+// enterprise policy blocked, or a declared one that failed to start, a
+// canceled session, and every refusal that
+// precedes the harness process (sandbox, policy admission, configuration).
+// Only Review applies this; a task stage's timeout keeps its own OnTimeout
+// salvage semantics and its failures stay the stage's business outcome.
+func classifyReviewSessionError(err error) error {
+	if err == nil || invoke.IsInfrastructureFailure(err) {
+		return err
+	}
+	switch {
+	case errors.Is(err, ErrCanceled),
+		errors.Is(err, ErrInvalidCompletion),
+		errors.Is(err, errRequiredMCPEnterpriseBlocked),
+		errors.Is(err, errRequiredMCPRejected),
+		errors.Is(err, errRequiredMCPDeclaredStartupFailed):
+		return err
+	}
+	var exitErr *exec.ExitError
+	if errors.Is(err, ErrTimeout) || errors.As(err, &exitErr) {
+		return invoke.InfrastructureFailure(err)
+	}
+	return err
 }
 
 func applyNestedExecutionPolicy(env apiv1.InvocationEnvelope, effective apiv1.ChildExecutionPolicy) apiv1.InvocationEnvelope {

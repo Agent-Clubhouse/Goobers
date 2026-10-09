@@ -212,6 +212,7 @@ const (
 	specificityNone             = 0
 	specificityBuildSummary     = 10
 	specificityBuildTrailer     = 15
+	specificityGitRevision      = 18
 	specificityPackageFailure   = 20
 	specificitySourceFinding    = 25
 	specificityTestFailure      = 30
@@ -318,6 +319,14 @@ func failureLineSpecificity(line string) int {
 		return specificitySourceFinding
 	case packageFailurePattern.MatchString(line):
 		return specificityPackageFailure
+	// git refusing a revision that does not exist in the checkout (#5389)
+	// names a stage-configuration fault. It outranks wrapper trailers so a
+	// git stage behind `make` records it as the diagnostic the gate's
+	// classifier reads, but not any finding about the work: a script that
+	// tolerates a failed git probe and then fails on a real finding must
+	// still hand that finding to the repass.
+	case failureclass.IsGitUnresolvableRevision(line):
+		return specificityGitRevision
 	case buildFailurePattern.MatchString(line):
 		return specificityBuildTrailer
 	case buildSummaryPattern.MatchString(line):

@@ -1269,7 +1269,7 @@ func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
 	spec.Tasks[0].PolicyActions = []string{"flag-foundation-coupling"}
 	spec.Tasks[0].Capabilities = nil
 	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "provider:pr:write", but the task does not declare it`
+	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "provider:pr:write" (or "github:pr:write"), but the task does not declare it`
 	if err == nil || !strings.Contains(err.Error(), wantCapability) {
 		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
 	}
@@ -1277,6 +1277,13 @@ func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
 	spec.Tasks[0].Capabilities = []string{string(capability.ProviderPRWrite)}
 	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("declared pr-select action and capability should compile: %v", err)
+	}
+
+	// Configs written before v0.6.0-alpha.3 declare github:pr:write; they
+	// must keep compiling.
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubPRWrite)}
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("pr-select declaring the pre-alpha.3 github:pr:write should compile: %v", err)
 	}
 }
 

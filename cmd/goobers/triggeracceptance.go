@@ -20,6 +20,9 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
+// defaultChildPruneBudget bounds one sweep's child-retention pass.
+const defaultChildPruneBudget = 250 * time.Millisecond
+
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
@@ -34,6 +37,9 @@ type durableTriggerService struct {
 	children        childExecutionLauncher
 	observeChild    childStartObserver
 	childCursor     string
+	// pruneBudget bounds each sweep's child-retention pass so it cannot stall dispatch;
+	// zero means defaultChildPruneBudget.
+	pruneBudget time.Duration
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a
@@ -100,7 +106,13 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
 	}
-	record, duplicate, err := s.queue.Accept(ctx, request.RequestID, request.Actor, payload, s.dispatch.now())
+	record, duplicate, err := s.queue.AcceptAdmitted(ctx, request.RequestID, request.Actor, payload, s.dispatch.now(), func() error {
+		return s.dispatch.validateTriggerTarget(request)
+	})
+	var refusal *httpapi.InterventionError
+	if errors.As(err, &refusal) {
+		return httpapi.TriggerResponse{}, err
+	}
 	if errors.Is(err, triggerqueue.ErrConflict) {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusConflict, "trigger_request_conflict", "request key belongs to another trigger", nil)
 	}
@@ -141,7 +153,11 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	// Child custody shares the ordinary queue database. Retention must run
 	// even while no scheduler is attached; otherwise inactive installations
 	// retain terminal lineages and cancellation fences indefinitely.
-	pruneCtx, cancelPrune := context.WithTimeout(ctx, 250*time.Millisecond)
+	budget := s.pruneBudget
+	if budget <= 0 {
+		budget = defaultChildPruneBudget
+	}
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, budget)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
 	cancelPrune()
 	if s.childFamilies != nil {

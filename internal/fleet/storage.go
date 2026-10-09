@@ -282,6 +282,9 @@ func (s *FileStorage) Update(instanceRoot string, update func(*Association) erro
 		if err := json.Unmarshal(data, &association); err != nil {
 			return fmt.Errorf("fleet: decode association metadata: %w", err)
 		}
+		if association.SchemaVersion != AssociationSchemaVersion {
+			return fmt.Errorf("fleet: unsupported association schema version %q", association.SchemaVersion)
+		}
 		if err := update(&association); err != nil {
 			return err
 		}

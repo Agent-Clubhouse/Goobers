@@ -328,3 +328,74 @@ func TestReadModelPathProjectsOperatorSummaryWithoutOpeningJournal(t *testing.T)
 }
 
 var fixedTime = time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+
+// TestOperatorReviewMarksSynthesizedVerdict is #5894's operator-summary
+// acceptance on both read paths: a runner-synthesized review verdict surfaces
+// synthesized=true with findings absent, never as a zero-findings review.
+func TestOperatorReviewMarksSynthesizedVerdict(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	run, _ := createFixtureRun(t, layout, fixtureMachine(t), "synthesized-review", "implementation", "goobers",
+		fixedTime, journal.Trigger{Kind: journal.TriggerItem, Ref: "5894"}, true)
+	verdict, err := json.Marshal(map[string]any{
+		"decision": "escalate", "reasonCode": "unchanged-repass", "rationale": "runner: this repass produced no change", "synthesized": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := run.RecordArtifact("review-verdict.json", verdict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "escalate", Ref: &ref}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	check := func(name string, sources LocalSources) {
+		t.Helper()
+		service, err := NewLocal(sources, func() bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := service.ListRuns(ctx, RunListOptions{Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].Operator.Review == nil {
+			t.Fatalf("%s: runs = %+v, want one run with a review", name, page.Runs)
+		}
+		review := page.Runs[0].Operator.Review
+		if !review.Synthesized || review.Findings != nil {
+			t.Fatalf("%s: review = %+v, want synthesized with findings absent", name, review)
+		}
+	}
+	check("journal", LocalSources{Layout: layout, Definitions: testDefinitions()})
+
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	reader, err := journal.OpenRead(filepath.Join(layout.RunsDir(), "synthesized-review"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(ctx, projection); err != nil {
+		t.Fatal(err)
+	}
+	check("read model", LocalSources{Layout: layout, Definitions: testDefinitions(), ReadModel: store})
+}

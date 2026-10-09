@@ -81,7 +81,7 @@ func TestSweepStalledRunsCancelsWedgedLiveEngineRun(t *testing.T) {
 	t.Cleanup(writer.Close)
 
 	const runID = "wedged-engine-run"
-	if _, err := writer.Emit(context.Background(), liveOpenBatch(runID, "example", now.Add(-2*time.Hour))); err != nil {
+	if _, err := writer.Emit(context.Background(), liveOpenBatch(runID, "example", now.Add(-time.Hour))); err != nil {
 		t.Fatalf("emit opening batch: %v", err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), runID, journal.PhaseRunning)

@@ -1216,6 +1216,8 @@ type backlogClaimSession struct {
 	gaggle              string
 	purpose             string
 	leaseDuration       time.Duration
+	// now is the liveness clock for lease reconfirmation; nil is time.Now.
+	now                 func() time.Time
 	maxItems            int
 	nextClaimIndex      int
 	claimSetPrepared    bool
@@ -1504,6 +1506,11 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 	for index := start; index < len(session.claimed); {
 		item := session.claimed[index]
 		result, err := session.confirmProviderClaim(ctx, item)
+		if dropped, dropErr := session.dropLostLease(ctx, index, err); dropErr != nil {
+			return dropErr
+		} else if dropped {
+			continue
+		}
 		if err != nil {
 			session.recordCurrentClaimObservation(ctx, item, result, err)
 			return fmt.Errorf("%s: %w", item.ID, err)
@@ -1527,6 +1534,11 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		} else if retired {
 			retiredHolder := result.ClaimedBy
 			result, err = session.confirmProviderClaim(ctx, item)
+			if dropped, dropErr := session.dropLostLease(ctx, index, err); dropErr != nil {
+				return dropErr
+			} else if dropped {
+				continue
+			}
 			if err != nil {
 				session.recordCurrentClaimObservation(ctx, item, result, err)
 				return fmt.Errorf("%s: %w", item.ID, err)
@@ -1565,6 +1577,26 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
 	}
 	return nil
+}
+
+// dropLostLease stops this run from processing the claimed item at index when
+// its ledger lease was lost mid-confirmation. Releasing the ledger frees this
+// run's own lapsed entry; a lease now held by another run is untouched
+// because a non-holder release is a no-op.
+func (session *backlogClaimSession) dropLostLease(ctx context.Context, index int, err error) (bool, error) {
+	var lost *ledgerLeaseLostError
+	if !errors.As(err, &lost) {
+		return false, nil
+	}
+	item := session.claimed[index]
+	if releaseErr := session.releaseLedger(ctx, item); releaseErr != nil {
+		return false, fmt.Errorf("release lapsed ledger claim %s: %w", item.ID, releaseErr)
+	}
+	session.refusals = append(session.refusals, claimRefusal{itemID: lost.itemID, source: claimRefusalLedger})
+	session.forgetNewClaim(lost.itemID)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	pf(session.env.stderr, "warning: %v; stopped this run from processing it\n", err)
+	return true, nil
 }
 
 func mergeProviderConfirmedClaim(current, confirmed providers.WorkItem) providers.WorkItem {

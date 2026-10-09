@@ -926,7 +926,7 @@ func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.E
 // recurrence on PR #1818).
 //
 // Retrying the operation itself waits for exactly the condition asserted. Only
-// the "unknown workflow" stderr is retried: any other non-zero exit fails
+// the unknown-workflow refusal is retried: any other non-zero exit fails
 // immediately, so a genuine regression still surfaces rather than being spun on
 // until the deadline.
 func waitForRunnableWorkflow(t *testing.T, root, workflow string) string {
@@ -936,7 +936,7 @@ func waitForRunnableWorkflow(t *testing.T, root, workflow string) string {
 		if code == 0 {
 			return stdout, true
 		}
-		if !strings.Contains(stderr, "unknown workflow") {
+		if !isUnknownWorkflowRefusal(stderr) {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
 		return "", false
@@ -950,11 +950,17 @@ func waitForCompletedWorkflow(t *testing.T, root, workflow string) {
 		if code == 0 {
 			return struct{}{}, true
 		}
-		if !strings.Contains(stderr, "unknown workflow") {
+		if !isUnknownWorkflowRefusal(stderr) {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
 		return struct{}{}, false
 	})
+}
+
+// isUnknownWorkflowRefusal matches both the scheduler's dispatch-time refusal
+// and the daemon's acceptance-time workflow_not_found refusal (#5895).
+func isUnknownWorkflowRefusal(stderr string) bool {
+	return strings.Contains(stderr, "unknown workflow") || strings.Contains(stderr, "workflow_not_found")
 }
 
 func waitForDefinitionsReload(t *testing.T, address string, loadedAt time.Time) {

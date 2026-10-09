@@ -295,9 +295,11 @@ func (s *Scope) Reclaim() error {
 	if parent != s.root || !strings.HasPrefix(filepath.Base(dir), dirPrefix) {
 		return fmt.Errorf("ephemeraltmp: refusing to reclaim %q: not a directory this package created under %q", dir, s.root)
 	}
-	s.dir = ""
-	if err := os.RemoveAll(dir); err != nil {
+	if err := removeAll(dir); err != nil {
 		return fmt.Errorf("ephemeraltmp: reclaim %q: %w", dir, err)
 	}
+	s.dir = ""
 	return nil
 }
+
+var removeAll = os.RemoveAll

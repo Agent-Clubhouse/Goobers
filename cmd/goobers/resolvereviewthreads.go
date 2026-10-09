@@ -77,8 +77,10 @@ type reviewThreadPublication struct {
 	earlier []apiv1.ReviewThreadPublication
 	pass    string
 	reused  map[string]string
-	stdout  io.Writer
-	stderr  io.Writer
+	// ack is the feedback-ack marker every reply carries (#6918).
+	ack    string
+	stdout io.Writer
+	stderr io.Writer
 }
 
 func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
@@ -127,7 +129,7 @@ func newReviewThreadPublication(root string, stdout, stderr io.Writer) (*reviewT
 	p := &reviewThreadPublication{
 		root: root, runID: runID, pullID: brief.SelectedNumber, publishedHead: publishedHead,
 		snapshot: brief.FeedbackSnapshot, threads: threads, responses: responses, stdout: stdout, stderr: stderr,
-		prePublishHead: strings.TrimSpace(brief.GatherPRContext.HeadSHA),
+		prePublishHead: strings.TrimSpace(brief.GatherPRContext.HeadSHA), ack: remediationFeedbackAck(brief),
 	}
 	if brief.FeedbackSnapshot != nil {
 		p.prePublishHead = brief.FeedbackSnapshot.HeadSHA
@@ -367,7 +369,7 @@ func (p *reviewThreadPublication) listThreads(ctx context.Context, what string) 
 
 func (p *reviewThreadPublication) reply(ctx context.Context, response reviewThreadDisposition, entry *apiv1.ReviewThreadReceipt) (providers.PullRequestReviewThreads, int, bool) {
 	thread := p.threads[response.ThreadID]
-	body := renderReviewThreadReply(p.runID, p.pass, p.publishedHead, response)
+	body := withFeedbackAck(renderReviewThreadReply(p.runID, p.pass, p.publishedHead, response), p.ack)
 	if _, err := p.mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
 		Repository: p.repo, PullID: p.pullID, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
 	}); err != nil {

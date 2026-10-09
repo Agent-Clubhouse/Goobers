@@ -556,7 +556,8 @@ spec:
                     type: integer
                   maxRunDuration:
                     description: |-
-                      MaxRunDuration is the maximum total wall-clock age of a run. Empty
+                      MaxRunDuration is the maximum active execution time of a run: its age
+                      less time the host spent suspended and durable child waits. Empty
                       disables the total-duration limit. It uses Go duration syntax.
                     minLength: 1
                     type: string

@@ -481,6 +481,21 @@ func TestDuplicateDiffSkipsTheSecondReview(t *testing.T) {
 	if digest, _ := last["diffDigest"].(string); digest == "" {
 		t.Errorf("final gate.evaluated = %v, want the diff digest recorded", last)
 	}
+	// #5894: the engine's synthesized verdict carries the same explicit marker
+	// as the local runner's, with findings absent.
+	var lastVerdict string
+	for _, op := range proj.Ops {
+		if op.Kind == opAppend && op.Event != nil && op.Event.Type == journal.EventGateEvaluated {
+			lastVerdict = op.Event.Name
+		}
+	}
+	var synthesized map[string]any
+	if err := json.Unmarshal(laneArtifact(t, proj, lastVerdict), &synthesized); err != nil {
+		t.Fatalf("decode synthesized verdict: %v", err)
+	}
+	if _, hasFindings := synthesized["findings"]; synthesized["synthesized"] != true || hasFindings {
+		t.Errorf("synthesized verdict = %v, want synthesized=true with findings absent", synthesized)
+	}
 	// The diff was still read from the workspace on every evaluation — the
 	// dedup skips the REVIEWER, not the evidence.
 	if got := ws.diffCallCount("review"); got < 2 {

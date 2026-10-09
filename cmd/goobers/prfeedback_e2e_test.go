@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
@@ -26,7 +27,9 @@ type feedbackWorld struct {
 	addComment  func(body string)
 	editThread  func(body string)
 	replies     func() int
-	resolved    func() bool
+	// lastReply is the body of the newest reply this run posted.
+	lastReply func() string
+	resolved  func() bool
 	// arm injects a one-shot fault at a mutation boundary (#6131):
 	// "reply" / "resolve" fail before the provider applies the mutation,
 	// "reply-applied" / "resolve-applied" apply it and then fail, the way a
@@ -177,8 +180,14 @@ func newGitHubFeedbackWorld(t *testing.T) feedbackWorld {
 		},
 		editThread: func(body string) { fake.mu.Lock(); fake.rootBody = body; fake.mu.Unlock() },
 		replies:    func() int { fake.mu.Lock(); defer fake.mu.Unlock(); return len(fake.replies) },
-		resolved:   func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.resolved },
-		arm:        func(fault string) { fake.mu.Lock(); fake.fault = fault; fake.mu.Unlock() },
+		lastReply: func() string {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			body, _ := fake.replies[len(fake.replies)-1]["body"].(string)
+			return body
+		},
+		resolved: func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.resolved },
+		arm:      func(fault string) { fake.mu.Lock(); fake.fault = fault; fake.mu.Unlock() },
 		deleteOwnReplies: func() {
 			fake.mu.Lock()
 			defer fake.mu.Unlock()
@@ -269,6 +278,13 @@ func newADOFeedbackWorld(t *testing.T) feedbackWorld {
 			fake.mu.Lock()
 			defer fake.mu.Unlock()
 			return len(fake.threads[5].replies) - humanReplies
+		},
+		lastReply: func() string {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			replies := fake.threads[5].replies
+			body, _ := replies[len(replies)-1]["content"].(string)
+			return body
 		},
 		resolved: func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.threads[5].status == "fixed" },
 		arm:      func(fault string) { fake.mu.Lock(); fake.fault = fault; fake.mu.Unlock() },
@@ -522,6 +538,13 @@ func TestResolveReviewThreadsPublishesCurrentFeedbackAcrossProviders(t *testing.
 			}
 			if w.replies() != 1 || !w.resolved() {
 				t.Fatalf("replies = %d resolved = %v, want one reply and the thread resolved", w.replies(), w.resolved())
+			}
+			// #6918: the reply is bound to the snapshot it answers, so its
+			// frontier never reaches past the gathered feedback (the ADO
+			// fixture's newest comment; GitHub fixtures carry no timestamps).
+			snapshotNewest := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+			if frontier, bound := parseFeedbackAck(w.lastReply()); !bound || frontier.After(snapshotNewest) {
+				t.Fatalf("reply frontier = %v bound=%v, want a snapshot-bound frontier:\n%s", frontier, bound, w.lastReply())
 			}
 		})
 	}

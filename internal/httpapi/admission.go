@@ -58,9 +58,11 @@ type admissionController struct {
 	slots map[apicontract.CostClass]chan struct{}
 }
 
-func newAdmissionController() *admissionController {
-	slots := make(map[apicontract.CostClass]chan struct{}, len(classLimits))
-	for class, limit := range classLimits {
+// newAdmissionController builds a controller with its own slots for limits.
+// Each Router owns one, so admission is never shared between handlers.
+func newAdmissionController(limits map[apicontract.CostClass]int) *admissionController {
+	slots := make(map[apicontract.CostClass]chan struct{}, len(limits))
+	for class, limit := range limits {
 		slots[class] = make(chan struct{}, limit)
 	}
 	return &admissionController{slots: slots}

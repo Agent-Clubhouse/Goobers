@@ -706,6 +706,9 @@ var completenessOmissions = map[reflect.Type]map[string]string{
 	reflect.TypeOf(apiv1.OperatorMessageContent{}): {
 		"Text": "content permits exactly one variant; the complete event fixture exercises the bounded artifact-reference variant",
 	},
+	reflect.TypeOf(apiv1.Verdict{}): {
+		"Synthesized": "schema forbids findings on a synthesized verdict; TestSynthesizedVerdictSchema validates the synthesized variant",
+	},
 }
 
 func assertEveryJSONFieldPopulated(t *testing.T, value any) {

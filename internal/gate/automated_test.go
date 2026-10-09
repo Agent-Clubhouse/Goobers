@@ -525,6 +525,16 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeInfra,
 		},
 		{
+			// #5389: a stage command naming a revision the workcopy does not
+			// have fails identically for every diff.
+			name: "git unresolvable revision",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 128; stderr: fatal: ambiguous argument 'origin/main...HEAD': unknown revision or path not in the working tree."},
+			},
+			want: OutcomeInfra,
+		},
+		{
 			// Must NOT misclassify a genuine permission bug as the Windows
 			// lock condition: a bare denial with no lock-specific phrase, and
 			// none of the existing filesystem-errno group's required pairings

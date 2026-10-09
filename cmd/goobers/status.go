@@ -1377,6 +1377,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		printValidationIssues(stderr, report)
 		if errors.Is(err, instance.ErrInvalidConfig) {
 			pf(stderr, "error: config directory failed validation\n")
+			instance.WriteInvalidConfigScope(stderr, l.ConfigDir(), report)
 			return 1
 		}
 		pf(stderr, "error: %v\n", err)
@@ -1820,6 +1821,9 @@ func renderStatusReview(stdout io.Writer, review *readservice.OperatorReview) {
 		pf(stdout, "  review reason: %s\n", review.ReasonCode)
 	} else if review.LegacyFailAmbiguous || review.Verdict == string(apiv1.VerdictFail) {
 		pf(stdout, "  review reason: %s\n", legacyFailAmbiguous)
+	}
+	if review.Synthesized {
+		pln(stdout, "  review synthesized: runner-generated, reviewer did not run (findings absent)")
 	}
 }
 

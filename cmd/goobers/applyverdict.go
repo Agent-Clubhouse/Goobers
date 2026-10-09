@@ -76,7 +76,7 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 	case apiv1.VerdictPass:
 		return "goobers:merge-ready"
 	case apiv1.VerdictFail, apiv1.VerdictEscalate:
-		return "goobers:merge-escalated"
+		return remediationEscalatedLabel
 	default:
 		if sequencingOnly(findings) {
 			return blockedOnSiblingLabel
@@ -1666,7 +1666,7 @@ func publishADOPassVerdict(
 			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
 		}
 	}
-	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderADOVerdictThreadComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
 	pf(stdout, "approved PR #%d at %s via goobers/validation PR status and PR thread\n", selectedNumber, current.HeadSHA)
@@ -1787,7 +1787,7 @@ func publishADONonPassVerdict(
 			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
 		}
 	}
-	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderADOVerdictThreadComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
 	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, labels %v (cleared %v), and PR thread\n",
@@ -1917,6 +1917,14 @@ func renderVerdictComment(v apiv1.Verdict) string {
 		s += "\n\n" + payload
 	}
 	return s
+}
+
+// renderADOVerdictThreadComment renders the verdict for ADO's append-only PR
+// thread. Each pass posts a fresh comment the watcher sees, so it carries a
+// "none" feedback-ack frontier: a status projection acknowledges no human
+// feedback and cannot mask comments left during remediation (#6918).
+func renderADOVerdictThreadComment(v apiv1.Verdict) string {
+	return withFeedbackAck(renderVerdictComment(v), feedbackAckMarker(time.Time{}))
 }
 
 // verdictJSONPattern matches the machine-readable payload

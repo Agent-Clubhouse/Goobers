@@ -96,6 +96,52 @@ func TestReclaimAllPersistsCompleteSet(t *testing.T) {
 	}
 }
 
+func TestLiveRenewalKeepsLeaseIncarnation(t *testing.T) {
+	granted := time.Date(2026, 9, 7, 1, 12, 16, 0, time.UTC)
+	now := granted
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path, WithLedgerClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "128"}
+	if ok, _, err := ledger.ClaimScoped(key, "run-a", "curate", time.Hour); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	entry, _ := ledger.LookupScoped(key)
+
+	now = granted.Add(5 * time.Minute)
+	if ok, err := ledger.RenewEntry(entry, time.Hour); err != nil || !ok {
+		t.Fatalf("renew: %v %v", ok, err)
+	}
+	now = granted.Add(10 * time.Minute)
+	if ok, _, err := ledger.ReclaimAll([]ClaimEntry{entry}, "run-a", "curate", time.Hour); err != nil || !ok {
+		t.Fatalf("reclaim: %v %v", ok, err)
+	}
+
+	reopened, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := reopened.LookupScoped(key)
+	if !got.ClaimedAt.Equal(granted) || !got.RenewedAt.Equal(now) || !got.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("renewed lease = %+v, want claimedAt %s renewedAt %s", got, granted, now)
+	}
+	if history := reopened.HistorySnapshot(); len(history) != 1 || !history[0].ClaimedAt.Equal(granted) {
+		t.Fatalf("history rewrote the grant time: %+v", history)
+	}
+
+	// A re-grant after expiry is a new incarnation, not a renewal.
+	now = now.Add(2 * time.Hour)
+	if ok, _, err := ledger.ClaimScoped(key, "run-a", "curate", time.Hour); err != nil || !ok {
+		t.Fatalf("reacquire: %v %v", ok, err)
+	}
+	got, _ = ledger.LookupScoped(key)
+	if !got.ClaimedAt.Equal(now) || !got.RenewedAt.IsZero() {
+		t.Fatalf("expired lease carried its incarnation: %+v", got)
+	}
+}
+
 func TestClaimHistorySurvivesReleaseAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.json")
 	ledger, err := OpenClaimLedger(path)

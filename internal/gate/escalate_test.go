@@ -158,7 +158,7 @@ func TestPostRunCommentReconcilesMarkerWithDifferentVisibleText(t *testing.T) {
 
 func TestUpsertFailureCommentCreatesWhenNoneExists(t *testing.T) {
 	poster := &fakeCommenter{}
-	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 1, "implement", "run-1", "http://127.0.0.1:8080/#/run/run-1"); err != nil {
+	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 1, "implement", "run-1", "http://127.0.0.1:8080/#/run/run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if poster.calls != 1 {
@@ -181,11 +181,11 @@ func TestUpsertFailureCommentCreatesWhenNoneExists(t *testing.T) {
 func TestUpsertFailureCommentEditsExisting(t *testing.T) {
 	poster := &fakeCommenter{
 		comments: []providers.Comment{
-			{ID: "42", Body: failureStreakBody(1, "implement", "run-old", "http://127.0.0.1:8080/#/run/run-old")},
+			{ID: "42", Body: failureStreakBody(1, "implement", "run-old", "http://127.0.0.1:8080/#/run/run-old", failurePark{})},
 		},
 	}
 
-	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 2, "implement", "run-new", "http://127.0.0.1:8080/#/run/run-new"); err != nil {
+	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 2, "implement", "run-new", "http://127.0.0.1:8080/#/run/run-new", nil); err != nil {
 		t.Fatal(err)
 	}
 	if poster.calls != 0 {
@@ -203,7 +203,7 @@ func TestUpsertFailureCommentFallsBackWhenEditingUnsupported(t *testing.T) {
 	poster := &fakeCommenter{
 		updateErr: errors.New("comment editing unsupported"),
 		comments: []providers.Comment{
-			{ID: "42", Body: failureStreakBody(1, "", "run-1", "http://run-1")},
+			{ID: "42", Body: failureStreakBody(1, "", "run-1", "http://run-1", failurePark{})},
 		},
 	}
 	latestComment := func() string { return poster.comments[len(poster.comments)-1].Body }
@@ -211,7 +211,7 @@ func TestUpsertFailureCommentFallsBackWhenEditingUnsupported(t *testing.T) {
 		t.Fatalf("latest comment before updates = %q, want data-count=\"1\"", latestComment())
 	}
 	for want := 2; want <= 3; want++ {
-		if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Provider: providers.ProviderADO, Name: "r"}, "1", want, "", fmt.Sprintf("run-%d", want), "http://run"); err != nil {
+		if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Provider: providers.ProviderADO, Name: "r"}, "1", want, "", fmt.Sprintf("run-%d", want), "http://run", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -221,10 +221,106 @@ func TestUpsertFailureCommentFallsBackWhenEditingUnsupported(t *testing.T) {
 	}
 }
 
+// labeledCommenter is a fakeCommenter that also implements WorkItemReader.
+type labeledCommenter struct {
+	fakeCommenter
+	labels  []string
+	readErr error
+}
+
+func (f *labeledCommenter) GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error) {
+	if f.readErr != nil {
+		return providers.WorkItem{}, f.readErr
+	}
+	return providers.WorkItem{Labels: f.labels}, nil
+}
+
+// TestUpsertFailureCommentNamesActualParkLabel covers #5430: the retry
+// instruction names the human-park label that actually holds the item, never
+// a fixed needs-human, and hedges instead of guessing when labels are unknown.
+func TestUpsertFailureCommentNamesActualParkLabel(t *testing.T) {
+	cases := []struct {
+		name     string
+		poster   Commenter
+		applying []string
+		want     string
+		absent   []string
+	}{
+		{
+			name:   "merge-review escalation names merge-escalated",
+			poster: &labeledCommenter{labels: []string{"goobers:merge-escalated"}},
+			want:   "Remove `goobers:merge-escalated` and re-approve to retry.",
+			absent: []string{providers.LabelNeedsHuman},
+		},
+		{
+			name:     "circuit breaker park on an escalated PR names both",
+			poster:   &labeledCommenter{labels: []string{"goobers:merge-escalated"}},
+			applying: []string{providers.LabelNeedsHuman},
+			want:     "Remove `goobers:needs-human` and `goobers:merge-escalated` and re-approve to retry.",
+		},
+		{
+			name:     "circuit breaker park names needs-human",
+			poster:   &labeledCommenter{labels: []string{providers.LabelReady}},
+			applying: []string{providers.LabelNeedsHuman},
+			want:     "Remove `goobers:needs-human` and re-approve to retry.",
+			absent:   []string{providers.LabelMergeEscalated},
+		},
+		{
+			name:   "item label casing is preserved",
+			poster: &labeledCommenter{labels: []string{"Goobers:Needs-Human"}},
+			want:   "Remove `Goobers:Needs-Human` and re-approve to retry.",
+		},
+		{
+			name:   "unparked item needs no label removal",
+			poster: &labeledCommenter{labels: []string{providers.LabelReady, providers.LabelNeedsRemediation}},
+			want:   "No human park label (`goobers:needs-human` and `goobers:merge-escalated`) is on this item, so no label removal is needed to retry.",
+		},
+		{
+			name:   "unreadable labels hedge instead of naming one",
+			poster: &labeledCommenter{readErr: errors.New("boom")},
+			want:   "If a human park label (`goobers:needs-human` and `goobers:merge-escalated`) is on this item, remove it and re-approve to retry.",
+		},
+		{
+			name:   "poster without a reader hedges",
+			poster: &fakeCommenter{},
+			want:   "If a human park label",
+		},
+		{
+			name:     "unreadable labels keep the applied park and hedge the rest",
+			poster:   &labeledCommenter{readErr: errors.New("boom")},
+			applying: []string{providers.LabelNeedsHuman},
+			want:     "Remove `goobers:needs-human` (and any other human park label on this item: `goobers:needs-human` and `goobers:merge-escalated`) and re-approve to retry.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := UpsertFailureComment(context.Background(), tc.poster, providers.RepositoryRef{Name: "r"}, "7", 1, "park-review", "run-1", "http://run-1", tc.applying); err != nil {
+				t.Fatal(err)
+			}
+			comments, err := tc.poster.ListComments(context.Background(), providers.RepositoryRef{Name: "r"}, "7")
+			if err != nil || len(comments) != 1 {
+				t.Fatalf("comments = %v, %v; want one", comments, err)
+			}
+			body := comments[0].Body
+			if !strings.Contains(body, tc.want) {
+				t.Fatalf("comment = %q, want it to contain %q", body, tc.want)
+			}
+			for _, label := range tc.absent {
+				if strings.Contains(body, label) {
+					t.Fatalf("comment = %q, must not name %q", body, label)
+				}
+			}
+			if got, ok := ParseFailureStreakCount(body); !ok || got != 1 {
+				t.Fatalf("ParseFailureStreakCount = %d, %v; want 1, true", got, ok)
+			}
+		})
+	}
+}
+
 func TestResetFailureCommentResetsExistingMarker(t *testing.T) {
 	poster := &fakeCommenter{
 		comments: []providers.Comment{
-			{ID: "42", Body: failureStreakBody(3, "", "run-fail", "http://run-fail")},
+			{ID: "42", Body: failureStreakBody(3, "", "run-fail", "http://run-fail", failurePark{})},
 		},
 	}
 	if err := ResetFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", "run-ok", "http://run-ok"); err != nil {
@@ -255,7 +351,7 @@ func TestResetFailureCommentNoopsWithoutMarker(t *testing.T) {
 // extracting the legacy count from a real marker, and refusing to fabricate a
 // count from anything else.
 func TestParseFailureStreakCount(t *testing.T) {
-	if got, ok := ParseFailureStreakCount(failureStreakBody(5, "implement", "run-1", "http://run-1")); !ok || got != 5 {
+	if got, ok := ParseFailureStreakCount(failureStreakBody(5, "implement", "run-1", "http://run-1", failurePark{})); !ok || got != 5 {
 		t.Fatalf("ParseFailureStreakCount(real marker) = %d, %v; want 5, true", got, ok)
 	}
 	for _, body := range []string{
