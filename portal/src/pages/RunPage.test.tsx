@@ -36,6 +36,18 @@ afterEach(() => {
 });
 
 describe("run detail", () => {
+  it("shows recorded child waits on the run page and navigates to the child", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!detail) throw new Error("Expected run fixture");
+    detail.childActivity = { status: "recorded", parked: true, waits: [{ runId: "01JZ400FAILED", stage: "implement", branch: 0, action: "merge", since: "2026-10-09T15:00:00Z", sequence: 7 }] };
+    renderRun(detail.id, new FixtureDaemonClient(fixtures));
+    expect(await screen.findByRole("heading", { name: "Child workflows" })).toBeInTheDocument();
+    expect(screen.getByText(/Awaiting merge of child changes/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open child 01JZ400FAILED" }));
+    expect(window.location.hash).toBe("#/run/01JZ400FAILED");
+  });
+
   it.each(canonicalRuns)("deep-links %s with canonical %s status", async (runId, status, heading) => {
     renderRun(runId);
 
