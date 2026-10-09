@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -333,6 +334,7 @@ func verifyParentRetirementStartup(t *testing.T, reader *journal.Reader, restore
 	if got, err := os.ReadFile(filepath.Join(checkout.Path, "source.txt")); err != nil || string(got) != "startup dirty\n" {
 		t.Fatal("startup archive lost latest working state", string(got), err)
 	}
+	verifyParentOverflowCleanup(t, reader, restorer, recovered, checkout)
 }
 
 func verifyRetiredParentCleanupRefusals(t *testing.T, reader *journal.Reader, restorer parentArchiveRestorer, writer *journal.Run, archive runner.ParentWorkspaceArchive, checkout *worktree.Worktree, record recovery.Record) {
@@ -412,4 +414,26 @@ func latestParentArchive(t *testing.T, reader *journal.Reader) (runner.ParentWor
 	}
 	t.Fatal("retirement missing")
 	return runner.ParentWorkspaceArchive{}, 0
+}
+
+func parentArchiveInventoryPath(ctx context.Context, layout instance.Layout, record recovery.Record) (string, error) {
+	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), recovery.MaxInventoryEntries)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if entry.Record.Ref != record.Ref || entry.Record.RepositoryKey != record.RepositoryKey {
+			continue
+		}
+		current := entry.Record
+		if current.RetainUntil.Before(record.RetainUntil) || !time.Now().Before(current.RetainUntil) {
+			return "", errors.New("parent archive retention expired or moved backwards")
+		}
+		current.RetainUntil = record.RetainUntil
+		if current != record {
+			return "", errors.New("parent archive inventory record changed")
+		}
+		return filepath.Join(filepath.Dir(entry.RecordPath), recovery.BundleFileName), nil
+	}
+	return "", errors.New("parent archive is unavailable in retained inventory")
 }

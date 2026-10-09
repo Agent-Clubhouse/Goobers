@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -39,20 +40,13 @@ func retiredParentCleanup(ctx context.Context, layout instance.Layout, cfg *inst
 	if err := verifyParentArchiveChildren(ctx, layout, contract.Identity); err != nil {
 		return true, err
 	}
-	path, err := parentArchiveInventoryPath(ctx, layout, record)
-	if err != nil {
-		return true, err
-	}
 	repository, ok := manager.LinkedWorktreeRepository(target.Path)
 	if !ok {
 		return true, errors.New("retired parent cleanup requires its managed mirror")
 	}
 	policy, _ := resolveRecoveryPolicy(layout, cfg)
 	maxBytes := policy.MaxArchiveBytesEffective()
-	if err := recovery.ImportSnapshotBundle(ctx, repository, path, record, maxBytes); err != nil {
-		return true, err
-	}
-	state, err := recovery.ReadRetainedParentState(ctx, repository, record)
+	state, err := recovery.LoadRetainedParentState(ctx, repository, filepath.Join(layout.Root, "recovery"), recoveryOverflowRoot(layout), record, maxBytes)
 	if err != nil {
 		return true, err
 	}

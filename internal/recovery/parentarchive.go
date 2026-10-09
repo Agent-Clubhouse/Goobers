@@ -161,7 +161,7 @@ func parentArchiveWorkingTree(ctx context.Context, repository string, snapshot C
 // delivered through the filtered worker workspace transport.
 func ReadRetainedParentState(ctx context.Context, repository string, record Record) (RetainedParentState, error) {
 	var result RetainedParentState
-	if err := record.validateRestorable(); err != nil {
+	if err := record.ValidateRestorable(); err != nil {
 		return result, err
 	}
 	var metadata bytes.Buffer

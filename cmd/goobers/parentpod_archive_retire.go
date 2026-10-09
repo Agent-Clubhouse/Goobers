@@ -61,7 +61,7 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 }
 
 func (r parentArchiveRestorer) captureRetirement(ctx context.Context, reader *journal.Reader, rec runner.OwnedJournalRecorder, candidate runner.ParentRetirementCandidate, captureAt time.Time) error {
-	wt, key, err := r.retirementWorkspace(ctx, reader, candidate)
+	wt, key, url, err := r.retirementWorkspace(ctx, reader, candidate)
 	if err != nil {
 		return err
 	}
@@ -69,6 +69,18 @@ func (r parentArchiveRestorer) captureRetirement(ctx context.Context, reader *jo
 	if err != nil {
 		return err
 	}
+	found, err := r.worktrees.WithExistingMirror(ctx, url, func(string) error {
+		return r.captureHeldRetirement(ctx, reader, rec, candidate, captureAt, wt, key, target)
+	})
+	if err == nil && !found {
+		err = errors.New("parent retirement mirror unavailable")
+	}
+	return err
+}
+
+// recoveryCleanupRequest's capacity eviction callback requires this managed
+// repository lock, just like an ordinary cleanup guard.
+func (r parentArchiveRestorer) captureHeldRetirement(ctx context.Context, reader *journal.Reader, rec runner.OwnedJournalRecorder, candidate runner.ParentRetirementCandidate, captureAt time.Time, wt *worktree.Worktree, key string, target worktree.CleanupTarget) error {
 	policy, err := parentCleanupPolicy(ctx, reader, target, key)
 	if err != nil {
 		return err
@@ -90,9 +102,9 @@ func (r parentArchiveRestorer) captureRetirement(ctx context.Context, reader *jo
 	if err != nil {
 		return err
 	}
-	// The current restore path requires an independently verified bundle.
-	// Ref-only overflow preserves data but cannot yet release a parent hold.
-	if err := record.Validate(); err != nil {
+	// Retain acknowledged either a verified bundle or the existing durable
+	// mirror pin tier. Cleanup revalidates that exact retention source.
+	if err := record.ValidateRestorable(); err != nil {
 		return err
 	}
 	if err := recovery.VerifyRetainedParentCheckout(ctx, wt.Path, record, request.MaxArchiveBytes); err != nil {
@@ -112,32 +124,32 @@ func (r parentArchiveRestorer) captureRetirement(ctx context.Context, reader *jo
 	return runner.RecordParentArchiveRetirement(rec, candidate.Workspace.Custody.Workspace.Branch, ref)
 }
 
-func (r parentArchiveRestorer) retirementWorkspace(ctx context.Context, reader *journal.Reader, candidate runner.ParentRetirementCandidate) (*worktree.Worktree, string, error) {
+func (r parentArchiveRestorer) retirementWorkspace(ctx context.Context, reader *journal.Reader, candidate runner.ParentRetirementCandidate) (*worktree.Worktree, string, string, error) {
 	value := candidate.Workspace
 	data, err := reader.ArtifactBytesBounded(value.Output, childpod.MaxContractBytes)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	var output childpod.Output
 	if json.Unmarshal(data, &output) != nil || output.Workspace == nil || output.ContractDigest != value.ContractDigest {
-		return nil, "", errors.New("parent retirement output differs from contribution")
+		return nil, "", "", errors.New("parent retirement output differs from contribution")
 	}
 	key := output.Workspace.Snapshot.Record.RepositoryKey
 	contract, _, err := readParentArchiveOutput(ctx, reader, value.Output, key)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if contract.ParentBranch != candidate.Branch || !reflect.DeepEqual(contract.ParentOrigin, value.Custody.Origin) {
-		return nil, "", errors.New("parent retirement origin changed")
+		return nil, "", "", errors.New("parent retirement origin changed")
 	}
 	project, err := recoveryConfiguredProject(r.config, key)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	url, err := r.cloneURL(project)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	wt, err := r.worktrees.AdoptHeldStage(ctx, url, value.Custody.Workspace)
-	return wt, key, err
+	return wt, key, url, err
 }

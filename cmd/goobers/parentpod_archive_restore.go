@@ -6,7 +6,6 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childpod"
@@ -59,17 +58,10 @@ func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJour
 	}
 	policy, _ := resolveRecoveryPolicy(r.layout, r.config)
 	maxBytes := policy.MaxArchiveBytesEffective()
-	path, err := parentArchiveInventoryPath(ctx, r.layout, record)
-	if err != nil {
-		return err
-	}
 	var state recovery.RetainedParentState
 	if err := r.worktrees.WithRecoveryMirror(ctx, url, func(repository string) error {
-		if err := recovery.ImportSnapshotBundle(ctx, repository, path, record, maxBytes); err != nil {
-			return err
-		}
 		var err error
-		state, err = recovery.ReadRetainedParentState(ctx, repository, record)
+		state, err = recovery.LoadRetainedParentState(ctx, repository, filepath.Join(r.layout.Root, "recovery"), recoveryOverflowRoot(r.layout), record, maxBytes)
 		if err != nil {
 			return err
 		}
@@ -118,7 +110,7 @@ func (r parentArchiveRestorer) authorize(ctx context.Context, reader *journal.Re
 	if err := json.Unmarshal(data, &record); err != nil {
 		return record, empty, err
 	}
-	if err := record.Validate(); err != nil {
+	if err := record.ValidateRestorable(); err != nil {
 		return record, empty, err
 	}
 	if record.RunID != id.RunID {
@@ -143,26 +135,4 @@ func (r parentArchiveRestorer) authorize(ctx context.Context, reader *journal.Re
 		return record, empty, errors.New("parent archive contract changed")
 	}
 	return record, contract, nil
-}
-
-func parentArchiveInventoryPath(ctx context.Context, layout instance.Layout, record recovery.Record) (string, error) {
-	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), recovery.MaxInventoryEntries)
-	if err != nil {
-		return "", err
-	}
-	for _, entry := range entries {
-		if entry.Record.Ref != record.Ref || entry.Record.RepositoryKey != record.RepositoryKey {
-			continue
-		}
-		current := entry.Record
-		if current.RetainUntil.Before(record.RetainUntil) || !time.Now().Before(current.RetainUntil) {
-			return "", errors.New("parent archive retention expired or moved backwards")
-		}
-		current.RetainUntil = record.RetainUntil
-		if current != record {
-			return "", errors.New("parent archive inventory record changed")
-		}
-		return filepath.Join(filepath.Dir(entry.RecordPath), recovery.BundleFileName), nil
-	}
-	return "", errors.New("parent archive is unavailable in retained inventory")
 }
