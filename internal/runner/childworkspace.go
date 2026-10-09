@@ -102,15 +102,11 @@ func (r *Runner) validateChildWorkspacePlan(in StartInput) error {
 	// stage adopts the same retained child branch, so no checkout derivation
 	// is needed to observe an earlier producer commit.
 	for _, task := range in.Machine.Def.Spec.Tasks {
-		if task.EffectiveWorkspace() == apiv1.WorkspaceRepoReadOnly || (task.Run != nil && task.Run.SyncBase) {
-			return fmt.Errorf("runner: child task %q requires unsupported readonly checkout or base synchronization", task.Name)
+		if task.Run != nil && task.Run.SyncBase {
+			return fmt.Errorf("runner: child task %q requires unsupported base synchronization", task.Name)
 		}
 	}
-	for _, gate := range in.Machine.Def.Spec.Gates {
-		if gate.EffectiveWorkspace() == apiv1.WorkspaceRepoReadOnly {
-			return fmt.Errorf("runner: child gate %q requires unsupported readonly checkout derivation", gate.Name)
-		}
-	}
+
 	return nil
 }
 
@@ -249,7 +245,11 @@ func (r *Runner) restoreExecutionWorkspace(ctx context.Context, reader *journal.
 	return in, nil
 }
 
-func (r *Runner) createChildStageWorkspace(ctx context.Context, in StartInput, mode apiv1.WorkspaceMode, syncBase bool, branch string) (*stageWorkspace, error) {
+func (r *Runner) createChildStageWorkspace(ctx context.Context, in StartInput, stage string, mode apiv1.WorkspaceMode, syncBase bool, branch string) (*stageWorkspace, error) {
+	if mode == apiv1.WorkspaceRepoReadOnly {
+		return r.createChildReadOnlyStage(ctx, in, stage, syncBase, branch)
+	}
+
 	if in.childWorkspace == nil || mode != apiv1.WorkspaceRepo || syncBase || in.workspaceRevision != nil {
 		return nil, fmt.Errorf("runner: child workspace cannot change its admitted repository, mode or base")
 	}
