@@ -651,6 +651,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
 		ChildWorkflows:           childAccess,
+		PublicationSchemas:       publicationSchemasFor(ctx, env),
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {

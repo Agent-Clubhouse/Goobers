@@ -101,6 +101,10 @@ type RunRequest struct {
 	// ChildWorkflows is trusted launcher access, never model/config-authored policy.
 	// It is excluded from generic request serialization and rendered prompts.
 	ChildWorkflows *mcpio.ChildWorkflowAccess `json:"-"`
+	// PublicationSchemas are the stage's own schema-bound artifact slots, from
+	// trusted workflow configuration. goobers-io's publish_output rejects a
+	// payload that does not satisfy them (#6868).
+	PublicationSchemas []mcpio.PublicationSchema `json:"-"`
 	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
 	MCPReadinessSink func(MCPReadiness) error
 	// Workspace is the working directory the harness runs in — normally
