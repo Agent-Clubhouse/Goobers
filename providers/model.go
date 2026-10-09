@@ -1318,6 +1318,14 @@ type ListWorkItemsRequest struct {
 	// PageInfo receives raw-candidate pagination metadata. Providers populate it
 	// before applying exact predicates or dropping non-work-item API records.
 	PageInfo *ListWorkItemsPageInfo `json:"-"`
+	// MaxCandidates, when positive on a caller-paged read (PageInfo or
+	// Cursor set), is a hard raw-candidate budget for the call: the provider
+	// inspects at most this many candidates, overriding any oversized window
+	// it would otherwise read for post-fetch filters, so
+	// PageInfo.CandidateCount never exceeds it. A window the budget cuts short
+	// reports HasNext with a cursor resuming after the last inspected
+	// candidate.
+	MaxCandidates int `json:"-"`
 	// OldestFirst, when set, asks the provider to return items in creation
 	// order (oldest filed first) rather than its own default. This matters
 	// whenever Limit truncates the result set: a FIFO consumer (#532) must

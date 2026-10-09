@@ -55,8 +55,10 @@ const backlogDedupeHelp = "Usage: goobers backlog-dedupe [path]\n\n" +
 	"compareState is open (default) or all (open plus closed history);\n" +
 	"compareLabels lists labels every comparison item must carry, sent to the\n" +
 	"provider query; compareFieldPredicate filters retrieved items by native\n" +
-	"fields; compareScanLimit (default 10000, at most 50000) bounds the raw\n" +
-	"candidates read. Claimed items must fall inside the comparison scope to be\n" +
+	"fields exactly (Azure DevOps also narrows its query by required exact\n" +
+	"System.AreaPath and System.WorkItemType equalities); compareScanLimit\n" +
+	"(default 10000, at most 50000) bounds the raw candidates read and is never\n" +
+	"exceeded. Claimed items must fall inside the comparison scope to be\n" +
 	"compared. The artifact's input section reports whether collection was\n" +
 	"complete, why it stopped, the claimed items not compared, and that pages\n" +
 	"are not an atomic snapshot. An incomplete input is a usable but partial\n" +

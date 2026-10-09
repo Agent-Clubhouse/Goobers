@@ -481,8 +481,10 @@ Comparison scope inputs, independent of how the claimed work was selected:
 compareState is open (default) or all (open plus closed history);
 compareLabels lists labels every comparison item must carry, sent to the
 provider query; compareFieldPredicate filters retrieved items by native
-fields; compareScanLimit (default 10000, at most 50000) bounds the raw
-candidates read. Claimed items must fall inside the comparison scope to be
+fields exactly (Azure DevOps also narrows its query by required exact
+System.AreaPath and System.WorkItemType equalities); compareScanLimit
+(default 10000, at most 50000) bounds the raw candidates read and is never
+exceeded. Claimed items must fall inside the comparison scope to be
 compared. The artifact's input section reports whether collection was
 complete, why it stopped, the claimed items not compared, and that pages
 are not an atomic snapshot. An incomplete input is a usable but partial

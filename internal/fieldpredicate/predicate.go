@@ -26,7 +26,16 @@ type Predicate struct {
 	// stringOperands are referenced fields used as the receiver of a string
 	// operation; they must hold string values at evaluation time.
 	stringOperands map[string]struct{}
-	programs       []cel.Program
+	// required are string equalities every match must satisfy: top-level
+	// conjuncts of each compiled expression.
+	required []FieldEquality
+	programs []cel.Program
+}
+
+// FieldEquality is an exact fields["Field"] == "Value" string comparison.
+type FieldEquality struct {
+	Field string
+	Value string
 }
 
 // String operations a predicate may apply to a field with a string constant
@@ -105,6 +114,7 @@ func Compile(expression string) (*Predicate, error) {
 	if err := predicate.validateExpression(checked.GetExpr()); err != nil {
 		return nil, err
 	}
+	predicate.required = requiredStringEqualities(checked.GetExpr(), nil)
 	program, err := env.Program(ast)
 	if err != nil {
 		return nil, fmt.Errorf("build CEL program: %w", err)
@@ -128,6 +138,7 @@ func CompileConjunction(expressions ...string) (*Predicate, error) {
 		for name := range predicate.stringOperands {
 			combined.stringOperands[name] = struct{}{}
 		}
+		combined.required = append(combined.required, predicate.required...)
 		combined.programs = append(combined.programs, predicate.programs...)
 	}
 	return combined, nil
@@ -176,6 +187,17 @@ func (p *Predicate) ReferencedFields() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// RequiredStringEqualities returns the fields["name"] == "constant" string
+// comparisons every matching item must satisfy: those joined to the rest of
+// each expression only by top-level &&. A provider may push them into its
+// query to narrow retrieval; Matches remains the exact check.
+func (p *Predicate) RequiredStringEqualities() []FieldEquality {
+	if p == nil {
+		return nil
+	}
+	return append([]FieldEquality(nil), p.required...)
 }
 
 // Matches evaluates the predicate. Every referenced field must be available
@@ -277,6 +299,28 @@ func (p *Predicate) validateStringOperation(call *exprpb.Expr_Call) error {
 	p.referenced[name] = struct{}{}
 	p.stringOperands[name] = struct{}{}
 	return nil
+}
+
+func requiredStringEqualities(expr *exprpb.Expr, out []FieldEquality) []FieldEquality {
+	call := expr.GetCallExpr()
+	if call == nil || call.Target != nil || len(call.Args) != 2 {
+		return out
+	}
+	switch call.Function {
+	case operators.LogicalAnd:
+		return requiredStringEqualities(call.Args[1], requiredStringEqualities(call.Args[0], out))
+	case operators.Equals:
+		field, constant := call.Args[0], call.Args[1]
+		if _, ok := fieldAccess(field); !ok {
+			field, constant = constant, field
+		}
+		name, ok := fieldAccess(field)
+		value, isString := constant.GetConstExpr().GetConstantKind().(*exprpb.Constant_StringValue)
+		if ok && isString {
+			out = append(out, FieldEquality{Field: name, Value: value.StringValue})
+		}
+	}
+	return out
 }
 
 func fieldComparison(left, right *exprpb.Expr) (string, bool, bool) {

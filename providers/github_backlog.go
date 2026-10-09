@@ -105,6 +105,10 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		if skipped > 0 {
 			issues = issues[min(skipped, fetched):]
 		}
+		budgetCapped := req.MaxCandidates > 0 && len(issues) > req.MaxCandidates
+		if budgetCapped {
+			issues = issues[:req.MaxCandidates]
+		}
 		items, scanned, err := issuesToWorkItems(issues, req)
 		if err != nil {
 			return nil, err
@@ -123,7 +127,7 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 			scannedEverything := scanned == len(issues)
 			fetchWasCapped := fetched == pageSize
 			req.PageInfo.CandidateCount = len(issues)
-			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped
+			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped || budgetCapped
 			req.PageInfo.NextCursor = ""
 			if req.PageInfo.HasNext {
 				req.PageInfo.NextCursor = strconv.Itoa(offset + scanned)

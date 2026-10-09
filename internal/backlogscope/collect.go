@@ -52,8 +52,11 @@ type Scope struct {
 	// ListWorkItemsRequest.Labels, which providers narrow server-side (Azure
 	// DevOps WIQL [System.Tags] CONTAINS, GitHub/Gitea label filters).
 	Labels []string
-	// FieldPredicate is applied by the provider after retrieval; no provider
-	// pushes arbitrary native-field predicates into its query.
+	// FieldPredicate is applied exactly to every retrieved item. Azure
+	// DevOps also narrows its query by the predicate's required exact
+	// area-path and work-item-type equalities (providers.
+	// ADOQueryFieldEqualities); other native-field conditions are filtered
+	// only after retrieval.
 	FieldPredicate *fieldpredicate.Predicate
 	// State is StateOpen or StateAll.
 	State string
@@ -95,6 +98,9 @@ func (c Coverage) Complete() bool { return c.Status == StatusComplete }
 
 // Collect reads scope page by page until the provider reports no next page,
 // maxCandidates raw candidates have been examined, or ctx's deadline passes.
+// Each page request carries the remaining budget as MaxCandidates, so the
+// examined count never exceeds maxCandidates; a provider that overshoots it
+// fails the collection.
 // A provider error before the deadline is returned as an error: a failed read
 // is never reported as a partial collection. maxCandidates must be positive.
 func Collect(ctx context.Context, provider Lister, scope Scope, maxCandidates int) ([]providers.WorkItem, Coverage, error) {
@@ -107,15 +113,19 @@ func Collect(ctx context.Context, provider Lister, scope Scope, maxCandidates in
 	cursor := ""
 	for {
 		pageInfo := &providers.ListWorkItemsPageInfo{}
+		remaining := maxCandidates - coverage.ExaminedCandidates
 		page, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 			Repository:     scope.Repository,
 			Labels:         scope.Labels,
 			FieldPredicate: scope.FieldPredicate,
 			State:          scope.State,
-			Limit:          min(PageSize, maxCandidates-coverage.ExaminedCandidates),
-			Cursor:         cursor,
-			PageInfo:       pageInfo,
-			OldestFirst:    true,
+			// Limit stays constant so page-numbered provider cursors keep
+			// their meaning; MaxCandidates is the raw budget left.
+			Limit:         PageSize,
+			MaxCandidates: remaining,
+			Cursor:        cursor,
+			PageInfo:      pageInfo,
+			OldestFirst:   true,
 		})
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -124,8 +134,9 @@ func Collect(ctx context.Context, provider Lister, scope Scope, maxCandidates in
 			}
 			return nil, coverage, err
 		}
-		if pageInfo.CandidateCount < 0 {
-			return nil, coverage, fmt.Errorf("provider returned invalid work-item candidate count %d", pageInfo.CandidateCount)
+		if pageInfo.CandidateCount < 0 || pageInfo.CandidateCount > remaining {
+			return nil, coverage, fmt.Errorf("provider returned work-item candidate count %d outside the remaining scan budget %d",
+				pageInfo.CandidateCount, remaining)
 		}
 		coverage.Pages++
 		coverage.ExaminedCandidates += pageInfo.CandidateCount
@@ -201,10 +212,11 @@ type ScopeReport struct {
 	State          string   `json:"state"`
 	Labels         []string `json:"labels"`
 	FieldPredicate string   `json:"fieldPredicate,omitempty"`
-	// ProviderNarrowed names the scope parts sent to the provider query.
+	// ProviderNarrowed names the scope parts sent to the provider query;
+	// "fieldPredicate:<field>" is a required exact equality on that field.
 	ProviderNarrowed []string `json:"providerNarrowed"`
-	// FilteredAfterRetrieval names the scope parts applied to retrieved
-	// items rather than pushed into the provider query.
+	// FilteredAfterRetrieval names the scope parts applied exactly to
+	// retrieved items, including any also narrowed by the provider query.
 	FilteredAfterRetrieval []string `json:"filteredAfterRetrieval"`
 }
 
@@ -230,6 +242,11 @@ func NewReport(scope Scope, fieldExpression string, coverage Coverage, items []p
 	}
 	if len(scope.Labels) > 0 {
 		scopeReport.ProviderNarrowed = append(scopeReport.ProviderNarrowed, "labels")
+	}
+	if scope.Repository.Provider == providers.ProviderADO {
+		for _, equality := range providers.ADOQueryFieldEqualities(scope.FieldPredicate) {
+			scopeReport.ProviderNarrowed = append(scopeReport.ProviderNarrowed, "fieldPredicate:"+equality.Field)
+		}
 	}
 	if !scope.FieldPredicate.IsZero() {
 		scopeReport.FilteredAfterRetrieval = append(scopeReport.FilteredAfterRetrieval, "fieldPredicate")

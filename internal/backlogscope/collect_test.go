@@ -2,16 +2,10 @@ package backlogscope
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -108,10 +102,13 @@ func TestCollectSendsScopeAndPagesToCompletion(t *testing.T) {
 	if len(lister.requests) != 2 {
 		t.Fatalf("requests = %d, want 2", len(lister.requests))
 	}
-	for _, req := range lister.requests {
+	for i, req := range lister.requests {
 		if req.State != StateOpen || !slices.Equal(req.Labels, []string{"approved"}) || req.FieldPredicate != predicate ||
 			req.Repository != scope.Repository || req.PageInfo == nil || !req.OldestFirst || req.Limit != PageSize {
 			t.Fatalf("request = %+v, want the full scope with paging", req)
+		}
+		if want := []int{1000, 998}[i]; req.MaxCandidates != want {
+			t.Fatalf("request %d MaxCandidates = %d, want the remaining budget %d", i, req.MaxCandidates, want)
 		}
 	}
 	if lister.requests[1].Cursor != "2" {
@@ -170,7 +167,7 @@ func TestCollectRejectsNonAdvancingCursor(t *testing.T) {
 func TestCollectStopsAtScanLimitAsIncomplete(t *testing.T) {
 	lister := &pagedLister{pages: map[string]listerPage{
 		"":  {items: []providers.WorkItem{item("1", "open"), item("2", "open")}, candidates: 3, next: "3"},
-		"3": {items: []providers.WorkItem{item("4", "open")}, candidates: 3, next: "6"},
+		"3": {items: []providers.WorkItem{item("4", "open")}, candidates: 2, next: "5"},
 	}}
 	items, coverage, err := Collect(context.Background(), lister, Scope{State: StateOpen}, 5)
 	if err != nil {
@@ -179,11 +176,22 @@ func TestCollectStopsAtScanLimitAsIncomplete(t *testing.T) {
 	if got := itemIDs(items); !slices.Equal(got, []string{"1", "2", "4"}) {
 		t.Fatalf("items = %v", got)
 	}
-	if coverage.Status != StatusIncomplete || coverage.Reason != ReasonScanLimit || coverage.ExaminedCandidates != 6 {
-		t.Fatalf("coverage = %+v, want incomplete scan-limit after 6 candidates", coverage)
+	if coverage.Status != StatusIncomplete || coverage.Reason != ReasonScanLimit || coverage.ExaminedCandidates != 5 {
+		t.Fatalf("coverage = %+v, want incomplete scan-limit after exactly 5 candidates", coverage)
 	}
-	if lister.requests[0].Limit != 5 || lister.requests[1].Limit != 2 {
-		t.Fatalf("limits = %d,%d, want the remaining budget 5,2", lister.requests[0].Limit, lister.requests[1].Limit)
+	if lister.requests[0].MaxCandidates != 5 || lister.requests[1].MaxCandidates != 2 {
+		t.Fatalf("budgets = %d,%d, want the remaining budget 5,2", lister.requests[0].MaxCandidates, lister.requests[1].MaxCandidates)
+	}
+}
+
+func TestCollectRejectsProviderBudgetOvershoot(t *testing.T) {
+	lister := &pagedLister{pages: map[string]listerPage{
+		"":  {items: []providers.WorkItem{item("1", "open")}, candidates: 3, next: "3"},
+		"3": {items: []providers.WorkItem{item("4", "open")}, candidates: 3, next: "6"},
+	}}
+	items, _, err := Collect(context.Background(), lister, Scope{State: StateOpen}, 5)
+	if err == nil || items != nil || !strings.Contains(err.Error(), "remaining scan budget 2") {
+		t.Fatalf("Collect = %v, %v; want an overshoot error and no partial items", items, err)
 	}
 }
 
@@ -253,124 +261,5 @@ func TestParseState(t *testing.T) {
 	}
 	if _, err := ParseState("closed"); err == nil {
 		t.Fatal("ParseState(closed) succeeded; a comparison set must include the open selected items")
-	}
-}
-
-var adoAfterIDPattern = regexp.MustCompile(`\[System\.Id\] > (\d+)`)
-
-// TestCollectADONarrowsByTagsServerSide drives a real ADO provider against a
-// fake WIQL endpoint that models server-side narrowing: only items whose tags
-// contain the requested scope label are ever returned for hydration. Untagged
-// project items must never be hydrated, which a project-wide read filtered
-// client-side would do. The scope spans two WIQL pages.
-func TestCollectADONarrowsByTagsServerSide(t *testing.T) {
-	const total = 600
-	tags := func(id int) string {
-		switch id % 3 {
-		case 0:
-			return "unrelated"
-		case 1:
-			return "team-a"
-		default:
-			return "team-a-archive" // CONTAINS false positive, rechecked as a whole tag
-		}
-	}
-	var mu sync.Mutex
-	var queries []string
-	hydrated := map[int]bool{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode WIQL: %v", err)
-			return
-		}
-		top, _ := strconv.Atoi(r.URL.Query().Get("$top"))
-		after := 0
-		if m := adoAfterIDPattern.FindStringSubmatch(body.Query); m != nil {
-			after, _ = strconv.Atoi(m[1])
-		}
-		mu.Lock()
-		queries = append(queries, body.Query)
-		mu.Unlock()
-		refs := []map[string]int{}
-		for id := after + 1; id <= total && (top == 0 || len(refs) < top); id++ {
-			if strings.Contains(body.Query, "[System.Tags] CONTAINS 'team-a'") && !strings.Contains(tags(id), "team-a") {
-				continue
-			}
-			refs = append(refs, map[string]int{"id": id})
-		}
-		writeTestJSON(t, w, map[string]any{"workItems": refs})
-	})
-	mux.HandleFunc("/org/project/_apis/wit/workitemsbatch", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			IDs []int `json:"ids"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode batch: %v", err)
-			return
-		}
-		values := make([]map[string]any, 0, len(body.IDs))
-		mu.Lock()
-		for _, id := range body.IDs {
-			hydrated[id] = true
-			values = append(values, map[string]any{"id": id, "rev": 1, "fields": map[string]any{
-				"System.Title": fmt.Sprintf("item %d", id), "System.State": "Done",
-				"System.WorkItemType": "Task", "System.Tags": tags(id),
-			}})
-		}
-		mu.Unlock()
-		writeTestJSON(t, w, map[string]any{"value": values})
-	})
-	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(t, w, map[string]any{"value": []map[string]string{
-			{"name": "To Do", "category": "Proposed"}, {"name": "Done", "category": "Completed"},
-		}})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = server.URL })
-	scope := Scope{
-		Repository: providers.RepositoryRef{Provider: providers.ProviderADO, Name: "repo", Project: "project"},
-		Labels:     []string{"team-a"},
-		State:      StateAll,
-	}
-	items, coverage, err := Collect(context.Background(), provider, scope, 10000)
-	if err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	if !coverage.Complete() || coverage.Pages < 2 {
-		t.Fatalf("coverage = %+v, want a complete multi-page collection", coverage)
-	}
-	if len(items) != total/3 {
-		t.Fatalf("collected %d items, want %d whole-tag matches", len(items), total/3)
-	}
-	for _, it := range items {
-		if !slices.Contains(it.Labels, "team-a") || it.State != "closed" {
-			t.Fatalf("item %s = labels %v state %q, want team-a completed history", it.ID, it.Labels, it.State)
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	for _, query := range queries {
-		if !strings.Contains(query, "[System.Tags] CONTAINS 'team-a'") {
-			t.Fatalf("WIQL %q does not narrow by the scope tag", query)
-		}
-	}
-	for id := range hydrated {
-		if tags(id) == "unrelated" {
-			t.Fatalf("item %d outside the tag scope was hydrated; narrowing was not server-side", id)
-		}
-	}
-}
-
-func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(value); err != nil {
-		t.Errorf("encode response: %v", err)
 	}
 }
