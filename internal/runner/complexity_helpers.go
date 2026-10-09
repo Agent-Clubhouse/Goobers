@@ -95,13 +95,6 @@ func cancelQueuedParallelBranches(
 	return nil
 }
 
-func cancelQueuedWhenTriggered(triggered bool, jr *journal.Run, par *parallelExec, p apiv1.Parallel, queue []int, next *int, outcomes []*parallelBranchResult, baseCompleted stageOutputs, branchEvents parallelBranchEventIndex, in StartInput) error {
-	if !triggered {
-		return nil
-	}
-	return cancelQueuedParallelBranches(jr, par, p, queue, next, outcomes, baseCompleted, branchEvents, in)
-}
-
 func (r *Runner) acceptTaskWorkspaceRevision(
 	ctx context.Context,
 	jr executionJournal,

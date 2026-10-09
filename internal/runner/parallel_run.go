@@ -318,12 +318,14 @@ func (r *Runner) runConcurrentParallel(
 		return concurrentParallelResult{parallel: par, paused: true}, nil
 	}
 
-	next, running := 0, 0
-	var firstErr error
-	failFast := false
-	draining := false
-
-	launch := func(index int) error {
+	dispatch := &parallelDispatch{queue: queue, limit: limit, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
+	dispatch.settle = func(result parallelBranchResult) error {
+		return settleConcurrentBranch(jr, par, p.Name, result)
+	}
+	dispatch.cancelQueued = func() error {
+		return cancelQueuedParallelBranches(jr, par, p, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in)
+	}
+	dispatch.launch = func(index int) error {
 		branch := par.branchSnapshot(index)
 		if !branch.started {
 			var cursors []journal.BranchCursor
@@ -339,7 +341,6 @@ func (r *Runner) runConcurrentParallel(
 				return err
 			}
 		}
-		running++
 		go func() {
 			results <- r.runParallelBranch(
 				branchCtx, jr, par, in, branch, basePointers, baseLastStage,
@@ -350,73 +351,10 @@ func (r *Runner) runConcurrentParallel(
 		return nil
 	}
 
-	if err := cancelQueuedWhenTriggered(terminalTriggered, jr, par, p, queue, &next, outcomes, baseCompleted, branchEvents, in); err != nil {
+	if err := dispatch.run(); err != nil {
 		return concurrentParallelResult{}, err
 	}
-	for next < len(queue) && running < limit {
-		if err := launch(queue[next]); err != nil {
-			firstErr = err
-			cancel(err)
-			break
-		}
-		next++
-	}
-
-	for running > 0 {
-		result := <-results
-		running--
-		outcomes[result.index] = &result
-		if result.paused {
-			draining = true
-		} else {
-			branch := par.branchSnapshot(result.index)
-			cursors := par.settleBranch(
-				branch.id, result.status, result.artifacts, result.pointers,
-				result.produced, result.failed, result.noOutput,
-			)
-			jr.SetBranchCursors(cursors)
-			if err := jr.Append(journal.Event{
-				Type:         journal.EventBranchFinished,
-				Branch:       branch.id,
-				Parallel:     p.Name,
-				BranchName:   branch.name,
-				BranchStatus: result.status,
-			}); err != nil && firstErr == nil {
-				firstErr = err
-				cancel(err)
-			}
-		}
-		if result.err != nil && firstErr == nil {
-			firstErr = result.err
-			cancel(result.err)
-		}
-		if result.terminalTarget != "" && !terminalTriggered {
-			terminalTriggered = true
-			cancel(errParallelTerminal)
-		}
-		if (result.status == journal.BranchFailed || result.status == journal.BranchTimedOut) && p.FailurePolicy == apiv1.BranchFailFast && !failFast {
-			failFast = true
-			cancel(errParallelFailFast)
-		}
-		if (firstErr != nil || terminalTriggered || failFast) && next < len(queue) {
-			if err := cancelQueuedParallelBranches(jr, par, p, queue, &next, outcomes, baseCompleted, branchEvents, in); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		for firstErr == nil && !terminalTriggered && !failFast && !draining && next < len(queue) && running < limit {
-			if err := launch(queue[next]); err != nil {
-				firstErr = err
-				cancel(err)
-				break
-			}
-			next++
-		}
-	}
-
-	if firstErr != nil {
-		return concurrentParallelResult{}, firstErr
-	}
-	if draining {
+	if dispatch.draining {
 		return concurrentParallelResult{parallel: par, paused: true}, nil
 	}
 
