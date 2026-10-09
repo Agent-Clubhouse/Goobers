@@ -15,6 +15,7 @@ import type {
   WorkflowGraph,
 } from "../api/types";
 import { newestFirst } from "../chronology";
+import { ChildActivityPanel } from "../components/ChildActivityPanel";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -564,6 +565,7 @@ function RunDetailWorkspace({
         )}
       </PageHeading>
 
+      <ChildActivityPanel activity={run.childActivity} navigate={navigate} />
       {run.lineage && (
         <section aria-labelledby="run-lineage-heading" className="run-lineage">
           <h2 id="run-lineage-heading">Continuation lineage</h2>

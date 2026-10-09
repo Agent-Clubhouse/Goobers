@@ -1064,7 +1064,16 @@ export interface OperatorRunSummary {
   diagnosticsLimitations?: string[];
 }
 
+export interface ChildActivity {
+  status: "recorded" | "unavailable";
+  parent?: { runId: string; workflow: string; stageOccurrence: string };
+  waits: Array<{ runId: string; stage: string; branch: number; action: "wait" | "merge" | "replace" | "discard"; since: string; sequence: number }>;
+  parked: boolean;
+}
+
 export interface RunDetail extends RunSummary {
+  /** Durable journal projection; absent on older daemons or without child activity. */
+  childActivity?: ChildActivity;
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
   agentProgress?: AgentProgressSummary[];
