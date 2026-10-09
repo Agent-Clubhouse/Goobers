@@ -26,6 +26,9 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 // snapshotted Item and workflow Definition); RepoRef is not journaled, so the
 // caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
+	// OnRecoveryOwned runs with journal and cancellation ownership acquired,
+	// before stage effects. Returning an error leaves execution suspended.
+	OnRecoveryOwned func() error
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
 	// Machine is the compiled workflow (#9) this run was walking. When nil,
@@ -156,6 +159,11 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	defer func() { _ = jr.Close() }()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		if in.OnRecoveryOwned != nil {
+			if err := in.OnRecoveryOwned(); err != nil {
+				return Result{}, err
+			}
+		}
 		return r.resumeOwned(ctx, in, jr, registrar, dir)
 	})
 }

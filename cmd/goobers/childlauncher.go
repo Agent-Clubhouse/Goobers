@@ -263,6 +263,13 @@ func (l *queuedChildLauncher) Result(ctx context.Context, ref childExecutionRef)
 		if err := l.reconcile(ctx, rd); err != nil {
 			return childExecutionResult{}, err
 		}
+		events, err := rd.Events()
+		if err != nil {
+			return childExecutionResult{}, err
+		}
+		if journal.PhaseFromEvents(events) == journal.PhaseRunning && !journal.ParkedAtGate(events) {
+			return childExecutionResult{}, l.resumeOwnedChild(ctx, ref)
+		}
 	}
 	return l.result(ctx, ref, rd)
 }
