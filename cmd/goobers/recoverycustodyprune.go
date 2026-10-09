@@ -37,6 +37,12 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	if err != nil {
 		return nil, noop, err
 	}
+	overflow, broken, err := readConfiguredRecoveryOverflow(ctx, layout)
+	if err != nil {
+		return nil, noop, err
+	}
+	entries = append(entries, overflow...)
+	unreadable = append(unreadable, broken...)
 	if len(unreadable) > 0 {
 		return nil, noop, fmt.Errorf(
 			"%w: recovery inventory holds %d unreadable reservation(s); refusing to prune run journals that may still own recovery state",
@@ -46,16 +52,13 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	for _, entry := range entries {
 		owners[entry.Record.RunID] = true
 	}
-	if len(owners) == 0 {
-		return nil, noop, nil
-	}
 	return func(candidate retention.Result) error {
 		if owners[candidate.RunID] {
 			return fmt.Errorf(
 				"%w: run %s still owns a live recovery snapshot; refusing to delete its journal until the snapshot is retired or expires",
 				retention.ErrCustodyHeld, candidate.RunID)
 		}
-		return nil
+		return preserveParentWorkspaceJournal(candidate)
 	}, noop, nil
 }
 

@@ -26,6 +26,9 @@ type ParentWorkspaceArchive struct {
 	ReturnSeq      uint64                          `json:"returnSeq"`
 }
 
+// ErrParentReturnPending keeps recovery custody pinned until the latest writer returns.
+var ErrParentReturnPending = errors.New("parent workspace has no acknowledged return for its latest owner")
+
 type parentWorkspaceState struct {
 	hold                          ContainedParentWorkspaceCustody
 	contribution                  parentContribution
@@ -46,7 +49,7 @@ func readParentWorkspaceState(events []journal.Event, runID, branch string) (par
 		}
 	}
 	if state.heldAt != 0 && state.returnedAt <= state.heldAt {
-		return state, errors.New("parent workspace has no acknowledged return for its latest owner")
+		return state, ErrParentReturnPending
 	}
 	return state, nil
 }
