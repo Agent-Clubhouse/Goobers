@@ -7,36 +7,41 @@ import (
 	"testing"
 )
 
-// ciMetadataEdit is the one predicate ci.yml uses to recognise a pull-request
-// title/body edit: an `edited` event that does not retarget the base branch.
-// Spelled identically everywhere it appears so the workflow cannot disagree
-// with itself about which edits re-run CI (#6360, #5491).
-const ciMetadataEdit = "(github.event.action == 'edited' && !github.event.changes.base)"
-
-// ciCodeGate is the `if:` on ci.yml's root jobs (preflight, scope). A false
-// gate skips the whole run; unit additionally requires the full profile.
-const ciCodeGate = "${{ !" + ciMetadataEdit + " }}"
-
 const ciFullGate = "${{ needs.scope.outputs.profile == 'full' }}"
 
 const pinnedRequiredCheck = "make ci (fmt-check · vet · build · test · lint)"
 
-// ciEventFixture is one GitHub event as ci.yml's expressions see it.
+// retargetDispatchInputs are ci.yml's workflow_dispatch inputs, set only by
+// ci-retarget.yml.
+var retargetDispatchInputs = []string{"base_sha", "head_sha", "merge_sha", "pr_number"}
+
+const (
+	fixtureBaseSHA  = "1111111111111111111111111111111111111111"
+	fixtureHeadSHA  = "2222222222222222222222222222222222222222"
+	fixtureMergeSHA = "3333333333333333333333333333333333333333"
+)
+
+// ciEventFixture is one GitHub event as the workflows' expressions see it.
 type ciEventFixture struct {
 	name  string
 	event string
-	// payload is github.event: only the fields the workflow reads.
+	// payload is github.event: only the fields the workflows read.
 	payload map[string]any
-	// validates: the run executes the full required gate under the pinned
-	// required-check name, in the ref's shared (cancelling) concurrency group.
-	// When false the run must schedule no job, cancel nothing, and render a
-	// required-ci name that cannot stand in for the pinned check.
-	validates bool
+	// ci: the event itself starts ci.yml, which runs the full required gate
+	// under the pinned name in its ref's shared concurrency group.
+	ci bool
+	// retarget: the event runs ci-retarget.yml's job, which dispatches
+	// ci.yml against the new merge result.
+	retarget bool
 }
 
 func ciEventFixtures() []ciEventFixture {
 	pr := func(action string, changes map[string]any) map[string]any {
-		payload := map[string]any{"action": action}
+		payload := map[string]any{"action": action, "pull_request": map[string]any{
+			"number": "1",
+			"base":   map[string]any{"ref": "main", "sha": fixtureBaseSHA},
+			"head":   map[string]any{"ref": "feature", "sha": fixtureHeadSHA, "repo": map[string]any{"full_name": "o/r"}},
+		}}
 		if changes != nil {
 			payload["changes"] = changes
 		}
@@ -45,29 +50,241 @@ func ciEventFixtures() []ciEventFixture {
 	from := func(v string) map[string]any { return map[string]any{"from": v} }
 	base := map[string]any{"ref": from("release"), "sha": from("0123abc")}
 	return []ciEventFixture{
-		{"pull request opened", "pull_request", pr("opened", nil), true},
-		{"new head pushed", "pull_request", pr("synchronize", nil), true},
-		{"pull request reopened", "pull_request", pr("reopened", nil), true},
-		{"title-only edit", "pull_request", pr("edited", map[string]any{"title": from("old")}), false},
-		{"body-only edit", "pull_request", pr("edited", map[string]any{"body": from("old")}), false},
-		{"base retarget", "pull_request", pr("edited", map[string]any{"base": base}), true},
-		{"base retarget with title edit", "pull_request", pr("edited", map[string]any{"base": base, "title": from("old")}), true},
-		{"merge queue", "merge_group", pr("checks_requested", nil), true},
-		{"manual dispatch", "workflow_dispatch", map[string]any{}, true},
+		{"pull request opened", "pull_request", pr("opened", nil), true, false},
+		{"new head pushed", "pull_request", pr("synchronize", nil), true, false},
+		{"pull request reopened", "pull_request", pr("reopened", nil), true, false},
+		{"title-only edit", "pull_request", pr("edited", map[string]any{"title": from("old")}), false, false},
+		{"body-only edit", "pull_request", pr("edited", map[string]any{"body": from("old")}), false, false},
+		{"base retarget", "pull_request", pr("edited", map[string]any{"base": base}), false, true},
+		{"base retarget with title edit", "pull_request", pr("edited", map[string]any{"base": base, "title": from("old")}), false, true},
+		{"merge queue", "merge_group", map[string]any{"action": "checks_requested"}, true, false},
+		{"manual dispatch", "workflow_dispatch", map[string]any{}, true, false},
 	}
 }
 
-// TestCIRunsOnBaseRetargetNotMetadataEdits evaluates ci.yml's own trigger,
-// concurrency, job conditions and required-check name against event fixtures
-// (#6360, carried from #5491). A base retarget changes the merge ref, so it
-// must re-run the full gate and replace the stale run. A title/body edit
-// changes no code: it must not cancel the in-flight run (own concurrency
-// group), must schedule no job, and must not publish a skipped check under the
-// pinned required name — a skipped required check satisfies the ruleset, so it
-// would let a red PR through instead of failing closed.
-func TestCIRunsOnBaseRetargetNotMetadataEdits(t *testing.T) {
+// TestCIRetargetValidatesNewMergeNotMetadataEdits evaluates ci.yml and
+// ci-retarget.yml against event fixtures (#7017, #6360, #5491).
+//
+// A pull-request title/body edit must not start ci.yml: any CI run on it, even
+// one whose jobs all skip, cancels the in-flight run or adds a newer CI check
+// suite to the head SHA, and a PR whose newest CI suite came from an edit
+// stays BLOCKED despite a green required check (observed GitHub behaviour,
+// #7017). It may only skip ci-retarget.yml's job.
+//
+// A base retarget changes the merge result, so it must run the complete
+// required gate on GitHub's new merge commit under the pinned required name,
+// in the PR's CI concurrency group, with base-aware checks reading the new
+// base. Re-running the old pull_request run would not: a re-run reuses the
+// original event's GITHUB_SHA (the old merge) and payload (the old base).
+func TestCIRetargetValidatesNewMergeNotMetadataEdits(t *testing.T) {
 	t.Parallel()
-	w := loadCIWorkflow(t)
+	ci := loadCIWorkflow(t)
+	retarget := loadWorkflowFile(t, "ci-retarget.yml")
+	if types := pullRequestTypes(t, ci); slices.Contains(types, "edited") {
+		t.Fatalf("ci.yml pull_request types %v include edited; a title/body edit would add a CI suite that blocks the PR", types)
+	}
+	assertRetargetDispatchInputs(t, ci)
+	dispatcher := assertRetargetWorkflow(t, retarget)
+	for _, fx := range ciEventFixtures() {
+		t.Run(fx.name, func(t *testing.T) {
+			eventCtx := map[string]any{"github": map[string]any{
+				"event_name": fx.event, "event": fx.payload, "workflow": "CI",
+				"ref": "refs/pull/1/merge", "run_id": "4242",
+			}}
+			if got := workflowTriggered(t, ci, fx); got != fx.ci {
+				t.Fatalf("ci.yml triggered=%v, want %v", got, fx.ci)
+			}
+			dispatches := workflowTriggered(t, retarget, fx) && truthy(evalExpr(t, trimExpr(dispatcher.If), eventCtx, true))
+			if dispatches != fx.retarget {
+				t.Fatalf("ci-retarget.yml dispatch job runs=%v, want %v", dispatches, fx.retarget)
+			}
+			if fx.ci {
+				assertFullGateRun(t, ci, eventCtx, "")
+			}
+			if fx.retarget {
+				// The run `gh workflow run ci.yml --ref "$HEAD_REF" -f ...` starts.
+				dispatchCtx := map[string]any{
+					"github": map[string]any{
+						"event_name": "workflow_dispatch", "event": map[string]any{}, "workflow": "CI",
+						"ref": "refs/heads/feature", "sha": fixtureHeadSHA, "run_id": "4343",
+					},
+					"inputs": map[string]any{
+						"pr_number": "1", "base_sha": fixtureBaseSHA, "head_sha": fixtureHeadSHA, "merge_sha": fixtureMergeSHA,
+					},
+				}
+				assertFullGateRun(t, ci, dispatchCtx, fixtureMergeSHA)
+				assertRetargetRunReadsNewBase(t, ci, dispatchCtx)
+			}
+		})
+	}
+}
+
+// assertFullGateRun checks that ctx's ci.yml run joins the PR's cancelling
+// concurrency group, runs every required job under the pinned name, and
+// checks out wantRef ("" is the event's own commit) in every job it runs.
+func assertFullGateRun(t *testing.T, w ciWorkflow, ctx map[string]any, wantRef string) {
+	t.Helper()
+	if group, want := renderTemplate(t, w.Concurrency.Group, ctx), "ci-CI-refs/pull/1/merge"; group != want {
+		t.Errorf("concurrency group = %q, want the PR's shared group %q so it replaces the stale run", group, want)
+	}
+	ran := simulateCIJobs(t, w, ctx)
+	for _, id := range append([]string{"required-ci"}, w.Jobs["required-ci"].Needs...) {
+		if !ran[id] {
+			t.Errorf("required job %s does not run", id)
+		}
+	}
+	if name := renderTemplate(t, w.Jobs["required-ci"].Name, ctx); name != pinnedRequiredCheck {
+		t.Errorf("required-ci renders %q, want the ruleset-pinned %q", name, pinnedRequiredCheck)
+	}
+	for id, job := range w.Jobs {
+		if !ran[id] {
+			continue
+		}
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/checkout@") {
+				if ref := renderTemplate(t, step.with("ref"), ctx); ref != wantRef {
+					t.Errorf("job %s checks out %q, want %q", id, ref, wantRef)
+				}
+			}
+		}
+	}
+}
+
+// assertRetargetRunReadsNewBase checks that a retarget dispatch verifies its
+// inputs and feeds the new base to the base-aware checks.
+func assertRetargetRunReadsNewBase(t *testing.T, w ciWorkflow, ctx map[string]any) {
+	t.Helper()
+	verify := w.Jobs["scope"].step(t, "Verify retarget dispatch inputs")
+	if !truthy(evalExpr(t, trimExpr(verify.If), ctx, true)) || verify.ContinueOnError {
+		t.Error("scope must verify the retarget inputs on a dispatch")
+	}
+	for _, want := range []string{
+		`"$HEAD_SHA" != "$GITHUB_SHA"`,
+		`"$(git rev-parse HEAD)" != "$MERGE_SHA"`,
+		`"$(git rev-list --parents -n 1 "$MERGE_SHA")" != "$MERGE_SHA $BASE_SHA $HEAD_SHA"`,
+		`git merge-base --is-ancestor "$BASE_SHA" refs/remotes/origin/main`,
+	} {
+		if !strings.Contains(verify.Run, want) {
+			t.Errorf("retarget input verification lacks %s", want)
+		}
+	}
+	growth := w.Jobs["cmdgoobers-growth"].step(t, "Enforce cmd/goobers growth ratchet")
+	if got := renderTemplate(t, growth.Env["BASE_REF"], ctx); got != fixtureBaseSHA {
+		t.Errorf("growth ratchet BASE_REF = %q, want the new base", got)
+	}
+	if got := renderTemplate(t, growth.Env["HEAD_REF"], ctx); got != fixtureHeadSHA {
+		t.Errorf("growth ratchet HEAD_REF = %q, want the PR head", got)
+	}
+	checks := w.Jobs["checks"]
+	design := checks.step(t, "Collect design delivery context")
+	if !truthy(evalExpr(t, trimExpr(design.If), ctx, true)) ||
+		renderTemplate(t, design.with("pr-number"), ctx) != "1" ||
+		renderTemplate(t, design.with("base-revision"), ctx) != fixtureBaseSHA {
+		t.Error("design delivery must compare the retargeted PR against its new base")
+	}
+	if env := checks.step(t, "fmt · tidy · no-phone-home · vet · build · portal").Env["GOOBERS_DESIGN_DELIVERY_CONTEXT"]; renderTemplate(t, env, ctx) == "" {
+		t.Error("portal checks must read the retarget run's design delivery context")
+	}
+}
+
+// assertRetargetDispatchInputs checks ci.yml's dispatch inputs are exactly the
+// four optional retarget strings, so a plain dispatch is unchanged.
+func assertRetargetDispatchInputs(t *testing.T, w ciWorkflow) {
+	t.Helper()
+	var dispatch struct {
+		Inputs map[string]struct {
+			Type     string  `yaml:"type"`
+			Required bool    `yaml:"required"`
+			Default  *string `yaml:"default"`
+		} `yaml:"inputs"`
+	}
+	trigger, ok := w.On["workflow_dispatch"]
+	if !ok {
+		t.Fatal("ci.yml must accept workflow_dispatch")
+	}
+	if err := trigger.Decode(&dispatch); err != nil {
+		t.Fatalf("decode workflow_dispatch: %v", err)
+	}
+	var names []string
+	for name, input := range dispatch.Inputs {
+		names = append(names, name)
+		if input.Type != "string" || input.Required || input.Default == nil || *input.Default != "" {
+			t.Errorf("dispatch input %s must be an optional string defaulting to ''", name)
+		}
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, retargetDispatchInputs) {
+		t.Errorf("ci.yml dispatch inputs = %v, want exactly %v", names, retargetDispatchInputs)
+	}
+}
+
+// assertRetargetWorkflow checks ci-retarget.yml's shape and returns its only
+// job: it fires only on edits, never reports the required context, cannot be
+// cancelled by a later edit, and dispatches ci.yml with the verified merge.
+func assertRetargetWorkflow(t *testing.T, w ciWorkflow) ciJob {
+	t.Helper()
+	if len(w.On) != 1 || !slices.Equal(pullRequestTypes(t, w), []string{"edited"}) {
+		t.Fatal("ci-retarget.yml must trigger only on pull_request edited")
+	}
+	if w.Concurrency.Group != "" {
+		t.Error("ci-retarget.yml must not share a concurrency group: a later title edit would cancel a pending retarget dispatch")
+	}
+	if len(w.Jobs) != 1 {
+		t.Fatalf("ci-retarget.yml has %d jobs, want one", len(w.Jobs))
+	}
+	job, ok := w.Jobs["dispatch-ci"]
+	if !ok {
+		t.Fatal("ci-retarget.yml must define the dispatch-ci job")
+	}
+	if trimExpr(job.If) != "github.event.changes.base" {
+		t.Errorf("dispatch-ci if = %q, want it to run only for a base retarget", job.If)
+	}
+	if strings.Contains(job.Name, "make ci") || strings.Contains(job.Name, "${{") {
+		t.Errorf("dispatch-ci name %q must be static and never the required context", job.Name)
+	}
+	if fmt.Sprint(job.Permissions) != fmt.Sprint(map[string]string{"actions": "write", "contents": "read", "pull-requests": "read"}) {
+		t.Errorf("dispatch-ci permissions = %v", job.Permissions)
+	}
+	if len(job.Steps) != 1 {
+		t.Fatalf("dispatch-ci has %d steps, want one", len(job.Steps))
+	}
+	step := job.Steps[0]
+	if step.Env["HEAD_REF"] != "${{ github.event.pull_request.head.ref }}" ||
+		step.Env["PR_NUMBER"] != "${{ github.event.pull_request.number }}" {
+		t.Error("dispatch-ci must dispatch the PR's own head branch and number")
+	}
+	for _, want := range []string{
+		`"$HEAD_REPO" != "$GH_REPO"`,
+		`= "$base $head" ]`,
+		`gh workflow run ci.yml --ref "$HEAD_REF"`,
+		`-f pr_number="$PR_NUMBER" -f base_sha="$base" -f head_sha="$head" -f merge_sha="$merge"`,
+	} {
+		if !strings.Contains(step.Run, want) {
+			t.Errorf("dispatch-ci step lacks %s", want)
+		}
+	}
+	return job
+}
+
+// workflowTriggered reports whether w's `on:` fires for the fixture event,
+// honouring pull_request activity types.
+func workflowTriggered(t *testing.T, w ciWorkflow, fx ciEventFixture) bool {
+	t.Helper()
+	if _, ok := w.On[fx.event]; !ok {
+		return false
+	}
+	if fx.event != "pull_request" {
+		return true
+	}
+	types := pullRequestTypes(t, w)
+	if len(types) == 0 {
+		types = []string{"opened", "synchronize", "reopened"} // GitHub's default
+	}
+	return slices.Contains(types, fx.payload["action"].(string))
+}
+
+func pullRequestTypes(t *testing.T, w ciWorkflow) []string {
+	t.Helper()
 	var types []string
 	trigger := w.On["pull_request"]
 	if err := trigger.Decode(&struct {
@@ -75,57 +292,12 @@ func TestCIRunsOnBaseRetargetNotMetadataEdits(t *testing.T) {
 	}{&types}); err != nil {
 		t.Fatalf("decode pull_request trigger: %v", err)
 	}
-	if !slices.Contains(types, "edited") {
-		t.Fatalf("pull_request types %v must include edited so a base retarget re-runs CI", types)
-	}
-	for _, root := range []string{"preflight", "scope"} {
-		if got := w.Jobs[root].If; got != ciCodeGate {
-			t.Errorf("root job %s if = %q, want %q", root, got, ciCodeGate)
-		}
-	}
-	if got, want := w.Jobs["unit"].If, "${{ !"+ciMetadataEdit+" && needs.scope.outputs.profile == 'full' }}"; got != want {
-		t.Errorf("unit if = %q, want %q", got, want)
-	}
+	return types
+}
 
-	const runID = "4242"
-	for _, fx := range ciEventFixtures() {
-		t.Run(fx.name, func(t *testing.T) {
-			ctx := map[string]any{"github": map[string]any{
-				"event_name": fx.event, "event": fx.payload, "workflow": "CI",
-				"ref": "refs/pull/1/merge", "run_id": runID,
-			}}
-			group := renderTemplate(t, w.Concurrency.Group, ctx)
-			shared := "ci-CI-refs/pull/1/merge"
-			if fx.validates && group != shared {
-				t.Errorf("concurrency group = %q, want the ref's shared group %q so it replaces the stale run", group, shared)
-			}
-			if !fx.validates && (group == shared || !strings.Contains(group, runID)) {
-				t.Errorf("concurrency group = %q; a metadata edit needs a run-unique group so it cancels nothing", group)
-			}
-
-			ran := simulateCIJobs(t, w, ctx)
-			name := renderTemplate(t, w.Jobs["required-ci"].Name, ctx)
-			if fx.validates {
-				for _, id := range append([]string{"required-ci"}, w.Jobs["required-ci"].Needs...) {
-					if !ran[id] {
-						t.Errorf("required job %s does not run", id)
-					}
-				}
-				if name != pinnedRequiredCheck {
-					t.Errorf("required-ci renders %q, want the ruleset-pinned %q", name, pinnedRequiredCheck)
-				}
-				return
-			}
-			for id, r := range ran {
-				if r {
-					t.Errorf("job %s runs on a title/body edit; it must schedule nothing", id)
-				}
-			}
-			if name == pinnedRequiredCheck {
-				t.Error("required-ci keeps the pinned name on a title/body edit; its skipped check would shadow the real result")
-			}
-		})
-	}
+func trimExpr(cond string) string {
+	cond = strings.TrimSpace(cond)
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(cond, "${{"), "}}"))
 }
 
 // requiredCIDisplayName is required-ci's check name on a run that validates
@@ -169,12 +341,11 @@ func simulateCIJobsWithProfile(t *testing.T, w ciWorkflow, ctx map[string]any, p
 			}
 			needs[dep] = map[string]any{"result": result, "outputs": outputs}
 		}
-		cond := strings.TrimSpace(job.If)
-		cond = strings.TrimSuffix(strings.TrimPrefix(cond, "${{"), "}}")
-		if strings.TrimSpace(cond) == "" {
+		cond := trimExpr(job.If)
+		if cond == "" {
 			cond = "success()"
 		}
-		jobCtx := map[string]any{"github": ctx["github"], "needs": needs}
+		jobCtx := map[string]any{"github": ctx["github"], "inputs": ctx["inputs"], "needs": needs}
 		run := truthy(evalExpr(t, cond, jobCtx, allOK))
 		if !hasStatusFunction(cond) {
 			run = run && allOK
@@ -191,12 +362,8 @@ func simulateCIJobsWithProfile(t *testing.T, w ciWorkflow, ctx map[string]any, p
 func TestCIScopePreservesPortalUXAndSelectsOnlyBackendSkips(t *testing.T) {
 	t.Parallel()
 	w := loadCIWorkflow(t)
-	for _, action := range []string{"opened", "synchronize", "reopened", "edited"} {
-		event := map[string]any{"action": action}
-		if action == "edited" {
-			event["changes"] = map[string]any{"base": map[string]any{"ref": map[string]any{"from": "release"}}}
-		}
-		ctx := map[string]any{"github": map[string]any{"event_name": "pull_request", "event": event}}
+	for _, action := range []string{"opened", "synchronize", "reopened"} {
+		ctx := map[string]any{"github": map[string]any{"event_name": "pull_request", "event": map[string]any{"action": action}}}
 		for _, profile := range []string{"full", "portal-only", ""} {
 			ran := simulateCIJobsWithProfile(t, w, ctx, profile)
 			for _, id := range w.Jobs["required-ci"].Needs {
@@ -233,7 +400,7 @@ func TestCIScopeUsesCompleteDiffAndDoesNotSavePartialCaches(t *testing.T) {
 	w := loadCIWorkflow(t)
 	scope := w.Jobs["scope"]
 	checkout := scope.stepUsing(t, "actions/checkout@")
-	if checkout.with("fetch-depth") != "0" || checkout.with("ref") != "" {
+	if checkout.with("fetch-depth") != "0" || checkout.with("ref") != "${{ inputs.merge_sha }}" {
 		t.Fatal("scope must inspect the event checkout with complete git history")
 	}
 	setup := scope.stepUsing(t, "actions/setup-go@")
