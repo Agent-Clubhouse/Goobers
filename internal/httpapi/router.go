@@ -443,6 +443,9 @@ func RequireRoles() Authorizer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialResolvePath {
 				return nil
 			}
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.ClaimListPath {
+				return nil
+			}
 			if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
 				return nil
 			}
@@ -648,6 +651,7 @@ type handlerConfig struct {
 	workflowMutations         WorkflowMutationService
 	gaggleBundles             GaggleBundleService
 	claims                    ClaimService
+	generatedChildExecution   ChildExecutionObserver
 	triggers                  TriggerService
 	escalations               EscalationService
 	cancels                   CancelService

@@ -340,7 +340,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 		func(ctx context.Context, claims ClaimService, request ClaimRequest) (ClaimResponse, error) {
 			return claims.Settle(ctx, request)
 		})
-	registerClaimListRoute(router, config.claims, errorLog)
+	registerClaimListRoute(router, config.claims, config.generatedChildExecution, errorLog)
 	registerClaimVerificationRoute(router, config.claims, errorLog)
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
@@ -443,9 +443,18 @@ func applyPodClaimScope(w http.ResponseWriter, request *http.Request, runID, act
 // a pod's namespace listing is flagged PodScoped so the service confines it
 // to the gaggle the run belongs to — a stage pod has no business reading
 // another gaggle's ledger, even read-only.
-func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.Logger) {
+func registerClaimListRoute(router *Router, claims ClaimService, child ChildExecutionObserver, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteClaimList, func(w http.ResponseWriter, request *http.Request) {
-		if claims == nil {
+		principal, authenticated := PrincipalFromRequest(request)
+		generated := authenticated && principal.Issuer == GeneratedChildPrincipalIssuer
+		if generated {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if child == nil {
+				writeError(w, http.StatusForbidden, "child_execution_unavailable", "child execution observation owner unavailable")
+				return
+			}
+		}
+		if !generated && claims == nil {
 			writeError(w, http.StatusServiceUnavailable, "claims_unavailable", "the claims plane is not available from this server")
 			return
 		}
@@ -460,6 +469,10 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 		}
 		if input.RunID == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId is required")
+			return
+		}
+		if generated && (principal.Subject != podPrincipalSubject(input.RunID) || !input.Execution || !input.IncludeHistory || input.Scope != ClaimListScopeRun || input.Gaggle != "" || input.Provider != "") {
+			writeError(w, http.StatusForbidden, "child_execution_scope", "child may only observe its own execution authority")
 			return
 		}
 		switch input.Scope {
@@ -478,7 +491,11 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 			return
 		}
 		input.PodScoped = podScoped
-		response, err := claims.List(request.Context(), input)
+		var observer ChildExecutionObserver = claims
+		if generated {
+			observer = child
+		}
+		response, err := observer.List(request.Context(), input)
 		if err != nil {
 			writePlaneError(w, errorLog, "list claims", err)
 			return

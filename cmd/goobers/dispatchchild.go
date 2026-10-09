@@ -14,7 +14,6 @@ import (
 	"maps"
 	"sync"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/invoke"
@@ -41,7 +40,7 @@ func runChildDispatchContext(ctx context.Context, stdout, stderr io.Writer) int 
 	}
 	usage := &isolatedObservedUsage{}
 	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
-	outcome := runIsolatedChildStage(ctx, contract.Identity.RunID, stdout, stderr)
+	outcome := runIsolatedChildStage(ctx, contract, stdout, stderr)
 	// Foreground completion does not prove custody: detached descendants
 	// must stop before the supervisor reads any return-tree files.
 	custody, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -88,10 +87,9 @@ func runChildDispatchContext(ctx context.Context, stdout, stderr io.Writer) int 
 	return 0
 }
 
-func runIsolatedChildStage(ctx context.Context, runID string, stdout, stderr io.Writer) stageOutcome {
+func runIsolatedChildStage(ctx context.Context, contract childpod.Contract, stdout, stderr io.Writer) stageOutcome {
 	token := os.Getenv(dispatcher.EnvPodToken)
-	fence := remoteSharedExecutionFence(os.Getenv(dispatcher.EnvDaemonAPI), func(string) (string, error) { return token, nil })
-	owned, stop, err := fence(context.WithValue(ctx, isolatedChildKey{}, true), apiv1.InvocationEnvelope{RunID: runID})
+	owned, stop, err := remoteChildExecutionFence(context.WithValue(ctx, isolatedChildKey{}, true), os.Getenv(dispatcher.EnvDaemonAPI), token, contract)
 	defer stop()
 	if err != nil {
 		return stageOutcome{Result: failureEnvelope("execution_authority_ended", err.Error())}

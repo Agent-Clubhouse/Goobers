@@ -66,6 +66,9 @@ func TestGeneratedChildIdentityIsConfinedToInstalledAttemptOwners(t *testing.T) 
 			err := RequireRoles().Authorize(request)
 			want := (method == http.MethodGet || method == http.MethodPut) && blobPlanePath(path)
 			want = want || (method == http.MethodPost && path == apicontract.CredentialResolvePath)
+			// The read-only execution owner rejects non-execution and foreign
+			// requests; generatedchildexecution_test covers that handler boundary.
+			want = want || (method == http.MethodPost && path == apicontract.ClaimListPath)
 			want = want || (method == http.MethodPost && journalPlanePath(path))
 			want = want || (method == http.MethodPost && surrenderPlanePath(path))
 			if (err == nil) != want {
