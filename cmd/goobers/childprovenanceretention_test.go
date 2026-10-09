@@ -3,15 +3,16 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/triggerqueue"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
 func stagePruneJournal(t *testing.T, dir string) string {
