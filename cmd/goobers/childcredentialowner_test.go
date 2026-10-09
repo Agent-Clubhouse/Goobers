@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -138,5 +139,61 @@ func TestChildCredentialHTTPRequiresLiveExactAttemptThroughMaterialization(t *te
 	}
 	if out := request(input); out.Code != http.StatusForbidden || resolved != 2 {
 		t.Fatal("cancelled child reached resolver", out.Code, out.Body, resolved)
+	}
+	// Cancellation revokes new effects, but the same unjoined writer must still
+	// be able to return observational evidence through its bounded journal owner.
+	testCancelledChildJournalCustody(t, s, auth, token, id, writer, blobs)
+}
+
+func testCancelledChildJournalCustody(t *testing.T, s *daemonCredentialService, auth httpapi.Authenticator, token string, id journal.RunIdentity, writer *journal.Run, blobs childpod.ScopedBlobs) {
+	t.Helper()
+	live, err := livejournal.NewWriter(func(gaggle string) (string, bool) { return s.layout.ForGaggle(gaggle).RunsDir(), gaggle == id.Gaggle })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	release, err := live.Adopt(id.RunID, id.Gaggle, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), httpapi.WithAuthenticator(auth), httpapi.WithJournalService(live), httpapi.WithGeneratedChildJournalService(childJournalPlane{writer: live, service: s}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(ops ...livejournal.Op) *httptest.ResponseRecorder {
+		data, err := json.Marshal(livejournal.EmitRequest{RunID: id.RunID, Gaggle: id.Gaggle, Ops: ops})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+id.RunID+"/journal/emit", bytes.NewReader(data))
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("Content-Type", "application/json")
+		out := httptest.NewRecorder()
+		handler.ServeHTTP(out, r)
+		return out
+	}
+	data := []byte("final child observation")
+	op := livejournal.Op{Kind: livejournal.OpArtifact, Key: "final-artifact", Artifact: &livejournal.ArtifactOp{Stage: "check", Attempt: 1, Name: "check/output", Data: data}}
+	before := writer.Seq()
+	for _, forged := range []journal.Event{
+		{Type: journal.EventRunFinished, Stage: "check", Attempt: 1, Status: "completed"},
+		{Type: journal.EventRunnerAnnotation, Stage: "check", Attempt: 1, Runner: map[string]any{"kind": childPodWriterJoined}},
+	} {
+		out := request(op, livejournal.Op{Kind: livejournal.OpAppend, Key: "forged", Event: &forged})
+		if out.Code != http.StatusForbidden || writer.Seq() != before {
+			t.Fatal("forged trailing operation partially applied", out.Code, out.Body)
+		}
+	}
+	for range 2 {
+		if out := request(op); out.Code != http.StatusOK || out.Header().Get("Cache-Control") != "private, no-store" {
+			t.Fatal("cancelled writer lost journal custody", out.Code, out.Body)
+		}
+	}
+	if writer.Seq() != before+1 {
+		t.Fatal("retry duplicated child artifact")
+	}
+	if got, err := blobs.Get(t.Context(), journal.Digest(data)); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("journal did not publish into child custody", string(got), err)
 	}
 }

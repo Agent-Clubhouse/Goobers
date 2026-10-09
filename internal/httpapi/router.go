@@ -443,6 +443,9 @@ func RequireRoles() Authorizer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialResolvePath {
 				return nil
 			}
+			if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
+				return nil
+			}
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == ChildWorkflowPrincipalIssuer {
@@ -646,6 +649,7 @@ type handlerConfig struct {
 	escalations               EscalationService
 	cancels                   CancelService
 	journal                   JournalService
+	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService
 	operatorMessages          OperatorMessageService
