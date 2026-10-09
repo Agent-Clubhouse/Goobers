@@ -115,6 +115,13 @@ func (f childPodFactory) executor(rec runner.ArtifactRecorder, goober string) (*
 }
 
 func (p *childStagePod) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	action, err := childPublicationAction(&run)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	if action != "" {
+		return p.publish(ctx, env, run, action)
+	}
 	out, err := p.execute(ctx, env, &run, false)
 	return out.Result, err
 }

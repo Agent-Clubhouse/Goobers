@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
@@ -102,6 +103,7 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 // daemonCredentialService is the credential plane over the daemon's own
 // credential wiring. It implements httpapi.CredentialService.
 type daemonCredentialService struct {
+	childPublisher func(childpublication.Target, string, httpapi.MintedCredential, string) (childpublication.Publisher, error)
 	// Installed before serving. Current child authority lease spans materialization.
 	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
 	childExecutors   childExecutorProvider
