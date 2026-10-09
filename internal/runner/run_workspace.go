@@ -34,6 +34,8 @@ type stageWorkspace struct {
 	release func()
 	// retainedChild verifies custody instead of deleting the shared child fork.
 	retainedChild func(context.Context) error
+	// validateReadOnly checks an immutable stage view before accepting output.
+	validateReadOnly func(context.Context) error
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -215,7 +217,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		return in.heldChildWorkspace, nil
 	}
 	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
-		return r.createChildStageWorkspace(ctx, in, mode, syncBase, workspaceBranch)
+		return r.createChildStageWorkspace(ctx, in, stageName, mode, syncBase, workspaceBranch)
 	}
 	if err := selectedWorkspaceUnsupported(in, mode); err != nil {
 		return nil, err
@@ -583,4 +585,15 @@ func worktreeWarningEvent(stage string, wt *worktree.Worktree) (journal.Event, b
 		Stage:  stage,
 		Runner: map[string]any{"kind": "worktree.warnings", "warnings": wt.Warnings},
 	}, true
+}
+
+func (w *stageWorkspace) ValidateAfterInvocation(ctx context.Context, invocation *gooberInvocation) error {
+	var err error
+	if w.validateReadOnly != nil {
+		err = w.validateReadOnly(ctx)
+	}
+	if invocation != nil && invocation.materializedAssets() {
+		err = errors.Join(err, w.ValidateReservedPaths(ctx))
+	}
+	return err
 }
