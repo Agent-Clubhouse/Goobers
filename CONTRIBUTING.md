@@ -15,7 +15,7 @@ and [`docs/VISION.md`](docs/VISION.md).
 ## Development setup
 
 All development requires the Go toolchain declared in [`go.mod`](go.mod)
-(currently Go 1.26.6), Git, and
+(currently Go 1.26.9), Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
 [`.golangci.yml`](.golangci.yml)). Node.js 24 with npm is required only for
 Portal work, complete dashboard-enabled binaries, and the merge/full validation
