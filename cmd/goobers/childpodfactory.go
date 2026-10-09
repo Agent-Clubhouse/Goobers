@@ -16,13 +16,14 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 )
 
 // installChildPodFactories composes the existing authenticated worker transport.
 // No Kubernetes client, credential, RBAC grant or ambient config read is added.
-func (s *daemonCredentialService) installChildPodFactories(client childpod.TemporalClient, surrenders dispatcher.SurrenderPlane) {
-	if client == nil || s.config == nil || s.config.API.PodTokenKeyFile == "" || surrenders == nil {
+func (s *daemonCredentialService) installChildPodFactories(client childpod.TemporalClient, surrenders dispatcher.SurrenderPlane, journals *livejournal.Writer) {
+	if client == nil || s.config == nil || s.config.API.PodTokenKeyFile == "" || surrenders == nil || journals == nil {
 		return
 	}
 	s.childPodRecovery = func(ctx context.Context, reader *journal.Reader, digest string, scope childPodScope) error {
@@ -34,6 +35,7 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 		}
 		factory := childPodFactory{service: s, start: start, runtime: runtime, client: client, surrenders: surrenders}
 		return runner.ChildExecutionFactories{
+			BorrowJournal: journals.Adopt,
 			NewDeterministic: func(rec runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Deterministic, error) {
 				return factory.executor(rec, "")
 			},

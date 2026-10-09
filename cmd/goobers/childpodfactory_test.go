@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -95,9 +96,19 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		t.Fatal(err)
 	}
 	blobs := childpod.ScopedBlobs{Queue: s.childQueue, Identity: f.child.Identity}
+	journals := childFactoryJournals(t, s)
 	worker := &factoryWorkerClient{lostReply: len(lost) > 0 && lost[0]}
 	worker.execute = func(ctx context.Context, in engine.ChildDispatchInput) (engine.ChildDispatchResult, error) {
 		a := in.Attempt
+		if resume {
+			if !journals.IsOpen(a.RunID) {
+				t.Fatal("child driver did not lend its journal before dispatch")
+			}
+			_, err := journals.Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "child-worker-heartbeat", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
+			if err != nil {
+				t.Fatal("remote observation could not use the driver-owned journal", err)
+			}
+		}
 		if a.Stage != "check" || a.PodAttempt < 2 || a.Envelope == nil || a.Envelope.Workspace != "" {
 			t.Fatal("incorrect physical child request", a)
 		}
@@ -154,7 +165,7 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 	}
 	previousKey := s.config.API.PodTokenKeyFile
 	s.config.API.PodTokenKeyFile = "configured-host-key"
-	s.installChildPodFactories(worker, plane)
+	s.installChildPodFactories(worker, plane, journals)
 	s.config.API.PodTokenKeyFile = previousKey
 	if s.childExecutors == nil {
 		t.Fatal("production factories not installed")
@@ -176,6 +187,9 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		result, err := isolated.Resume(t.Context(), runner.ResumeInput{RunID: f.writer.identity.RunID, Machine: start.Proposal.Machine, GooberDigest: f.writer.identity.GooberDigest})
 		if err != nil || result.Phase != journal.PhaseCompleted || worker.starts != 1 {
 			t.Fatal("actual generated runner failed", result, err, worker.starts)
+		}
+		if journals.IsOpen(f.writer.identity.RunID) {
+			t.Fatal("completed child retained a borrowed journal handle")
 		}
 		return
 	}
@@ -241,7 +255,7 @@ func TestChildFactoryUnsupportedPlacementHasNoHostFallback(t *testing.T) {
 	}}
 	previousKey := s.config.API.PodTokenKeyFile
 	s.config.API.PodTokenKeyFile = "configured-host-key"
-	s.installChildPodFactories(worker, plane)
+	s.installChildPodFactories(worker, plane, childFactoryJournals(t, s))
 	s.config.API.PodTokenKeyFile = previousKey
 	start, release, err := (&queuedChildLauncher{layout: s.layout, queue: s.childQueue, authority: s.children}).admittedChildIdentity(t.Context(), f.writer.identity)
 	if err != nil {
@@ -297,4 +311,14 @@ func testChildFactoryLostReplyRecovery(t *testing.T, s *daemonCredentialService,
 	if err != nil || string(data) != "verified result" {
 		t.Fatal("late output not adopted", string(data), err)
 	}
+}
+
+func childFactoryJournals(t *testing.T, s *daemonCredentialService) *livejournal.Writer {
+	t.Helper()
+	journals, err := livejournal.NewWriter(func(gaggle string) (string, bool) { return s.layout.ForGaggle(gaggle).RunsDir(), true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(journals.Close)
+	return journals
 }

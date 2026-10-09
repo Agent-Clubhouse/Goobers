@@ -439,6 +439,7 @@ type AgentProvenance struct {
 // supplied per call in StartInput, not fixed here.
 type Config struct {
 	childExecution      *journal.RunIdentity
+	childBorrowJournal  func(string, string, *journal.Run) (func(), error)
 	ChildHandoff        ChildHandoff
 	ChildParentCapacity ChildParentCapacity
 	SelfExecutionDenied bool
@@ -1127,6 +1128,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowChildJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend child journal: %w", err)
+	}
+	defer releaseJournal()
 	if in.OnJournalPublished != nil {
 		if err := in.OnJournalPublished(); err != nil {
 			return Result{}, fmt.Errorf("runner: journal admission barrier: %w", err)
