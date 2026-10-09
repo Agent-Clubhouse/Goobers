@@ -119,6 +119,7 @@ func TestDSL31ExpectedOutputsBOMIntermediaryHandoff(t *testing.T) {
 		wantPhase    journal.RunPhase
 		wantFailure  string
 		wantFailCode string
+		wantStartErr string
 	}{
 		{
 			name:         "bom-prefixed handoff reaches the successor",
@@ -138,8 +139,7 @@ func TestDSL31ExpectedOutputsBOMIntermediaryHandoff(t *testing.T) {
 			name:         "dsl 3.0 keeps the advisory behaviour",
 			dslVersion:   supportmatrix.V3DSLVersion,
 			intermediary: `printf '` + bom + `{"autoMerge":"enabled"}\r\n' > result.json`,
-			wantPhase:    journal.PhaseFailed,
-			wantFailure:  "ci-poll",
+			wantStartErr: `execute stage "ci-poll": task "ci-poll": inputsFrom "prNumber": upstream output "prNumber" not found`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,6 +158,7 @@ func TestDSL31ExpectedOutputsBOMIntermediaryHandoff(t *testing.T) {
 				},
 				Worktrees:    wtMgr,
 				RunsDir:      runsDir,
+				ScratchDir:   t.TempDir(),
 				RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
 			})
 			if err != nil {
@@ -196,6 +197,12 @@ func TestDSL31ExpectedOutputsBOMIntermediaryHandoff(t *testing.T) {
 				Trigger: journal.Trigger{Kind: journal.TriggerManual},
 				RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 			})
+			if tc.wantStartErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantStartErr) {
+					t.Fatalf("Start error = %v, want the successor to fail on %q", err, tc.wantStartErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
