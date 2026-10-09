@@ -24,6 +24,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Goobers comment attribution](comment-attribution.md)
 - [Workflow config drift](config-drift.md)
 - [Config-repo PR validation gate](config-pr-validation-gate.md)
+- [Contained child worker transport](contained-child-transport.md)
 - [Copilot hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
 - [Configure cost publication](cost-publication.md)
 - [Custom deterministic stage cookbook](custom-stage-cookbook.md)
