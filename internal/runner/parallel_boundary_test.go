@@ -16,16 +16,16 @@ func TestParallelChildRecoveryIsNotANewExecutionBoundary(t *testing.T) {
 	branch := branchState{id: 1, startedAt: time.Now().Add(-time.Hour)}
 	steps := &atomic.Int64{}
 	var result parallelBranchResult
-	if r.stopParallelBranchAtBoundary(t.Context(), run, frame.in, par, branch, steps, &result, &resumeContext{}) || steps.Load() != 0 {
+	if r.stopParallelBranchAtBoundary(t.Context(), run, frame.in, par, branch, steps, &result, parallelStageRecovery{child: &resumeContext{}}) || steps.Load() != 0 {
 		t.Fatal("child recovery consumed a fresh step or timed out mid-stage", result)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if !r.stopParallelBranchAtBoundary(ctx, run, frame.in, par, branch, steps, &result, &resumeContext{}) || !result.paused {
+	if !r.stopParallelBranchAtBoundary(ctx, run, frame.in, par, branch, steps, &result, parallelStageRecovery{child: &resumeContext{}}) || !result.paused {
 		t.Fatal("recovery ignored shutdown")
 	}
 	result = parallelBranchResult{}
-	if !r.stopParallelBranchAtBoundary(t.Context(), run, frame.in, par, branch, steps, &result, nil) || result.status != journal.BranchTimedOut {
+	if !r.stopParallelBranchAtBoundary(t.Context(), run, frame.in, par, branch, steps, &result, parallelStageRecovery{}) || result.status != journal.BranchTimedOut {
 		t.Fatal("the next execution boundary ignored its expired budget", result)
 	}
 }

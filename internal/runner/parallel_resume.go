@@ -8,6 +8,7 @@ import (
 )
 
 type parallelStageRecovery struct {
+	parent     bool
 	task       *apiv1.ResultEnvelope
 	gate       *gate.Result
 	gateEvent  *journal.Event
@@ -47,6 +48,11 @@ func recoverParallelStage(writer *branchJournal, machine *workflow.Machine, stat
 		case boundary.Type == journal.EventStageFinished && boundary.Stage == state && !isInterruptedAttemptMarker(boundary):
 			restored.task = &last
 		case boundary.Type == journal.EventStageStarted && boundary.Stage == state:
+			var err error
+			restored.parent, err = parallelParentRecoveryAvailable(writer, task, history)
+			if err != nil {
+				return restored, err
+			}
 			if err := restoreInterruptedParallelTask(writer, machine, task, boundary, history, &restored); err != nil {
 				return restored, err
 			}
@@ -65,7 +71,7 @@ func restoreInterruptedParallelTask(writer *branchJournal, machine *workflow.Mac
 	}
 	errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
 	runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
-	if task.Type == apiv1.TaskAgentic {
+	if !restored.parent && task.Type == apiv1.TaskAgentic {
 		limits, err := workflow.TaskLimits(machine, task)
 		if err != nil {
 			return err
@@ -76,7 +82,11 @@ func restoreInterruptedParallelTask(writer *branchJournal, machine *workflow.Mac
 			errorDetail, runnerDetail = errorDetailFrom(interrupted), nil
 		}
 	}
-	if err := appendInterruptedAttemptClosure(writer, history, task.Name, attempt, errorDetail, runnerDetail, restored.task == nil); err != nil {
+	if restored.parent {
+		if err := refuseInterruptedMutation(history, task.Name, attempt); err != nil {
+			return err
+		}
+	} else if err := appendInterruptedAttemptClosure(writer, history, task.Name, attempt, errorDetail, runnerDetail, restored.task == nil); err != nil {
 		return err
 	}
 	if restored.task == nil {
@@ -95,4 +105,23 @@ func applyChildTaskResume(frame *taskFrame, child *resumeContext) {
 	}
 	frame.childWaitResume, frame.childWaitCompletion = child.childWait, child.childWaitCompletion
 	frame.childWaitAttempt, frame.childWaitClass = child.attempt, child.class
+}
+
+// Keep the exact verified host recovery receipt alive until runTask restores
+// its checkout and probes accepted child work. A generic failed-attempt marker
+// would consume this receipt before that probe could recover the durable wait.
+func parallelParentRecoveryAvailable(writer *branchJournal, task apiv1.Task, history []journal.Event) (bool, error) {
+	if task.ChildWorkflows == nil {
+		return false, nil
+	}
+	reader, err := journal.OpenReadOnly(writer.Dir())
+	if err != nil {
+		return false, err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return false, err
+	}
+	_, found, err := selectParentRecovery(reader, history, identity.RunID, task.Name, writer.branch)
+	return found, err
 }

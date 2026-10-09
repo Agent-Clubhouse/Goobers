@@ -6,7 +6,51 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/worktree"
 )
+
+func TestParallelParentRecoveryPreservesReceiptAndMutationRefusal(t *testing.T) {
+	for _, mutated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "recovered", true: "external-write"}[mutated], func(t *testing.T) {
+			_, run, frame := childOriginRuntime(t, &childOriginGoober{})
+			writer := &branchJournal{run: run, branch: 1}
+			frame.jr = writer
+			if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+				t.Fatal(err)
+			}
+			custody := ContainedParentWorkspaceCustody{Version: 1, Origin: frame.childOrigin, Workspace: worktree.StageCustody{OwnerRunID: frame.in.RunID}}
+			env := apiv1.InvocationEnvelope{RunID: frame.in.RunID, ChildWorkflowOrigin: frame.childOrigin}
+			if err := RecordContainedParentRecovery(run, journal.Event{Stage: frame.t.Name, Branch: 1, Attempt: 1, Seq: run.Seq()}, journal.Digest([]byte("contract")), custody, env, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if mutated {
+				if err := writer.Append(journal.Event{Type: journal.EventRefTouched, Stage: frame.t.Name, Attempt: 1, ExternalRef: &journal.ExternalRef{Kind: "pr", ID: "7"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reader, err := journal.OpenReadOnly(run.Dir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := run.Seq()
+			restored, err := recoverParallelStage(writer, frame.in.Machine, frame.t.Name, apiv1.ResultEnvelope{}, events)
+			if mutated {
+				if err == nil || !strings.Contains(err.Error(), "external mutation") {
+					t.Fatal("recovered receipt bypassed external-write refusal", err)
+				}
+			} else if err != nil || !restored.parent || restored.attempt != 2 || restored.accounting == nil {
+				t.Fatal("host receipt lost before accepted-child recovery", restored, err)
+			}
+			if run.Seq() != before {
+				t.Fatal("generic interruption consumed recovered custody")
+			}
+		})
+	}
+}
 
 func TestParallelChildRecoveryErrorCannotSettleUnresolvedWait(t *testing.T) {
 	r, run, frame := childOriginRuntime(t, &childOriginGoober{})

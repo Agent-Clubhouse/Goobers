@@ -12,7 +12,7 @@ import (
 // Branch time budgets are checked between stages, never by killing an active
 // invocation. Durable child waiting consumes neither its branch execution
 // allowance nor a step. Other runnable branches retain their own clocks.
-func (r *Runner) stopParallelBranchAtBoundary(ctx context.Context, run *journal.Run, in StartInput, par *parallelExec, branch branchState, steps *atomic.Int64, result *parallelBranchResult, restored *resumeContext) bool {
+func (r *Runner) stopParallelBranchAtBoundary(ctx context.Context, run *journal.Run, in StartInput, par *parallelExec, branch branchState, steps *atomic.Int64, result *parallelBranchResult, restored parallelStageRecovery) bool {
 	if ctx.Err() != nil {
 		result.status, result.paused = journal.BranchCancelled, parallelDrainCancellation(ctx)
 		return true
@@ -20,7 +20,7 @@ func (r *Runner) stopParallelBranchAtBoundary(ctx context.Context, run *journal.
 	// Reentering the same stage to restore child custody is not the next stage
 	// boundary. It must finish restoring/settling its child before a branch
 	// deadline or a new step allowance can terminate subsequent execution.
-	if restored != nil {
+	if restored.child != nil || restored.parent {
 		return false
 	}
 	expired, err := parallelBranchExpired(run, in, par.spec.Name, branch, par.spec.BranchTimeoutSeconds, time.Now())

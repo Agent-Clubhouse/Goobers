@@ -140,7 +140,14 @@ func appendInterruptedAttemptClosure(branchJournal *branchJournal, history []jou
 	}); err != nil {
 		return err
 	}
-	if checkMutation && interruptedAttemptMutated(history, state, attempt) {
+	if checkMutation {
+		return refuseInterruptedMutation(history, state, attempt)
+	}
+	return nil
+}
+
+func refuseInterruptedMutation(history []journal.Event, state string, attempt int) error {
+	if interruptedAttemptMutated(history, state, attempt) {
 		return fmt.Errorf(
 			"runner: refusing to resume stage %q: attempt %d already touched an external mutation before the runner was interrupted; redispatching would duplicate it — reconcile manually, then rerun",
 			state, attempt,
@@ -514,11 +521,10 @@ func (r *Runner) runParallelBranch(
 	replayTask, replayGate, replayGateEvent := restored.task, restored.gate, restored.gateEvent
 	startAttempt, firstClass := restored.attempt, restored.class
 	committedWorkOnInfra, resumeAccounting := restored.committed, restored.accounting
-	childResume := restored.child
 	var retryInstructionAddendum string
 
 	for {
-		if r.stopParallelBranchAtBoundary(ctx, jr, in, par, branch, stepBudget, &result, childResume) {
+		if r.stopParallelBranchAtBoundary(ctx, jr, in, par, branch, stepBudget, &result, restored) {
 			return result
 		}
 		branchJournal.SetMachineState(state)
@@ -530,7 +536,7 @@ func (r *Runner) runParallelBranch(
 			replayed := replayTask != nil
 			if replayed {
 				stageResult = *replayTask
-				replayTask, childResume = nil, nil
+				replayTask, restored.child, restored.parent = nil, nil, false
 			} else {
 				attemptAddendum := retryInstructionAddendum
 				retryInstructionAddendum = ""
@@ -543,8 +549,8 @@ func (r *Runner) runParallelBranch(
 					workspaceRevision: &in.workspaceRevision,
 					repoRef:           &in.RepoRef,
 				}
-				applyChildTaskResume(&frame, childResume)
-				childResume = nil
+				applyChildTaskResume(&frame, restored.child)
+				restored.child, restored.parent = nil, false
 				stageResult, produced, err = r.runTask(
 					ctx, frame,
 					branch.id, startAttempt, firstClass, attemptAddendum,
