@@ -337,18 +337,18 @@ func (c Config) EvaluateAndRecord(observations []Observation, out Journal) (Deci
 	return decision, proposal, nil
 }
 
-// Retired reports whether an arm exceeds the configured failure-rate limit.
+// Retired reports whether an arm exceeds the configured failure-rate limit
+// after at least MinSamples observations. The default (control) arm gets no
+// exemption: it is retired under the same rule once it has enough evidence.
 func (c Config) Retired(arm string, observations []Observation) bool {
 	if c.Validate() != nil {
 		return false
 	}
 	selected := filterWindow(observations, c.Stage, "")
-	for _, observation := range selected {
-		if observation.Arm == arm {
-			return failureRate(selected, arm) > c.MaxFailureRate
-		}
+	if armSamples(selected, arm) < c.MinSamples {
+		return false
 	}
-	return false
+	return failureRate(selected, arm) > c.MaxFailureRate
 }
 
 // MarshalJSON validates and serializes an observation.

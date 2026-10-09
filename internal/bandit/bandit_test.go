@@ -357,3 +357,27 @@ func TestEvaluateExcludesRetiredArms(t *testing.T) {
 		t.Fatalf("decision = %+v, should not nominate retired arm", decision)
 	}
 }
+
+func TestRetiredRequiresMinSamples(t *testing.T) {
+	c := testConfig()
+	one := []Observation{{Stage: "review", Arm: "treatment", Success: false, Window: "eval"}}
+	if c.Retired("treatment", one) {
+		t.Fatal("single failure must not retire an arm below MinSamples")
+	}
+	two := append(one, Observation{Stage: "review", Arm: "treatment", Success: false, Window: "eval"})
+	if !c.Retired("treatment", two) {
+		t.Fatal("arm at MinSamples above failure-rate bound should retire")
+	}
+}
+
+func TestRetiredDefaultArmFollowsSameFloor(t *testing.T) {
+	c := testConfig()
+	one := []Observation{{Stage: "review", Arm: "control", Success: false, Window: "eval"}}
+	if c.Retired("control", one) {
+		t.Fatal("control must not retire after a single failure")
+	}
+	two := append(one, Observation{Stage: "review", Arm: "control", Success: false, Window: "eval"})
+	if !c.Retired("control", two) {
+		t.Fatal("control is subject to the same rule once MinSamples is reached")
+	}
+}
