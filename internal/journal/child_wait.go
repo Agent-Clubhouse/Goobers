@@ -109,12 +109,21 @@ func ParkedOnChild(events []Event) bool {
 
 // DecodeChildWaitHeader verifies a bounded wait against its durable started event.
 func DecodeChildWaitHeader(event, started Event) (*ChildWaitHeader, error) {
+	if event.Branch != 0 {
+		return nil, fmt.Errorf("runner: child wait is not bound to a serial stage attempt")
+	}
+	return decodeBoundChildWaitHeader(event, started)
+}
+
+// decodeBoundChildWaitHeader also supports read-only projection of branch waits.
+// Runtime admission retains its existing serial-only boundary above.
+func decodeBoundChildWaitHeader(event, started Event) (*ChildWaitHeader, error) {
 	data, err := json.Marshal(event.Runner["childWait"])
 	if err != nil || len(data) > MaxChildWaitBytes {
 		return nil, fmt.Errorf("runner: invalid child wait record")
 	}
 	var record ChildWaitHeader
-	if err := json.Unmarshal(data, &record); err != nil || record.Version != 1 || event.Stage != started.Stage || event.Attempt != started.Attempt || event.Branch != 0 || record.PolicyAttempts < 0 || record.InfrastructureFailures < 0 || record.ParentRunID != record.Request.ParentRunID {
+	if err := json.Unmarshal(data, &record); err != nil || record.Version != 1 || event.Stage != started.Stage || event.Attempt != started.Attempt || event.Branch != started.Branch || record.PolicyAttempts < 0 || record.InfrastructureFailures < 0 || record.ParentRunID != record.Request.ParentRunID {
 		return nil, fmt.Errorf("runner: child wait is not bound to a serial stage attempt")
 	}
 	origin, err := ChildWorkflowOriginForEvent(record.ParentRunID, started)
