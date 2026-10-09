@@ -908,6 +908,7 @@ func New(cfg Config) (*Runner, error) {
 // StartInput is what triggers one run.
 type StartInput struct {
 	parallelSlot     *parallelBranchSlot
+	parallelChild    *parallelChildCapacity
 	configGeneration string
 	// instanceID is assigned by Start or recovered from the durable journal
 	// on resume. A worker/config reload cannot replace a run's provenance.

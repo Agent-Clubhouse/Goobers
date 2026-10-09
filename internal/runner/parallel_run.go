@@ -288,6 +288,10 @@ func (r *Runner) runConcurrentParallel(
 		workspaceBranch = lastWorkspaceBranch(rootEvents, in.Machine, r.branchNamespaceFor(in.Gaggle))
 	}
 	branchEvents := newParallelBranchEventIndex(events, p.Name)
+	childCapacity, err := r.parallelChildOwner(in, par, events)
+	if err != nil {
+		return concurrentParallelResult{}, err
+	}
 
 	limit := int(p.MaxConcurrentBranches)
 	if limit > len(p.Branches) {
@@ -321,9 +325,13 @@ func (r *Runner) runConcurrentParallel(
 
 	slots := newParallelBranchSlots(limit)
 	dispatch := &parallelDispatch{released: slots.changed, queue: queue, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
-	dispatch.settle = func(result parallelBranchResult) error { return settleConcurrentBranch(jr, par, p.Name, result) }
+	dispatch.settle = func(result parallelBranchResult) error {
+		return finishParallelChildBranch(ctx, childCapacity, par.branchSnapshot(result.index).id, func() error {
+			return settleConcurrentBranch(jr, par, p.Name, result)
+		})
+	}
 	dispatch.cancelQueued = func() error {
-		return cancelQueuedParallelBranches(jr, par, p, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in)
+		return cancelQueuedParallelBranches(par, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in, dispatch.settle)
 	}
 	dispatch.launch = func(index int) (bool, error) {
 		slot, available := slots.tryAcquire()
@@ -347,7 +355,7 @@ func (r *Runner) runConcurrentParallel(
 			}
 		}
 		branchInput := in
-		branchInput.parallelSlot = slot
+		branchInput.parallelSlot, branchInput.parallelChild = slot, childCapacity
 		go func() {
 			result := r.runParallelBranch(
 				branchCtx, jr, par, branchInput, branch, basePointers, baseLastStage,
