@@ -434,7 +434,15 @@ func betaSample(alpha, beta float64, seed uint64) float64 {
 }
 
 func uniform(seed uint64) float64 {
+	seed = splitmix64(seed)
 	return float64(seed>>11) / float64(uint64(1)<<53)
+}
+
+func splitmix64(x uint64) uint64 {
+	x += 0x9e3779b97f4a7c15
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+	return x ^ (x >> 31)
 }
 
 func filterWindow(observations []Observation, stage, window string) []Observation {
