@@ -1620,6 +1620,41 @@ func TestStageTimeoutCoherenceSurfacesInValidate(t *testing.T) {
 	}
 }
 
+func TestUnparseableCIPollDurationSurfacesInValidate(t *testing.T) {
+	ix := newIndex()
+	ix.gaggles["example"] = apiv1.Gaggle{}
+	report := &Report{}
+	workflow := apiv1.Workflow{
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example",
+			Start:  "ci",
+			Tasks: []apiv1.Task{{
+				Name:           "ci",
+				Type:           apiv1.TaskDeterministic,
+				Goal:           "Wait for CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
+				TimeoutSeconds: 3600,
+				Inputs: map[string]string{
+					"kind":               "ci-poll",
+					"prNumber":           "1",
+					"pollTimeoutSeconds": "3300",
+				},
+			}},
+		},
+	}
+	workflow.Name = "ci-review"
+	ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+	for _, issue := range report.Issues {
+		if issue.Severity == Error && issue.Code == errorStageTimeout &&
+			strings.Contains(issue.Message, `inputs.pollTimeoutSeconds "3300" is not a valid duration`) &&
+			strings.Contains(issue.Message, `"3300s" (55m0s)`) {
+			return
+		}
+	}
+	t.Fatalf("unparseable duration not surfaced as an error: %v", report.Issues)
+}
+
 func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
 	ix := newIndex()
 	for _, definition := range []apiv1.Workflow{

@@ -12,12 +12,34 @@ const (
 	InputTimeout     = "timeout"
 	InputPollTimeout = "pollTimeoutSeconds"
 
+	InputPollInterval             = "pollIntervalSeconds"
+	InputPollMaxInterval          = "pollMaxIntervalSeconds"
+	InputRetryFailedChecksBackoff = "retryFailedChecksBackoffSeconds"
+
+	KindExternalTelemetry           = "external-telemetry"
+	InputTelemetryWindow            = "window"
+	InputTelemetryFreshness         = "freshness"
+	InputTelemetryQueryTimeout      = "queryTimeout"
+	InputTelemetryQueryRetryBackoff = "queryRetryBackoff"
+
 	DefaultTimeout     = 10 * time.Minute
 	DefaultPollTimeout = 30 * time.Minute
 
 	ciPollResultMargin      = time.Second
 	mergeQueuePollMinMargin = time.Minute
 )
+
+// CIPollDurationInputs lists the ci-poll stage inputs the executor parses
+// with time.ParseDuration, despite the "Seconds" suffix on their names.
+func CIPollDurationInputs() []string {
+	return []string{InputPollInterval, InputPollMaxInterval, InputPollTimeout, InputRetryFailedChecksBackoff}
+}
+
+// ExternalTelemetryDurationInputs lists the external-telemetry stage inputs
+// the executor parses with time.ParseDuration and requires to be positive.
+func ExternalTelemetryDurationInputs() []string {
+	return []string{InputTelemetryWindow, InputTelemetryFreshness, InputTelemetryQueryTimeout, InputTelemetryQueryRetryBackoff}
+}
 
 // CIPollBudget leaves time for a typed timeout result to cross the stage
 // boundary before the runner's enclosing wall-clock limit expires.
