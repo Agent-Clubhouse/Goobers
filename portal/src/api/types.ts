@@ -1088,6 +1088,8 @@ export interface RunReliability {
     branch?: string;
     branchSha?: string;
     pullRequest?: { provider: string; kind: string; id: string; url?: string };
+    /** "draft" or "ready" when reported by the opening stage, otherwise "unknown". */
+    pullRequestDraft?: string;
     recoveryRunId?: string;
   };
   nextAction: string;

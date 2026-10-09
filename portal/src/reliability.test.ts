@@ -47,14 +47,22 @@ describe("reliabilitySummary", () => {
         failure: { classification: "escalation", evidenceRule: "terminalCause.classification" },
         budgets: [{ kind: "local-infra", consumed: 1, remaining: 2, evidence: "terminalCause" }],
         latestVerdict: "escalate",
-        retained: { branch: "goobers/5313", branchSha: "abc123", recoveryRunId: "run-1" },
+        acceptance: { state: "complete", digest: "sha256:acc" },
+        retained: {
+          branch: "goobers/5313",
+          branchSha: "abc123",
+          pullRequest: { provider: "github", kind: "pr", id: "42" },
+          pullRequestDraft: "draft",
+          recoveryRunId: "run-1",
+        },
         nextAction: "human intervention required",
         humanInterventionReason: "reviewer requested a human decision",
       }),
     );
     expect(line).toContain("budgets local-infra 1 used/2 left");
     expect(line).toContain("verdict escalate");
-    expect(line).toContain("retained branch goobers/5313@abc123, recovers run-1");
+    expect(line).toContain("acceptance complete sha256:acc");
+    expect(line).toContain("retained branch goobers/5313@abc123, pr 42 (draft), recovers run-1");
     expect(line.endsWith("needs human: reviewer requested a human decision")).toBe(true);
   });
 });

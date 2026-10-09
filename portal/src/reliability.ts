@@ -14,7 +14,8 @@ function retainedLabel(retained: RunReliability["retained"]): string {
     parts.push(`branch ${retained.branch}${retained.branchSha ? `@${retained.branchSha}` : ""}`);
   }
   if (retained.pullRequest) {
-    parts.push(`pr ${retained.pullRequest.url || retained.pullRequest.id}`);
+    const draft = retained.pullRequestDraft ? ` (${retained.pullRequestDraft})` : "";
+    parts.push(`pr ${retained.pullRequest.url || retained.pullRequest.id}${draft}`);
   }
   if (retained.recoveryRunId) {
     parts.push(`recovers ${retained.recoveryRunId}`);
@@ -40,7 +41,7 @@ export function reliabilitySummary(reliability: RunReliability): string {
     `failure ${failure.classification}${failure.code ? ` ${failure.code}` : ""} (${failure.evidenceRule})`,
     `budgets ${reliability.budgets.map(budgetLabel).join(", ")}`,
     `verdict ${reliability.latestVerdict}`,
-    `acceptance ${reliability.acceptance.state}`,
+    `acceptance ${reliability.acceptance.state}${reliability.acceptance.digest ? ` ${reliability.acceptance.digest}` : ""}`,
     `retained ${retainedLabel(reliability.retained)}`,
     `next ${reliability.nextAction}`,
   ];

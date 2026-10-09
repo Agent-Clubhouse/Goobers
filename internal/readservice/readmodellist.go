@@ -149,6 +149,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		TerminalReason:   terminalReasonFromReadModel(row),
 		Operator:         operatorFromReadModel(row, observedAt),
 		Stages:           row.Stages,
+		reliabilityFacts: row.Operator.Reliability,
 	})
 }
 

@@ -1008,11 +1008,18 @@ export const goWireFixtures = {
             ],
             "latestVerdict": "escalate",
             "acceptance": {
-              "state": "unknown"
+              "state": "complete",
+              "digest": "sha256:acc"
             },
             "retained": {
               "branch": "goobers/implementation/run-122",
               "branchSha": "abc123",
+              "pullRequest": {
+                "provider": "github",
+                "kind": "pr",
+                "id": "42"
+              },
+              "pullRequestDraft": "draft",
               "recoveryRunId": "run-122"
             },
             "nextAction": "human intervention required",
@@ -1157,11 +1164,18 @@ export const goWireFixtures = {
         ],
         "latestVerdict": "escalate",
         "acceptance": {
-          "state": "unknown"
+          "state": "complete",
+          "digest": "sha256:acc"
         },
         "retained": {
           "branch": "goobers/implementation/run-122",
           "branchSha": "abc123",
+          "pullRequest": {
+            "provider": "github",
+            "kind": "pr",
+            "id": "42"
+          },
+          "pullRequestDraft": "draft",
           "recoveryRunId": "run-122"
         },
         "nextAction": "human intervention required",

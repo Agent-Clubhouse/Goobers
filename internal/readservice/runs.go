@@ -201,6 +201,8 @@ type RunSummary struct {
 	Operator       OperatorRunSummary `json:"operator"`
 	Stages         []string           `json:"-"`
 	stageAttempts  map[string][]StageAttempt
+	// reliabilityFacts feeds the #5313 reliability projection.
+	reliabilityFacts readmodel.ReliabilityFacts
 }
 
 // RunLineage is the canonical continuation projection shared by every read
@@ -1241,7 +1243,6 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 			causeStatus = "recorded"
 		}
 	}
-	summary = withTerminalCauseReliability(summary, cause)
 	var escalation *EscalationCause
 	if summary.Phase == journal.PhaseEscalated {
 		escalation = cause
@@ -1959,7 +1960,7 @@ func summarizeRunForStage(
 		RetryBackoff:     observations.retryBackoff,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
-	}, observations.activity), nil
+	}, observations), nil
 }
 
 func projectOperatorStageOutputs(operator *OperatorRunSummary, event journal.Event, claimedIssueFound bool) bool {

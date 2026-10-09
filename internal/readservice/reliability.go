@@ -2,11 +2,11 @@ package readservice
 
 import (
 	"cmp"
-	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/runcontrol"
 )
 
@@ -17,7 +17,10 @@ const (
 	reliabilityStateActive   = "active"
 	reliabilityStateRetrying = "retrying"
 
-	reliabilityEvidenceJournal       = "journal"
+	reliabilityEvidenceJournal = "journal"
+
+	pullRequestDraftDraft            = "draft"
+	pullRequestDraftReady            = "ready"
 	reliabilityEvidenceTerminalCause = "terminalCause"
 
 	reliabilityFailureNone         = "none"
@@ -54,8 +57,8 @@ type RunReliability struct {
 	// CurrentAttempt is the active attempt number of CurrentStage; zero means
 	// no attempt is active or the attempt is not recorded.
 	CurrentAttempt int `json:"currentAttempt,omitempty"`
-	// Failure classifies a running run's latest recorded error; a terminal
-	// run's failure is unknown until a recorded terminal cause refines it.
+	// Failure classifies a running run's latest recorded error, or a terminal
+	// run's recorded terminal cause; a terminal run without one is unknown.
 	Failure ReliabilityFailure `json:"failure"`
 	// Budgets reports consumed and remaining counts per retry target.
 	Budgets []ReliabilityBudget `json:"budgets"`
@@ -67,8 +70,9 @@ type RunReliability struct {
 	Retained ReliabilityRetainedRefs `json:"retained"`
 	// NextAction is what the system or an operator does next.
 	NextAction string `json:"nextAction"`
-	// HumanInterventionReason is the exact recorded reason an escalated run
-	// needs a human, or unknown when the journal does not record one.
+	// HumanInterventionReason is the exact reason an escalated run needs a
+	// human, taken from its recorded terminal cause, or unknown when the
+	// journal does not record one.
 	HumanInterventionReason string `json:"humanInterventionReason,omitempty"`
 }
 
@@ -101,9 +105,10 @@ type ReliabilityBudget struct {
 
 // ReliabilityAcceptance is the acceptance-criteria mapping state.
 type ReliabilityAcceptance struct {
-	// State is the mapping state, unknown when no standard source records it.
+	// State is the latest stage-reported mapping state ("recorded" when only a
+	// mapping artifact exists), or unknown when no stage reported one.
 	State string `json:"state"`
-	// Digest identifies the mapping artifact when one is recorded.
+	// Digest identifies the latest mapping artifact when one is recorded.
 	Digest string `json:"digest,omitempty"`
 }
 
@@ -115,6 +120,10 @@ type ReliabilityRetainedRefs struct {
 	BranchSHA string `json:"branchSha,omitempty"`
 	// PullRequest is the PR this run opened or touched.
 	PullRequest *journal.ExternalRef `json:"pullRequest,omitempty"`
+	// PullRequestDraft is "draft" or "ready" when the stage that opened
+	// PullRequest reported its draft state, otherwise unknown; empty when no
+	// PR is retained.
+	PullRequestDraft string `json:"pullRequestDraft,omitempty"`
 	// RecoveryRunID is the run this run continues or resumed from.
 	RecoveryRunID string `json:"recoveryRunId,omitempty"`
 }
@@ -141,7 +150,7 @@ func projectRunReliability(summary RunSummary) RunReliability {
 		Failure:        reliabilityFailure(summary),
 		Budgets:        reliabilityBudgets(summary),
 		LatestVerdict:  reliabilityUnknown,
-		Acceptance:     ReliabilityAcceptance{State: reliabilityUnknown},
+		Acceptance:     reliabilityAcceptance(summary.reliabilityFacts),
 		Retained:       retainedRefs(summary),
 		NextAction:     reliabilityNextAction(summary, state),
 	}
@@ -149,12 +158,22 @@ func projectRunReliability(summary RunSummary) RunReliability {
 		out.LatestVerdict = summary.Operator.Review.Verdict
 	}
 	if summary.Phase == journal.PhaseEscalated {
-		// List-path TerminalReason may be a heuristic (the read model's last
-		// error, or a legacy journal scan), so only a recorded terminal cause
-		// supplies the exact reason; see withTerminalCauseReliability.
+		// TerminalReason may be a heuristic (the read model's last error, or a
+		// legacy journal scan), so only a recorded terminal cause supplies the
+		// exact reason; see applyTerminalCause.
 		out.HumanInterventionReason = reliabilityUnknown
 	}
+	if summary.Terminal {
+		applyTerminalCause(&out, summary.Phase, summary.reliabilityFacts.TerminalCause)
+	}
 	return out
+}
+
+func reliabilityAcceptance(facts readmodel.ReliabilityFacts) ReliabilityAcceptance {
+	if facts.AcceptanceState == "" {
+		return ReliabilityAcceptance{State: reliabilityUnknown}
+	}
+	return ReliabilityAcceptance{State: facts.AcceptanceState, Digest: facts.AcceptanceDigest}
 }
 
 func currentAttempt(summary RunSummary) int {
@@ -219,6 +238,15 @@ func retainedRefs(summary RunSummary) ReliabilityRetainedRefs {
 	if summary.Operator.PullRequest != nil {
 		pr := *summary.Operator.PullRequest
 		refs.PullRequest = &pr
+		refs.PullRequestDraft = reliabilityUnknown
+		// Draft evidence counts only for the PR it was reported with, so a
+		// later touched PR never inherits another PR's state.
+		if draft := summary.reliabilityFacts.PullRequestDraft; draft != nil && draft.ID == pr.ID {
+			refs.PullRequestDraft = pullRequestDraftReady
+			if draft.Draft {
+				refs.PullRequestDraft = pullRequestDraftDraft
+			}
+		}
 	}
 	if summary.Lineage != nil {
 		refs.Branch = summary.Lineage.WorkspaceBranch
@@ -271,6 +299,9 @@ func (r RunReliability) StatusLine() string {
 	}
 	b.WriteString("; budgets " + strings.Join(budgets, ", "))
 	b.WriteString("; verdict " + r.LatestVerdict + "; acceptance " + r.Acceptance.State)
+	if r.Acceptance.Digest != "" {
+		b.WriteString(" " + r.Acceptance.Digest)
+	}
 	b.WriteString("; retained " + r.Retained.summary())
 	b.WriteString("; next " + r.NextAction)
 	if r.HumanInterventionReason != "" {
@@ -296,7 +327,11 @@ func (r ReliabilityRetainedRefs) summary() string {
 		parts = append(parts, branch)
 	}
 	if r.PullRequest != nil {
-		parts = append(parts, "pr "+cmp.Or(r.PullRequest.URL, r.PullRequest.ID))
+		pr := "pr " + cmp.Or(r.PullRequest.URL, r.PullRequest.ID)
+		if r.PullRequestDraft != "" {
+			pr += " (" + r.PullRequestDraft + ")"
+		}
+		parts = append(parts, pr)
 	}
 	if r.RecoveryRunID != "" {
 		parts = append(parts, "recovers "+r.RecoveryRunID)
@@ -307,34 +342,30 @@ func (r ReliabilityRetainedRefs) summary() string {
 	return strings.Join(parts, ", ")
 }
 
-// withTerminalCauseReliability refines the projection with a durably recorded
-// terminal cause, which carries the authoritative classification and the
-// selector's configured allowances pinned at run start. Legacy causes rebuilt
-// from log text are ignored so heuristics never look authoritative.
-func withTerminalCauseReliability(summary RunSummary, cause *EscalationCause) RunSummary {
-	if cause == nil || cause.Record == nil || summary.Operator.Reliability == nil {
-		return summary
+// applyTerminalCause refines the projection with a durably recorded terminal
+// cause, which carries the authoritative classification and the selector's
+// configured allowances pinned at run start. Both list paths fold the record
+// from run.finished; legacy causes rebuilt from log text never reach here, so
+// heuristics never look authoritative.
+func applyTerminalCause(out *RunReliability, phase journal.RunPhase, record *journal.TerminalCause) {
+	if record == nil {
+		return
 	}
-	record := cause.Record
-	reliability := *summary.Operator.Reliability
-	reliability.Failure = ReliabilityFailure{
+	out.Failure = ReliabilityFailure{
 		Classification: string(record.Classification),
 		EvidenceRule:   reliabilityRuleTerminalCause,
 		Code:           record.Code,
 	}
-	if summary.Phase == journal.PhaseEscalated {
-		reliability.HumanInterventionReason = cmp.Or(record.Message, record.Code, reliabilityUnknown)
+	if phase == journal.PhaseEscalated {
+		out.HumanInterventionReason = cmp.Or(record.Message, record.Code, reliabilityUnknown)
 	}
-	reliability.Budgets = slices.Clone(reliability.Budgets)
 	repassKind := budgetImplementationReview
 	if record.Code == runcontrol.ReasonInfrastructureBudgetExhausted {
 		repassKind = budgetLocalInfra
 	}
-	applyTerminalBudget(reliability.Budgets, repassKind, record.Repass)
-	applyTerminalBudget(reliability.Budgets, budgetStagePolicy, record.Retry)
-	applyTerminalBudget(reliability.Budgets, budgetCIPoll, record.Poll)
-	summary.Operator.Reliability = &reliability
-	return summary
+	applyTerminalBudget(out.Budgets, repassKind, record.Repass)
+	applyTerminalBudget(out.Budgets, budgetStagePolicy, record.Retry)
+	applyTerminalBudget(out.Budgets, budgetCIPoll, record.Poll)
 }
 
 // applyTerminalBudget replaces a budget with the terminal record's

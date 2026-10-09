@@ -1041,7 +1041,7 @@ func TestGitHubProviderOpenPullRequestIsIdempotentOnRepass(t *testing.T) {
 		decodeJSON(t, r, &body)
 		patchedTitle, _ = body["title"].(string)
 		patches++
-		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
+		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9", "draft": true})
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -1066,6 +1066,11 @@ func TestGitHubProviderOpenPullRequestIsIdempotentOnRepass(t *testing.T) {
 	}
 	if patchedTitle != "Implement #13 (repass)" {
 		t.Fatalf("patched title = %q", patchedTitle)
+	}
+	// The PATCH leaves draft untouched, so the reused PR's reported state
+	// must surface rather than the request's (#5313).
+	if result.Draft == nil || !*result.Draft {
+		t.Fatalf("result.Draft = %v, want reported draft=true", result.Draft)
 	}
 }
 

@@ -133,6 +133,13 @@ type OperatorFacts struct {
 	WorkspaceBranch       string
 	WorkspaceBranchSHA    string
 	InjectedInputs        []journal.InputRef
+	Reliability           ReliabilityFacts
+}
+
+func (o *OperatorFacts) foldObservations(event journal.Event) {
+	o.Activity = o.Activity.After(event)
+	o.RetryBackoff = o.RetryBackoff.After(event)
+	o.Reliability = o.Reliability.After(event)
 }
 
 // StageRow is one projected (run, stage) pair.
@@ -359,8 +366,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		if !event.KnownSchema() {
 			continue
 		}
-		row.Operator.Activity = row.Operator.Activity.After(event)
-		row.Operator.RetryBackoff = row.Operator.RetryBackoff.After(event)
+		row.Operator.foldObservations(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}

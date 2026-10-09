@@ -108,7 +108,12 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 	trigger := journal.Trigger{Kind: journal.TriggerItem, Ref: "5313"}
 
 	active, clock := createFixtureRun(t, layout, machine, "reliability-active", "implementation", "goobers", fixedTime, trigger, true)
-	appendReliabilityEvents(t, active, clock, journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	appendReliabilityEvents(t, active, clock,
+		journal.Event{Type: journal.EventStageStarted, Stage: "map-acceptance", Attempt: 1},
+		journal.Event{Type: journal.EventStageFinished, Stage: "map-acceptance", Attempt: 1, Status: string(apiv1.ResultSuccess),
+			Outputs: map[string]any{"acceptanceMapping": "Partial", "acceptanceMappingDigest": "sha256:acc"}},
+		journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+	)
 	if err := active.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +142,10 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 			Code: "workspace_failed", Message: "recovered earlier", Causes: []journal.ErrorCause{{Code: "workspace_failed", Class: "infra"}},
 		}},
 		journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		journal.Event{Type: journal.EventStageStarted, Stage: "open-pr", Attempt: 1},
+		journal.Event{Type: journal.EventRefTouched, Stage: "open-pr", ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"}},
+		journal.Event{Type: journal.EventStageFinished, Stage: "open-pr", Attempt: 1, Status: string(apiv1.ResultSuccess),
+			Outputs: map[string]any{"opened": "true", "prNumber": "42", "draft": "true"}},
 		journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "escalate", Target: journal.TargetEscalate},
 		journal.Event{
 			Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated),
@@ -153,13 +162,25 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runIDs := []string{"reliability-active", "reliability-retrying", "reliability-escalated"}
+	legacy, clock := createFixtureRun(t, layout, machine, "reliability-legacy", "implementation", "goobers", fixedTime.Add(3*time.Minute), trigger, true)
+	appendReliabilityEvents(t, legacy, clock,
+		journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		journal.Event{Type: journal.EventError, Stage: "implement", Error: &journal.ErrorDetail{
+			Code: "workspace_failed", Message: "recovered earlier", Causes: []journal.ErrorCause{{Code: "workspace_failed", Class: "infra"}},
+		}},
+		journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "escalate", Target: journal.TargetEscalate},
+		journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	)
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runIDs := []string{"reliability-active", "reliability-retrying", "reliability-escalated", "reliability-legacy"}
 	fromJournal := reliabilityByRun(t, LocalSources{Layout: layout, Definitions: testDefinitions()})
 	store := projectReliabilityRuns(t, layout, runIDs...)
 	fromReadModel := reliabilityByRun(t, LocalSources{Layout: layout, Definitions: testDefinitions(), ReadModel: store})
-	// The read model stores no terminal-cause column, so only active and
-	// retrying runs are expected to be identical across the two list paths.
-	for _, runID := range runIDs[:2] {
+	for _, runID := range runIDs {
 		if !reflect.DeepEqual(fromJournal[runID], fromReadModel[runID]) {
 			t.Fatalf("%s: journal reliability %s != read model %s", runID, fromJournal[runID].StatusLine(), fromReadModel[runID].StatusLine())
 		}
@@ -168,7 +189,7 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 	got := fromJournal["reliability-active"]
 	if got.State != "active" || got.CurrentStage != "implement" || got.CurrentAttempt != 1 ||
 		got.Failure.Classification != "none" || got.Failure.EvidenceRule != "no-error-recorded" ||
-		got.LatestVerdict != "unknown" || got.Acceptance.State != "unknown" ||
+		got.LatestVerdict != "unknown" || got.Acceptance != (ReliabilityAcceptance{State: "partial", Digest: "sha256:acc"}) ||
 		got.NextAction != "finish implement" || got.HumanInterventionReason != "" {
 		t.Fatalf("active reliability = %+v", got)
 	}
@@ -188,19 +209,31 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		t.Fatalf("retrying status line = %q", line)
 	}
 
+	// Both list paths fold the recorded terminal cause from run.finished, so
+	// status and the dashboard show the exact reason and pinned budgets.
 	got = fromJournal["reliability-escalated"]
 	if got.State != "escalated" || got.LatestVerdict != "escalate" ||
-		got.NextAction != "human intervention required" {
+		got.NextAction != "human intervention required" ||
+		got.Failure != (ReliabilityFailure{Classification: string(journal.TerminalEscalation), EvidenceRule: "terminalCause.classification", Code: runcontrol.ReasonInfrastructureBudgetExhausted}) ||
+		got.HumanInterventionReason != "reviewer requested a human decision" ||
+		got.Acceptance.State != "unknown" || got.Retained.PullRequestDraft != "draft" {
 		t.Fatalf("escalated reliability = %+v", got)
 	}
-	assertBudget(t, "escalated list", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
-	// Neither list path carries the recorded terminal cause, and the earlier
-	// recovered infra error must not be reported as what ended the run.
-	for name, got := range map[string]RunReliability{"journal": got, "read model": fromReadModel["reliability-escalated"]} {
-		if got.State != "escalated" || got.Failure.Classification != "unknown" ||
-			got.Failure.EvidenceRule != "terminal-cause-not-recorded" || got.HumanInterventionReason != "unknown" {
-			t.Fatalf("%s escalated reliability must mark missing cause unknown: %+v", name, got)
-		}
+	assertBudget(t, "escalated", budgetByKind(t, got, "local-infra"), intPtr(1), intPtr(2), "terminalCause")
+	assertBudget(t, "escalated", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
+	assertBudget(t, "escalated", budgetByKind(t, got, "ci-poll"), nil, nil, "unknown")
+	if line := got.StatusLine(); !strings.Contains(line, "local-infra 1 used/2 left") ||
+		!strings.Contains(line, "retained pr 42 (draft)") ||
+		!strings.HasSuffix(line, "; needs human: reviewer requested a human decision") {
+		t.Fatalf("escalated status line = %q", line)
+	}
+
+	// Without a recorded terminal cause the earlier recovered infra error
+	// must not be reported as what ended the run.
+	got = fromJournal["reliability-legacy"]
+	if got.State != "escalated" || got.Failure.Classification != "unknown" ||
+		got.Failure.EvidenceRule != "terminal-cause-not-recorded" || got.HumanInterventionReason != "unknown" {
+		t.Fatalf("legacy escalated reliability must mark missing cause unknown: %+v", got)
 	}
 
 	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
@@ -211,16 +244,9 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refined := detail.Operator.Reliability
-	if refined == nil || refined.Failure.Classification != string(journal.TerminalEscalation) ||
-		refined.Failure.EvidenceRule != "terminalCause.classification" ||
-		refined.Failure.Code != runcontrol.ReasonInfrastructureBudgetExhausted ||
-		refined.HumanInterventionReason != "reviewer requested a human decision" {
-		t.Fatalf("detail reliability = %+v", refined)
+	if detail.Operator.Reliability == nil || !reflect.DeepEqual(*detail.Operator.Reliability, fromJournal["reliability-escalated"]) {
+		t.Fatalf("detail reliability = %+v, want list projection %+v", detail.Operator.Reliability, fromJournal["reliability-escalated"])
 	}
-	assertBudget(t, "escalated detail", budgetByKind(t, *refined, "local-infra"), intPtr(1), intPtr(2), "terminalCause")
-	assertBudget(t, "escalated detail", budgetByKind(t, *refined, "implementation-review"), intPtr(0), nil, "journal")
-	assertBudget(t, "escalated detail", budgetByKind(t, *refined, "ci-poll"), nil, nil, "unknown")
 }
 
 func TestRunReliabilityCompletedRunIgnoresRecoveredErrorAndShowsRetainedRefs(t *testing.T) {
@@ -232,7 +258,7 @@ func TestRunReliabilityCompletedRunIgnoresRecoveredErrorAndShowsRetainedRefs(t *
 	if got.Failure.Classification != "none" || got.Failure.EvidenceRule != "run-completed" {
 		t.Fatalf("completed run failure = %+v", got.Failure)
 	}
-	if line := got.StatusLine(); !strings.Contains(line, "; retained branch goobers/5313@abc123, pr 42;") {
+	if line := got.StatusLine(); !strings.Contains(line, "; retained branch goobers/5313@abc123, pr 42 (unknown);") {
 		t.Fatalf("status line missing retained refs: %q", line)
 	}
 }
