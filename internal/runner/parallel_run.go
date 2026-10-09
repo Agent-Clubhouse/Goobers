@@ -151,6 +151,7 @@ func appendInterruptedAttemptClosure(branchJournal *branchJournal, history []jou
 }
 
 type parallelBranchResult struct {
+	slot              *parallelBranchSlot
 	index             int
 	status            journal.BranchStatus
 	lastStage         string
@@ -318,12 +319,17 @@ func (r *Runner) runConcurrentParallel(
 		return concurrentParallelResult{parallel: par, paused: true}, nil
 	}
 
-	dispatch := &parallelDispatch{limit: limit, queue: queue, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
+	slots := newParallelBranchSlots(limit)
+	dispatch := &parallelDispatch{released: slots.changed, queue: queue, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
 	dispatch.settle = func(result parallelBranchResult) error { return settleConcurrentBranch(jr, par, p.Name, result) }
 	dispatch.cancelQueued = func() error {
 		return cancelQueuedParallelBranches(jr, par, p, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in)
 	}
-	dispatch.launch = func(index int) error {
+	dispatch.launch = func(index int) (bool, error) {
+		slot, available := slots.tryAcquire()
+		if !available {
+			return false, nil
+		}
 		branch := par.branchSnapshot(index)
 		if !branch.started {
 			var cursors []journal.BranchCursor
@@ -336,17 +342,22 @@ func (r *Runner) runConcurrentParallel(
 				BranchName: branch.name,
 				Stage:      branch.start,
 			}); err != nil {
-				return err
+				slot.release()
+				return false, err
 			}
 		}
+		branchInput := in
+		branchInput.parallelSlot = slot
 		go func() {
-			results <- r.runParallelBranch(
-				branchCtx, jr, par, in, branch, basePointers, baseLastStage,
+			result := r.runParallelBranch(
+				branchCtx, jr, par, branchInput, branch, basePointers, baseLastStage,
 				baseLastResult, baseCompleted, workspaceBranch, reg,
 				branchEvents.events(branch.id), stepBudget,
 			)
+			result.slot = slot
+			results <- result
 		}()
-		return nil
+		return true, nil
 	}
 
 	if err := dispatch.run(); err != nil {
