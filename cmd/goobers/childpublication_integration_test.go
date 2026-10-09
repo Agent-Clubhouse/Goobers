@@ -105,9 +105,9 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	parentSource := strings.ReplaceAll(childValidationParent, "[agent:model]", "[agent:model, repo:push, provider:pr:write]")
 	parentSource = strings.ReplaceAll(parentSource, "[agent:model, repo:push]", "[agent:model, repo:push, provider:pr:write]")
 	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, gooberCapabilities: []string{"agent:model", "repo:push", "provider:pr:write"}, parent: parentSource, source: publicationChildSource, workspace: func(s *daemonCredentialService, c triggerqueue.ChildRecord, m *worktree.Manager) *runner.ChildWorkspaceAdmission {
-		set, _, err := loadConfigDirectory(s.layout.ConfigDir())
+		set, report, err := loadConfigDirectory(s.layout.ConfigDir())
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("load publication fixture: %v (%s)", err, validationIssueSummary(report))
 		}
 		project = set.Gaggles[0].Spec.Project
 		url, err := childRepoCloneURL(project)
