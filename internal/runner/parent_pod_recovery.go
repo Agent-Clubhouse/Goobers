@@ -79,7 +79,7 @@ func readParentRecovery(reader *journal.Reader, event journal.Event, runID strin
 }
 
 func (r *Runner) restoreContainedParentWorkspace(ctx context.Context, tf *taskFrame, branch int) error {
-	if tf.in.Child != nil || tf.t.ChildWorkflows == nil || tf.childWaitResume != nil {
+	if tf.in.Child != nil || tf.t.ChildWorkflows == nil {
 		return nil
 	}
 	reader, err := journal.OpenReadOnly(tf.jr.Dir())
@@ -94,6 +94,15 @@ func (r *Runner) restoreContainedParentWorkspace(ctx context.Context, tf *taskFr
 	if err != nil || !found {
 		return err
 	}
+	if tf.childWaitResume != nil {
+		old := tf.childWaitResume.Request.Origin
+		if *record.Custody.Origin == old {
+			return nil // the durable wait already carries this exact recovery
+		}
+		if tf.childWaitCompletion == nil || record.Custody.Origin.StageOccurrence != old.StageOccurrence {
+			return errors.New("parent recovery cannot replace unresolved child custody")
+		}
+	}
 	if r.cfg.Worktrees == nil || r.cfg.RepoCloneURL == nil {
 		return errors.New("parent workspace recovery unavailable")
 	}
@@ -107,6 +116,7 @@ func (r *Runner) restoreContainedParentWorkspace(ctx context.Context, tf *taskFr
 	}
 	tf.heldChildWorkspace = &stageWorkspace{path: workspace.Path, worktree: workspace, retainedChild: func(context.Context) error { return nil }}
 	tf.containedRecovery = &record
+	tf.childWaitResume, tf.childWaitCompletion = nil, nil
 	tf.upstream = append([]apiv1.ContextPointer(nil), record.Context...)
 	if record.Transcript != nil {
 		tf.upstream = append(tf.upstream, apiv1.ContextPointer{Name: "recovered-parent-transcript", Artifact: record.Transcript, Integrity: record.Transcript.Integrity})

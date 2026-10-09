@@ -4,6 +4,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -160,4 +162,95 @@ func TestIntegrationParentCustodyPrecedesInvocationAndSurvivesReplyLoss(t *testi
 	}
 	childWorkspaceRead(t, path, "retained.txt", []byte("parent edit"))
 	fork.assertParentUnchanged(t)
+}
+
+func TestIntegrationParentRecoveryAfterChildContinuationUsesLatestAttempt(t *testing.T) {
+	testdep.Require(t, "git")
+	r, run, frame, f, _ := prepareChildWaitRuntime(t)
+	if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := r.createStageWorkspace(t.Context(), frame.in, frame.t.Name, apiv1.WorkspaceRepo, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custody, err := workspace.worktree.HoldForChild(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ChildHandoffRequest{Gaggle: frame.in.Gaggle, ParentRunID: frame.in.RunID, Action: "wait", RequestID: journal.Digest([]byte("request")), ChildRunID: "child-run", AcceptanceID: "trigger-child-run", InvocationKey: "work", SourceDigest: journal.Digest([]byte("source")), Origin: *frame.childOrigin}
+	record := childWaitRecord{Version: 1, ParentRunID: frame.in.RunID, Request: request, Workspace: &custody, InstructionAddendum: "old guidance"}
+	event, err := childWaitEvent(frame.t.Name, 1, "", record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	pointer, err := recordChildCompletion(&frame, 1, "", record, ChildHandoffCompletion{State: "completed", ResultRef: "child-result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: frame.t.Name, Attempt: 1, Runner: map[string]any{"kind": ChildContinuedKind, "requestId": request.RequestID, "context": pointer}}); err != nil {
+		t.Fatal(err)
+	}
+	prior := newStageUsageTotals()
+	accumulateStageUsage(prior, map[string]float64{telemetry.AttrUsageCostUSD: 2})
+	if err := frame.recordTaskStartedWithRecovery(2, "", 0, 0, prior); err != nil {
+		t.Fatal(err)
+	}
+	pointer.Name = "latest-context"
+	env := apiv1.InvocationEnvelope{RunID: frame.in.RunID, Gaggle: frame.in.Gaggle, ChildWorkflowOrigin: frame.childOrigin, ContextPointers: []apiv1.ContextPointer{pointer}, InstructionAddendum: "latest guidance"}
+	if err := RecordContainedParentRecovery(run, journal.Event{Stage: frame.t.Name, Attempt: 2, Seq: run.Seq()}, journal.Digest([]byte("new-contract")), ContainedParentWorkspaceCustody{Version: 1, Origin: frame.childOrigin, Workspace: custody}, env, nil, map[string]float64{telemetry.AttrUsageCostUSD: 3}); err != nil {
+		t.Fatal(err)
+	}
+	frame.childWaitResume, frame.childWaitCompletion = &record, &pointer
+	frame.childWaitAttempt = 2
+	r.cfg.ChildHandoff = &acceptedRecoveryFixture{childHandoffFixture: f}
+	invoked := false
+	r.cfg.NewAgentic = func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+		return childWorkspaceAgent{invoke: func(env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+			invoked = true
+			if env.Workspace != workspace.path || env.InstructionAddendum != "latest guidance" || len(env.ContextPointers) != 1 || env.ContextPointers[0].Name != "latest-context" {
+				return apiv1.ResultEnvelope{}, errors.New("older child wait replaced latest recovered attempt")
+			}
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		}}, nil
+	}
+	frame.ex = childOriginExecutors(r.cfg, run)
+	accounting := &resumeRetryAccounting{replacementConsumesPolicy: true}
+	if _, _, err := r.runTask(t.Context(), frame, 0, 3, "", "", nil, false, accounting); err != nil {
+		t.Fatal(err)
+	}
+	if !invoked {
+		t.Fatal("latest attempt did not continue")
+	}
+	reader, err := journal.OpenReadOnly(run.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, event := range events {
+		if event.Attempt == 3 && event.Runner["kind"] == childAttemptAccountingKind {
+			var value childAttemptAccounting
+			raw, err := json.Marshal(event.Runner["accounting"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			if value.CostUSD != "5" {
+				t.Fatal("latest recovered usage was lost", value.CostUSD)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("recovered attempt accounting missing")
+	}
 }
