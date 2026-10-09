@@ -38,9 +38,10 @@ Refill is wired for a workflow only when all of these are true:
 
 1. `desiredConcurrentRuns` is set.
 2. The instance has at least one repository configured.
-3. The workflow declares no `backlog-item` trigger. A `backlog-item` trigger
-   already polls the backlog and starts one run per item, so the daemon does
-   not add a second poll on top of it.
+3. The workflow declares no `backlog-item` trigger, not even a disabled one.
+   A `backlog-item` trigger already polls the backlog and starts one run per
+   item, so the daemon does not add a second poll on top of it. Setting that
+   trigger to `enabled: false` stops its polling but does not turn refill on.
 4. The workflow's `start` task runs `goobers backlog-query`. The daemon reuses
    that task's label filters (`trustLabel`, `requireLabels`, `excludeLabels`)
    and the gaggle's backlog filters to count eligible items.
@@ -48,8 +49,10 @@ Refill is wired for a workflow only when all of these are true:
 If any of these is false, `desiredConcurrentRuns` is still validated and still
 shown by `goobers status`, but it starts nothing.
 
-Refill does not need any trigger. A workflow with only a `manual` trigger, or
-with every trigger set to `enabled: false`, still refills.
+Refill does not need any enabled trigger. A workflow with only a `manual`
+trigger, or whose `schedule`, `signal`, and `webhook` triggers are all set to
+`enabled: false`, still refills. A declared `backlog-item` trigger is the
+exception: it keeps refill off whether or not it is enabled.
 
 ### What refill does on each tick
 
@@ -153,15 +156,18 @@ described below.
 
 | Control | Schedule, signal, webhook triggers | `backlog-item` trigger | Refill | Explicit `goobers run` | Runs already in flight |
 | --- | --- | --- | --- | --- | --- |
-| Trigger `enabled: false` | that trigger stops | that trigger stops | **keeps running** | allowed | continue |
-| Workflow enable API set to `false` ([workflow-enable.md](../workflow-enable.md)) | stop | stop | **keeps running** | allowed | continue |
+| Trigger `enabled: false` | that trigger stops | that trigger stops | **keeps running** if no `backlog-item` trigger is declared; a declared `backlog-item` trigger keeps refill off even when disabled | allowed | continue |
+| Workflow enable API set to `false` ([workflow-enable.md](../workflow-enable.md)) | stop | stop | **keeps running** if no `backlog-item` trigger is declared; otherwise there is no refill | allowed | continue |
 | Remove `desiredConcurrentRuns` | unchanged | unchanged | stops | allowed | continue |
 | Workflow `spec.enabled: false` | stop | stop | stops | refused | continue |
 | Gaggle `spec.enabled: false` | stop for every workflow in the gaggle | stop | stops | refused | continue |
 | `goobers down`, `goobers service stop` | stop while the daemon is down | stop | stops | dispatched locally (see below) | drain, then the daemon exits |
 
 `manual` triggers ignore `enabled`. The workflow enable API only changes
-trigger `enabled` fields, so it also leaves refill on.
+trigger `enabled` fields, so it also leaves refill on. Disabling a `schedule`,
+`signal`, or `webhook` trigger never stops refill. A workflow that declares a
+`backlog-item` trigger has no refill at all, enabled or not, so disabling its
+triggers stops all of its autonomous starts.
 
 `spec.enabled: false` is the only control that stops every kind of new work
 for a workflow while the daemon keeps running. The daemon skips the workflow
