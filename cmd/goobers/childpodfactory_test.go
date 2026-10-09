@@ -49,6 +49,7 @@ type factoryWorkerClient struct {
 	result     engine.ChildDispatchResult
 	workflowID string
 	getErr     error
+	executeErr error
 	lostReply  bool
 }
 
@@ -56,6 +57,7 @@ func (c *factoryWorkerClient) ExecuteWorkflow(ctx context.Context, options clien
 	c.starts++
 	in := args[0].(engine.ChildDispatchInput)
 	out, err := c.execute(ctx, in)
+	c.executeErr = err
 	out.BindingDigest = in.BindingDigest()
 	c.result, c.workflowID = out, options.ID
 	if err != nil {
@@ -81,29 +83,35 @@ func (c *factoryWorkerClient) SignalWorkflow(_ context.Context, id, _, signal st
 	return nil
 }
 func TestProductionChildFactoryRecoversLostWorkerReply(t *testing.T) {
-	testProductionChildFactory(t, false, true)
+	testProductionChildFactory(t, childFactoryTestOptions{lost: true})
 }
 
 func TestProductionChildFactoryUsesRetainedKitAndScopedSurrender(t *testing.T) {
-	testProductionChildFactory(t, false)
+	testProductionChildFactory(t, childFactoryTestOptions{})
 }
 func TestProductionChildFactoryDrivesActualGeneratedRunner(t *testing.T) {
-	testProductionChildFactory(t, true)
+	testProductionChildFactory(t, childFactoryTestOptions{resume: true})
 }
 func TestProductionChildFactoryParksActualRunnerAfterLostReply(t *testing.T) {
-	testProductionChildFactory(t, true, true)
+	testProductionChildFactory(t, childFactoryTestOptions{resume: true, lost: true})
 }
-func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
+
+type childFactoryTestOptions struct{ resume, lost, queued bool }
+
+func TestProductionChildFactoryDrainsAcceptedQueueThroughWorkerAndResult(t *testing.T) {
+	testProductionChildFactory(t, childFactoryTestOptions{queued: true})
+}
+
+func TestProductionChildFactoryQueueRecoversLostWorkerBeforeContinuing(t *testing.T) {
+	testProductionChildFactory(t, childFactoryTestOptions{queued: true, lost: true})
+}
+
+func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 	t.Helper()
-	f := newChildKitFixture(t, true)
+	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, queued: options.queued})
 	s := f.writer.service
 
 	launcher := &queuedChildLauncher{layout: s.layout, queue: s.childQueue, authority: s.children}
-	start, release, err := launcher.admittedChildIdentity(t.Context(), f.writer.identity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	release()
 	plane, err := dispatcher.NewSurrenderDir(filepath.Join(t.TempDir(), "surrender"))
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +140,7 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 	var server *httptest.Server
 	var workerToken string
 	journals := childFactoryJournals(t, s)
-	worker := &factoryWorkerClient{lostReply: len(lost) > 0 && lost[0]}
+	worker := &factoryWorkerClient{lostReply: options.lost}
 	worker.execute = func(ctx context.Context, in engine.ChildDispatchInput) (engine.ChildDispatchResult, error) {
 		a := in.Attempt
 		var err error
@@ -141,11 +149,11 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 			return engine.ChildDispatchResult{}, err
 		}
 		remoteBlobs := &dispatcher.BlobClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
-		if resume {
+		if options.resume || options.queued {
 			if !journals.IsOpen(a.RunID) {
 				return engine.ChildDispatchResult{}, errors.New("child driver did not lend its journal before dispatch")
 			}
-			_, err := (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "child-worker-heartbeat", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
+			_, err := (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: fmt.Sprintf("child-worker-heartbeat-%d", a.PodAttempt), Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
 			if err != nil {
 				return engine.ChildDispatchResult{}, fmt.Errorf("remote observation could not use the driver-owned journal: %w", err)
 			}
@@ -169,7 +177,7 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 				return engine.ChildDispatchResult{}, fmt.Errorf("provider key escaped contract: %+v", key)
 			}
 		}
-		if contract.Identity.Child == nil || *contract.Identity.Child != start.Lineage || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
+		if contract.Identity.Child == nil || *contract.Identity.Child != *f.writer.identity.Child || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
 			return engine.ChildDispatchResult{}, fmt.Errorf("custody changed: %+v", contract)
 		}
 		owned, stop, err := remoteChildExecutionFence(ctx, server.URL, workerToken, contract)
@@ -215,7 +223,7 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			return engine.ChildDispatchResult{}, err
 		}
-		return engine.ChildDispatchResult{Report: dispatcher.Report{Runner: "isolated", ChildCreateAttempted: true, ChildPodUID: "exact-worker-uid", WorkspaceWritersStopped: true, SurrenderConfirmed: true}}, nil
+		return engine.ChildDispatchResult{Report: dispatcher.Report{Runner: "isolated", ChildCreateAttempted: true, ChildPodUID: fmt.Sprintf("exact-worker-%d", a.PodAttempt), WorkspaceWritersStopped: true, SurrenderConfirmed: true}}, nil
 	}
 	previousKey := s.config.API.PodTokenKeyFile
 	s.config.API.PodTokenKeyFile = "configured-host-key"
@@ -234,13 +242,22 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 	if s.childExecutors == nil {
 		t.Fatal("production factories not installed")
 	}
+	if options.queued {
+		testQueuedChildFactory(t, f, worker)
+		return
+	}
+	start, release, err := launcher.admittedChildIdentity(t.Context(), f.writer.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
 	runtime := preparedChildRuntime{executionGenerationRuntime: executionGenerationRuntime{gooberDigest: f.writer.identity.GooberDigest}}
 	factories, err := s.childExecutors(t.Context(), start, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
 	recorder := f.writer.recorder.(*journal.Run)
-	if resume {
+	if options.resume {
 		if err = recorder.Close(); err != nil {
 			t.Fatal(err)
 		}
