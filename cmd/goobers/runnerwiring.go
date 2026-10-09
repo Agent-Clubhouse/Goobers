@@ -315,7 +315,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			if err != nil {
 				return nil, err
 			}
-			return claimFencedGoober{Goober: exec, start: executionFence}, nil
+			return bindParentRouting(instanceRoot, gooberName, rec, exec, executionFence)
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a

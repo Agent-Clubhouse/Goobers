@@ -217,7 +217,16 @@ func testParentFactoryCustody(t *testing.T, lost, committed bool) {
 		return engine.ChildDispatchResult{Report: dispatcher.Report{ChildCreateAttempted: true, ChildPodUID: "exact-parent-pod", WorkspaceWritersStopped: true, SurrenderConfirmed: true}}, nil
 	}
 	service.installChildPodFactories(worker, plane, childFactoryJournals(t, service))
-	executor := &parentStagePod{service: service, journal: run, identity: id, client: worker, surrenders: plane, goober: env.Goober}
+	ordinary := &routingProbe{}
+	executor, err := routeContainedParent(f.layout.Root, env.Goober, run, ordinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if ordinary.invokes != 0 || ordinary.reviews != 0 {
+			t.Fatal("contained parent reached ordinary executor")
+		}
+	}()
 	ctx, proof := invoke.WithWorkspaceQuiescence(callCtx)
 	var observed map[string]float64
 	ctx = invoke.WithAgentUsageReporter(ctx, func(m map[string]float64) { observed = m })

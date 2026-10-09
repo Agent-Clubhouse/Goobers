@@ -108,6 +108,7 @@ type daemonCredentialService struct {
 	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
 	childExecutors   childExecutorProvider
 	parentRecovery   func(context.Context, journal.RunIdentity) error
+	parentExecutors  runner.NewAgenticFunc
 	childPodRecovery func(context.Context, *journal.Reader, string, childPodScope) error
 	layout           instance.Layout
 	config           *instance.Config

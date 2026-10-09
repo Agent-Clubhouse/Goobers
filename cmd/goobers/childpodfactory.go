@@ -25,6 +25,24 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 	if client == nil || s.config == nil || s.config.API.PodTokenKeyFile == "" || surrenders == nil || journals == nil {
 		return
 	}
+	s.parentExecutors = func(goober string, rec runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Goober, error) {
+		owned, _, err := runner.OwnedJournalScope(rec)
+		if err != nil {
+			return nil, err
+		}
+		reader, err := journal.OpenReadOnly(owned.Dir())
+		if err != nil {
+			return nil, err
+		}
+		id, err := reader.Identity()
+		if err != nil {
+			return nil, err
+		}
+		if id.Child != nil {
+			return nil, errors.New("child cannot acquire a parent executor")
+		}
+		return &parentStagePod{service: s, journal: owned, identity: id, client: client, surrenders: surrenders, goober: goober}, nil
+	}
 	s.parentRecovery = func(ctx context.Context, id journal.RunIdentity) error {
 		return (&parentStagePod{service: s, identity: id, client: client, surrenders: surrenders}).reconcile(ctx)
 	}
