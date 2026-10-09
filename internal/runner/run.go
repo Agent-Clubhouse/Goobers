@@ -4014,10 +4014,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	defer func() {
 		telemetry.IngestStageEmissions(telemetryDir, &result, span)
 		telemetry.CleanupStageTelemetryDir(telemetryDir)
-		if agentInvocation != nil && agentInvocation.materializedAssets() {
-			if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
-				err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
-			}
+		if validationErr := workspace.ValidateAfterInvocation(context.WithoutCancel(ctx), agentInvocation); validationErr != nil {
+			err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
 		}
 		acted := err != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0
 		err = errors.Join(err, r.journalWorkspaceBranches(ctx, jr, tf, workspace, boundSHA, acted))
@@ -4666,10 +4664,8 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		}
 		defer func() {
 			telemetry.CleanupStageTelemetryDir(gateTelemetryDir)
-			if agentInvocation != nil && agentInvocation.materializedAssets() {
-				if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
-					err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
-				}
+			if validationErr := workspace.ValidateAfterInvocation(context.WithoutCancel(ctx), agentInvocation); validationErr != nil {
+				err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
 			}
 			if in.Child != nil && errors.Is(err, invoke.ErrChildCustodyPending) {
 				removeErr = workspace.finishDispatch(ctx, true)
