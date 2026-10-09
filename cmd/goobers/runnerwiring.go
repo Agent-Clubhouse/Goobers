@@ -398,8 +398,9 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	if cloneURL == nil {
 		cloneURL = runner.DefaultRepoCloneURL
 	}
-	cfg.RestoreParentArchive = (parentArchiveRestorer{layout: input.Layout, config: input.Config, worktrees: cfg.Worktrees, cloneURL: cloneURL}).restore
-
+	archives := parentArchiveRestorer{layout: input.Layout, config: input.Config, worktrees: cfg.Worktrees, cloneURL: cloneURL, scrubber: input.SharedRegistry}
+	cfg.RestoreParentArchive = archives.restore
+	cfg.RetireParentWorkspaces = archives.retire
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {

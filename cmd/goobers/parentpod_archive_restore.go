@@ -22,6 +22,7 @@ type parentArchiveRestorer struct {
 	config    *instance.Config
 	worktrees *worktree.Manager
 	cloneURL  func(apiv1.RepoRef) (string, error)
+	scrubber  journal.Scrubber
 }
 
 func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJournalRecorder, archive runner.ParentWorkspaceArchive, seq uint64) error {

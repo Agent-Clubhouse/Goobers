@@ -164,6 +164,69 @@ func verifyParentArchiveDaemonRestoration(t *testing.T, reader *journal.Reader, 
 			t.Fatal(mode, "working state lost", string(got), err)
 		}
 	}
+	verifyAutomaticParentRetirement(t, reader, restorer, writer, checkout)
+}
+
+func verifyAutomaticParentRetirement(t *testing.T, reader *journal.Reader, restorer parentArchiveRestorer, writer *journal.Run, checkout *worktree.Worktree) {
+	t.Helper()
+	foreign := restorer
+	foreign.layout = restorer.layout.ForGaggle("foreign")
+	if err := foreign.retire(writer); err == nil {
+		t.Fatal("retirement crossed gaggle journal scope")
+	}
+	service, ok := stageGrantMinterFor(restorer.layout.Root).(*daemonCredentialService)
+	if !ok {
+		t.Fatal("fixture lacks child custody service")
+	}
+	unregisterDaemonStageGrants(restorer.layout.Root, service)
+	err := restorer.retire(writer)
+	registerStageGrantMinter(restorer.layout.Root, service)
+	if err == nil {
+		t.Fatal("retirement ignored unavailable child custody")
+	}
+	if _, err := checkout.HeldCleanupTarget(t.Context()); err != nil {
+		t.Fatal("failed retirement released hold", err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout.Path, "source.txt"), []byte("terminal dirty\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorer.retire(writer); err != nil {
+		t.Fatal("automatic parent retirement", err)
+	}
+	archive, _ := latestParentArchive(t, reader)
+	data, err := reader.ArtifactBytesBounded(archive.Archive, 16384)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record recovery.Record
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, terminal, err := recoveryCaptureWindow(t.Context(), reader, id.StartedAt)
+	if err != nil || !terminal || !record.CreatedAt.Equal(at) {
+		t.Fatal("retirement missed stable terminal anchor", record.CreatedAt, at, err)
+	}
+	if got := recoveryCLIGit(t, checkout.Path, "show", record.SnapshotSHA+":source.txt"); got != "terminal dirty" {
+		t.Fatal("retirement reused stale archive", got)
+	}
+	before, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restorer.retire(writer); err != nil {
+		t.Fatal("retirement replay", err)
+	}
+	after, err := reader.Events()
+	if err != nil || len(after) != len(before) {
+		t.Fatal("retirement replay wrote duplicate intent", err)
+	}
+	if _, err := checkout.HeldCleanupTarget(t.Context()); err != nil {
+		t.Fatal("retirement released hold before finalizer", err)
+	}
 }
 
 func verifyRetiredParentCleanupRefusals(t *testing.T, reader *journal.Reader, restorer parentArchiveRestorer, writer *journal.Run, archive runner.ParentWorkspaceArchive, checkout *worktree.Worktree, record recovery.Record) {

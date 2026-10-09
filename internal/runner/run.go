@@ -615,6 +615,9 @@ type Config struct {
 	// RestoreParentArchive restores retired contained-parent checkouts before
 	// any resumed task or parallel branch can create an executor or write files.
 	RestoreParentArchive ParentArchiveRestorer
+	// RetireParentWorkspaces archives acknowledged parent checkouts after the
+	// durable terminal event, before cleanup. Failures must preserve their holds.
+	RetireParentWorkspaces func(*journal.Run) error
 	// FinalizeTerminal performs instance-level cleanup for every terminal run,
 	// after run.finished is durable. Optional; errors are surfaced to the caller.
 	FinalizeTerminal TerminalFinalizer
@@ -3022,6 +3025,7 @@ func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, ph
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
+	prepareErr = errors.Join(prepareErr, r.retireParentWorkspaces(jr))
 	notifyErr := r.notifyTerminal(jr, runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
