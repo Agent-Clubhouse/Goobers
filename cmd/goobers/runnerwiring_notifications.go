@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/providers"
 )
@@ -73,7 +74,7 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	req = withNeedsHumanAssignee(req, c.needsHumanAssignee)
 	if req.Repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, req.Repository)
-		if !backlogOnOtherProvider(req.Repository, backlog) {
+		if !providerconfig.BacklogOnOtherProvider(req.Repository, backlog) {
 			return c.updateADOWorkItem(ctx, req, backlog)
 		}
 		// A backlog on another provider (topology (b)): the item lives there,
@@ -134,7 +135,7 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 	itemID = blockedLookupID(itemID)
 	if repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, repository)
-		if !backlogOnOtherProvider(repository, backlog) {
+		if !providerconfig.BacklogOnOtherProvider(repository, backlog) {
 			provider, err := newConfiguredADOProvider(c.layout.Root, repository)
 			if err != nil {
 				return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
@@ -180,7 +181,7 @@ func (c *escalationCommenter) GetWorkItem(ctx context.Context, repository provid
 	itemID = blockedLookupID(itemID)
 	if repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, repository)
-		if !backlogOnOtherProvider(repository, backlog) {
+		if !providerconfig.BacklogOnOtherProvider(repository, backlog) {
 			provider, err := newConfiguredADOProvider(c.layout.Root, repository)
 			if err != nil {
 				return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
@@ -212,7 +213,7 @@ func (c *escalationCommenter) GetWorkItem(ctx context.Context, repository provid
 func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
 	if repository.Provider == providers.ProviderADO {
 		backlog := backlogRepoRefForGaggle(c.layout, repository)
-		if !backlogOnOtherProvider(repository, backlog) {
+		if !providerconfig.BacklogOnOtherProvider(repository, backlog) {
 			return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
 		}
 		repository = backlog

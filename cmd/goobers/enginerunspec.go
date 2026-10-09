@@ -8,6 +8,7 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -158,7 +159,7 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 
 // roleRoutedBacklogProvider is the named gaggle's backlog provider when its
 // backlog is routed by role to another provider than its code
-// (crossProviderBacklog, topology (b)), and empty for every other gaggle.
+// (providerconfig.CrossProviderBacklog, topology (b)), and empty for every other gaggle.
 func roleRoutedBacklogProvider(set *instance.ConfigSet, gaggle string) apiv1.Provider {
 	if set == nil {
 		return ""
@@ -168,7 +169,7 @@ func roleRoutedBacklogProvider(set *instance.ConfigSet, gaggle string) apiv1.Pro
 		if g.Name != gaggle {
 			continue
 		}
-		if crossProviderBacklog(g.Spec.Project.Provider, g.Spec.Backlog.Provider) {
+		if providerconfig.CrossProviderBacklog(g.Spec.Project.Provider, g.Spec.Backlog.Provider) {
 			return g.Spec.Backlog.Provider
 		}
 		return ""

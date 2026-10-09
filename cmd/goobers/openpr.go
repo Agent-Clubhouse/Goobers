@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -41,7 +42,7 @@ func adoNativeWorkItemLink(root string, repo providers.RepositoryRef, haveIssue 
 	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
 		return false
 	}
-	return !backlogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
+	return !providerconfig.BacklogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
 }
 
 // textOnlyADOWorkItemLink stands in for the native linker when native linking
