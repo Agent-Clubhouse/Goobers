@@ -92,7 +92,7 @@ func verifyParentArchiveDaemonRestoration(t *testing.T, reader *journal.Reader, 
 		t.Fatal(err)
 	}
 	guard(restorer.worktrees)
-	for _, mode := range []string{"survived", "removed", "partial"} {
+	for _, mode := range []string{"survived", "removed", "partial", "released"} {
 		if err := runner.RecordParentArchiveRetirement(writer, checkout.Branch, ref); err != nil {
 			t.Fatal(mode, err)
 		}
@@ -106,7 +106,16 @@ func verifyParentArchiveDaemonRestoration(t *testing.T, reader *journal.Reader, 
 		if err := restorer.restore(t.Context(), writer, wrong, seq); err == nil {
 			t.Fatal("foreign archive receipt admitted")
 		}
-		if mode != "survived" {
+		if mode == "released" {
+			candidates, err := runner.ParentRetirementCandidates(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restorer.releaseArchives(reader, candidates); err != nil {
+				t.Fatal("release before interrupted cleanup", err)
+			}
+		}
+		if mode != "survived" && mode != "released" {
 			if err := checkout.ReleaseChildHold(t.Context()); err != nil {
 				t.Fatal(err)
 			}

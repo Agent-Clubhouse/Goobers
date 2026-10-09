@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -109,15 +110,12 @@ func ensureParentRestoreBranch(ctx context.Context, repository string, opts Crea
 
 func (m *Manager) adoptParentRestore(ctx context.Context, key, repository, path string, opts CreateOptions) (*Worktree, error) {
 	wt := &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key, startRef: opts.parentRestoreStart, repoURL: opts.RepoURL}
-	mk, _, err := wt.custodyMarkers()
+	mk, ownership, err := wt.parentRestoreMarkers(opts)
 	if err != nil {
 		return nil, err
 	}
 	if mk.OwnerRunID != opts.OwnerRunID || mk.Gaggle != opts.Gaggle || mk.StartRef != opts.parentRestoreStart || mk.BaseRef != resolvedCleanupBaseRef(ctx, repository, opts.BaseRef) || !mk.RetainOnCleanup {
 		return nil, fmt.Errorf("parent restore workspace identity changed")
-	}
-	if mk.Status != statusActive && (mk.Status != statusCleanupRetained || mk.CleanupDisposition != childWaitDisposition) {
-		return nil, fmt.Errorf("parent restore workspace is not available")
 	}
 	registered, err := worktreeRegistered(ctx, repository, path)
 	if err != nil || !registered {
@@ -130,9 +128,33 @@ func (m *Manager) adoptParentRestore(ctx context.Context, key, repository, path 
 	if err := ensureParentRestoreBranch(ctx, repository, opts); err != nil {
 		return nil, err
 	}
+	// Archive authority and exact branch ownership supersede an interrupted
+	// cleanup transition. Reestablish the hold before returning the checkout;
+	// never reset its partially restored index or working files.
+	mk.Status, ownership.Status = statusCleanupRetained, statusCleanupRetained
+	mk.CleanupDisposition, ownership.CleanupDisposition = childWaitDisposition, childWaitDisposition
+	if err := wt.writeCustodyMarkers(mk, ownership); err != nil {
+		return nil, err
+	}
 	wt.assetGuard = mk.AssetPathGuard
 	wt.partialMirror = m.partialClone && mirrorIsPartial(ctx, repository)
 	return wt, nil
+}
+
+func (wt *Worktree) parentRestoreMarkers(opts CreateOptions) (marker, marker, error) {
+	primary, err := readMarker(wt.manager.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		return marker{}, marker{}, err
+	}
+	ownership, err := readMarker(wt.manager.ownershipPath(wt.key, filepath.Base(wt.Path)))
+	if err != nil {
+		return marker{}, marker{}, err
+	}
+	custody := StageCustody{WorkspaceID: wt.RunID, OwnerRunID: opts.OwnerRunID, RepositoryDigest: RepositoryDigest(opts.RepoURL), Branch: opts.Branch, StartRef: opts.parentRestoreStart}
+	if err := archivedStageMarkers(primary, ownership, custody, filepath.Base(wt.Path)); err != nil {
+		return marker{}, marker{}, err
+	}
+	return primary, ownership, nil
 }
 
 func initialWorktreeRef(ctx context.Context, path string, opts CreateOptions) (string, error) {
