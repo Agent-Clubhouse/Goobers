@@ -38,10 +38,16 @@ func (m *Manager) CreateChildFromSnapshot(ctx context.Context, opts ChildOptions
 	if err != nil {
 		return nil, err
 	}
+	return m.createSnapshotWorkspace(ctx, create)
+}
+
+// Reuse the normal manager lock and exact-custody preservation for isolated
+// snapshot workspaces. No caller may reset a preexisting checkout on retry.
+func (m *Manager) createSnapshotWorkspace(ctx context.Context, create CreateOptions) (*Worktree, error) {
 	var repository string
-	found, err := m.WithExistingMirror(ctx, opts.RepoURL, func(dir string) error {
+	found, err := m.WithExistingMirror(ctx, create.RepoURL, func(dir string) error {
 		repository = dir
-		_, err := gitOutput(ctx, dir, "rev-parse", "--verify", opts.SnapshotSHA+"^{commit}")
+		_, err := gitOutput(ctx, dir, "rev-parse", "--verify", create.BaseRef+"^{commit}")
 		return err
 	})
 	if err != nil {
@@ -72,10 +78,14 @@ func (m *Manager) AdoptChildFromSnapshot(ctx context.Context, opts ChildOptions)
 	if err != nil {
 		return nil, err
 	}
+	return m.adoptSnapshotWorkspace(ctx, create)
+}
+
+func (m *Manager) adoptSnapshotWorkspace(ctx context.Context, create CreateOptions) (*Worktree, error) {
 	var adopted *Worktree
-	found, err := m.WithExistingMirror(ctx, opts.RepoURL, func(dir string) error {
-		key := repoKey(opts.RepoURL)
-		path := filepath.Join(m.runsDirForKey(key), worktreeDirectoryName(opts.RunID))
+	found, err := m.WithExistingMirror(ctx, create.RepoURL, func(dir string) error {
+		key := repoKey(create.RepoURL)
+		path := filepath.Join(m.runsDirForKey(key), worktreeDirectoryName(create.RunID))
 		var exists bool
 		var err error
 		adopted, exists, err = m.existingChildWorktree(ctx, key, dir, path, create)
