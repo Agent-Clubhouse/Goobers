@@ -21,7 +21,7 @@ compatibility evidence. See [Microsoft's base-image guidance](https://learn.micr
 | --- | --- |
 | Windows Server Core 2022, windows/amd64 | `mcr.microsoft.com/windows/servercore:ltsc2022@sha256:6b43c814ed2a800563083ce3193e5f1951d4d6a18fd2879ff45173851db82bd5`, manifest OS version `10.0.20348.5499`; resolved from [MCR manifest metadata](https://mcr.microsoft.com/v2/windows/servercore/manifests/ltsc2022) |
 | Regular MinGit 2.55.0.5, x64 | `MinGit-2.55.0.5-64-bit.zip`, SHA256 `56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e`; matches [the upstream release checksum](https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.5) and the downloaded archive |
-| Go 1.26.6 IANA timezone archive | `lib/time/zoneinfo.zip`, SHA256 `8f55634d05f8bca1f7bc7c69c5933428c69357e0bdf565e5ba224e3f88ff12e8`; verified against [the Go release source](https://github.com/golang/go/blob/go1.26.6/lib/time/zoneinfo.zip) |
+| Go 1.26.9 IANA timezone archive | `lib/time/zoneinfo.zip`, SHA256 `8f55634d05f8bca1f7bc7c69c5933428c69357e0bdf565e5ba224e3f88ff12e8`; verified against [the Go release source](https://github.com/golang/go/blob/go1.26.9/lib/time/zoneinfo.zip) |
 
 The regular MinGit ZIP contains `cmd/git.exe`, `usr/bin/sh.exe`, the MSYS2
 runtime, licenses, and `mingw64/etc/ssl/certs/ca-bundle.crt`. It excludes the full
