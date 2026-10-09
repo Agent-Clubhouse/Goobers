@@ -67,6 +67,7 @@ func TestGeneratedChildIdentityIsConfinedToInstalledAttemptOwners(t *testing.T) 
 			want := (method == http.MethodGet || method == http.MethodPut) && blobPlanePath(path)
 			want = want || (method == http.MethodPost && path == apicontract.CredentialResolvePath)
 			want = want || (method == http.MethodPost && journalPlanePath(path))
+			want = want || (method == http.MethodPost && surrenderPlanePath(path))
 			if (err == nil) != want {
 				t.Fatalf("worker admitted %s %s=%v, want %v", method, path, err == nil, want)
 			}

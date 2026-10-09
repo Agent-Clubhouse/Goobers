@@ -143,6 +143,7 @@ func TestChildCredentialHTTPRequiresLiveExactAttemptThroughMaterialization(t *te
 	// Cancellation revokes new effects, but the same unjoined writer must still
 	// be able to return observational evidence through its bounded journal owner.
 	testCancelledChildJournalCustody(t, s, auth, token, id, writer, blobs)
+	testCancelledChildSurrenderCustody(t, s, auth, token, contract, digest, custody)
 }
 
 func testCancelledChildJournalCustody(t *testing.T, s *daemonCredentialService, auth httpapi.Authenticator, token string, id journal.RunIdentity, writer *journal.Run, blobs childpod.ScopedBlobs) {

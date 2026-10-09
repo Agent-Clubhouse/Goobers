@@ -446,6 +446,9 @@ func RequireRoles() Authorizer {
 			if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
 				return nil
 			}
+			if request.Method == http.MethodPost && surrenderPlanePath(request.URL.Path) {
+				return nil
+			}
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == ChildWorkflowPrincipalIssuer {
@@ -659,6 +662,7 @@ type handlerConfig struct {
 	generatedChildBlobs       blobstore.Store
 	recovery                  RecoveryService
 	surrenders                SurrenderService
+	generatedChildSurrenders  SurrenderService
 	state                     StateService
 	telemetryDefects          TelemetryDefectAggregateService
 	podRunGaggle              func(context.Context, string) (string, error)
