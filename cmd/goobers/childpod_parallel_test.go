@@ -190,7 +190,17 @@ func testProductionChildParallel(t *testing.T, lost bool) {
 		if err != nil || len(resolved.Credentials) != 1 {
 			return out, fmt.Errorf("parallel model credential: %w", err)
 		}
+		if a.Stage == "inspect-a" {
+			_, err := (&dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: token, RetryDeadline: time.Second}).ResolveStage(ctx, a.RunID, "inspect-b", []string{"agent:model"})
+			if err == nil {
+				return out, errors.New("parallel worker acquired sibling stage credentials")
+			}
+		}
 		emitter := &livejournal.HTTPEmitter{BaseURL: server.URL, Token: token, RetryDeadline: time.Second}
+		_, forgedErr := emitter.Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "forged-branch", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number, Branch: want + 1}}}})
+		if forgedErr == nil {
+			return out, errors.New("worker selected an observation branch")
+		}
 		_, err = emitter.Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "parallel-heartbeat", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
 		if err != nil {
 			return out, err
