@@ -957,3 +957,7 @@ func assertJSONObjectKeys(t *testing.T, data []byte, expected ...string) {
 		}
 	}
 }
+
+func (r *telemetryParityReader) RunChildren(context.Context, string, string) (readservice.ChildHistoryPage, error) {
+	return readservice.ChildHistoryPage{}, readservice.ErrNotFound
+}
