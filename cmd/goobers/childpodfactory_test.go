@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -57,6 +58,9 @@ func (c *factoryWorkerClient) ExecuteWorkflow(ctx context.Context, options clien
 	out, err := c.execute(ctx, in)
 	out.BindingDigest = in.BindingDigest()
 	c.result, c.workflowID = out, options.ID
+	if err != nil {
+		return nil, err
+	}
 	if c.lostReply {
 		err = errors.New("lost worker acceptance reply")
 	}
@@ -134,79 +138,79 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		var err error
 		workerToken, err = key.MintChildPod(a.RunID, a.ChildExecutionDigest, time.Hour)
 		if err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		remoteBlobs := &dispatcher.BlobClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
 		if resume {
 			if !journals.IsOpen(a.RunID) {
-				t.Fatal("child driver did not lend its journal before dispatch")
+				return engine.ChildDispatchResult{}, errors.New("child driver did not lend its journal before dispatch")
 			}
 			_, err := (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "child-worker-heartbeat", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
 			if err != nil {
-				t.Fatal("remote observation could not use the driver-owned journal", err)
+				return engine.ChildDispatchResult{}, fmt.Errorf("remote observation could not use the driver-owned journal: %w", err)
 			}
 		}
 		if a.Stage != "check" || a.PodAttempt < 2 || a.Envelope == nil || a.Envelope.Workspace != "" {
-			t.Fatal("incorrect physical child request", a)
+			return engine.ChildDispatchResult{}, fmt.Errorf("incorrect physical child request: %+v", a)
 		}
 		raw, err := remoteBlobs.Get(ctx, a.ChildExecutionDigest)
 		if err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		contract, err := childpod.DecodeContract(raw, a.ChildExecutionDigest)
 		if err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		if contract.Ceiling.AllowPublication {
-			t.Fatal("host publication grant escaped to pod")
+			return engine.ChildDispatchResult{}, errors.New("host publication grant escaped to pod")
 		}
 		for _, key := range contract.Ceiling.AllowedKeys {
 			if key != "agent:model" {
-				t.Fatal("provider key escaped contract", key)
+				return engine.ChildDispatchResult{}, fmt.Errorf("provider key escaped contract: %+v", key)
 			}
 		}
 		if contract.Identity.Child == nil || *contract.Identity.Child != start.Lineage || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
-			t.Fatal("custody changed", contract)
+			return engine.ChildDispatchResult{}, fmt.Errorf("custody changed: %+v", contract)
 		}
 		owned, stop, err := remoteChildExecutionFence(ctx, server.URL, workerToken, contract)
 		if err != nil {
-			t.Fatal("startup execution observer refused worker", err)
+			return engine.ChildDispatchResult{}, fmt.Errorf("startup execution observer refused worker: %w", err)
 		}
 		defer stop()
 		credentialClient := &dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
 		resolved, err := credentialClient.ResolveStage(owned, a.RunID, a.Stage, []string{"agent:model"})
 		if err != nil || len(resolved.Credentials) != 1 || resolved.Credentials[0].Value != "test-model-credential" {
-			t.Fatal("startup credential owner refused worker", resolved, err)
+			return engine.ChildDispatchResult{}, fmt.Errorf("startup credential owner refused worker: %+v, %v", resolved, err)
 		}
 		raw, err = remoteBlobs.Get(owned, a.KitDigest)
 		if err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		var kit agentickit.Kit
 		if err = json.Unmarshal(raw, &kit); err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		if kit.Goobers["coder"].Harness != apiv1.HarnessClaudeCode || kit.Envelope.Workspace != "" {
-			t.Fatal("mutable host kit leaked", kit)
+			return engine.ChildDispatchResult{}, fmt.Errorf("mutable host kit leaked: %+v", kit)
 		}
 		output := []byte("verified result")
 		ref, err := journal.ArtifactRef(output)
 		if err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		scoped := remoteBlobs
 		if err = scoped.Put(ctx, ref.Digest, output); err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		carrier, _ := json.Marshal(childpod.Output{Version: 1, ContractDigest: a.ChildExecutionDigest})
 		digest := journal.Digest(carrier)
 		if err = scoped.Put(ctx, digest, carrier); err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		surrendered := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
 		data, _ := json.Marshal(surrendered)
 		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
-			t.Fatal(err)
+			return engine.ChildDispatchResult{}, err
 		}
 		return engine.ChildDispatchResult{Report: dispatcher.Report{Runner: "isolated", ChildCreateAttempted: true, ChildPodUID: "exact-worker-uid", WorkspaceWritersStopped: true, SurrenderConfirmed: true}}, nil
 	}

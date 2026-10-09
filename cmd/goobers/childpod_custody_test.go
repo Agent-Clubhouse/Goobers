@@ -2,10 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/goobers/goobers/internal/credentials"
 	"testing"
 
 	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"

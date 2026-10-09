@@ -2,14 +2,6 @@ package main
 
 import (
 	"bytes"
-	"github.com/goobers/goobers/internal/blobstore"
-	"github.com/goobers/goobers/internal/childpod"
-	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/engine"
-	"github.com/goobers/goobers/internal/httpapi"
-	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/podauth"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +10,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/podauth"
 )
 
 func TestChildBlobHTTPUsesAuthenticatedLineageAndNeverSharedFallback(t *testing.T) {
