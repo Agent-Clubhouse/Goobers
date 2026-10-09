@@ -95,10 +95,10 @@ func (w childKitWriter) snapshot(ctx context.Context, start childExecutionStart)
 		return nil, nil, err
 	}
 	release := func() { _ = lease.Release() }
-	set, _, err := loadConfigDirectory(directory)
+	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
 		release()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("child kit: load retained config: %w (%s)", err, validationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*start.Proposal.Workflow.DeepCopy()}
 	instructions, skills, err := loadSnapshotGooberInputs(directory, set)
@@ -143,7 +143,7 @@ func verifyChildKitIdentity(id journal.RunIdentity, attempt dispatcher.Attempt) 
 		return errors.New("child kit dispatch differs from admitted identity")
 	}
 	env := attempt.Envelope
-	if env == nil || env.RunID != id.RunID || env.Gaggle != id.Gaggle || env.WorkflowID != id.Workflow || env.ConfigGeneration != id.ConfigGeneration || env.GooberDigest != id.GooberDigest || int(env.Attempt) != attempt.Number || env.TaskID != id.RunID+":"+attempt.Stage || env.InstanceID != attempt.InstanceID {
+	if env == nil || env.RunID != id.RunID || env.Gaggle != id.Gaggle || env.WorkflowID != id.Workflow || env.ConfigGeneration != id.ConfigGeneration || env.GooberDigest != id.GooberDigest || int(env.Attempt) != attempt.Number || stageArtifactName(id.RunID, env.TaskID) != attempt.Stage || env.TaskID == attempt.Stage || env.InstanceID != attempt.InstanceID {
 		return errors.New("child kit envelope differs from admitted identity")
 	}
 	return nil

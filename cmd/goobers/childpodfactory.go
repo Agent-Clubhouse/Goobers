@@ -6,7 +6,6 @@ import (
 	"math"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -214,8 +213,9 @@ func (p *childStagePod) admit(ctx context.Context) (func(), error) {
 func (p *childStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelope, run *apiv1.DeterministicRun, review bool) (childpod.Request, dispatcher.PinnedPlacement, *journal.Reader, error) {
 	var empty childpod.Request
 	var noPin dispatcher.PinnedPlacement
-	stage, ok := strings.CutPrefix(env.TaskID, p.identity.RunID+":")
-	if !ok || env.InstanceID != p.identity.InstanceID || env.RunID != p.identity.RunID || env.Gaggle != p.identity.Gaggle || env.WorkflowID != p.identity.Workflow || env.ConfigGeneration != p.identity.ConfigGeneration || env.GooberDigest != p.identity.GooberDigest || env.Goober != p.goober || env.ChildWorkflowOrigin != nil {
+	stage := stageArtifactName(p.identity.RunID, env.TaskID)
+	qualified := stage != env.TaskID
+	if !qualified || env.InstanceID != p.identity.InstanceID || env.RunID != p.identity.RunID || env.Gaggle != p.identity.Gaggle || env.WorkflowID != p.identity.Workflow || env.ConfigGeneration != p.identity.ConfigGeneration || env.GooberDigest != p.identity.GooberDigest || env.Goober != p.goober || env.ChildWorkflowOrigin != nil {
 		return empty, noPin, nil, errors.New("child invocation differs from retained identity")
 	}
 	reader, err := journal.OpenReadOnly(p.journal.Dir())
