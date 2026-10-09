@@ -6,9 +6,12 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationRestoreAddAddDoesNotWriteLiveCheckout(t *testing.T) {
+	testdep.Require(t, "git")
 	for _, conflict := range []bool{false, true} {
 		name := "identical"
 		if conflict {
