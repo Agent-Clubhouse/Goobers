@@ -103,7 +103,7 @@ func TestIntegrationParentRestoreReclaimsInterruptedCleanup(t *testing.T) {
 
 func TestIntegrationParentRestoreRecreatesAbsentOwnedCheckout(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"missing-checkout", "missing-primary", "provisional", "foreign-owner", "unowned-registration"} {
+	for _, mode := range []string{"missing-checkout", "empty-checkout", "missing-primary", "provisional", "foreign-owner", "foreign-empty", "foreign-registration", "unowned-registration"} {
 		t.Run(mode, func(t *testing.T) {
 			m, err := NewManager(t.TempDir())
 			if err != nil {
@@ -124,6 +124,9 @@ func TestIntegrationParentRestoreRecreatesAbsentOwnedCheckout(t *testing.T) {
 				t.Fatal(err)
 			}
 			primaryPath, ownershipPath := m.markerPath(wt.key, wt.RunID), m.ownershipPath(wt.key, primary.Directory)
+			if mode == "foreign-registration" {
+				runTestGit(t, wt.Path, "switch", "-c", "goobers/foreign")
+			}
 			if mode == "provisional" {
 				runTestGit(t, m.repoDirForKey(wt.key), "worktree", "remove", "--force", wt.Path)
 				primary.StartRef, ownership.StartRef = "", ""
@@ -132,7 +135,12 @@ func TestIntegrationParentRestoreRecreatesAbsentOwnedCheckout(t *testing.T) {
 			} else if err := os.RemoveAll(wt.Path); err != nil {
 				t.Fatal(err)
 			}
-			if mode == "foreign-owner" {
+			if mode == "empty-checkout" || mode == "foreign-empty" || mode == "foreign-registration" {
+				if err := os.Mkdir(wt.Path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "foreign-owner" || mode == "foreign-empty" {
 				ownership.OwnerRunID = "another-parent"
 			}
 			if err := wt.writeCustodyMarkers(primary, ownership); err != nil {
@@ -150,12 +158,17 @@ func TestIntegrationParentRestoreRecreatesAbsentOwnedCheckout(t *testing.T) {
 			}
 			opts := ParentRestoreOptions{RepoURL: url, RunID: wt.RunID, OwnerRunID: "parent", Gaggle: "gaggle", Branch: wt.Branch, BaseRef: primary.BaseRef, HeadSHA: head, StartRef: custody.StartRef}
 			restored, err := m.CreateParentRestore(t.Context(), opts)
-			if mode == "foreign-owner" || mode == "unowned-registration" {
+			if mode == "foreign-owner" || mode == "foreign-empty" || mode == "foreign-registration" || mode == "unowned-registration" {
 				if err == nil {
 					t.Fatal("borrowed unowned checkout registration")
 				}
 				if registered, err := worktreeRegistered(t.Context(), m.repoDirForKey(wt.key), wt.Path); err != nil || !registered {
 					t.Fatal("refused restoration removed registration", registered, err)
+				}
+				if mode == "foreign-empty" || mode == "foreign-registration" {
+					if _, err := os.Lstat(wt.Path); err != nil {
+						t.Fatal("refused restoration removed foreign directory", err)
+					}
 				}
 				return
 			}

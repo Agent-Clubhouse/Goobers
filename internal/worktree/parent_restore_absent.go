@@ -4,8 +4,55 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 )
+
+// An interrupted add/remove may leave an empty directory. Remove only that
+// empty leaf after proving archive ownership; Remove refuses any file which
+// appears meanwhile. A nonempty directory always takes the preserving path.
+func (m *Manager) removeEmptyParentRestore(ctx context.Context, key, repository, path string, opts CreateOptions) (bool, error) {
+	dir, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	entries, readErr := dir.ReadDir(1)
+	closeErr := dir.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return false, errors.Join(readErr, closeErr)
+	}
+	if len(entries) != 0 || closeErr != nil {
+		return false, closeErr
+	}
+	wt := &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key, repoURL: opts.RepoURL}
+	mk, _, err := wt.parentRestoreMarkers(opts)
+	if err != nil {
+		return true, err
+	}
+	if err := validateParentRestoreMarker(ctx, repository, mk, opts); err != nil {
+		return true, err
+	}
+	if err := ensureParentRestoreBranch(ctx, repository, opts); err != nil {
+		return true, err
+	}
+	if err := validateEmptyParentRegistration(ctx, repository, path, opts.Branch); err != nil {
+		return true, err
+	}
+	return true, os.Remove(path)
+}
+
+func validateEmptyParentRegistration(ctx context.Context, repository, path, branch string) error {
+	entries, err := registeredWorktrees(ctx, repository)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if sameWorktreePath(entry.Path, path) && entry.Branch != "refs/heads/"+branch {
+			return errors.New("parent restore empty directory has another registered branch")
+		}
+	}
+	return nil
+}
 
 // Called under the repository lock, after the exact target was found absent.
 // Surviving ownership can precede a failed worktree add or follow an interrupted

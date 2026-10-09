@@ -75,6 +75,12 @@ func (m *Manager) existingParentRestore(ctx context.Context, key, repository, pa
 	if err != nil || !info.IsDir() {
 		return nil, false, fmt.Errorf("parent restore target is not a managed directory")
 	}
+	if empty, err := m.removeEmptyParentRestore(ctx, key, repository, path, opts); empty || err != nil {
+		if err != nil {
+			return nil, false, err
+		}
+		return nil, false, m.prepareAbsentParentRestore(ctx, key, repository, path, opts)
+	}
 	wt, err := m.adoptParentRestore(ctx, key, repository, path, opts)
 	return wt, err == nil, err
 }
