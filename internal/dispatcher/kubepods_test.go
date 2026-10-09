@@ -2,12 +2,18 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 // The client-go PodAPI covers exactly the §4 verb set, with idempotent
@@ -47,5 +53,37 @@ func TestKubernetesPodAPIVerbs(t *testing.T) {
 	}
 	if _, err := api.GetPod(ctx, "gaggle-web", "stage-pod"); err == nil {
 		t.Fatal("GetPod after delete must surface the NotFound the supervise loop treats as terminal-unknown")
+	}
+}
+
+func TestChildFinalizerUsesUIDResourceVersionAndPreservesOthers(t *testing.T) {
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "gaggle", Name: "child", UID: "exact", ResourceVersion: "42", Finalizers: []string{childCustodyFinalizer, "foreign/finalizer"}}}
+	client := fake.NewSimpleClientset(p)
+	api := NewKubernetesPodAPI(client).(childPodAPI)
+	var patches int
+	client.PrependReactor("patch", "pods", func(action ktesting.Action) (bool, runtime.Object, error) {
+		patches++
+		patch := action.(ktesting.PatchAction)
+		var ops []map[string]any
+		if err := json.Unmarshal(patch.GetPatch(), &ops); err != nil {
+			t.Fatal(err)
+		}
+		want := []map[string]any{{"op": "test", "path": "/metadata/uid", "value": "exact"}, {"op": "test", "path": "/metadata/resourceVersion", "value": "42"}, {"op": "replace", "path": "/metadata/finalizers", "value": []any{"foreign/finalizer"}}}
+		if patch.GetPatchType() != types.JSONPatchType || !reflect.DeepEqual(ops, want) {
+			t.Fatalf("patch=%s", patch.GetPatch())
+		}
+		return true, p, nil
+	})
+	if err := api.FinalizePodWithIdentity(t.Context(), p.Namespace, p.Name, "replacement"); !errors.Is(err, ErrChildIsolation) {
+		t.Fatal(err)
+	}
+	if patches != 0 {
+		t.Fatal("patched wrong UID")
+	}
+	if err := api.FinalizePodWithIdentity(t.Context(), p.Namespace, p.Name, p.UID); err != nil {
+		t.Fatal(err)
+	}
+	if patches != 1 {
+		t.Fatal(patches)
 	}
 }

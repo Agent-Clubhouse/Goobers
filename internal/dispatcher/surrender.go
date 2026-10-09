@@ -105,6 +105,10 @@ type SurrenderedMutation struct {
 // (ResultEnvelope + mutation facts + mutation issues), so the dispatch
 // activity can marshal it back into the identical stageActivityResult.
 type SurrenderedResult struct {
+	// ChildWorkspaceDigest names the bounded child output carrier. The host
+	// verifies its contract and waits for exact pod writer termination before
+	// importing its tree. Ordinary workspace delta semantics do not apply.
+	ChildWorkspaceDigest string `json:"childWorkspaceDigest,omitempty"`
 	// RecoveryAcknowledged is set only by the pod supervisor after the host
 	// accepts recovery custody (or verifies that no unmerged patch exists).
 	// Old images omit it; omission must not authorize writable-pod deletion.

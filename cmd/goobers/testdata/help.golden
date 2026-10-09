@@ -874,7 +874,8 @@ running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
 --wait-for-daemon optionally waits up to 30s for a concurrently starting
 daemon's read API; recovery may still be running when the portal opens.
-Use --wait-for-daemon=<duration> to choose another bound.
+Use --wait-for-daemon=<duration> to choose another bound. A daemon that
+reports its startup budget or progress extends that bound (up to 1h).
 --listen overrides the full bind address (host:port) and takes the place
 of --port when given; binding a non-loopback host requires api.auth to be
 configured in instance.yaml (SEC-043) — there is no insecure override.

@@ -28,17 +28,13 @@ import (
 // generous headroom before a worker concludes the daemon is down and exits.
 //
 // A daemon that does advertise its startup budget and progress (#6895) moves
-// the bound: see readinessBound.
+// the bound: see startuphint.Bound.
 const DefaultReadyWait = 20 * time.Minute
 
 // DefaultMaxReadyWait caps the bound however far a daemon's advertised budget
 // and progress extend it, so a daemon that keeps reporting progress without
 // ever becoming ready cannot hold a worker forever.
 const DefaultMaxReadyWait = 6 * time.Hour
-
-// startupBudgetGrace is added to a daemon's advertised remaining budget: the
-// budget is the daemon's own estimate, and missing it slightly is not "down".
-const startupBudgetGrace = 5 * time.Minute
 
 // ProbeOptions tunes the startup probe. Zero values use production defaults.
 type ProbeOptions struct {
@@ -144,16 +140,16 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 	}
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 	bound := newReadinessBound(time.Now(), opts)
-	start := bound.start
+	start := bound.Start()
 	attempts := 0
 	var lastStatus *dispatcher.BlobStatusError
 	var lastErr error
-	err := retryutil.Until(ctx, bound.limit.Sub(start), retryutil.Policy{Base: base, Max: max}, func(ctx context.Context) (bool, error) {
-		if lastErr != nil && !time.Now().Before(bound.deadline) {
+	err := retryutil.Until(ctx, bound.Limit().Sub(start), retryutil.Policy{Base: base, Max: max}, func(ctx context.Context) (bool, error) {
+		if lastErr != nil && !time.Now().Before(bound.Deadline()) {
 			return false, lastErr
 		}
 		attempts++
-		putCtx, cancel := context.WithDeadline(ctx, earliest(time.Now().Add(30*time.Second), bound.deadline))
+		putCtx, cancel := context.WithDeadline(ctx, earliest(time.Now().Add(30*time.Second), bound.Deadline()))
 		defer cancel()
 		err := remote.PutOnce(putCtx, digest, data)
 		if err == nil {
@@ -169,13 +165,13 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 			hints = startuphint.Parse(status.Header)
 		}
 		now := time.Now()
-		bound.observe(now, hints)
+		bound.Observe(now, hints)
 		lastErr = err
 		if opts.Log != nil {
 			_, _ = fmt.Fprintf(opts.Log, "INFO goobers worker: blob-plane probe waiting for daemon readiness (attempt %d, %s elapsed, bound %s%s): %v\n",
-				attempts, now.Sub(start).Round(time.Second), bound.deadline.Sub(start).Round(time.Second), describeHints(hints), err)
+				attempts, now.Sub(start).Round(time.Second), bound.Deadline().Sub(start).Round(time.Second), describeHints(hints), err)
 		}
-		return now.Before(bound.deadline), err
+		return now.Before(bound.Deadline()), err
 	})
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "WORKER_BLOB_STORE_MISMATCH") {
@@ -196,25 +192,7 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 	return nil
 }
 
-// readinessBound is when the probe stops waiting for a not-ready daemon.
-//
-// It starts at ReadyWait. A daemon that advertises its startup budget moves
-// it to the end of that budget plus a grace, and a daemon whose progress
-// token changes earns a fresh ReadyWait from that moment: a slow daemon that
-// is visibly advancing is waited for, while one that stops advancing is given
-// up on ReadyWait after its last progress (#6895). Neither can move it past
-// limit.
-type readinessBound struct {
-	start, deadline, limit time.Time
-	stall                  time.Duration
-	progress               string
-	// daemon is the process whose progress token is the current baseline;
-	// firstDaemon is the only process whose budget extends the bound.
-	daemon, firstDaemon string
-	seen                bool
-}
-
-func newReadinessBound(now time.Time, opts ProbeOptions) *readinessBound {
+func newReadinessBound(now time.Time, opts ProbeOptions) *startuphint.Bound {
 	wait := opts.ReadyWait
 	if wait <= 0 {
 		wait = DefaultReadyWait
@@ -223,44 +201,7 @@ func newReadinessBound(now time.Time, opts ProbeOptions) *readinessBound {
 	if maxWait <= 0 {
 		maxWait = DefaultMaxReadyWait
 	}
-	if maxWait < wait {
-		maxWait = wait
-	}
-	return &readinessBound{start: now, deadline: now.Add(wait), limit: now.Add(maxWait), stall: wait}
-}
-
-// observe folds one not-ready answer's hints into the bound. The first
-// progress token seen from a daemon process is a baseline, not progress, and
-// only the first daemon process seen may extend the bound by its budget: a
-// crash-looping daemon advertises a fresh budget and a reset progress token
-// on every restart, which must not read as advancing. A restart also caps
-// the bound at one more stall window, so a loop whose processes each advance
-// a little cannot chain extensions. A spent budget extends nothing, so a
-// daemon past its own estimate is held only by real progress.
-func (b *readinessBound) observe(now time.Time, hints startuphint.Hints) {
-	if hints == (startuphint.Hints{}) {
-		return
-	}
-	if !b.seen {
-		b.seen, b.firstDaemon, b.daemon = true, hints.Daemon, hints.Daemon
-	}
-	next := b.deadline
-	if hints.Daemon == b.firstDaemon && hints.HasBudget && hints.BudgetRemaining > 0 {
-		next = latest(next, now.Add(hints.BudgetRemaining+startupBudgetGrace))
-	}
-	switch {
-	case hints.Daemon != b.daemon:
-		// A restart: from here on nothing may hold the worker past one more
-		// stall window, however much the new processes appear to advance.
-		b.limit = earliest(b.limit, latest(b.deadline, now.Add(b.stall)))
-		b.daemon, b.progress = hints.Daemon, hints.Progress
-	case hints.Progress != "" && hints.Progress != b.progress:
-		if b.progress != "" {
-			next = latest(next, now.Add(b.stall))
-		}
-		b.progress = hints.Progress
-	}
-	b.deadline = earliest(next, b.limit)
+	return startuphint.NewBound(now, wait, maxWait)
 }
 
 func describeHints(hints startuphint.Hints) string {
@@ -282,13 +223,6 @@ func describeHints(hints startuphint.Hints) string {
 
 func earliest(a, b time.Time) time.Time {
 	if b.Before(a) {
-		return b
-	}
-	return a
-}
-
-func latest(a, b time.Time) time.Time {
-	if b.After(a) {
 		return b
 	}
 	return a
