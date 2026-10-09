@@ -5,14 +5,67 @@ package recovery
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
+
+func TestIntegrationParentRetentionRefusesUnsupportedRestoreBeforeCleanup(t *testing.T) {
+	testdep.Require(t, "git")
+	for _, scenario := range []string{"working-path-limit", "index-path-limit", "working-byte-limit", "file-directory-replacement"} {
+		t.Run(scenario, func(t *testing.T) {
+			repo, key, at := childSnapshotFixture(t)
+			base := recoveryTestGit(t, repo, "rev-parse", "HEAD")
+			switch scenario {
+			case "working-path-limit", "index-path-limit":
+				for i := range maxChildApplyPaths + 1 {
+					childSnapshotWrite(t, repo, fmt.Sprintf("added/%04d", i), "new work\n")
+				}
+				if scenario == "index-path-limit" {
+					recoveryTestGit(t, repo, "add", "added")
+					if err := os.RemoveAll(filepath.Join(repo, "added")); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "working-byte-limit":
+				// Highly compressible content fits the bundle budget but exceeds
+				// the restored file-content budget. Archive size is insufficient.
+				childSnapshotWrite(t, repo, "large.txt", strings.Repeat("x", maxChildApplyBytes+1))
+			case "file-directory-replacement":
+				if err := os.Remove(filepath.Join(repo, "tracked.txt")); err != nil {
+					t.Fatal(err)
+				}
+				childSnapshotWrite(t, repo, "tracked.txt/child.txt", "new directory\n")
+			}
+			policy := SnapshotPolicy{}
+			before := captureChildFixture(t, repo, key, "parent", at, policy)
+			root := t.TempDir()
+			request := RetentionRequest{Repository: repo, RepositoryKey: key, RunID: "parent", BaseRef: base, IdentityTime: at, RetainUntil: at.Add(time.Hour), InventoryRoot: root, CleanupRoots: []string{repo}, MaxSnapshots: 2, MaxArchiveBytes: 1 << 20, ParentPolicy: &policy}
+			acknowledged := false
+			log := retentionJournalFunc(func(journal.Event) error { acknowledged = true; return nil })
+			record, path, err := Retain(t.Context(), request, log)
+			if err == nil || record != (Record{}) || path != "" || acknowledged {
+				t.Fatalf("unsupported restore acknowledged cleanup: %+v %q %v, acknowledged=%v", record, path, err, acknowledged)
+			}
+			if !strings.Contains(err.Error(), "parent archive cannot be restored automatically") {
+				t.Fatal("retention failed before checking restoration limits", err)
+			}
+			if err := CheckChildSnapshotCurrent(t.Context(), repo, before); err != nil {
+				t.Fatal("failed retention changed source", err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 0 {
+				t.Fatal("unsupported restore consumed inventory capacity", entries, err)
+			}
+		})
+	}
+}
 
 func TestIntegrationParentRetentionKeepsLatestCommitIndexAndWorkingState(t *testing.T) {
 	testdep.Require(t, "git")

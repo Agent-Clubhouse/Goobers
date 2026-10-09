@@ -54,7 +54,37 @@ func prepareRetentionRecord(ctx context.Context, request RetentionRequest) (Reco
 	if _, err := ReadRetainedParentState(ctx, request.Repository, prepared); err != nil {
 		return Record{}, err
 	}
+	if err := verifyParentArchiveApplication(ctx, request.Repository, snapshot, request.MaxArchiveBytes); err != nil {
+		return Record{}, err
+	}
 	return prepared, nil
+}
+
+// A valid bundle alone is not permission to discard the checkout. Ordinary
+// stages can produce more work than the bounded restore protocol supports, or
+// change file/directory shapes it cannot replay. Check both independent trees
+// against the fresh checkout's HEAD before Retain acknowledges cleanup. This
+// reads objects and private indexes only; the current checkout stays untouched.
+func verifyParentArchiveApplication(ctx context.Context, repository string, snapshot ChildSnapshot, maxBytes int64) error {
+	head, err := WritePortableGitState(ctx, repository, snapshot, false, io.Discard, maxBytes)
+	if err != nil {
+		return err
+	}
+	index, err := WritePortableGitState(ctx, repository, snapshot, true, io.Discard, maxBytes)
+	if err != nil {
+		return err
+	}
+	if _, err := writePortableTree(ctx, repository, snapshot, snapshot.TreeSHA, io.Discard, maxBytes); err != nil {
+		return err
+	}
+	expected := snapshot
+	expected.TreeSHA = head.TreeSHA
+	for _, tree := range []string{snapshot.TreeSHA, index.TreeSHA} {
+		if _, err := loadChildChanges(ctx, repository, PreparedChildDisposition{ExpectedParent: expected, TreeSHA: tree}); err != nil {
+			return fmt.Errorf("parent archive cannot be restored automatically: %w", err)
+		}
+	}
+	return CheckChildSnapshotCurrent(ctx, repository, snapshot)
 }
 
 func parentArchiveIndex(ctx context.Context, repository string, snapshot ChildSnapshot) (string, error) {
