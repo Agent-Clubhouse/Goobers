@@ -435,9 +435,12 @@ func RequireRoles() Authorizer {
 			return errors.New("only an authenticated worker may report config divergence")
 		}
 		if principal.Issuer == GeneratedChildPrincipalIssuer {
-			// The exact-attempt route owner must be connected before this identity
-			// can reach any API. Ordinary pod scopes and human roles cannot widen it.
-			return errors.New("generated child execution authority unavailable")
+			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
+				return errors.New("generated child contract unavailable")
+			}
+			// Artifact handlers require a separately installed exact-attempt owner.
+			// All other API authority remains unavailable to this issuer.
+			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == ChildWorkflowPrincipalIssuer {
 			return authorizeChildWorkflow(request, principal)
@@ -555,7 +558,12 @@ func PrincipalFromRequest(request *http.Request) (Principal, bool) {
 	if request == nil {
 		return Principal{}, false
 	}
-	principal, ok := request.Context().Value(principalContextKey{}).(Principal)
+	return PrincipalFromContext(request.Context())
+}
+
+// PrincipalFromContext returns only the identity established by authentication.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
 	return principal, ok
 }
 
@@ -640,6 +648,7 @@ type handlerConfig struct {
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
+	generatedChildBlobs     blobstore.Store
 	recovery                RecoveryService
 	surrenders              SurrenderService
 	state                   StateService
@@ -1289,7 +1298,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
-	registerBlobPlaneRoutes(router, config.blobs, errorLog)
+	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{
 		http.MethodGet: apicontract.RouteRunRecovery, http.MethodPost: apicontract.RouteRunRecoveryPublish,
 	}, map[apicontract.RouteID]http.HandlerFunc{

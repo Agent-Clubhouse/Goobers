@@ -37,3 +37,9 @@ func (s *Store) ChildStart(ctx context.Context, identity ChildIdentity) (Record,
 	}
 	return scanRecord(s.db.QueryRowContext(ctx, `SELECT `+columns+` FROM triggers WHERE id=(SELECT acceptance_id FROM child_lineages WHERE gaggle=? AND parent_run=? AND occurrence=? AND invocation_key=? AND tombstoned_ns IS NULL)`, childArgs(identity)...))
 }
+
+// ChildForExecutionRun resolves internal custody by the original accepted run.
+// Callers must independently authorize exact journal lineage and attempt identity.
+func (s *Store) ChildForExecutionRun(ctx context.Context, runID string) (ChildRecord, error) {
+	return scanChild(s.db.QueryRowContext(ctx, "SELECT "+childColumns+childFrom+" WHERE c.child_id=?", "child-"+runID))
+}

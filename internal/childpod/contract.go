@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 )
@@ -20,6 +21,23 @@ const (
 	MaxBundleBytes   = 16 << 20
 	MaxContractBytes = 24 << 20
 )
+
+// WorkspaceInput is trusted host custody, never taken from task inputs.
+type WorkspaceInput struct {
+	Path string
+	Fork recovery.ChildSnapshot
+}
+
+// Request is assembled from the accepted source, committed stage attempt and
+// pinned run identity. No mutable-name lookup belongs in this adapter.
+type Request struct {
+	Identity  journal.RunIdentity
+	Attempt   dispatcher.Attempt
+	Eligible  []dispatcher.RunnerSpec
+	Workspace *WorkspaceInput
+	Ceiling   credentials.ChildCeiling
+	StartedAt time.Time
+}
 
 // Carrier is the bounded tree and its complete independent object custody.
 type Carrier struct {
@@ -96,6 +114,26 @@ func DecodeContract(data []byte, digest string) (Contract, error) {
 		return c, err
 	}
 	return c, c.Validate()
+}
+
+// DecodeOutput checks the source binding, policy, repository and exact bundle.
+func DecodeOutput(data []byte, digest, contractDigest string, c Contract) (Output, error) {
+	var out Output
+	if err := decode(data, digest, &out); err != nil {
+		return out, err
+	}
+	if out.Version != 1 || out.ContractDigest != contractDigest || (out.Workspace == nil) != (c.Workspace == nil) {
+		return out, fmt.Errorf("child output contract mismatch")
+	}
+	if out.Workspace != nil {
+		if err := out.Workspace.Validate(); err != nil {
+			return out, err
+		}
+		if out.Workspace.Snapshot.Record.RepositoryKey != c.Workspace.Snapshot.Record.RepositoryKey || !slices.Equal(out.Workspace.Snapshot.Policy.ExcludedPaths, c.Workspace.Snapshot.Policy.ExcludedPaths) {
+			return out, fmt.Errorf("child output workspace policy mismatch")
+		}
+	}
+	return out, nil
 }
 
 func decode(data []byte, digest string, out any) error {

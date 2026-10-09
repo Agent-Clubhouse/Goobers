@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -133,4 +134,28 @@ func InitializePortableWorkspace(ctx context.Context, repository, archive string
 	}
 	// Persistent configuration contains no transports or inherited helpers.
 	return recoveryGit(ctx, repository, io.Discard, "config", "core.hooksPath", filepath.ToSlash(os.DevNull))
+}
+
+// PreparePortableReturn maps a verified returned tree onto the host's captured
+// real ancestry using the existing replace planner. The caller persists and
+// applies the resulting plan under the same exclusive workspace custody.
+func PreparePortableReturn(ctx context.Context, repository string, expected ChildSnapshot, returned PortableSnapshot, operationID string, identityTime time.Time, maxBytes int64) (ChildApplyPlan, error) {
+	if err := returned.Validate(); err != nil {
+		return ChildApplyPlan{}, err
+	}
+	if returned.Record.RepositoryKey != expected.Record.RepositoryKey || !slices.Equal(returned.Policy.ExcludedPaths, expected.Policy.ExcludedPaths) {
+		return ChildApplyPlan{}, fmt.Errorf("portable workspace changed source or exclusion policy")
+	}
+	if err := verifyPortableObjects(ctx, repository, returned); err != nil {
+		return ChildApplyPlan{}, err
+	}
+	result, err := pinDispositionTree(ctx, repository, expected, returned.Record.SnapshotSHA, returned.TreeSHA, ChildReplace, operationID, identityTime)
+	if err != nil {
+		return ChildApplyPlan{}, err
+	}
+	prepared, err := PrepareChildDisposition(ctx, repository, expected, expected, result, ChildReplace, operationID+"-apply", identityTime, maxBytes)
+	if err != nil {
+		return ChildApplyPlan{}, err
+	}
+	return PlanChildApplication(ctx, repository, prepared)
 }

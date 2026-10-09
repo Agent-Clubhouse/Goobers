@@ -100,18 +100,24 @@ func (l *queuedChildLauncher) credentialCeiling(ctx context.Context, id journal.
 }
 
 func (l *queuedChildLauncher) retainedChildIdentity(ctx context.Context, id journal.RunIdentity) (childExecutionRef, error) {
-	if id.Child == nil || l.queue == nil {
+	return retainedChildExecutionRef(ctx, l.queue, id, true)
+}
+
+// retainedChildExecutionRef verifies accepted provenance without granting new effects.
+// Teardown callers may inspect a cancelled execution; credentials require current authority.
+func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, id journal.RunIdentity, requireCurrent bool) (childExecutionRef, error) {
+	if id.Child == nil || queue == nil {
 		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 	}
 	identity := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: id.Gaggle, ParentRunID: id.Child.ParentRunID}, StageOccurrence: id.Child.StageOccurrence, InvocationKey: id.Child.InvocationKey}
-	receipt, err := l.queue.ChildStart(ctx, identity)
+	receipt, err := queue.ChildStart(ctx, identity)
 	if err != nil {
 		return childExecutionRef{}, err
 	}
 	if receipt.State != triggerqueue.Dispatching && receipt.State != triggerqueue.Dispatched {
 		return childExecutionRef{}, errors.New("child execution has no claimed start")
 	}
-	service := durableTriggerService{queue: l.queue}
+	service := durableTriggerService{queue: queue}
 	ref, err := service.childReference(ctx, receipt)
 	if err != nil {
 		return childExecutionRef{}, err
@@ -119,7 +125,7 @@ func (l *queuedChildLauncher) retainedChildIdentity(ctx context.Context, id jour
 	if ref.Child.RunID != id.RunID || ref.Lineage != *id.Child || ref.Envelope.WorkflowDigest != id.WorkflowDigest || ref.Envelope.Workflow != id.Workflow || ref.Envelope.ConfigGeneration != id.ConfigGeneration {
 		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 	}
-	if ref.Child.CancellationRequested || ref.Child.State.Terminal() {
+	if requireCurrent && (ref.Child.CancellationRequested || ref.Child.State.Terminal()) {
 		return childExecutionRef{}, triggerqueue.ErrParentCancelled
 	}
 	return ref, nil

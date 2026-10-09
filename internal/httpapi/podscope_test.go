@@ -316,7 +316,14 @@ func TestGeneratedChildCannotInheritOrdinaryAuthority(t *testing.T) {
 			}
 			request := httptest.NewRequest(route.method, route.path, nil)
 			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
-			if err := RequireRoles().Authorize(request); err == nil {
+			err := RequireRoles().Authorize(request)
+			if authorizeWorkerBlob(request) == nil {
+				if err != nil {
+					t.Fatal("explicit child artifact route refused", err)
+				}
+				return // The handler separately requires the installed contract owner.
+			}
+			if err == nil {
 				t.Fatalf("generated child inherited authority for %s %s", route.method, route.path)
 			}
 		})

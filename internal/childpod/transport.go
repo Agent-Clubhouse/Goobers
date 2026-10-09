@@ -3,6 +3,7 @@ package childpod
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -47,4 +48,17 @@ func Materialize(ctx context.Context, path string, c Carrier) error {
 	return withBundle(c, func(archive string) error {
 		return recovery.InitializePortableWorkspace(ctx, path, archive, c.Snapshot, MaxBundleBytes)
 	})
+}
+
+func prepareReturn(ctx context.Context, path string, expected recovery.ChildSnapshot, c Carrier, operation string, at time.Time) (recovery.ChildApplyPlan, error) {
+	err := withBundle(c, func(archive string) error {
+		return recovery.ImportPortableSnapshot(ctx, path, archive, c.Snapshot, MaxBundleBytes)
+	})
+	if err != nil {
+		return recovery.ChildApplyPlan{}, err
+	}
+	if operation == "" {
+		return recovery.ChildApplyPlan{}, fmt.Errorf("child return requires stable application identity")
+	}
+	return recovery.PreparePortableReturn(ctx, path, expected, c.Snapshot, operation, at, MaxBundleBytes)
 }

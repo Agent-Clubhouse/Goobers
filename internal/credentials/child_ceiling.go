@@ -85,3 +85,10 @@ func RefuseUnisolatedChildProcess(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ChildCeilingFromContext returns a defensive copy of the trusted invocation ceiling.
+func ChildCeilingFromContext(ctx context.Context) (ChildCeiling, bool) {
+	ceiling, ok := ctx.Value(childCeilingKey{}).(ChildCeiling)
+	ceiling.AllowedKeys = slices.Clone(ceiling.AllowedKeys)
+	return ceiling, ok
+}
