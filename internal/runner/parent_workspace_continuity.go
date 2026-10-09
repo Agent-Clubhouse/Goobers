@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 
@@ -77,52 +76,12 @@ func hasContainedParentStage(in StartInput) bool {
 // newer hold without matching imported output fences reuse: a finished stage
 // alone does not establish that a remote writer returned its workspace.
 func selectHeldParentContribution(events []journal.Event, runID, branch string) (parentContribution, bool, error) {
-	var result parentContribution
-	var hold ContainedParentWorkspaceCustody
-	var heldAt, returnedAt uint64
-	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation {
-			continue
-		}
-		switch event.Runner["kind"] {
-		case ContainedParentWorkspaceKind:
-			var value ContainedParentWorkspaceCustody
-			data, err := json.Marshal(event.Runner["custody"])
-			if err != nil || len(data) > 8192 || json.Unmarshal(data, &value) != nil || value.Version != 1 || value.Origin == nil || value.Workspace.OwnerRunID != runID {
-				return result, false, errors.New("invalid retained parent workspace")
-			}
-			if value.Workspace.Branch == branch {
-				hold, heldAt = value, event.Seq
-			}
-		case ParentContributionKind:
-			value, err := decodeParentContribution(event)
-			if err != nil {
-				return result, false, err
-			}
-			if value.Custody.Workspace.OwnerRunID != runID {
-				return result, false, errors.New("parent contribution belongs to another run")
-			}
-			if value.Custody.Workspace.Branch == branch {
-				if heldAt == 0 || event.Seq <= heldAt || value.Custody.Workspace != hold.Workspace || *value.Custody.Origin != *hold.Origin {
-					return result, false, errors.New("parent contribution differs from retained workspace")
-				}
-				result, returnedAt = value, event.Seq
-			}
-		case ParentContributionRetiredKind:
-			value, err := decodeParentContribution(event)
-			if err != nil {
-				return result, false, err
-			}
-			if value.Custody.Workspace.Branch == branch {
-				return result, false, errors.New("parent contribution has been retired")
-			}
-		}
+	state, err := readParentWorkspaceState(events, runID, branch)
+	if err != nil {
+		return parentContribution{}, false, err
 	}
-	if heldAt == 0 {
-		return result, false, nil
+	if state.retiredAt != 0 {
+		return parentContribution{}, false, errors.New("parent contribution has been retired")
 	}
-	if returnedAt <= heldAt {
-		return result, false, errors.New("parent workspace has no acknowledged return for its latest owner")
-	}
-	return result, true, nil
+	return state.contribution, state.returnedAt != 0, nil
 }

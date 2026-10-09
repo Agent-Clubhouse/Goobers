@@ -612,6 +612,9 @@ type Config struct {
 	// PrepareTerminal records external cleanup immediately before run.finished.
 	// Optional; errors are surfaced before the terminal transition.
 	PrepareTerminal TerminalPreparer
+	// RestoreParentArchive restores retired contained-parent checkouts before
+	// any resumed task or parallel branch can create an executor or write files.
+	RestoreParentArchive ParentArchiveRestorer
 	// FinalizeTerminal performs instance-level cleanup for every terminal run,
 	// after run.finished is durable. Optional; errors are surfaced to the caller.
 	FinalizeTerminal TerminalFinalizer
@@ -1504,7 +1507,7 @@ func (r *Runner) newWalkGateEvaluator(ws *walkState) *gate.Evaluator {
 // gateDiffDigests likewise seeded so non-convergence detection continues
 // (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
-	if err := workflow.RefuseChildWorkflowExecution(ws.in.Machine.Def.Spec); err != nil {
+	if err := r.prepareWalkExecution(ctx, ws); err != nil {
 		return Result{}, err
 	}
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
