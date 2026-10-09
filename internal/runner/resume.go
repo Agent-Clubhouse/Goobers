@@ -158,9 +158,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
-	releaseJournal, err := r.borrowChildJournal(jr)
+	releaseJournal, err := r.borrowExecutionJournal(jr)
 	if err != nil {
-		return Result{}, fmt.Errorf("runner: lend recovered child journal: %w", err)
+		return Result{}, fmt.Errorf("runner: lend recovered execution journal: %w", err)
 	}
 	defer releaseJournal()
 
@@ -222,7 +222,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
-	releaseJournal, err := r.borrowChildJournal(jr)
+	releaseJournal, err := r.borrowExecutionJournal(jr)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: lend resumed child journal: %w", err)
 	}

@@ -1404,6 +1404,7 @@ func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Man
 	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, input.TerminalNotifier)
 	childHandoff := &daemonChildHandoff{layout: input.Layout, worktrees: manager, repoCloneURL: runnerCfg.RepoCloneURL, project: input.GaggleProject}
 	runnerCfg.ChildHandoff, runnerCfg.ChildParentCapacity = childHandoff, childHandoff
+	runnerCfg.BorrowParentJournal = containedParentJournalOwner(input.Layout.Root, input.Layout.Gaggle())
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, nil, err

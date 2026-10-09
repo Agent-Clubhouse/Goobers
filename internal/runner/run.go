@@ -443,7 +443,10 @@ type Config struct {
 	childTerminalCustody func(*journal.Run) error
 	ChildHandoff         ChildHandoff
 	ChildParentCapacity  ChildParentCapacity
-	SelfExecutionDenied  bool
+	// BorrowParentJournal lends the owned writer to contained parent observations.
+	// Release must join all remote appends before the runner closes its writer.
+	BorrowParentJournal func(string, string, *journal.Run) (func(), error)
+	SelfExecutionDenied bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
@@ -1142,9 +1145,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 
 	defer func() { _ = jr.Close() }()
-	releaseJournal, err := r.borrowChildJournal(jr)
+	releaseJournal, err := r.borrowExecutionJournal(jr)
 	if err != nil {
-		return Result{}, fmt.Errorf("runner: lend child journal: %w", err)
+		return Result{}, fmt.Errorf("runner: lend execution journal: %w", err)
 	}
 	defer releaseJournal()
 	if in.OnJournalPublished != nil {

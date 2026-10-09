@@ -25,6 +25,7 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 	if client == nil || s.config == nil || s.config.API.PodTokenKeyFile == "" || surrenders == nil || journals == nil {
 		return
 	}
+	s.parentBorrowJournal = journals.Adopt
 	s.parentExecutors = func(goober string, rec runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Goober, error) {
 		owned, _, err := runner.OwnedJournalScope(rec)
 		if err != nil {
