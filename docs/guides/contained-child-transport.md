@@ -168,3 +168,21 @@ its unfinished-child slot. A failed or interrupted run may retain an unconfirmed
 pod through its custody finalizer. Delete the **disposable cluster** and its local
 registry when qualification ends; do not clear production custody finalizers to
 imitate a passing test.
+
+### Cancelling an active child pod
+
+`TestIntegrationParentCancellationStopsRealKubernetesChild` uses the same
+explicit disposable environment. Its child shell signals that execution has
+started before the test sends a parent cancellation through the daemon cancel
+service. The durable family fence records cancellation intent; the bounded queue
+sweep then delivers it to the live child runner. The test requires a cancelled
+retained result and independently verifies the exact pod UID, stopped workspace
+writers and durable surrender. A cancellation request alone is never treated as
+stop confirmation.
+
+The startup signal is a test-only loopback HTTP endpoint reachable from the
+local container; it grants no Goobers authority. Cancelling before command
+startup can instead preserve a failed child outcome when the execution fence
+refuses startup first. This does not rewrite an already-recorded terminal
+outcome. The originating parent remains a fixture, so this test does not qualify
+cancellation of a complete agent-authored parent/child journey.
