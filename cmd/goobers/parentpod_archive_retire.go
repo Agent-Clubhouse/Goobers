@@ -23,14 +23,11 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 	if err != nil {
 		return err
 	}
-	pending, err := runner.PendingParentForks(reader)
-	if err != nil {
+	work, err := readParentRetirementWork(reader)
+	if err != nil || work.empty() {
 		return err
 	}
-	candidates, err := retirementCandidatesBeforeForkRecovery(reader, pending)
-	if err != nil || len(candidates) == 0 && len(pending) == 0 {
-		return err
-	}
+
 	id, err := reader.Identity()
 	if err != nil {
 		return err
@@ -48,10 +45,10 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 	if err := verifyParentArchiveChildren(ctx, r.layout, id); err != nil {
 		return err
 	}
-	if err := r.recoverForkPlans(ctx, run, reader, pending); err != nil {
+	if err := r.recoverForkPlans(ctx, run, reader, work.forks); err != nil {
 		return err
 	}
-	candidates, err = runner.ParentRetirementCandidates(reader)
+	candidates, err := runner.ParentRetirementCandidates(reader)
 	if err != nil {
 		return err
 	}
@@ -69,7 +66,10 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 	if failures != nil {
 		return failures
 	}
-	return r.releaseForkSources(ctx, run, reader)
+	if err := r.releaseForkSources(ctx, run, reader); err != nil {
+		return err
+	}
+	return r.releaseForkPreparations(ctx, run, reader, captureAt)
 }
 
 func (r parentArchiveRestorer) captureRetirement(ctx context.Context, reader *journal.Reader, rec runner.OwnedJournalRecorder, candidate runner.ParentRetirementCandidate, captureAt time.Time) error {

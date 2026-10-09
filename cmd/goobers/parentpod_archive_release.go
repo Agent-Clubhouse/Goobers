@@ -22,14 +22,11 @@ func releaseTerminalParentArchives(layout instance.Layout, manager *worktree.Man
 	if err != nil {
 		return err
 	}
-	pending, err := runner.PendingParentForks(reader)
-	if err != nil {
+	work, err := readParentRetirementWork(reader)
+	if err != nil || work.empty() {
 		return err
 	}
-	candidates, err := retirementCandidatesBeforeForkRecovery(reader, pending)
-	if err != nil || len(candidates) == 0 && len(pending) == 0 {
-		return err
-	}
+
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
 		return err
@@ -42,10 +39,10 @@ func releaseTerminalParentArchives(layout instance.Layout, manager *worktree.Man
 	if service, ok := stageGrantMinterFor(layout.Root).(*daemonCredentialService); ok {
 		restorer.scrubber = service.shared
 	}
-	if err := restorer.retryRetirement(reader, candidates); err != nil {
+	if err := restorer.retryRetirement(reader); err != nil {
 		return fmt.Errorf("%w: retry parent retirement: %w", worktree.ErrCleanupDeferred, err)
 	}
-	candidates, err = runner.ParentRetirementCandidates(reader)
+	candidates, err := runner.ParentRetirementCandidates(reader)
 	if err != nil {
 		return err
 	}

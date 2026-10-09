@@ -49,3 +49,17 @@ func deleteExactRecoveryRef(ctx context.Context, repository, ref, expected strin
 	}
 	return nil
 }
+
+// DeletePreparedSnapshotRef releases an uncompleted bundle preparation. The
+// caller must own terminal cleanup and preserve the work in another archive.
+// Only an exact snapshot ref with unpublished metadata is eligible here.
+func DeletePreparedSnapshotRef(ctx context.Context, repository string, record Record) error {
+	if err := record.validateSnapshot(); err != nil {
+		return err
+	}
+	ref, err := RefForSnapshot(record.RunID, record.SnapshotSHA)
+	if err != nil || ref != record.Ref || record.ArchiveDigest != "" || record.ArchiveBytes != 0 || record.ArchiveFormat != "" {
+		return fmt.Errorf("invalid snapshot preparation for release")
+	}
+	return deleteExactRecoveryRef(ctx, repository, record.Ref, record.SnapshotSHA)
+}

@@ -83,6 +83,17 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	if err != nil {
 		return Record{}, "", err
 	}
+	return RetainPrepared(ctx, request, prepared, log)
+}
+
+// RetainPrepared publishes an already captured snapshot using the same capacity,
+// overflow and acknowledgement policy as Retain. The caller must verify durable
+// ownership of the exact record and hold the repository's cleanup lock. This
+// never recaptures the current checkout, which may have changed since capture.
+func RetainPrepared(ctx context.Context, request RetentionRequest, prepared Record, log PublicationJournal) (Record, string, error) {
+	if err := validateRetentionPreparation(request, prepared, log); err != nil {
+		return Record{}, "", err
+	}
 	if request.ParentPolicy == nil && request.SkipEmpty && prepared.PatchDigest == emptyPatchDigest {
 		return Record{}, "", nil
 	}
@@ -124,4 +135,20 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 		}
 	}
 	return retained, path, nil
+}
+
+func validateRetentionPreparation(request RetentionRequest, prepared Record, log PublicationJournal) error {
+	if log == nil {
+		return fmt.Errorf("recovery requires a durable publication journal")
+	}
+	if err := prepared.validateSnapshot(); err != nil {
+		return err
+	}
+	if prepared.RepositoryKey != request.RepositoryKey || prepared.RunID != request.RunID || !prepared.CreatedAt.Equal(request.IdentityTime) || !prepared.RetainUntil.Equal(request.RetainUntil) {
+		return fmt.Errorf("prepared recovery ownership or retention window changed")
+	}
+	if prepared.ArchiveDigest != "" || prepared.ArchiveBytes != 0 || prepared.ArchiveFormat != "" {
+		return fmt.Errorf("prepared recovery must precede archive publication")
+	}
+	return nil
 }

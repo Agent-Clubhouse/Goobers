@@ -56,7 +56,7 @@ func (s Service) Result(ctx context.Context, rec Recorder, request spec.ResultRe
 		if err != nil {
 			return result, err
 		}
-		result, err = recordSnapshot(ctx, rec, workspace.Path, "parallel-result", snapshot, func(value recovery.ChildSnapshot) any {
+		result, err = recordSnapshot(ctx, rec, workspace.Path, "parallel-result", request, snapshot, func(value recovery.ChildSnapshot) any {
 			return resultMetadata{Version: 1, Plan: request.Plan, Seed: request.Seed, Branch: request.Branch, Status: request.Status, Custody: owner, Snapshot: value}
 		})
 		if err != nil {

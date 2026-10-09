@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 )
@@ -20,6 +21,13 @@ func preserveParentWorkspaceJournal(candidate retention.Result) error {
 	}
 	if err != nil {
 		return err
+	}
+	prepared, err := parallelworkspace.PendingPreparations(reader)
+	if err != nil {
+		return err
+	}
+	if len(prepared) != 0 {
+		return fmt.Errorf("%w: parallel snapshot preparation still owns recovery state", retention.ErrCustodyHeld)
 	}
 	candidates, err := runner.ParentRetirementCandidates(reader)
 	if errors.Is(err, runner.ErrParentReturnPending) {

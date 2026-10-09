@@ -23,7 +23,7 @@ import (
 
 func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, checkpoint := range []string{"ready", "active", "held", "uncreated"} {
+	for _, checkpoint := range []string{"ready", "active", "held", "uncreated", "no-preparation", "before-pin", "after-pin"} {
 		t.Run(checkpoint, func(t *testing.T) { verifyHostForkArchiveRecovery(t, checkpoint) })
 	}
 }
@@ -73,7 +73,12 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	backend := parallelworkspace.Service{Worktrees: manager, CloneURL: childRepoCloneURL, Policy: func(workspace string) (recovery.SnapshotPolicy, error) {
 		return childSnapshotPolicy(workspace, layout.Root, f.cfg)
 	}}
-	seed, err := backend.Prepare(t.Context(), run, spec.Request{RunID: env.RunID, Gaggle: env.Gaggle, Parallel: "fan", Sequence: started.Seq, At: started.Time, Repository: env.RepoRef, Workspace: source.Path}, nil)
+	request := spec.Request{RunID: env.RunID, Gaggle: env.Gaggle, Parallel: "fan", Sequence: started.Seq, At: started.Time, Repository: env.RepoRef, Workspace: source.Path}
+	if checkpoint == "no-preparation" || checkpoint == "before-pin" || checkpoint == "after-pin" {
+		verifyInterruptedForkCapture(t, f, run, reader, layout, manager, backend, request, checkpoint)
+		return
+	}
+	seed, err := backend.Prepare(t.Context(), run, request, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +166,7 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := restorer.retryRetirement(reader, nil); err != nil {
+	if err := restorer.retryRetirement(reader); err != nil {
 		t.Fatal("startup host fork retirement", err)
 	}
 	run, _, err = journal.TryRecover(reader.Dir())

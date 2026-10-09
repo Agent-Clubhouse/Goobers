@@ -26,6 +26,7 @@ const MaxMetadataBytes = 128 << 10
 // Recorder is supplied only by the host execution owner.
 type Recorder interface {
 	Dir() string
+	Append(journal.Event) error
 	RecordArtifactBoundedWithIntegrity(string, []byte, apiv1.Integrity, int) (journal.Ref, error)
 }
 
@@ -92,13 +93,16 @@ func (s Service) capture(ctx context.Context, rec Recorder, request spec.Request
 	if err != nil {
 		return source, err
 	}
-	return recordSnapshot(ctx, rec, request.Workspace, "parallel-source", snapshot, func(value recovery.ChildSnapshot) any {
+	return recordSnapshot(ctx, rec, request.Workspace, "parallel-source", spec.ResultRequest{Request: request}, snapshot, func(value recovery.ChildSnapshot) any {
 		return sourceMetadata{Version: 1, Gaggle: request.Gaggle, Parallel: request.Parallel, Sequence: request.Sequence, Snapshot: value}
 	})
 }
 
-func recordSnapshot(ctx context.Context, rec Recorder, repository, name string, snapshot recovery.ChildSnapshot, metadata func(recovery.ChildSnapshot) any) (spec.Source, error) {
+func recordSnapshot(ctx context.Context, rec Recorder, repository, name string, request spec.ResultRequest, snapshot recovery.ChildSnapshot, metadata func(recovery.ChildSnapshot) any) (spec.Source, error) {
 	var source spec.Source
+	if err := recordPreparation(rec, request, snapshot); err != nil {
+		return source, err
+	}
 	var data bytes.Buffer
 	snapshot, err := recovery.WriteChildSnapshotBundle(ctx, repository, snapshot, &data, MaxBundleBytes)
 	if err != nil {
