@@ -11,10 +11,13 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// ParentWriterStarted and ParentWriterJoined are host-owned physical custody receipts.
+// ParentWriterStarted records host-owned physical writer custody.
 const ParentWriterStarted = "isolated.parent.writer.started"
+
+// ParentWriterJoined records the host's acknowledgement that a writer stopped.
 const ParentWriterJoined = "isolated.parent.writer.joined"
 
+// VerifyParentCustody requires all dispatched parent writers to be joined.
 // Only the host can write these annotations. Pod journal ingress uses a strict
 // observation allowlist. Unknown dispatched custody blocks journal replacement;
 // neither terminal state nor a later attempt can acknowledge an older pod.
@@ -22,6 +25,7 @@ func VerifyParentCustody(ctx context.Context, reader *journal.Reader) error {
 	return verifyParentPodSelectedCustody(ctx, reader, nil)
 }
 
+// VerifyParentBranchCustody checks outstanding writers for one physical branch.
 func VerifyParentBranchCustody(ctx context.Context, reader *journal.Reader, branch int) error {
 	return verifyParentPodSelectedCustody(ctx, reader, &branch)
 }
@@ -39,12 +43,13 @@ func verifyParentPodSelectedCustody(ctx context.Context, reader *journal.Reader,
 	return nil
 }
 
+// ParentPodScope binds a physical writer receipt to its immutable contract.
 type ParentPodScope struct {
 	Event    journal.Event
 	Contract Contract
 }
 
-// parentPodCustodyPending authorizes bounded late surrender for exactly one
+// ParentCustodyPending authorizes bounded late surrender for exactly one
 // previously dispatched physical contract. It grants no execution, credentials,
 // new child authority, or cross-attempt blob access.
 func ParentCustodyPending(ctx context.Context, reader *journal.Reader, contractDigest string) (bool, error) {
@@ -67,6 +72,7 @@ func ParentCustodyPending(ctx context.Context, reader *journal.Reader, contractD
 	return true, nil
 }
 
+// PendingParentScopes projects unjoined physical writers from trusted receipts.
 func PendingParentScopes(ctx context.Context, reader *journal.Reader) (map[string]ParentPodScope, []journal.Event, error) {
 	id, err := reader.Identity()
 	if err != nil {

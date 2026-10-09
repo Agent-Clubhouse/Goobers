@@ -36,13 +36,17 @@ func (c *parentWorkerClient) SignalWorkflow(context.Context, string, string, str
 
 func TestIntegrationParentFactoryCancellationReturnsDirtyTreeAndTranscript(t *testing.T) {
 	testdep.Require(t, "git")
-	testParentFactoryCustody(t, false)
+	testParentFactoryCustody(t, false, false)
 }
 func TestIntegrationParentRecoveryRejoinsOriginalWorkerAndPreservesDirtyTree(t *testing.T) {
 	testdep.Require(t, "git")
-	testParentFactoryCustody(t, true)
+	testParentFactoryCustody(t, true, false)
 }
-func testParentFactoryCustody(t *testing.T, lost bool) {
+func TestIntegrationParentRecoveryPreservesCommittedStagedAndDirtyState(t *testing.T) {
+	testdep.Require(t, "git")
+	testParentFactoryCustody(t, true, true)
+}
+func testParentFactoryCustody(t *testing.T, lost, committed bool) {
 	f := containedParentFixture(t)
 	run, env := configuredChildStage(t, f)
 	env.RepoRef = f.applied.Gaggles[0].Spec.Project
@@ -167,20 +171,30 @@ func testParentFactoryCustody(t *testing.T, lost bool) {
 			t.Fatal("incorrect retained parent kit")
 		}
 		pod := t.TempDir()
-		if err = childpod.Materialize(ctx, pod, *contract.Workspace); err != nil {
+		if err = childpod.MaterializeContract(ctx, pod, contract); err != nil {
 			t.Fatal(err)
 		}
 		if got, err := os.ReadFile(filepath.Join(pod, "source.txt")); err != nil || string(got) != "parent dirty\n" {
 			t.Fatal("dirty parent missing from isolated fork", string(got), err)
 		}
+		if recoveryCLIGit(t, pod, "show", "HEAD:source.txt") != "base" || recoveryCLIGit(t, pod, "show", ":source.txt") != "staged" {
+			t.Fatal("parent Git states were flattened before invocation")
+		}
+		if committed {
+			recoveryCLIGit(t, pod, "commit", "-m", "commit only previously staged input")
+			if err = os.WriteFile(filepath.Join(pod, "source.txt"), []byte("pod staged\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			recoveryCLIGit(t, pod, "add", "source.txt")
+		}
 		if err = os.WriteFile(filepath.Join(pod, "source.txt"), []byte("pod edited before yield\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		carrier, _, err := childpod.CaptureCarrier(ctx, pod, contract.Workspace.Snapshot.Record.RepositoryKey, id.RunID, contract.StartedAt, contract.Workspace.Snapshot.Policy)
+		output, err := childpod.CaptureOutput(ctx, pod, contract, a.ChildExecutionDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
-		data, _ = json.Marshal(childpod.Output{Version: 1, ContractDigest: a.ChildExecutionDigest, Workspace: &carrier})
+		data, _ = json.Marshal(output)
 		digest := journal.Digest(data)
 		if err = scoped.Put(ctx, digest, data); err != nil {
 			t.Fatal(err)
@@ -284,11 +298,17 @@ func testParentFactoryCustody(t *testing.T, lost bool) {
 	if got, err := os.ReadFile(filepath.Join(repo, "source.txt")); err != nil || string(got) != "pod edited before yield\n" {
 		t.Fatal(string(got), err)
 	}
-	if recoveryCLIGit(t, repo, "rev-parse", "HEAD") != head || recoveryCLIGit(t, repo, "show", ":unrelated.txt") != "keep staged" {
-		t.Fatal("parent ancestry or unrelated staging changed")
+	wantIndex := "staged"
+	if committed {
+		wantIndex = "pod staged"
+		if recoveryCLIGit(t, repo, "rev-parse", "HEAD^") != head || recoveryCLIGit(t, repo, "show", "HEAD:source.txt") != "staged" {
+			t.Fatal("parent checkpoint lost real ancestry or committed dirty input")
+		}
+	} else if recoveryCLIGit(t, repo, "rev-parse", "HEAD") != head {
+		t.Fatal("uncommitted return moved parent HEAD")
 	}
-	if recoveryCLIGit(t, repo, "show", ":source.txt") != "pod edited before yield" {
-		t.Fatal("returned changed path was not staged")
+	if recoveryCLIGit(t, repo, "show", ":unrelated.txt") != "keep staged" || recoveryCLIGit(t, repo, "show", ":source.txt") != wantIndex {
+		t.Fatal("returned index was flattened into working files")
 	}
 	reader, err := journal.OpenReadOnly(run.Dir())
 	if err != nil {

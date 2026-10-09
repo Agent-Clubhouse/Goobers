@@ -167,6 +167,12 @@ func makeContract(ctx context.Context, r Request) (Contract, *recovery.ChildSnap
 			return c, nil, recovery.ErrWorkspaceChanged
 		}
 		c.Workspace, expected = &carrier, &snapshot
+		if r.ParentOrigin != nil {
+			c.GitState, err = captureGitState(ctx, r.Workspace.Path, snapshot)
+			if err != nil {
+				return c, nil, err
+			}
+		}
 	}
 	return c, expected, c.Validate()
 }
@@ -199,16 +205,19 @@ func (e *Executor) keepRef(ctx context.Context, r Request, kind string, value an
 	return ref, nil
 }
 
-func (e *Executor) applyReturn(ctx context.Context, r Request, expected recovery.ChildSnapshot, c Carrier, retained *recovery.ChildApplyPlan) error {
+func (e *Executor) applyReturn(ctx context.Context, r Request, expected recovery.ChildSnapshot, contract Contract, out Output, retained *recovery.ChildApplyPlan) error {
 	if retained != nil {
-		if err := verifyRetainedPlan(*retained, expected, c); err != nil {
+		if err := verifyRetainedPlan(*retained, expected, *out.Workspace); err != nil {
+			return err
+		}
+		if err := verifyRetainedGitState(*retained, contract, out); err != nil {
 			return err
 		}
 		return recovery.ApplyChildApplication(ctx, r.Workspace.Path, *retained)
 	}
 	identity, _ := json.Marshal([]any{r.Identity.RunID, r.Attempt.Stage, r.Attempt.Number, r.Attempt.PodAttempt})
 	op := "child-pod-" + strings.TrimPrefix(journal.Digest(identity), "sha256:")
-	plan, err := prepareReturn(ctx, r.Workspace.Path, expected, c, op, r.StartedAt)
+	plan, err := prepareOutputReturn(ctx, r.Workspace.Path, expected, contract, out, op)
 	if err != nil {
 		return err
 	}
@@ -242,7 +251,7 @@ func (e *Executor) receive(ctx context.Context, request Request, contract Contra
 		return out, fmt.Errorf("read-only child invocation changed workspace")
 	}
 	if returned.Workspace != nil {
-		if err = e.applyReturn(ctx, request, *expected, *returned.Workspace, plan); err != nil {
+		if err = e.applyReturn(ctx, request, *expected, contract, returned, plan); err != nil {
 			return out, err
 		}
 	}

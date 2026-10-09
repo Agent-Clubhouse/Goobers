@@ -64,14 +64,16 @@ type Contract struct {
 	StartedAt      time.Time                  `json:"startedAt"`
 	Ceiling        credentials.ChildCeiling   `json:"ceiling"`
 	Workspace      *Carrier                   `json:"workspace,omitempty"`
+	GitState       *GitState                  `json:"gitState,omitempty"`
 }
 
 // Output returns a tree bound to its input contract. Pod commit history is
 // deliberately squashed when mapped back onto the host's real child fork.
 type Output struct {
-	Version        int      `json:"version"`
-	ContractDigest string   `json:"contractDigest"`
-	Workspace      *Carrier `json:"workspace,omitempty"`
+	Version        int       `json:"version"`
+	ContractDigest string    `json:"contractDigest"`
+	Workspace      *Carrier  `json:"workspace,omitempty"`
+	GitState       *GitState `json:"gitState,omitempty"`
 }
 
 // Validate checks immutable identity and supported credential delegation.
@@ -97,9 +99,11 @@ func (c Contract) Validate() error {
 		return fmt.Errorf("isolated tree transport does not support child PR publication")
 	}
 	if c.Workspace != nil {
-		return c.Workspace.Validate()
+		if err := c.Workspace.Validate(); err != nil {
+			return err
+		}
 	}
-	return nil
+	return validateGitState(c.ParentOrigin != nil, c.Workspace, c.GitState)
 }
 
 // Validate verifies metadata and exact bundle bytes before any Git import.
@@ -135,9 +139,13 @@ func DecodeOutput(data []byte, digest, contractDigest string, c Contract) (Outpu
 		if err := out.Workspace.Validate(); err != nil {
 			return out, err
 		}
-		if out.Workspace.Snapshot.Record.RepositoryKey != c.Workspace.Snapshot.Record.RepositoryKey || !slices.Equal(out.Workspace.Snapshot.Policy.ExcludedPaths, c.Workspace.Snapshot.Policy.ExcludedPaths) {
+		a, b := out.Workspace.Snapshot.Record, c.Workspace.Snapshot.Record
+		if a.RepositoryKey != b.RepositoryKey || a.RunID != b.RunID || !a.CreatedAt.Equal(b.CreatedAt) || !slices.Equal(out.Workspace.Snapshot.Policy.ExcludedPaths, c.Workspace.Snapshot.Policy.ExcludedPaths) {
 			return out, fmt.Errorf("child output workspace policy mismatch")
 		}
+	}
+	if err := validateGitState(c.ParentOrigin != nil, out.Workspace, out.GitState); err != nil {
+		return out, err
 	}
 	return out, nil
 }

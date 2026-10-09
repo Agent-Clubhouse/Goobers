@@ -63,6 +63,8 @@ func (c ParentAccessClient) request(ctx context.Context, run, method string) ([]
 	}
 	return data, nil
 }
+
+// Acquire obtains child tool access bound to this client's parent contract.
 func (c ParentAccessClient) Acquire(ctx context.Context, run string) (*mcpio.ChildWorkflowAccess, error) {
 	data, err := c.request(ctx, run, http.MethodPost)
 	if err != nil {
@@ -82,6 +84,8 @@ func (c ParentAccessClient) Acquire(ctx context.Context, run string) (*mcpio.Chi
 	}
 	return &access, nil
 }
+
+// Revoke releases child tool access for this client's parent contract.
 func (c ParentAccessClient) Revoke(ctx context.Context, run string) error {
 	_, err := c.request(ctx, run, http.MethodDelete)
 	return err
