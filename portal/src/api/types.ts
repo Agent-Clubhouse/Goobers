@@ -1064,6 +1064,30 @@ export interface OperatorRunSummary {
   diagnosticsLimitations?: string[];
 }
 
+export interface ChildHistoryItem {
+  childId: string;
+  runId: string;
+  stageOccurrence: string;
+  invocationKey: string;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  acceptedAt: string;
+  updatedAt: string;
+  terminalAt?: string;
+  acknowledgedAt?: string;
+  expiredAt?: string;
+  cancellationRequested: boolean;
+}
+
+export interface ChildHistoryPage {
+  runId: string;
+  gaggle: string;
+  status: "recorded" | "unavailable";
+  observedAt: string;
+  items: ChildHistoryItem[];
+  nextCursor: string;
+  readState?: ReadState;
+}
+
 export interface ChildActivity {
   status: "recorded" | "unavailable";
   parent?: { runId: string; workflow: string; stageOccurrence: string };
@@ -1972,6 +1996,7 @@ export interface DaemonClient {
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
   listStageAttempts(runId: string, stage: string, options?: RequestOptions): Promise<AttemptList>;

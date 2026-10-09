@@ -48,6 +48,7 @@ type Reader interface {
 	TelemetryReader
 	ListRuns(context.Context, RunListOptions) (RunList, error)
 	GetRun(context.Context, string) (RunDetail, error)
+	RunChildren(context.Context, string, string) (ChildHistoryPage, error)
 	RunEvents(context.Context, string) (EventList, error)
 	StageAttempts(context.Context, string, string) (AttemptList, error)
 	AddressableAgents(context.Context, string) ([]AddressableAgent, error)
@@ -145,6 +146,8 @@ type LocalSources struct {
 	Definitions *instance.ConfigSet
 	Validation  *validate.Report
 	Telemetry   *rollup.DB
+	// ChildHistory is optional live custody access with no write methods.
+	ChildHistory ChildHistorySource
 	// ReadModel is the portal run read model (read.db). Optional: when absent,
 	// offline readers and rollback mode use the journal-derived paths.
 	// A Reader, deliberately not a *readmodel.Store. §3.1's separation is

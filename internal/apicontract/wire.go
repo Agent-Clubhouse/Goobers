@@ -42,6 +42,7 @@ type wireFixtures struct {
 	WorkflowDetail           readservice.WorkflowDetail                 `json:"workflowDetail"`
 	Runs                     readservice.RunList                        `json:"runs"`
 	RunDetail                readservice.RunDetail                      `json:"runDetail"`
+	RunChildren              readservice.ChildHistoryPage               `json:"runChildren"`
 	RunEvents                readservice.EventList                      `json:"runEvents"`
 	StageAttempts            readservice.AttemptList                    `json:"stageAttempts"`
 	TelemetryCosts           readservice.TelemetryCostResult            `json:"telemetryCosts"`
@@ -88,6 +89,7 @@ var wireFixtureTypes = []struct {
 	{name: "workflowDetail", scriptType: "WorkflowDetail"},
 	{name: "runs", scriptType: "RunList"},
 	{name: "runDetail", scriptType: "RunDetail"},
+	{name: "runChildren", scriptType: "ChildHistoryPage"},
 	{name: "runEvents", scriptType: "EventList"},
 	{name: "stageAttempts", scriptType: "AttemptList"},
 	{name: "telemetryCosts", scriptType: "TelemetryCostResult"},
@@ -586,7 +588,8 @@ func newWireFixtures() wireFixtures {
 			}},
 			NextCursor: "next-run",
 		},
-		RunDetail: wireRunDetail(runSummary, graph, timestamp),
+		RunDetail:   wireRunDetail(runSummary, graph, timestamp),
+		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "queued", AcceptedAt: timestamp, UpdatedAt: timestamp, CancellationRequested: true}}},
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
 			Events: []readservice.RunEvent{{

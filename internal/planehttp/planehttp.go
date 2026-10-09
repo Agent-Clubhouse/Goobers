@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Config configures a daemon-plane client.
@@ -154,7 +155,11 @@ func DecodeError(status int, raw []byte, factory ErrorFactory, fallback ErrorFal
 	if message == "" {
 		message = strings.TrimSpace(string(raw))
 		if fallback.DetailLimit > 0 && len(message) > fallback.DetailLimit {
-			message = message[:fallback.DetailLimit] + fallback.Ellipsis
+			cut := fallback.DetailLimit
+			for cut > 0 && !utf8.RuneStart(message[cut]) {
+				cut--
+			}
+			message = message[:cut] + fallback.Ellipsis
 		}
 	}
 	return factory(status, code, message)

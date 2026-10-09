@@ -952,6 +952,7 @@ func (u *upSession) startServices() int {
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
 		ReadModel:                    u.setup.ReadModel,
+		ChildHistory:                 u.readChildHistory,
 		RetentionStats:               u.setup.RetentionStats,
 		InstanceLogStats:             u.setup.InstanceLog.Stats,
 		StorageHealthStats:           u.storageGate.Stats,

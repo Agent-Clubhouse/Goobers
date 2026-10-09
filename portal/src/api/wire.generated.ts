@@ -24,6 +24,7 @@ import type {
   WorkflowDetail,
   RunList,
   RunDetail,
+  ChildHistoryPage,
   EventList,
   AttemptList,
   TelemetryCostResult,
@@ -67,6 +68,7 @@ export interface GoWireFixtures {
   workflowDetail: WorkflowDetail;
   runs: RunList;
   runDetail: RunDetail;
+  runChildren: ChildHistoryPage;
   runEvents: EventList;
   stageAttempts: AttemptList;
   telemetryCosts: TelemetryCostResult;
@@ -1159,6 +1161,25 @@ export const goWireFixtures = {
       }
     ],
     "transitionsStatus": "projected"
+  },
+  "runChildren": {
+    "runId": "run-123",
+    "gaggle": "core",
+    "status": "recorded",
+    "observedAt": "2026-07-18T12:34:56Z",
+    "items": [
+      {
+        "childId": "child-fixture",
+        "runId": "child-run",
+        "stageOccurrence": "inspect/branch0/visit1",
+        "invocationKey": "inspect",
+        "state": "queued",
+        "acceptedAt": "2026-07-18T12:34:56Z",
+        "updatedAt": "2026-07-18T12:34:56Z",
+        "cancellationRequested": true
+      }
+    ],
+    "nextCursor": ""
   },
   "runEvents": {
     "runId": "run-123",
