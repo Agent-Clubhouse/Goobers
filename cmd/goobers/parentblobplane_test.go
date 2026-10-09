@@ -105,7 +105,9 @@ func TestParentBlobHTTPPinsAttemptAndStopsAfterJoin(t *testing.T) {
 	if w := request(http.MethodGet, ownDigest, nil); w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), own) || w.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("late custody: %d %s", w.Code, w.Body)
 	}
+	assertSurrenderRevoked := testParentSurrenderCustody(t, service, auth, token, c, digest, store)
 	mark(childpod.ParentWriterJoined)
+	assertSurrenderRevoked()
 	if w := request(http.MethodGet, ownDigest, nil); w.Code == http.StatusOK {
 		t.Fatal("joined parent retained blob authority")
 	}

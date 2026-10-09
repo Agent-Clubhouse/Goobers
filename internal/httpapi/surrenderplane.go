@@ -97,6 +97,15 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 				}
 				plane = config.generatedChildSurrenders
 			}
+			isParent := authenticated && principal.Issuer == WorkflowParentPrincipalIssuer
+			if isParent {
+				w.Header().Set("Cache-Control", "private, no-store")
+				if config.workflowParentSurrenders == nil || principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+					writeError(w, http.StatusForbidden, "parent_surrender_unavailable", "contained parent result authority is not available")
+					return
+				}
+				plane = config.workflowParentSurrenders
+			}
 			if plane == nil {
 				writeError(w, http.StatusServiceUnavailable, "surrender_unavailable", "the surrender plane is not available from this server")
 				return
@@ -123,7 +132,7 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			// Per-run containment: a pod token proves "I am run X's stage pod",
 			// which authorizes surrendering a result for run X and no other —
 			// the same body-level binding the journal plane applies.
-			if authenticated && (IsPodPrincipal(principal) || generated) {
+			if authenticated && (IsPodPrincipal(principal) || generated || isParent) {
 				if principal.Subject != podPrincipalSubject(run) {
 					writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only surrender its own run's results")
 					return
@@ -154,4 +163,15 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			}
 			writeJSON(w, http.StatusOK, struct{}{})
 		}})
+}
+
+// WithWorkflowParentSurrenderService installs write-only parent result custody.
+func WithWorkflowParentSurrenderService(plane SurrenderService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if plane == nil {
+			return errors.New("contained parent surrender owner is required")
+		}
+		config.workflowParentSurrenders = plane
+		return nil
+	}
 }
