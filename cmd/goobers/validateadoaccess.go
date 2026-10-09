@@ -63,18 +63,23 @@ type adoRepositoryAccess struct {
 	policiesErr    error
 }
 
+// adoErrScrubber returns a func that redacts secrets from an ADO error message.
+func adoErrScrubber(registry *journal.RegistryScrubber) func(error) error {
+	return func(err error) error {
+		if err == nil {
+			return nil
+		}
+		return fmt.Errorf("%s", journal.Chain(registry, journal.NewPatternScrubber()).Scrub([]byte(err.Error())))
+	}
+}
+
 // targetADORepositoryAccess performs the reads. A package var so tests stub
 // the provider and never leave the process.
 var targetADORepositoryAccess = readADORepositoryAccess
 
 func readADORepositoryAccess(ctx context.Context, repo instance.RepoRef, stores credentials.StoreResolver) adoRepositoryAccess {
 	registry := journal.NewRegistryScrubber()
-	scrub := func(err error) error {
-		if err == nil {
-			return nil
-		}
-		return fmt.Errorf("%s", journal.Chain(registry, journal.NewPatternScrubber()).Scrub([]byte(err.Error())))
-	}
+	scrub := adoErrScrubber(registry)
 	provider, err := adoauth.Provider(repo, nil, registry, nil, nil, stores)
 	if err != nil {
 		err = scrub(err)
@@ -226,12 +231,7 @@ var targetADOBacklogStates = readADOBacklogStates
 
 func readADOBacklogStates(ctx context.Context, repo instance.RepoRef, project string, types []string, stores credentials.StoreResolver) adoBacklogStates {
 	registry := journal.NewRegistryScrubber()
-	scrub := func(err error) error {
-		if err == nil {
-			return nil
-		}
-		return fmt.Errorf("%s", journal.Chain(registry, journal.NewPatternScrubber()).Scrub([]byte(err.Error())))
-	}
+	scrub := adoErrScrubber(registry)
 	out := adoBacklogStates{byType: map[string][]providers.ADOWorkItemState{}, byTypeErrs: map[string]error{}}
 	provider, err := adoauth.Provider(repo, nil, registry, nil, nil, stores)
 	if err != nil {

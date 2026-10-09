@@ -11,7 +11,8 @@ import (
 
 // openRecoveryCustodyPruneGuard refuses to let telemetry retention delete a
 // run's journal while that run still owns a live (non-retired) recovery
-// record (#4824): every recovery consumer — retirement (recoveryexpiry.go),
+// record in either the bundle or overflow tier (#4824). Every recovery consumer
+// — retirement (recoveryexpiry.go),
 // selection (recoveryselect.go), restore (recoveryrestore.go) — re-opens the
 // owning run journal, and once it is gone none of them can ever select,
 // restore, or retire the record again, permanently stranding its inventory

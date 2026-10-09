@@ -298,6 +298,15 @@ func TestWriteWatermarkExactAtomicContents(t *testing.T) {
 	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("temporary watermark remains after replace: %v", err)
 	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("temporary file %q remains after atomic write", e.Name())
+		}
+	}
 }
 
 func TestRunResultFileFailureDoesNotAdvanceWatermark(t *testing.T) {
