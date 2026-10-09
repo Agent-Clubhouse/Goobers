@@ -267,7 +267,7 @@ requests under the workflow's run-branch namespace in the gaggle's project
 repository, on GitHub and Azure DevOps alike, and ignores PRs labelled
 `goobers:merge-escalated` in any casing. Until a count has been read, and
 whenever a read fails, admission is not held back by the cap.
-See [Desired concurrency, refill, and pausing work](../../guides/desired-concurrency-and-pause.md)
+See [Desired concurrency, refill, and pausing work](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/desired-concurrency-and-pause.md)
 for how `desiredConcurrentRuns` refill works and how to pause it.
 
 `requireProviderAuthorization: true` makes provider authorization health a
