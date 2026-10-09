@@ -90,6 +90,8 @@ func openAPIParameters(route Route) []map[string]any {
 		})
 	}
 	switch route.ID {
+	case RouteRunChildren:
+		parameters = append(parameters, map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string", "maxLength": 2048}})
 	case RouteGaggles, RouteGaggleGoobers, RouteGaggleWorkflows:
 		parameters = append(parameters,
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}},

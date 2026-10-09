@@ -1408,6 +1408,7 @@ func registerRunRevealRoute(router *Router, reveal func(context.Context, string)
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+	registerChildHistoryRoute(router, reader, errorLog)
 	router.Handle(apicontract.RouteRuns, func(w http.ResponseWriter, request *http.Request) {
 		options, err := runListOptions(request)
 		if err != nil {

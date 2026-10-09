@@ -212,6 +212,17 @@
       "recoverySafe": false
     },
     {
+      "id": "runChildren",
+      "method": "GET",
+      "path": "/api/v1/runs/{run}/children",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "single-run",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "runDetail",
       "method": "GET",
       "path": "/api/v1/runs/{run}",

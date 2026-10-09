@@ -305,3 +305,7 @@ func TestBlobServerRequiresAuthentication(t *testing.T) {
 		t.Fatalf("human principal GET status = %d, want 403", response.StatusCode)
 	}
 }
+
+func (stubReadService) RunChildren(context.Context, string, string) (readservice.ChildHistoryPage, error) {
+	return readservice.ChildHistoryPage{}, nil
+}
