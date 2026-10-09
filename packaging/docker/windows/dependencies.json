@@ -6,7 +6,7 @@
     "sha256": "56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e"
   },
   "zoneinfo": {
-    "url": "https://raw.githubusercontent.com/golang/go/go1.26.6/lib/time/zoneinfo.zip",
+    "url": "https://raw.githubusercontent.com/golang/go/go1.26.9/lib/time/zoneinfo.zip",
     "sha256": "8f55634d05f8bca1f7bc7c69c5933428c69357e0bdf565e5ba224e3f88ff12e8"
   }
 }
