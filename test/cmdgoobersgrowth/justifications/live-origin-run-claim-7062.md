@@ -1,6 +1,6 @@
 # #7062: PR lanes honour the live run that opened the PR
 
-Growth: +56 non-test lines and +0 files in `cmd/goobers`. Most of it is doc comment.
+Growth: +53 net non-test lines and +0 files in `cmd/goobers`. Most of it is doc comment.
 
 ## Why the growth belongs in the command package
 
