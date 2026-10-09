@@ -59,3 +59,15 @@ func (s *Store) UnsettledChildParents(ctx context.Context, after ChildParent, li
 	}
 	return parents, rows.Err()
 }
+
+// RetainsRunJournal reports custody that still depends on a run journal. Failed
+// and human-waiting parents remain pinned until settled; full child lineage
+// keeps both journals through result/publication reconciliation and tombstoning.
+func (s *Store) RetainsRunJournal(ctx context.Context, gaggle, runID string) (bool, error) {
+	var retained bool
+	err := s.db.QueryRowContext(ctx, `SELECT
+ EXISTS(SELECT 1 FROM child_parents WHERE gaggle=? AND parent_run=? AND settled_ns IS NULL)
+ OR EXISTS(SELECT 1 FROM child_lineages WHERE gaggle=? AND parent_run=? AND tombstoned_ns IS NULL)
+ OR EXISTS(SELECT 1 FROM child_lineages WHERE gaggle=? AND child_id=? AND tombstoned_ns IS NULL)`, gaggle, runID, gaggle, runID, gaggle, "child-"+runID).Scan(&retained)
+	return retained, err
+}
