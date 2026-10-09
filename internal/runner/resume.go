@@ -699,7 +699,7 @@ func (r *Runner) newResumeFrame(
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	branch := 0
-	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
+	if activeParallel != nil && !parallelUsesDispatcher(in.Machine, activeParallel.spec) && activeParallel.current() != nil {
 		branch = activeParallel.current().id
 	}
 	startIn, err := r.restoreExecutionWorkspace(ctx, rd, id, StartInput{
@@ -758,7 +758,7 @@ func (r *Runner) newResumeFrame(
 		segment:            segment,
 		rerun:              rerun,
 		parallelTransition: pendingParallelTransition(seedEvents, in.Machine),
-		concurrentResume:   activeParallel != nil && activeParallel.spec.MaxConcurrentBranches > 1,
+		concurrentResume:   activeParallel != nil && parallelUsesDispatcher(in.Machine, activeParallel.spec),
 		humanProgress:      humanProgress,
 		resumeTarget:       resumeTarget,
 		lastStage:          lastStage,

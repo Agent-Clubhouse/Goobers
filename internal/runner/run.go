@@ -1588,7 +1588,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		ws.state = outcome.target
 		return Result{}, false, nil
 	}
-	if ws.parallel != nil && ws.parallel.spec.MaxConcurrentBranches > 1 {
+	if ws.parallel != nil && parallelUsesDispatcher(ws.in.Machine, ws.parallel.spec) {
 		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel)
 		if done || err != nil {
 			return result, err
@@ -1713,7 +1713,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
 					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
 			}
-			if p.MaxConcurrentBranches > 1 {
+			if parallelUsesDispatcher(ws.in.Machine, p) {
 				result, done, err := runConcurrent(p, nil)
 				if done || err != nil {
 					return result, err
