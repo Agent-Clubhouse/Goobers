@@ -216,6 +216,9 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	if in.heldChildWorkspace != nil {
 		return in.heldChildWorkspace, nil
 	}
+	if inherited, err := r.inheritedParentWorkspace(ctx, in, mode, syncBase, workspaceBranch); inherited != nil || err != nil {
+		return inherited, err
+	}
 	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
 		return r.createChildStageWorkspace(ctx, in, mode, syncBase, workspaceBranch)
 	}
