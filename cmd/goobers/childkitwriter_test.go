@@ -35,6 +35,7 @@ type childKitFixture struct {
 type childKitFixtureOptions struct {
 	gooberCapabilities []string
 	isolated           bool
+	queued             bool
 	parent             string
 	source             string
 	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *runner.ChildWorkspaceAdmission
@@ -119,8 +120,10 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := queue.BeginDispatch(t.Context(), receipt.ID); err != nil {
-		t.Fatal(err)
+	if !options.queued {
+		if err := queue.BeginDispatch(t.Context(), receipt.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ref, err := (&durableTriggerService{queue: queue}).childReference(t.Context(), receipt)
 	if err != nil {
@@ -161,6 +164,12 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	driver, err := runner.New(runner.Config{RepoCloneURL: repoCloneURL, Worktrees: manager, RunsDir: f.layout.ForGaggle(parentEnv.Gaggle).RunsDir(), ScratchDir: t.TempDir(), ConfigGeneration: ref.Envelope.ConfigGeneration, InstanceID: f.parent.InstanceID})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if options.queued {
+		id := journal.RunIdentity{InstanceID: f.parent.InstanceID, RunID: accepted.RunID, Gaggle: parentEnv.Gaggle,
+			Workflow: proposal.Workflow.Name, WorkflowVersion: proposal.Machine.Def.Version, WorkflowDigest: proposal.Machine.Digest(),
+			ConfigGeneration: ref.Envelope.ConfigGeneration, GooberDigest: gooberDigest, Child: &ref.Lineage}
+		return childKitFixture{manager: manager, driver: driver, writer: childKitWriter{service: service, identity: id}, parent: f, child: ref.Child}
 	}
 	ceiling := proposal.CredentialCeiling()
 	_, err = driver.Start(t.Context(), runner.StartInput{RepoRef: f.applied.Gaggles[0].Spec.Project, ChildWorkspace: workspace, RunID: accepted.RunID, Gaggle: parentEnv.Gaggle, Child: &ref.Lineage, Machine: proposal.Machine, GooberDigest: gooberDigest, ChildCredentials: &ceiling, OnJournalPublished: func() error { return errors.New("publication interrupted") }})

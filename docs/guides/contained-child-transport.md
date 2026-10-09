@@ -54,6 +54,35 @@ factory, returned-tree application, and rejoin/reconciliation after worker loss.
 The internal contract digest and pod environment comparisons do not replace the
 host's authentication checks.
 
+### Private Linux process-namespace qualification
+
+The opt-in `TestIntegrationPID1QuiescesDetachedWriter` test runs the production
+supervisor as PID 1 under a non-root identity. It launches a detached writer,
+checks that PID 1 adopted it, then verifies that quiescence stops and reaps it.
+A cancelled observation must refuse to claim quiescence while the writer still
+runs. This qualifies the process cleanup primitive; it does not prove the full
+daemon, queue, worker and parent-continuation journey.
+
+Use a disposable local Linux container with a private PID namespace, `sh` and
+`sleep`. The test intentionally stops all other processes in that namespace.
+Set `GOOBERS_QUALIFICATION_IMAGE` to a locally prepared runner image, then run:
+
+```sh
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -tags=integration \
+  ./internal/childpod -o /tmp/goobers-childpod.test
+docker run --rm --platform linux/amd64 --network none \
+  --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges \
+  --read-only --pids-limit 64 --memory 256m --cpus 2 \
+  --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+  --mount type=bind,source=/tmp/goobers-childpod.test,target=/qualification/childpod.test,readonly \
+  --env GOOBERS_CHILD_PID1_TEST=1 --env TESTDEP_STRICT=1 \
+  --entrypoint /qualification/childpod.test "$GOOBERS_QUALIFICATION_IMAGE" \
+  -test.run '^TestIntegrationPID1QuiescesDetachedWriter$' -test.v -test.timeout=30s
+```
+
+The ordinary integration suite skips this test unless explicitly opted in.
+Neither cluster access nor provider or model credentials are needed.
+
 Delegated branch/PR publication follows that host factory and requires the
 parent's upfront permission. Parallel parent stages and human intervention use
 their own subsequent lifecycle qualification. This slice introduces no storage
