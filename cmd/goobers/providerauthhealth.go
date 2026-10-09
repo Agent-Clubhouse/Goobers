@@ -1,14 +1,11 @@
 package main
 
 import (
-	"context"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/providers"
 )
 
 // providerAuthGates builds the pre-claim provider authorization gates (#5317)
@@ -35,8 +32,4 @@ func (g providerAuthGates) forWorkflow(cfg *instance.Config, wf *apiv1.Workflow,
 		Repository:    backlogCounterRepoRef(cfg, repoRef),
 		CredentialRef: repoRef.Owner + "/" + repoRef.Name,
 	})
-}
-
-func verifyGitHubRepositoryReadAccess(ctx context.Context, token string, repo providers.RepositoryRef) error {
-	return newGitHubProvider(token, providers.WithMaxRateLimitRetries(0)).VerifyRepositoryReadAccess(ctx, repo)
 }
