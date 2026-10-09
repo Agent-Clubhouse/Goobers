@@ -59,10 +59,10 @@ func retiredParentCleanup(ctx context.Context, layout instance.Layout, cfg *inst
 	if !reflect.DeepEqual(state.Policy, contract.Workspace.Snapshot.Policy) {
 		return true, errors.New("retired parent cleanup policy changed")
 	}
-	info, err := os.Lstat(target.Path)
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
+	if gone, err := recovery.CleanupTargetGone(target.Path); gone || err != nil {
+		return true, err
 	}
+	info, err := os.Lstat(target.Path)
 	if err != nil {
 		return true, err
 	}

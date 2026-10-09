@@ -5,15 +5,15 @@ package main
 import (
 	"encoding/json"
 	"os"
-
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/runner"
 	"path/filepath"
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -226,6 +226,56 @@ func verifyAutomaticParentRetirement(t *testing.T, reader *journal.Reader, resto
 	}
 	if _, err := checkout.HeldCleanupTarget(t.Context()); err != nil {
 		t.Fatal("retirement released hold before finalizer", err)
+	}
+	verifyAutomaticParentRelease(t, reader, restorer, writer, checkout)
+}
+
+func verifyAutomaticParentRelease(t *testing.T, reader *journal.Reader, restorer parentArchiveRestorer, writer *journal.Run, checkout *worktree.Worktree) {
+	t.Helper()
+	if err := instance.WriteConfig(restorer.layout.ConfigFile(), restorer.config); err != nil {
+		t.Fatal(err)
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimsReleased := 0
+	finalize := func() error {
+		return finalizeTerminalRunWithClaimRelease(restorer.layout, nil, restorer.worktrees, id.RunID, func(instance.Layout, *journal.InstanceLog, string) error {
+			claimsReleased++
+			return nil
+		})
+	}
+	if err := os.WriteFile(filepath.Join(checkout.Path, "source.txt"), []byte("unarchived edit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalize(); err == nil || claimsReleased != 1 {
+		t.Fatal("failed release did not preserve cleanup error and release claims", claimsReleased, err)
+	}
+	if _, err := checkout.HeldCleanupTarget(t.Context()); err != nil {
+		t.Fatal("failed verification changed held custody", err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout.Path, "source.txt"), []byte("terminal dirty\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalize(); err != nil {
+		t.Fatal("automatic terminal parent cleanup", err)
+	}
+	if _, err := os.Lstat(checkout.Path); !os.IsNotExist(err) {
+		t.Fatal("automatic finalizer retained archived checkout", err)
+	}
+	if err := finalize(); err != nil || claimsReleased != 3 {
+		t.Fatal("terminal cleanup retry", claimsReleased, err)
+	}
+	archive, seq := latestParentArchive(t, reader)
+	if err := restorer.restore(t.Context(), writer, archive, seq); err != nil {
+		t.Fatal("automatic cleanup lost resumable archive", err)
+	}
+	if got := recoveryCLIGit(t, checkout.Path, "show", ":source.txt"); got != "ordinary staged" {
+		t.Fatal("automatic cleanup lost staging", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(checkout.Path, "source.txt")); err != nil || string(got) != "terminal dirty\n" {
+		t.Fatal("automatic cleanup lost latest working state", string(got), err)
 	}
 }
 
