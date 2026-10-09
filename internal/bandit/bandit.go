@@ -434,7 +434,15 @@ func betaSample(alpha, beta float64, seed uint64) float64 {
 }
 
 func uniform(seed uint64) float64 {
+	seed = splitmix64(seed)
 	return float64(seed>>11) / float64(uint64(1)<<53)
+}
+
+func splitmix64(x uint64) uint64 {
+	x += 0x9e3779b97f4a7c15
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+	return x ^ (x >> 31)
 }
 
 func filterWindow(observations []Observation, stage, window string) []Observation {
@@ -491,9 +499,9 @@ func observationReward(observation Observation) float64 {
 func posteriorConfidence(arm, control string, observations []Observation) float64 {
 	const draws = 512
 	wins := 0
+	a, b := posterior(arm, observations)
+	c, d := posterior(control, observations)
 	for i := 0; i < draws; i++ {
-		a, b := posterior(arm, observations)
-		c, d := posterior(control, observations)
 		if betaSample(a, b, uint64(i)*2+1) > betaSample(c, d, uint64(i)*2+2) {
 			wins++
 		}

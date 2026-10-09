@@ -71,26 +71,30 @@ func WithBlobService(store blobstore.Store) HandlerOption {
 // trigger planes: a nil store still answers a structured 503 rather than the
 // routes silently not existing, and a mode-1/2 daemon that is never asked to
 // serve a mode-3 stage never receives a request on them at all.
-func registerBlobPlaneRoutes(router *Router, store blobstore.Store, errorLog *log.Logger) {
+func registerBlobPlaneRoutes(router *Router, store, childStore blobstore.Store, errorLog *log.Logger) {
 	router.HandleByMethod(
 		map[string]apicontract.RouteID{
 			http.MethodGet: apicontract.RouteBlobGet,
 			http.MethodPut: apicontract.RouteBlobPut,
 		},
 		map[apicontract.RouteID]http.HandlerFunc{
-			apicontract.RouteBlobGet: blobGetHandler(store, errorLog),
-			apicontract.RouteBlobPut: blobPutHandler(store, errorLog),
+			apicontract.RouteBlobGet: childBlobRoute(blobGetHandler(store, errorLog), blobGetScopedHandler(childStore, errorLog, true), childStore),
+			apicontract.RouteBlobPut: childBlobRoute(blobPutHandler(store, errorLog), blobPutScopedHandler(childStore, errorLog, true), childStore),
 		},
 	)
 }
 
 func blobGetHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFunc {
+	return blobGetScopedHandler(store, errorLog, false)
+}
+
+func blobGetScopedHandler(store blobstore.Store, errorLog *log.Logger, childOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
 		if store == nil {
 			writeError(w, http.StatusServiceUnavailable, "blobs_unavailable", "the blob plane is not available from this server")
 			return
 		}
-		if !requireBlobPodPrincipal(w, request) {
+		if !requireBlobOwnerPrincipal(w, request, childOnly) {
 			return
 		}
 		digest := request.PathValue("digest")
@@ -108,12 +112,16 @@ func blobGetHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFun
 			writeError(w, http.StatusInternalServerError, "blob_read_failed", "blob could not be read")
 			return
 		}
-		// Content is content-addressed and immutable: once a digest resolves,
-		// its bytes never change, so the response can be cached forever.
+		// Child membership can be revoked even though content bytes are immutable.
+		// Shared caching must never bypass the exact-attempt owner.
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		if childOnly {
+			w.Header().Set("Cache-Control", "private, no-store")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		w.Header().Set("ETag", `"`+digest+`"`)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(data)
@@ -121,12 +129,16 @@ func blobGetHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFun
 }
 
 func blobPutHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFunc {
+	return blobPutScopedHandler(store, errorLog, false)
+}
+
+func blobPutScopedHandler(store blobstore.Store, errorLog *log.Logger, childOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
 		if store == nil {
 			writeError(w, http.StatusServiceUnavailable, "blobs_unavailable", "the blob plane is not available from this server")
 			return
 		}
-		if !requireBlobPodPrincipal(w, request) {
+		if !requireBlobOwnerPrincipal(w, request, childOnly) {
 			return
 		}
 		digest := request.PathValue("digest")
@@ -135,12 +147,16 @@ func blobPutHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFun
 			return
 		}
 		defer func() { _ = request.Body.Close() }()
-		data, err := io.ReadAll(http.MaxBytesReader(w, request.Body, MaxBlobBytes))
+		limit := int64(MaxBlobBytes)
+		if childOnly {
+			limit = 24 << 20
+		}
+		data, err := io.ReadAll(http.MaxBytesReader(w, request.Body, limit))
 		if err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
 				writeError(w, http.StatusRequestEntityTooLarge, "blob_too_large",
-					fmt.Sprintf("blob body exceeds %d bytes", MaxBlobBytes))
+					fmt.Sprintf("blob body exceeds %d bytes", limit))
 				return
 			}
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "blob body could not be read")
@@ -175,6 +191,47 @@ func requireBlobPodPrincipal(w http.ResponseWriter, request *http.Request) bool 
 	if !authenticated || (!IsPodPrincipal(principal) && principal.Issuer != WorkerBlobPrincipalIssuer) {
 		writeError(w, http.StatusForbidden, "blob_plane_requires_pod_principal",
 			"the blob plane requires an authenticated pod or blob-scoped worker principal")
+		return false
+	}
+	return true
+}
+
+// WithGeneratedChildBlobService installs the exact-attempt artifact owner.
+// It must authorize accepted lineage, immutable contract and live writer custody
+// on every request. It must never fall through to the ordinary shared store.
+func WithGeneratedChildBlobService(store blobstore.Store) HandlerOption {
+	return func(config *handlerConfig) error {
+		if store == nil {
+			return errors.New("generated child artifact owner is required")
+		}
+		config.generatedChildBlobs = store
+		return nil
+	}
+}
+
+func childBlobRoute(ordinary, child http.HandlerFunc, owner blobstore.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := PrincipalFromRequest(r)
+		if ok && p.Issuer == GeneratedChildPrincipalIssuer {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if owner == nil {
+				writeError(w, http.StatusForbidden, "child_artifacts_unavailable", "generated child artifact authority is not installed")
+				return
+			}
+			child(w, r)
+			return
+		}
+		ordinary(w, r)
+	}
+}
+
+func requireBlobOwnerPrincipal(w http.ResponseWriter, r *http.Request, childOnly bool) bool {
+	if !childOnly {
+		return requireBlobPodPrincipal(w, r)
+	}
+	p, ok := PrincipalFromRequest(r)
+	if !ok || p.Issuer != GeneratedChildPrincipalIssuer || p.GeneratedChild == nil || !blobstore.ValidDigest(p.GeneratedChild.ContractDigest) {
+		writeError(w, http.StatusForbidden, "child_artifact_identity_required", "a signed child execution contract is required")
 		return false
 	}
 	return true

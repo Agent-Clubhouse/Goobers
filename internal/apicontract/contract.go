@@ -268,6 +268,7 @@ const (
 	ChildWorkflowValidatePath = childworkflowwire.ValidatePath
 	ChildWorkflowStartPath    = childworkflowwire.StartPath
 	ChildWorkflowStatusPath   = childworkflowwire.StatusPath
+	ChildWorkflowResolvePath  = childworkflowwire.ResolvePath
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.
@@ -380,6 +381,7 @@ const (
 	RouteChildWorkflowValidate       RouteID = "childWorkflowValidate"
 	RouteChildWorkflowStart          RouteID = "childWorkflowStart"
 	RouteChildWorkflowStatus         RouteID = "childWorkflowStatus"
+	RouteChildWorkflowResolve        RouteID = "childWorkflowResolve"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -671,6 +673,7 @@ var v1Routes = []Route{
 	{ID: RouteChildWorkflowValidate, Method: http.MethodPost, Path: ChildWorkflowValidatePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowStart, Method: http.MethodPost, Path: ChildWorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowStatus, Method: http.MethodPost, Path: ChildWorkflowStatusPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowResolve, Method: http.MethodPost, Path: ChildWorkflowResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{

@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/blobstore"
 )
 
 // surrenderplane.go is the write API's surrender plane (#3699): a mode-3
@@ -55,6 +56,18 @@ func WithSurrenderService(plane SurrenderService) HandlerOption {
 	}
 }
 
+// WithGeneratedChildSurrenderService installs the exact-attempt result owner.
+// This never grants generated children the worker-only surrender read routes.
+func WithGeneratedChildSurrenderService(plane SurrenderService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if plane == nil {
+			return errors.New("generated child surrender owner is required")
+		}
+		config.generatedChildSurrenders = plane
+		return nil
+	}
+}
+
 // surrenderedResultShape is the minimal shape this route validates before
 // storing the request body verbatim: it needs to know the document carries a
 // real terminal status, not the full dispatcher.SurrenderedResult schema
@@ -73,6 +86,17 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 	}, map[apicontract.RouteID]http.HandlerFunc{
 		apicontract.RouteStageSurrenderGet: surrenderReadHandler(plane, false, errorLog),
 		apicontract.RouteStageSurrender: func(w http.ResponseWriter, request *http.Request) {
+			plane := config.surrenders
+			principal, authenticated := PrincipalFromRequest(request)
+			generated := authenticated && principal.Issuer == GeneratedChildPrincipalIssuer
+			if generated {
+				w.Header().Set("Cache-Control", "private, no-store")
+				if config.generatedChildSurrenders == nil || principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
+					writeError(w, http.StatusForbidden, "child_surrender_unavailable", "generated child result authority is not available")
+					return
+				}
+				plane = config.generatedChildSurrenders
+			}
 			if plane == nil {
 				writeError(w, http.StatusServiceUnavailable, "surrender_unavailable", "the surrender plane is not available from this server")
 				return
@@ -99,7 +123,7 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			// Per-run containment: a pod token proves "I am run X's stage pod",
 			// which authorizes surrendering a result for run X and no other —
 			// the same body-level binding the journal plane applies.
-			if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+			if authenticated && (IsPodPrincipal(principal) || generated) {
 				if principal.Subject != podPrincipalSubject(run) {
 					writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only surrender its own run's results")
 					return

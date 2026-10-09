@@ -61,9 +61,10 @@ type SubmissionRequest struct {
 
 // Submission is durable custody, not proof that execution or a wait has begun.
 type Submission struct {
-	Child     triggerqueue.ChildRecord
-	Duplicate bool
-	Envelope  ChildStartEnvelope
+	Disposition *triggerqueue.ChildDisposition
+	Child       triggerqueue.ChildRecord
+	Duplicate   bool
+	Envelope    ChildStartEnvelope
 }
 
 // SubmissionService validates and accepts children; it never runs a workflow.
@@ -192,10 +193,18 @@ func (s *SubmissionService) Get(ctx context.Context, origin Origin, invocationKe
 	if err := ValidateRetainedCustody(authority, retained, child, artifact); err != nil {
 		return Submission{}, err
 	}
+	disposition, err := s.Queue.ChildDisposition(ctx, identity)
+	if err != nil && !errors.Is(err, triggerqueue.ErrChildDispositionPending) {
+		return Submission{}, err
+	}
 	if err := s.recheck(ctx, authority); err != nil {
 		return Submission{}, err
 	}
-	return Submission{Child: child, Envelope: retained}, nil
+	result := Submission{Child: child, Envelope: retained}
+	if err == nil {
+		result.Disposition = &disposition
+	}
+	return result, nil
 }
 
 func (s *SubmissionService) resolve(ctx context.Context, origin Origin) (Authority, error) {

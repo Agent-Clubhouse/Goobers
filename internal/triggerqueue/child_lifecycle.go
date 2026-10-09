@@ -99,6 +99,13 @@ func (s *Store) AcknowledgeChild(ctx context.Context, identity ChildIdentity, ex
 	if !c.AcknowledgedAt.IsZero() {
 		return nil
 	}
+	var disposition string
+	if err := tx.QueryRowContext(ctx, `SELECT disposition_digest FROM child_lineages WHERE child_id=?`, c.ChildID).Scan(&disposition); err != nil {
+		return err
+	}
+	if disposition != "" {
+		return ErrTransition
+	} // Only verified disposition completion releases this slot.
 	if now.Before(c.UpdatedAt) {
 		return ErrTransition
 	}
@@ -133,6 +140,22 @@ func (s *Store) FenceChildParent(ctx context.Context, parent ChildParent, actor 
 		return err
 	}
 	return tx.Commit()
+}
+
+// ChildCancellationTime reads the first durable family cancellation for an
+// exact retained child. Missing cancellation or lineage returns sql.ErrNoRows.
+// It is not proof that any worker has stopped; execution custody must be joined
+// separately before using this timestamp to settle a child awaiting a human.
+func (s *Store) ChildCancellationTime(ctx context.Context, identity ChildIdentity) (time.Time, error) {
+	if !identity.valid() {
+		return time.Time{}, errors.New("triggerqueue: invalid child cancellation identity")
+	}
+	var ns int64
+	err := s.db.QueryRowContext(ctx, "SELECT p.cancelled_ns"+childFrom+childWhere+" AND p.cancelled_ns IS NOT NULL AND c.tombstoned_ns IS NULL", childArgs(identity)...).Scan(&ns)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(0, ns).UTC(), nil
 }
 
 // MarkChildParentSettled closes submission and starts the family retention

@@ -635,6 +635,10 @@ func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind Prov
 	} else if ok {
 		return updateRESTPullRequest(ctx, c, kind, baseURL, req, existing.Number, title, prBody)
 	}
+	return createRESTPullRequest(ctx, c, kind, baseURL, req, hooks, title, prBody)
+}
+
+func createRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks, title, prBody string) (PullRequestResult, error) {
 	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
 	if err != nil {
 		return PullRequestResult{}, err

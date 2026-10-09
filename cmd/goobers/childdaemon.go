@@ -22,6 +22,7 @@ func (s *daemonCredentialService) installQueuedChildren(setup *schedulerSetup, t
 		dispatch: triggers.dispatch, runners: setup.RunnerRegistry, wg: wg}
 	launcher.build = s.isolatedChildBuilder(setup.ChildRuntime)
 	launcher.result = launcher.captureTerminal
+	launcher.reconcile = s.reconcileChildPodCustody
 	triggers.children = launcher
 	s.childCredentials = launcher.credentialCeiling
 	setup.RunnerRegistry.setChildGenerationResolver(launcher.resolveGeneration)

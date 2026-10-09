@@ -19,7 +19,9 @@ import (
 
 // TerminalResultInput comes from the trusted execution observer after joining
 // all writers. Summary is already redacted; references are bounded artifact
-// identifiers, never instructions or authority. FinishedAt is journal time.
+// identifiers, never instructions or authority. FinishedAt is durable journal
+// or queue time; cancellation of an already escalated execution uses the later
+// of its terminal event and the recorded family cancellation.
 type TerminalResultInput struct {
 	State      triggerqueue.ChildState `json:"state"`
 	FinishedAt time.Time               `json:"finishedAt"`

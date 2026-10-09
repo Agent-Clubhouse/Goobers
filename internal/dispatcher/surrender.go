@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -105,6 +106,13 @@ type SurrenderedMutation struct {
 // (ResultEnvelope + mutation facts + mutation issues), so the dispatch
 // activity can marshal it back into the identical stageActivityResult.
 type SurrenderedResult struct {
+	// ObservedUsage comes from the isolated harness adapter, not model-authored metrics.
+	ObservedUsage         map[string]float64 `json:"observedUsage,omitempty"`
+	ObservedUsageReported bool               `json:"observedUsageReported,omitempty"`
+	// ChildWorkspaceDigest names the bounded child output carrier. The host
+	// verifies its contract and waits for exact pod writer termination before
+	// importing its tree. Ordinary workspace delta semantics do not apply.
+	ChildWorkspaceDigest string `json:"childWorkspaceDigest,omitempty"`
 	// RecoveryAcknowledged is set only by the pod supervisor after the host
 	// accepts recovery custody (or verifies that no unmerged patch exists).
 	// Old images omit it; omission must not authorize writable-pod deletion.
@@ -175,6 +183,14 @@ type SurrenderedResult struct {
 // they are, since those are routing decisions the engine — not the transport —
 // owns.
 func (r SurrenderedResult) Validate() error {
+	if len(r.ObservedUsage) > 64 || (len(r.ObservedUsage) > 0 && !r.ObservedUsageReported) {
+		return fmt.Errorf("dispatcher: observed usage exceeds bound")
+	}
+	for key, value := range r.ObservedUsage {
+		if key == "" || len(key) > 128 || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("dispatcher: invalid observed usage")
+		}
+	}
 	if err := r.Result.Validate(); err != nil {
 		return fmt.Errorf("dispatcher: surrendered result envelope: %w", err)
 	}

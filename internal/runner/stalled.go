@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/hostsuspend"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -523,6 +524,9 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 			if outcome, ok := active.waitFor(grace); ok {
 				return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
 			}
+			if r.cfg.childExecution != nil {
+				return Result{Phase: journal.PhaseRunning, FinalState: candidate.finalState}, false, invoke.ErrChildCustodyPending
+			}
 			outcome, claim := active.claimTakeover()
 			switch claim {
 			case takeoverReady:
@@ -763,6 +767,9 @@ func (r *Runner) interruptActiveRun(
 	}
 	if outcome, ok := active.waitFor(grace); ok {
 		return outcome.result, outcome.result.Phase == success, outcome.err
+	}
+	if r.cfg.childExecution != nil {
+		return Result{Phase: journal.PhaseRunning, FinalState: finalState}, false, invoke.ErrChildCustodyPending
 	}
 	outcome, claim := active.claimTakeover()
 	switch claim {

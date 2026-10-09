@@ -86,7 +86,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// Child tools run under the exact parent-stage grant. Validation and
 		// status are execution-plane operations, like claims/list, rather than
 		// human-facing navigation or an alternate admission authority.
-		"childWorkflowValidate": true, "childWorkflowStart": true, "childWorkflowStatus": true,
+		"childWorkflowValidate": true, "childWorkflowStart": true, "childWorkflowStatus": true, "childWorkflowResolve": true,
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true, "claimVerify": true,
 		// A resident worker reports a config comparison transition into the
 		// daemon-owned instance journal. This authenticated machine-to-daemon

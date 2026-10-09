@@ -1224,13 +1224,14 @@ func (w *Writer) notifyEvent(runID string, ev journal.Event) {
 // fetchSpan fetches digest and confirms the bytes hash to it — the span// source is an external dependency, and wrong content must surface as an
 // unavailable span, never a silently mismatched one (projection parity).
 func (w *Writer) fetchSpan(ctx context.Context, digest string) ([]byte, error) {
-	if w.spans == nil {
+	source := w.requestSpanSource(ctx)
+	if source == nil {
 		return nil, errors.New("no span source configured")
 	}
 	if digest == "" {
 		return nil, errors.New("span op has no digest")
 	}
-	data, err := w.spans.Get(ctx, digest)
+	data, err := source.Get(ctx, digest)
 	if err != nil {
 		return nil, err
 	}

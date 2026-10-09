@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/providers"
 )
 
 type handoffDaemonFixture struct {
@@ -69,6 +73,13 @@ func newHandoffDaemonFixtureConfig(t *testing.T, configure func(*instance.Config
 	return handoffDaemonFixture{host, service, queue, run, env, child, origin.Binding(grant.ExpiresAt)}
 }
 
+func recordDaemonHandoffWait(t *testing.T, f handoffDaemonFixture, request runner.ChildHandoffRequest) {
+	t.Helper()
+	if err := f.run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: "plan", Attempt: 1, Runner: map[string]any{"kind": runner.ChildWaitKind, "childWait": map[string]any{"version": 1, "parentRunId": f.env.RunID, "request": request, "policyAttempts": 0, "infrastructureFailures": 0}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDaemonChildHandoffSelectsAcceptedWaitAndVerifiedCompletion(t *testing.T) {
 	f := newHandoffDaemonFixture(t)
 	request, err := f.host.Await(t.Context(), f.env)
@@ -101,21 +112,77 @@ func TestDaemonChildHandoffSelectsAcceptedWaitAndVerifiedCompletion(t *testing.T
 	if request, err := f.host.observe(t.Context(), f.service, f.env); err != nil || request.RequestID != "" {
 		t.Fatal("terminal child without disposition caused repeated yield", request, err)
 	}
-	for _, action := range []string{"merge", "replace", "discard"} {
-		unsupported := request
-		unsupported.Action = action
-		unsupported.RequestID = childHandoffRequestDigest(unsupported)
-		if err := f.host.Yield(t.Context(), unsupported, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err == nil {
-			t.Fatalf("unavailable disposition %q accepted", action)
-		}
+	if _, err := f.queue.RequestChildDisposition(t.Context(), triggerqueue.ChildDispositionRequest{Identity: f.child.Identity, Action: "discard", ResultRef: result.ResultRef, Authority: f.grant}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	disposition, err := f.host.Await(t.Context(), f.env)
+	if err != nil || disposition.Action != "discard" {
+		t.Fatal(disposition, err)
+	}
+	if err := f.host.Yield(t.Context(), disposition, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err == nil {
+		t.Fatal("custody effect accepted before durable wait marker")
+	}
+	recordDaemonHandoffWait(t, f, disposition)
+	changed := disposition
+	changed.Action = "merge"
+	changed.RequestID = childHandoffRequestDigest(changed)
+	if _, _, err := f.host.parkedParent(changed); err == nil {
+		t.Fatal("different receipt accepted under parked origin")
+	}
+	if err := f.host.Yield(t.Context(), disposition, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err != nil {
+		t.Fatal(err)
 	}
 	child, err := f.queue.GetChild(t.Context(), f.child.Identity)
-	if err != nil || !child.AcknowledgedAt.IsZero() {
-		t.Fatal("completion released unresolved custody", child, err)
+	if err != nil || child.AcknowledgedAt.IsZero() {
+		t.Fatal("verified disposition did not release slot", child, err)
+	}
+	if err := f.host.Yield(t.Context(), disposition, runner.ChildWorkspaceCustody{Path: t.TempDir(), RepoRef: f.host.project}); err != nil {
+		t.Fatal("disposition retry lost custody", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := f.host.Await(ctx, f.env); err == nil {
 		t.Fatal("empty cancelled observer did not stop")
+	}
+}
+
+func TestDaemonChildHandoffIncludesUncertainPublicationWithoutChangingResult(t *testing.T) {
+	f := newHandoffDaemonFixture(t)
+	request, err := f.host.Await(t.Context(), f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineage := journal.ChildLineage{Gaggle: f.child.Identity.Gaggle, ParentRunID: f.child.Identity.ParentRunID, StageOccurrence: f.child.Identity.StageOccurrence, InvocationKey: f.child.Identity.InvocationKey, AcceptanceID: f.child.AcceptanceID, SourceDigest: f.child.ProposalDigest, EnvelopeDigest: journal.Digest([]byte("envelope"))}
+	intent := childpublication.BranchIntent{Version: 1, RunID: f.child.RunID, Lineage: lineage, Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "owner", Name: "repo"}, Remote: "https://github.com/owner/repo.git", Head: "factory/children/" + f.child.RunID, Base: "main", Commit: strings.Repeat("a", 40)}
+	raw, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := f.queue.PrepareChildExecutionPublication(t.Context(), f.child.Identity, f.child.RunID, "branch", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.queue.BeginChildExecutionPublicationEffect(t.Context(), publication, f.child.RunID); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := childworkflow.WorkspaceCoordinator{Queue: f.queue}
+	result, err := coordinator.CaptureResult(t.Context(), f.child, nil, childworkflow.TerminalResultInput{State: triggerqueue.ChildFailed, FinishedAt: time.Now(), Summary: "publication reply unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.queue.SetChildState(t.Context(), f.child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := f.host.Wait(t.Context(), request)
+	if err != nil || completion.ResultRef != result.ResultRef || len(completion.Publications) != 1 {
+		t.Fatal(completion, err)
+	}
+	status := completion.Publications[0]
+	if status.State != "effect_pending" || !status.NeedsHuman || status.IntentDigest != publication.Digest || status.Head != intent.Head {
+		t.Fatal("parent lost uncertain publication evidence", status)
+	}
+	retained, err := f.queue.ChildResult(t.Context(), f.child.Identity)
+	if err != nil || retained.ReceiptDigest != result.ResultRef {
+		t.Fatal("projection changed immutable child result", retained, err)
 	}
 }

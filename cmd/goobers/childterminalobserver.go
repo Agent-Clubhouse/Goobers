@@ -27,10 +27,16 @@ func (l *queuedChildLauncher) captureTerminal(ctx context.Context, ref childExec
 		return childExecutionResult{}, err
 	}
 	phase := journal.PhaseFromEvents(events)
-	if phase == journal.PhaseEscalated || (phase == journal.PhaseRunning && journal.ParkedAtGate(events)) {
+	if phase == journal.PhaseRunning && journal.ParkedAtGate(events) {
 		return childExecutionResult{State: triggerqueue.ChildAwaitingHuman}, nil
 	}
 	input, found, err := childTerminalInput(rd, events, phase)
+	if phase == journal.PhaseEscalated {
+		input, found, err = l.cancelledEscalationInput(ctx, ref, rd, events)
+		if err == nil && !found {
+			return childExecutionResult{State: triggerqueue.ChildAwaitingHuman}, nil
+		}
+	}
 	if err != nil || !found {
 		return childExecutionResult{}, err
 	}

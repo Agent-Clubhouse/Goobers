@@ -80,7 +80,7 @@ func newReviewThreadReceipt(pullID, publishedHead string, snapshot *apiv1.PRFeed
 		PullRequest:      pullID,
 		SelectedNumber:   pullID,
 		PublishedHeadSHA: publishedHead,
-		Status:           apiv1.ReviewThreadPublicationInProgress,
+		ResolutionStatus: apiv1.ReviewThreadPublicationInProgress,
 		Restoration:      apiv1.ReviewThreadRestorationUnsupported,
 		Threads:          make([]apiv1.ReviewThreadReceipt, 0, len(responses)),
 	}
@@ -377,7 +377,7 @@ func (p *reviewThreadPublication) fail(what string, err error) int {
 
 func (p *reviewThreadPublication) failTyped(what string, err error, code string, retryable bool, rateLimitReset string) int {
 	pf(p.stderr, "error: %s: %v\n", what, err)
-	p.receipt.Status = p.stoppedStatus()
+	p.receipt.ResolutionStatus = p.stoppedStatus()
 	p.receipt.ErrorCode = code
 	p.receipt.ErrorMessage = fmt.Sprintf("%s: %v", what, err)
 	p.receipt.ErrorRetryable = retryable

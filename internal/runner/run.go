@@ -438,10 +438,12 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
-	childExecution      *journal.RunIdentity
-	ChildHandoff        ChildHandoff
-	ChildParentCapacity ChildParentCapacity
-	SelfExecutionDenied bool
+	childExecution       *journal.RunIdentity
+	childBorrowJournal   func(string, string, *journal.Run) (func(), error)
+	childTerminalCustody func(*journal.Run) error
+	ChildHandoff         ChildHandoff
+	ChildParentCapacity  ChildParentCapacity
+	SelfExecutionDenied  bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
@@ -1127,6 +1129,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowChildJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend child journal: %w", err)
+	}
+	defer releaseJournal()
 	if in.OnJournalPublished != nil {
 		if err := in.OnJournalPublished(); err != nil {
 			return Result{}, fmt.Errorf("runner: journal admission barrier: %w", err)
@@ -1898,6 +1905,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 }
 
 func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (apiv1.ResultEnvelope, Result, bool, error) {
+	humanRerun := ws.rerun != nil && ws.rerun.stage == t.Name
 	startAttempt := int32(1)
 	var firstClass journal.AttemptClass
 	var instructionAddendum string
@@ -1913,7 +1921,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		instructionAddendum = ws.retryInstructionAddendum
 		ws.retryInstructionAddendum = ""
 	}
-	if ws.rerun != nil && ws.rerun.stage == t.Name {
+	if humanRerun {
 		taskRerun = ws.rerun
 		startAttempt = int32(ws.rerun.attempt)
 		firstClass = journal.AttemptHuman
@@ -1948,25 +1956,19 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			replacementConsumesPolicy: ws.resume.class != journal.AttemptInfra,
 		}
 		interruptedClass := journal.AttemptInfra
-		if ws.rerun != nil && ws.rerun.stage == t.Name {
+		if humanRerun {
 			interruptedClass = ws.resume.class
 		}
-		var interruptedBudgetResult apiv1.ResultEnvelope
-		if t.Type == apiv1.TaskAgentic {
-			limits, err := workflow.TaskLimits(ws.in.Machine, t)
-			if err != nil {
-				return apiv1.ResultEnvelope{}, Result{}, true, fmt.Errorf("project stage %q limits: %w", t.Name, err)
-			}
-			if usageBudgetConfigured(limits) {
-				interruptedBudgetResult = interruptedStageBudgetFailure(limits)
-				resumedResult = &interruptedBudgetResult
-			}
+		var err error
+		resumedResult, err = interruptedTaskBudgetResult(ws.in.Machine, t)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, Result{}, true, err
 		}
 		if !ws.resume.recorded {
 			errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
 			runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
 			if resumedResult != nil {
-				errorDetail = errorDetailFrom(interruptedBudgetResult)
+				errorDetail = errorDetailFrom(*resumedResult)
 				runnerDetail = nil
 			}
 			if err := ws.jr.Append(journal.Event{
@@ -1986,7 +1988,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		}
 		if resumedResult == nil {
 			startAttempt = int32(ws.resume.attempt) + 1
-			if ws.rerun != nil && ws.rerun.stage == t.Name {
+			if humanRerun {
 				firstClass = journal.AttemptHuman
 			} else {
 				firstClass = journal.AttemptInfra
@@ -2025,8 +2027,17 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			taskRerun, infraFailedAttemptCommittedWork, resumeAccounting,
 		)
 	}
+	return r.completeTaskStep(ctx, ws, t, result, produced, err)
+}
+
+// completeTaskStep publishes outcomes only after the physical dispatch has
+// returned custody; a parked child remains running with its attempt open.
+func (r *Runner) completeTaskStep(ctx context.Context, ws *walkState, t apiv1.Task, result apiv1.ResultEnvelope, produced []apiv1.ContextPointer, err error) (apiv1.ResultEnvelope, Result, bool, error) {
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
 		ws.rerun = nil
+	}
+	if ws.in.Child != nil && errors.Is(err, invoke.ErrChildCustodyPending) {
+		return result, Result{Phase: journal.PhaseRunning, FinalState: t.Name, Steps: ws.steps}, true, err
 	}
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, t.Name, ws.steps); stalled {
 		return result, stalledResult, true, stalledErr
@@ -2144,6 +2155,9 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 			ctx, ws.jr, ws.gateEval, ws.ex, ws.in, g, ws.lastStage, gateSubject,
 			gatePointers, ws.fanIn, instructionAddendum, ws.workspaceBranch, knownOutcome,
 		)
+	}
+	if ws.in.Child != nil && errors.Is(err, invoke.ErrChildCustodyPending) {
+		return gr, false, Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: ws.steps}, true, errors.Join(err, removeErr)
 	}
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, g.Name, ws.steps); stalled {
 		return gr, false, stalledResult, true, stalledErr
@@ -2969,6 +2983,11 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 }
 
 func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string, causes ...*journal.TerminalCause) (Result, error) {
+	if r.cfg.childExecution != nil && r.cfg.childTerminalCustody != nil {
+		if err := r.cfg.childTerminalCustody(jr); err != nil {
+			return Result{Phase: journal.PhaseRunning, FinalState: finalState, Steps: steps}, err
+		}
+	}
 	var supplied *journal.TerminalCause
 	if len(causes) > 0 {
 		supplied = causes[0]
@@ -3371,14 +3390,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err)
 		}
 	}
-	policyMaxAttempts := int32(1)
-	var backoff time.Duration
-	if t.Retry != nil {
-		if t.Retry.MaxAttempts > 0 {
-			policyMaxAttempts = t.Retry.MaxAttempts
-		}
-		backoff = time.Duration(t.Retry.BackoffSeconds) * time.Second
-	}
+	policyMaxAttempts, backoff := taskRetryPolicy(t.Retry)
 	// The infrastructure budget includes its triggering failure, so it can add
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
 	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
@@ -3477,6 +3489,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
 		result, mutations, cleanup, dispatchErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
+		if in.Child != nil && errors.Is(dispatchErr, invoke.ErrChildCustodyPending) {
+			span.Fail(dispatchErr)
+			return result, nil, errors.Join(dispatchErr, parkChildTaskDispatch(tf, heartbeat, int(attempt), class, mutations, cleanup))
+		}
 		if t.Type == apiv1.TaskAgentic {
 			applyTaskUsageBudget(usageLimits, &usage, cumulativeUsage, &result, &dispatchErr)
 			dispatchErr = declaredArtifactRetryError(dispatchErr, result, policyAttempts < policyMaxAttempts)
@@ -4655,7 +4671,11 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 					err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
 				}
 			}
-			removeErr = r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.Remove(ctx))
+			if in.Child != nil && errors.Is(err, invoke.ErrChildCustodyPending) {
+				removeErr = workspace.finishDispatch(ctx, true)
+			} else {
+				removeErr = r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.Remove(ctx))
+			}
 		}()
 		wt = workspace.worktree
 

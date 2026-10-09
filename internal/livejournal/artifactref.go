@@ -83,10 +83,11 @@ func (w *Writer) fetchArtifact(ctx context.Context, a *ArtifactOp, integrity api
 	if !integrity.Valid() || (ref.Integrity != "" && ref.Integrity != integrity) {
 		return nil, errors.New("artifact ref has invalid or conflicting integrity")
 	}
-	if w.artifacts == nil {
+	source := w.requestArtifactSource(ctx)
+	if source == nil {
 		return nil, errors.New("no bounded artifact source configured")
 	}
-	data, err := w.artifacts.GetBounded(ctx, ref.Digest, max(ref.Size, 1))
+	data, err := source.GetBounded(ctx, ref.Digest, max(ref.Size, 1))
 	if err != nil {
 		return nil, fmt.Errorf("fetch artifact %q: %w", a.Name, err)
 	}
