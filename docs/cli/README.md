@@ -5249,8 +5249,11 @@ API-update a clean behind-base PR, else route to remediation (a workflow stage)
 Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
-is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. A run dispatched for one
+is mergeable, CI-clean, and carries no substantive findings. A behind
+PR whose failing checks all failed on its base branch too, at its
+merge-base or at a base commit since, is red because its base was, so
+it is updated the same way. Other candidates are routed to full
+remediation. A run dispatched for one
 pull request (goobers run --pr, or a pull_request webhook delivery)
 selects that PR and no other; when the target is not selectable the
 stage reports no-work naming the reason instead of falling back to
