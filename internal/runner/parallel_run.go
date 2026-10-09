@@ -416,6 +416,9 @@ func (r *Runner) runConcurrentParallel(
 	if terminalTarget != "" {
 		target, runJoin = terminalTarget, false
 	}
+	if err := r.joinParallelForks(ctx, jr, in, p, runtime, outcomes, runJoin); err != nil {
+		return concurrentParallelResult{}, err
+	}
 	jr.SetBranchCursors(nil)
 	if err := jr.Append(journal.Event{
 		Type:         journal.EventParallelFinished,

@@ -14,4 +14,5 @@ type ResultRequest struct {
 	Branch  int
 	Status  journal.BranchStatus
 	Custody worktree.StageCustody
+	Join    bool
 }

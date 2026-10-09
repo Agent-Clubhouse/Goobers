@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/goobers/goobers/test/testsupport/testdep"
+
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/parallelworkspace/spec"
@@ -145,4 +147,9 @@ func captureForkResultsForCleanup(t *testing.T, r parentArchiveRestorer, run *jo
 		records = append(records, snapshot.Record)
 	}
 	return records
+}
+
+func TestIntegrationHostForkSourceReleaseRecovery(t *testing.T) {
+	testdep.Require(t, "git")
+	verifyHostForkArchiveRecovery(t, "ready")
 }

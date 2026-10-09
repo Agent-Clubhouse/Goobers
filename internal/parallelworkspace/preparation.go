@@ -134,6 +134,9 @@ func validatePreparation(reader *journal.Reader, value Preparation) error {
 	if request.Branch < 0 || request.Branch > 128 {
 		return errors.New("parallel preparation branch outside bound")
 	}
+	if request.Join {
+		return validateJoinPreparation(reader, value)
+	}
 	if request.Branch != 0 {
 		if request.Plan.Integrity != apiv1.IntegrityTrusted || record.BaseSHA != request.Seed.SnapshotSHA || request.Custody.OwnerRunID != id.RunID {
 			return errors.New("parallel result preparation changed fork ownership")

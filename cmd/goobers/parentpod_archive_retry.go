@@ -15,7 +15,7 @@ func (r parentArchiveRestorer) retryRetirement(reader *journal.Reader) error {
 	if err != nil {
 		return err
 	}
-	missing := len(work.forks) != 0 || len(work.preparations) != 0
+	missing := len(work.joins) != 0 || len(work.forks) != 0 || len(work.preparations) != 0
 	for _, candidate := range work.candidates {
 		missing = missing || candidate.RetirementSeq == 0
 	}

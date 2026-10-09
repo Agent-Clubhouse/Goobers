@@ -618,6 +618,7 @@ type Config struct {
 	// PrepareParentForkSource captures or imports host-owned fork sources.
 	PrepareParentForkSource ParentForkSourceFunc
 	PrepareParentForkResult ParentForkResultFunc
+	JoinParentFork          ParentForkJoinFunc
 	// RetireParentWorkspaces archives acknowledged parent checkouts after the
 	// durable terminal event, before cleanup. Failures must preserve their holds.
 	RetireParentWorkspaces func(*journal.Run) error

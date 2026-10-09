@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 type forkCaptureFault struct {
@@ -123,5 +124,12 @@ func verifyInterruptedForkCapture(t *testing.T, f pinnedChildFixture, run *journ
 	}
 	if err := releaseTerminalParentArchives(layout, manager, request.RunID); err != nil {
 		t.Fatal("preparation cleanup retry", err)
+	}
+}
+
+func TestIntegrationHostForkInterruptedCaptureRecovery(t *testing.T) {
+	testdep.Require(t, "git")
+	for _, checkpoint := range []string{"no-preparation", "before-pin", "after-pin"} {
+		t.Run(checkpoint, func(t *testing.T) { verifyHostForkArchiveRecovery(t, checkpoint) })
 	}
 }

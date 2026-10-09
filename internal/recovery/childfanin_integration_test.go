@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func fanInResult(t *testing.T, repository string, fork ChildSnapshot, name string, edits map[string]string) Record {
@@ -30,6 +32,7 @@ func fanInResult(t *testing.T, repository string, fork ChildSnapshot, name strin
 }
 
 func TestIntegrationChildFanInMergeAndApplication(t *testing.T) {
+	testdep.Require(t, "git")
 	repository, key, at := childSnapshotFixture(t)
 	policy := SnapshotPolicy{ExcludedPaths: []string{"private.key"}}
 	childSnapshotWrite(t, repository, "staging.txt", "staged\n")
@@ -103,6 +106,7 @@ func TestIntegrationChildFanInMergeAndApplication(t *testing.T) {
 }
 
 func TestIntegrationChildFanInAggregateBudgetAndPolicy(t *testing.T) {
+	testdep.Require(t, "git")
 	repository, key, at := childSnapshotFixture(t)
 	fork := captureChildFixture(t, repository, key, "fork", at, SnapshotPolicy{ExcludedPaths: []string{"private.key"}})
 	a := fanInResult(t, repository, fork, "a", map[string]string{"a.txt": "a\n"})
@@ -142,6 +146,7 @@ func TestIntegrationChildFanInAggregateBudgetAndPolicy(t *testing.T) {
 }
 
 func TestIntegrationChildFanInRefusalsPreserveParent(t *testing.T) {
+	testdep.Require(t, "git")
 	repository, key, at := childSnapshotFixture(t)
 	fork := captureChildFixture(t, repository, key, "fork", at, SnapshotPolicy{})
 	a := fanInResult(t, repository, fork, "a", map[string]string{"tracked.txt": "a\n"})
@@ -180,6 +185,7 @@ func TestIntegrationChildFanInRefusalsPreserveParent(t *testing.T) {
 }
 
 func TestIntegrationChildMergeAddAddConflictPreservesParent(t *testing.T) {
+	testdep.Require(t, "git")
 	repository, key, at := childSnapshotFixture(t)
 	fork := captureChildFixture(t, repository, key, "fork", at, SnapshotPolicy{})
 	result := fanInResult(t, repository, fork, "child", map[string]string{"new.txt": "child content\n"})

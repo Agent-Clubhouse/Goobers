@@ -411,6 +411,9 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	cfg.PrepareParentForkResult = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.ResultRequest, previous *spec.Source) (spec.Source, error) {
 		return forkSources.Result(ctx, rec, request, previous)
 	}
+	cfg.JoinParentFork = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.JoinRequest) error {
+		return forkSources.Join(ctx, rec, request)
+	}
 	cfg.RestoreParentArchive = archives.restore
 	cfg.RetireParentWorkspaces = archives.retire
 }

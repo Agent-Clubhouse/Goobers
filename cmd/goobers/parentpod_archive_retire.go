@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
@@ -46,6 +47,10 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 		return err
 	}
 	if err := r.recoverForkPlans(ctx, run, reader, work.forks); err != nil {
+		return err
+	}
+	joinService := parallelworkspace.Service{Worktrees: r.worktrees, CloneURL: r.cloneURL}
+	if err := joinService.RecoverJoins(ctx, run); err != nil {
 		return err
 	}
 	candidates, err := runner.ParentRetirementCandidates(reader)

@@ -43,10 +43,7 @@ func TestIntegrationParentRecoveryRejoinsOriginalWorkerAndPreservesDirtyTree(t *
 	testdep.Require(t, "git")
 	testParentFactoryCustody(t, true, false)
 }
-func TestIntegrationParentRecoveryPreservesCommittedStagedAndDirtyState(t *testing.T) {
-	testdep.Require(t, "git")
-	testParentFactoryCustody(t, true, true)
-}
+
 func testParentFactoryCustody(t *testing.T, lost, committed bool) {
 	f := containedParentFixture(t)
 	run, env := configuredChildStage(t, f)

@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -174,6 +175,13 @@ func ParentCleanupWorkspace(reader *journal.Reader, target worktree.CleanupTarge
 	events, err := reader.Events()
 	if err != nil {
 		return empty, false, err
+	}
+	pending, err := spec.PendingJoins(reader)
+	if err != nil {
+		return empty, false, err
+	}
+	if len(pending) != 0 {
+		return empty, false, ErrParentReturnPending
 	}
 	if err := refusePendingForkCleanup(reader, events, target); err != nil {
 		return empty, false, err

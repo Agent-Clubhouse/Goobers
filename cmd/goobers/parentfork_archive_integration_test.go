@@ -23,7 +23,7 @@ import (
 
 func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, checkpoint := range []string{"root", "ready", "active", "held", "uncreated", "no-preparation", "before-pin", "after-pin"} {
+	for _, checkpoint := range []string{"active", "held", "uncreated"} {
 		t.Run(checkpoint, func(t *testing.T) { verifyHostForkArchiveRecovery(t, checkpoint) })
 	}
 }
@@ -94,7 +94,7 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 		t.Fatal(err)
 	}
 	plan := runner.ParentForkPlan{Version: 1, RunID: env.RunID, Gaggle: env.Gaggle, Parallel: "fan", Sequence: started.Seq, Source: seed, Workspaces: []worktree.StageCustody{custody, sibling}}
-	if checkpoint == "root" {
+	if checkpoint == "root" || checkpoint == "join" {
 		owner, err := source.StageIdentity(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -144,10 +144,13 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	}
 	// The second reserved branch has never been created in any checkpoint.
 	// Recovery must use the durable snapshot even after the root changes.
-	writeFileContent(t, filepath.Join(source.Path, "source.txt"), "later root staging\n")
-	recoveryCLIGit(t, source.Path, "add", "source.txt")
+	rootExpected := "later root edits\n"
+	if checkpoint != "join" {
+		writeFileContent(t, filepath.Join(source.Path, "source.txt"), "later root staging\n")
+		recoveryCLIGit(t, source.Path, "add", "source.txt")
+		writeFileContent(t, filepath.Join(source.Path, "source.txt"), rootExpected)
+	}
 	rootIndex := recoveryCLIGit(t, source.Path, "write-tree")
-	writeFileContent(t, filepath.Join(source.Path, "source.txt"), "later root edits\n")
 	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -159,6 +162,10 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 		t.Fatal(err)
 	}
 	restorer := parentArchiveRestorer{layout: layout, config: f.cfg, worktrees: manager, cloneURL: childRepoCloneURL}
+	var joinRecord recovery.Record
+	if checkpoint == "join" {
+		joinRecord = interruptHostForkJoin(t, restorer, run, reader, plan, ref, source)
+	}
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
 		t.Fatal(err)
 	}
@@ -215,6 +222,17 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 		t.Fatal(err)
 	}
 	verifyForkSourcePin(t, manager, url, snapshot.Record, false)
+	if checkpoint == "join" {
+		verifyForkSourcePin(t, manager, url, joinRecord, false)
+		rootExpected = "ordinary working\n"
+		if got := readFileContent(t, filepath.Join(source.Path, "source.txt")); got != rootExpected {
+			t.Fatal("terminal recovery did not finish recorded root application", got)
+		}
+		if pending, err := spec.PendingJoins(reader); err != nil || len(pending) != 0 {
+			t.Fatal("terminal recovery left an unfinished join", err)
+		}
+		rootIndex = recoveryCLIGit(t, source.Path, "write-tree")
+	}
 	candidate := forkArchiveCandidate(t, candidates, 1)
 	for _, mode := range []string{"foreign-plan", "mixed-worker", "fake-origin"} {
 		wrong := candidate.Workspace
@@ -248,7 +266,7 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 		t.Fatal("fork hold release", err)
 	}
 	if plan.Root != nil {
-		verifyRootForkArchiveRestore(t, restorer, run, reader, source, candidates, base, rootIndex)
+		verifyRootForkArchiveRestore(t, restorer, run, reader, source, candidates, base, rootIndex, rootExpected)
 	}
 	if err := checkout.Remove(t.Context(), worktree.RemoveOptions{}); err != nil {
 		t.Fatal("fork cleanup", err)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/parallelworkspace"
+	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
@@ -14,6 +15,7 @@ import (
 
 type parentRetirementWork struct {
 	forks        []runner.ParentForkRecovery
+	joins        []spec.JoinState
 	candidates   []runner.ParentRetirementCandidate
 	preparations []parallelworkspace.PendingPreparation
 }
@@ -29,12 +31,16 @@ func readParentRetirementWork(reader *journal.Reader) (parentRetirementWork, err
 	if err != nil {
 		return work, err
 	}
+	work.joins, err = spec.PendingJoins(reader)
+	if err != nil {
+		return work, err
+	}
 	work.candidates, err = retirementCandidatesBeforeForkRecovery(reader, work.forks)
 	return work, err
 }
 
 func (w parentRetirementWork) empty() bool {
-	return len(w.forks) == 0 && len(w.candidates) == 0 && len(w.preparations) == 0
+	return len(w.joins) == 0 && len(w.forks) == 0 && len(w.candidates) == 0 && len(w.preparations) == 0
 }
 
 func (r parentArchiveRestorer) releaseForkPreparations(ctx context.Context, run *journal.Run, reader *journal.Reader, at time.Time) error {
@@ -47,7 +53,7 @@ func (r parentArchiveRestorer) releaseForkPreparations(ctx context.Context, run 
 		return err
 	}
 	for _, value := range pending {
-		covered, err := preparedForkCovered(value, retired)
+		covered, err := preparedForkCovered(reader, value, retired)
 		if err != nil {
 			return err
 		}
@@ -61,12 +67,18 @@ func (r parentArchiveRestorer) releaseForkPreparations(ctx context.Context, run 
 	return nil
 }
 
-func preparedForkCovered(value parallelworkspace.PendingPreparation, retired []runner.ParentForkRetirement) (bool, error) {
+func preparedForkCovered(reader *journal.Reader, value parallelworkspace.PendingPreparation, retired []runner.ParentForkRetirement) (bool, error) {
 	request := value.Value.Request
 	for _, entry := range retired {
 		plan := entry.Plan
 		if plan.Sequence != request.Sequence || plan.Parallel != request.Parallel {
 			continue
+		}
+		if request.Join {
+			if request.Plan != entry.Reference || request.Seed != plan.Source || plan.Root == nil || request.Custody != *plan.Root {
+				return false, errors.New("parallel merge preparation differs from archived root")
+			}
+			return true, parallelworkspace.AcknowledgedJoinPreparation(reader, value.Value)
 		}
 		if request.Branch == 0 {
 			return value.Value.Snapshot.Record.SnapshotSHA == plan.Source.SnapshotSHA, nil
@@ -76,7 +88,7 @@ func preparedForkCovered(value parallelworkspace.PendingPreparation, retired []r
 		}
 		return true, nil
 	}
-	if request.Branch != 0 {
+	if request.Branch != 0 || request.Join {
 		return false, errors.New("parallel result preparation has no archived fork owner")
 	}
 	return false, nil
@@ -92,7 +104,7 @@ func (r parentArchiveRestorer) releaseForkPreparation(ctx context.Context, value
 	if err != nil {
 		return err
 	}
-	if value.Value.Request.Branch != 0 && value.Value.Request.Custody.RepositoryDigest != worktree.RepositoryDigest(url) {
+	if (value.Value.Request.Branch != 0 || value.Value.Request.Join) && value.Value.Request.Custody.RepositoryDigest != worktree.RepositoryDigest(url) {
 		return errors.New("parallel preparation repository changed")
 	}
 	found, err := r.worktrees.WithExistingMirror(ctx, url, func(repository string) error {
