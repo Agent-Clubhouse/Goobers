@@ -659,7 +659,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		return nil, err
 	}
 
-	gagglesByName := indexedGaggles(input.Definitions)
+	gagglesByName, authGates := indexedGaggles(input.Definitions), newProviderAuthGates(credResolver, input.SharedRegistry, generation)
 
 	// Select each lane's substrate before solving placement: engine lanes do
 	// not execute on the daemon host. Selection only reads config and machines.
@@ -848,7 +848,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			// placement is proven against the full inventory instead (#3987).
 			PlacementRefusal: placement.Refusals[identity],
 		})
-		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
+		entries[len(entries)-1].GooberDigest, entries[len(entries)-1].ProviderAuth = gooberDigests[identity], authGates.forWorkflow(input.Config, wf, repoRefs[identity])
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,7 @@ func (s *instanceState) apply(event journal.Event) {
 	s.engineFallbacks.apply(event)
 	s.applyConfigReload(event)
 	s.applyClusterCheck(event)
+	s.applyProviderAuthHealth(event)
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -183,6 +185,45 @@ func (s *instanceState) applyClusterCheck(event journal.Event) {
 		s.clusterChecks = make(map[string]clustercheck.Result)
 	}
 	s.clusterChecks[result.Check] = result
+}
+
+// applyProviderAuthHealth surfaces a workflow blocked by its pre-claim
+// provider authorization predicate (#5317) as a refused workflow, so status
+// reports it with the stable reason until a run starts or config reloads.
+func (s *instanceState) applyProviderAuthHealth(event journal.Event) {
+	key := event.Gaggle + "/" + event.Workflow
+	switch event.Type {
+	case journal.EventTickSkipped:
+		reason := event.Reason
+		if blocking, ok := localscheduler.RefillBlockedReason(reason); ok {
+			reason = blocking
+		}
+		if event.Workflow == "" {
+			return
+		}
+		if !strings.HasPrefix(reason, localscheduler.ReasonProviderAuthUnhealthy) {
+			// Any other refusal means the auth gate passed or is no longer
+			// the blocker, so it must not mask the current reason.
+			s.clearProviderAuthRefusal(key)
+			return
+		}
+		if _, known := s.refusals[key]; !known {
+			s.refusalOrder = append(s.refusalOrder, key)
+		}
+		if s.refusals == nil {
+			s.refusals = make(map[string]WorkflowRefusalStatus)
+		}
+		s.refusals[key] = WorkflowRefusalStatus{Gaggle: event.Gaggle, Workflow: event.Workflow, Reason: reason, At: event.Time}
+	case journal.EventRunStarted:
+		s.clearProviderAuthRefusal(key)
+	}
+}
+
+func (s *instanceState) clearProviderAuthRefusal(key string) {
+	if refusal, ok := s.refusals[key]; ok && strings.HasPrefix(refusal.Reason, localscheduler.ReasonProviderAuthUnhealthy) {
+		delete(s.refusals, key)
+		s.refusalOrder = slices.DeleteFunc(s.refusalOrder, func(candidate string) bool { return candidate == key })
+	}
 }
 
 // applyConfigReload keeps the newest rejected reload until an accepted reload

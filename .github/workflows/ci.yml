@@ -1456,7 +1456,7 @@ jobs:
           CGO_ENABLED=0 go test -c -tags=integration -o "$RUNNER_TEMP/cancellation-regression/recovery.test" ./internal/recovery
           docker run --rm -v "$RUNNER_TEMP/cancellation-regression:/regression:ro" \
             -e TESTDEP_STRICT=1 -e GOOBERS_TEMPORAL_CLI=/regression/temporal \
-            debian:bookworm bash -euc '
+            mirror.gcr.io/library/debian:bookworm bash -euc '
               apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
               apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends git ca-certificates
               git --version
