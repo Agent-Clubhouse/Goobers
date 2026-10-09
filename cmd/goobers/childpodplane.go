@@ -24,7 +24,7 @@ func (s *daemonCredentialService) installChildPodPlane(client childpod.TemporalC
 		httpapi.WithWorkflowParentSurrenderService(parentSurrenderPlane{store: surrenders, service: s}),
 	}
 	if journals != nil {
-		opts = append(opts, httpapi.WithGeneratedChildJournalService(childJournalPlane{writer: journals, service: s}))
+		opts = append(opts, httpapi.WithGeneratedChildJournalService(childJournalPlane{writer: journals, service: s}), httpapi.WithWorkflowParentJournalService(parentJournalPlane{writer: journals, service: s}))
 	}
 	return opts
 }

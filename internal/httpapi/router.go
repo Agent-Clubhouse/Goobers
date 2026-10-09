@@ -440,7 +440,7 @@ func RequireRoles() Authorizer {
 			if principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
 				return errors.New("contained parent contract unavailable")
 			}
-			if request.Method == http.MethodPost && (request.URL.Path == apicontract.CredentialResolvePath || request.URL.Path == apicontract.ClaimListPath || surrenderPlanePath(request.URL.Path)) {
+			if request.Method == http.MethodPost && (request.URL.Path == apicontract.CredentialResolvePath || request.URL.Path == apicontract.ClaimListPath || surrenderPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) {
 				return nil
 			}
 			return authorizeWorkerBlob(request)
@@ -682,6 +682,7 @@ type handlerConfig struct {
 	surrenders                SurrenderService
 	generatedChildSurrenders  SurrenderService
 	workflowParentSurrenders  SurrenderService
+	workflowParentJournal     JournalService
 	state                     StateService
 	telemetryDefects          TelemetryDefectAggregateService
 	podRunGaggle              func(context.Context, string) (string, error)

@@ -52,6 +52,7 @@ type TranscriptCapture struct {
 	run      *Run
 	id       string
 	stage    string
+	branch   int
 	name     string
 	streams  map[string]*transcriptCaptureStream
 	count    int
@@ -79,6 +80,15 @@ func (r *Run) BeginTranscriptCapture(stage, name string) (*TranscriptCapture, er
 // BeginTranscriptCaptureWithScrubber preserves the executor-before-journal
 // redaction order when their scrubbers differ.
 func (r *Run) BeginTranscriptCaptureWithScrubber(stage, name string, scrubber Scrubber) (*TranscriptCapture, error) {
+	return r.beginBranchTranscriptCapture(0, stage, name, scrubber)
+}
+
+// BeginBranchTranscriptCapture keeps every partial and final span in its branch.
+func (r *Run) BeginBranchTranscriptCapture(branch int, stage, name string) (*TranscriptCapture, error) {
+	return r.beginBranchTranscriptCapture(branch, stage, name, nopScrubber{})
+}
+
+func (r *Run) beginBranchTranscriptCapture(branch int, stage, name string, scrubber Scrubber) (*TranscriptCapture, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -95,7 +105,7 @@ func (r *Run) BeginTranscriptCaptureWithScrubber(stage, name string, scrubber Sc
 	if _, err := rand.Read(identity[:]); err != nil {
 		return nil, err
 	}
-	return &TranscriptCapture{run: r, id: hex.EncodeToString(identity[:]), stage: stage, name: name,
+	return &TranscriptCapture{run: r, id: hex.EncodeToString(identity[:]), stage: stage, name: name, branch: branch,
 		streams: make(map[string]*transcriptCaptureStream), blobs: make(map[string]struct{}), scrubber: combined}, nil
 }
 
@@ -192,7 +202,7 @@ func (r *Run) recordTranscriptCheckpoint(c *TranscriptCapture, data []byte, meta
 			return Ref{}, err
 		}
 	}
-	if err := r.append(Event{Type: EventSpanRecorded, Stage: c.stage, Name: c.name + ".partial",
+	if err := r.append(Event{Type: EventSpanRecorded, Branch: c.branch, Stage: c.stage, Name: c.name + ".partial",
 		Ref: &ref, Runner: metadata}); err != nil {
 		return Ref{}, err
 	}
@@ -234,7 +244,7 @@ func (c *TranscriptCapture) RecordFinalWithExpectedDigest(schema string, data []
 		if key != "" {
 			metadata["emitKey"] = key
 		}
-		ref, err := c.run.recordSpanEventExpectedDigest(Event{Type: EventSpanRecorded, Stage: c.stage, Name: c.name,
+		ref, err := c.run.recordSpanEventExpectedDigest(Event{Type: EventSpanRecorded, Branch: c.branch, Stage: c.stage, Name: c.name,
 			DataSchema: schema, Runner: metadata}, data, expectedDigest)
 		if err != nil {
 			// The event may already be durable even if its state checkpoint
