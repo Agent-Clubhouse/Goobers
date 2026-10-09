@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/goobers/goobers/internal/blobstore"
@@ -29,15 +30,16 @@ type Carrier struct {
 // Contract binds every pod input to its exact accepted child and attempt.
 // Credentials and host filesystem paths are deliberately absent.
 type Contract struct {
-	KitDigest  string                   `json:"kitDigest,omitempty"`
-	Version    int                      `json:"version"`
-	Identity   journal.RunIdentity      `json:"identity"`
-	Stage      string                   `json:"stage"`
-	Attempt    int                      `json:"attempt"`
-	PodAttempt int                      `json:"podAttempt"`
-	StartedAt  time.Time                `json:"startedAt"`
-	Ceiling    credentials.ChildCeiling `json:"ceiling"`
-	Workspace  *Carrier                 `json:"workspace,omitempty"`
+	ContextDigests []string                 `json:"contextDigests,omitempty"`
+	KitDigest      string                   `json:"kitDigest,omitempty"`
+	Version        int                      `json:"version"`
+	Identity       journal.RunIdentity      `json:"identity"`
+	Stage          string                   `json:"stage"`
+	Attempt        int                      `json:"attempt"`
+	PodAttempt     int                      `json:"podAttempt"`
+	StartedAt      time.Time                `json:"startedAt"`
+	Ceiling        credentials.ChildCeiling `json:"ceiling"`
+	Workspace      *Carrier                 `json:"workspace,omitempty"`
 }
 
 // Output returns a tree bound to its input contract. Pod commit history is
@@ -50,6 +52,14 @@ type Output struct {
 
 // Validate checks immutable identity and supported credential delegation.
 func (c Contract) Validate() error {
+	if len(c.ContextDigests) > 64 || !slices.IsSorted(c.ContextDigests) {
+		return fmt.Errorf("invalid isolated context digests")
+	}
+	for i, digest := range c.ContextDigests {
+		if !blobstore.ValidDigest(digest) || (i > 0 && c.ContextDigests[i-1] == digest) {
+			return fmt.Errorf("invalid isolated context digest")
+		}
+	}
 	if c.KitDigest != "" && !blobstore.ValidDigest(c.KitDigest) {
 		return fmt.Errorf("invalid isolated child kit digest")
 	}
