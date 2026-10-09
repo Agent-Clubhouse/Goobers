@@ -437,16 +437,7 @@ func RequireRoles() Authorizer {
 			return errors.New("only an authenticated worker may report config divergence")
 		}
 		if principal.Issuer == WorkflowParentPrincipalIssuer {
-			if principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
-				return errors.New("contained parent contract unavailable")
-			}
-			if request.Method == http.MethodPost && (request.URL.Path == apicontract.CredentialResolvePath || request.URL.Path == apicontract.ClaimListPath || surrenderPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) {
-				return nil
-			}
-			if (request.Method == http.MethodPost || request.Method == http.MethodDelete) && parentAccessPath(request.URL.Path) {
-				return nil
-			}
-			return authorizeWorkerBlob(request)
+			return authorizeWorkflowParent(request, principal)
 		}
 		if principal.Issuer == GeneratedChildPrincipalIssuer {
 			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
@@ -1635,4 +1626,17 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 // agreeing to.
 type ConfigDigest struct {
 	Digest string `json:"digest"`
+}
+
+func authorizeWorkflowParent(request *http.Request, principal Principal) error {
+	if principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+		return errors.New("contained parent contract unavailable")
+	}
+	if request.Method == http.MethodPost && (request.URL.Path == apicontract.CredentialResolvePath || request.URL.Path == apicontract.ClaimListPath || surrenderPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) {
+		return nil
+	}
+	if (request.Method == http.MethodPost || request.Method == http.MethodDelete) && parentAccessPath(request.URL.Path) {
+		return nil
+	}
+	return authorizeWorkerBlob(request)
 }

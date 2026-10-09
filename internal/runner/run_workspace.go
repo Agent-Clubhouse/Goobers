@@ -34,6 +34,8 @@ type stageWorkspace struct {
 	release func()
 	// retainedChild verifies custody instead of deleting the shared child fork.
 	retainedChild func(context.Context) error
+	// parentContribution retains the imported tree until durable archive retirement.
+	parentContribution bool
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference

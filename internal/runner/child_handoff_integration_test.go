@@ -127,6 +127,20 @@ func TestIntegrationChildWaitRetainsParentWorkspaceAndRetryAllowance(t *testing.
 	if !ParkedOnChild(events) {
 		t.Fatal("active wait has no durable marker")
 	}
+	// A crash before the wait marker must recover the same unconsumed slot.
+	var accountingFound bool
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == childAttemptAccountingKind {
+			value, err := readChildAttemptAccounting(event, *f.envs[0].ChildWorkflowOrigin, accountingFound)
+			if err != nil || value.PolicyAttempts != 0 || value.InfrastructureFailures != 0 {
+				t.Fatal("pre-dispatch recovery spent the child wait allowance", value, err)
+			}
+			accountingFound = true
+		}
+	}
+	if !accountingFound {
+		t.Fatal("missing pre-dispatch recovery accounting")
+	}
 	if _, stalled, err := inspectStalledCandidate(run.Dir(), frame.in.RunID, time.Now().Add(24*time.Hour), time.Second, nil); err != nil || stalled {
 		t.Fatalf("child wait treated as stalled: %v %v", stalled, err)
 	}

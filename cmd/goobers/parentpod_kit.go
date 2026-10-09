@@ -25,8 +25,8 @@ type parentKitWriter struct {
 }
 
 func (w parentKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attempt, ceiling credentials.ChildCeiling) (string, error) {
-	if w.service == nil || w.service.children == nil || w.service.shared == nil || w.blobs == nil || w.recorder == nil || attempt.Envelope == nil || !attempt.WorkflowParent || attempt.Review || w.identity.Child != nil {
-		return "", errors.New("parent kit custody unavailable")
+	if err := w.validateCustody(attempt); err != nil {
+		return "", err
 	}
 	if err := verifyChildKitIdentity(w.identity, attempt); err != nil {
 		return "", err
@@ -117,4 +117,11 @@ func (w parentKitWriter) snapshot(ctx context.Context) (*workerConfigSnapshot, f
 		return nil, nil, errors.Join(errors.New("parent Goober pin differs from retained source"), err)
 	}
 	return snapshot, release, nil
+}
+
+func (w parentKitWriter) validateCustody(attempt dispatcher.Attempt) error {
+	if w.service == nil || w.service.children == nil || w.service.shared == nil || w.blobs == nil || w.recorder == nil || attempt.Envelope == nil || !attempt.WorkflowParent || attempt.Review || w.identity.Child != nil {
+		return errors.New("parent kit custody unavailable")
+	}
+	return nil
 }

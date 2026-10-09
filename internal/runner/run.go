@@ -3341,6 +3341,7 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 // value rather than as two parallel argument lists that drift apart field by
 // field (#4235) — the same reason walk takes a *walkState.
 type taskFrame struct {
+	containedRecovery   *containedParentRecovery
 	artifactVisit       uint64
 	heldChildWorkspace  *stageWorkspace
 	childWaitResume     *childWaitRecord
@@ -3372,16 +3373,16 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	if r.cfg.SelfExecutionDenied {
 		return r.refuseSelfTask(tf)
 	}
-	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
+	if err := r.prepareRecoveredTaskContext(ctx, &tf, branch, &startAttempt, &firstClass, &resumeAccounting); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err
+	}
 	if tf.workspaceRevision != nil {
 		tf.in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
 	}
 	jr, in, t := tf.jr, tf.in, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
-	if err := admitTaskIntegrity(tf); err != nil {
-		return apiv1.ResultEnvelope{}, nil, err
-	}
+
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -3431,12 +3432,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 
 	var lastErr error
 	cumulativeUsage := newStageUsageTotals()
-	if tf.childWaitResume != nil {
-		instructionAddendum = tf.childWaitResume.InstructionAddendum
-		if err := r.restoreChildWait(ctx, &tf, cumulativeUsage); err != nil {
-			return apiv1.ResultEnvelope{}, nil, err
-		}
+	if err := r.restoreParentProgress(ctx, &tf, cumulativeUsage, &instructionAddendum); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err
 	}
+
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
@@ -3455,7 +3454,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
-		if err := tf.recordTaskStartedWithRecovery(int(attempt), class, policyAttempts, infrastructureFailures, cumulativeUsage); err != nil {
+		if err := tf.recordTaskStartedWithRecovery(int(attempt), class, policyBeforeAttempt, infrastructureFailures, cumulativeUsage); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err

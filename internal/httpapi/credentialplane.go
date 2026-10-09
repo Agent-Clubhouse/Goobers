@@ -200,21 +200,9 @@ func registerCredentialRoute(router *Router, ordinary, child, parent CredentialS
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
-		if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId and stage are required")
+		if err := validateCredentialResolveInput(input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
-		}
-		if len(input.Capabilities) > MaxCredentialResolveCapabilities {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
-				fmt.Sprintf("capabilities must name no more than %d entries", MaxCredentialResolveCapabilities))
-			return
-		}
-		for _, capability := range input.Capabilities {
-			if strings.TrimSpace(capability) == "" || len(capability) > MaxCredentialCapabilityBytes {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest,
-					fmt.Sprintf("capability names must be non-empty and no longer than %d bytes", MaxCredentialCapabilityBytes))
-				return
-			}
 		}
 		// Per-run containment: the pod principal established above may only
 		// resolve credentials for its OWN run's stages.
@@ -244,4 +232,19 @@ func WithWorkflowParentCredentialService(service CredentialService) HandlerOptio
 		config.workflowParentCredentials = service
 		return nil
 	}
+}
+
+func validateCredentialResolveInput(input CredentialResolveRequest) error {
+	if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
+		return errors.New("runId and stage are required")
+	}
+	if len(input.Capabilities) > MaxCredentialResolveCapabilities {
+		return fmt.Errorf("capabilities must name no more than %d entries", MaxCredentialResolveCapabilities)
+	}
+	for _, capability := range input.Capabilities {
+		if strings.TrimSpace(capability) == "" || len(capability) > MaxCredentialCapabilityBytes {
+			return fmt.Errorf("capability names must be non-empty and no longer than %d bytes", MaxCredentialCapabilityBytes)
+		}
+	}
+	return nil
 }

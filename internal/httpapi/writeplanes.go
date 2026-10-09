@@ -478,7 +478,7 @@ func registerClaimListRoute(router *Router, claims ClaimService, child, parent C
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId is required")
 			return
 		}
-		if isolated && (principal.Subject != podPrincipalSubject(input.RunID) || !input.Execution || !input.IncludeHistory || input.Scope != ClaimListScopeRun || input.Gaggle != "" || input.Provider != "") {
+		if isolated && !isolatedClaimListAllowed(principal, input) {
 			writeError(w, http.StatusForbidden, "child_execution_scope", "child may only observe its own execution authority")
 			return
 		}
@@ -785,4 +785,8 @@ func writePlaneError(w http.ResponseWriter, errorLog *log.Logger, operation stri
 	}
 	errorLog.Printf("%s failed: %v", operation, err)
 	writeError(w, http.StatusInternalServerError, "write_failed", operation+" failed")
+}
+
+func isolatedClaimListAllowed(principal Principal, input ClaimListRequest) bool {
+	return principal.Subject == podPrincipalSubject(input.RunID) && input.Execution && input.IncludeHistory && input.Scope == ClaimListScopeRun && input.Gaggle == "" && input.Provider == ""
 }

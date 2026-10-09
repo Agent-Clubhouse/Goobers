@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,4 +76,147 @@ func readParentRecovery(reader *journal.Reader, event journal.Event, runID strin
 		return record, errors.New("invalid parent recovery custody")
 	}
 	return record, nil
+}
+
+func (r *Runner) restoreContainedParentWorkspace(ctx context.Context, tf *taskFrame, branch int) error {
+	if tf.in.Child != nil || tf.t.ChildWorkflows == nil || tf.childWaitResume != nil {
+		return nil
+	}
+	reader, err := journal.OpenReadOnly(tf.jr.Dir())
+	if err != nil {
+		return err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	record, found, err := selectParentRecovery(reader, events, tf.in.RunID, tf.t.Name, branch)
+	if err != nil || !found {
+		return err
+	}
+	if r.cfg.Worktrees == nil || r.cfg.RepoCloneURL == nil {
+		return errors.New("parent workspace recovery unavailable")
+	}
+	url, err := r.cfg.RepoCloneURL(tf.in.RepoRef)
+	if err != nil {
+		return err
+	}
+	workspace, err := r.cfg.Worktrees.AdoptHeldStage(ctx, url, record.Custody.Workspace)
+	if err != nil {
+		return err
+	}
+	tf.heldChildWorkspace = &stageWorkspace{path: workspace.Path, worktree: workspace, retainedChild: func(context.Context) error { return nil }}
+	tf.containedRecovery = &record
+	tf.upstream = append([]apiv1.ContextPointer(nil), record.Context...)
+	if record.Transcript != nil {
+		tf.upstream = append(tf.upstream, apiv1.ContextPointer{Name: "recovered-parent-transcript", Artifact: record.Transcript, Integrity: record.Transcript.Integrity})
+	}
+	return nil
+}
+
+func restoreContainedParentUsage(tf taskFrame, total *stageUsageTotals, instruction *string) error {
+	if tf.containedRecovery == nil {
+		return nil
+	}
+	reader, err := journal.OpenReadOnly(tf.jr.Dir())
+	if err != nil {
+		return err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	var accounting *childAttemptAccounting
+	origin := *tf.containedRecovery.Custody.Origin
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != childAttemptAccountingKind {
+			continue
+		}
+		var header childAttemptAccounting
+		data, _ := json.Marshal(event.Runner["accounting"])
+		if json.Unmarshal(data, &header) != nil || header.Origin != origin {
+			continue
+		}
+		accounting, err = readChildAttemptAccounting(event, origin, accounting != nil)
+		if err != nil {
+			return err
+		}
+	}
+	if accounting == nil {
+		return errors.New("parent recovery lacks original attempt accounting")
+	}
+	restored, err := restoreChildAccounting(*accounting, tf.containedRecovery.Usage)
+	if err != nil {
+		return err
+	}
+	*total = *restored
+	if *instruction == "" {
+		*instruction = tf.containedRecovery.InstructionAddendum
+	}
+	return nil
+}
+
+func (r *Runner) prepareRecoveredTaskContext(ctx context.Context, tf *taskFrame, branch int, start *int32, class *journal.AttemptClass, accounting **resumeRetryAccounting) error {
+	if err := r.restoreContainedParentWorkspace(ctx, tf, branch); err != nil {
+		return err
+	}
+	if err := r.restoreAcceptedParentWait(ctx, tf, start, class, accounting); err != nil {
+		return err
+	}
+	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
+	return admitTaskIntegrity(*tf)
+}
+
+// Recovery can only restore the latest physical owner of this stage/branch.
+// A later start or finish consumes the earlier receipt; a late stale receipt
+// is an error rather than authority to overwrite a replacement's checkout.
+func selectParentRecovery(reader *journal.Reader, events []journal.Event, runID, stage string, branch int) (containedParentRecovery, bool, error) {
+	var result containedParentRecovery
+	var started journal.Event
+	var candidate *journal.Event
+	for i := range events {
+		event := &events[i]
+		if event.Branch != branch {
+			continue
+		}
+		if event.Type == journal.EventStageStarted {
+			started, candidate = *event, nil
+		}
+		if event.Stage != stage {
+			continue
+		}
+		switch event.Type {
+		case journal.EventStageFinished:
+			candidate = nil
+		case journal.EventRunnerAnnotation:
+			if event.Runner["kind"] == ContainedParentRecoveredKind {
+				candidate = event
+			}
+		}
+	}
+	if candidate == nil {
+		return result, false, nil
+	}
+	result, err := readParentRecovery(reader, *candidate, runID)
+	if err != nil {
+		return result, false, err
+	}
+	origin, err := journal.ChildWorkflowOriginForEvent(runID, started)
+	if err != nil || candidate.Attempt != started.Attempt || origin == nil || *origin != *result.Custody.Origin {
+		return result, false, errors.New("parent recovery differs from latest stage owner")
+	}
+	return result, true, nil
+}
+
+func (r *Runner) restoreParentProgress(ctx context.Context, tf *taskFrame, total *stageUsageTotals, instruction *string) error {
+	if err := restoreContainedParentUsage(*tf, total, instruction); err != nil {
+		return err
+	}
+	if tf.childWaitResume == nil {
+		return nil
+	}
+	if *instruction == "" {
+		*instruction = tf.childWaitResume.InstructionAddendum
+	}
+	return r.restoreChildWait(ctx, tf, total)
 }

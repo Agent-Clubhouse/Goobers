@@ -138,23 +138,9 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 					return
 				}
 			}
-			defer func() { _ = request.Body.Close() }()
-			body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
-			if err != nil {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "request body could not be read")
-				return
-			}
-			if int64(len(body)) > maxSurrenderBody {
-				writeError(w, http.StatusRequestEntityTooLarge, CodeInvalidRequest, "surrendered result body exceeds the size limit")
-				return
-			}
-			var shape surrenderedResultShape
-			if err := json.Unmarshal(body, &shape); err != nil {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "invalid JSON request body")
-				return
-			}
-			if shape.Result.Status == "" {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "surrendered result carries no status")
+			body, status, message := readSurrenderedResult(request)
+			if status != 0 {
+				writeError(w, status, CodeInvalidRequest, message)
 				return
 			}
 			if err := plane.Put(request.Context(), run, stage, attempt, body); err != nil {
@@ -174,4 +160,23 @@ func WithWorkflowParentSurrenderService(plane SurrenderService) HandlerOption {
 		config.workflowParentSurrenders = plane
 		return nil
 	}
+}
+
+func readSurrenderedResult(request *http.Request) ([]byte, int, string) {
+	defer func() { _ = request.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
+	if err != nil {
+		return nil, http.StatusBadRequest, "request body could not be read"
+	}
+	if int64(len(body)) > maxSurrenderBody {
+		return nil, http.StatusRequestEntityTooLarge, "surrendered result body exceeds the size limit"
+	}
+	var shape surrenderedResultShape
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return nil, http.StatusBadRequest, "invalid JSON request body"
+	}
+	if shape.Result.Status == "" {
+		return nil, http.StatusBadRequest, "surrendered result carries no status"
+	}
+	return body, 0, ""
 }

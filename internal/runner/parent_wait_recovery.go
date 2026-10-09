@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -172,4 +173,58 @@ func readAcceptedParentRecovery(reader *journal.Reader, event journal.Event, req
 		return nil, errors.Join(errors.New("invalid recovered parent wait custody"), err)
 	}
 	return &value, nil
+}
+
+// A human continuation may reopen a terminal parent after custody was recovered.
+// Probe accepted work once, then restore its wait before publishing any attempt.
+func (r *Runner) restoreAcceptedParentWait(ctx context.Context, tf *taskFrame, start *int32, class *journal.AttemptClass, accounting **resumeRetryAccounting) error {
+	if tf.containedRecovery == nil || tf.childWaitResume != nil {
+		return nil
+	}
+	source, ok := r.cfg.ChildHandoff.(interface {
+		Recover(context.Context, apiv1.InvocationEnvelope) (ChildHandoffRequest, error)
+	})
+	if !ok {
+		return errors.New("contained parent accepted-wait recovery unavailable")
+	}
+	env := apiv1.InvocationEnvelope{RunID: tf.in.RunID, Gaggle: tf.in.Gaggle, ChildWorkflowOrigin: tf.containedRecovery.Custody.Origin}
+	request, err := source.Recover(ctx, env)
+	if err != nil || request.RequestID == "" {
+		return err
+	}
+	if request.ParentRunID != env.RunID || request.Gaggle != env.Gaggle || request.validate(env.ChildWorkflowOrigin) != nil {
+		return errors.New("accepted child recovery differs from parent invocation")
+	}
+	if err = RecoverContainedParentWait(tf.jr, request); err != nil {
+		return err
+	}
+	reader, err := journal.OpenReadOnly(tf.jr.Dir())
+	if err != nil {
+		return err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	projection, err := journal.ProjectChildWaits(events)
+	if err != nil {
+		return err
+	}
+	var record *childWaitRecord
+	var marker journal.Event
+	for _, wait := range projection.Waits {
+		if ChildHandoffRequest(wait.Header.Request) == request {
+			marker = wait.Marker
+			record, err = decodeChildWaitEvent(marker, wait.Started)
+			break
+		}
+	}
+	if err != nil || record == nil {
+		return errors.Join(errors.New("accepted child wait was not retained"), err)
+	}
+	tf.childWaitResume, tf.childWaitAttempt, tf.childWaitClass = record, marker.Attempt, marker.AttemptClass
+	*start, *class = int32(marker.Attempt)+1, marker.AttemptClass
+	*accounting = &resumeRetryAccounting{policyAttempts: record.PolicyAttempts, infrastructureFailures: record.InfrastructureFailures, replacementConsumesPolicy: marker.AttemptClass != journal.AttemptInfra}
+	tf.containedRecovery = nil // the wait carries the same accumulated usage
+	return nil
 }
