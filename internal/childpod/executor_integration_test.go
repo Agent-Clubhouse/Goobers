@@ -44,7 +44,14 @@ func TestIntegrationExecutorCancellationImportsSurrenderedTree(t *testing.T) {
 	testExecutorTreeReturn(t, true)
 }
 
-func testExecutorTreeReturn(t *testing.T, canceled bool) {
+func TestIntegrationExecutorReadOnlyDetachedReturn(t *testing.T) {
+	testdep.Require(t, "git")
+	for _, mode := range []string{"readonly", "readonly-mutated"} {
+		t.Run(mode, func(t *testing.T) { testExecutorTreeReturn(t, false, mode) })
+	}
+}
+
+func testExecutorTreeReturn(t *testing.T, canceled bool, readOnlyMode ...string) {
 	t.Helper()
 	r := requestFixture()
 	host := t.TempDir()
@@ -62,6 +69,12 @@ func testExecutorTreeReturn(t *testing.T, canceled bool) {
 	podTestGit(t, host, "reset", "--hard", fork.Record.SnapshotSHA)
 	r.Workspace = &WorkspaceInput{Path: host, Fork: fork}
 	r.Attempt.Workspace = "repo"
+	readOnly := len(readOnlyMode) != 0
+	mutate := !readOnly || readOnlyMode[0] == "readonly-mutated"
+	if readOnly {
+		r.Attempt.Workspace = "repo-readonly"
+		podTestGit(t, host, "checkout", "--detach", fork.Record.SnapshotSHA)
+	}
 	blobs, err := blobstore.NewDir(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +100,10 @@ func testExecutorTreeReturn(t *testing.T, canceled bool) {
 		if err = Materialize(ctx, pod, *contract.Workspace); err != nil {
 			t.Fatal(err)
 		}
-		if err = os.WriteFile(filepath.Join(pod, "source.txt"), []byte("agent edits\n"), 0600); err != nil {
-			t.Fatal(err)
+		if mutate {
+			if err = os.WriteFile(filepath.Join(pod, "source.txt"), []byte("agent edits\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		carrier, _, err := CaptureCarrier(ctx, pod, key, r.Identity.RunID, r.StartedAt, contract.Workspace.Snapshot.Policy)
 		if err != nil {
@@ -116,6 +131,15 @@ func testExecutorTreeReturn(t *testing.T, canceled bool) {
 	}
 	ctx, proof := invoke.WithWorkspaceQuiescence(ctx)
 	out, report, err := executor.Execute(ctx, r)
+	if readOnly && mutate {
+		if err == nil || !strings.Contains(err.Error(), "read-only child invocation") || proof.Verify() == nil {
+			t.Fatal("mutating return accepted", err, proof.Verify())
+		}
+		if data, readErr := os.ReadFile(filepath.Join(host, "source.txt")); readErr != nil || string(data) != "fork\n" {
+			t.Fatal("rejected return changed host", string(data), readErr)
+		}
+		return
+	}
 	if canceled {
 		if !errors.Is(err, context.Canceled) || out.Result.Status != apiv1.ResultSuccess || !report.SurrenderConfirmed {
 			t.Fatal(out, report, err)
@@ -129,7 +153,17 @@ func testExecutorTreeReturn(t *testing.T, canceled bool) {
 	if got := podTestGit(t, host, "rev-parse", "HEAD"); got != fork.Record.SnapshotSHA {
 		t.Fatal("transport replaced real ancestry")
 	}
-	if data, err := os.ReadFile(filepath.Join(host, "source.txt")); err != nil || string(data) != "agent edits\n" {
+	want := "agent edits\n"
+	if readOnly {
+		want = "fork\n"
+		if status := podTestGit(t, host, "status", "--porcelain"); status != "" {
+			t.Fatal("read-only return dirtied host", status)
+		}
+		if branch := podTestGit(t, host, "branch", "--show-current"); branch != "" {
+			t.Fatal("return attached detached view", branch)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(host, "source.txt")); err != nil || string(data) != want {
 		t.Fatal("result tree missing", err)
 	}
 	if len(recorder.data) != 4 {

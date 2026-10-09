@@ -5,7 +5,7 @@ import apiv1 "github.com/goobers/goobers/api/v1alpha1"
 // ParallelHasChildStage selects blocks that require isolated writable branch
 // forks. A child-capable join or unrelated stage does not opt in the branches.
 // Admission still validates the DSL version, policy and execution backend.
-func (machine *Machine) ParallelHasChildStage(parallel apiv1.Parallel) bool {
+func (m *Machine) ParallelHasChildStage(parallel apiv1.Parallel) bool {
 	seen := map[string]bool{}
 	var queue []string
 	for _, branch := range parallel.Branches {
@@ -18,10 +18,10 @@ func (machine *Machine) ParallelHasChildStage(parallel apiv1.Parallel) bool {
 			continue
 		}
 		seen[state] = true
-		if task, ok := machine.Task(state); ok && task.ChildWorkflows != nil {
+		if task, ok := m.Task(state); ok && task.ChildWorkflows != nil {
 			return true
 		}
-		queue = append(queue, machine.Outgoing(state)...)
+		queue = append(queue, m.Outgoing(state)...)
 	}
 	return false
 }

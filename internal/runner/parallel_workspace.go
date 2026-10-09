@@ -84,7 +84,7 @@ func (r *Runner) ownedStageWorkspace(ctx context.Context, in StartInput, stageNa
 		return inherited, err
 	}
 	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
-		return r.createChildStageWorkspace(ctx, in, mode, syncBase, workspaceBranch)
+		return r.createChildStageWorkspace(ctx, in, stageName, mode, syncBase, workspaceBranch)
 	}
 
 	return nil, nil

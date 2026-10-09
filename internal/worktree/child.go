@@ -109,7 +109,7 @@ func (m *Manager) existingChildWorktree(ctx context.Context, key, repository, pa
 		if _, markerErr := os.Lstat(m.markerPath(key, opts.RunID)); !errors.Is(markerErr, os.ErrNotExist) {
 			return nil, false, fmt.Errorf("child workspace has incomplete custody; recovery is required")
 		}
-		if branchExists(ctx, repository, opts.Branch) {
+		if opts.Branch != "" && branchExists(ctx, repository, opts.Branch) {
 			return nil, false, fmt.Errorf("child branch already exists without this workspace; recovery is required")
 		}
 		return nil, false, nil
@@ -132,13 +132,24 @@ func (m *Manager) existingChildWorktree(ctx context.Context, key, repository, pa
 	if err != nil || !registered {
 		return nil, false, fmt.Errorf("child workspace registration is unavailable")
 	}
+	if err := verifyChildSnapshotRevision(ctx, path, opts); err != nil {
+		return nil, false, err
+	}
+
+	return &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key, startRef: mk.StartRef, repoURL: opts.RepoURL, partialMirror: m.partialClone && mirrorIsPartial(ctx, repository)}, true, nil
+}
+
+func verifyChildSnapshotRevision(ctx context.Context, path string, opts CreateOptions) error {
+	if opts.Branch == "" {
+		return verifyChildDetachedView(ctx, path, opts.BaseRef)
+	}
 	branch, err := gitOutput(ctx, path, "symbolic-ref", "--quiet", "HEAD")
 	if err != nil || branch != "refs/heads/"+opts.Branch {
-		return nil, false, fmt.Errorf("child workspace changed its owned branch")
+		return fmt.Errorf("child workspace changed its owned branch")
 	}
 	ancestor, err := workspacedelta.IsAncestor(ctx, mirrorGit{}, path, opts.BaseRef, "HEAD")
 	if err != nil || !ancestor {
-		return nil, false, fmt.Errorf("child workspace no longer descends from its fork snapshot")
+		return fmt.Errorf("child workspace no longer descends from its fork snapshot")
 	}
-	return &Worktree{RunID: opts.RunID, Path: path, Branch: opts.Branch, manager: m, key: key, startRef: mk.StartRef, repoURL: opts.RepoURL, partialMirror: m.partialClone && mirrorIsPartial(ctx, repository)}, true, nil
+	return nil
 }
