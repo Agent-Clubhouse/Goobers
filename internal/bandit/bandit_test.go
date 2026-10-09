@@ -395,3 +395,26 @@ func BenchmarkPosteriorConfidence(b *testing.B) {
 		posteriorConfidence("a", "b", obs)
 	}
 }
+
+func TestRetiredRequiresMinSamples(t *testing.T) {
+	c := testConfig()
+	one := []Observation{{Stage: "review", Arm: "treatment", Success: false, Window: "train"}}
+	if c.Retired("treatment", one) {
+		t.Fatal("single failure retired an arm below MinSamples")
+	}
+	two := append(one, Observation{Stage: "review", Arm: "treatment", Success: false, Window: "train"})
+	if !c.Retired("treatment", two) {
+		t.Fatal("arm at MinSamples above failure-rate bound should retire")
+	}
+}
+
+func TestRetiredDefaultArmFollowsSameRule(t *testing.T) {
+	c := testConfig()
+	fail := Observation{Stage: "review", Arm: "control", Success: false, Window: "train"}
+	if c.Retired("control", []Observation{fail}) {
+		t.Fatal("control retired below MinSamples")
+	}
+	if !c.Retired("control", []Observation{fail, fail}) {
+		t.Fatal("control is not exempt once MinSamples is reached")
+	}
+}
