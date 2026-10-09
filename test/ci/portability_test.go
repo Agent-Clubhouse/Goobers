@@ -567,8 +567,8 @@ func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
 
 	// Repository ruleset 19093039 pins this exact required-check name:
 	// https://github.com/Agent-Clubhouse/Goobers/rules/19093039
-	// TestCIRunsOnBaseRetargetNotMetadataEdits checks that every run that
-	// validates code reports it, and that a title/body edit starts no CI run.
+	// TestCIIgnoresPullRequestEdits checks that every run that validates code
+	// reports it, and that a pull-request edit starts no CI run.
 	const requiredCheckName = "    name: " + pinnedRequiredCheck
 	requiredCI := workflowJob(string(data), "required-ci")
 	if !slices.Contains(strings.Split(requiredCI, "\n"), requiredCheckName) {

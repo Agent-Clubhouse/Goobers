@@ -76,11 +76,10 @@ on:
     # No `edited`: any CI run, even one whose jobs all skip, adds a newer CI
     # check suite to the head SHA, and a PR whose newest CI suite came from a
     # title/body edit stays BLOCKED despite a green required check (#7017;
-    # #5491: edit runs also cancelled the push run). A base retarget (#6360)
-    # must still re-run CI, so ci-retarget.yml handles `edited` and dispatches
-    # this workflow on the PR head only when `changes.base` is set. Design delivery
-    # re-evaluates body edits in design-delivery.yml. Pinned by
-    # TestCIRunsOnBaseRetargetNotMetadataEdits.
+    # #5491: edit runs also cancelled the push run). A base retarget is an
+    # `edited` event too, so it does not re-run CI until the next push; #7044
+    # tracks re-validating the new merge result. Design delivery re-evaluates
+    # body edits in design-delivery.yml. Pinned by TestCIIgnoresPullRequestEdits.
     types: [opened, synchronize, reopened]
   merge_group:
     branches: [main]
