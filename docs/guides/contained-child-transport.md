@@ -2,11 +2,15 @@
 
 ## Availability
 
-This is the worker transport foundation for generated child workflows. Public
-child execution remains disabled. The daemon has no installed isolated child
-factory, and the ordinary token minter does not satisfy the dispatcher's dedicated
-child-token requirement. This guide describes internal preparation, not an enabled
-Kubernetes, Temporal, Fleet or local host execution journey.
+This is the worker transport foundation for generated child workflows. The daemon
+connects an isolated child factory when its Temporal client, configured pod signing
+key, surrender store and journal service are available. Narrow authenticated
+child routes serve retained kits, credentials, journal observations and surrender.
+Missing execution dependencies leave accepted children queued.
+
+Public parent workflow execution with child-workflow policy remains gated. The
+connected components have separate qualification tests; they do not yet establish
+a supported complete parent-to-child-to-parent execution journey.
 
 The [child workflow design](../design/agent-authored-child-workflows.md) and
 [admission guide](child-workflow-admission.md) track the remaining lifecycle work.
@@ -48,11 +52,13 @@ confirm that unverified results are not deleted.
 
 ## Follow-up requirements
 
-Before runtime enablement, connect and qualify exact signed attempt authority,
-authenticated child-only artifact storage, retained agent kits, the isolated host
-factory, returned-tree application, and rejoin/reconciliation after worker loss.
-The internal contract digest and pod environment comparisons do not replace the
-host's authentication checks.
+The connected factory and authenticated routes cover exact signed attempt
+authority, child-only artifact storage, retained agent kits, returned-tree
+application and recovery of an uncertain worker. Before public runtime enablement,
+qualify these together with the originating parent invocation, durable wait and
+continuation. A simulated worker transport or an isolated process-shutdown test
+does not establish that full journey. Contract digests and pod environment
+comparisons do not replace the host's authentication checks.
 
 ### Private Linux process-namespace qualification
 
