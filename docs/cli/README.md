@@ -3735,7 +3735,8 @@ branch, changed or dirty work, and expired claims. Retained work whose base
 diverged or whose patch conflicts is skipped, and the claim starts fresh.
 Verified retries resume the prepared result; completed adoption removes its
 preparation branch. Writes recovery-resume.json with resume status and
-source-run provenance for the run journal.
+source-run provenance (recovery ref, base and snapshot commits, patch
+digest) for the run journal.
 Does not push, open a PR, release the claim, or remove retained state.
 ~~~
 

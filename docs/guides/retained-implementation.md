@@ -10,6 +10,10 @@ create a new operator branch on freshly fetched main. The
 [`goobers recovery-resume`](../cli/README.md#goobers-recovery-resume) workflow
 stage adopts a verified restoration into a receiving run. Conflicts, expired
 archives, and changes to protected runtime assets refuse restoration.
+Its `recovery-resume.json` result names the source run and, whenever retained
+work was adopted or skipped as incompatible, the exact retained snapshot:
+`sourceRecoveryRef`, `sourceBaseRef` (omitted for version-1 records),
+`sourceBaseSha`, `sourceSnapshotSha`, and `sourcePatchDigest`.
 
 ## Retirement
 
