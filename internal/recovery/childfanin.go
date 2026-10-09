@@ -12,10 +12,11 @@ import (
 // conflict returns no prepared disposition and leaves live files, HEAD, index,
 // and all input refs unchanged. The patch budget covers the complete fan-in.
 //
-// The coordinator must retain every input carrier, record preparation ownership
-// before this call can pin the final disposition, and persist an application
-// plan before applying it under exclusive root custody. This is not an applied
-// receipt, and must not be regenerated after an interrupted application.
+// No refs are created here. The coordinator must retain every input carrier and
+// durably record the returned preparation before planning an application (which
+// pins it), then persist that plan before applying under exclusive root custody.
+// This is not an applied receipt, and must not be regenerated after an
+// interrupted application. Existing single-child disposition pinning is unchanged.
 func PrepareChildFanIn(ctx context.Context, repository string, fork, parent ChildSnapshot, results []Record, operation string, at time.Time, maxBytes int64) (PreparedChildDisposition, error) {
 	var empty PreparedChildDisposition
 	if len(results) == 0 || len(results) > 128 {
@@ -47,7 +48,7 @@ func PrepareChildFanIn(ctx context.Context, repository string, fork, parent Chil
 	if err != nil {
 		return empty, err
 	}
-	prepared, err := pinDispositionTree(ctx, repository, parent, combined, tree, ChildMerge, operation, at)
+	prepared, err := prepareDispositionTree(ctx, repository, parent, combined, tree, ChildMerge, operation, at)
 	if err != nil {
 		return empty, err
 	}

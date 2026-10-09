@@ -46,6 +46,7 @@ func TestIntegrationChildFanInMergeAndApplication(t *testing.T) {
 	parent := captureChildFixture(t, repository, key, "parent-current", at, policy)
 	head := recoveryTestGit(t, repository, "rev-parse", "HEAD")
 	index := recoveryTestGit(t, repository, "write-tree")
+	refs := recoveryTestGit(t, repository, "show-ref")
 	prepared, err := PrepareChildFanIn(t.Context(), repository, fork, parent, results, "join", at, 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -58,18 +59,25 @@ func TestIntegrationChildFanInMergeAndApplication(t *testing.T) {
 	if err != nil || retry.Prepared.SnapshotSHA != prepared.Prepared.SnapshotSHA {
 		t.Fatal("fan-in preparation was not deterministic", err)
 	}
-	if _, err := PrepareChildFanIn(t.Context(), repository, fork, parent, []Record{results[2], results[1], results[0]}, "join", at, 1<<20); !errors.Is(err, ErrRecordConflict) {
-		t.Fatal("changed input order reused the operation pin", err)
-	}
 	if recoveryTestGit(t, repository, "rev-parse", "HEAD") != head || recoveryTestGit(t, repository, "write-tree") != index {
 		t.Fatal("preparation modified live Git state")
 	}
 	if _, err := os.Stat(filepath.Join(repository, "a.txt")); !os.IsNotExist(err) {
 		t.Fatal("preparation wrote branch output", err)
 	}
+	if recoveryTestGit(t, repository, "show-ref") != refs {
+		t.Fatal("preparation pinned before durable ownership")
+	}
 	plan, err := PlanChildApplication(t.Context(), repository, prepared)
 	if err != nil {
 		t.Fatal(err)
+	}
+	changed, err := PrepareChildFanIn(t.Context(), repository, fork, parent, []Record{results[2], results[1], results[0]}, "join", at, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PlanChildApplication(t.Context(), repository, changed); !errors.Is(err, ErrRecordConflict) {
+		t.Fatal("changed input order reused the operation pin", err)
 	}
 	// The coordinator persists plan before this point. Replaying this exact
 	// plan is idempotent; it never reruns a merge against partially applied work.
