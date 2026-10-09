@@ -530,9 +530,7 @@ func webhookTriggerSignalsAndBackoff(workflowName string, trigger apiv1.Trigger)
 }
 
 func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefinitions, error) {
-	l := input.Layout
-
-	l, generation, err := retainOptionalExecutionGeneration(l, input.Generations)
+	l, generation, err := schedulerExecutionGeneration(input)
 	if err != nil {
 		return nil, err
 	}
@@ -875,10 +873,11 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	}, nil
 }
 
-func schedulerGenerationBuilder(input schedulerDefinitionsInput) func(instance.Layout, *instance.ConfigSet, *validate.Report) (*schedulerDefinitions, error) {
-	return func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
+func schedulerGenerationBuilder(input schedulerDefinitionsInput) generationDefinitionBuilder {
+	return func(pinned instance.Layout, generation string, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
 		pinnedInput := input
 		pinnedInput.Layout = pinned
+		pinnedInput.PinnedGeneration = generation
 		pinnedInput.Definitions = pinnedSet
 		pinnedInput.Validation = pinnedReport
 		pinnedInput.StartupProgress = nil
@@ -1945,17 +1944,16 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 }
 
 // buildReadModelIfNeeded performs the first-start or migration-triggered build
-// (design §6.6 step 2).
+// (design §6.6 step 2), or re-projects only rows written by older projection
+// rules when the store is already built (#6895).
 //
 // Readiness is persisted in the store so an interrupted build cannot expose a
 // partial projection on the next startup merely because it wrote some rows.
+// progress receives why the work is needed and how far it has got.
 //
 // A failure is not fatal: the store remains detached and requests fall back to
 // the journal-derived path.
-func buildReadModelIfNeeded(ctx context.Context, store *readmodel.Store, state readmodel.State, l instance.Layout) error {
-	if state.Ready {
-		return nil
-	}
+func buildReadModelIfNeeded(ctx context.Context, store *readmodel.Store, state readmodel.State, l instance.Layout, progress func(string)) error {
 	// Startup-only reconstruction must not observe the daemon's lifetime
 	// cancellation. This work is not request-scoped and is intentionally not
 	// allowed to fail a daemon that is merely shutting down while the first
@@ -1965,10 +1963,8 @@ func buildReadModelIfNeeded(ctx context.Context, store *readmodel.Store, state r
 	if err != nil {
 		return err
 	}
-	if _, err := store.BuildFromJournals(startupCtx, roots); err != nil {
-		return err
-	}
-	return store.MarkReady(startupCtx)
+	_, err = store.EnsureReady(startupCtx, state, roots, progress)
+	return err
 }
 
 // bootstrapAndDigestConfigDir seeds a first-boot config tree when one is owed
@@ -2108,6 +2104,9 @@ type schedulerDefinitionsInput struct {
 	CredentialStores credentials.StoreResolver
 	StartupProgress  func(string)
 	Generations      []*configgeneration.Retainer
+	// PinnedGeneration names the admitted generation whose retained tree is
+	// Layout's config directory; the build reuses it instead of re-retaining.
+	PinnedGeneration string
 }
 
 // retainedLegacyRunnerInput names the dependencies for this construction boundary.

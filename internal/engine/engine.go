@@ -556,7 +556,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// verdict — the same durable wait marker the local runner persists
 			// before dispatch.
 			rec.gatePaused(ctx, g.Name)
-			gateDelta := selectGateDelta(ctx, g, continuity, workspaceBranch, rec)
+			gateDelta := selectGateDelta(ctx, g, runner.ReviewsImplementation(m, g.Name), continuity, workspaceBranch, rec)
 			// The knownOutcome shortcut (runner.RetryFailureClass, mirrored
 			// from stepGate): a status-equals gate standing over a
 			// nonzero_exit / base_sync_conflict failure already HAS its
@@ -1089,7 +1089,11 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			reviewerGoober = g.Agentic.Goober
 			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
+		reviewerUpstream := upstream
+		if ev.ReviewerPointers != nil {
+			reviewerUpstream = ev.ReviewerPointers
+		}
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, reviewerUpstream, reviewerGoober)
 		_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 		env.ReviewerMechanicalEscalationAllowed = gate.StructuredMechanicalEscalation(g)
 		env.InstructionAddendum = instructionAddendum
@@ -1140,7 +1144,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// workspace the gate declares (AgenticGate.Workspace, "" = the
 		// historical writable repo worktree) — both trailing positionals so a
 		// history recorded before them replays (see Activities.ReviewGoober).
-		// priorDiffDigest and subjectAgentic are trailing positionals for the
+		// priorDiffDigest and requireDiff (ev.RequireDiff, the #415 agentic
+		// subject widened to every implementation-review gate by #5414) are
+		// trailing positionals for the
 		// replay reason InvokeGoober documents, and they are what let the
 		// activity make the #316/#415 short-circuit decisions where the diff
 		// actually is. A history recorded before they existed replays with
@@ -1152,11 +1158,17 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			reviewerAttempt++
 			return recordReviewerDispatch(ctx, rec, g, reviewerAttempt, class, &review, func(ctx workflow.Context, class journal.AttemptClass) error {
 				if remote {
-					surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
+					surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, ev.RequireDiff, gatePodAttempt(gateDispatches, g.Name), class, rec)
 					if err != nil {
 						return err
 					}
 					review = GateReviewResult{Verdict: surrendered, Reviewed: true}
+					if ev.RequireDiff && gate.IsEmptyDiffVerdict(surrendered) {
+						// The pod's #5414 empty-diff short-circuit: no reviewer
+						// ran, and it must force escalation as ReviewGoober's does.
+						review.Reviewed = false
+						review.EmptyDiff = true
+					}
 					return nil
 				}
 				attemptEnv := env
@@ -1164,7 +1176,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 					attemptEnv.Attempt = int32(number)
 				}
 				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
-					g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+					g.EffectiveWorkspace(), priorDiffDigest, ev.RequireDiff).Get(ctx, &review)
 			})
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err

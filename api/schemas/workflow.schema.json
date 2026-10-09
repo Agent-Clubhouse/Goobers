@@ -179,7 +179,7 @@
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
-        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum active execution time of a run (its age less host suspension and durable child waits), expressed as a Go duration. Omit to disable." }
       }
     },
     "trigger": {

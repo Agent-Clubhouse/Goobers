@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -97,6 +98,37 @@ func BenchmarkConflictTouchesWindowed(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := reader.ConflictTouches(b.Context(), ConflictTouchRequest{Gaggle: "web", Since: since}); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+func TestWorkflowContributionPredicates(t *testing.T) {
+	agentic := func(mode apiv1.WorkspaceMode) apiv1.Task {
+		return apiv1.Task{Name: "a", Type: apiv1.TaskAgentic, Workspace: mode}
+	}
+	det := func(run apiv1.DeterministicRun) apiv1.Task {
+		return apiv1.Task{Name: "d", Type: apiv1.TaskDeterministic, Run: &run}
+	}
+	for _, tc := range []struct {
+		name             string
+		spec             apiv1.WorkflowSpec
+		conflict, strand bool
+	}{
+		{"empty", apiv1.WorkflowSpec{}, false, false},
+		{"agentic default workspace", apiv1.WorkflowSpec{Tasks: []apiv1.Task{agentic("")}}, false, true},
+		{"agentic repo", apiv1.WorkflowSpec{Tasks: []apiv1.Task{agentic(apiv1.WorkspaceRepo)}}, false, true},
+		{"agentic read-only", apiv1.WorkflowSpec{Tasks: []apiv1.Task{agentic(apiv1.WorkspaceRepoReadOnly)}}, false, false},
+		{"agentic scratch", apiv1.WorkflowSpec{Tasks: []apiv1.Task{agentic(apiv1.WorkspaceScratch)}}, false, false},
+		{"deterministic syncBase", apiv1.WorkflowSpec{Tasks: []apiv1.Task{det(apiv1.DeterministicRun{SyncBase: true})}}, true, false},
+		{"deterministic plain", apiv1.WorkflowSpec{Tasks: []apiv1.Task{det(apiv1.DeterministicRun{})}}, false, false},
+		{"agentic gate only", apiv1.WorkflowSpec{Gates: []apiv1.Gate{{Name: "g", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Workspace: apiv1.WorkspaceRepo}}}}, false, false},
+		{"both", apiv1.WorkflowSpec{Tasks: []apiv1.Task{agentic(""), det(apiv1.DeterministicRun{SyncBase: true})}}, true, true},
+	} {
+		if got := WorkflowCanRecordBaseSyncConflict(tc.spec); got != tc.conflict {
+			t.Errorf("%s: conflict = %t, want %t", tc.name, got, tc.conflict)
+		}
+		if got := WorkflowCanStrandUnpushedWork(tc.spec); got != tc.strand {
+			t.Errorf("%s: strand = %t, want %t", tc.name, got, tc.strand)
 		}
 	}
 }

@@ -295,15 +295,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	diagnostics.addReport(report, diagnosticFile(root, configDir))
 	printValidationIssues(stdout, report)
 	if errors.Is(err, instance.ErrInvalidConfig) {
-		// The legacy single-repo fallback can only be observed after decoding
-		// the schema-invalid empty project. Preserve the schema errors while
-		// still telling operators which repository runtime would bind.
-		comparisonSet, comparisonReport, comparisonErr := instance.LoadConfigDirForComparison(configDir)
-		if comparisonSet != nil && comparisonReport != nil && comparisonReport.HasErrors() &&
-			errors.Is(comparisonErr, instance.ErrInvalidConfig) {
-			_ = checkGaggleRepositoryBindings(root, configDir, cfg, comparisonSet, stdout, diagnostics)
-		}
-		pf(stdout, "\nconfig directory failed validation\n")
+		reportInvalidConfigDirectory(root, configDir, cfg, report, stdout, diagnostics)
 		return 1
 	}
 	placeholderFindings, err := findTemplatePlaceholders(root, configFile, configDir)
@@ -516,6 +508,27 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+// reportInvalidConfigDirectory finishes `validate` output for a config
+// directory rejected as a whole, naming the blast radius (#5896).
+func reportInvalidConfigDirectory(
+	root, configDir string,
+	cfg *instance.Config,
+	report *validate.Report,
+	stdout io.Writer,
+	diagnostics *diagnosticCollector,
+) {
+	// The legacy single-repo fallback can only be observed after decoding
+	// the schema-invalid empty project. Preserve the schema errors while
+	// still telling operators which repository runtime would bind.
+	comparisonSet, comparisonReport, comparisonErr := instance.LoadConfigDirForComparison(configDir)
+	if comparisonSet != nil && comparisonReport != nil && comparisonReport.HasErrors() &&
+		errors.Is(comparisonErr, instance.ErrInvalidConfig) {
+		_ = checkGaggleRepositoryBindings(root, configDir, cfg, comparisonSet, stdout, diagnostics)
+	}
+	pf(stdout, "\nconfig directory failed validation\n")
+	instance.WriteInvalidConfigScope(stdout, configDir, report)
 }
 
 func validateConfigPaths(options validateOptions, stdout io.Writer, diagnostics *diagnosticCollector) (configFile, configDir string) {

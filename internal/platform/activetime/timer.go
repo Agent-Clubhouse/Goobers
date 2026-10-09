@@ -10,4 +10,27 @@
 // minutes after resume (#5875). Shifting the recorded instant forward by
 // Mark.SuspendedSince removes the suspended interval, and leaves the
 // comparison unchanged on every other platform.
+//
+// Mark is only useful against Go's monotonic clock. Timestamps persisted in a
+// journal carry no monotonic reading, so comparing them across a suspend
+// counts the suspended interval on every platform. WallMark reports that
+// interval on every platform, so such comparisons can subtract it (#5891).
 package activetime
+
+import "time"
+
+// suspendNoiseFloor absorbs the difference between two clocks' update
+// granularity (Windows' unbiased interrupt time advances in timer-tick steps
+// of about 15.6ms, and NTP slews the wall clock by a bounded rate), so an
+// unsuspended host never reports a phantom suspension.
+const suspendNoiseFloor = time.Second
+
+// suspendedGap is the part of a wall-clock interval the active clock did not
+// see, or zero below the noise floor.
+func suspendedGap(wallElapsed, activeElapsed time.Duration) time.Duration {
+	suspended := wallElapsed - activeElapsed
+	if suspended < suspendNoiseFloor {
+		return 0
+	}
+	return suspended
+}

@@ -95,6 +95,15 @@ const (
 	// started the run. Only goobers CLI stages receive it.
 	TriggerRefEnvVar = "GOOBERS_TRIGGER_REF"
 
+	// StageTimeoutEnvVar carries the stage's effective execution deadline —
+	// the Go duration string the executor itself enforces, whichever surface
+	// (limits.maxDurationSeconds, inputs.timeout, or a default) supplied it —
+	// to goobers CLI stages (#5572). Without it a provider subcommand could
+	// only see a declared inputs.timeout and budgeted its own context (and
+	// so its rate-limit waits) against the built-in default instead of the
+	// clock that actually kills it.
+	StageTimeoutEnvVar = "GOOBERS_EFFECTIVE_STAGE_TIMEOUT"
+
 	// RepoProviderEnvVar carries the scheduler-routed repository provider to
 	// goobers CLI stages.
 	RepoProviderEnvVar = "GOOBERS_REPO_PROVIDER"

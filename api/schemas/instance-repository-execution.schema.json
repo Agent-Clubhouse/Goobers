@@ -74,7 +74,7 @@
         "maxRunDuration": {
           "type": "string",
           "minLength": 1,
-          "description": "Maximum total run age. The large-repo default is 24h."
+          "description": "Maximum active execution time of a run, excluding host suspension and durable child waits. The large-repo default is 24h."
         }
       }
     }

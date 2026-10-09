@@ -414,6 +414,14 @@ func TestPublishADONonPassVerdictPublishesFailedStatusLabelAndThread(t *testing.
 	if !strings.Contains(threadContent, "verdict-json:") {
 		t.Fatalf("thread content = %q, want it to carry the verdict-json machine payload", threadContent)
 	}
+	// #6918: the append-only verdict comment must not acknowledge (mask)
+	// human feedback left during remediation.
+	if frontier, bound := parseFeedbackAck(threadContent); !bound || !frontier.IsZero() {
+		t.Fatalf("thread content = %q, want a none feedback-ack frontier", threadContent)
+	}
+	if _, ok := parseVerdictComment(threadContent); !ok {
+		t.Fatalf("thread content = %q, want the verdict to stay parseable", threadContent)
+	}
 	result := readVerdictResult(t, resultFile)
 	if result["decision"] != "needs-changes" {
 		t.Fatalf("result = %+v, want decision=needs-changes", result)

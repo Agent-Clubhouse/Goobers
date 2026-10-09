@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -76,11 +78,37 @@ func (a *Activities) logDispatchCleanup(ctx context.Context, attempt dispatcher.
 // Waiting for cleanup delivers the actual activity outcome to the workflow.
 // Preserve genuine cancellation without changing stage-deadline classification;
 // the caller keeps confirmed surrender authoritative before entering this arm.
+// A context the server did not cancel was lost to its control path (#6750):
+// worker shutdown or a failed heartbeat. The SDK reports a bare
+// context.Canceled from such a context as an ordinary policy failure, so it
+// is committed as infrastructure carrying the worker-loss marker instead.
 func unconfirmedDispatchFailure(ctx context.Context, err error, report dispatcher.Report) (stageActivityResult, error) {
-	if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
-		return stageActivityResult{}, context.Canceled
+	if errors.Is(ctx.Err(), context.Canceled) {
+		if !cancellationRequested(ctx) {
+			return dispatchFailureResult(dispatchControlPathLost(context.Cause(ctx), err), report)
+		}
+		if errors.Is(err, context.Canceled) {
+			return stageActivityResult{}, context.Canceled
+		}
 	}
 	return dispatchFailureResult(classifyDispatchError(err), report)
+}
+
+// failureTypeWorkerLost marks an attempt whose activity lost its worker or
+// heartbeat path. Like a heartbeat timeout, the pod may have run to effect.
+const failureTypeWorkerLost = "GoobersWorkerLost"
+
+// Only a server-delivered cancellation carries a Temporal CanceledError cause.
+// Direct non-Temporal callers own their context, so any cancel is requested.
+func cancellationRequested(ctx context.Context) bool {
+	return !activity.IsActivity(ctx) || temporal.IsCanceledError(context.Cause(ctx))
+}
+
+func dispatchControlPathLost(cause, err error) error {
+	message := fmt.Sprintf("engine: dispatch control path lost (%v): %v", cause, err)
+	return temporal.NewApplicationErrorWithOptions(message, FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
+		Cause: temporal.NewApplicationError(message, failureTypeWorkerLost),
+	})
 }
 
 // Once surrender is confirmed, cancellation must not discard the authoritative

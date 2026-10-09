@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/goobers/goobers/internal/engineoperator"
 
@@ -50,6 +51,9 @@ type daemonRunJournalService struct {
 	// escalation-candidates route answers from it, never from an offline
 	// journal scan (#6889 follow-up).
 	reads decomposition.EscalationReads
+	// definitions names the workflows whose runs can contribute to the
+	// windowed routes (#6968); without them those routes refuse.
+	definitions *interventionDefinitionRegistry
 }
 
 func newDaemonRunJournalService(layout instance.Layout, log *journal.InstanceLog) *daemonRunJournalService {
@@ -115,7 +119,17 @@ func (s *daemonRunJournalService) ConflictTouches(ctx context.Context, request j
 	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
 		return journalclient.ConflictTouchResponse{}, gaggleMismatch("a conflict-history read")
 	}
-	touches, err := s.crossRun().ConflictTouches(ctx, journalclient.ConflictTouchRequest{
+	if err := s.requireWindowedLiveReads(request.Since, "a conflict-history read"); err != nil {
+		return journalclient.ConflictTouchResponse{}, err
+	}
+	workflows, err := s.contributingWorkflows(request.Gaggle, journalclient.WorkflowCanRecordBaseSyncConflict)
+	if err != nil {
+		return journalclient.ConflictTouchResponse{}, err
+	}
+	// Candidate runs come from the live read model (last activity since the
+	// window opens) of the workflows that can record a conflict; only those
+	// journals are opened, never every run's.
+	touches, err := s.crossRun().ConflictTouchesFromReads(ctx, s.reads, workflows, journalclient.ConflictTouchRequest{
 		RunID:  request.RunID,
 		Gaggle: request.Gaggle,
 		Since:  request.Since,
@@ -124,6 +138,38 @@ func (s *daemonRunJournalService) ConflictTouches(ctx context.Context, request j
 		return journalclient.ConflictTouchResponse{}, err
 	}
 	return journalclient.ConflictTouchResponse{Touches: touches}, nil
+}
+
+// requireWindowedLiveReads refuses a windowed cross-run scan that has no live
+// read model to narrow its candidates with, or no window: falling back to the
+// offline directory scan is the defect this plane exists to avoid.
+func (s *daemonRunJournalService) requireWindowedLiveReads(since time.Time, what string) error {
+	if since.IsZero() {
+		return httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
+			"since is required; an unbounded "+what+" is refused", nil)
+	}
+	if s.reads == nil {
+		return errors.New(what + ": the daemon's live read model is not attached")
+	}
+	return nil
+}
+
+// contributingWorkflows names the gaggle's workflows, in the daemon's current
+// definitions, whose runs can hold what a windowed scan reads. Most runs on a
+// busy instance (merge-review ticks) can hold neither, and opening their
+// journals is what exhausted the route's budget and the daemon's heap.
+func (s *daemonRunJournalService) contributingWorkflows(gaggle string, can func(apiv1.WorkflowSpec) bool) ([]string, error) {
+	if s.definitions == nil {
+		return nil, errors.New("the daemon's workflow definitions are not attached; refusing an unfiltered journal scan")
+	}
+	var names []string
+	for identity, machine := range s.definitions.Snapshot().machines {
+		if identity.Gaggle == gaggle && machine != nil && can(machine.Def.Spec) {
+			names = append(names, identity.Workflow)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // UnpushedWork answers the stranded-diff question for the items the asking run
@@ -144,7 +190,14 @@ func (s *daemonRunJournalService) UnpushedWork(ctx context.Context, request jour
 	if len(itemIDs) == 0 {
 		return journalclient.UnpushedWorkResponse{}, nil
 	}
-	work, err := s.crossRun().UnpushedWork(ctx, journalclient.UnpushedWorkRequest{
+	if err := s.requireWindowedLiveReads(request.Since, "a prior-unpushed-work read"); err != nil {
+		return journalclient.UnpushedWorkResponse{}, err
+	}
+	workflows, err := s.contributingWorkflows(request.Gaggle, journalclient.WorkflowCanStrandUnpushedWork)
+	if err != nil {
+		return journalclient.UnpushedWorkResponse{}, err
+	}
+	work, err := s.crossRun().UnpushedWorkFromReads(ctx, s.reads, workflows, journalclient.UnpushedWorkRequest{
 		RunID:              request.RunID,
 		Gaggle:             request.Gaggle,
 		Since:              request.Since,

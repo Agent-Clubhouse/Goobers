@@ -4,7 +4,8 @@ The portable [Goobers agent toolkit](../../agent-toolkit/README.md) gives an
 external coding agent release-matched skills for environment resolution, DSL
 authoring, read-only run inspection, and workflow upgrades. It runs in the
 user's agent harness and is distinct from skills configured on workflow
-goobers.
+goobers. To diagnose runs with the toolkit's read-only skills, see
+[Diagnose an instance with the Goobers agent toolkit](agent-toolkit-diagnostics.md).
 
 ## Install the release bundle
 

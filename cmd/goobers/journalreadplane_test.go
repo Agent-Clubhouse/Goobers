@@ -149,11 +149,13 @@ func TestDaemonCrossRunRoutesRefuseUnsafeGaggleSegments(t *testing.T) {
 // hold — no matter what it sends.
 func TestDaemonUnpushedWorkDerivesItemsFromTheLedger(t *testing.T) {
 	layout := crossRunTestLayout(t)
-	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
-	seedStrandedDiffRun(t, layout, crossRunTestGaggle, "prior-run", "42", "diff for item 42")
-	seedStrandedDiffRun(t, layout, crossRunTestGaggle, "someone-elses-run", "99", "diff for item 99")
+	seedLiveAskingRun(t, layout)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "prior-run", "42", "diff for item 42", false)
+	seedStrandedDiffRunWith(t, layout, crossRunTestGaggle, "someone-elses-run", "99", "diff for item 99", false)
 
 	service := newDaemonRunJournalService(layout, nil)
+	service.reads = liveEscalationReads(t, layout)
+	service.definitions = crossRunTestDefinitions(t)
 	ctx := context.Background()
 	since := time.Now().UTC().Add(-24 * time.Hour)
 
@@ -193,11 +195,13 @@ func TestDaemonUnpushedWorkDerivesItemsFromTheLedger(t *testing.T) {
 // pod receives is scoped to its own gaggle's runs.
 func TestDaemonConflictTouchesStaysInsideTheGaggle(t *testing.T) {
 	layout := crossRunTestLayout(t)
-	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
-	seedConflictRun(t, layout, crossRunTestGaggle, "conflicted-run", "internal/mine.go")
-	seedConflictRun(t, layout, "other-gaggle", "foreign-conflicted-run", "internal/theirs.go")
+	seedLiveAskingRun(t, layout)
+	seedConflictRunWith(t, layout, crossRunTestGaggle, "conflicted-run", "internal/mine.go", false)
+	seedConflictRunWith(t, layout, "other-gaggle", "foreign-conflicted-run", "internal/theirs.go", false)
 
 	service := newDaemonRunJournalService(layout, nil)
+	service.reads = liveEscalationReads(t, layout)
+	service.definitions = crossRunTestDefinitions(t)
 	response, err := service.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{
 		RunID: "asking-run", Gaggle: crossRunTestGaggle, Since: time.Now().UTC().Add(-24 * time.Hour),
 	})
@@ -461,12 +465,15 @@ func claimItemForRun(t *testing.T, layout instance.Layout, itemID, runID string)
 	}
 }
 
-func seedStrandedDiffRun(t *testing.T, layout instance.Layout, gaggle, runID, itemID, diff string) {
+// seedStrandedDiffRunWith seeds the fixture; minimalRunYAML replaces the schema-valid
+// run.yaml journal.Create wrote with the bare file the containment check keys on,
+// which the read model cannot project.
+func seedStrandedDiffRunWith(t *testing.T, layout instance.Layout, gaggle, runID, itemID, diff string, minimalRunYAML bool, opts ...journal.Option) {
 	t.Helper()
 	runsDir := layout.ForGaggle(gaggle).RunsDir()
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: runID, Workflow: "implementation", Gaggle: gaggle,
-	}, nil)
+	}, nil, opts...)
 	if err != nil {
 		t.Fatalf("create run %s: %v", runID, err)
 	}
@@ -489,17 +496,23 @@ func seedStrandedDiffRun(t *testing.T, layout instance.Layout, gaggle, runID, it
 	if err := run.Close(); err != nil {
 		t.Fatalf("close run %s: %v", runID, err)
 	}
+	if !minimalRunYAML {
+		return
+	}
 	if err := os.WriteFile(filepath.Join(runsDir, runID, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func seedConflictRun(t *testing.T, layout instance.Layout, gaggle, runID, file string) {
+// seedConflictRunWith seeds the fixture; minimalRunYAML replaces the schema-valid
+// run.yaml journal.Create wrote with the bare file the containment check keys on,
+// which the read model cannot project.
+func seedConflictRunWith(t *testing.T, layout instance.Layout, gaggle, runID, file string, minimalRunYAML bool, opts ...journal.Option) {
 	t.Helper()
 	runsDir := layout.ForGaggle(gaggle).RunsDir()
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: runID, Workflow: "implementation", Gaggle: gaggle,
-	}, nil)
+	}, nil, opts...)
 	if err != nil {
 		t.Fatalf("create run %s: %v", runID, err)
 	}
@@ -514,6 +527,9 @@ func seedConflictRun(t *testing.T, layout instance.Layout, gaggle, runID, file s
 	}
 	if err := run.Close(); err != nil {
 		t.Fatalf("close run %s: %v", runID, err)
+	}
+	if !minimalRunYAML {
+		return
 	}
 	if err := os.WriteFile(filepath.Join(runsDir, runID, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
 		t.Fatal(err)

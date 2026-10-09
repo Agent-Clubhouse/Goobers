@@ -172,6 +172,7 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 		PullRequest:       facts.PullRequest,
 		PROpenerStage:     facts.PROpenerStage,
 		ResumedFromRunID:  facts.ResumedFromRunID,
+		DisplayTitle:      facts.DisplayTitle,
 		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
 		LatestError:       facts.LatestError,
 		PotentialBlockers: []string{},
@@ -201,6 +202,7 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 			Rationale:           facts.ReviewRationale,
 			ReasonCode:          facts.ReviewReasonCode,
 			Findings:            facts.ReviewFindings,
+			Synthesized:         facts.ReviewSynthesized,
 			LegacyFailAmbiguous: facts.ReviewVerdict == "fail" && facts.ReviewReasonCode == "",
 		}
 	}

@@ -638,6 +638,7 @@ func githubIssueFields(issue githubIssue) fieldpredicate.Fields {
 	fields := fieldpredicate.Fields{
 		"id":       issue.ID,
 		"number":   int64(issue.Number),
+		"title":    issue.Title,
 		"state":    issue.State,
 		"locked":   issue.Locked,
 		"comments": int64(issue.Comments),

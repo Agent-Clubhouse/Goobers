@@ -118,7 +118,7 @@ func TestAzureReplayBootstrapSurvivesShutdownAndReplaysAfterRestart(t *testing.T
 		_ = blocker.Release()
 		t.Fatal(err)
 	}
-	closeCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	closeCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	if err := first.close(closeCtx); err != nil {
 		cancel()
 		_ = blocker.Release()

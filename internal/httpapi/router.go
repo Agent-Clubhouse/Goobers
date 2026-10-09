@@ -608,6 +608,9 @@ type Router struct {
 	// letting a handler run against subsystems recovery has not finished
 	// opening yet.
 	recoveryGate func() bool
+	// recoveryHints, when set, decorates the recovery gate's 503 with the
+	// daemon's startup hints (#6895).
+	recoveryHints func(http.Header)
 
 	// budgetLog records requests whose budget expired before the handler wrote
 	// a response (#6890). nil disables the log, never the 503.
@@ -616,7 +619,7 @@ type Router struct {
 
 // ensureAdmission creates the controller on first use.
 func (r *Router) ensureAdmission() {
-	r.admissionOnce.Do(func() { r.admission = newAdmissionController() })
+	r.admissionOnce.Do(func() { r.admission = newAdmissionController(classLimits) })
 }
 
 type handlerConfig struct {
@@ -647,6 +650,7 @@ type handlerConfig struct {
 	instanceReadiness       InstanceReadinessService
 	portalAssets            http.Handler
 	recoveryGate            func() bool
+	recoveryHints           func(http.Header)
 	discoveryIdentity       DiscoveryIdentity
 	telemetryReadsAvailable bool
 	workItemsAvailable      bool
@@ -793,6 +797,19 @@ func WithRecoveryGate(ready func() bool) HandlerOption {
 			return errors.New("http API recovery gate predicate is required")
 		}
 		c.recoveryGate = ready
+		return nil
+	}
+}
+
+// WithRecoveryHints sets headers on every recovery-gate refusal, so a client
+// waiting out a long recovery can see the daemon's startup budget and
+// progress (#6895). It has no effect without WithRecoveryGate.
+func WithRecoveryHints(set func(http.Header)) HandlerOption {
+	return func(c *handlerConfig) error {
+		if set == nil {
+			return errors.New("http API recovery hints function is required")
+		}
+		c.recoveryHints = set
 		return nil
 	}
 }
@@ -1026,6 +1043,9 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 	// whether it would otherwise have authenticated.
 	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
 		w.Header().Set(HeaderRetryAfterSeconds, strconv.Itoa(NotReadyRetryAfterSeconds))
+		if r.recoveryHints != nil {
+			r.recoveryHints(w.Header())
+		}
 		writeError(w, http.StatusServiceUnavailable, CodeRecovering, "daemon is completing crash recovery")
 		return
 	}
@@ -1071,7 +1091,7 @@ func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc
 		// The slot is returned when the handler goroutine ends, not when the
 		// response does: a handler abandoned at its budget still occupies the
 		// capacity the class limit is protecting (#6890).
-		serveWithBudgetAnswer(r.budgetLog, string(route.ID), budget, w, bounded, handler, release)
+		serveWithBudgetAnswer(r.budgetLog, string(route.ID), budget, writeDeadlineMargin, w, bounded, handler, release)
 		return
 	}
 	defer release()
@@ -1124,6 +1144,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
+	router.recoveryHints = config.recoveryHints
 	router.budgetLog = errorLog
 	discovery, err := registerDiscoveryRoutes(router, config)
 	if err != nil {

@@ -2,7 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -13,10 +17,15 @@ import (
 
 func driftTestMachine(t *testing.T, goal string) *workflow.Machine {
 	t.Helper()
+	return driftTestWorkflowMachine(t, "implementation", goal, nil)
+}
+
+func driftTestWorkflowMachine(t *testing.T, name, goal string, controls *apiv1.RunControls) *workflow.Machine {
+	t.Helper()
 	machine, err := workflow.Compile(workflow.Definition{
-		Name: "implementation", Version: 1,
+		Name: name, Version: 1,
 		Spec: apiv1.WorkflowSpec{
-			Gaggle: "goobers", Start: "implement",
+			Gaggle: "goobers", Start: "implement", RunControls: controls,
 			Tasks: []apiv1.Task{{
 				Name: "implement", Type: apiv1.TaskDeterministic, Goal: goal,
 				Run: &apiv1.DeterministicRun{Command: []string{"true"}},
@@ -30,6 +39,11 @@ func driftTestMachine(t *testing.T, goal string) *workflow.Machine {
 }
 
 func newDriftTestRun(t *testing.T, l instance.Layout, runID string, machine *workflow.Machine, snapshot bool, terminal bool) {
+	t.Helper()
+	newDriftTestRunWithControls(t, l, runID, machine, nil, snapshot, terminal)
+}
+
+func newDriftTestRunWithControls(t *testing.T, l instance.Layout, runID string, machine *workflow.Machine, controls *apiv1.RunControls, snapshot bool, terminal bool) {
 	t.Helper()
 	var inputs map[string][]byte
 	var opts []journal.Option
@@ -45,7 +59,7 @@ func newDriftTestRun(t *testing.T, l instance.Layout, runID string, machine *wor
 	}
 	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
-		WorkflowDigest: machine.Digest(), Gaggle: machine.Def.Spec.Gaggle,
+		WorkflowDigest: machine.Digest(), Gaggle: machine.Def.Spec.Gaggle, RunControls: controls,
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 	}, inputs, opts...)
 	if err != nil {
@@ -87,7 +101,7 @@ func TestInspectWorkflowDigestDriftSeparatesRecoverableFromAtRisk(t *testing.T) 
 	machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{
 		{Gaggle: "goobers", Workflow: "implementation"}: served,
 	}
-	drift, err := inspectWorkflowDigestDrift(l, machines)
+	drift, err := inspectWorkflowDigestDrift(l, machines, nil)
 	if err != nil {
 		t.Fatalf("inspectWorkflowDigestDrift: %v", err)
 	}
@@ -148,5 +162,160 @@ func TestJournalWorkflowDigestDriftStaysQuietWithoutDrift(t *testing.T) {
 	}
 	if got, _ := found.Runner["recoverableCount"].(float64); int(got) != 1 {
 		t.Fatalf("recoverableCount = %v, want 1", found.Runner["recoverableCount"])
+	}
+}
+
+func driftTestGaggles(maxRepasses int32) *instance.ConfigSet {
+	return &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{
+		ObjectMeta: metav1.ObjectMeta{Name: "goobers"},
+		Spec:       apiv1.GaggleSpec{RunControls: &apiv1.RunControls{MaxRepasses: maxRepasses}},
+	}}}
+}
+
+// TestInspectWorkflowDigestDriftReportsRunsSupersededByThisReload is #5898:
+// with definition watching on, an applied edit never reaches an in-flight
+// run, which keeps the workflow and goober content (and so the stage
+// timeouts) it launched with. The reload must
+// name exactly the runs it left behind: not runs launched on the new
+// definitions, not terminal runs, and not runs an earlier reload already
+// superseded when this reload changed nothing they pinned.
+func TestInspectWorkflowDigestDriftReportsRunsSupersededByThisReload(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	pinned := driftTestMachine(t, "implement")
+	served := driftTestMachine(t, "implement, but edited")
+	newDriftTestRun(t, l, "run-recoverable", pinned, true, false)
+	newDriftTestRun(t, l, "run-at-risk", pinned, false, false)
+	newDriftTestRun(t, l, "run-current", served, true, false)
+	newDriftTestRun(t, l, "run-terminal", pinned, false, true)
+
+	key := localscheduler.WorkflowIdentity{Gaggle: "goobers", Workflow: "implementation"}
+	defs := func(machine *workflow.Machine, gooberDigest string, maxRepasses int32) pinnedDefinitions {
+		return newPinnedDefinitions(nil,
+			map[localscheduler.WorkflowIdentity]*workflow.Machine{key: machine},
+			map[localscheduler.WorkflowIdentity]string{key: gooberDigest}, nil, driftTestGaggles(maxRepasses))
+	}
+	cases := []struct {
+		name          string
+		before, after pinnedDefinitions
+		want          []string
+	}{
+		{"workflow edit", defs(pinned, "", 3), defs(served, "", 3), []string{"run-at-risk", "run-recoverable"}},
+		{"unrelated reload", defs(served, "", 3), defs(served, "", 3), nil},
+		{"goober edit", defs(served, "", 3), defs(served, "sha256:goober-edited", 3), []string{"run-at-risk", "run-current", "run-recoverable"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			drift, err := inspectWorkflowDigestDrift(l, tc.after.machines, supersededWorkflows(tc.before, tc.after))
+			if err != nil {
+				t.Fatalf("inspectWorkflowDigestDrift: %v", err)
+			}
+			if fmt.Sprint(drift.Superseded) != fmt.Sprint(tc.want) {
+				t.Fatalf("superseded = %v, want %v", drift.Superseded, tc.want)
+			}
+			if len(drift.Recoverable) != 1 || len(drift.AtRisk) != 1 {
+				t.Fatalf("standing drift = %+v, want one recoverable and one at-risk run regardless of this reload", drift)
+			}
+		})
+	}
+}
+
+// TestInspectWorkflowDigestDriftComparesEffectiveRunControls is the #5898
+// maxRepasses case: a gaggle runControls edit supersedes only the in-flight
+// runs whose pinned effective controls it changes. A workflow that overrides
+// the edited field masks the edit and must stay silent, as must a run already
+// launched under the new effective controls; a legacy run with no pinned
+// controls cannot show it is current and is reported.
+func TestInspectWorkflowDigestDriftComparesEffectiveRunControls(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	plain := driftTestMachine(t, "implement")
+	overridden := driftTestWorkflowMachine(t, "overridden", "implement", &apiv1.RunControls{MaxRepasses: 5})
+	machines := map[localscheduler.WorkflowIdentity]*workflow.Machine{
+		{Gaggle: "goobers", Workflow: "implementation"}: plain,
+		{Gaggle: "goobers", Workflow: "overridden"}:     overridden,
+	}
+	before := newPinnedDefinitions(nil, machines, nil, nil, driftTestGaggles(3))
+	after := newPinnedDefinitions(nil, machines, nil, nil, driftTestGaggles(9))
+	pinned := func(key localscheduler.WorkflowIdentity, defs pinnedDefinitions) *apiv1.RunControls {
+		controls := defs.runControls[key].Overrides()
+		return &controls
+	}
+	plainKey := localscheduler.WorkflowIdentity{Gaggle: "goobers", Workflow: "implementation"}
+	overriddenKey := localscheduler.WorkflowIdentity{Gaggle: "goobers", Workflow: "overridden"}
+	if before.runControls[overriddenKey].MaxRepasses != 5 || before.runControls[plainKey].MaxRepasses != 3 {
+		t.Fatalf("fixture effective controls = %+v", before.runControls)
+	}
+	newDriftTestRunWithControls(t, l, "run-plain", plain, pinned(plainKey, before), true, false)
+	newDriftTestRunWithControls(t, l, "run-overridden", overridden, pinned(overriddenKey, before), true, false)
+	newDriftTestRunWithControls(t, l, "run-launched-after", plain, pinned(plainKey, after), true, false)
+	newDriftTestRun(t, l, "run-legacy", plain, true, false)
+
+	drift, err := inspectWorkflowDigestDrift(l, machines, supersededWorkflows(before, after))
+	if err != nil {
+		t.Fatalf("inspectWorkflowDigestDrift: %v", err)
+	}
+	if want := "[run-legacy run-plain]"; fmt.Sprint(drift.Superseded) != want {
+		t.Fatalf("superseded = %v, want %s", drift.Superseded, want)
+	}
+
+	drift, err = inspectWorkflowDigestDrift(l, machines, supersededWorkflows(after, after))
+	if err != nil {
+		t.Fatalf("inspectWorkflowDigestDrift: %v", err)
+	}
+	if len(drift.Superseded) != 0 {
+		t.Fatalf("unchanged run controls superseded %v, want none", drift.Superseded)
+	}
+}
+
+// TestReportWorkflowDigestDriftLogsSubsequentRunsOnlyNotice keeps the #5898
+// daemon-log line tied to the runs this reload superseded: silent when there
+// are none (even with standing drift still journaled), and naming them when
+// there are.
+func TestReportWorkflowDigestDriftLogsSubsequentRunsOnlyNotice(t *testing.T) {
+	l := instance.NewLayout(t.TempDir())
+	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = instanceLog.Close() })
+
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	if err := reportWorkflowDigestDrift(instanceLog, workflowDigestDrift{AtRisk: []string{"run-a"}}, logf); err != nil {
+		t.Fatalf("reportWorkflowDigestDrift: %v", err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("standing drift alone logged %q, want silence", lines)
+	}
+
+	if err := reportWorkflowDigestDrift(instanceLog, workflowDigestDrift{
+		AtRisk: []string{"run-a"}, Superseded: []string{"run-a", "run-b"},
+	}, logf); err != nil {
+		t.Fatalf("reportWorkflowDigestDrift: %v", err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("logged %d lines, want 1: %q", len(lines), lines)
+	}
+	for _, want := range []string{
+		"config reload: definition change detected; will apply to subsequent runs only",
+		"2 in-flight run(s)", "stage timeouts and maxRepasses", "[run-a run-b]",
+	} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("notice %q missing %q", lines[0], want)
+		}
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	journaled := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["kind"] == journal.RunnerAnnotationWorkflowDigestDrift {
+			journaled++
+		}
+	}
+	if journaled != 2 {
+		t.Fatalf("journaled %d drift annotations, want 2", journaled)
 	}
 }

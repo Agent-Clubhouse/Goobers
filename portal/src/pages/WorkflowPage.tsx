@@ -29,6 +29,7 @@ import { Inspector } from "../ui/Inspector";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useWorkflowDetail } from "../workflowDetailData";
 import { useInsightStats } from "../insightData";
+import { distinctTriggerRef, runWorkTitle } from "../operationalData";
 import { formatTriggers } from "./WorkflowsPage";
 
 export function WorkflowPage({
@@ -367,6 +368,32 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
   );
 }
 
+function WorkflowRunRow({ run }: { run: RunSummary }) {
+  const workTitle = runWorkTitle(run, " · ");
+  const triggerRef = distinctTriggerRef(run);
+  return (
+    <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
+      <span className="row-primary">
+        {workTitle ? (
+          <span className="row-title" title={workTitle}>
+            {workTitle}
+          </span>
+        ) : (
+          <span className="row-title mono">{run.id}</span>
+        )}
+        <span className="row-subtitle">
+          {run.trigger.kind}
+          {triggerRef ? ` · ${triggerRef}` : ""} · <Timestamp value={run.startedAt} />
+          {workTitle ? <span className="mono"> · {run.id}</span> : null}
+        </span>
+      </span>
+      <StatusBadge status={run.phase} />
+      <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
+      <RunTiming run={run} />
+    </DataRow>
+  );
+}
+
 function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: WorkflowDetail }) {
   return (
     <section className="content-section">
@@ -388,23 +415,7 @@ function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: Workflow
           gridClassName="workflow-runs-grid"
         >
           {runs.map((run) => (
-            <DataRow
-              href={routeHash({ page: "run", id: run.id })}
-              key={run.id}
-              label={`Open run ${run.id}`}
-            >
-              <span className="row-primary">
-                <span className="row-title mono">{run.id}</span>
-                <span className="row-subtitle">
-                  {run.trigger.kind}
-                  {run.trigger.ref ? ` · ${run.trigger.ref}` : ""} ·{" "}
-                  <Timestamp value={run.startedAt} />
-                </span>
-              </span>
-              <StatusBadge status={run.phase} />
-              <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
-              <RunTiming run={run} />
-            </DataRow>
+            <WorkflowRunRow key={run.id} run={run} />
           ))}
         </DataList>
       )}

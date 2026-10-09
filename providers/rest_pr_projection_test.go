@@ -79,6 +79,7 @@ func TestGiteaPullRequestSummaryProjection(t *testing.T) {
 		ID:         "17",
 		Number:     17,
 		URL:        "https://gitea.test/acme/app/pulls/17",
+		Title:      "  wip: shared projection",
 		State:      "closed",
 		Merged:     true,
 		Head:       "feature/gitea-projection",

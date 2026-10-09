@@ -400,6 +400,7 @@ func newWireFixtures() wireFixtures {
 		},
 		Operator: readservice.OperatorRunSummary{
 			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
+			DisplayTitle:      "Implement #673: Improve operator status",
 			CurrentStage:      "review",
 			Liveness:          "terminal",
 			Trajectory:        "terminal",
@@ -783,7 +784,8 @@ func newWireFixtures() wireFixtures {
 					CostBases:     []string{"vendor_reported"},
 				}},
 				Runs: []readservice.TelemetryCostRunAggregate{{
-					RunID: "run-123", Gaggle: "goobers", Workflow: "implement", Status: "completed", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
+					RunID: "run-123", Gaggle: "goobers", Workflow: "implement", TriggerKind: "item", TriggerRef: "4398",
+					Status: "completed", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
 					InputTokens: &modelInputTokens, OutputTokens: &modelOutputTokens,
 					NativeTotals: []readservice.TelemetryCostAmount{{
 						Unit: "aiCredits", Value: 2.5,
@@ -813,7 +815,7 @@ func newWireFixtures() wireFixtures {
 				},
 				Models: []readservice.TelemetryCostModelAggregate{},
 				Runs: []readservice.TelemetryCostRunAggregate{{
-					RunID: "run-124", Gaggle: "goobers", Workflow: "review", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
+					RunID: "run-124", Gaggle: "goobers", Workflow: "review", TriggerKind: "manual", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
 					NativeTotals: []readservice.TelemetryCostAmount{{
 						Unit: "usd", Value: 0.025,
 					}},

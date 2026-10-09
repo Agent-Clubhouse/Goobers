@@ -163,3 +163,49 @@ func TestAuthSchemeFollowsTheConfiguredKind(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderBuildsFromRepo(t *testing.T) {
+	t.Setenv("ADO_TEST_TOKEN", "pat")
+	repo := instance.RepoRef{
+		Provider: "ado",
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+		Token:    instance.TokenRef{Env: "ADO_TEST_TOKEN"},
+	}
+	provider, err := Provider(repo, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider == nil {
+		t.Fatal("provider is nil")
+	}
+}
+
+func TestProviderUsesInjectedRunner(t *testing.T) {
+	runner := &sourceRunner{}
+	repo := instance.RepoRef{
+		Provider: "ado",
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI, Tenant: "tenant"},
+	}
+	provider, err := Provider(repo, runner, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.Runner != runner {
+		t.Fatalf("provider runner = %#v, want injected runner", provider.Runner)
+	}
+}
+
+func TestProviderRejectsInvalidSource(t *testing.T) {
+	if _, err := Provider(instance.RepoRef{Provider: "github"}, nil, nil, nil, nil, nil); err == nil {
+		t.Fatal("expected error for non-ADO provider")
+	}
+	repo := instance.RepoRef{Provider: "ado", Auth: &instance.RepoAuthConfig{Kind: "bogus"}}
+	if _, err := Provider(repo, nil, nil, nil, nil, nil); err == nil {
+		t.Fatal("expected error for unsupported auth kind")
+	}
+}

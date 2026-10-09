@@ -64,6 +64,8 @@ export function filterExternalCostRows(
         run.runId,
         run.gaggle ?? "",
         run.workflow ?? "",
+        run.triggerKind ?? "",
+        run.triggerRef ?? "",
         run.status ?? "",
         run.startedAt,
         ...run.billingModels,

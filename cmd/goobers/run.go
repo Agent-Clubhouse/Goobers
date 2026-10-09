@@ -443,12 +443,11 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if !isTerminalPhase(phase) {
-		// A cancelled wait (Ctrl-C, cancelled Actions job) can return a
-		// non-terminal phase with no error; close the Check Run rather than
-		// leave it stuck at "in progress" until the workflow job times out.
-		reporter.Finalize(ctx.Err())
-	}
+	// A cancelled wait (Ctrl-C, cancelled Actions job) can return a
+	// non-terminal phase with no error, and a terminal publish can be lost
+	// to a transient GitHub failure; close the Check Run rather than leave
+	// it stuck at "in progress" until the workflow job times out.
+	reporter.Finalize(ctx.Err())
 
 	// waitForRunTerminal polls the run's OWN journal and returns as soon as
 	// it sees a terminal phase — that races trackedStarter.Start's dispatch
@@ -1370,12 +1369,10 @@ func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance
 				reporter = newHostedRunWaitReporter(ctx, runID, dir, progress)
 			}
 			phase, waitErr := waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
-			if waitErr != nil || !isTerminalPhase(phase) {
-				// Close any hosted-progress Check Run on abnormal exit so
-				// the workflow job's remote view does not linger at
-				// "in progress" past the run's actual end.
-				reporter.Finalize(waitErr)
-			}
+			// Close any hosted-progress Check Run (abnormal exit or a lost
+			// terminal publish) so the workflow job's remote view does not
+			// linger at "in progress" past the run's actual end.
+			reporter.Finalize(waitErr)
 			return phase, waitErr
 		}
 		if !errors.Is(err, iofs.ErrNotExist) {

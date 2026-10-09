@@ -182,6 +182,33 @@ export function attentionSeverity(
   return "warning";
 }
 
+/**
+ * The run's canonical title (#5429): the stage-published display title when
+ * present, else the claimed work item as `#number<separator>title`. Undefined
+ * when the run has neither, so callers choose their own run-ID fallback.
+ */
+export function runWorkTitle(run: RunSummary, separator = " "): string | undefined {
+  const operator = run.operator;
+  if (operator?.displayTitle) {
+    return operator.displayTitle;
+  }
+  if (operator?.issue) {
+    return `#${operator.issue.number}${operator.issue.title ? `${separator}${operator.issue.title}` : ""}`;
+  }
+  return undefined;
+}
+
+/**
+ * The trigger reference worth showing in a run subtitle (#5428). A manually
+ * admitted queue worker records the workflow name as its ref; repeating it next
+ * to the workflow adds nothing, so it is omitted. Trigger provenance itself is
+ * unchanged.
+ */
+export function distinctTriggerRef(run: RunSummary): string | undefined {
+  const ref = run.trigger.ref;
+  return ref && ref !== run.workflow ? ref : undefined;
+}
+
 function sameWorkItem(left: RunSummary, right: RunSummary): boolean {
   if (left.gaggle !== right.gaggle) {
     return false;

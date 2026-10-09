@@ -330,7 +330,7 @@ func TestWriteCopilotInvocationDiagnostics(t *testing.T) {
 	argv := []string{
 		"copilot", "-p", "SECRET PROMPT TEXT that must not be recorded",
 		"--model", "gpt-5", "--allow-all-tools", "--log-level", "all",
-		"--available-tools=view,shell", "--add-github-mcp-toolset=issues", "--silent",
+		"--available-tools=view,shell", "--enable-all-github-mcp-tools", "--silent",
 	}
 
 	if err := writeCopilotInvocationDiagnostics(req, argv, req.Tools, false); err != nil {
@@ -354,7 +354,7 @@ func TestWriteCopilotInvocationDiagnostics(t *testing.T) {
 	if !got.ToolConstrained {
 		t.Error("toolConstrained = false, want true for a declared allowlist")
 	}
-	want := []string{"--allow-all-tools", "--available-tools=view,shell", "--add-github-mcp-toolset=issues"}
+	want := []string{"--allow-all-tools", "--available-tools=view,shell", "--enable-all-github-mcp-tools"}
 	if strings.Join(got.PermissionArgs, " ") != strings.Join(want, " ") {
 		t.Errorf("permissionArgs = %v, want %v", got.PermissionArgs, want)
 	}

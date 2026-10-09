@@ -337,6 +337,7 @@ func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 		RunID:          entry.RunID,
 		Workflow:       entry.Workflow,
 		ClaimedAt:      entry.ClaimedAt,
+		RenewedAt:      entry.RenewedAt,
 		ExpiresAt:      entry.ExpiresAt,
 		SharedDeadline: entry.SharedDeadline,
 		SharedRevoked:  entry.SharedRevoked,
@@ -525,6 +526,9 @@ type daemonTriggerService struct {
 	// nil (never wired, e.g. existing tests) means "always ready", the
 	// pre-#4252 behavior.
 	schedulerReady func() bool
+	// startupCatalog is the configured workflow set acceptance validates
+	// against until a scheduler is attached (#5895); nil skips validation.
+	startupCatalog []localscheduler.WorkflowIdentity
 
 	mu    sync.Mutex
 	seen  map[string]triggerReservation
@@ -560,6 +564,43 @@ func (s *daemonTriggerService) AttachScheduler(sched *localscheduler.Scheduler) 
 func (s *daemonTriggerService) withSchedulerReadyGate(ready func() bool) *daemonTriggerService {
 	s.schedulerReady = ready
 	return s
+}
+
+func (s *daemonTriggerService) withStartupCatalog(entries []localscheduler.WorkflowEntry) *daemonTriggerService {
+	s.startupCatalog = localscheduler.EntryIdentities(entries)
+	return s
+}
+
+// validateTriggerTarget refuses a workflow the daemon's catalog cannot resolve
+// before a trigger is durably accepted (#5895), so a typo is answered with the
+// available workflows instead of an accepted-then-rejected record. The live
+// scheduler's reload-aware catalog wins; with neither it nor a startup
+// catalog the dispatch-time check remains the only one.
+func (s *daemonTriggerService) validateTriggerTarget(request httpapi.TriggerRequest) error {
+	catalog := s.startupCatalog
+	if sched := s.sched.Load(); sched != nil {
+		catalog = sched.WorkflowIdentities()
+	} else if catalog == nil {
+		return nil
+	}
+	err := localscheduler.ResolveWorkflowTarget(catalog, request.Gaggle, request.Workflow)
+	var unknown *localscheduler.UnknownWorkflowError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &unknown):
+		if request.PodScoped {
+			// A pod principal may only learn its own gaggle's catalog.
+			scoped := *unknown
+			if scoped.UnknownGaggle {
+				scoped.Available = nil
+			}
+			err = &scoped
+		}
+		return httpapi.NewInterventionError(http.StatusNotFound, "workflow_not_found", err.Error(), err)
+	default:
+		return httpapi.NewInterventionError(http.StatusBadRequest, "workflow_ambiguous", err.Error(), err)
+	}
 }
 
 // dispatchContextHolder boxes a context for atomic.Pointer, which cannot hold

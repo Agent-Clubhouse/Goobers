@@ -177,6 +177,7 @@ func TestChildOrphanRetainsUnconfirmedCustodyAfterOrdinaryHoldExpires(t *testing
 		t.Fatal(err)
 	}
 	a := testAttempt()
+	a.PodAttempt = 1
 	a.ChildExecutionDigest = "sha256:" + strings.Repeat("a", 64)
 	pod, err := RenderPod(cfg, a, linuxRunner())
 	if err != nil {
@@ -246,9 +247,14 @@ func TestOrphanDisposalRetainsPhysicalIdentityAndIsolation(t *testing.T) {
 	if got.IdentityAttempt() != 17 || got.ChildExecutionDigest != a.ChildExecutionDigest {
 		t.Fatal(got)
 	}
-	p.Labels[LabelPodAttempt] = "invalid"
-	got = orphanDisposalAttempt(p, PodAttempt{RunID: a.RunID, Stage: a.Stage, Attempt: a.Number})
-	if childContractDigest.MatchString(got.ChildExecutionDigest) {
-		t.Fatal("malformed physical attempt fell back to logical ordinal")
+	for _, physical := range []string{"invalid", "0", "-1", "", "missing"} {
+		p.Labels[LabelPodAttempt] = physical
+		if physical == "missing" {
+			delete(p.Labels, LabelPodAttempt)
+		}
+		got = orphanDisposalAttempt(p, PodAttempt{RunID: a.RunID, Stage: a.Stage, Attempt: a.Number})
+		if childContractDigest.MatchString(got.ChildExecutionDigest) {
+			t.Fatalf("physical attempt %q fell back to logical ordinal", physical)
+		}
 	}
 }
