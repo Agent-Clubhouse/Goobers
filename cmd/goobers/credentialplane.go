@@ -105,6 +105,7 @@ type daemonCredentialService struct {
 	// Installed before serving. Current child authority lease spans materialization.
 	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
 	childExecutors   childExecutorProvider
+	childPodRecovery func(context.Context, *journal.Reader, string, childPodScope) error
 	layout           instance.Layout
 	config           *instance.Config
 	stores           credentials.StoreResolver
@@ -217,7 +218,7 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, err
 	}
 	defer pinned.release()
-	ctx, childLease, err := s.applyChildCredentialCeiling(ctx, pinned)
+	ctx, childLease, err := s.applyChildCredentialCeiling(ctx, pinned, request.Stage)
 	if err != nil {
 		return stageResolution{}, err
 	}

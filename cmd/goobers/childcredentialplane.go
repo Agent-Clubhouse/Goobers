@@ -8,6 +8,7 @@ import (
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -29,7 +30,11 @@ func (l *childCredentialLease) finish(ctx context.Context) error {
 	return nil
 }
 
-func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Context, pinned pinnedStage) (context.Context, *childCredentialLease, error) {
+func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Context, pinned pinnedStage, requestedStage ...string) (context.Context, *childCredentialLease, error) {
+	attempt, err := s.childCredentialAttempt(ctx, pinned.identity, requestedStage)
+	if err != nil {
+		return nil, nil, err
+	}
 	if pinned.identity.Child == nil {
 		return ctx, &childCredentialLease{release: func() {}}, nil
 	}
@@ -62,12 +67,44 @@ func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Contex
 		lease.release()
 		return refuse()
 	}
-	childCtx, err := credentials.WithChildCeiling(ctx, lease.ceiling)
+	effective := lease.ceiling
+	if attempt != nil {
+		effective = lease.ceiling.ModelOnly()
+		if !sameChildCeiling(effective, attempt.contract.Ceiling) {
+			lease.release()
+			return refuse()
+		}
+	}
+	childCtx, err := credentials.WithChildCeiling(ctx, effective)
 	if err != nil {
 		lease.release()
 		return refuse()
 	}
+	if attempt != nil {
+		verify := lease.verify
+		lease.verify = func(ctx context.Context) error {
+			if err := attempt.active(ctx); err != nil {
+				return err
+			}
+			if err := attempt.custody(ctx); err != nil {
+				return err
+			}
+			return verify(ctx)
+		}
+	}
 	return childCtx, lease, nil
+}
+
+func (s *daemonCredentialService) childCredentialAttempt(ctx context.Context, id journal.RunIdentity, stage []string) (*childAttemptCustody, error) {
+	principal, ok := httpapi.PrincipalFromContext(ctx)
+	if !ok || principal.Issuer != httpapi.GeneratedChildPrincipalIssuer {
+		return nil, nil
+	}
+	a, err := s.childAttempt(ctx)
+	if err != nil || len(stage) != 1 || a.contract.Identity.RunID != id.RunID || a.contract.Stage != stage[0] || a.active(ctx) != nil || a.custody(ctx) != nil {
+		return nil, credentialPlaneError(http.StatusForbidden, "child_attempt_unavailable", "child credentials require the active signed physical attempt and host writer custody")
+	}
+	return &a, nil
 }
 
 func sameChildCeiling(a, b credentials.ChildCeiling) bool {
@@ -100,18 +137,24 @@ func (l *queuedChildLauncher) credentialCeiling(ctx context.Context, id journal.
 }
 
 func (l *queuedChildLauncher) retainedChildIdentity(ctx context.Context, id journal.RunIdentity) (childExecutionRef, error) {
-	if id.Child == nil || l.queue == nil {
+	return retainedChildExecutionRef(ctx, l.queue, id, true)
+}
+
+// retainedChildExecutionRef verifies accepted provenance without granting new effects.
+// Teardown callers may inspect a cancelled execution; credentials require current authority.
+func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, id journal.RunIdentity, requireCurrent bool) (childExecutionRef, error) {
+	if id.Child == nil || queue == nil {
 		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 	}
 	identity := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: id.Gaggle, ParentRunID: id.Child.ParentRunID}, StageOccurrence: id.Child.StageOccurrence, InvocationKey: id.Child.InvocationKey}
-	receipt, err := l.queue.ChildStart(ctx, identity)
+	receipt, err := queue.ChildStart(ctx, identity)
 	if err != nil {
 		return childExecutionRef{}, err
 	}
 	if receipt.State != triggerqueue.Dispatching && receipt.State != triggerqueue.Dispatched {
 		return childExecutionRef{}, errors.New("child execution has no claimed start")
 	}
-	service := durableTriggerService{queue: l.queue}
+	service := durableTriggerService{queue: queue}
 	ref, err := service.childReference(ctx, receipt)
 	if err != nil {
 		return childExecutionRef{}, err
@@ -119,7 +162,7 @@ func (l *queuedChildLauncher) retainedChildIdentity(ctx context.Context, id jour
 	if ref.Child.RunID != id.RunID || ref.Lineage != *id.Child || ref.Envelope.WorkflowDigest != id.WorkflowDigest || ref.Envelope.Workflow != id.Workflow || ref.Envelope.ConfigGeneration != id.ConfigGeneration {
 		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 	}
-	if ref.Child.CancellationRequested || ref.Child.State.Terminal() {
+	if requireCurrent && (ref.Child.CancellationRequested || ref.Child.State.Terminal()) {
 		return childExecutionRef{}, triggerqueue.ErrParentCancelled
 	}
 	return ref, nil

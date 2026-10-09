@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -767,6 +768,9 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 		current, err := e.Reviewer.Review(attemptCtx, *env, subjectStage, subject)
 		if cancel != nil {
 			cancel()
+		}
+		if errors.Is(err, invoke.ErrChildCustodyPending) {
+			return false, err
 		}
 		invalid := err == nil && e.invalidNeedsHumanVerdict(g, current)
 		if jerr := recordReviewerFinish(e.Journal, gateName, number, class, current, err, invalid); jerr != nil {
