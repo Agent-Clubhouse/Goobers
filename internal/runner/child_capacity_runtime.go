@@ -49,6 +49,30 @@ func finishParallelChildBranch(ctx context.Context, owner *parallelChildCapacity
 	return owner.Finish(context.WithoutCancel(ctx), branch, publish)
 }
 
+func settleParallelChildBranch(ctx context.Context, run *journal.Run, par *parallelExec, owner *parallelChildCapacity, result parallelBranchResult) error {
+	branch := par.branchSnapshot(result.index).id
+	return finishParallelChildBranch(ctx, owner, branch, func() error {
+		if owner != nil {
+			reader, err := journal.OpenReadOnly(run.Dir())
+			if err != nil {
+				return err
+			}
+			events, err := reader.Events()
+			if err != nil {
+				return err
+			}
+			projection, err := journal.ProjectChildWaits(events)
+			if err != nil {
+				return err
+			}
+			if _, waiting := projection.Waits[branch]; waiting {
+				return fmt.Errorf("runner: branch cannot settle with unresolved child custody")
+			}
+		}
+		return settleConcurrentBranch(run, par, par.spec.Name, result)
+	})
+}
+
 type childBranchSuspension struct {
 	serial   ChildParentSuspension
 	parallel *parallelChildSuspension

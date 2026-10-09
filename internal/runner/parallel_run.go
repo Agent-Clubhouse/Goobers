@@ -326,9 +326,7 @@ func (r *Runner) runConcurrentParallel(
 	slots := newParallelBranchSlots(limit)
 	dispatch := &parallelDispatch{released: slots.changed, queue: queue, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
 	dispatch.settle = func(result parallelBranchResult) error {
-		return finishParallelChildBranch(ctx, childCapacity, par.branchSnapshot(result.index).id, func() error {
-			return settleConcurrentBranch(jr, par, p.Name, result)
-		})
+		return settleParallelChildBranch(ctx, jr, par, childCapacity, result)
 	}
 	dispatch.cancelQueued = func() error {
 		return cancelQueuedParallelBranches(par, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in, dispatch.settle)
@@ -509,63 +507,16 @@ func (r *Runner) runParallelBranch(
 		state = retryTarget
 	}
 
-	var replayTask *apiv1.ResultEnvelope
-	var replayGate *gate.Result
-	var replayGateEvent *journal.Event
-	startAttempt := int32(1)
-	var firstClass journal.AttemptClass
-	var committedWorkOnInfra bool
-	var resumeAccounting *resumeRetryAccounting
-	var retryInstructionAddendum string
-	if boundary, ok := lastParallelBoundary(history); ok {
-		if task, isTask := in.Machine.Task(state); isTask {
-			switch {
-			case boundary.Type == journal.EventStageFinished && boundary.Stage == state && !isInterruptedAttemptMarker(boundary):
-				replayed := result.lastResult
-				replayTask = &replayed
-			case boundary.Type == journal.EventStageStarted && boundary.Stage == state:
-				attempt := boundary.Attempt
-				if attempt == 0 {
-					attempt = 1
-				}
-				errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
-				runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
-				if task.Type == apiv1.TaskAgentic {
-					limits, err := workflow.TaskLimits(in.Machine, task)
-					if err != nil {
-						result.status, result.err = journal.BranchFailed, err
-						return result
-					}
-					if usageBudgetConfigured(limits) {
-						interrupted := interruptedStageBudgetFailure(limits)
-						replayTask = &interrupted
-						errorDetail = errorDetailFrom(interrupted)
-						runnerDetail = nil
-					}
-				}
-				if err := appendInterruptedAttemptClosure(branchJournal, history, state, attempt, errorDetail, runnerDetail, replayTask == nil); err != nil {
-					result.status, result.err = journal.BranchFailed, err
-					return result
-				}
-				if replayTask == nil {
-					startAttempt = int32(attempt) + 1
-					firstClass = journal.AttemptInfra
-					committedWorkOnInfra = infraFailedAttemptCommittedWork(history, state, attempt)
-					resumeAccounting = &resumeRetryAccounting{
-						policyAttempts:            policyAttemptsBefore(history, state, attempt),
-						infrastructureFailures:    infrastructureFailuresBefore(history, state, attempt),
-						replacementConsumesPolicy: boundary.AttemptClass != journal.AttemptInfra,
-					}
-				}
-			}
-		} else if _, isGate := in.Machine.Gate(state); isGate &&
-			boundary.Type == journal.EventGateEvaluated && boundary.Gate == state {
-			gr := gateResultFromEvent(boundary)
-			replayGate = &gr
-			event := boundary
-			replayGateEvent = &event
-		}
+	restored, err := recoverParallelStage(branchJournal, in.Machine, state, result.lastResult, history)
+	if err != nil {
+		result.status, result.err = journal.BranchFailed, err
+		return result
 	}
+	replayTask, replayGate, replayGateEvent := restored.task, restored.gate, restored.gateEvent
+	startAttempt, firstClass := restored.attempt, restored.class
+	committedWorkOnInfra, resumeAccounting := restored.committed, restored.accounting
+	childResume := restored.child
+	var retryInstructionAddendum string
 
 	for {
 		if ctx.Err() != nil {
@@ -601,23 +552,29 @@ func (r *Runner) runParallelBranch(
 			} else {
 				attemptAddendum := retryInstructionAddendum
 				retryInstructionAddendum = ""
+				frame := taskFrame{
+					jr: branchJournal, in: in, ex: ex, t: task,
+					upstream:        branchContextPointers(basePointers, result.pointers),
+					upstreamResult:  result.lastResult,
+					completed:       result.completed,
+					workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
+					workspaceRevision: &in.workspaceRevision,
+					repoRef:           &in.RepoRef,
+				}
+				applyChildTaskResume(&frame, childResume)
+				childResume = nil
 				stageResult, produced, err = r.runTask(
-					ctx,
-					taskFrame{
-						jr: branchJournal, in: in, ex: ex, t: task,
-						upstream:        branchContextPointers(basePointers, result.pointers),
-						upstreamResult:  result.lastResult,
-						completed:       result.completed,
-						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
-						workspaceRevision: &in.workspaceRevision,
-						repoRef:           &in.RepoRef,
-					},
+					ctx, frame,
 					branch.id, startAttempt, firstClass, attemptAddendum,
 					nil, committedWorkOnInfra, resumeAccounting,
 				)
 				startAttempt = 1
 				firstClass = ""
 				resumeAccounting = nil
+			}
+			if errors.Is(err, errChildWaitDrain) {
+				result.status, result.paused = journal.BranchCancelled, true
+				return result
 			}
 			if err = taskDispatchError(task.Name, stageResult, err); err != nil {
 				result.status, result.err = journal.BranchFailed, err
