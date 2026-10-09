@@ -253,7 +253,7 @@ const (
 		"The remaining sections contain Linux-specific credential, live-run, and\n" +
 		"systemd guidance. They supplement rather than duplicate either route.\n\n"
 	linuxQuickstartSourceCIJob      = "CI job (`.github/workflows/ci.yml`), which runs the shipped binary end to end —\n"
-	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.6**) |\n"
+	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.9**) |\n"
 	linuxQuickstartSourceValidation = "> **Linux delta — deterministic `network: none` stages use user namespaces.** On\n" +
 		"> Linux, a workflow stage that declares `network: none` is isolated with an\n" +
 		"> unprivileged user + network namespace (`CLONE_NEWUSER`), not an external\n" +
@@ -269,9 +269,9 @@ const (
 		"```\n\n"
 	linuxQuickstartSourcePrerequisites = "## 1. Install prerequisites\n\n" +
 		"```sh\n" +
-		"# Go — install the toolchain matching go.mod (1.26.6). Distro packages often lag;\n" +
+		"# Go — install the toolchain matching go.mod (1.26.9). Distro packages often lag;\n" +
 		"# prefer the official tarball:\n" +
-		"curl -sSfL https://go.dev/dl/go1.26.6.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
+		"curl -sSfL https://go.dev/dl/go1.26.9.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
 		"export PATH=\"/usr/local/go/bin:$(go env GOPATH)/bin:$PATH\"\n\n" +
 		"# Git (>= 2.17 — any supported Ubuntu/Debian is newer):\n" +
 		"sudo apt-get update && sudo apt-get install --yes git\n\n" +
