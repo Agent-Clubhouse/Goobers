@@ -20,7 +20,16 @@ func (r parentArchiveRestorer) retryRetirement(reader *journal.Reader, candidate
 		missing = missing || candidate.RetirementSeq == 0
 	}
 	if !missing {
-		return nil
+		retired, err := runner.RetiredParentForks(reader)
+		if err != nil {
+			return err
+		}
+		for _, value := range retired {
+			missing = missing || !value.ReleaseRecorded
+		}
+		if !missing {
+			return nil
+		}
 	}
 	phase, err := reader.Phase()
 	if err != nil {

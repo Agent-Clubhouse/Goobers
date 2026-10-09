@@ -155,6 +155,9 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	if run.Seq() != beforeRecovery {
 		t.Fatal("busy cleanup mutated the journal")
 	}
+	if checkpoint == "ready" {
+		interruptForkSourceRelease(t, restorer, run, reader)
+	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +187,15 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	if err != nil || len(candidates) != 2 || candidates[0].Workspace.Fork == nil || candidates[0].RetirementSeq == 0 {
 		t.Fatal("fork archive missing", candidates, err)
 	}
+	retired, err := runner.RetiredParentForks(reader)
+	if err != nil || len(retired) != 1 || !retired[0].ReleaseRecorded {
+		t.Fatal("source release not acknowledged", retired, err)
+	}
+	snapshot, err := parallelworkspace.ReadSource(reader, seed, plan.Parallel, plan.Sequence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyForkSourcePin(t, manager, url, snapshot.Record, false)
 	candidate := candidates[0]
 	for _, mode := range []string{"foreign-plan", "mixed-worker", "fake-origin"} {
 		wrong := candidate.Workspace
@@ -204,6 +216,9 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	before := run.Seq()
 	if err := restorer.retire(run); err != nil || run.Seq() != before {
 		t.Fatal("retirement replay", err)
+	}
+	if checkpoint == "held" {
+		verifyChangedForkSourceRef(t, restorer, run, reader, candidate.Workspace, snapshot.Record, url)
 	}
 	guard, err := recoveryCleanupOption(layout, f.cfg, manager.Root, childRepoCloneURL, journal.NewRegistryScrubber(), nil)
 	if err != nil {
@@ -245,12 +260,33 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	if _, err := manager.AdoptHeldStage(t.Context(), url, custody); err != nil {
 		t.Fatal("restoration lost exact hold", err)
 	}
+	verifyForkSourcePin(t, manager, url, snapshot.Record, true)
+	if _, err := runner.RetiredParentForks(reader); !errors.Is(err, runner.ErrParentReturnPending) {
+		t.Fatal("restored branch retained release authority", err)
+	}
 	writeFileContent(t, filepath.Join(checkout.Path, "source.txt"), "new cycle\n")
 	if err := restorer.retire(run); err != nil {
 		t.Fatal("fork retirement after restoration", err)
 	}
+	verifyForkSourcePin(t, manager, url, snapshot.Record, false)
 	next, err := runner.ParentRetirementCandidates(reader)
 	if err != nil || len(next) != 2 || next[0].RetirementSeq <= candidate.RetirementSeq || next[0].Workspace.Archive == candidate.Workspace.Archive {
 		t.Fatal("restored fork reused obsolete archive", next, err)
+	}
+	if checkpoint == "held" {
+		verifyRetainedForkSource(t, restorer, run, reader, next[0].Workspace, snapshot.Record, url)
+	}
+}
+
+func verifyForkSourcePin(t *testing.T, manager *worktree.Manager, url string, record recovery.Record, want bool) {
+	t.Helper()
+	found, err := manager.WithExistingMirror(t.Context(), url, func(repository string) error {
+		if got := recovery.HasSnapshotRef(t.Context(), repository, record); got != want {
+			t.Errorf("source pin exists=%v, want %v", got, want)
+		}
+		return nil
+	})
+	if err != nil || !found {
+		t.Fatal("source mirror unavailable", err)
 	}
 }

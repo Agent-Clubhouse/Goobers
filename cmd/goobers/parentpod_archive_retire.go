@@ -66,7 +66,10 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 		}
 		failures = errors.Join(failures, err)
 	}
-	return failures
+	if failures != nil {
+		return failures
+	}
+	return r.releaseForkSources(ctx, run, reader)
 }
 
 func (r parentArchiveRestorer) captureRetirement(ctx context.Context, reader *journal.Reader, rec runner.OwnedJournalRecorder, candidate runner.ParentRetirementCandidate, captureAt time.Time) error {
