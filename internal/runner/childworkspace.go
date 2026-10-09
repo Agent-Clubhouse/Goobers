@@ -98,14 +98,6 @@ func (r *Runner) validateChildWorkspacePlan(in StartInput) error {
 	if r.cfg.PinnedWorkspace {
 		return fmt.Errorf("runner: managed child forks cannot use pinned project workspace mode")
 	}
-	// Serial repoFrom edges are checked by the compiler. Every writable
-	// stage adopts the same retained child branch, so no checkout derivation
-	// is needed to observe an earlier producer commit.
-	for _, task := range in.Machine.Def.Spec.Tasks {
-		if task.Run != nil && task.Run.SyncBase {
-			return fmt.Errorf("runner: child task %q requires unsupported base synchronization", task.Name)
-		}
-	}
 
 	return nil
 }
@@ -250,7 +242,7 @@ func (r *Runner) createChildStageWorkspace(ctx context.Context, in StartInput, s
 		return r.createChildReadOnlyStage(ctx, in, stage, syncBase, branch)
 	}
 
-	if in.childWorkspace == nil || mode != apiv1.WorkspaceRepo || syncBase || in.workspaceRevision != nil {
+	if in.childWorkspace == nil || mode != apiv1.WorkspaceRepo || in.workspaceRevision != nil {
 		return nil, fmt.Errorf("runner: child workspace cannot change its admitted repository, mode or base")
 	}
 	state := in.childWorkspace
@@ -264,6 +256,14 @@ func (r *Runner) createChildStageWorkspace(ctx context.Context, in StartInput, s
 		}
 	}
 	if err != nil {
+		state.stage.Unlock()
+		return nil, err
+	}
+	base := in.RepoRef.Branch
+	if base == "" {
+		base = "main"
+	}
+	if err := state.worktree.PrepareChildStage(ctx, opts, base, syncBase); err != nil {
 		state.stage.Unlock()
 		return nil, err
 	}
