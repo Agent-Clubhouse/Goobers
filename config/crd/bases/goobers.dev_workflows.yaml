@@ -763,8 +763,8 @@ spec:
                     expectedOutputs:
                       description: |-
                         ExpectedOutputs declares intended task postconditions. Through DSL 3.0 it
-                        is advisory and validation emits VER003 when set. From DSL 3.1 a shell
-                        stage fails when it succeeds without emitting every declared key.
+                        is advisory and validation emits VER003 when set. From DSL 3.1 a stage
+                        fails when it succeeds without emitting every declared key.
                       items:
                         type: string
                       type: array

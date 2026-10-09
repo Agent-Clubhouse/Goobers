@@ -16,7 +16,7 @@ import (
 
 func TestMigrateV30ToV31Golden(t *testing.T) {
 	notes := map[string][]string{
-		"legacy-artifacts": {`task produce: expectedOutputs ["report" "trace"] are enforced from DSL 3.1; the stage fails if its result file omits a declared key`},
+		"legacy-artifacts": {`task produce: expectedOutputs ["report" "trace"] are enforced from DSL 3.1; the stage fails if it succeeds without a declared key`},
 	}
 	for _, name := range []string{"legacy-artifacts", "undeclared-outputs"} {
 		t.Run(name, func(t *testing.T) {

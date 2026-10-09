@@ -219,8 +219,8 @@ Required capability: `telemetry:read`.
 
 `artifactSlots` and `artifactInputs` are additive in `dslVersion: "3.1"` only.
 DSL 2.0 and 3.0 documents neither accept nor require them. `expectedOutputs`
-does not name artifact slots, but from DSL 3.1 a shell stage fails when its
-result file omits a declared `expectedOutputs` key (see
+does not name artifact slots, but from DSL 3.1 a stage fails when it succeeds
+without a declared `expectedOutputs` key (see
 [`expectedOutputs`](graph-and-execution.md#expectedoutputs)). The runtime artifact
 transport remains the existing positional/context-pointer channel; DSL 3.1 only
 adds stable authoring names that future tooling can lower onto that transport.

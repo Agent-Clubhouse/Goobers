@@ -73,9 +73,23 @@ func TestEnforceExpectedOutputs(t *testing.T) {
 		},
 		{name: "no-work is not a contract breach", version: supportmatrix.V31DSLVersion, task: shell, status: apiv1.ResultNoWork},
 		{name: "failure keeps its own diagnosis", version: supportmatrix.V31DSLVersion, task: shell, status: apiv1.ResultFailure},
-		{name: "built-in ci-poll owns its outputs", version: supportmatrix.V31DSLVersion, task: withKind(shell, "ci-poll"), status: apiv1.ResultSuccess},
-		{name: "runtime-bound kind may be built in", version: supportmatrix.V31DSLVersion, task: dynamicKind, status: apiv1.ResultSuccess},
-		{name: "agentic stage owns its outputs", version: supportmatrix.V31DSLVersion, task: agentic, status: apiv1.ResultSuccess},
+		{
+			name: "built-in kind fails on a missing key", version: supportmatrix.V31DSLVersion, task: withKind(shell, "ci-poll"),
+			status: apiv1.ResultSuccess, outputs: partial, wantFail: true,
+			wantMsg: []string{`built-in kind "ci-poll"`, `"prNumber"`},
+		},
+		{
+			name: "runtime-bound kind fails on a missing key", version: supportmatrix.V31DSLVersion, task: dynamicKind,
+			status: apiv1.ResultSuccess, outputs: partial, wantFail: true,
+			wantMsg: []string{"inputsFrom.kind", `"prNumber"`},
+		},
+		{
+			name: "agentic stage fails on a missing key", version: supportmatrix.V31DSLVersion, task: agentic,
+			status: apiv1.ResultSuccess, outputs: partial, wantFail: true,
+			wantMsg: []string{"agent result", `"prNumber"`},
+		},
+		{name: "agentic stage on dsl 3.0 stays advisory", version: supportmatrix.V3DSLVersion, task: agentic, status: apiv1.ResultSuccess, outputs: partial},
+		{name: "built-in kind with every key succeeds", version: supportmatrix.V31DSLVersion, task: withKind(shell, "ci-poll"), status: apiv1.ResultSuccess, outputs: complete},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := apiv1.ResultEnvelope{Status: tc.status, Outputs: tc.outputs}

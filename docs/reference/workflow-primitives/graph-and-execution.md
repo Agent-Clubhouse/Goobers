@@ -78,11 +78,13 @@ that emit scalar outputs use an `inputs.resultFile` contract; kind-backed and
 agentic stages emit through their executors/harnesses.
 
 Through DSL 3.0 the declaration is advisory (`VER003`). From `dslVersion: "3.1"`
-a shell stage that reports success without every declared key fails with
-`missing_expected_outputs`; the diagnostic names the result file and the
-missing keys, never the file contents. The result file must be a flat JSON
-object (UTF-8, optional byte-order mark). Kind-backed and agentic stages keep
-their own output contracts.
+any stage (shell, kind-backed, or agentic) that reports success without every
+declared key fails with `missing_expected_outputs`. The diagnostic names the
+stage's output channel (the result file, the built-in kind, or the agent
+result) and the missing keys, never output values. A shell result file must be
+a flat JSON object (UTF-8, optional byte-order mark). Declare only keys a
+stage emits on every successful outcome; for example, `ci-poll` emits
+`ciFailedChecks` only when checks fail.
 
 ### `outbox`
 

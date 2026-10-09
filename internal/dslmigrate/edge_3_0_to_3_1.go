@@ -16,9 +16,9 @@ import (
 // artifact behavior; named slots and consumer bindings are author opt-ins.
 // Neither expectedOutputs nor generated artifact names establish an artifact
 // contract, so this edge must not infer artifactSlots or artifactInputs from
-// them. It does note every shell stage whose expectedOutputs becomes a
-// runtime contract under 3.1 (#5175): such a stage now fails when its result
-// file omits a declared key, so authors can check each one before writing.
+// them. It does note every stage whose expectedOutputs becomes a runtime
+// contract under 3.1 (#5175): such a stage now fails when it succeeds without
+// a declared key, so authors can check each one before writing.
 func applyV30ToV31(source []byte, _ *yaml.Node) (bool, []string, error) {
 	var wf apiv1.Workflow
 	if err := k8syaml.Unmarshal(source, &wf); err != nil {
@@ -28,7 +28,7 @@ func applyV30ToV31(source []byte, _ *yaml.Node) (bool, []string, error) {
 	for _, task := range wf.Spec.Tasks {
 		if v30.EnforcesExpectedOutputs(supportmatrix.V31DSLVersion, task) {
 			notes = append(notes, fmt.Sprintf(
-				"task %s: expectedOutputs %q are enforced from DSL 3.1; the stage fails if its result file omits a declared key",
+				"task %s: expectedOutputs %q are enforced from DSL 3.1; the stage fails if it succeeds without a declared key",
 				task.Name, task.ExpectedOutputs))
 		}
 	}

@@ -371,8 +371,8 @@ type Task struct {
 	// +optional
 	OnTimeout string `json:"onTimeout,omitempty" yaml:"onTimeout,omitempty"`
 	// ExpectedOutputs declares intended task postconditions. Through DSL 3.0 it
-	// is advisory and validation emits VER003 when set. From DSL 3.1 a shell
-	// stage fails when it succeeds without emitting every declared key.
+	// is advisory and validation emits VER003 when set. From DSL 3.1 a stage
+	// fails when it succeeds without emitting every declared key.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
 	// ArtifactSlots declares named artifact positions this producer may publish
