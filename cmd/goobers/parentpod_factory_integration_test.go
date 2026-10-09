@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -316,5 +317,9 @@ func testParentFactoryCustody(t *testing.T, lost, committed bool) {
 	}
 	if _, err = reader.ArtifactBytes(journal.Ref{Path: out.Transcript.Path, Digest: out.Transcript.Digest, Size: out.Transcript.Size}); err != nil {
 		t.Fatal("partial transcript not adopted", err)
+	}
+	if committed {
+		key := (providers.RepositoryRef{Provider: providers.ProviderKind(env.RepoRef.Provider), URL: env.RepoRef.BaseURL, Owner: env.RepoRef.Owner, Project: env.RepoRef.Project, Name: env.RepoRef.Name}).CanonicalKey()
+		verifyLatestParentCleanupArchive(t, reader, repo, key, held)
 	}
 }

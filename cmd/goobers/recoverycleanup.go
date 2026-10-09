@@ -122,6 +122,10 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err := worktree.VerifyCleanupTargetEmptyWithoutHEAD(ctx, target); err == nil {
 		return nil
 	}
+	request.ParentPolicy, err = parentCleanupPolicy(ctx, reader, target, key)
+	if err != nil {
+		return err
+	}
 	_, _, err = recovery.Retain(ctx, request, publication)
 	return err
 }

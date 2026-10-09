@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // ParentContributionKind is a host-only receipt for a verified imported tree.
@@ -144,4 +145,47 @@ func ParentWorkspaceCustody(rec OwnedJournalRecorder, env apiv1.InvocationEnvelo
 	}
 	_, custody, err := parentContributionCustody(events, env, branch)
 	return custody, err
+}
+
+// ParentCleanupContribution identifies the last verified worker output for an
+// exact managed checkout. Its tree may be old: cleanup must capture current
+// files after any subsequent ordinary stages. The output supplies only policy
+// and provenance, never the contents to archive.
+func ParentCleanupContribution(reader *journal.Reader, target worktree.CleanupTarget) (journal.Ref, bool, error) {
+	id, err := reader.Identity()
+	if err != nil || id.RunID != target.OwnerRunID || id.Child != nil {
+		return journal.Ref{}, false, errors.Join(errors.New("parent cleanup owner mismatch"), err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return journal.Ref{}, false, err
+	}
+	var branch string
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != ContainedParentWorkspaceKind {
+			continue
+		}
+		var value ContainedParentWorkspaceCustody
+		data, err := json.Marshal(event.Runner["custody"])
+		if err != nil || len(data) > 8192 || json.Unmarshal(data, &value) != nil || value.Version != 1 || value.Origin == nil {
+			return journal.Ref{}, false, errors.New("invalid parent cleanup custody")
+		}
+		if value.Workspace.WorkspaceID == target.WorktreeID {
+			if value.Workspace.Branch == "" || value.Workspace.OwnerRunID != id.RunID {
+				return journal.Ref{}, false, errors.New("invalid parent cleanup workspace identity")
+			}
+			branch = value.Workspace.Branch
+		}
+	}
+	if branch == "" {
+		return journal.Ref{}, false, nil
+	}
+	value, found, err := selectHeldParentContribution(events, id.RunID, branch)
+	if err != nil || !found {
+		return journal.Ref{}, false, errors.Join(errors.New("parent cleanup has no current acknowledged contribution"), err)
+	}
+	if value.Custody.Workspace.WorkspaceID != target.WorktreeID || value.Custody.Workspace.RepositoryDigest != target.RepositoryDigest || value.Custody.Workspace.StartRef != target.StartRef {
+		return journal.Ref{}, false, errors.New("parent cleanup checkout identity changed")
+	}
+	return value.Output, true, nil
 }

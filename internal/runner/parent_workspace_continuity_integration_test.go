@@ -12,8 +12,60 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
+
+func TestIntegrationParentCleanupRequiresAcknowledgedExactCheckout(t *testing.T) {
+	testdep.Require(t, "git")
+	r, run, frame, _, _ := prepareChildWaitRuntime(t)
+	if err := frame.recordTaskStarted(1, ""); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := r.createStageWorkspace(t.Context(), frame.in, frame.t.Name, apiv1.WorkspaceRepo, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := apiv1.InvocationEnvelope{RunID: frame.in.RunID, Gaggle: frame.in.Gaggle, WorkflowID: frame.in.Machine.Def.Name, Attempt: 1, ChildWorkflowOrigin: frame.childOrigin}
+	if err := holdContainedParentWorkspace(t.Context(), frame, workspace, env); err != nil {
+		t.Fatal(err)
+	}
+	held, err := ParentWorkspaceCustody(run, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := worktree.CleanupTarget{WorktreeID: held.Workspace.WorkspaceID, OwnerRunID: held.Workspace.OwnerRunID, RepositoryDigest: held.Workspace.RepositoryDigest, StartRef: held.Workspace.StartRef}
+	reader, err := journal.OpenReadOnly(run.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ParentCleanupContribution(reader, target); err == nil {
+		t.Fatal("unacknowledged parent fell back to ordinary cleanup")
+	}
+	output, err := run.RecordArtifact("verified-parent-output.json", []byte("verified transport output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordParentContribution(run, env, journal.Digest([]byte("contract")), output); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := ParentCleanupContribution(reader, target); err != nil || !found || got != output {
+		t.Fatal("verified current checkout was not selected", got, found, err)
+	}
+	for name, alter := range map[string]func(*worktree.CleanupTarget){
+		"owner":      func(v *worktree.CleanupTarget) { v.OwnerRunID = "another" },
+		"repository": func(v *worktree.CleanupTarget) { v.RepositoryDigest = journal.Digest([]byte("another")) },
+		"start":      func(v *worktree.CleanupTarget) { v.StartRef = "another" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			wrong := target
+			alter(&wrong)
+			if _, _, err := ParentCleanupContribution(reader, wrong); err == nil {
+				t.Fatal("mismatched cleanup custody accepted")
+			}
+		})
+	}
+}
 
 func TestIntegrationParentContributionSurvivesOrdinaryStages(t *testing.T) {
 	testdep.Require(t, "git")
