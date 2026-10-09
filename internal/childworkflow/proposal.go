@@ -42,7 +42,7 @@ const (
 type Backend string
 
 const (
-	// BackendRunner selects the local runner's executable placement surface.
+	// BackendRunner selects a local coordinator with pinned stage placements.
 	BackendRunner Backend = "runner"
 	// BackendEngine selects engine placement and its supported-feature checks.
 	BackendEngine Backend = "engine"
@@ -338,9 +338,8 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 		return nil, refusal("placement", "", "spec", bounded(err.Error()))
 	}
 	placement := runnersolve.Solve(inventory, requirements)
-	if v.context.Backend == BackendRunner {
-		placement = runnersolve.SolveExecutable(inventory, requirements)
-	}
+	// The runner coordinates children; pinned stages execute on admitted workers.
+	// The child factory independently refuses unsupported or self placements.
 	if failures := placement.Unsatisfiable(); len(failures) != 0 {
 		return nil, refusal("placement", failures[0].Stage, "runsOn", bounded(failures[0].Unsat.Diagnostic))
 	}

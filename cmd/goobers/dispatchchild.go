@@ -11,10 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"maps"
+	"sync"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 type isolatedChildKey struct{}
@@ -34,6 +39,8 @@ func runChildDispatchContext(ctx context.Context, stdout, stderr io.Writer) int 
 		pf(stderr, "dispatch-child: admission: %v\n", err)
 		return 1
 	}
+	usage := &isolatedObservedUsage{}
+	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
 	outcome := runIsolatedChildStage(ctx, contract.Identity.RunID, stdout, stderr)
 	// Foreground completion does not prove custody: detached descendants
 	// must stop before the supervisor reads any return-tree files.
@@ -67,7 +74,8 @@ func runChildDispatchContext(ctx context.Context, stdout, stderr io.Writer) int 
 		pf(stderr, "dispatch-child: mutation evidence: %v\n", err)
 		return 1
 	}
-	result := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, Result: outcome.Result, Verdict: outcome.Verdict, Mutations: mutations, ChildWorkspaceDigest: outputDigest}
+	metrics, reported := usage.snapshot()
+	result := dispatcher.SurrenderedResult{ObservedUsage: metrics, ObservedUsageReported: reported, RecoveryAcknowledged: true, Result: outcome.Result, Verdict: outcome.Verdict, Mutations: mutations, ChildWorkspaceDigest: outputDigest}
 	data, err = json.Marshal(result)
 	if err != nil {
 		return 1
@@ -92,7 +100,9 @@ func runIsolatedChildStage(ctx context.Context, runID string, stdout, stderr io.
 	outcome := runStage(owned, stdout, stderr)
 	heartbeat.Stop()
 	if err := context.Cause(owned); err != nil {
-		return stageOutcome{Result: failureEnvelope("execution_authority_ended", err.Error())}
+		failed := failureEnvelope("execution_authority_ended", err.Error())
+		failed.Transcript, failed.Artifacts = outcome.Result.Transcript, outcome.Result.Artifacts
+		return stageOutcome{Result: failed}
 	}
 	return outcome
 }
@@ -144,4 +154,31 @@ func cleanChildPodEnvironment() error {
 		}
 	}
 	return nil
+}
+
+// Usage reports are adapter-owned snapshots, matching the runner's collector.
+// The callback runs inside the pod supervisor and never reads Result.Metrics.
+type isolatedObservedUsage struct {
+	mu       sync.Mutex
+	metrics  map[string]float64
+	reported bool
+}
+
+func (u *isolatedObservedUsage) report(metrics map[string]float64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.reported = true
+	if u.metrics == nil {
+		u.metrics = make(map[string]float64)
+	}
+	for key, value := range metrics {
+		if telemetry.IsCanonicalAgentUsageMetric(key) {
+			u.metrics[key] = value
+		}
+	}
+}
+func (u *isolatedObservedUsage) snapshot() (map[string]float64, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return maps.Clone(u.metrics), u.reported
 }

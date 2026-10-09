@@ -36,6 +36,7 @@ type queuedChildLauncher struct {
 	runners   *daemonRunnerRegistry
 	wg        *sync.WaitGroup
 	result    func(context.Context, childExecutionRef, *journal.Reader) (childExecutionResult, error)
+	reconcile func(context.Context, *journal.Reader) error
 }
 
 func (l *queuedChildLauncher) Prepare(ctx context.Context, e childworkflow.ChildStartEnvelope) (childworkflow.Authority, error) {
@@ -257,6 +258,11 @@ func (l *queuedChildLauncher) Result(ctx context.Context, ref childExecutionRef)
 	rd, err := journal.OpenReadOnly(dir)
 	if err != nil {
 		return childExecutionResult{}, err
+	}
+	if l.reconcile != nil {
+		if err := l.reconcile(ctx, rd); err != nil {
+			return childExecutionResult{}, err
+		}
 	}
 	return l.result(ctx, ref, rd)
 }

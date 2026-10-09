@@ -92,3 +92,8 @@ func ChildCeilingFromContext(ctx context.Context) (ChildCeiling, bool) {
 	ceiling.AllowedKeys = slices.Clone(ceiling.AllowedKeys)
 	return ceiling, ok
 }
+
+// ModelOnly isolates the model process from any separate publication delegation.
+func (c ChildCeiling) ModelOnly() ChildCeiling {
+	return NewChildCeiling(false, c.AllowedKeys, c.AllowedKeys)
+}
