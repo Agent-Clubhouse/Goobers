@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -82,48 +83,53 @@ func pruneExpiredChildTombstones(ctx context.Context, tx *sql.Tx, now time.Time,
 }
 
 func tombstoneChildLineages(ctx context.Context, tx *sql.Tx, now time.Time, limit int) (int, error) {
-	count := 0
 	cutoff := now.Add(-ChildRetention).UnixNano()
-	ids, err := childPruneIDs(ctx, tx, `WITH tombstone_counts AS MATERIALIZED (
+	rows, err := tx.QueryContext(ctx, `WITH tombstone_counts AS MATERIALIZED (
  SELECT gaggle,COUNT(*) AS count FROM child_lineages WHERE tombstoned_ns IS NOT NULL GROUP BY gaggle)
- SELECT c.child_id FROM child_lineages c JOIN child_parents p USING(gaggle,parent_run)
+ SELECT c.child_id,c.gaggle,COALESCE(h.count,0) FROM child_lineages c JOIN child_parents p USING(gaggle,parent_run)
+ LEFT JOIN tombstone_counts h ON h.gaggle=c.gaggle
  WHERE c.tombstoned_ns IS NULL AND c.terminal_ns IS NOT NULL AND c.acknowledged_ns<=? AND p.settled_ns<=?
  AND NOT EXISTS(SELECT 1 FROM child_lineages f WHERE f.gaggle=c.gaggle AND f.parent_run=c.parent_run AND f.acknowledged_ns IS NULL)
  AND NOT EXISTS(SELECT 1 FROM child_parents d WHERE d.gaggle=c.gaggle AND d.parent_run=substr(c.acceptance_id,9))
- AND COALESCE((SELECT count FROM tombstone_counts h WHERE h.gaggle=c.gaggle),0)<?
+ AND COALESCE(h.count,0)<?
  AND EXISTS(SELECT 1 FROM triggers t WHERE t.id=c.acceptance_id AND t.state IN ('dispatched','rejected'))
  ORDER BY c.acknowledged_ns,c.child_id LIMIT ?`, cutoff, cutoff, MaxChildTombstones, limit)
 	if err != nil {
 		return 0, err
 	}
-	tombstoneCounts := make(map[string]int)
-	for _, id := range ids {
-		var gaggle, acceptanceID string
-		if err = tx.QueryRowContext(ctx, `SELECT gaggle,acceptance_id FROM child_lineages WHERE child_id=?`, id).Scan(&gaggle, &acceptanceID); err != nil {
+	var ids []any
+	selected := make(map[string]int)
+	for rows.Next() {
+		var id, gaggle string
+		var existing int
+		if err := rows.Scan(&id, &gaggle, &existing); err != nil {
+			_ = rows.Close()
 			return 0, err
 		}
-		tombstones, counted := tombstoneCounts[gaggle]
-		if !counted {
-			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM child_lineages WHERE gaggle=? AND tombstoned_ns IS NOT NULL`, gaggle).Scan(&tombstones); err != nil {
-				return 0, err
-			}
-			tombstoneCounts[gaggle] = tombstones
-		}
-		// Do not evict idempotency evidence to make room. Intake backpressures
-		// at this quota; a later pass deletes expired tombstones first.
-		if tombstones >= MaxChildTombstones {
+		// Retained idempotency evidence is never evicted to make room. Count
+		// every newly selected lineage against its gaggle's remaining quota.
+		if existing+selected[gaggle] >= MaxChildTombstones {
 			continue
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE child_lineages SET result_ref='',workspace_ref='',tombstoned_ns=? WHERE child_id=?`, now.UnixNano(), id); err != nil {
-			return 0, err
-		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM triggers WHERE id=?`, acceptanceID); err != nil {
-			return 0, err
-		}
-		count++
-		tombstoneCounts[gaggle]++
+		ids = append(ids, id)
+		selected[gaggle]++
 	}
-	return count, nil
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	// The caller caps selection at 100. Two bounded statements preserve the
+	// same transaction and release triggers without hundreds of repeated SQL
+	// parses/round trips competing with the daemon's maintenance deadline.
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	if _, err = tx.ExecContext(ctx, `UPDATE child_lineages SET result_ref='',workspace_ref='',tombstoned_ns=? WHERE child_id IN (`+placeholders+`)`, append([]any{now.UnixNano()}, ids...)...); err != nil {
+		return 0, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM triggers WHERE id IN (SELECT acceptance_id FROM child_lineages WHERE child_id IN (`+placeholders+`))`, ids...); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
 }
 
 func pruneChildOccurrences(ctx context.Context, tx *sql.Tx, now time.Time, limit int) (int, error) {
