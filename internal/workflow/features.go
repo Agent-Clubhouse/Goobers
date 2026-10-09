@@ -157,6 +157,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	if def.Spec.Enabled != nil {
 		features = append(features, binaryLayerFeature("workflow.spec.enabled"))
 	}
+	if def.Spec.Readiness.RequireProviderAuthorization {
+		features = append(features, binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"))
+	}
 	if def.Spec.Backprop != nil {
 		features = append(features,
 			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
@@ -244,10 +247,15 @@ func binaryLayerFeatures() []Feature {
 		binaryLayerFeature("gaggle.spec.enabled"),
 		binaryLayerFeatureSince("gaggle.spec.health", "dev"),
 		binaryLayerFeature("workflow.spec.enabled"),
+		binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}
 }
+
+// featureRequireProviderAuthorization is the pre-claim provider authorization
+// health predicate (#5317), enforced by the daemon scheduler.
+const featureRequireProviderAuthorization FeatureID = "workflow.spec.readiness.requireProviderAuthorization"
 
 func binaryLayerFeature(id FeatureID) Feature {
 	return binaryLayerFeatureSince(id, "v0.4.0")

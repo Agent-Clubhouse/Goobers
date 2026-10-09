@@ -412,6 +412,14 @@ func newCounterGitHubProvider(
 	return newGitHubProvider(token, opts...), cleanup, nil
 }
 
+// verifyGitHubRepositoryReadAccess is the daemon-side pre-claim authorization
+// probe (#5317). Like the backlog counter it reads with an instance-resolved
+// token and never consults AuthenticatedLogin. It bypasses the API read cache
+// so a revoked credential is observed live.
+func verifyGitHubRepositoryReadAccess(ctx context.Context, token string, repo providers.RepositoryRef) error {
+	return newGitHubProvider(token, providers.WithMaxRateLimitRetries(0)).VerifyRepositoryReadAccess(ctx, repo)
+}
+
 func (b *backlogCounter) ProviderQuotaGuarded() bool {
 	return b.quota != nil
 }
