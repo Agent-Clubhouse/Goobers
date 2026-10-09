@@ -101,6 +101,7 @@ func (r *JournalAuthorityResolver) prepare(ctx context.Context, runID string, or
 		return Authority{}, id, event, errors.Join(ErrAuthorityChanged, err)
 	}
 	authority := Authority{
+		ParentExecutionCapabilities: append([]string(nil), pinned.ParentExecutionCapabilities...),
 		Origin: Origin{Gaggle: id.Gaggle, RunID: id.RunID, StageOccurrence: origin.StageOccurrence,
 			AttemptID: origin.AttemptID, ConfigDigest: admission.ConfigDigest, PolicyDigest: AuthorityPolicyDigest(admission)},
 		Actor:     InvocationActor(id.RunID, origin.StageOccurrence),
