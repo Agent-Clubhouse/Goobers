@@ -75,7 +75,27 @@ func CommandEffects(t apiv1.Task) Effects {
 	if len(cmd) < 2 || cmd[0] != "goobers" {
 		return Effects{}
 	}
+	if cmd[1] == "issue-close-out" {
+		return issueCloseOutEffects(t)
+	}
 	return goobersCommandEffects(cmd[1], cmd[2:])
+}
+
+// issueCloseOutStatuses mirrors the statuses `goobers issue-close-out`
+// accepts; an empty status defaults to done.
+var issueCloseOutStatuses = []string{"", "done", "in-review", "needs-human", "needs-remediation"}
+
+// issueCloseOutEffects recognizes only a statically declared, supported
+// status. Every supported status updates or parks the driving work item, not
+// a PR, so none publishes review findings or counts as a terminal PR park.
+func issueCloseOutEffects(t apiv1.Task) Effects {
+	if len(t.Run.Command) != 2 {
+		return Effects{}
+	}
+	if _, dynamic := t.InputsFrom["status"]; dynamic || !slices.Contains(issueCloseOutStatuses, t.Inputs["status"]) {
+		return Effects{}
+	}
+	return Effects{Known: true}
 }
 
 func goobersCommandEffects(command string, args []string) Effects {
@@ -201,13 +221,22 @@ func gitDiffEffects(cmd []string) Effects {
 	if slices.Equal(cmd, []string{"git", "diff", "--check"}) {
 		return Effects{Known: true, EmptySuccess: true, CodeSubject: true}
 	}
-	if len(cmd) == 3 && strings.HasSuffix(cmd[2], "...HEAD") && !strings.HasPrefix(cmd[2], "-") {
+	// A whitespace check over a branch range is validation evidence: it prints
+	// nothing on success, so it never supplies a patch artifact.
+	if len(cmd) == 4 && cmd[2] == "--check" && headRange(cmd[3]) {
+		return Effects{Known: true, EmptySuccess: true, CodeSubject: true}
+	}
+	if len(cmd) == 3 && headRange(cmd[2]) {
 		if cmd[2] == "HEAD...HEAD" || cmd[2] == "...HEAD" {
 			return Effects{Known: true, EmptySuccess: true, CodeSubject: true}
 		}
 		return Effects{Known: true, Patch: true, CodeSubject: true}
 	}
 	return Effects{}
+}
+
+func headRange(arg string) bool {
+	return strings.HasSuffix(arg, "...HEAD") && !strings.HasPrefix(arg, "-")
 }
 
 func verdictEffects(args []string) Effects {

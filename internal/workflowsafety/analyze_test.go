@@ -96,6 +96,8 @@ func TestSafetyEvidenceRoutes(t *testing.T) {
 		{"explicit alternate producer", "", apiv1.WorkspaceScratch, []string{"git", "diff", "main...HEAD"}, false},
 		{"explicit readonly evidence", "", apiv1.WorkspaceRepoReadOnly, []string{"git", "diff", "main...HEAD"}, false},
 		{"self comparison is empty", "", apiv1.WorkspaceScratch, []string{"git", "diff", "HEAD...HEAD"}, true},
+		{"range check implicit", "", "", []string{"git", "diff", "--check", "origin/main...HEAD"}, false},
+		{"range check is not a patch", "", apiv1.WorkspaceScratch, []string{"git", "diff", "--check", "origin/main...HEAD"}, true},
 		{"internal non-code review", "internal", apiv1.WorkspaceScratch, []string{"git", "diff", "--check"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -421,6 +423,59 @@ func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
 	}
 }
 
+// #5680: first-party stage commands have exact, deliberately narrow effects.
+// Provider-side commands (open-pr, merge-pr, post-merge, ...) are recognized
+// but claim no publication or park: catalog effects are static wiring
+// knowledge, not proof of live delivery.
+func TestSafetyFirstPartyStageCommandEffects(t *testing.T) {
+	withInputs := func(task apiv1.Task, inputs, inputsFrom map[string]string) apiv1.Task {
+		task.Inputs, task.InputsFrom = inputs, inputsFrom
+		return task
+	}
+	for _, tc := range []struct {
+		name string
+		task apiv1.Task
+		want Effects
+	}{
+		{"open-pr", shell("s", "", "goobers", "open-pr"), Effects{Known: true}},
+		{"ci-poll kind", withInputs(shell("s", "", "goobers", "ci-poll"), map[string]string{"kind": "ci-poll"}, nil), Effects{Known: true}},
+		{"ci-poll without kind", shell("s", "", "goobers", "ci-poll"), Effects{}},
+		{"reconcile-post-merge", shell("s", "", "goobers", "reconcile-post-merge"), Effects{Known: true}},
+		{"elect-lander", shell("s", "", "goobers", "elect-lander"), Effects{Known: true}},
+		{"merge-pr", shell("s", "", "goobers", "merge-pr"), Effects{Known: true}},
+		{"merge-queue-poll", shell("s", "", "goobers", "merge-queue-poll"), Effects{Known: true}},
+		{"post-merge", shell("s", "", "goobers", "post-merge"), Effects{Known: true}},
+		{"record-merge-refusal", shell("s", "", "goobers", "record-merge-refusal"), Effects{Known: true}},
+		{"remediation-checkpoint", shell("s", "", "goobers", "remediation-checkpoint"), Effects{Known: true}},
+		{"remediation-checkpoint budget", shell("s", "", "goobers", "remediation-checkpoint", "--budget", "3"), Effects{Known: true}},
+		{"remediation-checkpoint escalate", shell("s", "", "goobers", "remediation-checkpoint", "--escalate=stalled"), Effects{Known: true, Parks: true}},
+		{"respond-to-findings", shell("s", "", "goobers", "respond-to-findings"), Effects{Known: true}},
+		{"respond-to-findings check", shell("s", "", "goobers", "respond-to-findings", "--check"), Effects{Known: true}},
+		{"issue-close-out default", shell("s", "", "goobers", "issue-close-out"), Effects{Known: true}},
+		{"issue-close-out in-review", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "in-review"}, nil), Effects{Known: true}},
+		{"issue-close-out done", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "done"}, nil), Effects{Known: true}},
+		// Issue parks label the work item, not the PR, so they never discharge
+		// a pending PR rejection the way remediation-checkpoint --escalate does.
+		{"issue-close-out needs-human", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "needs-human"}, map[string]string{"reason": "conflictReason"}), Effects{Known: true}},
+		{"issue-close-out needs-remediation", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "needs-remediation"}, nil), Effects{Known: true}},
+		{"issue-close-out unsupported status", withInputs(shell("s", "", "goobers", "issue-close-out"), map[string]string{"status": "closed"}, nil), Effects{}},
+		{"issue-close-out dynamic status", withInputs(shell("s", "", "goobers", "issue-close-out"), nil, map[string]string{"status": "status"}), Effects{}},
+		{"issue-close-out extra argv", shell("s", "", "goobers", "issue-close-out", "--status", "done"), Effects{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CommandEffects(tc.task); got != tc.want {
+				t.Fatalf("CommandEffects(%v) = %+v, want %+v", tc.task.Run.Command, got, tc.want)
+			}
+		})
+	}
+	// Every inventoried stage command is explicitly classified in its bare form.
+	for _, name := range builtincmd.Names() {
+		if !CommandEffects(shell("s", "", "goobers", name)).Known {
+			t.Errorf("built-in stage command %q is not classified by the safety catalog", name)
+		}
+	}
+}
+
 func TestSafetyShippedBuiltInCommandsAreCovered(t *testing.T) {
 	roots := []string{
 		filepath.Join("..", "..", "reference-workflows", "gaggles"),
@@ -687,7 +742,12 @@ func TestSafetyCommandCatalogExactForms(t *testing.T) {
 		{[]string{"git", "diff", "--check"}, Effects{Known: true, EmptySuccess: true, CodeSubject: true}},
 		{[]string{"git", "diff", "main...HEAD"}, Effects{Known: true, Patch: true, CodeSubject: true}},
 		{[]string{"git", "diff", "--stat"}, Effects{}},
-		{[]string{"git", "diff", "--check", "main...HEAD"}, Effects{}},
+		{[]string{"git", "diff", "--check", "main...HEAD"}, Effects{Known: true, EmptySuccess: true, CodeSubject: true}},
+		{[]string{"git", "diff", "--check", "origin/main...HEAD"}, Effects{Known: true, EmptySuccess: true, CodeSubject: true}},
+		{[]string{"git", "diff", "--check", "--stat"}, Effects{}},
+		{[]string{"git", "diff", "--check", "-x...HEAD"}, Effects{}},
+		{[]string{"git", "diff", "--check", "main..HEAD"}, Effects{}},
+		{[]string{"git", "diff", "--check", "main...HEAD", "--", "docs"}, Effects{}},
 		{[]string{"sh", "-c", "goobers apply-verdict"}, Effects{}},
 		{[]string{"goobers", "apply-verdict"}, Effects{Known: true, Publishes: "review"}},
 		{[]string{"goobers", "apply-verdict", "--gate", "renamed"}, Effects{Known: true, Publishes: "renamed"}},

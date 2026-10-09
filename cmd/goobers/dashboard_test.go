@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/startuphint"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -862,6 +863,80 @@ func TestPrepareDashboardAPIWaitForDaemonTimesOut(t *testing.T) {
 	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 150*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "up.lock") {
 		t.Fatalf("wait error = %v, want timeout naming up.lock", err)
+	}
+}
+
+// #5515: a first-boot daemon can spend longer than the attach timeout behind
+// its "daemon is starting" 503. Its advertised startup budget must keep the
+// dashboard waiting instead of exiting; without hints the timeout still holds.
+func TestPrepareDashboardAPIWaitsForDaemonAdvertisingStartupBudget(t *testing.T) {
+	const startingAnswers = 10
+	originalTimeout := dashboardAttachTimeout
+	dashboardAttachTimeout = 200 * time.Millisecond
+	defer func() { dashboardAttachTimeout = originalTimeout }()
+
+	for _, tc := range []struct {
+		name  string
+		hints bool
+	}{{"budget extends the wait", true}, {"no hints keep the timeout", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initDemo(t)
+			layout := instance.NewLayout(root)
+			var mu sync.Mutex
+			answers := 0
+			daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				mu.Lock()
+				answers++
+				starting := answers <= startingAnswers
+				mu.Unlock()
+				if starting {
+					if tc.hints {
+						startuphint.Set(response.Header(), startuphint.Hints{
+							HasBudget: true, BudgetRemaining: time.Minute, Progress: "1", Daemon: "d1",
+						})
+					}
+					http.Error(response, daemonStartingMessage, http.StatusServiceUnavailable)
+					return
+				}
+				if err := json.NewEncoder(response).Encode(readservice.Health{
+					APIVersion: readservice.APIVersion, SchemaVersion: readservice.SchemaVersion, Ready: true,
+				}); err != nil {
+					t.Errorf("encode health response: %v", err)
+				}
+			}))
+			defer daemon.Close()
+			setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
+			config, err := instance.LoadConfig(layout.ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+
+			// The probe sleeps 100ms between answers, so reaching the healthy
+			// answer takes several times the 200ms attach timeout.
+			api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 0)
+			if !tc.hints {
+				if err == nil || !strings.Contains(err.Error(), "timed out") {
+					t.Fatalf("prepareDashboardAPI error = %v, want attach timeout without startup hints", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("prepareDashboardAPI error = %v, want attach after the daemon finished starting", err)
+			}
+			defer func() {
+				if err := api.close(); err != nil {
+					t.Errorf("close dashboard API: %v", err)
+				}
+			}()
+			if api.mode != dashboardModeDaemon {
+				t.Fatalf("mode = %q, want daemon", api.mode)
+			}
+		})
 	}
 }
 

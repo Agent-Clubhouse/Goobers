@@ -81,7 +81,7 @@ type ReviewThreadPublication struct {
 	SelectedNumber         string                  `json:"selectedNumber"`
 	PublishedHeadSHA       string                  `json:"publishedHeadSha"`
 	FeedbackSnapshotDigest string                  `json:"feedbackSnapshotDigest"`
-	Status                 string                  `json:"status"`
+	ResolutionStatus       string                  `json:"resolutionStatus"`
 	ResumedFromReceipt     bool                    `json:"resumedFromReceipt"`
 	Restoration            string                  `json:"restoration"`
 	UnresolvedThreadCount  string                  `json:"unresolvedThreadCount,omitempty"`

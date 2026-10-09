@@ -300,7 +300,7 @@ func completeReviewThreadPublication() apiv1.ReviewThreadPublication {
 		SelectedNumber:         "42",
 		PublishedHeadSHA:       strings.Repeat("a", 40),
 		FeedbackSnapshotDigest: "sha256:" + strings.Repeat("f", 64),
-		Status:                 apiv1.ReviewThreadPublicationStale,
+		ResolutionStatus:       apiv1.ReviewThreadPublicationStale,
 		ResumedFromReceipt:     true,
 		Restoration:            apiv1.ReviewThreadRestorationUnsupported,
 		UnresolvedThreadCount:  "1",
