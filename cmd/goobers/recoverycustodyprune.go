@@ -11,7 +11,8 @@ import (
 
 // openRecoveryCustodyPruneGuard refuses to let telemetry retention delete a
 // run's journal while that run still owns a live (non-retired) recovery
-// record (#4824): every recovery consumer — retirement (recoveryexpiry.go),
+// record in either the bundle or overflow tier (#4824). Every recovery consumer
+// — retirement (recoveryexpiry.go),
 // selection (recoveryselect.go), restore (recoveryrestore.go) — re-opens the
 // owning run journal, and once it is gone none of them can ever select,
 // restore, or retire the record again, permanently stranding its inventory
@@ -37,6 +38,12 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	if err != nil {
 		return nil, noop, err
 	}
+	overflow, broken, err := readConfiguredRecoveryOverflow(ctx, layout)
+	if err != nil {
+		return nil, noop, err
+	}
+	entries = append(entries, overflow...)
+	unreadable = append(unreadable, broken...)
 	if len(unreadable) > 0 {
 		return nil, noop, fmt.Errorf(
 			"%w: recovery inventory holds %d unreadable reservation(s); refusing to prune run journals that may still own recovery state",
