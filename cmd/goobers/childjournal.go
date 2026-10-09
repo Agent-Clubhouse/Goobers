@@ -86,10 +86,7 @@ func childObservationOp(c childpod.Contract, op livejournal.Op) (livejournal.Op,
 		return op, childJournalRefusal()
 	}
 	normalize := func(stage string) string {
-		if stage == c.Identity.RunID+":"+c.Stage {
-			return c.Stage
-		}
-		return stage
+		return stageArtifactName(c.Identity.RunID, stage)
 	}
 	stage, attempt := "", 0
 	switch op.Kind {

@@ -136,9 +136,9 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, _, err := loadConfigDirectory(f.retainedPath)
+	set, report, err := loadConfigDirectory(f.retainedPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load config: %v (%s)", err, validationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*proposal.Workflow.DeepCopy()}
 	instructions, skills, err := loadSnapshotGooberInputs(f.retainedPath, set)
@@ -216,6 +216,15 @@ func TestChildKitWriterUsesRealAcceptedSourceAndRetainedInstructions(t *testing.
 	for _, grant := range kit.Grants {
 		if grant.Capability != "agent:model" {
 			t.Fatalf("credential escaped: %+v", grant)
+		}
+	}
+	for _, taskID := range []string{f.attempt.Stage, "other:" + f.attempt.Stage, f.attempt.Envelope.TaskID + "/artifact"} {
+		foreign := f.attempt
+		env := *foreign.Envelope
+		env.TaskID = taskID
+		foreign.Envelope = &env
+		if err := verifyChildKitIdentity(f.writer.identity, foreign); err == nil {
+			t.Fatalf("unqualified or foreign task received authority: %q", taskID)
 		}
 	}
 	foreign := f.attempt
