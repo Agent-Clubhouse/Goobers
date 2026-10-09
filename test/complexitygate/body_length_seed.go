@@ -36,7 +36,7 @@ var bodyLengthSeedCeilings = map[string]int{
 	"internal/readmodel/project.go\tProjectRun":                      272,
 	"internal/readservice/runs.go\tsummarizeRunForStage":             258,
 	"internal/readservice/telemetry.go\t(*Telemetry).TelemetryStats": 217,
-	"internal/runner/parallel_run.go\t(*Runner).runParallelBranch":   344,
+	"internal/runner/parallel_run.go\t(*Runner).runParallelBranch":   327,
 	"internal/runner/run.go\t(*Runner).dispatchTask":                 253,
 	"internal/runner/run.go\t(*Runner).evaluateGate":                 241,
 	"internal/runner/run.go\t(*Runner).runTask":                      273,

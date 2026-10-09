@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -519,24 +518,7 @@ func (r *Runner) runParallelBranch(
 	var retryInstructionAddendum string
 
 	for {
-		if ctx.Err() != nil {
-			result.status = journal.BranchCancelled
-			result.paused = parallelDrainCancellation(ctx)
-			return result
-		}
-		// Exceeding branchTimeoutSeconds terminates at the next stage
-		// boundary (never mid-stage — see the field's doc comment), so this
-		// is a plain check here, not a context deadline: a stage that is
-		// already running finishes on its own, exactly like the sequential
-		// path (run.go).
-		if deadline := branch.deadline(par.spec.BranchTimeoutSeconds); !deadline.IsZero() && !time.Now().Before(deadline) {
-			result.status = journal.BranchTimedOut
-			result.failed = true
-			return result
-		}
-		if stepBudget.Add(1) > int64(r.maxSteps) {
-			result.status = journal.BranchFailed
-			result.err = fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps)
+		if r.stopParallelBranchAtBoundary(ctx, jr, in, par, branch, stepBudget, &result, childResume) {
 			return result
 		}
 		branchJournal.SetMachineState(state)
@@ -548,7 +530,7 @@ func (r *Runner) runParallelBranch(
 			replayed := replayTask != nil
 			if replayed {
 				stageResult = *replayTask
-				replayTask = nil
+				replayTask, childResume = nil, nil
 			} else {
 				attemptAddendum := retryInstructionAddendum
 				retryInstructionAddendum = ""
