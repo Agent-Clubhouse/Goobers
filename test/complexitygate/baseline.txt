@@ -43,12 +43,11 @@ internal/readservice/runs.go	(*Local).listRunsUnannotated	42
 internal/readservice/runs.go	summarizeRunForStage	65
 internal/readservice/telemetry.go	(*Local).runtimeAnalyticsGraph	42
 internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	43
-internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	57
 internal/runner/parallel_run.go	(*Runner).runParallelBranch	76
 internal/runner/resume.go	pendingParallel	61
 internal/runner/run.go	(*Runner).dispatchTask	61
 internal/runner/run.go	(*Runner).evaluateGate	44
-internal/runner/run.go	(*Runner).runTask	48
+internal/runner/run.go	(*Runner).runTask	47
 !entry-justification	internal/runner/run.go	(*Runner).taskOutcome	52	#5107 adds the no-work repass gate-routing decision (extracted into noWorkRepassOutcome, but the call site itself still adds one branch)
 internal/runner/run.go	(*Runner).taskOutcome	52
 internal/runner/run.go	(*Runner).walk	88
@@ -96,11 +95,10 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	internal/readmodel/project.go	ProjectRun	272
 !body-length	internal/readservice/runs.go	summarizeRunForStage	258
 !body-length	internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	217
-!body-length	internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	241
 !body-length	internal/runner/parallel_run.go	(*Runner).runParallelBranch	385
 !body-length	internal/runner/run.go	(*Runner).dispatchTask	253
 !body-length	internal/runner/run.go	(*Runner).evaluateGate	241
-!body-length	internal/runner/run.go	(*Runner).runTask	275
+!body-length	internal/runner/run.go	(*Runner).runTask	273
 !body-length-justification	internal/runner/run.go	(*Runner).taskOutcome	291	#5107 adds the no-work repass gate-routing call site (decision logic itself extracted into noWorkRepassOutcome to keep this growth minimal)
 !body-length	internal/runner/run.go	(*Runner).taskOutcome	291
 !body-length	internal/runner/run.go	(*Runner).walk	400
