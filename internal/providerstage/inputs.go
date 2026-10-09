@@ -81,7 +81,10 @@ var inputSchemas = map[string][]Input{
 		integersIn("maxItems"), stringListsIn("excludeLabels", "requireLabels", "roster"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
-	"backlog-dedupe": schema(integersIn("maxCandidates"), pathsIn("resultFile"), durationsIn("timeout")),
+	"backlog-dedupe": schema(
+		stringsIn("compareFieldPredicate", "compareState"), integersIn("compareScanLimit", "maxCandidates"),
+		stringListsIn("compareLabels"), pathsIn("resultFile"), durationsIn("timeout"),
+	),
 	"backlog-health": schema(
 		stringsIn("readyLabel", "trustLabel"),
 		integersIn("implementationFailureThreshold", "transitionScanMaxPages", "transitionScanQuotaFloor"),
