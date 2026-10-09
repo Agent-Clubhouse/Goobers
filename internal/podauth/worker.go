@@ -78,18 +78,6 @@ func validWorkerID(id string) bool {
 	return id != "" && len(id) <= 256 && strings.TrimSpace(id) == id && utf8.ValidString(id) && strings.IndexFunc(id, unicode.IsControl) < 0
 }
 
-func (s *SignedKey) verifyWorkerConfigDigest(token string) (string, error) {
-	return s.verifyWorkerToken(workerConfigDigestKind, token)
-}
-
-func (s *SignedKey) verifyWorkerBlob(token string) (string, error) {
-	return s.verifyWorkerToken(workerBlobKind, token)
-}
-
-func (s *SignedKey) verifyWorkerSurrender(token string) (string, error) {
-	return s.verifyWorkerToken(workerSurrenderKind, token)
-}
-
 func (s *SignedKey) verifyWorkerToken(kind workerTokenKind, token string) (string, error) {
 	rest, ok := strings.CutPrefix(token, kind.prefix)
 	if !ok || len(rest) > 512 {
