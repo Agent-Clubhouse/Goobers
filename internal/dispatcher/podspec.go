@@ -25,6 +25,8 @@ import (
 // reconcile sweep keys on (dispatcher §5: label + sweep, NOT a cross-namespace
 // ownerReference).
 const (
+	// EnvChildExecutionDigest names the host-published isolated child contract.
+	EnvChildExecutionDigest = "GOOBERS_CHILD_EXECUTION_DIGEST"
 	// LabelManagedBy marks every pod this dispatcher creates; the orphan
 	// sweep lists by it.
 	LabelManagedBy = "app.kubernetes.io/managed-by"
@@ -345,6 +347,7 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // stage-spec vars because a stage rewriting its own command/capabilities is
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
+	EnvChildExecutionDigest,
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvArtifactPublication,
