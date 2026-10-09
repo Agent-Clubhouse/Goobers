@@ -73,6 +73,7 @@ export const apiRoutes = {
   "childWorkflowValidate": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/validate", actionClass: "workflow-execution" },
   "childWorkflowStart": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/start", actionClass: "workflow-execution" },
   "childWorkflowStatus": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/status", actionClass: "workflow-execution" },
+  "childWorkflowResolve": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/resolve", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];

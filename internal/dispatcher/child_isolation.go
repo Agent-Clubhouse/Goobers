@@ -254,7 +254,7 @@ func childSettlementContext(ctx context.Context, attempt Attempt) (context.Conte
 // A distinct signed token domain identifies generated custody at the daemon,
 // even if lineage is missing. It must never fall through to shared blob storage.
 type childTokenMinter interface {
-	MintChildPod(string, time.Duration) (string, error)
+	MintChildPod(string, string, time.Duration) (string, error)
 }
 
 func (d *Dispatcher) mintAttemptToken(attempt *Attempt) error {
@@ -265,7 +265,7 @@ func (d *Dispatcher) mintAttemptToken(attempt *Attempt) error {
 		if !ok || attempt.PodToken != "" {
 			return fmt.Errorf("%w: generated custody requires a freshly signed child token", ErrChildIsolation)
 		}
-		token, err = minter.MintChildPod(attempt.RunID, 0)
+		token, err = minter.MintChildPod(attempt.RunID, attempt.ChildExecutionDigest, 0)
 		if err == nil && token == "" {
 			return ErrChildIsolation
 		}

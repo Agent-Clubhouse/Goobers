@@ -9,7 +9,9 @@ import (
 
 // ChildPruneResult counts maintenance work units. A lineage tombstone also
 // releases its pinned ordinary receipt and potentially its last-owned proposal,
-// plus fork/result carriers, so one pass deletes at most 5*limit
+// plus fork/result carriers, one disposition, at most 32 prior choices,
+// and at most 512 combined blob/read-membership rows,
+// so one pass deletes at most 550*limit
 // physical rows. All stages share the same work budget.
 type ChildPruneResult struct {
 	Tombstoned         int
@@ -67,7 +69,7 @@ func pruneExpiredChildTombstones(ctx context.Context, tx *sql.Tx, now time.Time,
 	// Delete expired tombstones first so a full tombstone quota can recover.
 	ids, err := childPruneIDs(ctx, tx, `SELECT c.child_id FROM child_lineages c JOIN child_parents p USING(gaggle,parent_run)
  WHERE c.tombstoned_ns<=? AND p.settled_ns IS NOT NULL
- AND NOT EXISTS(SELECT 1 FROM child_lineages f WHERE f.gaggle=c.gaggle AND f.parent_run=c.parent_run AND f.acknowledged_ns IS NULL)
+ AND NOT EXISTS(SELECT 1 FROM child_lineages f WHERE f.gaggle=c.gaggle AND f.parent_run=c.parent_run AND (f.acknowledged_ns IS NULL OR f.publication_pending>0))
  ORDER BY c.tombstoned_ns,c.child_id LIMIT ?`, now.Add(-ChildTombstoneRetention).UnixNano(), limit)
 	if err != nil {
 		return 0, err
@@ -88,7 +90,7 @@ func tombstoneChildLineages(ctx context.Context, tx *sql.Tx, now time.Time, limi
  SELECT gaggle,COUNT(*) AS count FROM child_lineages WHERE tombstoned_ns IS NOT NULL GROUP BY gaggle)
  SELECT c.child_id FROM child_lineages c JOIN child_parents p USING(gaggle,parent_run)
  WHERE c.tombstoned_ns IS NULL AND c.terminal_ns IS NOT NULL AND c.acknowledged_ns<=? AND p.settled_ns<=?
- AND NOT EXISTS(SELECT 1 FROM child_lineages f WHERE f.gaggle=c.gaggle AND f.parent_run=c.parent_run AND f.acknowledged_ns IS NULL)
+ AND NOT EXISTS(SELECT 1 FROM child_lineages f WHERE f.gaggle=c.gaggle AND f.parent_run=c.parent_run AND (f.acknowledged_ns IS NULL OR f.publication_pending>0))
  AND NOT EXISTS(SELECT 1 FROM child_parents d WHERE d.gaggle=c.gaggle AND d.parent_run=substr(c.acceptance_id,9))
  AND COALESCE((SELECT count FROM tombstone_counts h WHERE h.gaggle=c.gaggle),0)<?
  AND EXISTS(SELECT 1 FROM triggers t WHERE t.id=c.acceptance_id AND t.state IN ('dispatched','rejected'))

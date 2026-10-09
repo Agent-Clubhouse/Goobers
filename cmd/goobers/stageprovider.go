@@ -38,6 +38,7 @@ type stageProviderConfig struct {
 	// delivered credential. Only an operator command that is not a stage sets
 	// it; see withStageProviderConfiguredADOAuth.
 	configuredADOAuth bool
+	adoSource         providers.ADOCredentialSource
 	noRetries         bool
 	tokenSource       providers.TokenSource
 	observeToken      func(string)
@@ -478,6 +479,9 @@ func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provid
 }
 
 func newBrokeredADOProviderForStage(cfg stageProviderConfig) (*providers.ADOProvider, error) {
+	if cfg.adoSource != nil {
+		return newADOProviderForStage(cfg.repo, cfg.adoSource)
+	}
 	token, err := stageProviderToken(cfg)
 	if err != nil {
 		return nil, err
@@ -649,3 +653,9 @@ func stageProviderStampedLogin(stamped string, repo providers.RepositoryRef) sta
 // where a malformed identity matches nothing and every trusted-comment check
 // silently reads as "not mine".
 var githubLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$`)
+
+// withStageProviderADOCredential supplies the host broker's explicit scheme.
+// Contained publication cannot infer it from the daemon process environment.
+func withStageProviderADOCredential(source providers.ADOCredentialSource) stageProviderOption {
+	return func(cfg *stageProviderConfig) { cfg.adoSource = source }
+}

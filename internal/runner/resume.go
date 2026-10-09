@@ -26,6 +26,10 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 // snapshotted Item and workflow Definition); RepoRef is not journaled, so the
 // caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
+	// OnRecoveryOwned runs with journal and cancellation ownership acquired,
+	// before stage effects. The context observes operator interruption. Other
+	// callback errors leave execution suspended.
+	OnRecoveryOwned func(context.Context) error
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
 	// Machine is the compiled workflow (#9) this run was walking. When nil,
@@ -154,8 +158,25 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowChildJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend recovered child journal: %w", err)
+	}
+	defer releaseJournal()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		if in.OnRecoveryOwned != nil {
+			if err := in.OnRecoveryOwned(stalledAttemptContext(ctx)); err != nil {
+				if request, ok := stalledRequestFromContext(ctx); ok {
+					_, state, inspectErr := runPhaseAndState(dir)
+					if inspectErr != nil {
+						return Result{}, inspectErr
+					}
+					return r.finishStalled(in.RunID, jr, state, 0, request)
+				}
+				return Result{}, err
+			}
+		}
 		return r.resumeOwned(ctx, in, jr, registrar, dir)
 	})
 }
@@ -201,6 +222,11 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}
 	defer func() { _ = jr.Close() }()
+	releaseJournal, err := r.borrowChildJournal(jr)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: lend resumed child journal: %w", err)
+	}
+	defer releaseJournal()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
 		rd, err := journal.OpenRead(dir)

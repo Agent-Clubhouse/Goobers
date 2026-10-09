@@ -83,6 +83,8 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
+	// GeneratedChild is populated only by the signed generated-worker authenticator.
+	GeneratedChild *GeneratedChildPrincipal
 	// ChildWorkflow is populated only by the stage-grant authenticator.
 	ChildWorkflow *ChildWorkflowPrincipal
 	Subject       string
@@ -151,6 +153,14 @@ func (p Principal) HasRole(required Role) bool {
 // implementation). Pod principals hold no instance roles: authorization for
 // them is plane-scoped, not role-ranked.
 const PodPrincipalIssuer = "goobers/pod"
+
+// GeneratedChildPrincipalIssuer is separate from ordinary pod and human authority.
+const GeneratedChildPrincipalIssuer = "goobers/generated-child"
+
+// GeneratedChildPrincipal binds authentication to one immutable execution contract.
+type GeneratedChildPrincipal struct {
+	ContractDigest string
+}
 
 // WorkerPrincipalIssuer identifies a resident worker's short-lived
 // config-observability credential. It carries neither instance roles nor a run
@@ -424,6 +434,26 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if principal.Issuer == GeneratedChildPrincipalIssuer {
+			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
+				return errors.New("generated child contract unavailable")
+			}
+			// Each permitted handler requires a separately installed exact-attempt
+			// owner. A missing owner never falls back to ordinary pod authority.
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialResolvePath {
+				return nil
+			}
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.ClaimListPath {
+				return nil
+			}
+			if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
+				return nil
+			}
+			if request.Method == http.MethodPost && surrenderPlanePath(request.URL.Path) {
+				return nil
+			}
+			return authorizeWorkerBlob(request)
+		}
 		if principal.Issuer == ChildWorkflowPrincipalIssuer {
 			return authorizeChildWorkflow(request, principal)
 		}
@@ -540,7 +570,12 @@ func PrincipalFromRequest(request *http.Request) (Principal, bool) {
 	if request == nil {
 		return Principal{}, false
 	}
-	principal, ok := request.Context().Value(principalContextKey{}).(Principal)
+	return PrincipalFromContext(request.Context())
+}
+
+// PrincipalFromContext returns only the identity established by authentication.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
 	return principal, ok
 }
 
@@ -608,40 +643,45 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
-	events                  eventSource
-	authenticator           Authenticator
-	interventions           InterventionService
-	interventionContext     context.Context
-	runRevealer             func(context.Context, string) error
-	workflowMutations       WorkflowMutationService
-	gaggleBundles           GaggleBundleService
-	claims                  ClaimService
-	triggers                TriggerService
-	escalations             EscalationService
-	cancels                 CancelService
-	journal                 JournalService
-	runJournal              RunJournalService
-	childWorkflows          ChildWorkflowService
-	operatorMessages        OperatorMessageService
-	credentials             CredentialService
-	blobs                   blobstore.Store
-	recovery                RecoveryService
-	surrenders              SurrenderService
-	state                   StateService
-	telemetryDefects        TelemetryDefectAggregateService
-	podRunGaggle            func(context.Context, string) (string, error)
-	configDigest            func() string
-	workerConfigDivergence  func(journal.Event) error
-	instanceReadiness       InstanceReadinessService
-	portalAssets            http.Handler
-	recoveryGate            func() bool
-	recoveryHints           func(http.Header)
-	discoveryIdentity       DiscoveryIdentity
-	telemetryReadsAvailable bool
-	workItemsAvailable      bool
-	activeClaimsAvailable   bool
-	configAuthoring         ConfigAuthoringReader
-	trustedProxies          []string
+	events                    eventSource
+	authenticator             Authenticator
+	interventions             InterventionService
+	interventionContext       context.Context
+	runRevealer               func(context.Context, string) error
+	workflowMutations         WorkflowMutationService
+	gaggleBundles             GaggleBundleService
+	claims                    ClaimService
+	generatedChildExecution   ChildExecutionObserver
+	triggers                  TriggerService
+	escalations               EscalationService
+	cancels                   CancelService
+	journal                   JournalService
+	generatedChildJournal     JournalService
+	runJournal                RunJournalService
+	childWorkflows            ChildWorkflowService
+	operatorMessages          OperatorMessageService
+	credentials               CredentialService
+	generatedChildCredentials CredentialService
+	blobs                     blobstore.Store
+	generatedChildBlobs       blobstore.Store
+	recovery                  RecoveryService
+	surrenders                SurrenderService
+	generatedChildSurrenders  SurrenderService
+	state                     StateService
+	telemetryDefects          TelemetryDefectAggregateService
+	podRunGaggle              func(context.Context, string) (string, error)
+	configDigest              func() string
+	workerConfigDivergence    func(journal.Event) error
+	instanceReadiness         InstanceReadinessService
+	portalAssets              http.Handler
+	recoveryGate              func() bool
+	recoveryHints             func(http.Header)
+	discoveryIdentity         DiscoveryIdentity
+	telemetryReadsAvailable   bool
+	workItemsAvailable        bool
+	activeClaimsAvailable     bool
+	configAuthoring           ConfigAuthoringReader
+	trustedProxies            []string
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -1274,7 +1314,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
-	registerBlobPlaneRoutes(router, config.blobs, errorLog)
+	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{
 		http.MethodGet: apicontract.RouteRunRecovery, http.MethodPost: apicontract.RouteRunRecoveryPublish,
 	}, map[apicontract.RouteID]http.HandlerFunc{

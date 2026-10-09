@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema, childSnapshotSchema, childResultSchema}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, childPublicationSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL

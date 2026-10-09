@@ -32,6 +32,12 @@ type ChildWorkflowService interface {
 	ChildWorkflowStatus(ctx context.Context, grant, run, invocationKey string) (apicontract.ChildWorkflowResponse, error)
 }
 
+// ChildWorkflowResolutionService durably records intent; the runner applies it
+// only after stopping and joining writers. A transport response is not a yield.
+type ChildWorkflowResolutionService interface {
+	ResolveChildWorkflow(context.Context, string, string, apicontract.ChildWorkflowResolveRequest) (apicontract.ChildWorkflowResolutionResponse, error)
+}
+
 // WithChildWorkflowService enables the stage-only child workflow transport.
 func WithChildWorkflowService(service ChildWorkflowService) HandlerOption {
 	return func(config *handlerConfig) error {
@@ -44,7 +50,7 @@ func WithChildWorkflowService(service ChildWorkflowService) HandlerOption {
 }
 
 func registerChildWorkflowRoutes(router *Router, service ChildWorkflowService, errorLog *log.Logger) {
-	for _, id := range []apicontract.RouteID{apicontract.RouteChildWorkflowValidate, apicontract.RouteChildWorkflowStart, apicontract.RouteChildWorkflowStatus} {
+	for _, id := range []apicontract.RouteID{apicontract.RouteChildWorkflowValidate, apicontract.RouteChildWorkflowStart, apicontract.RouteChildWorkflowStatus, apicontract.RouteChildWorkflowResolve} {
 		router.Handle(id, childWorkflowHandler(id, service, errorLog))
 	}
 }
@@ -80,6 +86,9 @@ func childWorkflowHandler(id apicontract.RouteID, service ChildWorkflowService, 
 }
 
 func callChildWorkflow(request *http.Request, id apicontract.RouteID, service ChildWorkflowService, grant, run string) (any, int, error) {
+	if id == apicontract.RouteChildWorkflowResolve {
+		return callChildResolution(request, service, grant, run)
+	}
 	if id == apicontract.RouteChildWorkflowStatus {
 		key, err := childStringBody(request, "invocationKey", apicontract.MaxChildWorkflowInvocationKeyBytes)
 		if err != nil || !validChildInvocationKey(key) {

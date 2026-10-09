@@ -357,3 +357,41 @@ func TestEvaluateExcludesRetiredArms(t *testing.T) {
 		t.Fatalf("decision = %+v, should not nominate retired arm", decision)
 	}
 }
+
+func TestUniformVaries(t *testing.T) {
+	seen := map[float64]bool{}
+	for i := uint64(1); i <= 64; i++ {
+		u := uniform(i)
+		if u < 0 || u >= 1 {
+			t.Fatalf("uniform(%d) = %v out of range", i, u)
+		}
+		seen[u] = true
+	}
+	if len(seen) < 60 {
+		t.Fatalf("uniform draws not varied: %d distinct", len(seen))
+	}
+}
+
+func TestPosteriorConfidenceEqualArmsNearHalf(t *testing.T) {
+	var obs []Observation
+	for _, arm := range []string{"a", "b"} {
+		for i := 0; i < 10; i++ {
+			obs = append(obs, Observation{Arm: arm, Success: i%2 == 0})
+		}
+	}
+	c := posteriorConfidence("a", "b", obs)
+	if c <= 0.3 || c >= 0.7 {
+		t.Fatalf("confidence = %v, want near 0.5", c)
+	}
+}
+
+func BenchmarkPosteriorConfidence(b *testing.B) {
+	obs := make([]Observation, 0, 2000)
+	for i := 0; i < 1000; i++ {
+		obs = append(obs, Observation{Arm: "a", Success: i%3 != 0}, Observation{Arm: "b", Success: i%2 == 0})
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		posteriorConfidence("a", "b", obs)
+	}
+}

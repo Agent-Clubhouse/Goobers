@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -81,13 +82,26 @@ func (h *daemonChildHandoff) observe(ctx context.Context, s *daemonCredentialSer
 	if child.CancellationRequested {
 		return runner.ChildHandoffRequest{}, childworkflow.ErrAuthorityUnavailable
 	}
-	// Result disposition is a later landing slice. A completed child must not
-	// repeatedly interrupt its resumed parent or release custody implicitly.
+	action, dispositionDigest := "wait", ""
 	if child.State.Terminal() {
-		return runner.ChildHandoffRequest{}, nil
+		request, err := s.childQueue.ChildDisposition(ctx, child.Identity)
+		if errors.Is(err, triggerqueue.ErrChildDispositionPending) {
+			return runner.ChildHandoffRequest{}, nil
+		}
+		if err != nil {
+			return runner.ChildHandoffRequest{}, err
+		}
+		if !request.AppliedAt.IsZero() {
+			return runner.ChildHandoffRequest{}, nil
+		}
+		if request.AttemptID != env.ChildWorkflowOrigin.AttemptID {
+			// A new invocation must explicitly adopt/revise the old choice by
+			// request-digest CAS before the host yields again.
+			return runner.ChildHandoffRequest{}, nil
+		}
+		action, dispositionDigest = request.Action, request.RequestDigest()
 	}
-	action := "wait"
-	request := runner.ChildHandoffRequest{Gaggle: env.Gaggle, ParentRunID: env.RunID, Action: action, ChildRunID: child.RunID, AcceptanceID: child.AcceptanceID, InvocationKey: child.Identity.InvocationKey, SourceDigest: child.ProposalDigest, Origin: *env.ChildWorkflowOrigin}
+	request := runner.ChildHandoffRequest{Gaggle: env.Gaggle, ParentRunID: env.RunID, Action: action, DispositionDigest: dispositionDigest, ChildRunID: child.RunID, AcceptanceID: child.AcceptanceID, InvocationKey: child.Identity.InvocationKey, SourceDigest: child.ProposalDigest, Origin: *env.ChildWorkflowOrigin}
 	request.RequestID = childHandoffRequestDigest(request)
 	return request, nil
 }
@@ -127,15 +141,36 @@ func (h *daemonChildHandoff) Yield(ctx context.Context, request runner.ChildHand
 		return err
 	}
 	coordinator := childworkflow.WorkspaceCoordinator{Queue: s.childQueue, Worktrees: h.worktrees}
-	parent, err := h.yieldedWorkspace(s, custody, url)
+	parent, err := h.yieldedWorkspace(ctx, s, &coordinator, child, request.Action, custody, url)
 	if err != nil {
 		return err
 	}
-	return coordinator.Capture(ctx, child, parent)
+	if request.Action == "wait" {
+		return coordinator.Capture(ctx, child, parent)
+	}
+	disposition, err := s.childQueue.ChildDisposition(ctx, child.Identity)
+	if err != nil {
+		return err
+	}
+	if disposition.RequestDigest() != request.DispositionDigest || disposition.Action != request.Action || disposition.AttemptID != request.Origin.AttemptID {
+		return childworkflow.ErrAuthorityChanged
+	}
+	_, err = coordinator.ApplyDisposition(ctx, child, &parent, time.Now().UTC())
+	if err == nil {
+		return nil
+	}
+	current, readErr := s.childQueue.ChildDisposition(ctx, child.Identity)
+	if readErr != nil || current.RequestDigest() != disposition.RequestDigest() || !current.AppliedAt.IsZero() {
+		return errors.Join(err, readErr)
+	}
+	if len(current.Plan) == 0 {
+		return &runner.ChildDispositionWaitError{Reason: "Child disposition preparation was refused before parent files changed. Read the current disposition request digest and choose discard or a revised action."}
+	}
+	return &runner.ChildDispositionWaitError{Reconcile: true, Reason: "The published child application plan requires reconciliation. Parent writers remain stopped; another action cannot replace this plan."}
 }
 
 func (h *daemonChildHandoff) child(ctx context.Context, s *daemonCredentialService, request runner.ChildHandoffRequest) (triggerqueue.ChildRecord, error) {
-	if request.Action != "wait" || request.Gaggle != h.layout.Gaggle() || request.RequestID != childHandoffRequestDigest(request) {
+	if request.Gaggle != h.layout.Gaggle() || request.RequestID != childHandoffRequestDigest(request) {
 		return triggerqueue.ChildRecord{}, childworkflow.ErrAuthorityUnavailable
 	}
 	id := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: request.Gaggle, ParentRunID: request.ParentRunID}, StageOccurrence: request.Origin.StageOccurrence, InvocationKey: request.InvocationKey}
@@ -189,7 +224,7 @@ func (h *daemonChildHandoff) parkedParent(request runner.ChildHandoffRequest) (j
 
 func (h *daemonChildHandoff) validateAccepted(ctx context.Context, s *daemonCredentialService, request runner.ChildHandoffRequest, child triggerqueue.ChildRecord, id journal.RunIdentity, pinned childworkflow.PinnedStageAdmission) error {
 	actor := childworkflow.InvocationActor(id.RunID, request.Origin.StageOccurrence)
-	receipt, err := s.childQueue.Get(ctx, child.AcceptanceID, actor)
+	receipt, err := s.childQueue.VerifiedChildStart(ctx, child.Identity, actor)
 	if err != nil {
 		return err
 	}
@@ -201,12 +236,16 @@ func (h *daemonChildHandoff) validateAccepted(ctx context.Context, s *daemonCred
 	if err != nil {
 		return err
 	}
-	validator, err := childworkflow.NewValidator(pinned.Admission)
-	if err != nil {
+	authority := childworkflow.Authority{Origin: childworkflow.Origin{Gaggle: id.Gaggle, RunID: id.RunID, StageOccurrence: request.Origin.StageOccurrence, ConfigDigest: pinned.Admission.ConfigDigest, PolicyDigest: childworkflow.AuthorityPolicyDigest(pinned.Admission)}, Actor: actor, Admission: pinned.Admission, ConfigGeneration: id.ConfigGeneration, ParentWorkflow: id.Workflow, ParentWorkflowDigest: id.WorkflowDigest, ParentGooberDigest: id.GooberDigest}
+	if err := childworkflow.ValidateRetainedCustody(authority, envelope, child, source); err != nil {
 		return err
 	}
-	authority := childworkflow.Authority{Origin: childworkflow.Origin{Gaggle: id.Gaggle, RunID: id.RunID, StageOccurrence: request.Origin.StageOccurrence, ConfigDigest: pinned.Admission.ConfigDigest, PolicyDigest: validator.PolicyDigest()}, Actor: actor, Admission: pinned.Admission, ConfigGeneration: id.ConfigGeneration, ParentWorkflow: id.Workflow, ParentWorkflowDigest: id.WorkflowDigest, ParentGooberDigest: id.GooberDigest}
-	_, err = childworkflow.ValidateRetainedStart(authority, envelope, source.Source)
+	if err := childworkflow.CheckDispositionAuthority(authority, request.Action); err != nil {
+		return err
+	}
+	if request.Action != "discard" {
+		_, err = childworkflow.ValidateRetainedStart(authority, envelope, source.Source)
+	}
 	return err
 }
 
@@ -230,7 +269,11 @@ func (h *daemonChildHandoff) Wait(ctx context.Context, request runner.ChildHando
 			if err != nil {
 				return runner.ChildHandoffCompletion{}, err
 			}
-			return runner.ChildHandoffCompletion{State: string(result.Input.State), Summary: result.Input.Summary, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef, References: result.Input.References}, nil
+			publications, err := childpublication.Inspect(ctx, s.childQueue, child.Identity)
+			if err != nil {
+				return runner.ChildHandoffCompletion{}, err
+			}
+			return runner.ChildHandoffCompletion{Publications: childPublicationStatuses(publications), State: string(result.Input.State), Summary: result.Input.Summary, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef, References: result.Input.References}, nil
 		}
 		if err := childHandoffPoll(ctx, time.Second); err != nil {
 			return runner.ChildHandoffCompletion{}, err
@@ -280,4 +323,19 @@ func childHandoffPoll(ctx context.Context, delay time.Duration) error {
 
 func childRepoKey(ref apiv1.RepoRef) string {
 	return (providers.RepositoryRef{Provider: providers.ProviderKind(ref.Provider), URL: ref.BaseURL, Owner: ref.Owner, Project: ref.Project, Name: ref.Name}).CanonicalKey()
+}
+
+// childPublicationStatuses keeps the runner independent of provider recovery.
+func childPublicationStatuses(statuses []childpublication.Status) []runner.ChildPublicationStatus {
+	out := make([]runner.ChildPublicationStatus, 0, len(statuses))
+	for _, status := range statuses {
+		out = append(out, runner.ChildPublicationStatus{
+			SourceRunID: status.SourceRunID, Action: string(status.Action),
+			IntentDigest: status.IntentDigest, State: status.State,
+			Head: status.Head, Base: status.Base, Commit: status.Commit,
+			PullRequestURL: status.PullRequestURL, PullRequestNumber: status.PullRequestNumber,
+			NeedsHuman: status.NeedsHuman,
+		})
+	}
+	return out
 }

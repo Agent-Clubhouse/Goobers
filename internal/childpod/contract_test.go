@@ -25,6 +25,20 @@ func TestContractRejectsPublicationAndSubstitution(t *testing.T) {
 	if _, err := DecodeContract(data, journal.Digest([]byte("foreign"))); err == nil {
 		t.Fatal("substitution accepted")
 	}
+	for name, contexts := range map[string][]string{
+		"malformed": {"sha256:short"},
+		"duplicate": {digest, digest},
+		"unsorted":  {"sha256:" + strings.Repeat("b", 64), digest},
+		"too-many":  make([]string, 65),
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := c
+			invalid.ContextDigests = contexts
+			if invalid.Validate() == nil {
+				t.Fatal("invalid context read grant accepted")
+			}
+		})
+	}
 	c.Ceiling.AllowPublication = true
 	if c.Validate() == nil {
 		t.Fatal("synthetic history publication accepted")
