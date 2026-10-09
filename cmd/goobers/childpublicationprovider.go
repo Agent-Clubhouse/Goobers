@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/childpublication"
@@ -33,6 +34,9 @@ func (p *childStagePod) publicationTarget(ctx context.Context, authority childwo
 
 func (p *childStagePod) publicationProvider(target childpublication.Target, key string, credential httpapi.MintedCredential, scheme string) (childpublication.Publisher, error) {
 	publisher := childpublication.Publisher{Queue: p.service.childQueue}
+	if credential.Value == "" || (credential.ExpiresAt != nil && !credential.ExpiresAt.After(time.Now())) {
+		return publisher, errors.New("child publication credential is missing or expired")
+	}
 	opts := []stageProviderOption{withStageProviderCapability(capability.Capability(key)), withStageProviderToken(credential.Value), withStageProviderRetriesDisabled()}
 	var env []string
 	switch target.Repository.Provider {

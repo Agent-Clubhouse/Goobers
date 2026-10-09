@@ -73,27 +73,8 @@ func (p *childStagePod) publish(ctx context.Context, env apiv1.InvocationEnvelop
 		return apiv1.ResultEnvelope{}, err
 	}
 	defer release()
-	source, err := p.service.childQueue.ChildProposal(ctx, p.start.Child.Identity)
+	key, err := p.publicationAuthority(ctx, launcher, authority, env, run, request.Attempt.Stage, action)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
-	}
-	proposal, err := childworkflow.ValidateRetainedStart(authority, p.start.Envelope, source.Source)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, err
-	}
-	ceiling := proposal.CredentialCeiling()
-	if !ceiling.AllowPublication || !sameChildCeiling(ceiling, p.start.Proposal.CredentialCeiling()) {
-		return apiv1.ResultEnvelope{}, errors.New("child publication delegation unavailable")
-	}
-	task, ok := proposal.Machine.Task(request.Attempt.Stage)
-	if !ok || !reflect.DeepEqual(task.Run, &run) || !slices.Equal(task.Capabilities, env.Capabilities) {
-		return apiv1.ResultEnvelope{}, errors.New("child publication differs from retained stage")
-	}
-	key, err := childPublicationCapability(task, action)
-	if err != nil || !slices.Contains(ceiling.AllowedKeys, key) {
-		return apiv1.ResultEnvelope{}, errors.Join(errors.New("child publication capability was not delegated"), err)
-	}
-	if _, err = launcher.retainedChildIdentity(ctx, p.identity); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, childpublication.EffectTimeout)
@@ -105,6 +86,11 @@ func (p *childStagePod) publish(ctx context.Context, env apiv1.InvocationEnvelop
 	credential, scheme, err := p.publicationCredential(ctx, request.Attempt.Stage, key)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
+	}
+	if credential.ExpiresAt != nil {
+		var cancelCredential context.CancelFunc
+		ctx, cancelCredential = context.WithDeadline(ctx, *credential.ExpiresAt)
+		defer cancelCredential()
 	}
 	factory := p.publicationProvider
 	if p.service.childPublisher != nil {
@@ -244,4 +230,57 @@ func credentialExpiry(c httpapi.MintedCredential) time.Time {
 		return *c.ExpiresAt
 	}
 	return time.Time{}
+}
+
+// admitChildPublicationTask keeps provider authority on the host's two typed
+// operations. Other child commands and model processes cannot consume it.
+func admitChildPublicationTask(start childExecutionStart, task apiv1.Task) error {
+	action, err := childPublicationAction(task.Run)
+	if err != nil {
+		return err
+	}
+	if action != "" {
+		ceiling := start.Proposal.CredentialCeiling()
+		key, err := childPublicationCapability(task, action)
+		if err != nil || !ceiling.AllowPublication || !slices.Contains(ceiling.AllowedKeys, key) {
+			return errors.Join(errors.New("child publication requires its parent's explicit delegation"), err)
+		}
+		return nil
+	}
+	for _, key := range task.Capabilities {
+		switch capability.Capability(key) {
+		case capability.RepoPush, capability.ConfigRepoWrite, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.ADOPRWrite, capability.GitHubPRMerge, capability.ADOPRComplete:
+			return errors.New("child publication capability requires a canonical host publication stage")
+		}
+	}
+	return nil
+}
+
+// publicationAuthority runs under the caller's current-policy lease. It repeats
+// retained-source and exact-stage checks before resolving a host credential.
+func (p *childStagePod) publicationAuthority(ctx context.Context, launcher *queuedChildLauncher, authority childworkflow.Authority, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, stage, action string) (string, error) {
+	source, err := p.service.childQueue.ChildProposal(ctx, p.start.Child.Identity)
+	if err != nil {
+		return "", err
+	}
+	proposal, err := childworkflow.ValidateRetainedStart(authority, p.start.Envelope, source.Source)
+	if err != nil {
+		return "", err
+	}
+	ceiling := proposal.CredentialCeiling()
+	if !ceiling.AllowPublication || !sameChildCeiling(ceiling, p.start.Proposal.CredentialCeiling()) {
+		return "", errors.New("child publication delegation unavailable")
+	}
+	task, ok := proposal.Machine.Task(stage)
+	if !ok || !reflect.DeepEqual(task.Run, &run) || !slices.Equal(task.Capabilities, env.Capabilities) {
+		return "", errors.New("child publication differs from retained stage")
+	}
+	key, err := childPublicationCapability(task, action)
+	if err != nil || !slices.Contains(ceiling.AllowedKeys, key) {
+		return "", errors.Join(errors.New("child publication capability was not delegated"), err)
+	}
+	if _, err = launcher.retainedChildIdentity(ctx, p.identity); err != nil {
+		return "", err
+	}
+	return key, nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -268,7 +269,11 @@ func (h *daemonChildHandoff) Wait(ctx context.Context, request runner.ChildHando
 			if err != nil {
 				return runner.ChildHandoffCompletion{}, err
 			}
-			return runner.ChildHandoffCompletion{State: string(result.Input.State), Summary: result.Input.Summary, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef, References: result.Input.References}, nil
+			publications, err := childpublication.Inspect(ctx, s.childQueue, child.Identity)
+			if err != nil {
+				return runner.ChildHandoffCompletion{}, err
+			}
+			return runner.ChildHandoffCompletion{Publications: childPublicationStatuses(publications), State: string(result.Input.State), Summary: result.Input.Summary, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef, References: result.Input.References}, nil
 		}
 		if err := childHandoffPoll(ctx, time.Second); err != nil {
 			return runner.ChildHandoffCompletion{}, err
@@ -318,4 +323,19 @@ func childHandoffPoll(ctx context.Context, delay time.Duration) error {
 
 func childRepoKey(ref apiv1.RepoRef) string {
 	return (providers.RepositoryRef{Provider: providers.ProviderKind(ref.Provider), URL: ref.BaseURL, Owner: ref.Owner, Project: ref.Project, Name: ref.Name}).CanonicalKey()
+}
+
+// childPublicationStatuses keeps the runner independent of provider recovery.
+func childPublicationStatuses(statuses []childpublication.Status) []runner.ChildPublicationStatus {
+	out := make([]runner.ChildPublicationStatus, 0, len(statuses))
+	for _, status := range statuses {
+		out = append(out, runner.ChildPublicationStatus{
+			SourceRunID: status.SourceRunID, Action: string(status.Action),
+			IntentDigest: status.IntentDigest, State: status.State,
+			Head: status.Head, Base: status.Base, Commit: status.Commit,
+			PullRequestURL: status.PullRequestURL, PullRequestNumber: status.PullRequestNumber,
+			NeedsHuman: status.NeedsHuman,
+		})
+	}
+	return out
 }

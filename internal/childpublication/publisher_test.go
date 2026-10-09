@@ -202,7 +202,7 @@ func (p *concurrentPublicationPR) FindPullRequestByBranch(context.Context, provi
 	<-p.release
 	return providers.PullRequestResult{}, false, nil
 }
-func (p *concurrentPublicationPR) OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error) {
+func (p *concurrentPublicationPR) CreatePullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error) {
 	p.creates.Add(1)
 	return providers.PullRequestResult{ID: "7", Number: 7, URL: "https://github.com/acme/web/pull/7"}, nil
 }

@@ -29,20 +29,20 @@ func (a Action) Valid() bool { return a == ActionBranch || a == ActionPR }
 // title/body, full intent, workspace paths or retained source are exposed.
 // CheckedAt/Observation describe this check; the command ledger owns its audit.
 type Status struct {
-	SourceRunID       string
-	Action            Action
-	IntentDigest      string
-	State             string
-	Head              string
-	Base              string
-	Commit            string
-	PullRequestURL    string
-	PullRequestNumber int
-	NeedsHuman        bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	CheckedAt         time.Time
-	Observation       string
+	SourceRunID       string    `json:"sourceRunId"`
+	Action            Action    `json:"action"`
+	IntentDigest      string    `json:"intentDigest"`
+	State             string    `json:"state"`
+	Head              string    `json:"head"`
+	Base              string    `json:"base"`
+	Commit            string    `json:"commit"`
+	PullRequestURL    string    `json:"pullRequestUrl"`
+	PullRequestNumber int       `json:"pullRequestNumber"`
+	NeedsHuman        bool      `json:"needsHuman"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	CheckedAt         time.Time `json:"checkedAt"`
+	Observation       string    `json:"observation"`
 }
 
 // ObservationTarget is host-only, verified effect custody. The authorization
@@ -69,8 +69,8 @@ type EffectObserver interface {
 }
 
 // Reconciler confirms only already-admitted publication effects. The caller must
-// hold the current gaggle run.intervene+repository.read lease across Check and
-// use its existing idempotent command ledger for human attribution.
+// hold current gaggle authority across Check. The executing publication owner
+// uses its admitted stage lease; future human callers need their own read policy.
 type Reconciler struct {
 	Queue    *triggerqueue.Store
 	Observer EffectObserver

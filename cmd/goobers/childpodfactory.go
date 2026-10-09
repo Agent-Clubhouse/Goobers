@@ -61,9 +61,6 @@ func admitChildPodPlan(start childExecutionStart) error {
 	if start.Proposal == nil {
 		return &childStartDeferred{Reason: "child requires explicit contained placement"}
 	}
-	if start.Proposal.CredentialCeiling().AllowPublication {
-		return &childStartDeferred{Reason: "child publication requires the separate governed publication backend"}
-	}
 	if err := admitChildPodStages(start); err != nil {
 		return err
 	}
@@ -315,6 +312,9 @@ func admitChildPodStages(start childExecutionStart) error {
 		placed[pin.Stage] = true
 	}
 	for _, task := range start.Proposal.Workflow.Spec.Tasks {
+		if err := admitChildPublicationTask(start, task); err != nil {
+			return err
+		}
 		if !placed[task.Name] {
 			return &childStartDeferred{Reason: "child task has no explicit contained placement"}
 		}

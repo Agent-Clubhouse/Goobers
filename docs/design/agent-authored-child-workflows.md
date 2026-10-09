@@ -30,6 +30,8 @@ journey and its enabled backends are qualified.
 | [LAND-C05 local disposition / #6916](https://github.com/Agent-Clubhouse/Goobers/pull/6916) | Durable merge/replace/discard requests, exact-revision adoption, bounded history, stopped-writer application and crash reconciliation | Public execution, delegated PR publication and Portal controls remain pending. See [parent result disposition](../guides/child-workflow-admission.md#parent-result-disposition). |
 | [LAND-C06a contained worker transport / #6947](https://github.com/Agent-Clubhouse/Goobers/pull/6947) | Private portable workspace carrier, dispatcher pod containment, writer-stop/surrender evidence and custody-aware orphan cleanup | Public execution remains disabled. Exact signed attempt/blob authority, host factory, returned-tree application and recovery remain follow-ups. See [contained transport boundary](../guides/contained-child-transport.md). |
 
+| LAND-C06c / delegated publication portion of LAND-C05 | Canonical host push/PR stages, immutable bounded publication intent, create-only provider effects and parent publication status | Public activation and Portal qualification remain pending; stopped-child human reconciliation is LAND-H06. See [child workflow publication](../guides/child-workflow-publication.md). |
+
 The later implementation notes in this document remain evidence from the reference
 snapshot; they are not a claim that those later slices have landed on main.
 

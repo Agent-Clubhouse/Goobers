@@ -62,7 +62,7 @@ type BranchReceipt struct {
 
 // PRProvider uses the existing native reconciliation surface for exact head/base.
 type PRProvider interface {
-	OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error)
+	CreatePullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error)
 	FindPullRequestByBranch(context.Context, providers.RepositoryRef, string, string) (providers.PullRequestResult, bool, error)
 }
 
@@ -187,6 +187,9 @@ func (p Publisher) OpenPR(ctx context.Context, t Target, title, body string, dra
 		err = json.Unmarshal(intent.Receipt, &result)
 		return result, err
 	}
+	if intent.State == "effect_pending" {
+		return p.reconcilePR(ctx, t, intent)
+	}
 	observed, err := p.Git.Head(ctx, t.Workspace, t.Remote, t.Head)
 	if err != nil {
 		return zero, err
@@ -245,7 +248,7 @@ func (p Publisher) performPR(ctx context.Context, t Target, intent triggerqueue.
 		if err = p.Queue.BeginChildExecutionPublicationEffect(ctx, intent, t.Identity.RunID); err != nil {
 			return zero, err
 		}
-		result, err = p.PRs.OpenPullRequest(ctx, request)
+		result, err = p.PRs.CreatePullRequest(ctx, request)
 		if err != nil {
 			return zero, err
 		}
