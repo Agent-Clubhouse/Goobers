@@ -318,8 +318,8 @@ func admitChildPodStages(start childExecutionStart) error {
 		if !placed[task.Name] {
 			return &childStartDeferred{Reason: "child task has no explicit contained placement"}
 		}
-		if task.Run != nil && (task.Run.Network != "" || task.Run.SyncBase || task.Run.InjectRunContext) {
-			return &childStartDeferred{Reason: "child deterministic execution requests unsupported network, base synchronization or run context"}
+		if task.Run != nil && (task.Run.Network != "" || task.Run.InjectRunContext) {
+			return &childStartDeferred{Reason: "child deterministic execution requests unsupported network or run context"}
 		}
 	}
 	for _, gate := range start.Proposal.Workflow.Spec.Gates {
