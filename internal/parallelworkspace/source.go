@@ -92,27 +92,33 @@ func (s Service) capture(ctx context.Context, rec Recorder, request spec.Request
 	if err != nil {
 		return source, err
 	}
+	return recordSnapshot(ctx, rec, request.Workspace, "parallel-source", snapshot, func(value recovery.ChildSnapshot) any {
+		return sourceMetadata{Version: 1, Gaggle: request.Gaggle, Parallel: request.Parallel, Sequence: request.Sequence, Snapshot: value}
+	})
+}
+
+func recordSnapshot(ctx context.Context, rec Recorder, repository, name string, snapshot recovery.ChildSnapshot, metadata func(recovery.ChildSnapshot) any) (spec.Source, error) {
+	var source spec.Source
 	var data bytes.Buffer
-	snapshot, err = recovery.WriteChildSnapshotBundle(ctx, request.Workspace, snapshot, &data, MaxBundleBytes)
+	snapshot, err := recovery.WriteChildSnapshotBundle(ctx, repository, snapshot, &data, MaxBundleBytes)
 	if err != nil {
 		return source, err
 	}
-	source.Bundle, err = rec.RecordArtifactBoundedWithIntegrity("parallel-source.bundle", data.Bytes(), apiv1.IntegrityTrusted, MaxBundleBytes)
+	source.Bundle, err = rec.RecordArtifactBoundedWithIntegrity(name+".bundle", data.Bytes(), apiv1.IntegrityTrusted, MaxBundleBytes)
 	if err != nil {
 		return source, err
 	}
 	if source.Bundle.Digest != snapshot.Record.ArchiveDigest || source.Bundle.Size != snapshot.Record.ArchiveBytes {
-		return source, errors.New("parallel source changed during recording")
+		return source, errors.New("parallel snapshot changed during recording")
 	}
 	source.SnapshotSHA = snapshot.Record.SnapshotSHA
-	metadata := sourceMetadata{Version: 1, Gaggle: request.Gaggle, Parallel: request.Parallel, Sequence: request.Sequence, Snapshot: snapshot}
-	encoded, err := json.Marshal(metadata)
+	encoded, err := json.Marshal(metadata(snapshot))
 	if err != nil {
 		return source, err
 	}
-	source.Metadata, err = rec.RecordArtifactBoundedWithIntegrity("parallel-source.json", encoded, apiv1.IntegrityTrusted, MaxMetadataBytes)
+	source.Metadata, err = rec.RecordArtifactBoundedWithIntegrity(name+".json", encoded, apiv1.IntegrityTrusted, MaxMetadataBytes)
 	if err == nil && source.Metadata.Digest != journal.Digest(encoded) {
-		err = errors.New("parallel source metadata changed during recording")
+		err = errors.New("parallel metadata changed during recording")
 	}
 	return source, err
 }

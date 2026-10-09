@@ -54,6 +54,9 @@ func (r parentArchiveRestorer) releaseForkSource(ctx context.Context, reader *jo
 		if err := r.verifyForkArchives(ctx, reader, repository, value); err != nil {
 			return err
 		}
+		if err := r.releaseForkResultPins(ctx, reader, repository, value); err != nil {
+			return err
+		}
 		retained, err := r.forkSourceRetained(ctx, source.Record)
 		if err != nil || retained {
 			return err
@@ -142,4 +145,28 @@ func (r parentArchiveRestorer) importArchivedForkSource(ctx context.Context, rec
 	backend := parallelworkspace.Service{Worktrees: r.worktrees, CloneURL: r.cloneURL}
 	_, err = backend.Prepare(ctx, rec, spec.Request{RunID: plan.RunID, Gaggle: plan.Gaggle, Parallel: plan.Parallel, Sequence: plan.Sequence, At: source.Record.CreatedAt, Repository: project}, &plan.Source)
 	return err
+}
+
+func (r parentArchiveRestorer) releaseForkResultPins(ctx context.Context, reader *journal.Reader, repository string, value runner.ParentForkRetirement) error {
+	results, err := runner.ParentForkResults(reader, value.Plan, value.Reference)
+	if err != nil {
+		return err
+	}
+	for _, result := range results {
+		request := spec.ResultRequest{Request: spec.Request{Parallel: value.Plan.Parallel, Sequence: value.Plan.Sequence}, Plan: value.Reference, Seed: value.Plan.Source, Branch: result.Branch, Status: result.Status, Custody: value.Plan.Workspaces[result.Branch-1]}
+		snapshot, err := parallelworkspace.ReadResult(reader, request, result.Source)
+		if err != nil {
+			return err
+		}
+		retained, err := r.forkSourceRetained(ctx, snapshot.Record)
+		if err != nil {
+			return err
+		}
+		if !retained {
+			if err := recovery.DeleteSnapshotRef(ctx, repository, snapshot.Record); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

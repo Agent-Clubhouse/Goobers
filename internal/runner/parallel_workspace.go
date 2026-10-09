@@ -19,6 +19,9 @@ func (r *Runner) prepareParallelRuntime(ctx context.Context, run *journal.Run, i
 	if err != nil {
 		return parallelRuntime{}, err
 	}
+	if parallelHasChildStage(in.Machine, par.spec) && r.cfg.PrepareParentForkResult == nil {
+		return parallelRuntime{}, errors.New("parallel fork result service unavailable before dispatch")
+	}
 	forks, err := r.prepareParallelForks(ctx, run, in, par.spec, branch, events)
 	return parallelRuntime{capacity: capacity, forks: forks}, err
 }

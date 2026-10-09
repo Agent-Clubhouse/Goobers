@@ -332,7 +332,7 @@ func (r *Runner) runConcurrentParallel(
 	slots := newParallelBranchSlots(limit)
 	dispatch := &parallelDispatch{released: slots.changed, queue: queue, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
 	dispatch.settle = func(result parallelBranchResult) error {
-		return settleParallelChildBranch(ctx, jr, par, runtime.capacity, result)
+		return r.settleParallelRuntimeBranch(ctx, jr, in, par, runtime, result)
 	}
 	dispatch.cancelQueued = func() error {
 		return cancelQueuedParallelBranches(par, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in, dispatch.settle)
@@ -378,6 +378,9 @@ func (r *Runner) runConcurrentParallel(
 		return concurrentParallelResult{parallel: par, paused: true}, nil
 	}
 
+	if err := r.verifyParallelForkResults(ctx, jr, in, p, runtime, outcomes); err != nil {
+		return concurrentParallelResult{}, err
+	}
 	mergedCompleted := cloneStageOutputs(baseCompleted)
 	lastStage, lastResult := baseLastStage, baseLastResult
 	workspaceRevision := in.workspaceRevision.DeepCopy()
