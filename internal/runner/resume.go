@@ -27,8 +27,9 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 // caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
 	// OnRecoveryOwned runs with journal and cancellation ownership acquired,
-	// before stage effects. Returning an error leaves execution suspended.
-	OnRecoveryOwned func() error
+	// before stage effects. The context observes operator interruption. Other
+	// callback errors leave execution suspended.
+	OnRecoveryOwned func(context.Context) error
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
 	// Machine is the compiled workflow (#9) this run was walking. When nil,
@@ -165,7 +166,14 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
 		if in.OnRecoveryOwned != nil {
-			if err := in.OnRecoveryOwned(); err != nil {
+			if err := in.OnRecoveryOwned(stalledAttemptContext(ctx)); err != nil {
+				if request, ok := stalledRequestFromContext(ctx); ok {
+					_, state, inspectErr := runPhaseAndState(dir)
+					if inspectErr != nil {
+						return Result{}, inspectErr
+					}
+					return r.finishStalled(in.RunID, jr, state, 0, request)
+				}
 				return Result{}, err
 			}
 		}

@@ -81,7 +81,15 @@ func (l *queuedChildLauncher) resumeOwnedChild(ctx context.Context, ref childExe
 			if runtime.release != nil {
 				defer runtime.release()
 			}
-			_, runErr := runtime.runner.Resume(launchCtx, runner.ResumeInput{RunID: ref.Child.RunID, Machine: runtime.machine, GooberDigest: runtime.gooberDigest, RepoRef: runtime.repoRef, RecoveryReason: "isolated-child-custody-reconciled", OnRecoveryOwned: func() error { close(ready); return <-permission }})
+			_, runErr := runtime.runner.Resume(launchCtx, runner.ResumeInput{RunID: ref.Child.RunID, Machine: runtime.machine, GooberDigest: runtime.gooberDigest, RepoRef: runtime.repoRef, RecoveryReason: "isolated-child-custody-reconciled", OnRecoveryOwned: func(owned context.Context) error {
+				close(ready)
+				select {
+				case err := <-permission:
+					return err
+				case <-owned.Done():
+					return owned.Err()
+				}
+			}})
 			done <- runErr
 		}()
 		select {
