@@ -62,8 +62,16 @@ type Verdict struct {
 // Schema is a compiled JSON Schema plus the identity stamped on verdicts.
 type Schema struct {
 	id, version string
+	source      []byte
 	compiled    *jsonschema.Schema
 }
+
+// ID returns the identity stamped on verdicts produced by this schema.
+func (s *Schema) ID() string { return s.id }
+
+// Source returns a copy of the JSON Schema document this schema was compiled
+// from, so a trusted boundary can hand the same contract to another process.
+func (s *Schema) Source() []byte { return append([]byte(nil), s.source...) }
 
 // Compile compiles a JSON Schema (2020-12) for use with Check.
 func Compile(id, version string, schemaJSON []byte) (*Schema, error) {
@@ -80,7 +88,7 @@ func Compile(id, version string, schemaJSON []byte) (*Schema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("handoffcheck: schema %q: %w", id, err)
 	}
-	return &Schema{id: id, version: version, compiled: compiled}, nil
+	return &Schema{id: id, version: version, source: append([]byte(nil), schemaJSON...), compiled: compiled}, nil
 }
 
 // Check validates data as strict JSON and against the schema. It never panics

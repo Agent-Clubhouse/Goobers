@@ -46,12 +46,16 @@ type Config struct {
 	Workspace            string               `json:"workspace"`
 	ArtifactFile         string               `json:"artifactFile,omitempty"`
 	ArtifactManifestFile string               `json:"artifactManifestFile,omitempty"`
-	ReceiptFile          string               `json:"receiptFile,omitempty"`
-	Inputs               map[string]string    `json:"inputs,omitempty"`
-	RunID                string               `json:"runId"`
-	WorkflowID           string               `json:"workflowId"`
-	TaskID               string               `json:"taskId"`
-	Gaggle               string               `json:"gaggle"`
+	// PublicationSchemas are the stage's own schema-bound application/json
+	// artifact slots. publish_output refuses a manifest whose payload for any
+	// of these slots is absent, malformed, or violates its schema (#6868).
+	PublicationSchemas []PublicationSchema `json:"publicationSchemas,omitempty"`
+	ReceiptFile        string              `json:"receiptFile,omitempty"`
+	Inputs             map[string]string   `json:"inputs,omitempty"`
+	RunID              string              `json:"runId"`
+	WorkflowID         string              `json:"workflowId"`
+	TaskID             string              `json:"taskId"`
+	Gaggle             string              `json:"gaggle"`
 }
 
 // LoadConfig reads and validates a config file at path.
@@ -71,6 +75,9 @@ func LoadConfig(path string) (Config, error) {
 		if err := cfg.ChildWorkflows.Validate(cfg.RunID); err != nil {
 			return Config{}, err
 		}
+	}
+	if _, err := compilePublicationSchemas(cfg.PublicationSchemas); err != nil {
+		return Config{}, fmt.Errorf("mcpio: config %s: %w", path, err)
 	}
 	return cfg, nil
 }

@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 func TestExecutorManifestArtifactSet(t *testing.T) {
@@ -208,5 +211,87 @@ func TestExecutorNamedSlotPublication(t *testing.T) {
 				t.Fatalf("result=%+v", result)
 			}
 		})
+	}
+}
+
+func TestExecutorEnforcesPublicationSchemaAtCompletion(t *testing.T) {
+	schema, err := handoffcheck.Compile("schemas/report.schema.json", "", []byte(`{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, payload string
+		wantFailure   bool
+	}{
+		{name: "valid", payload: `{"summary":"ok"}`},
+		{name: "direct write bypass", payload: `{"summary":3}`, wantFailure: true},
+		{name: "malformed", payload: `{"summary":`, wantFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &fakeRecorder{}
+			var seen []mcpio.PublicationSchema
+			adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+				seen = req.PublicationSchemas
+				entries := []artifactset.ManifestEntry{{Name: "report", Path: "payload.json", MediaType: "application/json"}}
+				data, err := json.Marshal(artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: entries})
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(req.Workspace, "manifest.json"), data, 0o600); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(req.Workspace, "payload.json"), []byte(tc.payload), 0o600); err != nil {
+					return err
+				}
+				return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			}}
+			e, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec, journal.NewRegistryScrubber(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := testEnvelope(t.TempDir())
+			env.Attempt = 1
+			env.ArtifactPublication = &apiv1.ArtifactPublication{Stage: "produce", Visit: 3, Slots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.schema.json"}}}
+			env.Inputs = map[string]any{InputArtifactManifestFile: "manifest.json"}
+			ctx := handoffcheck.WithPublicationSchemas(t.Context(), map[string]*handoffcheck.Schema{"report": schema, "undeclared": schema})
+			result, err := e.Invoke(ctx, env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(seen) != 1 || seen[0].Slot != "report" || seen[0].SchemaID != "schemas/report.schema.json" || len(seen[0].Document) == 0 {
+				t.Fatalf("goobers-io did not receive exactly the declared slot schema: %+v", seen)
+			}
+			if !tc.wantFailure {
+				if result.Status != apiv1.ResultSuccess || len(result.Artifacts) != 2 {
+					t.Fatalf("result=%+v", result)
+				}
+				return
+			}
+			if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "invalid_declared_artifact_set" || len(result.Artifacts) != 0 {
+				t.Fatalf("schema-invalid output was accepted: %+v", result)
+			}
+			for _, artifact := range rec.artifacts {
+				if string(artifact.data) == tc.payload {
+					t.Fatal("rejected payload was recorded as a consumable artifact")
+				}
+			}
+		})
+	}
+}
+
+func TestGoobersIOPromptNamesPublicationContract(t *testing.T) {
+	req := RunRequest{
+		Envelope:           apiv1.InvocationEnvelope{Inputs: map[string]any{InputArtifactManifestFile: "manifest.json"}},
+		PublicationSchemas: []mcpio.PublicationSchema{{Slot: "report", SchemaID: "schemas/report.schema.json"}},
+	}
+	prompt := goobersIOPromptSection(req)
+	for _, want := range []string{"`report` (schema schemas/report.schema.json)", "call `publish_output` again in this session", "Do not repeat completed external actions"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	req.PublicationSchemas = nil
+	if strings.Contains(goobersIOPromptSection(req), "JSON Schema") {
+		t.Fatal("unconstrained stage received schema instructions")
 	}
 }

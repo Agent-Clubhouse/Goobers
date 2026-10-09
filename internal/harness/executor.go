@@ -657,7 +657,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
 		}
 	}
-	postcondition := armCommitPostcondition(ctx, mode, env, &req)
+	postcondition, publication := e.armPostconditions(ctx, mode, env, &req)
 	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
@@ -704,7 +704,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
-	out, runErr = postcondition.settle(e.runAdapter(ctx, req, nestedAdapter))
+	out, runErr = publication.settle(postcondition.settle(e.runAdapter(ctx, req, nestedAdapter)))
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {

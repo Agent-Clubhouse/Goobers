@@ -150,8 +150,8 @@ func uncommittedChangesRepairProblem(validationErr error) string {
 func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
 	problem := "Your previous turn ended without writing the mandatory completion file."
-	if errors.Is(validationErr, ErrUncommittedChanges) {
-		problem = uncommittedChangesRepairProblem(validationErr)
+	if postcondition, ok := postconditionRepairProblem(validationErr); ok {
+		problem = postcondition
 	} else if errors.Is(validationErr, ErrInvalidCompletion) {
 		problem = fmt.Sprintf(
 			"Your previous turn wrote a completion file that failed schema validation: %s.",
@@ -172,8 +172,8 @@ func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
 	problem := "Your previous turn ended without returning the mandatory completion as valid JSON."
-	if errors.Is(validationErr, ErrUncommittedChanges) {
-		problem = uncommittedChangesRepairProblem(validationErr)
+	if postcondition, ok := postconditionRepairProblem(validationErr); ok {
+		problem = postcondition
 	} else if errors.Is(validationErr, ErrInvalidCompletion) {
 		problem = fmt.Sprintf(
 			"Your previous turn returned a completion that failed schema validation: %s.",
