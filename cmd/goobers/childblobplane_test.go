@@ -124,6 +124,10 @@ func TestChildBlobHTTPUsesAuthenticatedLineageAndNeverSharedFallback(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Windows cannot rename a directory while its journal writer is open.
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Rename(dir, dir+"-missing"); err != nil {
 		t.Fatal(err)
 	}
