@@ -17,8 +17,8 @@ func TestCmdGoobersGrowthGateUsesBaseRevision(t *testing.T) {
 	job := workflowJob(workflow, "cmdgoobers-growth")
 	for _, want := range []string{
 		"fetch-depth: 0",
-		"BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'HEAD' }}",
-		"HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || '' }}",
+		"BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.base_sha || 'HEAD' }}",
+		"HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || inputs.head_sha || '' }}",
 		`run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF" -head-ref "$HEAD_REF"`,
 	} {
 		if !strings.Contains(job, want) {

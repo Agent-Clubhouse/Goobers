@@ -1,0 +1,93 @@
+name: CI base retarget
+
+# Validates a pull request against its new base when it is retargeted onto
+# main (#6360), without CI ever triggering on `edited` (#7017).
+#
+# A retarget is a `pull_request: edited` event with `changes.base`. ci.yml does
+# not trigger on `edited`: every CI run, even one whose jobs all skip, adds a
+# newer CI check suite to the head SHA, and a PR whose newest CI suite came
+# from a title/body edit stays BLOCKED despite a green required check
+# (observed GitHub behaviour). Edits land here instead. A title/body edit
+# skips this workflow's only job: no CI suite, no cancelled CI run, and never
+# the required `make ci` context.
+#
+# A retarget waits until GitHub has recomputed the PR's merge commit as the
+# two-parent merge of the new base and the head, then dispatches ci.yml on the
+# head branch with that merge (see ci.yml's workflow_dispatch inputs). Every
+# CI job checks out the merge, base-aware checks read the new base, scope
+# verifies the inputs, and the run reports the required check on the head SHA
+# in the PR's own concurrency group, replacing the old-base result. Re-running
+# the old pull_request run would not do: a re-run reuses the original event's
+# GITHUB_SHA (the old merge commit) and payload (the old base).
+#
+# A fork head cannot be dispatched from this repository, so a retargeted fork
+# PR fails this (non-required) check and needs a new push to validate.
+#
+# Pinned by TestCIRetargetValidatesNewMergeNotMetadataEdits (test/ci).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [edited]
+
+permissions:
+  contents: read
+
+# No concurrency group: every title/body edit also starts a run here, and a
+# shared cancelling group would let an edit made right after a retarget cancel
+# the pending dispatch. Dispatched CI runs share the PR's CI group, so a newer
+# one replaces an older one.
+
+jobs:
+  dispatch-ci:
+    name: dispatch CI after a base retarget
+    if: ${{ github.event.changes.base }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Dispatch CI on the new merge result
+        timeout-minutes: 8
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          if [ "$HEAD_REPO" != "$GH_REPO" ]; then
+            echo "::error::head branch is in fork $HEAD_REPO and cannot be dispatched; push a new commit to validate against the new base"
+            exit 1
+          fi
+          # GitHub recomputes the merge commit asynchronously after a retarget;
+          # poll until it is the merge of the current base and head.
+          while :; do
+            pr=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")
+            if [ "$(jq -r .base.ref <<<"$pr")" != main ]; then
+              echo "pull request no longer targets main; nothing to validate"
+              exit 0
+            fi
+            base=$(jq -r .base.sha <<<"$pr")
+            head=$(jq -r .head.sha <<<"$pr")
+            merge=$(jq -r '.merge_commit_sha // ""' <<<"$pr")
+            mergeable=$(jq -r .mergeable <<<"$pr")
+            if [ "$mergeable" = false ]; then
+              echo "::error::pull request conflicts with its new base; resolve and push to validate"
+              exit 1
+            fi
+            if [ "$mergeable" = true ] && [ -n "$merge" ] &&
+              [ "$(gh api "repos/$GH_REPO/commits/$merge" --jq '[.parents[].sha] | join(" ")')" = "$base $head" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "$(gh api "repos/$GH_REPO/git/ref/heads/$HEAD_REF" --jq .object.sha)" != "$head" ]; then
+            echo "head branch moved past $head; its push starts CI"
+            exit 0
+          fi
+          gh workflow run ci.yml --ref "$HEAD_REF" \
+            -f pr_number="$PR_NUMBER" -f base_sha="$base" -f head_sha="$head" -f merge_sha="$merge"
