@@ -4,9 +4,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -46,6 +48,15 @@ import (
 // guard is bypassed. Run only against the disposable kind cluster described in
 // the transport guide, with a freshly built Goobers worker image.
 func TestIntegrationQueuedChildUsesRealKubernetesWorker(t *testing.T) {
+	testRealKubernetesChild(t, false)
+}
+
+func TestIntegrationParentCancellationStopsRealKubernetesChild(t *testing.T) {
+	testRealKubernetesChild(t, true)
+}
+
+func testRealKubernetesChild(t *testing.T, cancelParent bool) {
+	t.Helper()
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	testdep.Require(t, "git")
 	image := os.Getenv("GOOBERS_CHILD_QUALIFICATION_IMAGE")
@@ -54,6 +65,35 @@ func TestIntegrationQueuedChildUsesRealKubernetesWorker(t *testing.T) {
 	}
 	api, namespace := childQualificationKubernetes(t)
 	source := strings.Replace(childValidationProposal, "      run: {command: [\"true\"]}", "      timeoutSeconds: 60\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: {workspace: scratch, command: [sh, -c, 'test $$ -gt 1; echo real-contained-worker']}", 1)
+	var waitStarted func()
+	if cancelParent {
+		// A pod can report Running before the worker starts its command. The
+		// side channel proves shell execution without modifying runtime authority.
+		started := make(chan struct{})
+		var startedOnce sync.Once
+		notify := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+			startedOnce.Do(func() { close(started) })
+		}))
+		t.Cleanup(notify.Close)
+		notifyURL, err := url.Parse(notify.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command := `node -e 'require("http").get("http://` + net.JoinHostPort("host.docker.internal", notifyURL.Port()) + `/started", r => r.resume())'; sleep 60`
+		encoded, err := json.Marshal([]string{"sh", "-c", command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		source = strings.Replace(source, "command: [sh, -c, 'test $$ -gt 1; echo real-contained-worker']", "command: "+string(encoded), 1)
+		waitStarted = func() {
+			select {
+			case <-started:
+			case <-time.After(30 * time.Second):
+				t.Fatal("worker shell did not start")
+			}
+		}
+	}
 	keyPath := filepath.Join(t.TempDir(), "pod.key")
 	if err := os.WriteFile(keyPath, []byte(strings.Repeat("q", 32)), 0600); err != nil {
 		t.Fatal(err)
@@ -139,8 +179,34 @@ func TestIntegrationQueuedChildUsesRealKubernetesWorker(t *testing.T) {
 		}
 		t.Cleanup(worker.Stop)
 	}
-	finish := prepareQueuedParentReturn(t, f, server.URL)
-	drainRealQueuedChild(t, f)
+	var finish func()
+	wantState := triggerqueue.ChildCompleted
+	var afterDispatch func(*durableTriggerService, *daemonRunnerRegistry)
+	if cancelParent {
+		wantState = triggerqueue.ChildCancelled
+		afterDispatch = func(triggers *durableTriggerService, registry *daemonRunnerRegistry) {
+			waitStarted()
+			cancel := newDaemonCancelService(registry)
+			cancel.fenceChildren = triggers.childFamilies.Fence
+			if _, err := cancel.Cancel(t.Context(), httpapi.CancelRunRequest{RunID: f.parentEnv.RunID, Gaggle: f.parentEnv.Gaggle, Actor: "qualification-human"}); err != nil {
+				t.Fatal(err)
+			}
+			child, err := s.childQueue.GetChild(t.Context(), f.child.Identity)
+			if err != nil || !child.CancellationRequested || (child.State != triggerqueue.ChildQueued && child.State != triggerqueue.ChildRunning) || child.ResultRef != "" {
+				t.Fatal("cancellation intent invented terminal custody", child.State, child.ResultRef, err)
+			}
+			// The bounded child sweep may first reset its cursor. Drive a complete
+			// pass so cancellation reaches the live owner before awaiting it.
+			for range 2 {
+				if err := triggers.Drain(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	} else {
+		finish = prepareQueuedParentReturn(t, f, server.URL)
+	}
+	child := drainRealQueuedChild(t, f, afterDispatch)
 	calls := transport.snapshot()
 	if len(calls) != 1 {
 		t.Fatalf("actual worker starts = %d, want 1", len(calls))
@@ -151,12 +217,18 @@ func TestIntegrationQueuedChildUsesRealKubernetesWorker(t *testing.T) {
 			t.Fatal(err)
 		}
 		report := result.Report
-		if result.BindingDigest != in.BindingDigest() || result.DispatchError() != nil || result.DisposalFailed || report.ChildPodUID == "" || !report.WorkspaceWritersStopped || !report.SurrenderConfirmed {
+		if result.BindingDigest != in.BindingDigest() || (!cancelParent && result.DispatchError() != nil) || result.DisposalFailed || report.ChildPodUID == "" || !report.WorkspaceWritersStopped || !report.SurrenderConfirmed {
 			t.Fatalf("real worker lacks exact stopped-writer custody: %+v", result)
 		}
-		t.Logf("real pod %s UID %s: stopped=%t surrendered=%t", report.Pod, report.ChildPodUID, report.WorkspaceWritersStopped, report.SurrenderConfirmed)
+		t.Logf("real pod %s UID %s: stopped=%t surrendered=%t error=%v", report.Pod, report.ChildPodUID, report.WorkspaceWritersStopped, report.SurrenderConfirmed, result.DispatchError())
 	}
-	finish()
+	if child.State != wantState || child.ResultRef == "" {
+		logQueuedFactoryJournal(t, s, f.child.RunID)
+		t.Fatal("unexpected retained child outcome", child.State, child.ResultRef)
+	}
+	if finish != nil {
+		finish()
+	}
 }
 
 // The wrapper records submitted identities but delegates every RPC to the real
@@ -243,7 +315,7 @@ func childQualificationKubernetes(t *testing.T) (*kubernetes.Clientset, string) 
 	return api, namespace.Name
 }
 
-func drainRealQueuedChild(t *testing.T, f childKitFixture) {
+func drainRealQueuedChild(t *testing.T, f childKitFixture, afterDispatch func(*durableTriggerService, *daemonRunnerRegistry)) triggerqueue.ChildRecord {
 	t.Helper()
 	s := f.writer.service
 	store, err := executionGenerationStore(s.layout)
@@ -256,7 +328,7 @@ func drainRealQueuedChild(t *testing.T, f childKitFixture) {
 	dispatch := newDaemonTriggerService()
 	dispatch.AttachDispatchContext(t.Context())
 	dispatch.AttachScheduler(localscheduler.New([]localscheduler.WorkflowEntry{{Gaggle: f.child.Identity.Gaggle, Workflow: f.writer.identity.Child.ParentWorkflow, RepoRef: f.parent.applied.Gaggles[0].Spec.Project, Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1, MaxRunsPerHour: 3}}}, s.log))
-	triggers := &durableTriggerService{queue: s.childQueue, dispatch: dispatch, observeChild: acceptedChildObserver(s.layout)}
+	triggers := &durableTriggerService{queue: s.childQueue, dispatch: dispatch, observeChild: acceptedChildObserver(s.layout), childFamilies: &childFamilyLifecycle{layout: s.layout, queue: s.childQueue, runners: registry}}
 	build := func(layout instance.Layout, generation string, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
 		return buildSchedulerDefinitions(schedulerDefinitionsInput{Layout: layout, Config: s.config, Definitions: set, Validation: report, RunnerRegistry: registry, ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer}, PinnedGeneration: generation})
 	}
@@ -269,6 +341,9 @@ func drainRealQueuedChild(t *testing.T, f childKitFixture) {
 	if err := triggers.Drain(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if afterDispatch != nil {
+		afterDispatch(triggers, registry)
+	}
 	wg.Wait()
 	for range 2 {
 		if err := triggers.Drain(t.Context()); err != nil {
@@ -277,8 +352,8 @@ func drainRealQueuedChild(t *testing.T, f childKitFixture) {
 		}
 	}
 	child, err := s.childQueue.GetChild(t.Context(), f.child.Identity)
-	if err != nil || child.State != triggerqueue.ChildCompleted || child.ResultRef == "" {
-		logQueuedFactoryJournal(t, s, f.child.RunID)
-		t.Fatal("real child did not complete", child.State, child.ResultRef, err)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return child
 }
