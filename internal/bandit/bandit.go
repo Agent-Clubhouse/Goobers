@@ -499,9 +499,9 @@ func observationReward(observation Observation) float64 {
 func posteriorConfidence(arm, control string, observations []Observation) float64 {
 	const draws = 512
 	wins := 0
+	a, b := posterior(arm, observations)
+	c, d := posterior(control, observations)
 	for i := 0; i < draws; i++ {
-		a, b := posterior(arm, observations)
-		c, d := posterior(control, observations)
 		if betaSample(a, b, uint64(i)*2+1) > betaSample(c, d, uint64(i)*2+2) {
 			wins++
 		}
