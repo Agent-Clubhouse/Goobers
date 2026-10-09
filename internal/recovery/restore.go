@@ -85,8 +85,8 @@ func applySnapshotTrees(ctx context.Context, repository string, records []Record
 	if err != nil {
 		return "", err
 	}
-	// Git's three-way add/add path can materialize a working file even with
-	// --cached. Give it a private worktree as well as a private index.
+	// Git's three-way add/add path can write working files even with --cached.
+	// Isolate its worktree and process directory as well as its index.
 	privateWorktree := filepath.Join(directory, "worktree")
 	if err := os.Mkdir(privateWorktree, 0o700); err != nil {
 		return "", err
