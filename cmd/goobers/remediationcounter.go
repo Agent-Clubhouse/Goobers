@@ -108,7 +108,7 @@ func filterClaimAvailablePullRequests(
 			return err
 		}
 		for _, candidate := range candidates {
-			claimed, ownedByCurrentRun := pullRequestClaimStatus(claims, gaggle, provider, candidate.Number, currentRunID, now)
+			claimed, ownedByCurrentRun := pullRequestClaimStatusFor(claims, gaggle, provider, candidate, currentRunID, now)
 			if !claimed || ownedByCurrentRun {
 				available = append(available, candidate)
 			}
