@@ -98,9 +98,12 @@ func (r *Runner) validateChildWorkspacePlan(in StartInput) error {
 	if r.cfg.PinnedWorkspace {
 		return fmt.Errorf("runner: managed child forks cannot use pinned project workspace mode")
 	}
+	// Serial repoFrom edges are checked by the compiler. Every writable
+	// stage adopts the same retained child branch, so no checkout derivation
+	// is needed to observe an earlier producer commit.
 	for _, task := range in.Machine.Def.Spec.Tasks {
-		if len(task.RepoFrom) != 0 || task.EffectiveWorkspace() == apiv1.WorkspaceRepoReadOnly || (task.Run != nil && task.Run.SyncBase) {
-			return fmt.Errorf("runner: child task %q requires unsupported workspace derivation, readonly checkout or base synchronization", task.Name)
+		if task.EffectiveWorkspace() == apiv1.WorkspaceRepoReadOnly || (task.Run != nil && task.Run.SyncBase) {
+			return fmt.Errorf("runner: child task %q requires unsupported readonly checkout or base synchronization", task.Name)
 		}
 	}
 	for _, gate := range in.Machine.Def.Spec.Gates {
