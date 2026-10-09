@@ -111,11 +111,12 @@ func (c *Client) DoRetrying(ctx context.Context, method, path string, body []byt
 		} else if response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusTooManyRequests {
 			raw, readErr := ReadBounded(response.Body, maxStatusBodyBytes)
 			_ = response.Body.Close()
-			response.Body = io.NopCloser(bytes.NewReader(raw))
-			if readErr == nil {
-				kind = classifyStatus(response.StatusCode, raw)
-				retryAfter = parseRetryAfter(response.Header.Get("Retry-After"))
+			if readErr != nil {
+				return nil, &RequestError{Op: "read", Endpoint: c.baseURL + path, Err: readErr}
 			}
+			response.Body = io.NopCloser(bytes.NewReader(raw))
+			kind = classifyStatus(response.StatusCode, raw)
+			retryAfter = parseRetryAfter(response.Header.Get("Retry-After"))
 		}
 		if kind == notTransient || (kind == ambiguous && !replayAmbiguous) {
 			return response, err

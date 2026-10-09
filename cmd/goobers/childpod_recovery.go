@@ -123,7 +123,7 @@ func (s *daemonCredentialService) childRecoveryRequest(ctx context.Context, read
 	if err != nil {
 		return request, blobs, err
 	}
-	workspace, err := manager.AdoptChildFromSnapshot(ctx, worktree.ChildOptions{RepoURL: url, RunID: admission.WorkspaceID, OwnerRunID: c.Identity.RunID, Gaggle: c.Identity.Gaggle, SnapshotSHA: admission.ForkSHA})
+	workspace, err := adoptChildStageWorkspace(ctx, manager, worktree.ChildOptions{RepoURL: url, RunID: admission.WorkspaceID, OwnerRunID: c.Identity.RunID, Gaggle: c.Identity.Gaggle, SnapshotSHA: admission.ForkSHA}, c.Stage, apiv1.WorkspaceMode(request.Attempt.Workspace))
 	if err != nil {
 		return request, blobs, err
 	}

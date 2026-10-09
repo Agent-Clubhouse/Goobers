@@ -41,7 +41,7 @@ func (p *childStagePod) workspace(ctx context.Context, reader *journal.Reader, e
 	if fork.Record.SnapshotSHA != admission.ForkSHA || fork.Record.RepositoryKey != childRepoKey(p.runtime.repoRef) || admission.RepositoryDigest != worktree.RepositoryDigest(url) {
 		return nil, errors.New("child workspace fork differs from retained custody")
 	}
-	owned, err := p.runtime.worktrees.AdoptChildFromSnapshot(ctx, worktree.ChildOptions{RepoURL: url, RunID: admission.WorkspaceID, OwnerRunID: p.identity.RunID, Gaggle: p.identity.Gaggle, SnapshotSHA: admission.ForkSHA})
+	owned, err := adoptChildStageWorkspace(ctx, p.runtime.worktrees, worktree.ChildOptions{RepoURL: url, RunID: admission.WorkspaceID, OwnerRunID: p.identity.RunID, Gaggle: p.identity.Gaggle, SnapshotSHA: admission.ForkSHA}, stageArtifactName(p.identity.RunID, env.TaskID), mode)
 	if err != nil {
 		return nil, err
 	}
@@ -150,4 +150,14 @@ func containedOutputIntegrity(grade apiv1.Integrity) apiv1.Integrity {
 		return grade
 	}
 	return apiv1.IntegrityDerived
+}
+
+func adoptChildStageWorkspace(ctx context.Context, manager *worktree.Manager, opts worktree.ChildOptions, stage string, mode apiv1.WorkspaceMode) (*worktree.Worktree, error) {
+	if mode == apiv1.WorkspaceRepoReadOnly {
+		return manager.AdoptChildReadOnlyView(ctx, opts, stage)
+	}
+	if mode != apiv1.WorkspaceRepo && mode != "" {
+		return nil, errors.New("child stage has no repository workspace")
+	}
+	return manager.AdoptChildFromSnapshot(ctx, opts)
 }
