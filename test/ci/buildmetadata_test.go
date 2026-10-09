@@ -71,8 +71,11 @@ func TestMakefileBuildMetadataResolvesFromGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
+	// A second makefile on stdin also works with macOS's bundled Make 3.81,
+	// which predates --eval. Load the real Makefile before adding the probe.
 	cmd := exec.Command(makeBin, "-s", "--no-print-directory",
-		"--eval=print-build-metadata: ; @echo [$(VERSION)] [$(COMMIT)] [$(DATE)]", "print-build-metadata")
+		"-f", "Makefile", "-f", "-", "print-build-metadata")
+	cmd.Stdin = strings.NewReader("print-build-metadata:\n\t@echo [$(VERSION)] [$(COMMIT)] [$(DATE)]\n")
 	cmd.Dir = root
 	cmd.Env = withoutBuildMetadataEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
