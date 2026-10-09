@@ -35,6 +35,16 @@ func releaseTerminalParentArchives(layout instance.Layout, manager *worktree.Man
 		cloneURL = runner.DefaultRepoCloneURL
 	}
 	restorer := parentArchiveRestorer{layout: layout, config: cfg, worktrees: manager, cloneURL: cloneURL}
+	if service, ok := stageGrantMinterFor(layout.Root).(*daemonCredentialService); ok {
+		restorer.scrubber = service.shared
+	}
+	if err := restorer.retryRetirement(reader, candidates); err != nil {
+		return fmt.Errorf("%w: retry parent retirement: %w", worktree.ErrCleanupDeferred, err)
+	}
+	candidates, err = runner.ParentRetirementCandidates(reader)
+	if err != nil {
+		return err
+	}
 	return restorer.releaseArchives(reader, candidates)
 }
 

@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -285,6 +286,52 @@ func verifyAutomaticParentRelease(t *testing.T, reader *journal.Reader, restorer
 	}
 	if got, err := os.ReadFile(filepath.Join(checkout.Path, "source.txt")); err != nil || string(got) != "terminal dirty\n" {
 		t.Fatal("automatic cleanup lost latest working state", string(got), err)
+	}
+	verifyParentRetirementStartup(t, reader, restorer, writer, checkout)
+}
+
+func verifyParentRetirementStartup(t *testing.T, reader *journal.Reader, restorer parentArchiveRestorer, writer *journal.Run, checkout *worktree.Worktree) {
+	t.Helper()
+	id, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout.Path, "source.txt"), []byte("startup dirty\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	claimsReleased := 0
+	finalize := func() error {
+		return finalizeTerminalRunWithClaimRelease(restorer.layout, nil, restorer.worktrees, id.RunID, func(instance.Layout, *journal.InstanceLog, string) error {
+			claimsReleased++
+			return nil
+		})
+	}
+	if err := finalize(); !errors.Is(err, journal.ErrRecoveryBusy) || claimsReleased != 1 {
+		t.Fatal("startup cleanup borrowed live writer or skipped claim release", claimsReleased, err)
+	}
+	if _, err := checkout.HeldCleanupTarget(t.Context()); err != nil {
+		t.Fatal("busy retirement released custody", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalize(); err != nil || claimsReleased != 2 {
+		t.Fatal("startup did not complete missing retirement", claimsReleased, err)
+	}
+	if _, err := os.Lstat(checkout.Path); !os.IsNotExist(err) {
+		t.Fatal("startup retirement retained original checkout", err)
+	}
+	recovered, _, err := journal.TryRecover(reader.Dir())
+	if err != nil {
+		t.Fatal("startup cleanup leaked journal lease", err)
+	}
+	defer func() { _ = recovered.Close() }()
+	archive, seq := latestParentArchive(t, reader)
+	if err := restorer.restore(t.Context(), recovered, archive, seq); err != nil {
+		t.Fatal("startup archive could not restore", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(checkout.Path, "source.txt")); err != nil || string(got) != "startup dirty\n" {
+		t.Fatal("startup archive lost latest working state", string(got), err)
 	}
 }
 
