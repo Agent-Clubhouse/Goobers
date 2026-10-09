@@ -141,6 +141,30 @@ func childParentOpen(ctx context.Context, tx *sql.Tx, parent ChildParent) error 
 	return nil
 }
 
+// CheckChildParentOpen checks the durable cancellation fence before an attempt
+// receives new authority. An absent row is allowed before the first grant;
+// checking does not allocate custody. Call again before delivering a secret.
+func (s *Store) CheckChildParentOpen(ctx context.Context, parent ChildParent) error {
+	if !parent.valid() {
+		return ErrChildAuthorityChanged
+	}
+	var cancelled, settled sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT cancelled_ns,settled_ns FROM child_parents WHERE gaggle=? AND parent_run=?`, parent.Gaggle, parent.ParentRunID).Scan(&cancelled, &settled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if cancelled.Valid {
+		return ErrParentCancelled
+	}
+	if settled.Valid {
+		return ErrParentSettled
+	}
+	return nil
+}
+
 func childAuthorityCapacity(ctx context.Context, tx *sql.Tx, gaggle string) error {
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM child_authorities WHERE gaggle=?`, gaggle).Scan(&count); err != nil {
