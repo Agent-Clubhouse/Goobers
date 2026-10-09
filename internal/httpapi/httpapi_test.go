@@ -1206,3 +1206,8 @@ func TestConstructorsRequireDependencies(t *testing.T) {
 		t.Fatal("expected missing server option error")
 	}
 }
+
+func (f *fakeReader) RunChildren(_ context.Context, runID, _ string) (readservice.ChildHistoryPage, error) {
+	f.runID = runID
+	return readservice.ChildHistoryPage{RunID: runID, Status: "unavailable", Items: []readservice.ChildHistoryItem{}}, f.err
+}
