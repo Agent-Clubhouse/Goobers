@@ -312,3 +312,32 @@ func TestExhaustedTransportErrorNamesAttempts(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+type failingBody struct{ sent bool }
+
+func (b *failingBody) Read(p []byte) (int, error) {
+	if b.sent {
+		return 0, errors.New("connection reset mid-body")
+	}
+	b.sent = true
+	return copy(p, `{"error":{"code":"x`), nil
+}
+
+func TestOverloadBodyReadFailureReturnsErrorNotTruncatedBody(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{}, Body: io.NopCloser(&failingBody{})}, nil
+	})
+	client := newTestClient(t, "http://plane.test", &http.Client{Transport: rt}, fastRetry())
+	response, err := client.DoRetrying(context.Background(), http.MethodGet, "/x", nil, nil, false)
+	if err == nil || response != nil {
+		t.Fatalf("want error and no response, got %v, %v", response, err)
+	}
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) || requestErr.Op != "read" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
