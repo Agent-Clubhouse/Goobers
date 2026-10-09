@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/pathutil"
 )
 
 // defaultReadLineCap bounds a range-less read_input call — large enough for
@@ -64,10 +65,10 @@ func (t *Toolset) GetRunInfo() RunInfo {
 }
 
 // resolveInWorkspace resolves rel against the workspace root using the same
-// no-follow-anywhere-in-the-chain discipline as resolveRooted (see its doc
+// no-follow-anywhere-in-the-chain discipline as pathutil.ResolveRootedPath (see its doc
 // comment) — this is just that logic scoped to t.cfg.Workspace.
 func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string, error) {
-	return resolveRooted(t.cfg.Workspace, rel, createMissingDirs)
+	return pathutil.ResolveRootedPath(t.cfg.Workspace, rel, createMissingDirs)
 }
 
 // PublishOutput writes the task's single declared control target: artifactFile
