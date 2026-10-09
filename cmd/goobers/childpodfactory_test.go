@@ -96,7 +96,7 @@ func TestProductionChildFactoryParksActualRunnerAfterLostReply(t *testing.T) {
 	testProductionChildFactory(t, childFactoryTestOptions{resume: true, lost: true})
 }
 
-type childFactoryTestOptions struct{ resume, lost, queued bool }
+type childFactoryTestOptions struct{ resume, lost, queued, handoff bool }
 
 func TestProductionChildFactoryDrainsAcceptedQueueThroughWorkerAndResult(t *testing.T) {
 	testProductionChildFactory(t, childFactoryTestOptions{queued: true})
@@ -231,7 +231,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		return httpapi.ClaimListResponse{ClaimVisibility: "local", ObservedAt: time.Now()}, nil
 	})
 	opts := s.installChildPodPlane(worker, plane, journals, observe, nil)
-	opts = append(opts, httpapi.WithAuthenticator(auth))
+	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.key)), httpapi.WithChildWorkflowService(s.children.HTTPService()))
 	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +243,14 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		t.Fatal("production factories not installed")
 	}
 	if options.queued {
+		var finish func()
+		if options.handoff {
+			finish = prepareQueuedParentReturn(t, f, server.URL)
+		}
 		testQueuedChildFactory(t, f, worker)
+		if finish != nil {
+			finish()
+		}
 		return
 	}
 	start, release, err := launcher.admittedChildIdentity(t.Context(), f.writer.identity)
