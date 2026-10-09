@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -29,7 +30,7 @@ func (r *Runner) inheritedParentWorkspace(ctx context.Context, in StartInput, mo
 	if err != nil {
 		return nil, err
 	}
-	contribution, found, err := selectHeldParentContribution(events, in.RunID, branch)
+	custody, found, err := inheritedParentCustody(reader, events, in.RunID, branch)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -39,14 +40,11 @@ func (r *Runner) inheritedParentWorkspace(ctx context.Context, in StartInput, mo
 	if err := selectedWorkspaceUnsupported(in, mode); err != nil {
 		return nil, err
 	}
-	if _, err := reader.ArtifactBytesBounded(contribution.Output, maxParentContributionBytes); err != nil {
-		return nil, err
-	}
 	url, err := r.cfg.RepoCloneURL(in.RepoRef)
 	if err != nil {
 		return nil, err
 	}
-	wt, err := r.cfg.Worktrees.AdoptHeldStage(ctx, url, contribution.Custody.Workspace)
+	wt, err := r.cfg.Worktrees.AdoptHeldStage(ctx, url, custody)
 	if err != nil {
 		return nil, err
 	}
@@ -84,4 +82,28 @@ func selectHeldParentContribution(events []journal.Event, runID, branch string) 
 		return parentContribution{}, false, errors.New("parent contribution has been retired")
 	}
 	return state.contribution, state.returnedAt != 0 && state.fork == nil, nil
+}
+
+func inheritedParentCustody(reader *journal.Reader, events []journal.Event, runID, branch string) (worktree.StageCustody, bool, error) {
+	state, err := readParentWorkspaceState(events, runID, branch)
+	if err != nil {
+		return worktree.StageCustody{}, false, err
+	}
+	if state.retiredAt != 0 {
+		return worktree.StageCustody{}, false, errors.New("parent contribution has been retired")
+	}
+	if state.returnedAt == 0 {
+		return worktree.StageCustody{}, false, nil
+	}
+	if state.fork != nil {
+		if state.branch != 0 {
+			return worktree.StageCustody{}, false, errors.New("branch fork cannot replace the root workspace")
+		}
+		if _, _, err := ParentForkArchivePlan(reader, state.archiveValue(journal.Ref{})); err != nil {
+			return worktree.StageCustody{}, false, err
+		}
+	} else if _, err := reader.ArtifactBytesBounded(state.contribution.Output, maxParentContributionBytes); err != nil {
+		return worktree.StageCustody{}, false, err
+	}
+	return state.hold.Workspace, true, nil
 }

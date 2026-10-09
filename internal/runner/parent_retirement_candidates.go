@@ -83,7 +83,7 @@ func parentEventCustody(event journal.Event) (ContainedParentWorkspaceCustody, b
 	if event.Type != journal.EventRunnerAnnotation {
 		return custody, false, nil
 	}
-	if event.Runner["kind"] == ParentForkReadyKind {
+	if event.Runner["kind"] == ParentForkReadyKind || event.Runner["kind"] == ParentForkRootReadyKind {
 		fork, err := decodeParentForkCustody(event)
 		return ContainedParentWorkspaceCustody{Version: 1, Workspace: fork.Workspace}, true, err
 	}

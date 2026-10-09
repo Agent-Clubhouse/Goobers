@@ -30,6 +30,7 @@ type ParentForkPlan struct {
 	Source     spec.Source             `json:"source"`
 	RunID      string                  `json:"runId"`
 	Workspaces []worktree.StageCustody `json:"workspaces"`
+	Root       *worktree.StageCustody  `json:"root,omitempty"`
 }
 
 type parentForkState struct {
@@ -55,7 +56,7 @@ func readParentForkStates(reader *journal.Reader, events []journal.Event) (map[u
 				return nil, errors.New("duplicate parallel fork plan")
 			}
 			states[state.plan.Sequence] = state
-		case ParentForkReadyKind:
+		case ParentForkReadyKind, ParentForkRootReadyKind:
 			if err := consumeParentForkReady(states, event); err != nil {
 				return nil, err
 			}
@@ -82,8 +83,8 @@ func readParentForkPlan(reader *journal.Reader, event journal.Event) (*parentFor
 	if err != nil {
 		return nil, err
 	}
-	if plan.RunID != id.RunID || plan.Gaggle != id.Gaggle || id.Child != nil {
-		return nil, errors.New("parallel fork plan owner changed")
+	if err := validateParentForkOwner(plan, id); err != nil {
+		return nil, err
 	}
 	if !blobstore.ValidDigest(plan.Source.Metadata.Digest) || plan.Source.Metadata.Size <= 0 || plan.Source.Metadata.Size > maxParentForkPlanBytes || !blobstore.ValidDigest(plan.Source.Bundle.Digest) || plan.Source.Bundle.Size <= 0 || plan.Source.Bundle.Size > maxParentForkBundleBytes {
 		return nil, errors.New("parallel fork source identity changed")
@@ -98,7 +99,11 @@ func consumeParentForkReady(states map[uint64]*parentForkState, event journal.Ev
 		return err
 	}
 	state := states[value.Sequence]
-	if state == nil || event.Branch <= 0 || event.Branch > len(state.plan.Workspaces) || event.Parallel != state.plan.Parallel || event.Seq <= state.plannedAt || value.PlannedAt != state.plannedAt || state.ready[event.Branch] || !reflect.DeepEqual(state.reference, value.Plan) || value.Workspace != state.plan.Workspaces[event.Branch-1] {
+	if state == nil {
+		return errors.New("parallel fork readiness has no durable plan")
+	}
+	owner, valid := state.plan.Workspace(event.Branch)
+	if !valid || event.Parallel != state.plan.Parallel || event.Seq <= state.plannedAt || value.PlannedAt != state.plannedAt || state.ready[event.Branch] || !reflect.DeepEqual(state.reference, value.Plan) || value.Workspace != owner {
 		return errors.New("parallel fork readiness differs from durable plan")
 	}
 	state.ready[event.Branch] = true
@@ -136,7 +141,7 @@ func reserveParentForks(events []journal.Event, states map[uint64]*parentForkSta
 		}
 	}
 	for _, state := range states {
-		for _, owner := range state.plan.Workspaces {
+		for _, owner := range state.plan.AllWorkspaces() {
 			if err := add(owner); err != nil {
 				return err
 			}
@@ -158,8 +163,12 @@ func requireParallelForkArchiveOwnership(reader *journal.Reader, events []journa
 		return err
 	}
 	for _, fork := range states {
-		for branch, owner := range fork.plan.Workspaces {
-			if !fork.ready[branch+1] {
+		for branch := 0; branch <= len(fork.plan.Workspaces); branch++ {
+			owner, exists := fork.plan.Workspace(branch)
+			if !exists {
+				continue
+			}
+			if !fork.ready[branch] {
 				return ErrParentReturnPending
 			}
 			state, err := readParentWorkspaceState(events, owner.OwnerRunID, owner.Branch)

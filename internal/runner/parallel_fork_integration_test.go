@@ -106,7 +106,7 @@ func TestIntegrationParallelForkPlanPreservesSourceAndBranchEdits(t *testing.T) 
 			}
 		}
 	}
-	if forksToArchive != 2 {
+	if forksToArchive != 3 {
 		t.Fatal("missing fork source authority", forksToArchive)
 	}
 	dir := run.Dir()
@@ -148,6 +148,16 @@ func TestIntegrationParallelForkPlanPreservesSourceAndBranchEdits(t *testing.T) 
 		t.Fatal("source custody changed")
 	}
 	childWorkspaceRead(t, source.path, "main.txt", []byte("working source\n"))
+	join, err := r.createStageWorkspace(t.Context(), frame.in, "join", apiv1.WorkspaceRepo, false, "")
+	if err != nil || join.path != source.path {
+		t.Fatal("join did not inherit original root", err)
+	}
+	if err := join.Remove(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if gitOutput(t, source.path, "write-tree") != sourceIndex {
+		t.Fatal("ordinary join cleanup lost original staging")
+	}
 }
 
 func TestIntegrationParallelForkRecoversHoldBeforeReadyWithoutPriorParent(t *testing.T) {
@@ -190,6 +200,7 @@ func TestIntegrationParallelForkRecoversHoldBeforeReadyWithoutPriorParent(t *tes
 	if _, err := recordParallelForkPlan(run, plan); err != nil {
 		t.Fatal(err)
 	}
+	root, rootIndex := prepareInterruptedForkRoot(t, r, reader, plan, url)
 	workspace, err := r.cfg.Worktrees.CreateParallelFromSnapshot(t.Context(), worktree.ParallelForkOptions{RepoURL: url, OwnerRunID: frame.in.RunID, Gaggle: frame.in.Gaggle, ParallelSequence: plan.Sequence, Branch: 1, SnapshotSHA: plan.Source.SnapshotSHA})
 	if err != nil {
 		t.Fatal(err)
@@ -229,9 +240,14 @@ func TestIntegrationParallelForkRecoversHoldBeforeReadyWithoutPriorParent(t *tes
 		t.Fatal(err)
 	}
 	states, err := readParentForkStates(reader, events)
-	if err != nil || len(states[plan.Sequence].ready) != 2 {
+	if err != nil || len(states[plan.Sequence].ready) != 3 {
 		t.Fatal("recovery did not acknowledge both forks", err)
 	}
+	join, err := r.createStageWorkspace(t.Context(), frame.in, "join", apiv1.WorkspaceRepo, false, "")
+	if err != nil || join.path != root.Path || gitOutput(t, root.Path, "write-tree") != rootIndex {
+		t.Fatal("recovered join root was reset", err)
+	}
+	childWorkspaceRead(t, root.Path, "root.txt", []byte("working root\n"))
 	// A replay for a different repository must not reuse an unrelated source.
 	foreign := frame.in
 	foreign.RepoRef.Name = "other"
@@ -239,4 +255,24 @@ func TestIntegrationParallelForkRecoversHoldBeforeReadyWithoutPriorParent(t *tes
 		t.Fatal("changed source repository accepted")
 	}
 	childWorkspaceRead(t, workspace.Path, "preserved.bin", []byte{0, 17, 255})
+}
+
+func prepareInterruptedForkRoot(t *testing.T, r *Runner, reader *journal.Reader, plan ParentForkPlan, url string) (*worktree.Worktree, string) {
+	t.Helper()
+	if plan.Root == nil {
+		t.Fatal("fork plan omitted original root")
+	}
+	target := worktree.CleanupTarget{WorktreeID: plan.Root.WorkspaceID, OwnerRunID: plan.Root.OwnerRunID, RepositoryDigest: plan.Root.RepositoryDigest, StartRef: plan.Root.StartRef}
+	if _, _, err := ParentCleanupWorkspace(reader, target); !errors.Is(err, ErrParentReturnPending) {
+		t.Fatal("cleanup ignored unacknowledged root reservation", err)
+	}
+	root, err := r.cfg.Worktrees.HoldReservedStage(t.Context(), url, *plan.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childWorkspaceWrite(t, root.Path, "root.txt", []byte("staged root\n"))
+	runGit(t, root.Path, "add", "root.txt")
+	childWorkspaceWrite(t, root.Path, "root.txt", []byte("working root\n"))
+	rootIndex := gitOutput(t, root.Path, "write-tree")
+	return root, rootIndex
 }

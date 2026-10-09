@@ -47,6 +47,9 @@ func (r parentArchiveRestorer) recoverForkPlan(ctx context.Context, run *journal
 			return errors.New("terminal fork reservation changed repository or physical owner")
 		}
 	}
+	if root := item.Plan.Root; root != nil && (root.OwnerRunID != item.Plan.RunID || root.RepositoryDigest != worktree.RepositoryDigest(url)) {
+		return errors.New("terminal root reservation changed repository or owner")
+	}
 	backend := parallelworkspace.Service{Worktrees: r.worktrees, CloneURL: r.cloneURL}
 	request := spec.Request{RunID: item.Plan.RunID, Gaggle: item.Plan.Gaggle, Parallel: item.Plan.Parallel, Sequence: item.Plan.Sequence, At: snapshot.Record.CreatedAt, Repository: project}
 	source, err := backend.Prepare(ctx, run, request, &item.Plan.Source)
@@ -65,10 +68,16 @@ func (r parentArchiveRestorer) recoverForkPlan(ctx context.Context, run *journal
 }
 
 func (r parentArchiveRestorer) recoverForkCheckout(ctx context.Context, run *journal.Run, url string, item runner.ParentForkRecovery, branch int) error {
-	if branch <= 0 || branch > len(item.Plan.Workspaces) {
+	owner, exists := item.Plan.Workspace(branch)
+	if !exists {
 		return errors.New("terminal fork branch outside reservation")
 	}
-	owner := item.Plan.Workspaces[branch-1]
+	if branch == 0 {
+		if _, err := r.worktrees.HoldReservedStage(ctx, url, owner); err != nil {
+			return err
+		}
+		return runner.RecordParentForkReady(run, item.Plan.Sequence, item.Reference, 0, owner)
+	}
 	_, err := r.worktrees.AdoptHeldStage(ctx, url, owner)
 	if err != nil {
 		checkout, err := r.worktrees.CreateParallelFromSnapshot(ctx, worktree.ParallelForkOptions{RepoURL: url, OwnerRunID: item.Plan.RunID, Gaggle: item.Plan.Gaggle, ParallelSequence: item.Plan.Sequence, Branch: branch, SnapshotSHA: item.Plan.Source.SnapshotSHA})

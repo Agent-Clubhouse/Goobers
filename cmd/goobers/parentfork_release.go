@@ -45,7 +45,7 @@ func (r parentArchiveRestorer) releaseForkSource(ctx context.Context, reader *jo
 	if err != nil {
 		return err
 	}
-	for _, owner := range value.Plan.Workspaces {
+	for _, owner := range value.Plan.AllWorkspaces() {
 		if owner.RepositoryDigest != worktree.RepositoryDigest(url) {
 			return errors.New("parallel source release repository changed")
 		}
@@ -75,7 +75,7 @@ func (r parentArchiveRestorer) verifyForkArchives(ctx context.Context, reader *j
 		return err
 	}
 	policy, _ := resolveRecoveryPolicy(r.layout, r.config)
-	for _, owner := range value.Plan.Workspaces {
+	for _, owner := range value.Plan.AllWorkspaces() {
 		found := false
 		for _, candidate := range candidates {
 			if candidate.Workspace.Custody.Workspace != owner {

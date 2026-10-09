@@ -23,7 +23,7 @@ import (
 
 func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, checkpoint := range []string{"ready", "active", "held", "uncreated", "no-preparation", "before-pin", "after-pin"} {
+	for _, checkpoint := range []string{"root", "ready", "active", "held", "uncreated", "no-preparation", "before-pin", "after-pin"} {
 		t.Run(checkpoint, func(t *testing.T) { verifyHostForkArchiveRecovery(t, checkpoint) })
 	}
 }
@@ -94,6 +94,13 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 		t.Fatal(err)
 	}
 	plan := runner.ParentForkPlan{Version: 1, RunID: env.RunID, Gaggle: env.Gaggle, Parallel: "fan", Sequence: started.Seq, Source: seed, Workspaces: []worktree.StageCustody{custody, sibling}}
+	if checkpoint == "root" {
+		owner, err := source.StageIdentity(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan.Root = &owner
+	}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +144,9 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	}
 	// The second reserved branch has never been created in any checkpoint.
 	// Recovery must use the durable snapshot even after the root changes.
+	writeFileContent(t, filepath.Join(source.Path, "source.txt"), "later root staging\n")
+	recoveryCLIGit(t, source.Path, "add", "source.txt")
+	rootIndex := recoveryCLIGit(t, source.Path, "write-tree")
 	writeFileContent(t, filepath.Join(source.Path, "source.txt"), "later root edits\n")
 	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
@@ -189,7 +199,11 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 		t.Fatal("recovered plan still pending", pending, err)
 	}
 	candidates, err := runner.ParentRetirementCandidates(reader)
-	if err != nil || len(candidates) != 2 || candidates[0].Workspace.Fork == nil || candidates[0].RetirementSeq == 0 {
+	wantCandidates := 2
+	if plan.Root != nil {
+		wantCandidates++
+	}
+	if err != nil || len(candidates) != wantCandidates || candidates[0].Workspace.Fork == nil || candidates[0].RetirementSeq == 0 {
 		t.Fatal("fork archive missing", candidates, err)
 	}
 	retired, err := runner.RetiredParentForks(reader)
@@ -201,7 +215,7 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 		t.Fatal(err)
 	}
 	verifyForkSourcePin(t, manager, url, snapshot.Record, false)
-	candidate := candidates[0]
+	candidate := forkArchiveCandidate(t, candidates, 1)
 	for _, mode := range []string{"foreign-plan", "mixed-worker", "fake-origin"} {
 		wrong := candidate.Workspace
 		fork := *wrong.Fork
@@ -232,6 +246,9 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	guard(manager)
 	if err := restorer.releaseArchives(reader, candidates); err != nil {
 		t.Fatal("fork hold release", err)
+	}
+	if plan.Root != nil {
+		verifyRootForkArchiveRestore(t, restorer, run, reader, source, candidates, base, rootIndex)
 	}
 	if err := checkout.Remove(t.Context(), worktree.RemoveOptions{}); err != nil {
 		t.Fatal("fork cleanup", err)
@@ -275,11 +292,15 @@ func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
 	}
 	verifyForkSourcePin(t, manager, url, snapshot.Record, false)
 	next, err := runner.ParentRetirementCandidates(reader)
-	if err != nil || len(next) != 2 || next[0].RetirementSeq <= candidate.RetirementSeq || next[0].Workspace.Archive == candidate.Workspace.Archive {
+	if err != nil || len(next) != wantCandidates {
+		t.Fatal("restored fork inventory changed", next, err)
+	}
+	nextBranch := forkArchiveCandidate(t, next, 1)
+	if nextBranch.RetirementSeq <= candidate.RetirementSeq || nextBranch.Workspace.Archive == candidate.Workspace.Archive {
 		t.Fatal("restored fork reused obsolete archive", next, err)
 	}
 	if checkpoint == "held" {
-		verifyRetainedForkSource(t, restorer, run, reader, next[0].Workspace, snapshot.Record, url)
+		verifyRetainedForkSource(t, restorer, run, reader, nextBranch.Workspace, snapshot.Record, url)
 	}
 }
 

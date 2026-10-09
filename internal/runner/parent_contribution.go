@@ -175,6 +175,9 @@ func ParentCleanupWorkspace(reader *journal.Reader, target worktree.CleanupTarge
 	if err != nil {
 		return empty, false, err
 	}
+	if err := refusePendingForkCleanup(reader, events, target); err != nil {
+		return empty, false, err
+	}
 	var branch string
 	for _, event := range events {
 		value, relevant, err := parentEventCustody(event)

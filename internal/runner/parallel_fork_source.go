@@ -28,14 +28,23 @@ func (r *Runner) captureParallelForkSource(ctx context.Context, run *journal.Run
 	if err != nil {
 		return empty, err
 	}
-	defer func() { _ = workspace.Remove(context.WithoutCancel(ctx)) }()
+	if workspace.worktree == nil || len(workspace.additional) != 0 {
+		_ = workspace.Remove(context.WithoutCancel(ctx))
+		return empty, errors.New("parallel source requires one managed root checkout")
+	}
+	root, err := workspace.worktree.StageIdentity(ctx)
+	if err != nil {
+		_ = workspace.Remove(context.WithoutCancel(ctx))
+		return empty, err
+	}
 	request := forkSourceRequest(in, started)
 	request.Workspace = workspace.path
 	source, err := r.cfg.PrepareParentForkSource(ctx, run, request, nil)
 	if err != nil {
+		_ = workspace.Remove(context.WithoutCancel(ctx))
 		return empty, err
 	}
-	return ParentForkPlan{Version: 1, Parallel: started.Parallel, Sequence: started.Seq, RunID: in.RunID, Gaggle: in.Gaggle, Source: source}, nil
+	return ParentForkPlan{Root: &root, Version: 1, Parallel: started.Parallel, Sequence: started.Seq, RunID: in.RunID, Gaggle: in.Gaggle, Source: source}, nil
 }
 
 func recordParallelForkPlan(run *journal.Run, plan ParentForkPlan) (journal.Ref, error) {

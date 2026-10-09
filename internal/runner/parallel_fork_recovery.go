@@ -33,6 +33,9 @@ func PendingParentForks(reader *journal.Reader) ([]ParentForkRecovery, error) {
 	var result []ParentForkRecovery
 	for _, state := range states {
 		pending := ParentForkRecovery{Plan: state.plan, Reference: state.reference}
+		if state.plan.Root != nil && !state.ready[0] {
+			pending.Pending = append(pending.Pending, 0)
+		}
 		for index := range state.plan.Workspaces {
 			if !state.ready[index+1] {
 				pending.Pending = append(pending.Pending, index+1)
@@ -66,11 +69,19 @@ func RecordParentForkReady(run *journal.Run, sequence uint64, reference journal.
 		return err
 	}
 	state := states[sequence]
-	if state == nil || reference != state.reference || branch <= 0 || branch > len(state.plan.Workspaces) || owner != state.plan.Workspaces[branch-1] {
+	if state == nil || reference != state.reference {
+		return errors.New("parallel fork readiness differs from its owned reservation")
+	}
+	expected, exists := state.plan.Workspace(branch)
+	if !exists || owner != expected {
 		return errors.New("parallel fork readiness differs from its owned reservation")
 	}
 	if state.ready[branch] {
 		return nil
 	}
-	return run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Parallel: state.plan.Parallel, Runner: map[string]any{"kind": ParentForkReadyKind, "sequence": sequence, "plannedAt": state.plannedAt, "plan": reference, "workspace": owner}})
+	kind := ParentForkReadyKind
+	if branch == 0 {
+		kind = ParentForkRootReadyKind
+	}
+	return run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Parallel: state.plan.Parallel, Runner: map[string]any{"kind": kind, "sequence": sequence, "plannedAt": state.plannedAt, "plan": reference, "workspace": owner}})
 }

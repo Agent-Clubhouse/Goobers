@@ -25,7 +25,7 @@ func decodeParentForkCustody(event journal.Event) (ParentForkCustody, error) {
 	if err != nil || len(data) > 8192 || json.Unmarshal(data, &value) != nil {
 		return value, errors.New("invalid parallel fork readiness")
 	}
-	if value.Sequence == 0 || value.PlannedAt <= value.Sequence || value.PlannedAt >= event.Seq || event.Branch <= 0 || event.Branch > 128 || value.Plan.Size <= 0 || value.Plan.Size > maxParentForkPlanBytes || !blobstore.ValidDigest(value.Plan.Digest) || value.Plan.Path == "" || value.Workspace.OwnerRunID == "" || value.Workspace.WorkspaceID == "" || value.Workspace.Branch == "" || value.Workspace.StartRef == "" || !blobstore.ValidDigest("sha256:"+value.Workspace.RepositoryDigest) {
+	if value.Sequence == 0 || value.PlannedAt <= value.Sequence || value.PlannedAt >= event.Seq || !validForkReceiptRole(event) || value.Plan.Size <= 0 || value.Plan.Size > maxParentForkPlanBytes || !blobstore.ValidDigest(value.Plan.Digest) || value.Plan.Path == "" || value.Workspace.OwnerRunID == "" || value.Workspace.WorkspaceID == "" || value.Workspace.Branch == "" || value.Workspace.StartRef == "" || !blobstore.ValidDigest("sha256:"+value.Workspace.RepositoryDigest) {
 		return value, errors.New("invalid parallel fork custody")
 	}
 	return value, nil
@@ -42,9 +42,11 @@ func (s *parentWorkspaceState) consumeFork(event journal.Event, runID, branch st
 	if value.Workspace.Branch != branch {
 		return nil
 	}
-	if s.heldAt != 0 || s.retiredAt != 0 {
-		return errors.New("parallel fork custody was already established")
+	if s.retiredAt != 0 || (s.heldAt != 0 && (event.Branch != 0 || s.branch != 0 || s.returnedAt <= s.heldAt || s.hold.Workspace != value.Workspace)) {
+		return errors.New("parallel fork custody was already established or not returned")
 	}
+	s.contribution = parentContribution{}
+	s.archive, s.restoredRetirement = ParentWorkspaceArchive{}, 0
 	s.fork = &value
 	s.hold = ContainedParentWorkspaceCustody{Version: 1, Workspace: value.Workspace}
 	s.heldAt, s.returnedAt, s.branch = value.PlannedAt, event.Seq, event.Branch
@@ -104,7 +106,8 @@ func ParentForkArchivePlan(reader *journal.Reader, archive ParentWorkspaceArchiv
 	if err != nil {
 		return empty, 0, err
 	}
-	if !state.matchesArchiveSource(archive) || state.returnedAt != archive.ReturnSeq || state.branch <= 0 || state.branch > len(fork.plan.Workspaces) || !fork.ready[state.branch] || fork.plan.Workspaces[state.branch-1] != archive.Custody.Workspace {
+	owner, exists := fork.plan.Workspace(state.branch)
+	if !state.matchesArchiveSource(archive) || state.returnedAt != archive.ReturnSeq || !exists || !fork.ready[state.branch] || owner != archive.Custody.Workspace {
 		return empty, 0, errors.New("fork archive is not the current acknowledged workspace")
 	}
 	return fork.plan, state.branch, nil

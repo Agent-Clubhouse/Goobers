@@ -58,7 +58,7 @@ func readParentWorkspaceState(events []journal.Event, runID, branch string) (par
 
 func (s *parentWorkspaceState) consume(event journal.Event, runID, branch string) error {
 	switch event.Runner["kind"] {
-	case ParentForkReadyKind:
+	case ParentForkReadyKind, ParentForkRootReadyKind:
 		return s.consumeFork(event, runID, branch)
 	case ContainedParentWorkspaceKind:
 		return s.consumeHold(event, runID, branch)

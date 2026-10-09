@@ -16,7 +16,7 @@ func (r *Runner) prepareParallelForks(ctx context.Context, run *journal.Run, in 
 	if !parallelHasChildStage(in.Machine, parallel) {
 		return nil, nil
 	}
-	if in.Child != nil || in.pinnedWorkspace != nil || r.cfg.Worktrees == nil || r.cfg.RepoCloneURL == nil {
+	if in.Child != nil || in.pinnedWorkspace != nil || len(r.cfg.AdditionalRepos) != 0 || r.cfg.Worktrees == nil || r.cfg.RepoCloneURL == nil {
 		return nil, errors.New("parallel parent forks require managed parent workspace ownership")
 	}
 	reader, err := journal.OpenReadOnly(run.Dir())
@@ -45,27 +45,18 @@ func (r *Runner) prepareParallelForks(ctx context.Context, run *journal.Run, in 
 		if err != nil {
 			return nil, err
 		}
-		if err := reserveParentForks(events, states, owners); err != nil {
+		plan.Workspaces = owners
+		if err := reserveParentForks(events, states, plan.AllWorkspaces()); err != nil {
 			return nil, err
 		}
-		plan.Workspaces = owners
 		ref, err := recordParallelForkPlan(run, plan)
 		if err != nil {
 			return nil, err
 		}
 		state = &parentForkState{plan: plan, reference: ref, plannedAt: run.Seq(), ready: map[int]bool{}}
 	}
-	expected, err := parallelForkOwners(url, in, state.plan, len(parallel.Branches))
-	if err != nil {
+	if err := validateParallelForkOwners(url, in, state.plan, len(parallel.Branches)); err != nil {
 		return nil, err
-	}
-	if len(expected) != len(state.plan.Workspaces) {
-		return nil, errors.New("parallel fork branch count changed")
-	}
-	for i := range expected {
-		if expected[i] != state.plan.Workspaces[i] {
-			return nil, errors.New("parallel fork identity changed on replay")
-		}
 	}
 	if r.cfg.PrepareParentForkSource == nil {
 		return nil, errors.New("parallel fork source service unavailable")
@@ -76,6 +67,9 @@ func (r *Runner) prepareParallelForks(ctx context.Context, run *journal.Run, in 
 	}
 	if restored != state.plan.Source {
 		return nil, errors.New("parallel fork source changed on replay")
+	}
+	if err := r.prepareParallelRoot(ctx, run, url, state); err != nil {
+		return nil, err
 	}
 	for index, owner := range state.plan.Workspaces {
 		if err := r.prepareParallelFork(ctx, run, url, state, index+1, owner); err != nil {
@@ -135,4 +129,20 @@ func (r *Runner) prepareParallelFork(ctx context.Context, run *journal.Run, url 
 		return nil
 	}
 	return RecordParentForkReady(run, state.plan.Sequence, state.reference, branch, owner)
+}
+
+func validateParallelForkOwners(url string, in StartInput, plan ParentForkPlan, count int) error {
+	expected, err := parallelForkOwners(url, in, plan, count)
+	if err != nil {
+		return err
+	}
+	if len(expected) != len(plan.Workspaces) {
+		return errors.New("parallel fork branch count changed")
+	}
+	for i := range expected {
+		if expected[i] != plan.Workspaces[i] {
+			return errors.New("parallel fork identity changed on replay")
+		}
+	}
+	return nil
 }
