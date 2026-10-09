@@ -118,3 +118,27 @@ func TestOrdinaryParallelJournalsDoNotGainChildValidation(t *testing.T) {
 		t.Fatal(p, err)
 	}
 }
+
+func TestChildWaitProjectionRefusesInvalidDeclaredOwners(t *testing.T) {
+	for _, owners := range [][]BranchOutcome{nil, {{Branch: 0}}, {{Branch: 129}}, {{Branch: 1}, {Branch: 1}}} {
+		events, _, _ := parallelWaitFixture()
+		events[0].Completeness = owners
+		if _, err := ProjectChildWaits(events); err == nil {
+			t.Fatalf("invalid declared owners accepted: %+v", owners)
+		}
+	}
+}
+
+// This private preparation already supports bound branch execution internally;
+// public workflow starts and parallel child queue admission remain gated.
+func TestChildWaitProjectionAgreesWithPreparedParallelRuntime(t *testing.T) {
+	events, wait, _ := parallelWaitFixture()
+	projected, err := ProjectChildWaits(events[:3])
+	if err != nil || len(projected.Waits) != 1 {
+		t.Fatal(projected, err)
+	}
+	header, err := DecodeChildWaitHeader(wait, events[1])
+	if err != nil || header.Request != projected.Waits[wait.Branch].Header.Request {
+		t.Fatal("projection and prepared branch custody differ", err)
+	}
+}

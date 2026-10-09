@@ -87,3 +87,18 @@ Delegated branch/PR publication follows that host factory and requires the
 parent's upfront permission. Parallel parent stages and human intervention use
 their own subsequent lifecycle qualification. This slice introduces no storage
 migration and grants no new provider or human permissions.
+
+## Recorded child activity in the Portal
+
+Run details project the generated run's recorded parent and its current durable
+child waits. Each wait identifies its stage, branch, child run and requested
+handoff action. A whole-run waiting message appears only when the journal accounts
+for all unfinished branches as waiting. A recorded continuation removes its wait.
+Malformed or mismatched custody is shown as unavailable.
+
+This read-only view uses the existing run-detail read surface and permissions.
+Links identify recorded runs; queued execution and expired history can make a
+linked run unavailable. The projection covers recorded waits, with the complete
+accepted-child queue, history and intervention controls still requiring the
+remaining Portal and HITL work. It provides no cancellation or stopped-writer
+confirmation. Runtime enablement continues to require the qualification above.

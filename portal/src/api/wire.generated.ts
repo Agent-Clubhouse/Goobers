@@ -994,6 +994,25 @@ export const goWireFixtures = {
     "nextCursor": "next-run"
   },
   "runDetail": {
+    "childActivity": {
+      "status": "recorded",
+      "parent": {
+        "runId": "parent-run",
+        "workflow": "planning",
+        "stageOccurrence": "plan/branch0/visit1"
+      },
+      "waits": [
+        {
+          "runId": "child-run",
+          "stage": "implement",
+          "branch": 0,
+          "action": "wait",
+          "since": "2026-07-18T12:34:56Z",
+          "sequence": 7
+        }
+      ],
+      "parked": true
+    },
     "retryBackoff": {},
     "activeStages": [
       {

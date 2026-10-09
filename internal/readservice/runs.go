@@ -289,6 +289,7 @@ type OperatorReview struct {
 // GraphStatus is "pinned" for current runs and "unavailable" for journals that
 // predate graph snapshots.
 type RunDetail struct {
+	ChildActivity *ChildActivity `json:"childActivity,omitempty"`
 	ReadStateEnvelope
 	RunSummary
 	Graph       *workflow.Graph `json:"graph,omitempty"`
@@ -1249,6 +1250,7 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 		Graph:               graph,
 		GraphStatus:         status,
 		AgentProgress:       agentProgress,
+		ChildActivity:       recordedChildActivity(run.identity, recordEvents(run.records)),
 		Escalation:          escalation,
 		TerminalCause:       cause,
 		TerminalCauseStatus: causeStatus,

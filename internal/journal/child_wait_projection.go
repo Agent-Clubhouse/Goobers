@@ -132,7 +132,7 @@ func (p *childWaitProjector) beginParallel(event Event) error {
 	}
 	owners := map[int]bool{}
 	for _, branch := range event.Completeness {
-		if branch.Branch <= 0 || owners[branch.Branch] {
+		if branch.Branch <= 0 || branch.Branch > 128 || owners[branch.Branch] {
 			return fmt.Errorf("runner: child wait parallel has invalid owners")
 		}
 		owners[branch.Branch] = true
