@@ -26,11 +26,11 @@ import (
 // branch executors and durable fan-in. Public start remains separately gated.
 func TestIntegrationCompiledParallelForkJoin(t *testing.T) {
 	testdep.Require(t, "git")
-	t.Run("one-slot", func(t *testing.T) { verifyCompiledForkJoin(t, 1) })
-	t.Run("two-slots", func(t *testing.T) { verifyCompiledForkJoin(t, 2) })
+	t.Run("one-slot", func(t *testing.T) { verifyCompiledForkJoin(t, 1, nil) })
+	t.Run("two-slots", func(t *testing.T) { verifyCompiledForkJoin(t, 2, nil) })
 }
 
-func verifyCompiledForkJoin(t *testing.T, width int32) {
+func verifyCompiledForkJoin(t *testing.T, width int32, waiting *compiledChildWait) {
 	t.Helper()
 	fork := prepareChildWorkspaceFixture(t, false)
 	machine := compiledForkMachine(t, width)
@@ -43,6 +43,9 @@ func verifyCompiledForkJoin(t *testing.T, width int32) {
 	cfg := fork.config
 	cfg.ChildHandoff = noChildRequest{}
 	cfg.ChildParentCapacity = noChildRequest{}
+	if waiting != nil {
+		cfg.ChildHandoff, cfg.ChildParentCapacity = waiting, waiting
+	}
 	service := parallelworkspace.Service{Worktrees: cfg.Worktrees, CloneURL: cfg.RepoCloneURL, Policy: func(string) (recovery.SnapshotPolicy, error) { return recovery.SnapshotPolicy{}, nil }}
 	cfg.PrepareParentForkSource = func(ctx context.Context, rec OwnedJournalRecorder, req spec.Request, previous *spec.Source) (spec.Source, error) {
 		return service.Prepare(ctx, rec, req, previous)
@@ -56,7 +59,7 @@ func verifyCompiledForkJoin(t *testing.T, width int32) {
 	paths := map[string]string{}
 	var pathsMu sync.Mutex
 	cfg.NewAgentic = func(_ string, rec ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
-		return childWorkspaceAgent{invoke: func(env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+		base := childWorkspaceAgent{invoke: func(env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 			name := strings.TrimPrefix(env.TaskID, in.RunID+":")
 			pathsMu.Lock()
 			paths[name] = env.Workspace
@@ -74,28 +77,24 @@ func verifyCompiledForkJoin(t *testing.T, width int32) {
 				runGit(t, env.Workspace, "add", name+".txt")
 				runGit(t, env.Workspace, "-c", "user.name=Fork Test", "-c", "user.email=fork-test@example.invalid", "commit", "-m", name)
 			case "join":
+				if waiting != nil {
+					childWorkspaceRead(t, env.Workspace, "pending.txt", []byte("retained branch edits"))
+				}
 				childWorkspaceRead(t, env.Workspace, "a.txt", []byte("a result\n"))
 				childWorkspaceRead(t, env.Workspace, "b.txt", []byte("b result\n"))
 			default:
 				t.Errorf("unexpected task %s", name)
 			}
-			if env.ChildWorkflowOrigin != nil {
-				// This synchronous host fixture supplies the verified-return
-				// receipt normally written by the isolated worker factory.
-				owned, _, err := OwnedJournalScope(rec)
-				if err != nil {
-					return apiv1.ResultEnvelope{}, err
-				}
-				output, err := owned.RecordArtifact("fixture-return.json", []byte("verified synchronous return"))
-				if err != nil {
-					return apiv1.ResultEnvelope{}, err
-				}
-				if err := RecordParentContribution(owned, env, journal.Digest([]byte("fixture-contract")), output); err != nil {
-					return apiv1.ResultEnvelope{}, err
-				}
+			if err := recordCompiledParentReturn(rec, env); err != nil {
+				return apiv1.ResultEnvelope{}, err
 			}
+
 			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"summary": name + " complete"}}, nil
-		}}, nil
+		}}
+		if waiting != nil {
+			return &compiledWaitingAgent{base: base, waiting: waiting, recorder: rec}, nil
+		}
+		return base, nil
 	}
 	r, err := New(cfg)
 	if err != nil {
@@ -117,6 +116,9 @@ func verifyCompiledForkJoin(t *testing.T, width int32) {
 	}
 	if len(paths) != 3 || paths["a"] == paths["b"] || paths["join"] == paths["a"] || paths["join"] == paths["b"] {
 		t.Fatalf("branch/root workspace isolation lost: %v", paths)
+	}
+	if waiting != nil {
+		waiting.verify(t, run)
 	}
 	fork.assertParentUnchanged(t)
 }
@@ -153,4 +155,21 @@ func (noChildRequest) Wait(context.Context, ChildHandoffRequest) (ChildHandoffCo
 }
 func (noChildRequest) SuspendChildParent(context.Context, string) (ChildParentSuspension, error) {
 	return nil, errors.New("unexpected child suspension")
+}
+
+func recordCompiledParentReturn(rec ArtifactRecorder, env apiv1.InvocationEnvelope) error {
+	if env.ChildWorkflowOrigin == nil {
+		return nil
+	}
+	// The synchronous host fixture supplies the verified-return receipt
+	// normally written by the isolated worker factory after its writer stops.
+	owned, _, err := OwnedJournalScope(rec)
+	if err != nil {
+		return err
+	}
+	output, err := owned.RecordArtifact("fixture-return.json", []byte("verified synchronous return"))
+	if err != nil {
+		return err
+	}
+	return RecordParentContribution(owned, env, journal.Digest([]byte("fixture-contract:"+env.ChildWorkflowOrigin.AttemptID)), output)
 }
