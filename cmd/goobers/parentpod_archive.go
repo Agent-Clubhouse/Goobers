@@ -14,20 +14,18 @@ import (
 )
 
 func parentCleanupPolicy(ctx context.Context, reader *journal.Reader, target worktree.CleanupTarget, repositoryKey string) (*recovery.SnapshotPolicy, error) {
-	id, err := reader.Identity()
-	if err != nil || id.Child != nil {
-		return nil, err
-	}
-	ref, found, err := runner.ParentCleanupContribution(reader, target)
+	archive, found, err := runner.ParentCleanupWorkspace(reader, target)
 	if err != nil || !found {
 		return nil, err
 	}
-	_, output, err := readParentArchiveOutput(ctx, reader, ref, repositoryKey)
+	authority, err := parentArchiveSource(ctx, reader, archive)
 	if err != nil {
 		return nil, err
 	}
-	policy := output.Workspace.Snapshot.Policy
-	return &policy, nil
+	if authority.repositoryKey != repositoryKey {
+		return nil, errors.New("parent cleanup source repository changed")
+	}
+	return &authority.policy, nil
 }
 
 func readParentArchiveOutput(ctx context.Context, reader *journal.Reader, ref journal.Ref, repositoryKey string) (childpod.Contract, childpod.Output, error) {

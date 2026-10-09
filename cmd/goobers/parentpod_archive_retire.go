@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
-	"reflect"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
@@ -126,22 +124,14 @@ func (r parentArchiveRestorer) captureHeldRetirement(ctx context.Context, reader
 
 func (r parentArchiveRestorer) retirementWorkspace(ctx context.Context, reader *journal.Reader, candidate runner.ParentRetirementCandidate) (*worktree.Worktree, string, string, error) {
 	value := candidate.Workspace
-	data, err := reader.ArtifactBytesBounded(value.Output, childpod.MaxContractBytes)
+	authority, err := parentArchiveSource(ctx, reader, value)
 	if err != nil {
 		return nil, "", "", err
 	}
-	var output childpod.Output
-	if json.Unmarshal(data, &output) != nil || output.Workspace == nil || output.ContractDigest != value.ContractDigest {
-		return nil, "", "", errors.New("parent retirement output differs from contribution")
+	if authority.branch != candidate.Branch {
+		return nil, "", "", errors.New("parent retirement branch changed")
 	}
-	key := output.Workspace.Snapshot.Record.RepositoryKey
-	contract, _, err := readParentArchiveOutput(ctx, reader, value.Output, key)
-	if err != nil {
-		return nil, "", "", err
-	}
-	if contract.ParentBranch != candidate.Branch || !reflect.DeepEqual(contract.ParentOrigin, value.Custody.Origin) {
-		return nil, "", "", errors.New("parent retirement origin changed")
-	}
+	key := authority.repositoryKey
 	project, err := recoveryConfiguredProject(r.config, key)
 	if err != nil {
 		return nil, "", "", err

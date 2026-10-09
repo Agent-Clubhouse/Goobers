@@ -152,40 +152,55 @@ func ParentWorkspaceCustody(rec OwnedJournalRecorder, env apiv1.InvocationEnvelo
 // files after any subsequent ordinary stages. The output supplies only policy
 // and provenance, never the contents to archive.
 func ParentCleanupContribution(reader *journal.Reader, target worktree.CleanupTarget) (journal.Ref, bool, error) {
+	value, found, err := ParentCleanupWorkspace(reader, target)
+	if err != nil || !found {
+		return journal.Ref{}, found, err
+	}
+	if value.Fork != nil {
+		return journal.Ref{}, false, errors.New("parent cleanup source is a host fork")
+	}
+	return value.Output, true, nil
+}
+
+// ParentCleanupWorkspace resolves the exact current source authority for either
+// a returned contained workspace or a host-created fork. Content is always
+// captured from the live checkout, never from the source artifact.
+func ParentCleanupWorkspace(reader *journal.Reader, target worktree.CleanupTarget) (ParentWorkspaceArchive, bool, error) {
+	var empty ParentWorkspaceArchive
 	id, err := reader.Identity()
 	if err != nil || id.RunID != target.OwnerRunID || id.Child != nil {
-		return journal.Ref{}, false, errors.Join(errors.New("parent cleanup owner mismatch"), err)
+		return empty, false, errors.Join(errors.New("parent cleanup owner mismatch"), err)
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return journal.Ref{}, false, err
+		return empty, false, err
 	}
 	var branch string
 	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != ContainedParentWorkspaceKind {
-			continue
+		value, relevant, err := parentEventCustody(event)
+		if err != nil {
+			return empty, false, err
 		}
-		var value ContainedParentWorkspaceCustody
-		data, err := json.Marshal(event.Runner["custody"])
-		if err != nil || len(data) > 8192 || json.Unmarshal(data, &value) != nil || value.Version != 1 || value.Origin == nil {
-			return journal.Ref{}, false, errors.New("invalid parent cleanup custody")
-		}
-		if value.Workspace.WorkspaceID == target.WorktreeID {
-			if value.Workspace.Branch == "" || value.Workspace.OwnerRunID != id.RunID {
-				return journal.Ref{}, false, errors.New("invalid parent cleanup workspace identity")
+		if relevant && value.Workspace.WorkspaceID == target.WorktreeID {
+			if value.Workspace.OwnerRunID != id.RunID {
+				return empty, false, errors.New("parent cleanup workspace owner changed")
 			}
 			branch = value.Workspace.Branch
 		}
 	}
 	if branch == "" {
-		return journal.Ref{}, false, nil
+		return empty, false, nil
 	}
-	value, found, err := selectHeldParentContribution(events, id.RunID, branch)
-	if err != nil || !found {
-		return journal.Ref{}, false, errors.Join(errors.New("parent cleanup has no current acknowledged contribution"), err)
+	state, err := readParentWorkspaceState(events, id.RunID, branch)
+	if err != nil {
+		return empty, false, err
 	}
-	if value.Custody.Workspace.WorkspaceID != target.WorktreeID || value.Custody.Workspace.RepositoryDigest != target.RepositoryDigest || value.Custody.Workspace.StartRef != target.StartRef {
-		return journal.Ref{}, false, errors.New("parent cleanup checkout identity changed")
+	if state.returnedAt == 0 || state.retiredAt != 0 {
+		return empty, false, errors.New("parent cleanup has no current acknowledged workspace")
 	}
-	return value.Output, true, nil
+	owner := state.hold.Workspace
+	if target.Pinned || owner.WorkspaceID != target.WorktreeID || owner.RepositoryDigest != target.RepositoryDigest || owner.StartRef != target.StartRef {
+		return empty, false, errors.New("parent cleanup checkout identity changed")
+	}
+	return state.archiveValue(journal.Ref{}), true, nil
 }

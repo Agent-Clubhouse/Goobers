@@ -71,11 +71,11 @@ func (s Service) Prepare(ctx context.Context, rec Recorder, request spec.Request
 	} else {
 		source = *previous
 	}
-	metadata, err := readSource(reader, request, source)
+	snapshot, err := readSource(reader, request, source)
 	if err != nil {
 		return source, err
 	}
-	err = s.importSource(ctx, reader, url, source, metadata.Snapshot)
+	err = s.importSource(ctx, reader, url, source, snapshot)
 	return source, err
 }
 
@@ -117,20 +117,70 @@ func (s Service) capture(ctx context.Context, rec Recorder, request spec.Request
 	return source, err
 }
 
-func readSource(reader *journal.Reader, request spec.Request, source spec.Source) (sourceMetadata, error) {
+func readSource(reader *journal.Reader, request spec.Request, source spec.Source) (recovery.ChildSnapshot, error) {
+	snapshot, err := ReadSource(reader, source, request.Parallel, request.Sequence)
+	if err != nil {
+		return snapshot, err
+	}
+	if snapshot.Record.RunID != request.RunID || snapshot.Record.RepositoryKey != repositoryKey(request.Repository) || !snapshot.Record.CreatedAt.Equal(request.At) {
+		return snapshot, errors.New("parallel source identity changed")
+	}
+	return snapshot, nil
+}
+
+// ReadSource verifies host metadata against the journal's immutable identity and
+// original root boundary. It supplies archive policy without inventing a worker
+// contract and does not mutate or acquire a repository.
+func ReadSource(reader *journal.Reader, source spec.Source, parallel string, sequence uint64) (recovery.ChildSnapshot, error) {
 	var metadata sourceMetadata
+	if source.Metadata.Integrity != apiv1.IntegrityTrusted || source.Bundle.Integrity != apiv1.IntegrityTrusted {
+		return metadata.Snapshot, errors.New("parallel source lacks host provenance")
+	}
 	data, err := reader.ArtifactBytesBounded(source.Metadata, MaxMetadataBytes)
 	if err != nil {
-		return metadata, err
+		return metadata.Snapshot, err
 	}
-	if json.Unmarshal(data, &metadata) != nil || metadata.Version != 1 || metadata.Gaggle != request.Gaggle || metadata.Parallel != request.Parallel || metadata.Sequence != request.Sequence {
-		return metadata, errors.New("parallel source scope changed")
+	if json.Unmarshal(data, &metadata) != nil || metadata.Version != 1 || metadata.Parallel != parallel || metadata.Sequence != sequence {
+		return metadata.Snapshot, errors.New("parallel source scope changed")
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return metadata.Snapshot, err
 	}
 	record := metadata.Snapshot.Record
-	if record.RunID != request.RunID || record.RepositoryKey != repositoryKey(request.Repository) || !record.CreatedAt.Equal(request.At) || record.SnapshotSHA != source.SnapshotSHA || record.ArchiveDigest != source.Bundle.Digest || record.ArchiveBytes != source.Bundle.Size {
-		return metadata, errors.New("parallel source identity changed")
+	if id.Child != nil || record.RunID != id.RunID || metadata.Gaggle != id.Gaggle || record.SnapshotSHA != source.SnapshotSHA || record.ArchiveDigest != source.Bundle.Digest || record.ArchiveBytes != source.Bundle.Size {
+		return metadata.Snapshot, errors.New("parallel source identity changed")
 	}
-	return metadata, record.Validate()
+	if err := record.Validate(); err != nil {
+		return metadata.Snapshot, err
+	}
+	if err := metadata.Snapshot.Policy.Validate(); err != nil {
+		return metadata.Snapshot, err
+	}
+	if err := verifySourceBoundary(reader, metadata); err != nil {
+		return metadata.Snapshot, err
+	}
+	if _, err := reader.ArtifactBytesBounded(source.Bundle, MaxBundleBytes); err != nil {
+		return metadata.Snapshot, err
+	}
+	return metadata.Snapshot, nil
+}
+
+func verifySourceBoundary(reader *journal.Reader, metadata sourceMetadata) error {
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.Seq != metadata.Sequence {
+			continue
+		}
+		if event.Type != journal.EventParallelStarted || event.Branch != 0 || event.Parallel != metadata.Parallel || !event.Time.Equal(metadata.Snapshot.Record.CreatedAt) {
+			return errors.New("parallel source boundary changed")
+		}
+		return nil
+	}
+	return errors.New("parallel source boundary missing")
 }
 
 func repositoryKey(ref apiv1.RepoRef) string {

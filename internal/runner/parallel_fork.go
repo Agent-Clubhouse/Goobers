@@ -134,5 +134,5 @@ func (r *Runner) prepareParallelFork(ctx context.Context, run *journal.Run, url 
 	if state.ready[branch] {
 		return nil
 	}
-	return run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Parallel: state.plan.Parallel, Runner: map[string]any{"kind": ParentForkReadyKind, "sequence": state.plan.Sequence, "plan": state.reference, "workspace": owner}})
+	return run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Parallel: state.plan.Parallel, Runner: map[string]any{"kind": ParentForkReadyKind, "sequence": state.plan.Sequence, "plannedAt": state.plannedAt, "plan": state.reference, "workspace": owner}})
 }

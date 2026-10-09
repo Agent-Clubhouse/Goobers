@@ -93,8 +93,21 @@ func TestIntegrationParallelForkPlanPreservesSourceAndBranchEdits(t *testing.T) 
 	if err := first.Remove(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParentRetirementCandidates(reader); !errors.Is(err, ErrParentReturnPending) {
-		t.Fatal("unarchived host forks lost journal custody", err)
+	candidates, err := ParentRetirementCandidates(reader)
+	if err != nil || len(candidates) != 3 {
+		t.Fatal("host forks lost archive ownership", candidates, err)
+	}
+	forksToArchive := 0
+	for _, candidate := range candidates {
+		if candidate.Workspace.Fork != nil {
+			forksToArchive++
+			if candidate.Workspace.Custody.Origin != nil || candidate.Workspace.ContractDigest != "" || candidate.RetirementSeq != 0 {
+				t.Fatal("host fork impersonated a worker return", candidate)
+			}
+		}
+	}
+	if forksToArchive != 2 {
+		t.Fatal("missing fork source authority", forksToArchive)
 	}
 	dir := run.Dir()
 	if err := run.Close(); err != nil {

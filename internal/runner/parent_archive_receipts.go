@@ -17,7 +17,7 @@ func RecordParentArchiveRetirement(rec OwnedJournalRecorder, branch string, arch
 	if err != nil {
 		return err
 	}
-	value := ParentWorkspaceArchive{Version: 1, Custody: state.contribution.Custody, ContractDigest: state.contribution.ContractDigest, Output: state.contribution.Output, Archive: archive, HoldSeq: state.heldAt, ReturnSeq: state.returnedAt}
+	value := state.archiveValue(archive)
 	event := journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": ParentContributionRetiredKind, "archive": value}}
 	if _, err := decodeParentWorkspaceArchive(event); err != nil {
 		return err

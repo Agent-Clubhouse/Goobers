@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/parallelworkspace/spec"
@@ -66,7 +67,7 @@ func readParentForkStates(reader *journal.Reader, events []journal.Event) (map[u
 func readParentForkPlan(reader *journal.Reader, event journal.Event) (*parentForkState, error) {
 	var ref journal.Ref
 	data, err := json.Marshal(event.Runner["plan"])
-	if err != nil || json.Unmarshal(data, &ref) != nil {
+	if err != nil || json.Unmarshal(data, &ref) != nil || ref.Integrity != apiv1.IntegrityTrusted {
 		return nil, errors.New("invalid parallel fork plan reference")
 	}
 	data, err = reader.ArtifactBytesBounded(ref, maxParentForkPlanBytes)
@@ -92,17 +93,12 @@ func readParentForkPlan(reader *journal.Reader, event journal.Event) (*parentFor
 }
 
 func consumeParentForkReady(states map[uint64]*parentForkState, event journal.Event) error {
-	var value struct {
-		Sequence  uint64                `json:"sequence"`
-		Plan      journal.Ref           `json:"plan"`
-		Workspace worktree.StageCustody `json:"workspace"`
-	}
-	data, err := json.Marshal(event.Runner)
-	if err != nil || len(data) > 8192 || json.Unmarshal(data, &value) != nil {
-		return errors.New("invalid parallel fork readiness")
+	value, err := decodeParentForkCustody(event)
+	if err != nil {
+		return err
 	}
 	state := states[value.Sequence]
-	if state == nil || event.Branch <= 0 || event.Branch > len(state.plan.Workspaces) || event.Parallel != state.plan.Parallel || event.Seq <= state.plannedAt || state.ready[event.Branch] || !reflect.DeepEqual(state.reference, value.Plan) || value.Workspace != state.plan.Workspaces[event.Branch-1] {
+	if state == nil || event.Branch <= 0 || event.Branch > len(state.plan.Workspaces) || event.Parallel != state.plan.Parallel || event.Seq <= state.plannedAt || value.PlannedAt != state.plannedAt || state.ready[event.Branch] || !reflect.DeepEqual(state.reference, value.Plan) || value.Workspace != state.plan.Workspaces[event.Branch-1] {
 		return errors.New("parallel fork readiness differs from durable plan")
 	}
 	state.ready[event.Branch] = true
@@ -154,9 +150,8 @@ func reserveParentForks(events []journal.Event, states map[uint64]*parentForkSta
 	return nil
 }
 
-// A host-created fork also needs archival when no contained stage has returned
-// yet. Until that source authority is incorporated by the archive owner, keep
-// both its checkout hold and journal instead of treating it as ordinary data.
+// Every reserved fork must have an acknowledged physical owner. Incomplete
+// creation retains the plan and source until recovery can settle that custody.
 func requireParallelForkArchiveOwnership(reader *journal.Reader, events []journal.Event) error {
 	states, err := readParentForkStates(reader, events)
 	if err != nil {

@@ -30,14 +30,14 @@ func retiredParentCleanup(ctx context.Context, layout instance.Layout, cfg *inst
 		return true, errors.New("retired parent cleanup requires a terminal owner")
 	}
 	restorer := parentArchiveRestorer{layout: layout, config: cfg}
-	record, contract, err := restorer.authorize(ctx, reader, archive)
+	record, authority, err := restorer.authorize(ctx, reader, archive)
 	if err != nil {
 		return true, err
 	}
-	if record.RepositoryKey != key || contract.Workspace == nil {
+	if record.RepositoryKey != key {
 		return true, errors.New("retired parent cleanup source changed")
 	}
-	if err := verifyParentArchiveChildren(ctx, layout, contract.Identity); err != nil {
+	if err := verifyParentArchiveChildren(ctx, layout, authority.identity); err != nil {
 		return true, err
 	}
 	repository, ok := manager.LinkedWorktreeRepository(target.Path)
@@ -50,7 +50,7 @@ func retiredParentCleanup(ctx context.Context, layout instance.Layout, cfg *inst
 	if err != nil {
 		return true, err
 	}
-	if !reflect.DeepEqual(state.Policy, contract.Workspace.Snapshot.Policy) {
+	if !reflect.DeepEqual(state.Policy, authority.policy) {
 		return true, errors.New("retired parent cleanup policy changed")
 	}
 	if gone, err := recovery.CleanupTargetGone(target.Path); gone || err != nil {

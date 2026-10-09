@@ -8,7 +8,6 @@ import (
 	"reflect"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
@@ -33,16 +32,16 @@ func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJour
 	if err != nil {
 		return err
 	}
-	record, contract, err := r.authorize(ctx, reader, archive)
+	record, authority, err := r.authorize(ctx, reader, archive)
 	if err != nil {
 		return err
 	}
-	id := contract.Identity
+	id := authority.identity
 	_, branch, err := runner.OwnedJournalScope(rec)
 	if err != nil {
 		return err
 	}
-	if contract.ParentBranch != branch || contract.Workspace == nil {
+	if authority.branch != branch {
 		return errors.New("parent restore contract has different workspace scope")
 	}
 	project, err := recoveryConfiguredProject(r.config, record.RepositoryKey)
@@ -65,7 +64,7 @@ func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJour
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(state.Policy, contract.Workspace.Snapshot.Policy) {
+		if !reflect.DeepEqual(state.Policy, authority.policy) {
 			return errors.New("parent archive exclusion policy changed")
 		}
 		return nil
@@ -90,9 +89,9 @@ func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJour
 	return runner.RecordParentArchiveRestoration(rec, archive, seq)
 }
 
-func (r parentArchiveRestorer) authorize(ctx context.Context, reader *journal.Reader, archive runner.ParentWorkspaceArchive) (recovery.Record, childpod.Contract, error) {
+func (r parentArchiveRestorer) authorize(ctx context.Context, reader *journal.Reader, archive runner.ParentWorkspaceArchive) (recovery.Record, parentArchiveAuthority, error) {
 	var record recovery.Record
-	var empty childpod.Contract
+	var empty parentArchiveAuthority
 	id, err := reader.Identity()
 	if err != nil {
 		return record, empty, err
@@ -116,23 +115,12 @@ func (r parentArchiveRestorer) authorize(ctx context.Context, reader *journal.Re
 	if record.RunID != id.RunID {
 		return record, empty, errors.New("parent archive record belongs to another run")
 	}
-	contract, _, err := readParentArchiveOutput(ctx, reader, archive.Output, record.RepositoryKey)
+	authority, err := parentArchiveSource(ctx, reader, archive)
 	if err != nil {
 		return record, empty, err
 	}
-	if !reflect.DeepEqual(contract.ParentOrigin, archive.Custody.Origin) {
-		return record, empty, errors.New("parent archive origin differs from retained worker")
+	if authority.repositoryKey != record.RepositoryKey {
+		return record, empty, errors.New("parent archive repository changed")
 	}
-	// The receipt pins the exact contract, not just a compatible source policy.
-	var preview struct {
-		ContractDigest string `json:"contractDigest"`
-	}
-	data, err = reader.ArtifactBytesBounded(archive.Output, 24<<20)
-	if err != nil {
-		return record, empty, err
-	}
-	if json.Unmarshal(data, &preview) != nil || preview.ContractDigest != archive.ContractDigest {
-		return record, empty, errors.New("parent archive contract changed")
-	}
-	return record, contract, nil
+	return record, authority, nil
 }

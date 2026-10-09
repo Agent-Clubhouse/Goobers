@@ -83,5 +83,5 @@ func selectHeldParentContribution(events []journal.Event, runID, branch string) 
 	if state.retiredAt != 0 {
 		return parentContribution{}, false, errors.New("parent contribution has been retired")
 	}
-	return state.contribution, state.returnedAt != 0, nil
+	return state.contribution, state.returnedAt != 0 && state.fork == nil, nil
 }

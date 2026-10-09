@@ -44,7 +44,7 @@ func ParentRetirementCandidates(reader *journal.Reader) ([]ParentRetirementCandi
 		}
 		value := state.archive
 		if state.retiredAt == 0 {
-			value = ParentWorkspaceArchive{Version: 1, Custody: state.contribution.Custody, ContractDigest: state.contribution.ContractDigest, Output: state.contribution.Output, HoldSeq: state.heldAt, ReturnSeq: state.returnedAt}
+			value = state.archiveValue(journal.Ref{})
 		}
 		result = append(result, ParentRetirementCandidate{Workspace: value, Branch: branch.index, RetirementSeq: state.retiredAt})
 	}
@@ -55,13 +55,12 @@ func heldParentBranches(events []journal.Event) ([]parentArchiveBranch, error) {
 	var result []parentArchiveBranch
 	seen := map[string]int{}
 	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != ContainedParentWorkspaceKind {
-			continue
+		custody, relevant, err := parentEventCustody(event)
+		if err != nil {
+			return nil, err
 		}
-		var custody ContainedParentWorkspaceCustody
-		data, err := json.Marshal(event.Runner["custody"])
-		if err != nil || len(data) > 8192 || json.Unmarshal(data, &custody) != nil || custody.Workspace.Branch == "" {
-			return nil, errors.New("invalid parent retirement custody")
+		if !relevant {
+			continue
 		}
 		name := custody.Workspace.Branch
 		if prior, ok := seen[name]; ok {
@@ -77,4 +76,23 @@ func heldParentBranches(events []journal.Event) ([]parentArchiveBranch, error) {
 		result = append(result, parentArchiveBranch{name: name, index: event.Branch})
 	}
 	return result, nil
+}
+
+func parentEventCustody(event journal.Event) (ContainedParentWorkspaceCustody, bool, error) {
+	var custody ContainedParentWorkspaceCustody
+	if event.Type != journal.EventRunnerAnnotation {
+		return custody, false, nil
+	}
+	if event.Runner["kind"] == ParentForkReadyKind {
+		fork, err := decodeParentForkCustody(event)
+		return ContainedParentWorkspaceCustody{Version: 1, Workspace: fork.Workspace}, true, err
+	}
+	if event.Runner["kind"] != ContainedParentWorkspaceKind {
+		return custody, false, nil
+	}
+	data, err := json.Marshal(event.Runner["custody"])
+	if err != nil || len(data) > 8192 || json.Unmarshal(data, &custody) != nil || custody.Version != 1 || custody.Origin == nil || custody.Workspace.Branch == "" {
+		return custody, true, errors.New("invalid parent retirement custody")
+	}
+	return custody, true, nil
 }
