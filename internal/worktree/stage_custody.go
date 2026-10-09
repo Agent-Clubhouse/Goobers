@@ -10,8 +10,9 @@ import (
 
 const childWaitDisposition = "child-workflow-wait"
 
-// StageCustody identifies an existing held checkout, without a path or clone
-// URL. It is recorded only by the host after its writers have joined.
+// StageCustody identifies an exact managed checkout, without a path or clone
+// URL. The host records reservations after writers have joined; a successful
+// hold is independently required before this identity grants retained custody.
 type StageCustody struct {
 	WorkspaceID      string `json:"workspaceId"`
 	OwnerRunID       string `json:"ownerRunId"`
@@ -24,41 +25,32 @@ type StageCustody struct {
 // and age pruning while a child holds custody. The active family owns this
 // retention; ReleaseChildHold explicitly hands it back to ordinary cleanup.
 func (wt *Worktree) HoldForChild(ctx context.Context) (StageCustody, error) {
-	var custody StageCustody
-	found, err := wt.manager.WithExistingMirror(ctx, wt.repoURL, func(repository string) error {
-		primary, ownership, err := wt.custodyMarkers()
-		if err != nil {
-			return err
-		}
-		if primary.Status != statusActive && (primary.Status != statusCleanupRetained || primary.CleanupDisposition != childWaitDisposition) {
-			return fmt.Errorf("worktree: stage custody is unavailable")
-		}
-		custody = StageCustody{WorkspaceID: wt.RunID, OwnerRunID: primary.OwnerRunID, RepositoryDigest: primary.RepositoryDigest, Branch: primary.Branch, StartRef: primary.StartRef}
-		ownership.StartRef = primary.StartRef
-		primary.Status, ownership.Status = statusCleanupRetained, statusCleanupRetained
-		primary.CleanupDisposition, ownership.CleanupDisposition = childWaitDisposition, childWaitDisposition
-		return wt.writeCustodyMarkers(primary, ownership)
-	})
-	if err == nil && !found {
-		err = fmt.Errorf("worktree: held stage mirror is unavailable")
+	custody, err := wt.StageIdentity(ctx)
+	if err != nil {
+		return StageCustody{}, err
 	}
+	_, err = wt.manager.HoldReservedStage(ctx, wt.repoURL, custody)
 	return custody, err
 }
 
 // AdoptHeldStage verifies custody without creating, fetching, or resetting a
 // checkout. The caller already owns the run execution lease.
 func (m *Manager) AdoptHeldStage(ctx context.Context, repoURL string, custody StageCustody) (*Worktree, error) {
+	return m.adoptReservedStage(ctx, repoURL, custody, false)
+}
+
+func (m *Manager) adoptReservedStage(ctx context.Context, repoURL string, custody StageCustody, hold bool) (*Worktree, error) {
 	if !validRunID(custody.WorkspaceID) || !validRunID(custody.OwnerRunID) || custody.RepositoryDigest != RepositoryDigest(repoURL) || custody.Branch == "" || custody.StartRef == "" {
 		return nil, fmt.Errorf("worktree: invalid held stage custody")
 	}
 	key := repoKey(repoURL)
 	wt := &Worktree{RunID: custody.WorkspaceID, Path: filepath.Join(m.runsDirForKey(key), worktreeDirectoryName(custody.WorkspaceID)), Branch: custody.Branch, manager: m, key: key, startRef: custody.StartRef, repoURL: repoURL}
 	found, err := m.WithExistingMirror(ctx, repoURL, func(repository string) error {
-		primary, _, err := wt.custodyMarkers()
+		primary, ownership, err := wt.reservedStageMarkers(hold)
 		if err != nil {
 			return err
 		}
-		if primary.Status != statusCleanupRetained || primary.CleanupDisposition != childWaitDisposition || primary.OwnerRunID != custody.OwnerRunID || primary.RepositoryDigest != custody.RepositoryDigest || primary.StartRef != custody.StartRef || primary.Branch != custody.Branch {
+		if (!hold && !heldStageMarker(primary)) || primary.OwnerRunID != custody.OwnerRunID || primary.RepositoryDigest != custody.RepositoryDigest || primary.StartRef != custody.StartRef || primary.Branch != custody.Branch {
 			return fmt.Errorf("worktree: held stage identity has changed")
 		}
 		registered, err := worktreeRegistered(ctx, repository, wt.Path)
@@ -75,6 +67,12 @@ func (m *Manager) AdoptHeldStage(ctx context.Context, repoURL string, custody St
 		}
 		wt.assetGuard = primary.AssetPathGuard
 		wt.partialMirror = m.partialClone && mirrorIsPartial(ctx, repository)
+		if hold {
+			ownership.StartRef = primary.StartRef
+			primary.Status, ownership.Status = statusCleanupRetained, statusCleanupRetained
+			primary.CleanupDisposition, ownership.CleanupDisposition = childWaitDisposition, childWaitDisposition
+			return wt.writeCustodyMarkers(primary, ownership)
+		}
 		return nil
 	})
 	if err == nil && !found {
