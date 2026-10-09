@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/goobers/goobers/internal/providerfixture"
 )
 
 const (
@@ -274,7 +272,7 @@ func TestProvisionApplyIsIdempotentAndNeverMutatesExistingObjects(t *testing.T) 
 	}
 	fixture := strconv.Itoa(fake.itemTitled(fixtureTitle).ID)
 	spec := strconv.Itoa(fake.itemTitled(specTitle).ID)
-	for _, want := range []string{"ADO_PROVIDER_FIXTURE_WORK_ITEM=" + fixture, "ADO_LIVE_SPEC_WORK_ITEM=" + spec} {
+	for _, want := range []string{"provider fixture #" + fixture + ": no variable", "ADO_LIVE_SPEC_WORK_ITEM=" + spec} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout does not print %q:\n%s", want, stdout)
 		}
@@ -493,14 +491,5 @@ func TestProvisionCIPipelineIsOptInAndIdempotent(t *testing.T) {
 	if definition["name"] != ciPipelineName || process["yamlFilename"] != ciPipelineYAML || process["type"] != float64(2) ||
 		repository["id"] != testRepoID || repository["type"] != "TfsGit" || queue["id"] != float64(testQueueID) {
 		t.Errorf("definition = %v", definition)
-	}
-}
-
-// TestFixtureTagMatchesTheDriftListing pins the tag the drift leg filters its
-// open-items listing by to the tag this tool writes.
-func TestFixtureTagMatchesTheDriftListing(t *testing.T) {
-	t.Parallel()
-	if fixtureTag != providerfixture.ADOFixtureTag {
-		t.Fatalf("fixture tag %q, drift listing tag %q", fixtureTag, providerfixture.ADOFixtureTag)
 	}
 }

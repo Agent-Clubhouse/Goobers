@@ -418,3 +418,70 @@ func connectorTestStorage(t *testing.T) (*memoryStorage, *ecdsa.PublicKey) {
 	}
 	return store, parsed.(*ecdsa.PublicKey)
 }
+
+func TestConnectorBackoffResetsAfterSuccessfulConnection(t *testing.T) {
+	store, _ := connectorTestStorage(t)
+	session := func(id string, last any) *fakeSocket {
+		return newFakeSocket(
+			Challenge{Type: messageTypeChallenge, ProtocolVersion: ProtocolVersion, FleetID: "fleet-1", ConnectionID: id, Nonce: "nonce"},
+			HelloAck{Type: messageTypeHelloAck, ConnectionID: id, HeartbeatSeconds: 30},
+			last,
+		)
+	}
+	dials := 0
+	connector := NewConnector(store, "root", "dev")
+	connector.Dial = func(context.Context, string, *websocket.DialOptions) (Socket, *http.Response, error) {
+		dials++
+		switch dials {
+		case 1:
+			return nil, nil, errors.New("outage")
+		case 2:
+			return session("c2", HeartbeatAck{Type: "bogus", ConnectionID: "other"}), nil, nil
+		case 3:
+			return nil, nil, errors.New("outage")
+		}
+		return session("c4", Revoke{Type: messageTypeRevoke, Reason: "done"}), nil, nil
+	}
+	var attempts []int
+	connector.Backoff = func(attempt int) time.Duration {
+		attempts = append(attempts, attempt)
+		return 0
+	}
+	connector.Wait = func(context.Context, time.Duration) error { return nil }
+	if err := connector.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []int{0, 0, 1}
+	if len(attempts) != len(want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	for i := range want {
+		if attempts[i] != want[i] {
+			t.Fatalf("attempts = %v, want %v", attempts, want)
+		}
+	}
+}
+
+func TestConnectorDefaultBackoff(t *testing.T) {
+	c := &Connector{}
+	for attempt, base := range map[int]time.Duration{0: time.Second, 1: 2 * time.Second, 4: 16 * time.Second, 5: 30 * time.Second, 50: 30 * time.Second} {
+		for i := 0; i < 20; i++ {
+			got := c.backoff(attempt)
+			if got < base*3/4 || got > base*5/4 {
+				t.Fatalf("backoff(%d) = %s, want within 25%% of %s", attempt, got, base)
+			}
+		}
+	}
+}
+
+func TestConnectorDefaultWait(t *testing.T) {
+	c := &Connector{}
+	if err := c.wait(context.Background(), time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.wait(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait = %v, want context canceled", err)
+	}
+}

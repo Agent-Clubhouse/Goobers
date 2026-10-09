@@ -196,6 +196,8 @@ func (d *Dispatcher) SweepOrphansWithReport(ctx context.Context, runs RunStates)
 // the recovery-custody gate, and past that gate only once the hold on an
 // unconfirmed writable pod has expired. It returns the disposal reason.
 func (d *Dispatcher) reapTerminalPod(ctx context.Context, pod *corev1.Pod, attempt PodAttempt) (string, error) {
+	// Custody is keyed by the original physical attempt, including for
+	// ordinary pods; isolated children also retain their contract identity.
 	disposal := orphanDisposalAttempt(pod, attempt)
 	err := d.disposePod(ctx, pod, disposal)
 	if err == nil {
@@ -310,11 +312,10 @@ func sweepSelector(instanceID string) map[string]string {
 // Malformed isolated identity returns an unusable digest and refuses disposal.
 func orphanDisposalAttempt(pod *corev1.Pod, identity PodAttempt) Attempt {
 	a := Attempt{RunID: identity.RunID, Stage: identity.Stage, Number: identity.Attempt, ChildExecutionDigest: isolatedDigestFromPod(pod)}
-	if value := pod.Labels[LabelPodAttempt]; value != "" {
-		a.PodAttempt, _ = strconv.Atoi(value)
-		if a.PodAttempt < 1 && a.ChildExecutionDigest != "" {
-			a.ChildExecutionDigest = "invalid"
-		}
+	physical, valid := podPhysicalAttempt(pod)
+	a.PodAttempt = physical
+	if a.ChildExecutionDigest != "" && (!valid || physical < 1) {
+		a.ChildExecutionDigest = "invalid"
 	}
 	return a
 }

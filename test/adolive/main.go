@@ -22,7 +22,8 @@
 //   - Exact-scoped blocking policies on the scratch repository's base branch:
 //     minimum reviewers, the goobers-live/live-write status, and "Require a
 //     merge strategy" (the policy classification the write leg reads, #6106).
-//   - The #4602 fixture work item, tagged goobers-fixture.
+//   - The #4602 fixture work item, tagged goobers-fixture. The drift leg
+//     resolves it by title and tag, and recreates it if it is closed.
 //   - The spec fixture pair the read-only leg reads (#6125, #6191, #6194): an
 //     ancestry parent (-parent-type, default Feature) with a description, and
 //     its child of the project's requirement type (or -spec-type) with an
@@ -55,6 +56,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/providerfixture"
 )
 
 const (
@@ -68,11 +71,11 @@ const (
 	liveStatusGenre = "goobers-live"
 	liveStatusName  = "live-write"
 
-	fixtureTitle = "goobers provider fixture (do not close)"
-	// fixtureTag must equal providerfixture.ADOFixtureTag: the drift leg
-	// lists open items carrying it (main_test.go pins the two together).
-	fixtureTag  = "goobers-fixture"
-	fixtureBody = "Stable seeded work item read by the ADO provider fixture-drift workflow (#4602). Do not edit or close it."
+	// The drift leg resolves its fixture by this title and tag, and
+	// recreates it with the same title, body and tag when it is closed.
+	fixtureTitle = providerfixture.ADOFixtureTitle
+	fixtureTag   = providerfixture.ADOFixtureTag
+	fixtureBody  = providerfixture.ADOFixtureBody
 )
 
 var errBlockingPrefix = errors.New("a blocking branch policy covers the live leg's goobers-live/ branches")
@@ -183,7 +186,7 @@ func provision(ctx context.Context, c *client, cfg config, out io.Writer) error 
 	}
 	printf(out, "\nRepository variables to set (an admin sets these; this tool does not):\n")
 	printf(out, "  ADO_WRITE_REPOSITORY=%s\n", repo.Name)
-	printVariable(out, "ADO_PROVIDER_FIXTURE_WORK_ITEM", fixtureID)
+	printFixtureNote(out, fixtureID)
 	printVariable(out, "ADO_LIVE_SPEC_WORK_ITEM", specID)
 	if cfg.ciPipeline {
 		printVariable(out, "ADO_LIVE_CI_FAILURE_PIPELINE", pipelineID)
@@ -198,6 +201,17 @@ func provision(ctx context.Context, c *client, cfg config, out io.Writer) error 
 
 func printf(out io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(out, format, args...)
+}
+
+// printFixtureNote reports the drift leg's fixture. It needs no variable: the
+// workflow resolves the oldest open fixture by title and tag and recreates it
+// when none is open. This tool's lookup ignores state, so #id may be closed.
+func printFixtureNote(out io.Writer, id int) {
+	if id == 0 {
+		printf(out, "  (provider fixture: no variable; the drift workflow creates it on its next run)\n")
+		return
+	}
+	printf(out, "  (provider fixture #%d: no variable; the drift workflow resolves the open fixture by title and tag)\n", id)
 }
 
 func printVariable(out io.Writer, name string, id int) {

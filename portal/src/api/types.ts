@@ -1041,6 +1041,8 @@ export interface LineageRun {
 
 export interface OperatorRunSummary {
   issue?: { number: string; title?: string; labels?: string[] };
+  /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
+  displayTitle?: string;
   currentStage?: string;
   lastHeartbeatAt?: string;
   heartbeatAgeMillis?: number;
@@ -1483,6 +1485,8 @@ export interface TelemetryCostRunAggregate {
   runId: string;
   gaggle?: string;
   workflow?: string;
+  triggerKind?: string;
+  triggerRef?: string;
   status?: string;
   startedAt: string;
   usageAttempts: number;

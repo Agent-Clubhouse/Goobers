@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -696,6 +697,10 @@ func TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("journaled gate events = %d, want 2", len(events))
 	}
+	assertSynthesizedVerdictArtifact(t, run, events[1])
+	if strings.Contains(string(readVerdictArtifact(t, run, events[0])), `"synthesized"`) {
+		t.Fatal("reviewer-produced verdict artifact carries the synthesized marker")
+	}
 	dup, ok := events[1].Runner["duplicateDiff"].(bool)
 	if !ok || !dup {
 		t.Fatalf("events[1].Runner[duplicateDiff] = %v, want true", events[1].Runner["duplicateDiff"])
@@ -994,6 +999,44 @@ func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
 	}
 	if r.Verdict == nil || r.Verdict.Decision != apiv1.VerdictFail {
 		t.Fatalf("r.Verdict = %+v, want a synthesized fail verdict explaining the empty diff", r.Verdict)
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 1 {
+		t.Fatalf("journaled gate events = %d, want 1", len(events))
+	}
+	assertSynthesizedVerdictArtifact(t, run, events[0])
+}
+
+func readVerdictArtifact(t *testing.T, run *journal.Run, ev journal.Event) []byte {
+	t.Helper()
+	if ev.Ref == nil {
+		t.Fatalf("gate event %+v has no verdict artifact", ev)
+	}
+	rd, err := journal.OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("journal.OpenRead: %v", err)
+	}
+	data, err := rd.ArtifactBytes(*ev.Ref)
+	if err != nil {
+		t.Fatalf("ArtifactBytes: %v", err)
+	}
+	return data
+}
+
+// assertSynthesizedVerdictArtifact is #5894's acceptance: a verdict the runner
+// produced without a reviewer carries synthesized=true with findings absent,
+// so a findings count can never read it as a clean review.
+func assertSynthesizedVerdictArtifact(t *testing.T, run *journal.Run, ev journal.Event) {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(readVerdictArtifact(t, run, ev), &doc); err != nil {
+		t.Fatalf("decode verdict artifact: %v", err)
+	}
+	if doc["synthesized"] != true {
+		t.Fatalf("verdict artifact = %v, want synthesized=true", doc)
+	}
+	if _, present := doc["findings"]; present {
+		t.Fatalf("verdict artifact = %v, want findings absent", doc)
 	}
 }
 

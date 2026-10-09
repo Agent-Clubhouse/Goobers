@@ -122,7 +122,7 @@ func stampClaimsPlaneEnv(t *testing.T, plane *claimsPlane, runID, token string) 
 func normalizeClaimEntries(entries []claimsclient.Entry) []claimsclient.Entry {
 	out := make([]claimsclient.Entry, 0, len(entries))
 	for _, entry := range entries {
-		entry.ClaimedAt, entry.ExpiresAt = time.Time{}, time.Time{}
+		entry.ClaimedAt, entry.RenewedAt, entry.ExpiresAt = time.Time{}, time.Time{}, time.Time{}
 		if entry.ReleasedAt != nil {
 			released := time.Time{}
 			entry.ReleasedAt = &released

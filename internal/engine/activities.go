@@ -659,7 +659,7 @@ func captureUnpushedDiff(ctx context.Context, ws Workspace, mode apiv1.Workspace
 // never publishes: it returns a Verdict, not a stage result, and must not
 // commit. Both new arguments are trailing positionals for the replay reason
 // InvokeGoober documents.
-func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, subjectAgentic bool) (GateReviewResult, error) {
+func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, requireDiff bool) (GateReviewResult, error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
 			return GateReviewResult{}, classifySelfAdmissionError(err)
@@ -674,6 +674,11 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
 	}
+	// #5414: a reviewer off the run branch reads the run's diff from a probe.
+	probed, err := a.probeRunBranchDiff(ctx, env, workspace, workspaceBranch, workspaceDelta, requireDiff)
+	if err != nil {
+		return GateReviewResult{}, classifySeamError(err)
+	}
 	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
 		return GateReviewResult{}, classifySeamError(err)
@@ -685,6 +690,9 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// reviewer judges and — through the two short-circuits below — the reason
 	// a reviewer sometimes must not be asked at all.
 	out := captureGateDiff(ctx, ws, workspace, env)
+	if probed != nil {
+		out = *probed
+	}
 	if a.Canary != nil && len(out.Diff) > 0 {
 		// Defence in depth, as in the local runner's recordReviewerDiff: a
 		// commit that captured a registered credential must not carry it into
@@ -713,10 +721,11 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	// places them: after the diff is known and BEFORE the reviewer is called.
 	// A synthesized verdict here is the whole point — the negative assertion
 	// the parity rows make is that a.Goober.Review is never reached.
-	if out.Observed && len(out.Diff) == 0 && subjectAgentic {
+	if out.Observed && len(out.Diff) == 0 && requireDiff {
 		// #415: an agentic stage asked to change something changed nothing.
 		// No reviewer can turn that into a pass. Scoped to an agentic subject
-		// because a DETERMINISTIC one legitimately produces no diff.
+		// — or, since #5414, a gate that reviews implementation work — because
+		// a DETERMINISTIC one legitimately produces no diff.
 		verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
 		out.Verdict = verdict
 		out.EmptyDiff = true

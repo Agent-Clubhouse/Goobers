@@ -78,6 +78,7 @@ type engineWorkflowClient interface {
 	DescribeWorkflowExecution(ctx context.Context, workflowID, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
 	GetWorkflow(ctx context.Context, workflowID, runID string) client.WorkflowRun
 	CancelWorkflow(ctx context.Context, workflowID, runID string) error
+	TerminateWorkflow(ctx context.Context, workflowID, runID, reason string, details ...any) error
 }
 
 // dialDaemonEngine is the daemon's single Temporal dial, a var so tests can
@@ -469,6 +470,79 @@ func (g *engineRunGuards) cancelWorkflow(ctx context.Context, workflowID string)
 	cancelCtx, cancel := context.WithTimeout(ctx, engineCancelTimeout)
 	defer cancel()
 	return g.client.CancelWorkflow(cancelCtx, workflowID, "")
+}
+
+// terminateUnresponsive closes an engine run's workflow whose cancellation was
+// never honoured (#5407). It returns without error only once Temporal has
+// confirmed that the workflow is no longer running, and reports whether the
+// run ended by termination, so that only then does the daemon write the run's
+// terminal itself.
+//
+// CancelWorkflow is a request that only workflow code can act on. When no
+// worker can take the run's tasks the request sits on the server forever and
+// the run keeps its claim and concurrency slot. TerminateWorkflow is applied
+// by the server itself, so it settles the workflow with no worker at all.
+//
+// A workflow that is already closed is not terminated again. One that closed
+// any other way (completed, failed, cancelled), or that can no longer be
+// found, reports false: its outcome is in its history, and the completed-run
+// reconciler backfills it. NotFound without the open-workflow scan, or with a
+// scan that failed, is an unknown answer and is reported for the next tick.
+// Every call is bounded because the stall sweep runs on the daemon's ticker.
+func (g *engineRunGuards) terminateUnresponsive(ctx context.Context, runID, reason string) (bool, error) {
+	if g == nil || g.client == nil {
+		return false, fmt.Errorf("terminate engine run %s: %w", runID, errNoEngineClient)
+	}
+	workflowID := runID
+	status, err := g.describeOnce(ctx, workflowID)
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		if g.resolveWorkflowID == nil {
+			return false, fmt.Errorf("terminate engine run %s: %w", runID, errEngineRunUnresolvable)
+		}
+		resolved, resolveErr := g.resolveEngineWorkflowID(ctx, runID)
+		if errors.Is(resolveErr, errEngineRunUnresolvable) {
+			// Nothing open under the run, but how it closed is unknown:
+			// leave its outcome to the completed-run reconciler.
+			return false, nil
+		}
+		if resolveErr != nil {
+			return false, fmt.Errorf("terminate engine run %s: %w", runID, resolveErr)
+		}
+		workflowID = resolved
+		if status, err = g.describeOnce(ctx, workflowID); errors.As(err, &notFound) {
+			return false, nil
+		}
+	}
+	if err != nil {
+		return false, fmt.Errorf("describe engine run %s as workflow %s: %w", runID, workflowID, err)
+	}
+	switch status {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+		return true, nil
+	case enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED:
+		return false, fmt.Errorf("terminate engine run %s: workflow %s reported no execution status", runID, workflowID)
+	default:
+		return false, nil
+	}
+	terminateCtx, cancel := context.WithTimeout(ctx, engineCancelTimeout)
+	defer cancel()
+	if err := g.client.TerminateWorkflow(terminateCtx, workflowID, "", reason); err != nil {
+		return false, fmt.Errorf("terminate engine run %s as workflow %s: %w", runID, workflowID, err)
+	}
+	return true, nil
+}
+
+// describeOnce is a single bounded describe with no retry budget.
+func (g *engineRunGuards) describeOnce(ctx context.Context, workflowID string) (enumspb.WorkflowExecutionStatus, error) {
+	describeCtx, cancel := context.WithTimeout(ctx, engineDescribeTimeout)
+	defer cancel()
+	desc, err := g.client.DescribeWorkflowExecution(describeCtx, workflowID, "")
+	if err != nil {
+		return enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED, err
+	}
+	return desc.GetWorkflowExecutionInfo().GetStatus(), nil
 }
 
 // engineReattachDeps is the daemon state one re-attachment needs after the

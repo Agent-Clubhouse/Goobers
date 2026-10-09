@@ -48,14 +48,53 @@ type BuildResult struct {
 // idempotent on last_seq, so a build interrupted halfway and restarted
 // re-projects what it already did without changing it, and picks up the rest.
 func (s *Store) BuildFromJournals(ctx context.Context, runsDirs []string) (BuildResult, error) {
+	return s.buildFromJournals(ctx, runsDirs, nil)
+}
+
+// buildFromJournals is BuildFromJournals with an optional progress report of
+// directories scanned against the total, so a long build is visibly moving.
+func (s *Store) buildFromJournals(ctx context.Context, runsDirs []string, progress func(done, total int)) (BuildResult, error) {
 	var result BuildResult
+	dirs, err := listRunDirs(runsDirs)
+	if err != nil {
+		return result, err
+	}
+	for _, dir := range dirs {
+		// Cancellation is honoured between runs rather than mid-run: a
+		// partially-projected run would still be consistent (the upsert is
+		// transactional) but stopping cleanly at a boundary keeps the
+		// progress figures meaningful.
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		result.Scanned++
+		projected, err := s.projectRunDir(ctx, dir)
+		if err != nil {
+			return result, err
+		}
+		if projected {
+			result.Projected++
+		} else {
+			result.Skipped++
+		}
+		if progress != nil {
+			progress(result.Scanned, len(dirs))
+		}
+	}
+	return result, nil
+}
+
+// listRunDirs returns every run directory under runsDirs, each root's entries
+// in sorted order, so a build can report its total before it starts.
+func listRunDirs(runsDirs []string) ([]string, error) {
+	var dirs []string
 	for _, runsDir := range runsDirs {
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return result, fmt.Errorf("readmodel: read runs directory %s: %w", runsDir, err)
+			return nil, fmt.Errorf("readmodel: read runs directory %s: %w", runsDir, err)
 		}
 		names := make([]string, 0, len(entries))
 		for _, entry := range entries {
@@ -64,28 +103,11 @@ func (s *Store) BuildFromJournals(ctx context.Context, runsDirs []string) (Build
 			}
 		}
 		sort.Strings(names)
-
 		for _, name := range names {
-			// Cancellation is honoured between runs rather than mid-run: a
-			// partially-projected run would still be consistent (the upsert is
-			// transactional) but stopping cleanly at a boundary keeps the
-			// progress figures meaningful.
-			if err := ctx.Err(); err != nil {
-				return result, err
-			}
-			result.Scanned++
-			projected, err := s.projectRunDir(ctx, filepath.Join(runsDir, name))
-			if err != nil {
-				return result, err
-			}
-			if projected {
-				result.Projected++
-			} else {
-				result.Skipped++
-			}
+			dirs = append(dirs, filepath.Join(runsDir, name))
 		}
 	}
-	return result, nil
+	return dirs, nil
 }
 
 // ProjectRunDir projects one run directory.
@@ -106,6 +128,9 @@ func (s *Store) ProjectRunDir(ctx context.Context, dir string) error {
 
 // projectRunDir projects one run directory, reporting whether it was written.
 func (s *Store) projectRunDir(ctx context.Context, dir string) (bool, error) {
+	if s.projectDirObserver != nil {
+		s.projectDirObserver(dir)
+	}
 	// An unpublished directory has no run.yaml and can never be ingested. This
 	// check is what keeps a build from paying for the 27% of directories that
 	// carry no identity — and, historically, from taking a journal lock on them

@@ -238,7 +238,7 @@ func (x *azureReplayIndex) migrateBootstrapStreamLocked(ctx context.Context, str
 				return err
 			}
 		}
-		if err := x.stamp(ctx, tx); err != nil {
+		if err := x.stamp(ctx, tx, nil); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE reconciliation SET audited=? WHERE id=1`, time.Now().UnixNano())

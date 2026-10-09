@@ -255,6 +255,38 @@ func TestStoreRepairsTornFinalAppendOnRestart(t *testing.T) {
 	}
 }
 
+func TestStoreAppendSucceedsWhenProjectionWriteFailsAfterCommit(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := apiv1.GaggleHealthIdentity{Gaggle: "alpha"}
+	key, err := EpisodeKey(FindingNoProgress, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "health", "gaggles"), []byte("blocker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened := finding(FindingNoProgress, key, identity, now, apiv1.GaggleHealthStalled)
+	snapshot, err := store.Append(event(1, now, apiv1.GaggleHealthFindingOpened, opened))
+	if err != nil {
+		t.Fatalf("Append reported failure after durable commit: %v", err)
+	}
+	if snapshot.LastSequence != 1 {
+		t.Fatalf("snapshot sequence = %d, want 1", snapshot.LastSequence)
+	}
+	if _, err := store.Append(event(2, now.Add(time.Minute), apiv1.GaggleHealthFindingUpdated,
+		finding(FindingNoProgress, key, identity, now.Add(time.Minute), apiv1.GaggleHealthStalled))); err != nil {
+		t.Fatalf("retry-sequence append: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func fixedRetention(retention time.Duration) RetentionResolver {
 	return func(string) (time.Duration, error) {
 		return retention, nil

@@ -418,7 +418,7 @@ var DispatcherPlaneEnv = []string{
 var runContextEnv = []string{
 	executorRepoProviderEnv, executorRepoBaseURLEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
-	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv,
+	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
 }
 
 // The executor package owns these names; they are restated rather than imported
@@ -435,6 +435,11 @@ const (
 	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
 	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
 	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
+	// executorStageTimeoutEnv restates executor.StageTimeoutEnvVar: the
+	// deadline dispatch-exec enforces, stamped for goobers-CLI stages so a
+	// provider command budgets against it rather than a default (#5572).
+	// EnvStageTimeout itself is privileged and never reaches the stage.
+	executorStageTimeoutEnv = "GOOBERS_EFFECTIVE_STAGE_TIMEOUT"
 	// executorInputKindKey, executorKindExternalTelemetry and
 	// executorInputTelemetryConnector restate executor.InputKind (itself
 	// boundedwait.InputKind), executor.KindExternalTelemetry, and
@@ -1220,6 +1225,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		// supply the name) and why an empty value and an absent one are two
 		// different facts on the far side.
 		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: literalPodEnv(providerBotLogin(cfg, attempt))})
+		env = append(env, corev1.EnvVar{Name: executorStageTimeoutEnv, Value: attempt.stageTimeout().String()})
 	}
 	if stamp := externalTelemetryConnectorStamp(cfg, attempt); stamp != "" {
 		env = append(env, corev1.EnvVar{Name: ExternalTelemetryConnectorEnv, Value: literalPodEnv(stamp)})

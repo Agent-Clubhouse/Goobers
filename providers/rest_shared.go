@@ -155,6 +155,7 @@ func pullSummaryFromProjection(pr restPRProjection, checkState CheckState) PullR
 		ID:         strconv.Itoa(pr.Number),
 		Number:     pr.Number,
 		URL:        pr.URL,
+		Title:      pr.Title,
 		State:      pr.State,
 		Merged:     pr.Merged || pr.MergedAt != nil,
 		Head:       pr.HeadBranch,

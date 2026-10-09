@@ -22,6 +22,7 @@ import {
   attentionSeverity,
   attentionSeverityRank,
   incompleteRunPhasesMessage,
+  runWorkTitle,
   type AttentionSeverity,
   type OperationalOverview,
   useOperationalOverview,
@@ -1211,10 +1212,7 @@ function RunSection({
 }
 
 function runLabel(run: RunSummary): string {
-  if (run.operator?.issue) {
-    return `#${run.operator.issue.number}${run.operator.issue.title ? ` ${run.operator.issue.title}` : ""}`;
-  }
-  return run.id;
+  return runWorkTitle(run) ?? run.id;
 }
 
 function runContextSubtitle(run: RunSummary, active: boolean): string {
@@ -1277,9 +1275,9 @@ function groupAttentionRuns(
           Date.parse(run.lastActivityAt) >
             Date.parse(existing.severitySource.lastActivityAt))
       ) {
-        existing.label = issue
-          ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
-          : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`;
+        existing.label =
+          runWorkTitle(run) ??
+          `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`;
         existing.context = workflowIdentity(run);
         existing.diagnosis = attentionDiagnosis(run, failureReasons, severity);
         existing.severity = severity;
@@ -1290,9 +1288,9 @@ function groupAttentionRuns(
     grouped.set(key, {
       key,
       domId: key.replace(/[^a-zA-Z0-9_-]/g, "-"),
-      label: issue
-        ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
-        : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`,
+      label:
+        runWorkTitle(run) ??
+        `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons, severity)}`,
       context: workflowIdentity(run),
       diagnosis: attentionDiagnosis(run, failureReasons, severity),
       severity,

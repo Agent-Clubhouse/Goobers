@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -543,7 +544,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 	}
 
 	t.Run("human newer than bot triggers", func(t *testing.T) {
-		_, fresh := latestUnaddressedHumanComment([]providers.Comment{
+		_, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{
 			comment("bot", "", at(time.Hour)),
 			comment("dev", "", at(2*time.Hour)),
 		}, dedicatedLoginClassifier("bot"))
@@ -553,7 +554,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 	})
 
 	t.Run("bot newer than human is quiet", func(t *testing.T) {
-		_, fresh := latestUnaddressedHumanComment([]providers.Comment{
+		_, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{
 			comment("bot", "", at(time.Hour)),
 			comment("dev", "", at(2*time.Hour)),
 			comment("bot", "", at(3*time.Hour)),
@@ -565,7 +566,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 
 	t.Run("nil timestamps fall back to list position", func(t *testing.T) {
 		// Oldest-first: the human at a later index is newer than the earlier bot.
-		got, fresh := latestUnaddressedHumanComment([]providers.Comment{
+		got, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{
 			comment("bot", "", nil),
 			comment("dev", "", nil),
 		}, dedicatedLoginClassifier("bot"))
@@ -576,7 +577,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 
 	t.Run("equal timestamps break by position", func(t *testing.T) {
 		// Same instant: the bot comment at the later index wins, so no trigger.
-		_, fresh := latestUnaddressedHumanComment([]providers.Comment{
+		_, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{
 			comment("dev", "", at(time.Hour)),
 			comment("bot", "", at(time.Hour)),
 		}, dedicatedLoginClassifier("bot"))
@@ -586,7 +587,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 	})
 
 	t.Run("empty list is quiet", func(t *testing.T) {
-		if _, fresh := latestUnaddressedHumanComment(nil, dedicatedLoginClassifier("bot")); fresh {
+		if _, fresh, _ := latestUnaddressedHumanComment(nil, dedicatedLoginClassifier("bot")); fresh {
 			t.Fatal("expected quiet for an empty thread")
 		}
 	})
@@ -596,7 +597,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 		// attribution footer still makes the response Goobers'.
 		marked := comment("other-app", "", at(2*time.Hour))
 		marked.Body = stampOwnFixtureBody("done", "comment")
-		if _, fresh := latestUnaddressedHumanComment([]providers.Comment{
+		if _, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{
 			comment("dev", "", at(time.Hour)),
 			marked,
 		}, dedicatedLoginClassifier("bot")); fresh {
@@ -609,7 +610,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 			prCommentWatchSettings{identityMode: prCommentWatchIdentityShared})
 		own := comment("bot", "", at(time.Hour))
 		own.Body = stampOwnFixtureBody("verdict", "comment")
-		got, fresh := latestUnaddressedHumanComment([]providers.Comment{own, comment("bot", "", at(2*time.Hour))}, shared)
+		got, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{own, comment("bot", "", at(2*time.Hour))}, shared)
 		if !fresh || got.Author != "bot" {
 			t.Fatalf("got %+v fresh=%v, want the unmarked own-login comment to trigger", got, fresh)
 		}
@@ -617,12 +618,95 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 
 	t.Run("own-login match is case-insensitive", func(t *testing.T) {
 		// The only human is the token owner under a different case: no signal.
-		if _, fresh := latestUnaddressedHumanComment([]providers.Comment{
+		if _, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{
 			comment("Bot-Account", "", at(time.Hour)),
 		}, dedicatedLoginClassifier("bot-account")); fresh {
 			t.Fatal("expected quiet when the sole author is the bot under a different case")
 		}
 	})
+
+	// #6918: a frontier-bound reply acknowledges only what its snapshot read.
+	acked := func(created *time.Time, ack string) providers.Comment {
+		c := comment("bot", "", created)
+		c.Body = withFeedbackAck("Addressed.", ack)
+		return c
+	}
+	t.Run("a reply to older feedback does not acknowledge newer feedback", func(t *testing.T) {
+		got, fresh, unbound := latestUnaddressedHumanComment([]providers.Comment{
+			comment("dev", "", at(time.Hour)),
+			comment("reviewer", "", at(2*time.Hour)),
+			acked(at(3*time.Hour), feedbackAckMarker(*at(time.Hour))),
+		}, dedicatedLoginClassifier("bot"))
+		if !fresh || unbound || got.Author != "reviewer" {
+			t.Fatalf("got %+v fresh=%v unbound=%v, want the post-snapshot comment to trigger", got, fresh, unbound)
+		}
+	})
+
+	t.Run("a bound reply covers feedback within its frontier second", func(t *testing.T) {
+		if _, fresh, unbound := latestUnaddressedHumanComment([]providers.Comment{
+			comment("dev", "", at(time.Hour+500*time.Millisecond)),
+			acked(at(3*time.Hour), feedbackAckMarker(*at(time.Hour))),
+		}, dedicatedLoginClassifier("bot")); fresh || unbound {
+			t.Fatalf("fresh=%v unbound=%v, want assessed feedback acknowledged", fresh, unbound)
+		}
+	})
+
+	t.Run("a none or unreadable frontier acknowledges nothing", func(t *testing.T) {
+		for _, ack := range []string{feedbackAckMarker(time.Time{}), feedbackAckMarkerPrefix + "garbled" + feedbackAckMarkerSuffix} {
+			if _, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{
+				comment("dev", "", at(time.Hour)),
+				acked(at(2*time.Hour), ack),
+			}, dedicatedLoginClassifier("bot")); !fresh {
+				t.Fatalf("ack %q: expected the unassessed comment to trigger", ack)
+			}
+		}
+	})
+
+	t.Run("an unbound acknowledgement is reported", func(t *testing.T) {
+		_, fresh, unbound := latestUnaddressedHumanComment([]providers.Comment{
+			comment("dev", "", at(time.Hour)),
+			acked(at(2*time.Hour), feedbackAckMarker(*at(time.Hour))),
+			comment("dev", "", at(4*time.Hour)),
+			comment("bot", "", at(5*time.Hour)),
+		}, dedicatedLoginClassifier("bot"))
+		if fresh || !unbound {
+			t.Fatalf("fresh=%v unbound=%v, want quiet but reported as unbound", fresh, unbound)
+		}
+	})
+}
+
+// TestRemediationFeedbackAckIsSnapshotBound pins #6918's frontier: the newest
+// timestamp the run's feedback snapshot read, and no marker without a snapshot.
+func TestRemediationFeedbackAckIsSnapshotBound(t *testing.T) {
+	brief := apiv1.RemediationBrief{}
+	brief.GatherPRContext.Comments = []apiv1.RemediationThreadComment{{CreatedAt: "2026-01-02T03:04:05Z"}, {CreatedAt: "bogus"}}
+	brief.GatherReviewThreads = &apiv1.RemediationReviewThreads{
+		InlineComments: []apiv1.RemediationInlineComment{{CreatedAt: "2026-01-02T04:00:00+01:00"}},
+		Reviews:        []apiv1.RemediationNativeReview{{SubmittedAt: "2026-01-02T03:10:00Z"}},
+	}
+	if got := remediationFeedbackAck(brief); got != "" {
+		t.Fatalf("ack without a snapshot = %q, want none emitted", got)
+	}
+	brief.FeedbackSnapshot = &apiv1.PRFeedbackSnapshot{}
+	want := feedbackAckPrefixFor("2026-01-02T03:10:00Z")
+	if got := remediationFeedbackAck(brief); got != want {
+		t.Fatalf("ack = %q, want %q", got, want)
+	}
+	frontier, bound := parseFeedbackAck("> " + want + "\nreply\n\n" + want)
+	if !bound || frontier.Format(time.RFC3339) != "2026-01-02T03:10:00Z" {
+		t.Fatalf("parsed frontier %v bound=%v", frontier, bound)
+	}
+	if _, bound := parseFeedbackAck("> " + want); bound {
+		t.Fatal("a quoted marker must not bind a comment")
+	}
+	brief.GatherPRContext.Comments, brief.GatherReviewThreads = nil, nil
+	if got := remediationFeedbackAck(brief); got != feedbackAckPrefixFor(feedbackAckNone) {
+		t.Fatalf("empty snapshot ack = %q, want none", got)
+	}
+}
+
+func feedbackAckPrefixFor(value string) string {
+	return feedbackAckMarkerPrefix + value + feedbackAckMarkerSuffix
 }
 
 // dedicatedLoginClassifier is the GitHub/Gitea default: a dedicated bot login.

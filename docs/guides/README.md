@@ -8,6 +8,7 @@ cannot leave it outside the documented navigation surfaces.
 
 - [Azure DevOps authentication](ado-authentication.md)
 - [Azure DevOps limitations](ado-limitations.md)
+- [Diagnose an instance with the Goobers agent toolkit](agent-toolkit-diagnostics.md)
 - [Onboard an arbitrary repository (tiers 1-2)](arbitrary-repo-onboarding.md)
 - [Coordinate a shared backlog with assignees](assignment-aware-backlogs.md)
 - [Export tenant telemetry directly to Azure Monitor](azure-monitor.md)
@@ -16,6 +17,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Configuring backlog park-label filtering](backlog-park-filtering.md)
 - [Find ready issues with no label route](backlog-routing-diagnostics.md)
 - [Child workflow admission internals (preview)](child-workflow-admission.md)
+- [Investigation: default-branch CI failures 32040570522 and 32063514602](ci-main-failures-32040570522-32063514602.md)
 - [CI test results: JUnit artifacts and failure annotations](ci-test-results.md)
 - [Inspect claim verification](claim-verification.md)
 - [Codex harness](codex-harness.md)

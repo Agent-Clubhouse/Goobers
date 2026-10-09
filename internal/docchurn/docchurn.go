@@ -332,13 +332,13 @@ func commitsInRange(git Git, repo, base, head string) ([]churnCommit, error) {
 }
 
 func changedFiles(git Git, repo, base, head string) ([]string, error) {
-	out, err := git(repo, "diff", "--no-renames", "--name-only", base, head)
+	out, err := git(repo, "diff", "--no-renames", "--name-only", "-z", base, head)
 	if err != nil {
 		return nil, err
 	}
 	var files []string
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
+	for _, line := range strings.Split(out, "\x00") {
+		if line != "" {
 			files = append(files, line)
 		}
 	}

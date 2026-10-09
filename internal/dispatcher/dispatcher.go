@@ -480,6 +480,11 @@ type Attempt struct {
 	// document that carries its instructions, never from a listable env var.
 	// Meaningless without Agentic; Dispatch refuses the combination.
 	Review bool
+	// ReviewRequiresDiff marks a Review whose gate must judge a non-empty run
+	// diff (#5414). Like Review it rides the verified kit
+	// (agentickit.Kit.ReviewRequiresDiff), never the pod spec. Meaningless
+	// without Review.
+	ReviewRequiresDiff bool
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.
@@ -878,8 +883,9 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 
 // Dispatch executes one stage attempt on the eligible runner set (the
 // solver's ELIGIBLE-SET output for this stage, in inventory order): resolve
-// the runner (Linux-preferring), verify the image skew contract, wait
-// bounded for capacity, create ONE fresh pod, supervise it, confirm output
+// the runner (Linux-preferring), verify the image skew contract, retire any
+// earlier attempt's still-running pod, wait bounded for capacity, create ONE
+// fresh pod, supervise it, confirm output
 // surrender, and dispose the pod when recovery custody permits. Writable pods
 // without a verified recovery acknowledgment are preserved. Every retry still
 // receives a fresh pod, never a reused one (D1).
@@ -926,7 +932,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		return Report{}, err
 	}
 
-	if err := d.waitForCapacity(ctx, selected); err != nil {
+	if err := d.admitAttempt(ctx, attempt, selected); err != nil {
 		return report, err
 	}
 

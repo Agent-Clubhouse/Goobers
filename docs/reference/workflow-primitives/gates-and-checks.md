@@ -56,6 +56,15 @@ from failures in the work.
 **Outcomes:** `pass` for success, `infra` for retryable or recognized
 infrastructure failure, and `fail` otherwise.
 
+A git command that exits 128 because a revision it was given does not exist
+in the checkout (`fatal: ambiguous argument '...': unknown revision or path not
+in the working tree`, or `fatal: bad revision '...'`) is recognized
+infrastructure: it fails the same way for every change, so it routes to `infra`
+instead of spending an implementation repass. Local run workcopies are linked
+worktrees of a mirror that stores the project's branches as `refs/heads/*`
+without `refs/remotes/origin/*`, so name a base as `main...HEAD`, not
+`origin/main...HEAD`.
+
 ### `output-equals`
 
 Passes when the named scalar output string equals the configured value.

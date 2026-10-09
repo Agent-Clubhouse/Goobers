@@ -250,9 +250,19 @@ func (r *copilotControlledRunner) sessionConfig(id string, req ProcessRequest, s
 		config.ConfigDirectory = home
 	}
 	if copilotDeclaresTool(r.request.Tools, "github") {
-		config.GitHubMCPToolConfig = &copilot.GitHubMCPToolConfig{AdditionalToolsets: []string{"issues"}}
+		config.GitHubMCPToolConfig = copilotGitHubMCPToolConfig(r.request.Envelope.Capabilities)
 	} else if len(r.request.MCPServers) > 0 {
 		config.DisabledMCPServers = []string{"github-mcp-server"}
 	}
 	return config
+}
+
+// copilotGitHubMCPToolConfig is the SDK-session form of
+// copilotGitHubMCPRegistrationArg.
+func copilotGitHubMCPToolConfig(capabilities []string) *copilot.GitHubMCPToolConfig {
+	if copilotGitHubNeedsFullCatalog(capabilities) {
+		enableAll := true
+		return &copilot.GitHubMCPToolConfig{EnableAllTools: &enableAll}
+	}
+	return &copilot.GitHubMCPToolConfig{AdditionalToolsets: []string{"issues"}}
 }

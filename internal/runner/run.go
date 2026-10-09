@@ -4604,7 +4604,8 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	// agentic gate with no committed change, passes "" through to Evaluate,
 	// which treats that as "no digest to compare" and never short-circuits.
 	var diffDigest string
-	// emptyDiff (#415) is set below only for an agentic gate whose AGENTIC
+	// emptyDiff (#415) is set below only for an agentic gate on a writable
+	// repo worktree whose AGENTIC
 	// subject stage committed no change — recordReviewerDiff returns a nil
 	// pointer for a zero-length diff. Passed to Evaluate so the reviewer gate
 	// fast-fails that empty diff on review-1 instead of looping repasses over
@@ -4635,7 +4636,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			gateCaps = r.cfg.GateGooberCapabilities[gooberName]
 		}
 		prepFailures := 0
-		env, workspace, prepFailures, err = r.buildGateEnvelopeWithRetry(ctx, jr, in, g, gateCaps, gateLimits, upstream, workspaceBranch)
+		env, workspace, prepFailures, err = r.buildGateEnvelopeWithRetry(ctx, jr, in, g, gateCaps, gateLimits, reviewerContextPointers(jr, in.Machine, subjectStage, upstream), workspaceBranch)
 		if err != nil {
 			prepErr := fmt.Errorf("prepare gate %q: %w", g.Name, err)
 			err = codedStageFailure(provisionFailureCode(err), prepErr)
@@ -4666,7 +4667,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		// evidence-pointer mechanism (env.ContextPointers), resolved into the
 		// reviewer's workspace like any other evidence pointer.
 		if g.Evaluator == apiv1.EvaluatorAgentic {
-			ptr, derr := r.recordReviewerDiff(ctx, jr, ex, in, g.Name, wt)
+			ptr, derr := r.recordReviewerDiff(ctx, jr, ex, in, g.Name, workspaceBranch, wt)
 			if derr != nil {
 				err = fmt.Errorf("runner: gate %q: reviewer diff evidence: %w", g.Name, derr)
 				span.Fail(err)
@@ -4677,17 +4678,10 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 				if ptr.Artifact != nil {
 					diffDigest = ptr.Artifact.Digest
 				}
-			} else if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic {
-				// A nil pointer (no error — that returned early above) means the
-				// run branch has a zero-length diff. Fast-fail it (#415) only
-				// when the subject stage is AGENTIC: an agent whose deliverable
-				// is its committed work produced nothing to review, so a repass
-				// can only re-observe the same emptiness. A deterministic
-				// subject (e.g. merge-review's gather-sibling-context, whose
-				// reviewer judges PRs from its outputs, not a run-branch commit)
-				// is never expected to commit — its empty diff is normal, and
-				// the reviewer must still run against its actual evidence.
-				emptyDiff = true
+			} else {
+				// A nil pointer (no error — that returned early above) means
+				// the diff the reviewer was handed is zero-length vs. base.
+				emptyDiff = emptyReviewerDiffIsEvidence(in.Machine, subjectStage, g, r.reviewerDiffObservesRunBranch(in, g.Name, wt))
 			}
 		}
 	}
@@ -4952,17 +4946,10 @@ func priorSubjectCompletion(events []journal.Event, subjectStage string) int {
 // diff is computed by the runner from the actual commits — never self-reported
 // by the implementer's model — so the reviewer judges the real change with the
 // same content-addressed integrity as any other artifact. Returns (nil, nil)
-// when the gate has no repository worktree or the branch carries no change vs.
-// base (nothing to attach).
-func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
-	if wt == nil {
-		return nil, nil
-	}
-	baseRef := in.RepoRef.Branch
-	if baseRef == "" {
-		baseRef = "main"
-	}
-	diff, err := wt.Diff(ctx, baseRef)
+// when there is no diff to read (reviewerDiff) or the branch carries no change
+// vs. base (nothing to attach).
+func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, gateName, workspaceBranch string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+	diff, err := r.reviewerDiff(ctx, in, gateName, workspaceBranch, wt)
 	if err != nil {
 		return nil, err
 	}

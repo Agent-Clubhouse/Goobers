@@ -479,11 +479,19 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		if !req.MatchesIdentityFields(author, nil, requestedReviewers) {
 			continue
 		}
+		titleMatched, err := req.MatchesTitle(pr.Title)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate title predicate for pull request #%d: %w", pr.PullRequestID, err)
+		}
+		if !titleMatched {
+			continue
+		}
 		labels := adoLabelNames(pr.Labels)
 		out = append(out, PullRequestSummary{
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
 			URL:                p.pullRequestWebURL(req.Repository, pr),
+			Title:              pr.Title,
 			Author:             author,
 			RequestedReviewers: requestedReviewers,
 			Head:               head,

@@ -308,6 +308,33 @@ describe("workflow detail page", () => {
     expect(panel).toHaveTextContent("timeoutSeconds: 3600");
   });
 
+  it("titles recent runs by claimed work and omits a trigger ref that repeats the workflow (#5428)", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const claimed = fixtures.runs.runs.find((run) => run.id === "01JZ441DAEMONAPI");
+    const unclaimed = fixtures.runs.runs.find(
+      (run) => run.workflow === claimed?.workflow && !run.operator?.issue,
+    );
+    if (!claimed?.operator || !unclaimed) {
+      throw new Error("Expected claimed and unclaimed implementation run fixtures.");
+    }
+    claimed.trigger = { kind: "manual", ref: claimed.workflow };
+    claimed.operator.displayTitle = "Investigate #3088: Operator status progress";
+    unclaimed.trigger = { kind: "item", ref: "queue-item-7" };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const claimedRow = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(claimedRow.querySelector(".row-title")).toHaveTextContent(
+      /^Investigate #3088: Operator status progress$/,
+    );
+    const claimedSubtitle = claimedRow.querySelector(".row-subtitle");
+    expect(claimedSubtitle).toHaveTextContent(/^manual · .+ · 01JZ441DAEMONAPI$/);
+    expect(claimedSubtitle).not.toHaveTextContent(claimed.workflow);
+
+    const unclaimedRow = screen.getByRole("link", { name: `Open run ${unclaimed.id}` });
+    expect(unclaimedRow.querySelector(".row-title")).toHaveTextContent(new RegExp(`^${unclaimed.id}$`));
+    expect(unclaimedRow.querySelector(".row-subtitle")).toHaveTextContent(/^item · queue-item-7 · /);
+  });
+
   it("navigates from recent history to run detail", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);

@@ -13,8 +13,9 @@ var ErrHeld = errors.New("lock is held")
 // Handle owns a shared or exclusive file lock. File returns the locked file and is valid
 // until Release is called.
 type Handle struct {
-	mu   sync.Mutex
-	file *os.File
+	mu         sync.Mutex
+	file       *os.File
+	holderPath string
 }
 
 // TryAcquire opens path and attempts to take an exclusive lock without waiting.
@@ -89,5 +90,12 @@ func (h *Handle) Release() error {
 	}
 	file := h.file
 	h.file = nil
+	if h.holderPath != "" {
+		// Cleared while still locked so it cannot delete the next holder's
+		// record. Best effort: a leftover record is overwritten by the next
+		// Announce and is only ever read by a waiter that found the lock held.
+		_ = os.Remove(h.holderPath)
+		h.holderPath = ""
+	}
 	return errors.Join(unlockFile(file), file.Close())
 }

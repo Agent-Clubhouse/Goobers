@@ -817,6 +817,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/startuphint",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Header encoding and parsing only; no Windows-specific seam identified. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/stateclient",
       "coverage": "none",
       "category": "not-selected",
@@ -1250,6 +1256,12 @@
     },
     {
       "package": "test/providers",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "test/releasedconfigs",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."

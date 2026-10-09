@@ -336,6 +336,16 @@ const (
 	// check is the complement — pattern-shaped, so intentionally incomplete
 	// and never an error on its own evidence.
 	WarningSecretShapedInput WarningCode = "SEC001"
+	// WarningSiblingOverlapUnsequenced identifies a gate that routes a
+	// detected sibling overlap (hasSiblingOverlap=true) to run termination
+	// without any path through lander election, verdict publication, or
+	// another stage that durably records sequencing or remediation state
+	// (#5592). Lazy remediation never counts green, unlabeled, uncrowned
+	// overlapping PRs as demand, so such a graph reselects and terminates
+	// on the same PR forever. A warning rather than an error because the
+	// config still loads and runs; --strict promotes it, since the shape is
+	// a guaranteed livelock rather than a compatibility notice.
+	WarningSiblingOverlapUnsequenced WarningCode = "WF028"
 	// WF024 was the "gate placement not yet honoured" warning that stood
 	// between the DSL half of decision 001 (#3848) and its engine/pod half
 	// (rulings 7–8). It retired with that half and the code is not reused.
@@ -377,6 +387,7 @@ const (
 	errorUnknownRestriction       WarningCode = "CAP005"
 	errorRepoHandoff              WarningCode = "WF022"
 	errorGateRunsOn               WarningCode = "WF023"
+	errorReadOnlyAfterRebind      WarningCode = "WS002"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -412,6 +423,7 @@ const (
 	errorFieldPredicateTrigger    WarningCode = "FLD002"
 	errorFieldPredicateTask       WarningCode = "FLD003"
 	errorFieldOrderTask           WarningCode = "FLD004"
+	errorTitlePredicateTask       WarningCode = "FLD005"
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
 	errorContextFromDuplicate     WarningCode = "CTX001"
@@ -1578,6 +1590,7 @@ func (ix *index) checkFieldSelections(r *Report) {
 			}
 		}
 		for i, task := range workflow.Spec.Tasks {
+			checkPRSelectTitlePredicate(r, indexed.file, workflow.Name, i, task)
 			if !isBacklogQueryTask(task) {
 				continue
 			}
@@ -1604,10 +1617,30 @@ func (ix *index) checkFieldSelections(r *Report) {
 }
 
 func isBacklogQueryTask(task apiv1.Task) bool {
+	return isGoobersSubcommandTask(task, "backlog-query")
+}
+
+func isGoobersSubcommandTask(task apiv1.Task, subcommand string) bool {
 	return task.Run != nil &&
 		len(task.Run.Command) >= 2 &&
 		filepath.Base(task.Run.Command[0]) == "goobers" &&
-		task.Run.Command[1] == "backlog-query"
+		task.Run.Command[1] == subcommand
+}
+
+// checkPRSelectTitlePredicate compiles a pr-select titlePredicate input so an
+// unsupported or non-title expression fails validation instead of the stage.
+func checkPRSelectTitlePredicate(r *Report, file, workflow string, i int, task apiv1.Task) {
+	expression, ok := task.Inputs["titlePredicate"]
+	if !ok || !isGoobersSubcommandTask(task, "pr-select") {
+		return
+	}
+	if strings.TrimSpace(expression) == "" {
+		r.add(errorTitlePredicateTask, Error, file, "Workflow", workflow,
+			"spec.tasks[%d].inputs.titlePredicate is invalid: CEL expression must not be blank", i)
+	} else if _, err := fieldpredicate.CompileTitlePredicate(expression); err != nil {
+		r.add(errorTitlePredicateTask, Error, file, "Workflow", workflow,
+			"spec.tasks[%d].inputs.titlePredicate is invalid: %v", i, err)
+	}
 }
 
 // prLifecycleBaseCommands are the goobers CLI subcommands whose "base" input
@@ -2536,6 +2569,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	ix.addImplicitWritableWorkspaceWarnings(r, def, file, w)
+	addSiblingOverlapSequencingWarnings(r, def, file, w)
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
 	}
@@ -2949,6 +2983,12 @@ func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definiti
 	}
 }
 
+func addSiblingOverlapSequencingWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	for _, msg := range wf.CheckSiblingOverlapSequencing(def) {
+		r.addWarning(WarningSiblingOverlapUnsequenced, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
+	}
+}
+
 func (ix *index) addStageContractFindings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
 	artifactDiagnostics := artifactDiagnosticsByMessage(def)
 	indexed := ix.indexedWorkflow(w)
@@ -3044,6 +3084,7 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
 			continue
 		}
+		addReadOnlyAfterRebindFindings(r, indexed, machine)
 		safetyOptions := workflowsafety.Options{BinaryIdentity: version.Version + ":" + version.Commit}
 		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
 			safetyOptions.GaggleRunControls = gaggle.Spec.RunControls
@@ -3059,6 +3100,19 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 				Message: finding.Message(), Safety: &details,
 			})
 		}
+	}
+}
+
+// addReadOnlyAfterRebindFindings reports WS002: a repo-readonly stage the
+// compiled machine can reach from a stage that rebinds the run's workspace
+// branch. The runner refuses to create that workspace on a rebound branch, so
+// the stage fails on every run that rebinds — after the stages before it have
+// already been paid for — while nothing else in validation notices (#5390).
+func addReadOnlyAfterRebindFindings(r *Report, indexed indexedWorkflow, machine *wf.Machine) {
+	w := indexed.definition
+	for _, finding := range wf.ReadOnlyWorkspacesAfterRebind(machine) {
+		line, col := safetyPosition(indexed, finding.Stage)
+		r.addLocated(errorReadOnlyAfterRebind, Error, indexed.file, line, col, "Workflow", w.Name, "%s", finding.Message(w.Name))
 	}
 }
 

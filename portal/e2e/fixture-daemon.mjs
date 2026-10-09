@@ -495,6 +495,8 @@ const responses = new Map([
           runId: run.id,
           gaggle: run.gaggle,
           workflow: run.workflow,
+          triggerKind: run.trigger.kind,
+          triggerRef: run.trigger.ref,
           status: run.status,
           startedAt: run.startedAt,
           usageAttempts: 2,

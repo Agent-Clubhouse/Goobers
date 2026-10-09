@@ -953,6 +953,7 @@ export const goWireFixtures = {
               "goobers:needs-human"
             ]
           },
+          "displayTitle": "Implement #673: Improve operator status",
           "currentStage": "review",
           "liveness": "terminal",
           "trajectory": "terminal",
@@ -1048,6 +1049,7 @@ export const goWireFixtures = {
           "goobers:needs-human"
         ]
       },
+      "displayTitle": "Implement #673: Improve operator status",
       "currentStage": "review",
       "liveness": "terminal",
       "trajectory": "terminal",
@@ -1400,6 +1402,8 @@ export const goWireFixtures = {
             "runId": "run-123",
             "gaggle": "goobers",
             "workflow": "implement",
+            "triggerKind": "item",
+            "triggerRef": "4398",
             "status": "completed",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 3,
@@ -1472,6 +1476,7 @@ export const goWireFixtures = {
             "runId": "run-124",
             "gaggle": "goobers",
             "workflow": "review",
+            "triggerKind": "manual",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 2,
             "measuredAttempts": 2,

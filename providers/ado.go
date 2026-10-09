@@ -396,6 +396,15 @@ func (p *ADOProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest)
 		}
 		return DeleteBranchResult{Deleted: false}, nil
 	}
+	if update := out.Value[0]; update.Success != nil && !*update.Success {
+		// ADO answers a rejected ref update with HTTP 200 and a per-ref
+		// failure; a stale oldObjectId is a lost lease, anything else is a
+		// failed delete — never a confirmed one.
+		if strings.EqualFold(update.UpdateStatus, "staleOldObjectId") {
+			return DeleteBranchResult{}, &BranchTipChangedError{Name: req.Name, ExpectedSHA: expected}
+		}
+		return DeleteBranchResult{}, fmt.Errorf("ado delete branch %q rejected: %s", req.Name, update.UpdateStatus)
+	}
 	return DeleteBranchResult{Deleted: true}, nil
 }
 
@@ -497,24 +506,15 @@ func (p *ADOProvider) branchSHA(ctx context.Context, repo RepositoryRef, branch 
 
 // lookupBranchSHA is branchSHA's found-or-not-found counterpart (CONF-3
 // #2076): DeleteBranch needs to tell "ref absent" apart from "lookup
-// failed" without branchSHA's caller-facing error-on-absent behavior.
+// failed" without branchSHA's caller-facing error-on-absent behavior. The
+// match is exact: the refs filter is a starts-with match, so the first
+// returned ref may be a longer sibling branch (#5900).
 func (p *ADOProvider) lookupBranchSHA(ctx context.Context, repo RepositoryRef, branch string) (string, bool, error) {
-	endpoint, err := p.repoURL(repo, "refs")
-	if err != nil {
+	ref, found, err := p.findHeadRef(ctx, repo, strings.TrimPrefix(branch, adoHeadsRefPrefix))
+	if err != nil || !found {
 		return "", false, err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{"filter": []string{"heads/" + strings.TrimPrefix(branch, "refs/heads/")}})
-	if err != nil {
-		return "", false, err
-	}
-	var out adoRefsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return "", false, err
-	}
-	if len(out.Value) == 0 || out.Value[0].ObjectID == "" {
-		return "", false, nil
-	}
-	return out.Value[0].ObjectID, true, nil
+	return ref.ObjectID, true, nil
 }
 
 func (p *ADOProvider) repoURL(repo RepositoryRef, elems ...string) (string, error) {
@@ -873,11 +873,7 @@ type adoPatchOperation struct {
 }
 
 type adoRefsResponse struct {
-	Value []struct {
-		Name     string `json:"name"`
-		ObjectID string `json:"objectId"`
-		URL      string `json:"url"`
-	} `json:"value"`
+	Value []adoRef `json:"value"`
 }
 
 type adoRefUpdate struct {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/boundedagg"
+	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
@@ -49,6 +50,28 @@ type stalledSweepDeps struct {
 	// these intervals that falls after its last activity. Time the daemon was
 	// up, and downtime after a crash or a forced drain, still count.
 	DrainedDowntime []daemonDowntime
+	// HostSuspensions is every interval the host was observed suspended
+	// (#5891). maxRunDuration counts active execution time, and silence while
+	// the host slept is not a stall, so both checks exclude these intervals.
+	HostSuspensions *hostsuspend.Ledger
+	// CloseEngineRun writes the terminal of an engine run whose workflow the
+	// sweep terminated (#5407) through the live journal plane. nil leaves such
+	// a run unterminated and reported, since nothing else will close it.
+	CloseEngineRun func(ctx context.Context, identity journal.RunIdentity, cause string, at time.Time) error
+}
+
+func (d *stalledSweepDeps) closeEngineRun() func(context.Context, journal.RunIdentity, string, time.Time) error {
+	if d == nil {
+		return nil
+	}
+	return d.CloseEngineRun
+}
+
+func (d *stalledSweepDeps) hostSuspensions() []hostsuspend.Window {
+	if d == nil {
+		return nil
+	}
+	return d.HostSuspensions.Windows()
 }
 
 func (d *stalledSweepDeps) prepareTerminal() stalledTerminalPreparer {
@@ -386,6 +409,8 @@ func sweepStalledRuns(
 	// scheduler journal when persisted (#1166, #1414).
 	var sweepErrs []error
 	terminalizers := make(map[string]*runner.Runner)
+	cancels := &engineCancelHistory{log: log}
+	suspended := deps.hostSuspensions()
 	for _, runDir := range candidates {
 		runsDir := filepath.Dir(runDir)
 		entryName := filepath.Base(runDir)
@@ -423,7 +448,7 @@ func sweepStalledRuns(
 		if phase != journal.PhaseRunning {
 			continue
 		}
-		events, elapsed, elapsedErr := stalledExecutionClock(reader, identity.StartedAt, now)
+		events, elapsed, elapsedErr := stalledExecutionClock(reader, identity.StartedAt, now, suspended)
 		if elapsedErr != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("read run %q execution clock: %w", identity.RunID, elapsedErr))
 			continue
@@ -447,7 +472,7 @@ func sweepStalledRuns(
 			}
 			lastActivity := events[len(events)-1].Time
 			stallWindow = runTimeout + deps.drainedDowntimeSince(lastActivity)
-			if !lastActivity.Before(now.Add(-stallWindow)) {
+			if !lastActivity.Before(now.Add(-stallWindow - hostsuspend.Overlap(suspended, lastActivity, now))) {
 				continue
 			}
 		}
@@ -464,37 +489,14 @@ func sweepStalledRuns(
 		// The phase differs from the runner-driven neighbour below, which
 		// this sweep escalates: the engine reports what actually happened
 		// to its workflow, and what happened is a cancellation.
+		//
+		// A cancellation that no worker ever picks up is escalated to a
+		// server-side terminate one stall timeout after it was first
+		// requested; see settleStalledEngineRun.
 		if identity.EngineDriven() {
-			if err := guards.cancel(ctx, identity.RunID); err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err))
-				continue
+			if err := settleStalledEngineRun(ctx, guards, log, deps, cancels, release, identity, events, now, suspended, runTimeout, runMaxDuration, durationExceeded); err != nil {
+				sweepErrs = append(sweepErrs, err)
 			}
-			if log != nil {
-				message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
-				if durationExceeded {
-					message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
-				}
-				appendErr := log.Append(journal.Event{
-					Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
-					Runner: map[string]any{
-						"kind":   journal.RunnerAnnotationRunRecovery,
-						"reason": message,
-						"action": journal.RecoveryActionEngineCancelRequested,
-						"driver": string(identity.Driver),
-					},
-				})
-				if appendErr != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, appendErr))
-				}
-			}
-			// Deliberately no `release`: a cancellation is a REQUEST, and
-			// the run's scheduler slot belongs to whoever learns the
-			// outcome. For a run this daemon seeded at startup that is
-			// reattachEngineRun's goroutine, still waiting on the workflow
-			// and releasing when it closes; a run started during this
-			// daemon's life has no reconciled slot to release at all.
-			// Freeing it here, on a request that has not landed yet, is the
-			// same duplicate-admission hazard from the other end.
 			continue
 		}
 
@@ -518,9 +520,9 @@ func sweepStalledRuns(
 		var result runner.Result
 		var terminated bool
 		if durationExceeded {
-			result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration)
+			result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration, suspended...)
 		} else {
-			result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, stallWindow)
+			result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, stallWindow, suspended...)
 		}
 		if terminated {
 			if release != nil {
@@ -557,11 +559,11 @@ func sweepStalledRuns(
 }
 
 // Read once for both the active execution clock and the stall/parking checks.
-func stalledExecutionClock(reader *journal.Reader, startedAt, now time.Time) ([]journal.Event, time.Duration, error) {
+func stalledExecutionClock(reader *journal.Reader, startedAt, now time.Time, suspended []hostsuspend.Window) ([]journal.Event, time.Duration, error) {
 	events, err := reader.Events()
 	if err != nil {
 		return nil, 0, err
 	}
-	elapsed, err := runner.RunExecutionElapsed(events, startedAt, now)
+	elapsed, err := runner.RunExecutionElapsed(events, startedAt, now, suspended...)
 	return events, elapsed, err
 }

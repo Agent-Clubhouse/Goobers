@@ -321,6 +321,10 @@ const (
 	// they either resume from their pinned snapshot or, when that snapshot is
 	// unavailable, are refused at the next daemon restart.
 	RunnerAnnotationWorkflowDigestDrift = "workflow.digest.drift"
+	// RunnerAnnotationHostSuspended records an interval the daemon observed
+	// the host spending suspended (#5891). Its Runner payload carries
+	// suspendedFrom and suspendedTo as RFC 3339 timestamps.
+	RunnerAnnotationHostSuspended = "host.suspended"
 	// RecoveryActionResumed records continuation of an interrupted stage.
 	RecoveryActionResumed = "resumed"
 	// RecoveryActionRetried records a new attempt after interruption.
@@ -346,6 +350,11 @@ const (
 	// terminalizing its journal. The run's own terminal event follows from the
 	// engine once the cancellation lands.
 	RecoveryActionEngineCancelRequested = "engine_cancel_requested"
+	// RecoveryActionEngineTerminated records that the stalled-run sweep
+	// terminated an engine-driven run's workflow on the server because no
+	// worker acted on its earlier cancellation, then wrote the run's terminal
+	// itself (#5407).
+	RecoveryActionEngineTerminated = "engine_terminated"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in

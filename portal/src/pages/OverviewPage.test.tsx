@@ -155,6 +155,29 @@ describe("overview page", () => {
     expect(completionTime).toHaveAttribute("title", `Completed ${preciseTime}`);
   });
 
+  it("labels active and attention runs with a published display title", async () => {
+    const fixtures = populatedDaemonFixtures();
+    for (const run of fixtures.runs.runs) {
+      if (run.operator?.issue || run.phase === "failed" || run.phase === "escalated") {
+        run.operator = {
+          liveness: "finished",
+          trajectory: "blocked",
+          claim: { leaseStatus: "released", providerMarker: "verified" },
+          potentialBlockers: [],
+          ...run.operator,
+          issue: { number: "4449", title: "Repeated implementation failure" },
+          displayTitle: "Investigate #4449: Repeated implementation failure",
+        };
+      }
+    }
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      (await screen.findAllByText("Investigate #4449: Repeated implementation failure")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("#4449 Repeated implementation failure")).not.toBeInTheDocument();
+  });
+
   it("groups repeated attention runs by linked issue and expands direct run links", async () => {
     const fixtures = populatedDaemonFixtures();
     const repeated = fixtures.runs.runs.filter(

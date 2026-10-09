@@ -1803,5 +1803,8 @@ func (e *ShellExecutor) runContextEnv(ctx context.Context, env apiv1.InvocationE
 	if plane, ok := JournalPlaneFromContext(ctx); ok {
 		runEnv = append(runEnv, "GOOBERS_JOURNAL_ENDPOINT="+plane.Endpoint, "GOOBERS_JOURNAL_TOKEN="+plane.Token)
 	}
+	if resolved, err := e.resolveTimeout(env); err == nil && !resolved.Immediate() {
+		runEnv = append(runEnv, StageTimeoutEnvVar+"="+resolved.Duration.String())
+	}
 	return runEnv
 }

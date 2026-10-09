@@ -170,8 +170,11 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   digest and source run id.
 - **PRL-015 (MUST, Shipped):** The agentic reviewer gate MUST retry a
   transient evaluator-harness failure within declared bounds
-  (`retry.maxAttempts`) instead of failing the run on first occurrence (#765);
-  non-transient errors still fail fast. (Gate mechanics owned by `GT-011`.)
+  (`retry.maxAttempts`) instead of failing the run on first occurrence (#765).
+  A reviewer session that ends without a verdict is transient: no completion
+  file, a non-zero harness exit, or a session timeout (#5543). Non-transient
+  errors (a schema-invalid verdict, a rejected or policy-blocked required MCP
+  server, a refused session) still fail fast. (Gate mechanics owned by `GT-011`.)
 
 ### Election: single lander, policy seam
 
@@ -608,7 +611,7 @@ therefore have no action row.
 | Cancel obsolete pending CI for an exact rejected head (`cancel-pending-ci`) | `merge-review/cancel-pending-ci` | `provider:ci:cancel` | Covered |
 | Route a verdict to remediation, sibling-blocked, or escalation, or invalidate a standing fail verdict after an operator clears escalation (`route-verdict`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
 | Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
-| Park a narrower PR behind a dominant shared-file rewrite (`flag-foundation-coupling`) | `merge-review/pr-select` | `provider:pr:write` | Covered |
+| Park a narrower PR behind a dominant shared-file rewrite (`flag-foundation-coupling`) | `merge-review/pr-select` | `provider:pr:write` (or `github:pr:write`) | Covered |
 | Apply or clear the scope-drift advisory and post its first warning (`flag-scope-drift`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
 | Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` (every provider; `ado:pr:complete` optional on Azure DevOps) | Covered |
 | Watch an enqueued merge to a determined outcome (`watch-merge-queue`) | `merge-review/queue-watch` | `github:pr:merge` (every provider; `ado:pr:complete` optional on Azure DevOps) | Covered |

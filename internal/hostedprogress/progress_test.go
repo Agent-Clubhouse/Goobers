@@ -251,7 +251,7 @@ func TestPublisherReusesExistingCheckRunAcrossPublishers(t *testing.T) {
 // error handling: a failing lookup must NOT be swallowed — it disables the
 // Publisher exactly like a failing create/update, so callers observe the
 // GitHub API failure and stop hammering it.
-func TestPublisherFindExistingErrorDisablesPublisher(t *testing.T) {
+func TestPublisherFindExistingErrorBacksOffWithoutCreating(t *testing.T) {
 	var calls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -264,30 +264,187 @@ func TestPublisherFindExistingErrorDisablesPublisher(t *testing.T) {
 	defer server.Close()
 
 	runDir, events := testJournal(t)
-	publisher := New(GitHubEnvironment{
+	publisher := testPublisher(server.URL, runDir)
+	clock := time.Unix(1_700_000_000, 0)
+	publisher.now = func() time.Time { return clock }
+
+	err := publisher.Publish(context.Background(), events)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") || IsPermanent(err) {
+		t.Fatalf("Publish err = %v, want transient lookup failure surfaced", err)
+	}
+
+	// Within the backoff window Publish must not contact GitHub again.
+	before := atomic.LoadInt32(&calls)
+	if err2 := publisher.Publish(context.Background(), events); err2 == nil {
+		t.Fatal("Publish during backoff returned nil, want the pending error")
+	}
+	if atomic.LoadInt32(&calls) != before {
+		t.Fatalf("Publish during backoff contacted GitHub: calls before=%d after=%d", before, atomic.LoadInt32(&calls))
+	}
+
+	// After the backoff the lookup is retried — never a fallback to create.
+	clock = clock.Add(retryMaxDelay)
+	_ = publisher.Publish(context.Background(), events)
+	if atomic.LoadInt32(&calls) != before+1 {
+		t.Fatalf("Publish after backoff calls = %d, want one retried lookup", atomic.LoadInt32(&calls)-before)
+	}
+}
+
+// TestPublisherRecoversAfterTransientError is the #6876 regression: one
+// transient GitHub failure must not stop publishing for the rest of the run.
+func TestPublisherRecoversAfterTransientError(t *testing.T) {
+	var mu sync.Mutex
+	var writes []map[string]any
+	var failed bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"check_runs":[]}`)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPatch && !failed {
+			failed = true
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		writes = append(writes, body)
+		_, _ = io.WriteString(w, `{"id":42}`)
+	}))
+	defer server.Close()
+
+	runDir, events := testJournal(t)
+	publisher := testPublisher(server.URL, runDir)
+	clock := time.Unix(1_700_000_000, 0)
+	publisher.now = func() time.Time { return clock }
+
+	if err := publisher.Publish(context.Background(), events[:1]); err != nil {
+		t.Fatalf("initial publish: %v", err)
+	}
+	if err := publisher.Publish(context.Background(), events); err == nil || IsPermanent(err) {
+		t.Fatalf("Publish err = %v, want transient HTTP 502", err)
+	}
+	clock = clock.Add(retryMaxDelay)
+	if err := publisher.Publish(context.Background(), events); err != nil {
+		t.Fatalf("Publish after transient failure: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(writes) != 2 || writes[1]["status"] != "completed" || writes[1]["conclusion"] != "success" {
+		t.Fatalf("writes = %#v, want create then completed/success update", writes)
+	}
+}
+
+func TestPublisherPermanentErrorDisablesPublisher(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	runDir, events := testJournal(t)
+	publisher := testPublisher(server.URL, runDir)
+	clock := time.Unix(1_700_000_000, 0)
+	publisher.now = func() time.Time { return clock }
+
+	if err := publisher.Publish(context.Background(), events); !IsPermanent(err) {
+		t.Fatalf("Publish err = %v, want permanent", err)
+	}
+	clock = clock.Add(retryMaxDelay)
+	if err := publisher.Publish(context.Background(), events); !IsPermanent(err) {
+		t.Fatalf("second Publish err = %v, want permanent", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("calls = %d, want 1 (disabled after a permanent error)", got)
+	}
+	if err := publisher.Finalize(context.Background(), nil); err != nil {
+		t.Fatalf("Finalize without a Check Run: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("Finalize contacted GitHub with no Check Run: calls = %d", got)
+	}
+}
+
+// TestPublisherFinalizeClosesCheckRunAfterPermanentError: a permanent
+// failure on an update still lets Finalize close the existing Check Run.
+func TestPublisherFinalizeClosesCheckRunAfterPermanentError(t *testing.T) {
+	var mu sync.Mutex
+	var patches []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"check_runs":[]}`)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPatch && len(patches) == 0 {
+			patches = append(patches, nil)
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		if r.Method == http.MethodPatch {
+			patches = append(patches, body)
+		}
+		_, _ = io.WriteString(w, `{"id":42}`)
+	}))
+	defer server.Close()
+
+	runDir, events := testJournal(t)
+	publisher := testPublisher(server.URL, runDir)
+	if err := publisher.Publish(context.Background(), events[:1]); err != nil {
+		t.Fatalf("initial publish: %v", err)
+	}
+	if err := publisher.Publish(context.Background(), events); !IsPermanent(err) {
+		t.Fatalf("Publish err = %v, want permanent", err)
+	}
+	if err := publisher.Finalize(context.Background(), nil); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(patches) != 2 || patches[1]["conclusion"] != "success" {
+		t.Fatalf("patches = %#v, want rejected update then completed/success finalize", patches)
+	}
+}
+
+func TestStatusErrorPermanence(t *testing.T) {
+	cases := []struct {
+		err  statusError
+		want bool
+	}{
+		{statusError{code: http.StatusUnauthorized}, true},
+		{statusError{code: http.StatusUnprocessableEntity}, true},
+		{statusError{code: http.StatusForbidden}, true},
+		{statusError{code: http.StatusForbidden, rateLimited: true}, false},
+		{statusError{code: http.StatusTooManyRequests}, false},
+		{statusError{code: http.StatusBadGateway}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.err.permanent(); got != tc.want {
+			t.Errorf("HTTP %d (rateLimited=%v) permanent = %v, want %v", tc.err.code, tc.err.rateLimited, got, tc.want)
+		}
+	}
+}
+
+func testPublisher(apiURL, runDir string) *Publisher {
+	return New(GitHubEnvironment{
 		Repository:   "owner/repo",
 		SHA:          "deadbeef",
 		ActionsRunID: "123",
 		Token:        "token",
-		APIURL:       server.URL,
+		APIURL:       apiURL,
 		ServerURL:    "https://github.example",
 	}, runDir)
-
-	err := publisher.Publish(context.Background(), events)
-	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
-		t.Fatalf("Publish err = %v, want lookup-failure surfaced", err)
-	}
-
-	// A subsequent Publish must return the same disabled error without
-	// contacting GitHub again — no fallback to create, no retry loop.
-	before := atomic.LoadInt32(&calls)
-	err2 := publisher.Publish(context.Background(), events)
-	if err2 == nil || !errors.Is(err2, err) && err2.Error() != err.Error() {
-		t.Fatalf("second Publish err = %v, want same disabled error", err2)
-	}
-	if atomic.LoadInt32(&calls) != before {
-		t.Fatalf("second Publish contacted GitHub again after lookup failure: calls before=%d after=%d", before, atomic.LoadInt32(&calls))
-	}
 }
 
 func TestBoundContractPreservesLatestEvents(t *testing.T) {
@@ -440,13 +597,9 @@ func TestPublisherFinalizeClosesCheckRunOnAbnormalExit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runDir, events := testJournal(t)
-	// Trim the terminal event so Publish creates a Check Run in the
-	// "in_progress" state (matching a live run that hasn't finished yet).
-	inFlight := events[:len(events)-1]
-	if len(inFlight) == 0 {
-		inFlight = events[:1]
-	}
+	// A live run that hasn't finished: Publish creates an "in_progress"
+	// Check Run and the journal on disk is not terminal.
+	runDir, inFlight := testJournalWith(t, false)
 	publisher := New(GitHubEnvironment{
 		Repository:   "owner/repo",
 		SHA:          "deadbeef",
@@ -549,7 +702,70 @@ func TestBoundContractMarksAllEventsDropped(t *testing.T) {
 	}
 }
 
+// TestPublisherFinalizePublishesTerminalJournalPhase is the #6876 Finalize
+// regression: when the terminal publish was lost (transient failure) the
+// run still completed, so Finalize — even with a nil waitErr — must label
+// the Check Run with the journal's real conclusion, not "cancelled".
+func TestPublisherFinalizePublishesTerminalJournalPhase(t *testing.T) {
+	var mu sync.Mutex
+	var writes []map[string]any
+	var failNext bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"check_runs":[]}`)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if failNext {
+			failNext = false
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		writes = append(writes, body)
+		_, _ = io.WriteString(w, `{"id":42}`)
+	}))
+	defer server.Close()
+
+	runDir, events := testJournal(t)
+	publisher := testPublisher(server.URL, runDir)
+	if err := publisher.Publish(context.Background(), events[:1]); err != nil {
+		t.Fatalf("initial publish: %v", err)
+	}
+	mu.Lock()
+	failNext = true
+	mu.Unlock()
+	if err := publisher.Publish(context.Background(), events); err == nil {
+		t.Fatal("terminal publish succeeded, want transient failure")
+	}
+
+	if err := publisher.Finalize(context.Background(), nil); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if err := publisher.Finalize(context.Background(), nil); err != nil {
+		t.Fatalf("Finalize idempotent call: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want 2 (create, terminal finalize)", len(writes))
+	}
+	if writes[1]["status"] != "completed" || writes[1]["conclusion"] != "success" {
+		t.Fatalf("finalize write = %#v, want completed/success", writes[1])
+	}
+}
+
 func testJournal(t *testing.T) (string, []journal.Event) {
+	t.Helper()
+	return testJournalWith(t, true)
+}
+
+func testJournalWith(t *testing.T, finished bool) (string, []journal.Event) {
 	t.Helper()
 	runsDir := t.TempDir()
 	runID := "0123456789abcdef0123456789abcdef"
@@ -566,11 +782,13 @@ func testJournal(t *testing.T) (string, []journal.Event) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.Append(journal.Event{
-		Type:   journal.EventRunFinished,
-		Status: string(journal.PhaseCompleted),
-	}); err != nil {
-		t.Fatal(err)
+	if finished {
+		if err := run.Append(journal.Event{
+			Type:   journal.EventRunFinished,
+			Status: string(journal.PhaseCompleted),
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)

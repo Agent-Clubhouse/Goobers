@@ -408,7 +408,9 @@ describe("Insight page", () => {
     );
     const runTable = screen.getByRole("table", { name: "PR #4398 run breakdown" });
     expect(within(runTable).getAllByRole("columnheader").map((header) => header.textContent))
-      .toEqual(["Run", "Started", "Attempts", "AIC", "Models"]);
+      .toEqual(["Run", "Workflow / trigger", "Started", "Attempts", "AIC", "Models"]);
+    expect(within(runTable).getByText("core / implementation")).toBeInTheDocument();
+    expect(within(runTable).getByText("item · 4398")).toBeInTheDocument();
     expect(
       within(runTable).getByText(
         (_, element) =>
@@ -426,6 +428,8 @@ describe("Insight page", () => {
     const issueRunTable = screen.getByRole("table", { name: "Issue #4398 run breakdown" });
     expect(within(issueRunTable).getByRole("link", { name: "Open run 01JZ400FAILED" }))
       .toHaveAttribute("href", "#/run/01JZ400FAILED");
+    expect(within(issueRunTable).getByText("Workflow unavailable")).toBeInTheDocument();
+    expect(within(issueRunTable).getByText("Trigger unavailable")).toBeInTheDocument();
     expect(within(issueRunTable).getByText("42 AIC")).toBeInTheDocument();
     expect(within(issueRunTable).getByText("2/2 measured")).toBeInTheDocument();
     expect(within(issueRunTable).getByText("Model not recorded")).toBeInTheDocument();
