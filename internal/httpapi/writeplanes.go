@@ -347,7 +347,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerTriggerStatusRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCancelRoute(router, config.cancels, errorLog)
-	registerCredentialRoute(router, config.credentials, errorLog)
+	registerCredentialRoute(router, config.credentials, config.generatedChildCredentials, errorLog)
 	registerCredentialRefreshRoute(router, config.credentials, errorLog)
 	registerChildWorkflowRoutes(router, config.childWorkflows, errorLog)
 }

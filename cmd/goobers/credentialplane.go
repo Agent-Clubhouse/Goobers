@@ -218,7 +218,7 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, err
 	}
 	defer pinned.release()
-	ctx, childLease, err := s.applyChildCredentialCeiling(ctx, pinned)
+	ctx, childLease, err := s.applyChildCredentialCeiling(ctx, pinned, request.Stage)
 	if err != nil {
 		return stageResolution{}, err
 	}

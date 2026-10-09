@@ -317,7 +317,7 @@ func TestGeneratedChildCannotInheritOrdinaryAuthority(t *testing.T) {
 			request := httptest.NewRequest(route.method, route.path, nil)
 			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
 			err := RequireRoles().Authorize(request)
-			if authorizeWorkerBlob(request) == nil {
+			if authorizeWorkerBlob(request) == nil || (route.method == http.MethodPost && route.path == apicontract.CredentialResolvePath) {
 				if err != nil {
 					t.Fatal("explicit child artifact route refused", err)
 				}

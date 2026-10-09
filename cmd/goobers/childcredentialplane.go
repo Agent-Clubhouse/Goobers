@@ -8,6 +8,7 @@ import (
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -29,7 +30,15 @@ func (l *childCredentialLease) finish(ctx context.Context) error {
 	return nil
 }
 
-func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Context, pinned pinnedStage) (context.Context, *childCredentialLease, error) {
+func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Context, pinned pinnedStage, requestedStage ...string) (context.Context, *childCredentialLease, error) {
+	var attempt *childAttemptCustody
+	if principal, ok := httpapi.PrincipalFromContext(ctx); ok && principal.Issuer == httpapi.GeneratedChildPrincipalIssuer {
+		a, err := s.childAttempt(ctx)
+		if err != nil || len(requestedStage) != 1 || a.contract.Identity.RunID != pinned.identity.RunID || a.contract.Stage != requestedStage[0] || a.active(ctx) != nil || a.custody(ctx) != nil {
+			return nil, nil, credentialPlaneError(http.StatusForbidden, "child_attempt_unavailable", "child credentials require the active signed physical attempt and host writer custody")
+		}
+		attempt = &a
+	}
 	if pinned.identity.Child == nil {
 		return ctx, &childCredentialLease{release: func() {}}, nil
 	}
@@ -62,10 +71,30 @@ func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Contex
 		lease.release()
 		return refuse()
 	}
-	childCtx, err := credentials.WithChildCeiling(ctx, lease.ceiling)
+	effective := lease.ceiling
+	if attempt != nil {
+		effective = lease.ceiling.ModelOnly()
+		if !sameChildCeiling(effective, attempt.contract.Ceiling) {
+			lease.release()
+			return refuse()
+		}
+	}
+	childCtx, err := credentials.WithChildCeiling(ctx, effective)
 	if err != nil {
 		lease.release()
 		return refuse()
+	}
+	if attempt != nil {
+		verify := lease.verify
+		lease.verify = func(ctx context.Context) error {
+			if err := attempt.active(ctx); err != nil {
+				return err
+			}
+			if err := attempt.custody(ctx); err != nil {
+				return err
+			}
+			return verify(ctx)
+		}
 	}
 	return childCtx, lease, nil
 }

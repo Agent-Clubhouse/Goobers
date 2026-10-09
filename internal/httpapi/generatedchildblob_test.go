@@ -51,7 +51,7 @@ func TestGeneratedChildWithoutArtifactOwnerCannotUseSharedStore(t *testing.T) {
 	}
 }
 
-func TestGeneratedChildIdentityIsConfinedToOwnedBlobTransfers(t *testing.T) {
+func TestGeneratedChildIdentityIsConfinedToInstalledAttemptOwners(t *testing.T) {
 	paths := []string{apicontract.ConfigDigestPath, apicontract.WorkerConfigDivergencePath, RunsPath, EventsPath, HealthPath,
 		"/api/v1/runs/run-1/operator-messages", apicontract.ConfigDigestPath + "/", "/api/v1/unknown"}
 	for _, route := range apicontract.V1Routes() {
@@ -65,6 +65,7 @@ func TestGeneratedChildIdentityIsConfinedToOwnedBlobTransfers(t *testing.T) {
 			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
 			err := RequireRoles().Authorize(request)
 			want := (method == http.MethodGet || method == http.MethodPut) && blobPlanePath(path)
+			want = want || (method == http.MethodPost && path == apicontract.CredentialResolvePath)
 			if (err == nil) != want {
 				t.Fatalf("worker admitted %s %s=%v, want %v", method, path, err == nil, want)
 			}

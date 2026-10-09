@@ -438,8 +438,11 @@ func RequireRoles() Authorizer {
 			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
 				return errors.New("generated child contract unavailable")
 			}
-			// Artifact handlers require a separately installed exact-attempt owner.
-			// All other API authority remains unavailable to this issuer.
+			// Each permitted handler requires a separately installed exact-attempt
+			// owner. A missing owner never falls back to ordinary pod authority.
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialResolvePath {
+				return nil
+			}
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == ChildWorkflowPrincipalIssuer {
@@ -631,41 +634,42 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
-	events                  eventSource
-	authenticator           Authenticator
-	interventions           InterventionService
-	interventionContext     context.Context
-	runRevealer             func(context.Context, string) error
-	workflowMutations       WorkflowMutationService
-	gaggleBundles           GaggleBundleService
-	claims                  ClaimService
-	triggers                TriggerService
-	escalations             EscalationService
-	cancels                 CancelService
-	journal                 JournalService
-	runJournal              RunJournalService
-	childWorkflows          ChildWorkflowService
-	operatorMessages        OperatorMessageService
-	credentials             CredentialService
-	blobs                   blobstore.Store
-	generatedChildBlobs     blobstore.Store
-	recovery                RecoveryService
-	surrenders              SurrenderService
-	state                   StateService
-	telemetryDefects        TelemetryDefectAggregateService
-	podRunGaggle            func(context.Context, string) (string, error)
-	configDigest            func() string
-	workerConfigDivergence  func(journal.Event) error
-	instanceReadiness       InstanceReadinessService
-	portalAssets            http.Handler
-	recoveryGate            func() bool
-	recoveryHints           func(http.Header)
-	discoveryIdentity       DiscoveryIdentity
-	telemetryReadsAvailable bool
-	workItemsAvailable      bool
-	activeClaimsAvailable   bool
-	configAuthoring         ConfigAuthoringReader
-	trustedProxies          []string
+	events                    eventSource
+	authenticator             Authenticator
+	interventions             InterventionService
+	interventionContext       context.Context
+	runRevealer               func(context.Context, string) error
+	workflowMutations         WorkflowMutationService
+	gaggleBundles             GaggleBundleService
+	claims                    ClaimService
+	triggers                  TriggerService
+	escalations               EscalationService
+	cancels                   CancelService
+	journal                   JournalService
+	runJournal                RunJournalService
+	childWorkflows            ChildWorkflowService
+	operatorMessages          OperatorMessageService
+	credentials               CredentialService
+	generatedChildCredentials CredentialService
+	blobs                     blobstore.Store
+	generatedChildBlobs       blobstore.Store
+	recovery                  RecoveryService
+	surrenders                SurrenderService
+	state                     StateService
+	telemetryDefects          TelemetryDefectAggregateService
+	podRunGaggle              func(context.Context, string) (string, error)
+	configDigest              func() string
+	workerConfigDivergence    func(journal.Event) error
+	instanceReadiness         InstanceReadinessService
+	portalAssets              http.Handler
+	recoveryGate              func() bool
+	recoveryHints             func(http.Header)
+	discoveryIdentity         DiscoveryIdentity
+	telemetryReadsAvailable   bool
+	workItemsAvailable        bool
+	activeClaimsAvailable     bool
+	configAuthoring           ConfigAuthoringReader
+	trustedProxies            []string
 }
 
 // HandlerOption configures optional HTTP transport surfaces.

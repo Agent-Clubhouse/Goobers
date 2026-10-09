@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/blobstore"
 )
 
 // credentialplane.go implements the daemon write API's credential plane
@@ -132,8 +133,32 @@ func WithCredentialService(credentials CredentialService) HandlerOption {
 	}
 }
 
-func registerCredentialRoute(router *Router, credentials CredentialService, errorLog *log.Logger) {
+// WithGeneratedChildCredentialService installs an owner that independently
+// verifies exact contract, physical attempt, custody and current delegation.
+// Ordinary pod credential authority is never a fallback for generated children.
+func WithGeneratedChildCredentialService(credentials CredentialService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if credentials == nil {
+			return errors.New("generated child credential owner is required")
+		}
+		config.generatedChildCredentials = credentials
+		return nil
+	}
+}
+
+func registerCredentialRoute(router *Router, ordinary, child CredentialService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteCredentialResolve, func(w http.ResponseWriter, request *http.Request) {
+		credentials := ordinary
+		principal, authenticated := PrincipalFromRequest(request)
+		generated := authenticated && principal.Issuer == GeneratedChildPrincipalIssuer
+		if generated {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if child == nil || principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
+				writeError(w, http.StatusForbidden, "child_credentials_unavailable", "generated child credential authority is not available")
+				return
+			}
+			credentials = child
+		}
 		if credentials == nil {
 			writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "the credential plane is not available from this server")
 			return
@@ -156,8 +181,7 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 		// caller could pull raw secret material for any run/stage and drive
 		// GitHub App token minting. The gate sits before body decoding — an
 		// unauthenticated caller learns nothing from this surface.
-		principal, authenticated := PrincipalFromRequest(request)
-		if !authenticated || !IsPodPrincipal(principal) {
+		if !generated && (!authenticated || !IsPodPrincipal(principal)) {
 			writeError(w, http.StatusForbidden, "credential_plane_requires_pod_principal",
 				"the credential plane requires an authenticated pod principal; it serves stage pods only")
 			return
@@ -195,7 +219,9 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 			return
 		}
 		// The body carries live secret material: forbid every cache layer.
-		w.Header().Set("Cache-Control", "no-store")
+		if !generated {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		writeJSON(w, http.StatusOK, response)
 	})
 }
