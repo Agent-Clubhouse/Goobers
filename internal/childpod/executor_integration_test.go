@@ -35,15 +35,17 @@ func podTestGit(t *testing.T, dir string, args ...string) string {
 }
 
 func TestIntegrationExecutorImportsVerifiedTreeAndPreservesFork(t *testing.T) {
+	testdep.Require(t, "git")
 	testExecutorTreeReturn(t, false)
 }
 
 func TestIntegrationExecutorCancellationImportsSurrenderedTree(t *testing.T) {
+	testdep.Require(t, "git")
 	testExecutorTreeReturn(t, true)
 }
 
 func testExecutorTreeReturn(t *testing.T, canceled bool) {
-	testdep.Require(t, "git")
+	t.Helper()
 	r := requestFixture()
 	host := t.TempDir()
 	podTestGit(t, host, "init", "--initial-branch=main")

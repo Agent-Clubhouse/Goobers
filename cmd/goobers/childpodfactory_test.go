@@ -179,8 +179,11 @@ func testProductionChildFactory(t *testing.T, resume bool, lost ...bool) {
 		defer stop()
 		credentialClient := &dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
 		resolved, err := credentialClient.ResolveStage(owned, a.RunID, a.Stage, []string{"agent:model"})
-		if err != nil || len(resolved.Credentials) != 1 || resolved.Credentials[0].Value != "test-model-credential" {
-			return engine.ChildDispatchResult{}, fmt.Errorf("startup credential owner refused worker: %+v, %v", resolved, err)
+		if err != nil {
+			return engine.ChildDispatchResult{}, fmt.Errorf("startup credential owner refused worker: %w", err)
+		}
+		if len(resolved.Credentials) != 1 || resolved.Credentials[0].Value != "test-model-credential" {
+			return engine.ChildDispatchResult{}, fmt.Errorf("startup credential owner returned unexpected credentials: %+v", resolved)
 		}
 		raw, err = remoteBlobs.Get(owned, a.KitDigest)
 		if err != nil {
