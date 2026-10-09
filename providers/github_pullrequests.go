@@ -25,7 +25,22 @@ import (
 // sidesteps this package's lack of a typed HTTP-status error to match against
 // (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
-	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, restOpenPullRequestHooks{
+	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, githubOpenPullRequestHooks())
+}
+
+// CreatePullRequest only attempts creation. It never updates an existing PR or
+// handles an ambiguous response with another mutation; its caller owns recovery.
+func (p *GitHubProvider) CreatePullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestResult{}, err
+	}
+	hooks := githubOpenPullRequestHooks()
+	hooks.isCreateRaceError = nil
+	return createRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, hooks, req.Title, withRunIDFooter(req.Body, req.RunID))
+}
+
+func githubOpenPullRequestHooks() restOpenPullRequestHooks {
+	return restOpenPullRequestHooks{
 		title: func(req PullRequestRequest) string { return req.Title },
 		createBody: func(req PullRequestRequest, title, body string) interface{} {
 			return map[string]interface{}{
@@ -37,7 +52,7 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 			}
 		},
 		isCreateRaceError: IsPullRequestAlreadyExistsError,
-	})
+	}
 }
 
 // FindPullRequestByBranch looks up an open PR for head/base, returning

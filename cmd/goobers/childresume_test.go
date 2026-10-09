@@ -86,15 +86,14 @@ func TestChildRecoveryOwnershipBarrierAllowsCancellationBeforeEffects(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	ready, proceed := make(chan struct{}), make(chan struct{})
+	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		_, err := runtime.runner.Resume(t.Context(), runner.ResumeInput{RunID: id.RunID, Machine: runtime.machine, GooberDigest: runtime.gooberDigest, OnRecoveryOwned: func() error { close(ready); <-proceed; return nil }})
+		_, err := runtime.runner.Resume(t.Context(), runner.ResumeInput{RunID: id.RunID, Machine: runtime.machine, GooberDigest: runtime.gooberDigest, OnRecoveryOwned: func(owned context.Context) error { close(ready); <-owned.Done(); return owned.Err() }})
 		done <- err
 	}()
 	<-ready
 	_, accepted, err := runtime.runner.CancelRun(id.RunID, time.Now())
-	close(proceed)
 	if err != nil || !accepted {
 		t.Fatal("recovery not cancellable", accepted, err)
 	}

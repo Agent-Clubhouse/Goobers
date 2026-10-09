@@ -61,6 +61,17 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		p.recordMutation(ctx, "pr", strconv.Itoa(out.PullRequestID), "update", req.Repository)
 		return p.adoPullRequestResult(req.Repository, out), nil
 	}
+	return p.CreatePullRequest(ctx, req)
+}
+
+// CreatePullRequest only attempts creation; an existing PR or uncertain response
+// is left for the caller's read-only reconciliation, never a fallback update.
+func (p *ADOProvider) CreatePullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
+	if err := requireRepo(req.Repository); err != nil {
+		return PullRequestResult{}, err
+	}
+	head := strings.TrimPrefix(req.Head, "refs/heads/")
+	base := strings.TrimPrefix(req.Base, "refs/heads/")
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
 		return PullRequestResult{}, err

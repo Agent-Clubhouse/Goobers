@@ -17,6 +17,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Configuring backlog park-label filtering](backlog-park-filtering.md)
 - [Find ready issues with no label route](backlog-routing-diagnostics.md)
 - [Child workflow admission internals (preview)](child-workflow-admission.md)
+- [Child workflow publication](child-workflow-publication.md)
 - [Investigation: default-branch CI failures 32040570522 and 32063514602](ci-main-failures-32040570522-32063514602.md)
 - [CI test results: JUnit artifacts and failure annotations](ci-test-results.md)
 - [Inspect claim verification](claim-verification.md)

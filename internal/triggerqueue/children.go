@@ -368,8 +368,10 @@ func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposa
 }
 
 func childByteCapacity(ctx context.Context, tx *sql.Tx, additionalBytes int) error {
+	// Acknowledgement releases execution credit through the schema trigger,
+	// retaining receipt credit for publication effects with unknown outcomes.
 	var reserved int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(reserved_bytes),0) FROM child_lineages WHERE tombstoned_ns IS NULL AND acknowledged_ns IS NULL`).Scan(&reserved); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(reserved_bytes),0) FROM child_lineages WHERE tombstoned_ns IS NULL`).Scan(&reserved); err != nil {
 		return err
 	}
 	var pages, freePages, pageSize int64

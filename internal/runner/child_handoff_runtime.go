@@ -243,7 +243,7 @@ func resumeChildCapacity(ctx context.Context, suspension ChildParentSuspension, 
 }
 
 func recordChildCompletion(tf *taskFrame, attempt int, class journal.AttemptClass, record childWaitRecord, completion ChildHandoffCompletion) (apiv1.ContextPointer, error) {
-	if len(completion.DispositionIssue) > 1024 || len(completion.Summary) > 16<<10 || len(completion.References) > 64 || len(completion.ResultRef) > 1024 || len(completion.WorkspaceRef) > 1024 {
+	if len(completion.Publications) > 2 || len(completion.DispositionIssue) > 1024 || len(completion.Summary) > 16<<10 || len(completion.References) > 64 || len(completion.ResultRef) > 1024 || len(completion.WorkspaceRef) > 1024 {
 		return apiv1.ContextPointer{}, fmt.Errorf("runner: child completion exceeds its bound")
 	}
 	data, err := json.Marshal(struct {

@@ -28,15 +28,31 @@ type ChildWorkspaceCustody struct {
 	RepoRef apiv1.RepoRef
 }
 
+// ChildPublicationStatus is a host-verified projection of a child's immutable
+// publication custody. It contains no provider credentials or authored PR text.
+type ChildPublicationStatus struct {
+	SourceRunID       string `json:"sourceRunId"`
+	Action            string `json:"action"`
+	IntentDigest      string `json:"intentDigest"`
+	State             string `json:"state"`
+	Head              string `json:"head"`
+	Base              string `json:"base"`
+	Commit            string `json:"commit"`
+	PullRequestURL    string `json:"pullRequestUrl"`
+	PullRequestNumber int    `json:"pullRequestNumber"`
+	NeedsHuman        bool   `json:"needsHuman"`
+}
+
 // ChildHandoffCompletion is verified by the host before it enters the parent's
 // own bounded artifact. It grants no authority to read another run's journal.
 type ChildHandoffCompletion struct {
-	State            string   `json:"state"`
-	Summary          string   `json:"summary"`
-	ResultRef        string   `json:"resultRef"`
-	WorkspaceRef     string   `json:"workspaceRef,omitempty"`
-	References       []string `json:"references,omitempty"`
-	DispositionIssue string   `json:"dispositionIssue,omitempty"`
+	Publications     []ChildPublicationStatus `json:"publications,omitempty"`
+	State            string                   `json:"state"`
+	Summary          string                   `json:"summary"`
+	ResultRef        string                   `json:"resultRef"`
+	WorkspaceRef     string                   `json:"workspaceRef,omitempty"`
+	References       []string                 `json:"references,omitempty"`
+	DispositionIssue string                   `json:"dispositionIssue,omitempty"`
 }
 
 // ChildHandoff owns queue authority and custody effects. Await observes a

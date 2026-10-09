@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/providers"
 )
 
 type handoffDaemonFixture struct {
@@ -139,5 +143,46 @@ func TestDaemonChildHandoffSelectsAcceptedWaitAndVerifiedCompletion(t *testing.T
 	cancel()
 	if _, err := f.host.Await(ctx, f.env); err == nil {
 		t.Fatal("empty cancelled observer did not stop")
+	}
+}
+
+func TestDaemonChildHandoffIncludesUncertainPublicationWithoutChangingResult(t *testing.T) {
+	f := newHandoffDaemonFixture(t)
+	request, err := f.host.Await(t.Context(), f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineage := journal.ChildLineage{Gaggle: f.child.Identity.Gaggle, ParentRunID: f.child.Identity.ParentRunID, StageOccurrence: f.child.Identity.StageOccurrence, InvocationKey: f.child.Identity.InvocationKey, AcceptanceID: f.child.AcceptanceID, SourceDigest: f.child.ProposalDigest, EnvelopeDigest: journal.Digest([]byte("envelope"))}
+	intent := childpublication.BranchIntent{Version: 1, RunID: f.child.RunID, Lineage: lineage, Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "owner", Name: "repo"}, Remote: "https://github.com/owner/repo.git", Head: "factory/children/" + f.child.RunID, Base: "main", Commit: strings.Repeat("a", 40)}
+	raw, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := f.queue.PrepareChildExecutionPublication(t.Context(), f.child.Identity, f.child.RunID, "branch", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.queue.BeginChildExecutionPublicationEffect(t.Context(), publication, f.child.RunID); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := childworkflow.WorkspaceCoordinator{Queue: f.queue}
+	result, err := coordinator.CaptureResult(t.Context(), f.child, nil, childworkflow.TerminalResultInput{State: triggerqueue.ChildFailed, FinishedAt: time.Now(), Summary: "publication reply unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.queue.SetChildState(t.Context(), f.child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := f.host.Wait(t.Context(), request)
+	if err != nil || completion.ResultRef != result.ResultRef || len(completion.Publications) != 1 {
+		t.Fatal(completion, err)
+	}
+	status := completion.Publications[0]
+	if status.State != "effect_pending" || !status.NeedsHuman || status.IntentDigest != publication.Digest || status.Head != intent.Head {
+		t.Fatal("parent lost uncertain publication evidence", status)
+	}
+	retained, err := f.queue.ChildResult(t.Context(), f.child.Identity)
+	if err != nil || retained.ReceiptDigest != result.ResultRef {
+		t.Fatal("projection changed immutable child result", retained, err)
 	}
 }
