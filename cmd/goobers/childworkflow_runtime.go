@@ -33,11 +33,7 @@ func (s *daemonCredentialService) enableChildWorkflows(queue *triggerqueue.Store
 			return journal.OpenReadOnly(dir)
 		},
 		LoadPinnedStage: func(ctx context.Context, current *instance.ConfigSet, parent journal.RunIdentity, stage string) (childworkflow.PinnedStageAdmission, error) {
-			authority, err := loadPinnedChildStage(ctx, s.layout, s.config, current, parent, stage)
-			return childworkflow.PinnedStageAdmission{
-				Admission: authority.Admission, ConfigGeneration: authority.ConfigGeneration,
-				WorkflowDigest: authority.ParentWorkflowDigest, GooberDigest: authority.ParentGooberDigest,
-			}, err
+			return s.pinnedChildStage(ctx, current, parent, stage)
 		},
 	})
 	if err != nil {

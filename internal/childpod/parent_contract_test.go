@@ -2,9 +2,10 @@ package childpod
 
 import (
 	"encoding/json"
+	"testing"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
-	"testing"
 )
 
 func parentContractFixture() Contract {

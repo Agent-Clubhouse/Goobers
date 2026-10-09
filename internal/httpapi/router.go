@@ -440,6 +440,9 @@ func RequireRoles() Authorizer {
 			if principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
 				return errors.New("contained parent contract unavailable")
 			}
+			if request.Method == http.MethodPost && (request.URL.Path == apicontract.CredentialResolvePath || request.URL.Path == apicontract.ClaimListPath) {
+				return nil
+			}
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == GeneratedChildPrincipalIssuer {
@@ -660,6 +663,7 @@ type handlerConfig struct {
 	gaggleBundles             GaggleBundleService
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
+	workflowParentExecution   ChildExecutionObserver
 	triggers                  TriggerService
 	escalations               EscalationService
 	cancels                   CancelService
@@ -670,6 +674,7 @@ type handlerConfig struct {
 	operatorMessages          OperatorMessageService
 	credentials               CredentialService
 	generatedChildCredentials CredentialService
+	workflowParentCredentials CredentialService
 	blobs                     blobstore.Store
 	generatedChildBlobs       blobstore.Store
 	workflowParentBlobs       blobstore.Store

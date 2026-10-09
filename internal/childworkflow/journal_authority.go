@@ -17,10 +17,13 @@ import (
 // fallback is permitted. The loader must independently verify all three pins.
 // ParentTask is the compiled task from that generation, without policy edits.
 type PinnedStageAdmission struct {
-	Admission        AdmissionContext
-	ConfigGeneration string
-	WorkflowDigest   string
-	GooberDigest     string
+	// ParentExecutionCapabilities intersects the pinned and current parent task.
+	// It is independent of the capabilities the parent may delegate to children.
+	ParentExecutionCapabilities []string
+	Admission                   AdmissionContext
+	ConfigGeneration            string
+	WorkflowDigest              string
+	GooberDigest                string
 }
 
 // JournalAuthorityResolver checks live tool authority against committed stage
