@@ -443,6 +443,9 @@ func RequireRoles() Authorizer {
 			if request.Method == http.MethodPost && (request.URL.Path == apicontract.CredentialResolvePath || request.URL.Path == apicontract.ClaimListPath || surrenderPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) {
 				return nil
 			}
+			if (request.Method == http.MethodPost || request.Method == http.MethodDelete) && parentAccessPath(request.URL.Path) {
+				return nil
+			}
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == GeneratedChildPrincipalIssuer {
@@ -683,6 +686,7 @@ type handlerConfig struct {
 	generatedChildSurrenders  SurrenderService
 	workflowParentSurrenders  SurrenderService
 	workflowParentJournal     JournalService
+	workflowParentAccess      ChildWorkflowAccessService
 	state                     StateService
 	telemetryDefects          TelemetryDefectAggregateService
 	podRunGaggle              func(context.Context, string) (string, error)

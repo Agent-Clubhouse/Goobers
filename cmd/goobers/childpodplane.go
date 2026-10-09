@@ -17,6 +17,7 @@ func (s *daemonCredentialService) installChildPodPlane(client childpod.TemporalC
 		httpapi.WithGeneratedChildBlobService(s.childBlobPlane(blobs)),
 		httpapi.WithWorkflowParentBlobService(s.childBlobPlane(blobs)),
 		httpapi.WithWorkflowParentCredentialService(parentCredentialPlane{service: s}),
+		httpapi.WithWorkflowParentAccessService(parentAccessPlane{service: s}),
 		httpapi.WithWorkflowParentExecutionObserver(parentExecutionPlane{service: s, claims: claims}),
 		httpapi.WithGeneratedChildCredentialService(childCredentialPlane{service: s}),
 		httpapi.WithGeneratedChildExecutionObserver(childExecutionPlane{service: s, claims: claims}),

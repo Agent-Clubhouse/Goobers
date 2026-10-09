@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// WorkflowParentPodPrefix identifies the separate signed parent token domain.
+// The prefix alone never authenticates a caller.
+const WorkflowParentPodPrefix = workflowParentPodPrefix
+
 const workflowParentPodPrefix = "goobers-workflow-parent-pod."
 const workflowParentPodMACDomain = "workflow-parent-pod/v1:"
 

@@ -36,6 +36,10 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 			operation["x-goobers-stage-grant"] = "goobers-child"
 		}
+		if parentAccessRoute(route.ID) {
+			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
+			operation["x-goobers-parent-contract"] = true
+		}
 		if route.Capability != "" {
 			operation["x-goobers-capability"] = route.Capability
 		}
@@ -204,6 +208,8 @@ func openAPIRequestBody(route Route) map[string]any {
 	}
 	schema := map[string]any{"type": "object", "additionalProperties": true}
 	switch route.ID {
+	case RouteChildWorkflowAccessAcquire, RouteChildWorkflowAccessRevoke:
+		schema = schemaRef("ChildWorkflowAccessRequest")
 	case RouteChildWorkflowValidate, RouteChildWorkflowStart:
 		schema = schemaRef("ChildWorkflowSourceRequest")
 	case RouteChildWorkflowStatus:
@@ -263,6 +269,10 @@ func openAPIResponses(route Route) map[string]any {
 	}
 	successSchema := map[string]any{"type": "object", "additionalProperties": true}
 	switch route.ID {
+	case RouteChildWorkflowAccessAcquire:
+		successSchema = schemaRef("ChildWorkflowAccessResponse")
+	case RouteChildWorkflowAccessRevoke:
+		successSchema = map[string]any{"type": "object", "additionalProperties": false}
 	case RouteChildWorkflowValidate:
 		successSchema = schemaRef("ChildWorkflowValidationResponse")
 	case RouteChildWorkflowStart, RouteChildWorkflowStatus:
@@ -305,6 +315,9 @@ func openAPIResponses(route Route) map[string]any {
 	responses := map[string]any{
 		"200":     successResponse,
 		"default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope")),
+	}
+	if parentAccessRoute(route.ID) {
+		return responses
 	}
 	if childWorkflowRoute(route.ID) {
 		if route.ID == RouteChildWorkflowStart || route.ID == RouteChildWorkflowResolve {

@@ -191,6 +191,21 @@ func (s *Store) CheckChildAuthority(ctx context.Context, grant ChildAuthority, n
 	return checkChildAuthority(ctx, s.db, grant, now)
 }
 
+// CheckChildAuthorityDelivery checks both the exact grant and parent cancellation
+// fence in one snapshot before re-delivering a retained secret. Status reads
+// retain their separate authority-only check so cancellation remains observable.
+func (s *Store) CheckChildAuthorityDelivery(ctx context.Context, grant ChildAuthority, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := checkChildAuthority(ctx, tx, grant, now); err != nil {
+		return err
+	}
+	return childParentOpen(ctx, tx, grant.ChildParent)
+}
+
 func checkChildAuthority(ctx context.Context, db childAuthorityReader, grant ChildAuthority, now time.Time) error {
 	if !grant.valid() || grant.Revoked || now.IsZero() || !grant.ExpiresAt.After(now) {
 		return ErrChildAuthorityChanged
