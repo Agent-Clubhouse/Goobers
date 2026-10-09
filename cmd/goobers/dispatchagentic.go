@@ -120,6 +120,11 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// Generated children receive the host runner's captured reviewer diff through
 	// contract-bound context. Their portable checkout deliberately has no host
 	// ancestry and cannot recompute that diff. Ordinary pod reviews still compute it.
+	if kit.IsReview() && isolatedChildWorkspace(ctx) && kit.ReviewRequiresDiff {
+		if err := requireCapturedChildReviewDiff(kit.Envelope, os.Getenv(dispatcher.EnvStage)); err != nil {
+			return fail("reviewer_diff_missing", err)
+		}
+	}
 	if kit.IsReview() && !isolatedChildWorkspace(ctx) {
 		// The reviewer's diff evidence (#301 parity on the pod path; decision
 		// 001 ruling 7): computed HERE, by this binary, from the checkout the

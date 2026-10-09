@@ -49,6 +49,7 @@ func (w childKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attempt
 	if err != nil {
 		return "", err
 	}
+	kit.ReviewRequiresDiff = attempt.Review && runner.ReviewsImplementation(start.Proposal.Machine, attempt.Stage)
 	if attempt.Review {
 		if !slices.Equal(kit.Goobers[attempt.Envelope.Goober].Capabilities, attempt.Envelope.Capabilities) {
 			return "", errors.New("child reviewer capabilities differ from pinned Goober")
