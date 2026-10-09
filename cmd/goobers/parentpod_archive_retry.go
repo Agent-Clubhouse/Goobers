@@ -11,7 +11,11 @@ import (
 // capture. Retry only under a newly acquired journal lease; the live runner's
 // writer must never be borrowed by a concurrent terminal cleanup sweep.
 func (r parentArchiveRestorer) retryRetirement(reader *journal.Reader, candidates []runner.ParentRetirementCandidate) error {
-	missing := false
+	pending, err := runner.PendingParentForks(reader)
+	if err != nil {
+		return err
+	}
+	missing := len(pending) != 0
 	for _, candidate := range candidates {
 		missing = missing || candidate.RetirementSeq == 0
 	}

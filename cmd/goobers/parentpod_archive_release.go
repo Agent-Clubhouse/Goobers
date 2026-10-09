@@ -22,8 +22,12 @@ func releaseTerminalParentArchives(layout instance.Layout, manager *worktree.Man
 	if err != nil {
 		return err
 	}
-	candidates, err := runner.ParentRetirementCandidates(reader)
-	if err != nil || len(candidates) == 0 {
+	pending, err := runner.PendingParentForks(reader)
+	if err != nil {
+		return err
+	}
+	candidates, err := retirementCandidatesBeforeForkRecovery(reader, pending)
+	if err != nil || len(candidates) == 0 && len(pending) == 0 {
 		return err
 	}
 	cfg, err := instance.LoadConfig(layout.ConfigFile())

@@ -23,8 +23,12 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 	if err != nil {
 		return err
 	}
-	candidates, err := runner.ParentRetirementCandidates(reader)
-	if err != nil || len(candidates) == 0 {
+	pending, err := runner.PendingParentForks(reader)
+	if err != nil {
+		return err
+	}
+	candidates, err := retirementCandidatesBeforeForkRecovery(reader, pending)
+	if err != nil || len(candidates) == 0 && len(pending) == 0 {
 		return err
 	}
 	id, err := reader.Identity()
@@ -42,6 +46,13 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 		return errors.New("parent retirement requires a durable terminal event")
 	}
 	if err := verifyParentArchiveChildren(ctx, r.layout, id); err != nil {
+		return err
+	}
+	if err := r.recoverForkPlans(ctx, run, reader, pending); err != nil {
+		return err
+	}
+	candidates, err = runner.ParentRetirementCandidates(reader)
+	if err != nil {
 		return err
 	}
 	var failures error
@@ -142,4 +153,12 @@ func (r parentArchiveRestorer) retirementWorkspace(ctx context.Context, reader *
 	}
 	wt, err := r.worktrees.AdoptHeldStage(ctx, url, value.Custody.Workspace)
 	return wt, key, url, err
+}
+
+func retirementCandidatesBeforeForkRecovery(reader *journal.Reader, pending []runner.ParentForkRecovery) ([]runner.ParentRetirementCandidate, error) {
+	candidates, err := runner.ParentRetirementCandidates(reader)
+	if errors.Is(err, runner.ErrParentReturnPending) && len(pending) != 0 {
+		return nil, nil
+	}
+	return candidates, err
 }

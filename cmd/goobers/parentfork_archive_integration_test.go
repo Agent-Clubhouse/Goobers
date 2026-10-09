@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,6 +23,13 @@ import (
 
 func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T) {
 	testdep.Require(t, "git")
+	for _, checkpoint := range []string{"ready", "active", "held", "uncreated"} {
+		t.Run(checkpoint, func(t *testing.T) { verifyHostForkArchiveRecovery(t, checkpoint) })
+	}
+}
+
+func verifyHostForkArchiveRecovery(t *testing.T, checkpoint string) {
+	t.Helper()
 	f := containedParentFixture(t)
 	run, env := configuredChildStage(t, f)
 	env.RepoRef = f.applied.Gaggles[0].Spec.Project
@@ -50,7 +58,7 @@ func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.Append(journal.Event{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{{Branch: 1, Name: "a"}}}); err != nil {
+	if err := run.Append(journal.Event{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{{Branch: 1, Name: "a"}, {Branch: 2, Name: "b"}}}); err != nil {
 		t.Fatal(err)
 	}
 	reader, err := journal.OpenReadOnly(run.Dir())
@@ -74,7 +82,13 @@ func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := runner.ParentForkPlan{Version: 1, RunID: env.RunID, Gaggle: env.Gaggle, Parallel: "fan", Sequence: started.Seq, Source: seed, Workspaces: []worktree.StageCustody{custody}}
+	siblingOptions := options
+	siblingOptions.Branch = 2
+	sibling, err := worktree.ParallelForkCustody(siblingOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := runner.ParentForkPlan{Version: 1, RunID: env.RunID, Gaggle: env.Gaggle, Parallel: "fan", Sequence: started.Seq, Source: seed, Workspaces: []worktree.StageCustody{custody, sibling}}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -86,29 +100,39 @@ func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T)
 	if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Parallel: "fan", Runner: map[string]any{"kind": runner.ParentForkPlannedKind, "plan": ref}}); err != nil {
 		t.Fatal(err)
 	}
-	plannedAt := run.Seq()
-	checkout, err := manager.CreateParallelFromSnapshot(t.Context(), options)
-	if err != nil {
-		t.Fatal(err)
+	var checkout *worktree.Worktree
+	head, index := seed.SnapshotSHA, ""
+	if checkpoint != "uncreated" {
+		checkout, err = manager.CreateParallelFromSnapshot(t.Context(), options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if checkpoint != "active" {
+			if _, err := checkout.HoldForChild(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if checkpoint == "ready" {
+			if err := runner.RecordParentForkReady(run, plan.Sequence, ref, 1, custody); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// No worker was launched: preserve ordinary edits even without ready.
+		writeFileContent(t, filepath.Join(checkout.Path, "source.txt"), "ordinary committed\n")
+		recoveryCLIGit(t, checkout.Path, "add", "source.txt")
+		recoveryCLIGit(t, checkout.Path, "commit", "-m", "ordinary branch work")
+		head = recoveryCLIGit(t, checkout.Path, "rev-parse", "HEAD")
+		writeFileContent(t, filepath.Join(checkout.Path, "source.txt"), "ordinary staged\n")
+		recoveryCLIGit(t, checkout.Path, "add", "source.txt")
+		writeFileContent(t, filepath.Join(checkout.Path, "source.txt"), "ordinary working\n")
+		if err := os.WriteFile(filepath.Join(checkout.Path, "untracked.bin"), []byte{0, 255, 17}, 0600); err != nil {
+			t.Fatal(err)
+		}
+		index = recoveryCLIGit(t, checkout.Path, "write-tree")
 	}
-	if _, err := checkout.HoldForChild(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: 1, Parallel: "fan", Runner: map[string]any{"kind": runner.ParentForkReadyKind, "sequence": plan.Sequence, "plannedAt": plannedAt, "plan": ref, "workspace": custody}}); err != nil {
-		t.Fatal(err)
-	}
-	// There is deliberately no contained-parent hold, pod, contract or return.
-	writeFileContent(t, filepath.Join(checkout.Path, "source.txt"), "ordinary committed\n")
-	recoveryCLIGit(t, checkout.Path, "add", "source.txt")
-	recoveryCLIGit(t, checkout.Path, "commit", "-m", "ordinary branch work")
-	head := recoveryCLIGit(t, checkout.Path, "rev-parse", "HEAD")
-	writeFileContent(t, filepath.Join(checkout.Path, "source.txt"), "ordinary staged\n")
-	recoveryCLIGit(t, checkout.Path, "add", "source.txt")
-	writeFileContent(t, filepath.Join(checkout.Path, "source.txt"), "ordinary working\n")
-	if err := os.WriteFile(filepath.Join(checkout.Path, "untracked.bin"), []byte{0, 255, 17}, 0600); err != nil {
-		t.Fatal(err)
-	}
-	index := recoveryCLIGit(t, checkout.Path, "write-tree")
+	// The second reserved branch has never been created in any checkpoint.
+	// Recovery must use the durable snapshot even after the root changes.
+	writeFileContent(t, filepath.Join(source.Path, "source.txt"), "later root edits\n")
 	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -123,11 +147,41 @@ func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T)
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := restorer.retire(run); err != nil {
-		t.Fatal("host fork retirement", err)
+	// A startup sweep cannot borrow the live owner's journal lease.
+	beforeRecovery := run.Seq()
+	if err := releaseTerminalParentArchives(layout, manager, env.RunID); !errors.Is(err, journal.ErrRecoveryBusy) {
+		t.Fatal("fork cleanup borrowed live journal", err)
+	}
+	if run.Seq() != beforeRecovery {
+		t.Fatal("busy cleanup mutated the journal")
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorer.retryRetirement(reader, nil); err != nil {
+		t.Fatal("startup host fork retirement", err)
+	}
+	run, _, err = journal.TryRecover(reader.Dir())
+	if err != nil {
+		t.Fatal("retirement leaked journal lease", err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+	checkout, err = manager.AdoptHeldStage(t.Context(), url, custody)
+	if err != nil {
+		t.Fatal("recovered fork not held", err)
+	}
+	second, err := manager.AdoptHeldStage(t.Context(), url, sibling)
+	if err != nil {
+		t.Fatal("uncreated sibling not recovered", err)
+	}
+	if got := readFileContent(t, filepath.Join(second.Path, "source.txt")); got != "base\n" {
+		t.Fatal("sibling recaptured later root edits", got)
+	}
+	if pending, err := runner.PendingParentForks(reader); err != nil || len(pending) != 0 {
+		t.Fatal("recovered plan still pending", pending, err)
 	}
 	candidates, err := runner.ParentRetirementCandidates(reader)
-	if err != nil || len(candidates) != 1 || candidates[0].Workspace.Fork == nil || candidates[0].RetirementSeq == 0 {
+	if err != nil || len(candidates) != 2 || candidates[0].Workspace.Fork == nil || candidates[0].RetirementSeq == 0 {
 		t.Fatal("fork archive missing", candidates, err)
 	}
 	candidate := candidates[0]
@@ -175,13 +229,17 @@ func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T)
 	if err := restorer.restore(t.Context(), rec, candidate.Workspace, candidate.RetirementSeq); err != nil {
 		t.Fatal("fork restoration", err)
 	}
-	if recoveryCLIGit(t, checkout.Path, "rev-parse", "HEAD") != head || recoveryCLIGit(t, checkout.Path, "write-tree") != index {
+	if recoveryCLIGit(t, checkout.Path, "rev-parse", "HEAD") != head || index != "" && recoveryCLIGit(t, checkout.Path, "write-tree") != index {
 		t.Fatal("restoration changed HEAD or index")
 	}
-	if got := readFileContent(t, filepath.Join(checkout.Path, "source.txt")); got != "ordinary working\n" {
+	expected := "ordinary working\n"
+	if checkpoint == "uncreated" {
+		expected = "base\n"
+	}
+	if got := readFileContent(t, filepath.Join(checkout.Path, "source.txt")); got != expected {
 		t.Fatal("working file lost", got)
 	}
-	if data, err := os.ReadFile(filepath.Join(checkout.Path, "untracked.bin")); err != nil || string(data) != string([]byte{0, 255, 17}) {
+	if data, err := os.ReadFile(filepath.Join(checkout.Path, "untracked.bin")); checkpoint != "uncreated" && (err != nil || string(data) != string([]byte{0, 255, 17})) {
 		t.Fatal("binary lost", data, err)
 	}
 	if _, err := manager.AdoptHeldStage(t.Context(), url, custody); err != nil {
@@ -192,7 +250,7 @@ func TestIntegrationHostForkArchivesAndRestoresWithoutWorkerReturn(t *testing.T)
 		t.Fatal("fork retirement after restoration", err)
 	}
 	next, err := runner.ParentRetirementCandidates(reader)
-	if err != nil || len(next) != 1 || next[0].RetirementSeq <= candidate.RetirementSeq || next[0].Workspace.Archive == candidate.Workspace.Archive {
+	if err != nil || len(next) != 2 || next[0].RetirementSeq <= candidate.RetirementSeq || next[0].Workspace.Archive == candidate.Workspace.Archive {
 		t.Fatal("restored fork reused obsolete archive", next, err)
 	}
 }
