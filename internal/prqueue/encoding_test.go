@@ -60,3 +60,60 @@ func TestReportProducerRejectsUnboundedAndContradictoryEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateClaimTable(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	future, past := now.Add(time.Hour), now.Add(-time.Hour)
+	report := Report{RunID: "me", Gaggle: "g", ObservedAt: now}
+	other := report
+	other.Gaggle = ""
+	valid := func(owner string, exp time.Time, label bool) ClaimObservation {
+		return ObserveClaim(true, owner, "me", exp, now, label)
+	}
+	mut := func(c ClaimObservation, f func(*ClaimObservation)) ClaimObservation {
+		f(&c)
+		return c
+	}
+	long := strings.Repeat("x", 3000)
+	tests := []struct {
+		name    string
+		claim   ClaimObservation
+		report  Report
+		wantErr string
+	}{
+		{"unknown ok", ObserveClaim(false, "", "me", now, now, false), report, ""},
+		{"unclaimed ok", valid("", now, false), report, ""},
+		{"held-by-this-run ok", valid("me", future, true), report, ""},
+		{"held-by-other-run ok", valid("o", future, false), report, ""},
+		{"expired ok", valid("o", past, true), report, ""},
+		{"legacy override ok", mut(valid("o", future, true), func(c *ClaimObservation) { c.State = "held-in-legacy-namespace" }), report, ""},
+		{"legacy this-run override ok", mut(valid("me", future, true), func(c *ClaimObservation) { c.State = "held-in-legacy-namespace" }), report, ""},
+		{"legacy without gaggle", mut(valid("o", future, true), func(c *ClaimObservation) { c.State = "held-in-legacy-namespace" }), other, "contradicts"},
+		{"owner too long", mut(valid("o", future, true), func(c *ClaimObservation) { c.OwnerRunID = long }), report, "field limits"},
+		{"missing next step", mut(valid("o", future, true), func(c *ClaimObservation) { c.NextStep = "" }), report, "field limits"},
+		{"next step too long", mut(valid("o", future, true), func(c *ClaimObservation) { c.NextStep = long }), report, "field limits"},
+		{"unclaimed with owner", mut(valid("", now, false), func(c *ClaimObservation) { c.OwnerRunID = "o" }), report, "has an owner"},
+		{"unknown with expiry", mut(valid("", now, false), func(c *ClaimObservation) { c.State = "unknown"; c.ExpiresAt = &now }), report, "has an owner"},
+		{"held lacks owner", mut(valid("o", future, true), func(c *ClaimObservation) { c.OwnerRunID = "" }), report, "lacks owner or expiry"},
+		{"held lacks expiry", mut(valid("o", future, true), func(c *ClaimObservation) { c.ExpiresAt = nil }), report, "lacks owner or expiry"},
+		{"expired lacks owner", mut(valid("o", past, true), func(c *ClaimObservation) { c.OwnerRunID = "" }), report, "lacks owner or expiry"},
+		{"unknown state", mut(valid("o", future, true), func(c *ClaimObservation) { c.State = "bogus" }), report, "unknown claim observation state"},
+		{"unknown comparison", mut(valid("o", future, true), func(c *ClaimObservation) { c.Comparison = "bogus" }), report, "unknown claim comparison"},
+		{"state contradicts expiry", mut(valid("o", past, true), func(c *ClaimObservation) { c.State = "held-by-other-run" }), report, "contradicts"},
+		{"comparison contradicts label", mut(valid("o", future, true), func(c *ClaimObservation) { c.Comparison = "local-lease-without-provider-label" }), report, "contradicts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateClaim(tt.claim, tt.report)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}

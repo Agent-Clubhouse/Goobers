@@ -1,0 +1,1 @@
+{"mcpServers":{"goobers-io":{"type":"local","command":"/usr/local/bin/goobers","args":["mcp-io","--config","/workspace/.goobers/mcp-io/goobers-io-config.json"],"tools":["get_run_info","publish_output","list_inputs","read_input","grep_input"]}}}

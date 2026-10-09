@@ -1,0 +1,41 @@
+{
+  "cliVersion": "GitHub Copilot CLI 1.0.83.",
+  "usageCapture": "usage-file-with-session-fallback",
+  "declaredTools": [
+    "shell",
+    "goobers-io-get_run_info",
+    "goobers-io-publish_output",
+    "goobers-io-list_inputs",
+    "goobers-io-read_input",
+    "goobers-io-grep_input"
+  ],
+  "availableTools": [
+    "bash",
+    "read_bash",
+    "stop_bash",
+    "list_bash",
+    "powershell",
+    "read_powershell",
+    "stop_powershell",
+    "list_powershell",
+    "view",
+    "create",
+    "edit",
+    "str_replace_editor",
+    "apply_patch",
+    "grep",
+    "rg",
+    "glob",
+    "goobers-io-get_run_info",
+    "goobers-io-publish_output",
+    "goobers-io-list_inputs",
+    "goobers-io-read_input",
+    "goobers-io-grep_input"
+  ],
+  "permissionArgs": [
+    "--allow-all-tools",
+    "--available-tools=bash,read_bash,stop_bash,list_bash,powershell,read_powershell,stop_powershell,list_powershell,view,create,edit,str_replace_editor,apply_patch,grep,rg,glob,goobers-io-get_run_info,goobers-io-publish_output,goobers-io-list_inputs,goobers-io-read_input,goobers-io-grep_input"
+  ],
+  "toolConstrained": true,
+  "sandboxed": false
+}
