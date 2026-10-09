@@ -788,6 +788,9 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		if err != nil {
 			return nil, err
 		}
+		if len(selections[identity].ContainedParentStages) != 0 {
+			requiredCaps = selections[identity].schedulerSelfCapabilities(requiredCaps)
+		}
 		entries = append(entries, localscheduler.WorkflowEntry{
 			Workflow:            wf.Name,
 			WorkflowVersion:     machine.Def.Version,
