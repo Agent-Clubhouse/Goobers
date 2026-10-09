@@ -79,7 +79,7 @@ func (r *JournalAuthorityResolver) prepare(ctx context.Context, runID string, or
 	if err != nil || rd == nil {
 		return Authority{}, journal.RunIdentity{}, journal.Event{}, errors.Join(ErrAuthorityUnavailable, err)
 	}
-	id, event, err := activeJournalStage(ctx, rd, runID, origin)
+	id, event, err := VerifyActiveStage(ctx, rd, runID, origin)
 	if err != nil {
 		return Authority{}, id, event, err
 	}
@@ -93,7 +93,7 @@ func (r *JournalAuthorityResolver) prepare(ctx context.Context, runID string, or
 	}
 	// Loading an archive can race completion or replacement. Re-read durable
 	// state before returning; acceptance additionally uses the queue's CAS fence.
-	currentID, currentEvent, err := activeJournalStage(ctx, rd, runID, origin)
+	currentID, currentEvent, err := VerifyActiveStage(ctx, rd, runID, origin)
 	if err != nil || !sameJSON(id, currentID) || !sameJSON(event, currentEvent) {
 		return Authority{}, id, event, errors.Join(ErrAuthorityChanged, err)
 	}

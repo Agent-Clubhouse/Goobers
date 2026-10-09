@@ -437,7 +437,10 @@ func RequireRoles() Authorizer {
 			return errors.New("only an authenticated worker may report config divergence")
 		}
 		if principal.Issuer == WorkflowParentPrincipalIssuer {
-			return errors.New("contained parent route owner unavailable")
+			if principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+				return errors.New("contained parent contract unavailable")
+			}
+			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == GeneratedChildPrincipalIssuer {
 			if principal.GeneratedChild == nil || !blobstore.ValidDigest(principal.GeneratedChild.ContractDigest) {
@@ -669,6 +672,7 @@ type handlerConfig struct {
 	generatedChildCredentials CredentialService
 	blobs                     blobstore.Store
 	generatedChildBlobs       blobstore.Store
+	workflowParentBlobs       blobstore.Store
 	recovery                  RecoveryService
 	surrenders                SurrenderService
 	generatedChildSurrenders  SurrenderService
@@ -1319,7 +1323,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
-	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, errorLog)
+	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, config.workflowParentBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{
 		http.MethodGet: apicontract.RouteRunRecovery, http.MethodPost: apicontract.RouteRunRecoveryPublish,
 	}, map[apicontract.RouteID]http.HandlerFunc{

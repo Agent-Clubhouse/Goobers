@@ -13,7 +13,8 @@ func TestWorkflowParentCannotInheritOrdinaryAuthority(t *testing.T) {
 			principal := Principal{Subject: podPrincipalSubject("parent"), Issuer: WorkflowParentPrincipalIssuer, WorkflowParent: &WorkflowParentPrincipal{ContractDigest: "sha256:" + strings.Repeat("a", 64)}, Roles: []Role{RoleAdmin, RoleOperate, RoleView}, Scopes: knownPodScopes()}
 			request := httptest.NewRequest(route.method, route.path, nil)
 			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
-			if IsPodPrincipal(principal) || RequireRoles().Authorize(request) == nil {
+			wantBlob := authorizeWorkerBlob(request) == nil
+			if IsPodPrincipal(principal) || (RequireRoles().Authorize(request) == nil) != wantBlob {
 				t.Fatal("uninstalled parent owner inherited ordinary authority")
 			}
 		})

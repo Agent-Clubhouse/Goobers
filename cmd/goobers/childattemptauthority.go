@@ -118,6 +118,16 @@ type generatedBlobPlane struct {
 func (p generatedBlobPlane) Describe() string { return "generated-attempt-blob-plane" }
 func (p generatedBlobPlane) store(ctx context.Context) (blobstore.Store, error) {
 	principal, ok := httpapi.PrincipalFromContext(ctx)
+	if ok && principal.Issuer == httpapi.WorkflowParentPrincipalIssuer {
+		a, err := p.service.parentAttempt(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := a.custody(ctx); err != nil {
+			return nil, err
+		}
+		return a.blobs, nil
+	}
 	if !ok || principal.Issuer != httpapi.GeneratedChildPrincipalIssuer {
 		return p.base, nil
 	}
