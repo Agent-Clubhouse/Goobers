@@ -43,7 +43,6 @@ internal/readservice/runs.go	(*Local).listRunsUnannotated	42
 internal/readservice/runs.go	summarizeRunForStage	65
 internal/readservice/telemetry.go	(*Local).runtimeAnalyticsGraph	42
 internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	43
-internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	57
 internal/runner/parallel_run.go	(*Runner).runParallelBranch	76
 internal/runner/resume.go	pendingParallel	61
 internal/runner/run.go	(*Runner).dispatchTask	61
@@ -96,7 +95,6 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	internal/readmodel/project.go	ProjectRun	272
 !body-length	internal/readservice/runs.go	summarizeRunForStage	258
 !body-length	internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	217
-!body-length	internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	241
 !body-length	internal/runner/parallel_run.go	(*Runner).runParallelBranch	385
 !body-length	internal/runner/run.go	(*Runner).dispatchTask	253
 !body-length	internal/runner/run.go	(*Runner).evaluateGate	241
