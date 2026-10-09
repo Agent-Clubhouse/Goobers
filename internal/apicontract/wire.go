@@ -586,25 +586,7 @@ func newWireFixtures() wireFixtures {
 			}},
 			NextCursor: "next-run",
 		},
-		RunDetail: readservice.RunDetail{
-			RunSummary:  runSummary,
-			Graph:       &graph,
-			GraphStatus: "pinned",
-			Escalation: &readservice.EscalationCause{
-				Selector:       readservice.EscalationSelector{Kind: "gate", Name: "review"},
-				SelectedBranch: "fail",
-				RepassCount:    1,
-				RetryCount:     2,
-				TerminalReason: "review budget exhausted",
-				CausalEventSeq: 9,
-			},
-			TerminalCauseStatus: "unavailable",
-			Transitions: []readservice.RunTransition{
-				{Branch: 0, Seq: 3, Source: "implement", Target: "review"},
-				{Branch: 0, Seq: 9, Source: "review", Verdict: "fail", Terminal: true, Status: "escalated"},
-			},
-			TransitionsStatus: "projected",
-		},
+		RunDetail: wireRunDetail(runSummary, graph, timestamp),
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
 			Events: []readservice.RunEvent{{
@@ -1099,4 +1081,29 @@ func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
 	fixtures.ChildWorkflowResolve = ChildWorkflowResolveRequest{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest}
 	fixtures.ChildWorkflowResolution = ChildWorkflowResolutionResponse{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest, RequestedAt: fixtures.ChildWorkflow.AcceptedAt, RequestDigest: fixtures.ChildWorkflow.SourceDigest, PlanPublished: false}
 	return fixtures
+}
+
+func wireRunDetail(runSummary readservice.RunSummary, graph workflow.Graph, timestamp time.Time) readservice.RunDetail {
+	return readservice.RunDetail{
+		ChildActivity: &readservice.ChildActivity{Status: "recorded", Parked: true,
+			Parent: &readservice.ChildParentLink{RunID: "parent-run", Workflow: "planning", StageOccurrence: "plan/branch0/visit1"},
+			Waits:  []readservice.ChildStageWait{{RunID: "child-run", Stage: "implement", Branch: 0, Action: "wait", Since: timestamp, Sequence: 7}}},
+		RunSummary:  runSummary,
+		Graph:       &graph,
+		GraphStatus: "pinned",
+		Escalation: &readservice.EscalationCause{
+			Selector:       readservice.EscalationSelector{Kind: "gate", Name: "review"},
+			SelectedBranch: "fail",
+			RepassCount:    1,
+			RetryCount:     2,
+			TerminalReason: "review budget exhausted",
+			CausalEventSeq: 9,
+		},
+		TerminalCauseStatus: "unavailable",
+		Transitions: []readservice.RunTransition{
+			{Branch: 0, Seq: 3, Source: "implement", Target: "review"},
+			{Branch: 0, Seq: 9, Source: "review", Verdict: "fail", Terminal: true, Status: "escalated"},
+		},
+		TransitionsStatus: "projected",
+	}
 }
