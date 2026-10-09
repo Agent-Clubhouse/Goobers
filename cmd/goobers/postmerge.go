@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -282,7 +283,7 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 	// A backlog on another provider (topology (b)) is opened on that provider
 	// with the github:issues:write credential bound to it (§7.2).
 	backlogRepo := backlogRepoRefForStage(root, repo)
-	issuesProvider, err := newMergeReviewProvider(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderCapability(capability.GitHubIssuesWrite))
+	issuesProvider, err := newMergeReviewProvider(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderCapability(capability.GitHubIssuesWrite))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
