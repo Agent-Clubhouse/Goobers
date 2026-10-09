@@ -384,3 +384,14 @@ func TestPosteriorConfidenceEqualArmsNearHalf(t *testing.T) {
 		t.Fatalf("confidence = %v, want near 0.5", c)
 	}
 }
+
+func BenchmarkPosteriorConfidence(b *testing.B) {
+	obs := make([]Observation, 0, 2000)
+	for i := 0; i < 1000; i++ {
+		obs = append(obs, Observation{Arm: "a", Success: i%3 != 0}, Observation{Arm: "b", Success: i%2 == 0})
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		posteriorConfidence("a", "b", obs)
+	}
+}
