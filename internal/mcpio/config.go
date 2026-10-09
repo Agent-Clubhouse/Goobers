@@ -22,6 +22,7 @@ import (
 	"os"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/pathutil"
 	"github.com/goobers/goobers/internal/platform/secfile"
 )
 
@@ -95,7 +96,7 @@ func WriteConfig(root, rel string, cfg Config) (string, error) {
 // this package's own Config type. It runs in the harness's own process,
 // before the spawned harness subprocess is sandboxed — so, unlike a normal
 // os.MkdirAll+os.WriteFile, it must not follow a symlink planted at rel or
-// any not-yet-existing intermediate component of it (see resolveRooted's
+// any not-yet-existing intermediate component of it (see pathutil.ResolveRootedPath's
 // doc comment and #2413, which tracks the same gap at other pre-sandbox
 // harness writes into a workspace).
 func WriteJSON(root, rel string, v any) (string, error) {
@@ -109,7 +110,7 @@ func writeJSON(root, rel string, v any, write func(string, []byte) error) (strin
 	if err != nil {
 		return "", fmt.Errorf("mcpio: encode config: %w", err)
 	}
-	full, err := resolveRooted(root, rel, true)
+	full, err := pathutil.ResolveRootedPath(root, rel, true)
 	if err != nil {
 		return "", fmt.Errorf("mcpio: resolve config path: %w", err)
 	}
