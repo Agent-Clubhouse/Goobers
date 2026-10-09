@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -87,4 +88,37 @@ func (r *Runner) ownedStageWorkspace(ctx context.Context, in StartInput, stageNa
 	}
 
 	return nil, nil
+}
+
+// A branch may delegate only from the exact fork reserved by its coordinator.
+// Root stages in mixed workflows keep ordinary serial custody.
+func verifyParallelHandoffWorkspace(ctx context.Context, tf taskFrame, workspace *stageWorkspace) error {
+	if len(tf.in.Machine.Def.Spec.Parallels) == 0 {
+		return nil
+	}
+	_, branch, err := OwnedJournalScope(tf.jr)
+	if err != nil {
+		return err
+	}
+	if branch == 0 {
+		if tf.in.parallelWorkspace != nil {
+			return errors.New("root handoff cannot use a parallel fork")
+		}
+		return nil
+	}
+	if tf.in.parallelWorkspace == nil || tf.in.parallelChild == nil || tf.in.parallelSlot == nil {
+		return errors.New("parallel handoff requires reserved branch workspace and capacity")
+	}
+	identity, err := workspace.worktree.StageIdentity(ctx)
+	if err != nil {
+		return err
+	}
+	if identity != *tf.in.parallelWorkspace || identity.OwnerRunID != tf.in.RunID || identity.Branch != tf.in.WorkspaceBranch {
+		return errors.New("parallel handoff workspace differs from its reserved fork")
+	}
+	return nil
+}
+
+func parallelWorkspaceAllowed(machine *workflow.Machine, p apiv1.Parallel, mode apiv1.WorkspaceMode) bool {
+	return parallelHasChildStage(machine, p) || mode == apiv1.WorkspaceScratch || mode == apiv1.WorkspaceRepoReadOnly
 }

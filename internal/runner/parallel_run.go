@@ -217,11 +217,11 @@ func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Par
 
 			if task, ok := machine.Task(state); ok {
 				mode := taskWorkspaceMode(task)
-				if mode != apiv1.WorkspaceScratch && mode != apiv1.WorkspaceRepoReadOnly {
+				if !parallelWorkspaceAllowed(machine, p, mode) {
 					return fmt.Errorf("parallel %q: maxConcurrentBranches %d requires every branch stage to use scratch or repo-readonly; branch %q task %q resolves to workspace %q",
 						p.Name, p.MaxConcurrentBranches, branch.Name, task.Name, mode)
 				}
-				if task.Run != nil && task.Run.SyncBase {
+				if task.Run != nil && task.Run.SyncBase && !parallelHasChildStage(machine, p) {
 					return fmt.Errorf("parallel %q: branch %q task %q requests syncBase, which requires a writable repo workspace",
 						p.Name, branch.Name, task.Name)
 				}
@@ -231,7 +231,7 @@ func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Par
 				}
 				if g.Evaluator == apiv1.EvaluatorAgentic {
 					mode := gateWorkspaceMode(g)
-					if mode != apiv1.WorkspaceScratch && mode != apiv1.WorkspaceRepoReadOnly {
+					if !parallelWorkspaceAllowed(machine, p, mode) {
 						return fmt.Errorf("parallel %q: maxConcurrentBranches %d requires every branch stage to use scratch or repo-readonly; branch %q gate %q resolves to workspace %q",
 							p.Name, p.MaxConcurrentBranches, branch.Name, g.Name, mode)
 					}

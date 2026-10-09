@@ -15,22 +15,5 @@ func parallelUsesDispatcher(machine *workflow.Machine, parallel apiv1.Parallel) 
 }
 
 func parallelHasChildStage(machine *workflow.Machine, parallel apiv1.Parallel) bool {
-	seen := map[string]bool{}
-	var queue []string
-	for _, branch := range parallel.Branches {
-		queue = append(queue, branch.Start)
-	}
-	for len(queue) > 0 {
-		state := queue[0]
-		queue = queue[1:]
-		if state == "" || state == parallel.Join || workflow.IsReservedAnyTarget(state) || seen[state] {
-			continue
-		}
-		seen[state] = true
-		if task, ok := machine.Task(state); ok && task.ChildWorkflows != nil {
-			return true
-		}
-		queue = append(queue, machine.Outgoing(state)...)
-	}
-	return false
+	return machine.ParallelHasChildStage(parallel)
 }

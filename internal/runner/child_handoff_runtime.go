@@ -43,8 +43,11 @@ func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invoc
 	if tf.t.ChildWorkflows == nil || r.cfg.ChildHandoff == nil {
 		return invocation.Invoke(ctx, env)
 	}
-	if len(tf.in.Machine.Def.Spec.Parallels) != 0 || tf.in.pinnedWorkspace != nil || workspace.worktree == nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: child handoff currently requires a serial parent with a managed repository workspace")
+	if tf.in.pinnedWorkspace != nil || workspace == nil || workspace.worktree == nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: child handoff requires a managed repository workspace")
+	}
+	if err := verifyParallelHandoffWorkspace(ctx, tf, workspace); err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	if err := holdContainedParentWorkspace(ctx, tf, workspace, env); err != nil {
 		return apiv1.ResultEnvelope{}, err
