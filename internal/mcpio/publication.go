@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/handoffcheck"
 )
 
@@ -83,12 +84,6 @@ func compilePublicationSchemas(declared []PublicationSchema) (map[string]*handof
 	return compiled, nil
 }
 
-type stagedEntry struct {
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	MediaType string `json:"mediaType"`
-}
-
 // checkPublication validates a manifest-mode publication against the stage's
 // schema-bound slots before anything is written, so a refused publication
 // leaves the previously accepted manifest (if any) untouched.
@@ -107,13 +102,14 @@ func (t *Toolset) checkPublication(content string) error {
 	if verdict := handoffcheck.CheckSyntax([]byte(content)); !verdict.Valid {
 		return rejectAll(slots, t.schemas, RejectInvalidManifest, redactIssues(verdict.Issues))
 	}
-	var manifest struct {
-		Entries []stagedEntry `json:"entries"`
+	// The same canonical validation Prepare applies at completion, so a
+	// manifest this tool accepts (schemaVersion, unique names, media types,
+	// paths, no unknown members) is never rejected later.
+	manifest, err := artifactset.ParseManifest([]byte(content))
+	if err != nil {
+		return rejectAll(slots, t.schemas, RejectInvalidManifest, []handoffcheck.Issue{{Code: RejectInvalidManifest, Message: err.Error()}})
 	}
-	if err := json.Unmarshal([]byte(content), &manifest); err != nil {
-		return rejectAll(slots, t.schemas, RejectInvalidManifest, []handoffcheck.Issue{{Code: handoffcheck.CodeInvalidJSON, Message: "manifest must be an object with an entries array"}})
-	}
-	entries := make(map[string]stagedEntry, len(manifest.Entries))
+	entries := make(map[string]artifactset.ManifestEntry, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		entries[entry.Name] = entry
 	}
@@ -129,7 +125,7 @@ func (t *Toolset) checkPublication(content string) error {
 	return nil
 }
 
-func (t *Toolset) checkSlot(slot string, schema *handoffcheck.Schema, entries map[string]stagedEntry) (RejectedOutput, bool) {
+func (t *Toolset) checkSlot(slot string, schema *handoffcheck.Schema, entries map[string]artifactset.ManifestEntry) (RejectedOutput, bool) {
 	out := RejectedOutput{Slot: slot, SchemaID: schema.ID()}
 	entry, ok := entries[slot]
 	if !ok {

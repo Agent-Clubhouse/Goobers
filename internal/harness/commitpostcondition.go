@@ -101,11 +101,13 @@ func (c *commitPostcondition) settle(out Outcome, err error) (Outcome, error) {
 	if c == nil {
 		return out, err
 	}
-	return out, withoutUncommittedChanges(err)
+	return out, withoutPostcondition(err, ErrUncommittedChanges)
 }
 
-func withoutUncommittedChanges(err error) error {
-	if err == nil || !errors.Is(err, ErrUncommittedChanges) {
+// withoutPostcondition removes the members of err that are only target,
+// keeping every other joined failure.
+func withoutPostcondition(err, target error) error {
+	if err == nil || !errors.Is(err, target) {
 		return err
 	}
 	joined, ok := err.(interface{ Unwrap() []error })
@@ -114,7 +116,7 @@ func withoutUncommittedChanges(err error) error {
 	}
 	var rest []error
 	for _, member := range joined.Unwrap() {
-		if kept := withoutUncommittedChanges(member); kept != nil {
+		if kept := withoutPostcondition(member, target); kept != nil {
 			rest = append(rest, kept)
 		}
 	}
@@ -122,14 +124,15 @@ func withoutUncommittedChanges(err error) error {
 }
 
 // repairExit decides what a repair turn that could not run, or that failed,
-// leaves behind. For a completion that failed only the commit postcondition
+// leaves behind. For a completion that failed only a completion postcondition
+// (the commit postcondition, or the #6868 publication postcondition)
 // the original, schema-valid completion stands — the Executor then reports
 // UNCOMMITTED_CHANGES and records the diff — rather than turning finished
 // work into a timeout or an adapter fault. Any other repairable error keeps
 // the adapter's existing behavior: the repair failure replaces it. Returns
 // (runErr, completionErr).
 func repairExit(completionErr, failure error) (error, error) {
-	if errors.Is(completionErr, ErrUncommittedChanges) {
+	if isCompletionPostcondition(completionErr) {
 		return nil, completionErr
 	}
 	return failure, nil

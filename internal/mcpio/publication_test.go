@@ -72,6 +72,10 @@ func TestPublishOutputRejectsSchemaBoundOutputs(t *testing.T) {
 		{name: "omitted output", manifest: `{"schemaVersion":"goobers.dev/stage-artifact-set/v1alpha1","entries":[]}`, category: RejectMissingOutput, code: RejectMissingOutput},
 		{name: "unreadable payload", manifest: strings.Replace(findingManifest, "out/finding.json", "out/absent.json", 1), category: RejectUnreadableOutput, code: RejectUnreadableOutput},
 		{name: "malformed manifest", manifest: `{"entries":`, category: RejectInvalidManifest, code: handoffcheck.CodeTruncated},
+		{name: "missing schemaVersion", manifest: `{"entries":[{"name":"finding","path":"out/finding.json","mediaType":"application/json"}]}`, payload: `{"summary": "x", "severity": 1}`, category: RejectInvalidManifest, code: RejectInvalidManifest},
+		{name: "wrong schemaVersion", manifest: strings.Replace(findingManifest, "v1alpha1", "v9", 1), payload: `{"summary": "x", "severity": 1}`, category: RejectInvalidManifest, code: RejectInvalidManifest},
+		{name: "duplicate entry names", manifest: `{"schemaVersion":"goobers.dev/stage-artifact-set/v1alpha1","entries":[{"name":"finding","path":"out/absent.json","mediaType":"application/json"},{"name":"finding","path":"out/finding.json","mediaType":"application/json"}]}`, payload: `{"summary": "x", "severity": 1}`, category: RejectInvalidManifest, code: RejectInvalidManifest},
+		{name: "unknown manifest member", manifest: strings.Replace(findingManifest, `"entries"`, `"extra":1,"entries"`, 1), payload: `{"summary": "x", "severity": 1}`, category: RejectInvalidManifest, code: RejectInvalidManifest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tool, root := schemaToolset(t)
@@ -118,7 +122,7 @@ func TestPublishOutputRepublishAfterRejectionReplacesAtomically(t *testing.T) {
 	manifestPath := filepath.Join(root, "output", "manifest.json")
 
 	writePayload(t, root, `{"summary": "second"}`)
-	const replacement = `{"schemaVersion":"goobers.dev/stage-artifact-set/v1alpha1","entries":[{"name":"finding","path":"out/finding.json","mediaType":"application/json"}],"note":1}`
+	const replacement = `{"schemaVersion":"goobers.dev/stage-artifact-set/v1alpha1","entries":[{"name":"finding","path":"out/finding.json","mediaType":"application/json"}] }`
 	_, _, err := tool.PublishOutput(replacement)
 	requireRejection(t, err, RejectSchemaViolation)
 	if data, readErr := os.ReadFile(manifestPath); readErr != nil || string(data) != findingManifest {

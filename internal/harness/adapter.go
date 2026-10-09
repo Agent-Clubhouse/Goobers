@@ -494,10 +494,10 @@ func validateCompletion(req RunRequest, payload []byte, readErr error) error {
 		return nil
 	}
 	if err := req.ValidateCompletion(payload); err != nil {
-		if errors.Is(err, ErrUncommittedChanges) {
+		if isCompletionPostcondition(err) {
 			// A schema-valid completion that failed only the #5182 commit
-			// postcondition is not an invalid completion: it must not be
-			// captured or recorded as one.
+			// or #6868 publication postcondition is not an invalid
+			// completion: it must not be captured or recorded as one.
 			return err
 		}
 		return fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
@@ -506,5 +506,5 @@ func validateCompletion(req RunRequest, payload []byte, readErr error) error {
 }
 
 func repairableCompletionError(err error) bool {
-	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion) || errors.Is(err, ErrUncommittedChanges)
+	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion) || isCompletionPostcondition(err)
 }

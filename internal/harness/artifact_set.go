@@ -52,6 +52,23 @@ func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelo
 	if !ok || manifest == "" || legacy || len(reported) != 0 {
 		return nil, fmt.Errorf("%w: manifest mode requires a path, no artifactFile, and no self-reported pointers", artifactset.ErrInvalid)
 	}
+	prepared, err := e.prepareDeclaredSet(ctx, env, manifest)
+	if err != nil {
+		return nil, err
+	}
+	return prepared.Publish(ctx, func(name, media string, data []byte) (apiv1.ArtifactPointer, error) {
+		ref, err := e.recordPreparedArtifact(ctx, env.TaskID+"/"+name, media, data)
+		if err != nil {
+			return apiv1.ArtifactPointer{}, err
+		}
+		return refToPointer(ref, media), nil
+	})
+}
+
+// prepareDeclaredSet validates, sanitizes, binds, and schema-checks the staged
+// set. The publication postcondition runs it before completion is accepted and
+// liftArtifacts runs it again authoritatively, so both judge identical rules.
+func (e *Executor) prepareDeclaredSet(ctx context.Context, env apiv1.InvocationEnvelope, manifest string) (*artifactset.Prepared, error) {
 	prepared, err := e.prepareArtifactSet(ctx, env, manifest)
 	if err != nil {
 		return nil, err
@@ -62,13 +79,7 @@ func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelo
 	if err := prepared.CheckSchemas(declaredPublicationSchemas(ctx, env)); err != nil {
 		return nil, err
 	}
-	return prepared.Publish(ctx, func(name, media string, data []byte) (apiv1.ArtifactPointer, error) {
-		ref, err := e.recordPreparedArtifact(ctx, env.TaskID+"/"+name, media, data)
-		if err != nil {
-			return apiv1.ArtifactPointer{}, err
-		}
-		return refToPointer(ref, media), nil
-	})
+	return prepared, nil
 }
 
 func (e *Executor) recordPreparedArtifact(ctx context.Context, name, media string, data []byte) (journal.Ref, error) {
