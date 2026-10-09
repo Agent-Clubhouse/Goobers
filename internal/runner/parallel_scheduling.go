@@ -11,9 +11,10 @@ import (
 // change legacy serial workspace behavior. Start, resume and rerun share this
 // decision; admission and workspace validation remain separate prerequisites.
 func parallelUsesDispatcher(machine *workflow.Machine, parallel apiv1.Parallel) bool {
-	if parallel.MaxConcurrentBranches > 1 {
-		return true
-	}
+	return parallel.MaxConcurrentBranches > 1 || parallelHasChildStage(machine, parallel)
+}
+
+func parallelHasChildStage(machine *workflow.Machine, parallel apiv1.Parallel) bool {
 	seen := map[string]bool{}
 	var queue []string
 	for _, branch := range parallel.Branches {

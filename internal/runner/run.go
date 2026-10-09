@@ -615,6 +615,8 @@ type Config struct {
 	// RestoreParentArchive restores retired contained-parent checkouts before
 	// any resumed task or parallel branch can create an executor or write files.
 	RestoreParentArchive ParentArchiveRestorer
+	// PrepareParentForkSource captures or imports host-owned fork sources.
+	PrepareParentForkSource ParentForkSourceFunc
 	// RetireParentWorkspaces archives acknowledged parent checkouts after the
 	// durable terminal event, before cleanup. Failures must preserve their holds.
 	RetireParentWorkspaces func(*journal.Run) error
@@ -970,6 +972,7 @@ type StartInput struct {
 	pinnedStage          *sync.Mutex
 	childWorkspace       *childRunWorkspace
 	heldChildWorkspace   *stageWorkspace
+	parallelWorkspace    *worktree.StageCustody
 	workspaceRevision    *apiv1.WorkspaceRevision
 	configuredRepoRef    *apiv1.RepoRef
 }

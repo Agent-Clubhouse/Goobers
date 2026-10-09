@@ -57,3 +57,13 @@ func parallelForkCreateOptions(opts ParallelForkOptions) (CreateOptions, error) 
 	create.Branch = "goobers/parents/" + id
 	return create, nil
 }
+
+// ParallelForkCustody computes the exact physical owner before creation, so the
+// caller can durably reserve a whole fan-out before provisioning any checkout.
+func ParallelForkCustody(opts ParallelForkOptions) (StageCustody, error) {
+	create, err := parallelForkCreateOptions(opts)
+	if err != nil {
+		return StageCustody{}, err
+	}
+	return StageCustody{WorkspaceID: create.RunID, OwnerRunID: create.OwnerRunID, RepositoryDigest: RepositoryDigest(opts.RepoURL), Branch: create.Branch, StartRef: opts.SnapshotSHA}, nil
+}

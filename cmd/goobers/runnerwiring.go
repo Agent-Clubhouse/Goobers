@@ -21,6 +21,9 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/parallelworkspace"
+	"github.com/goobers/goobers/internal/parallelworkspace/spec"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -399,6 +402,12 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 		cloneURL = runner.DefaultRepoCloneURL
 	}
 	archives := parentArchiveRestorer{layout: input.Layout, config: input.Config, worktrees: cfg.Worktrees, cloneURL: cloneURL, scrubber: input.SharedRegistry}
+	forkSources := parallelworkspace.Service{Worktrees: cfg.Worktrees, CloneURL: cloneURL, Policy: func(workspace string) (recovery.SnapshotPolicy, error) {
+		return childSnapshotPolicy(workspace, input.Layout.Root, input.Config)
+	}}
+	cfg.PrepareParentForkSource = func(ctx context.Context, rec runner.OwnedJournalRecorder, request spec.Request, previous *spec.Source) (spec.Source, error) {
+		return forkSources.Prepare(ctx, rec, request, previous)
+	}
 	cfg.RestoreParentArchive = archives.restore
 	cfg.RetireParentWorkspaces = archives.retire
 }

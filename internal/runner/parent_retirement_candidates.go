@@ -29,6 +29,9 @@ func ParentRetirementCandidates(reader *journal.Reader) ([]ParentRetirementCandi
 	if err != nil {
 		return nil, err
 	}
+	if err := requireParallelForkArchiveOwnership(reader, events); err != nil {
+		return nil, err
+	}
 	branches, err := heldParentBranches(events)
 	if err != nil {
 		return nil, err
