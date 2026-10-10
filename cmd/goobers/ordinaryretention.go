@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -28,5 +29,16 @@ func retainedOrdinaryGenerationPins(ctx context.Context, layout instance.Layout)
 		return nil, err
 	}
 	defer func() { _ = queue.Close() }()
-	return startintent.RetainedGenerations(ctx, queue)
+	pins, err := startintent.RetainedGenerations(ctx, queue)
+	if err != nil {
+		return nil, err
+	}
+	direct, err := enginestartintent.RetainedGenerations(ctx, queue)
+	if err != nil {
+		return nil, err
+	}
+	for generation := range direct {
+		pins[generation] = true
+	}
+	return pins, nil
 }

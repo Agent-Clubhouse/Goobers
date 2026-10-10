@@ -8,10 +8,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/bootstrap"
-	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/temporalcodec"
-	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
@@ -23,13 +21,20 @@ const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n
 	"the workflow through its own engine starter. The run id is the\n" +
 	"scheduler's, and --dedupe-key is refused, because the daemon mints a\n" +
 	"fresh run id per admission.\n\n" +
-	"--direct bypasses the daemon and starts the workflow straight on\n" +
+	"--direct bypasses scheduler admission and queues an exact input for\n" +
 	"Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,\n" +
 	"workflow and --dedupe-key. That is the only mode in which --dedupe-key\n" +
 	"means anything: a direct start's run id IS its dedupe unit, whereas a\n" +
 	"delegated dispatch dedupes DELIVERIES (by request id) and not work.\n" +
 	"A direct start takes no scheduler slot and fires no terminal hooks.\n" +
 	"--direct is implied when no daemon is running.\n\n" +
+	"Direct starts commit their complete input and exact frontend, namespace\n" +
+	"and task queue to the shared start ledger before contacting Temporal.\n" +
+	"Same-key retries reuse that input. Changed options or credential selectors\n" +
+	"refuse; no current workflow is substituted. The daemon can drain pending\n" +
+	"direct receipts and reconcile an uncertain reply. After any attempted\n" +
+	"start, missing or deleted history remains uncertain and is never resent.\n" +
+	"Confirmation requires the exact input and task queue in Temporal history.\n\n" +
 	"--live-journal pins live journal authorship into the run: workers emit\n" +
 	"journal events through the daemon's journal plane as they happen, so the\n" +
 	"run is visible mid-flight; without it the journal is projected from\n" +
@@ -77,38 +82,6 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	if *taskQueue == "" {
 		*taskQueue = engineConfig.TaskQueue
 	}
-	set, report, err := loadConfigDirectory(l.ConfigDir())
-	if err != nil {
-		printValidationIssues(stderr, report)
-		pf(stderr, "error: load config directory: %v\n", err)
-		return 2
-	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
-	target := *gaggle
-	if target == "" {
-		for i := range set.Workflows {
-			if set.Workflows[i].Name == workflowName {
-				target = set.Workflows[i].Spec.Gaggle
-				break
-			}
-		}
-	}
-	if target == "" {
-		pf(stderr, "error: workflow %q not found; pass --gaggle to disambiguate\n", workflowName)
-		return 2
-	}
-
-	reg, _, err := bootstrap.RegisterGaggleWorkflows(set, target)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	_, ok := reg.Latest(workflowName)
-	if !ok {
-		pf(stderr, "error: workflow %q is not registered\n", workflowName)
-		return 1
-	}
 	// Delegation decision, before anything is pinned: a live daemon owns the
 	// scheduler, and a direct start behind its back takes no concurrency
 	// slot, writes no instance-log run.started, and fires none of the
@@ -120,6 +93,42 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	daemonUp := lockErr != nil
 	if release != nil {
 		release()
+	}
+	target := *gaggle
+	// An explicit direct target can replay accepted input without reopening
+	// mutable authored definitions. New input is validated during capture.
+	if target == "" || (daemonUp && !*direct) {
+		set, report, err := loadConfigDirectory(l.ConfigDir())
+		if err != nil {
+			printValidationIssues(stderr, report)
+			pf(stderr, "error: load config directory: %v\n", err)
+			return 2
+		}
+		instance.ApplyGaggleCICommand(set)
+		instance.ApplyGaggleOutboxMirror(set)
+		if target == "" {
+			for i := range set.Workflows {
+				if set.Workflows[i].Name == workflowName {
+					target = set.Workflows[i].Spec.Gaggle
+					break
+				}
+			}
+		}
+		if target == "" {
+			pf(stderr, "error: workflow %q not found; pass --gaggle to disambiguate\n", workflowName)
+			return 2
+		}
+
+		reg, _, err := bootstrap.RegisterGaggleWorkflows(set, target)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		_, ok := reg.Latest(workflowName)
+		if !ok {
+			pf(stderr, "error: workflow %q is not registered\n", workflowName)
+			return 1
+		}
 	}
 	if daemonUp && !*direct {
 		if *dedupe != "" {
@@ -139,31 +148,10 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "note: no daemon holds %s; starting directly on Temporal (no scheduler slot, no terminal hooks)\n", l.SchedulerDir())
 	}
 
-	in, release, err := pinnedDirectEngineInput(ctx, l, cfg, target, workflowName, *dedupe, *liveJournal)
-	if err != nil {
-		pf(stderr, "error: pin engine run: %v\n", err)
-		return 1
-	}
-	defer release()
-
-	dc, err := temporalcodec.DataConverter(cfg)
-	if err != nil {
-		pf(stderr, "error: temporal payload codec: %v\n", err)
-		return 2
-	}
-	c, err := temporaldial.Dial(ctx, *hostPort, *namespace, engineConfig.TLS, dc)
-	if err != nil {
-		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
-		return 1
-	}
-	defer c.Close()
-	res, err := engine.NewTemporalStarter(c, *taskQueue).Start(ctx, in)
-	if err != nil {
-		pf(stderr, "error: start engine run: %v\n", err)
-		return 1
-	}
-	pf(stdout, "engine run started: %s (workflow=%s v%d, gaggle=%s, queue=%s)\n", res.RunID, in.WorkflowName, in.Version, in.Gaggle, *taskQueue)
-	return 0
+	return queueDirectEngineStart(ctx, l, cfg, enginestartintent.Request{
+		HostPort: *hostPort, Namespace: *namespace, TaskQueue: *taskQueue,
+		Gaggle: target, Workflow: workflowName, DedupeKey: *dedupe, LiveJournal: *liveJournal,
+	}, stdout, stderr)
 }
 
 // engineStartTimeout bounds the whole dispatch — the Temporal dial and start
