@@ -186,3 +186,48 @@ startup can instead preserve a failed child outcome when the execution fence
 refuses startup first. This does not rewrite an already-recorded terminal
 outcome. The originating parent remains a fixture, so this test does not qualify
 cancellation of a complete agent-authored parent/child journey.
+
+
+### Parent-authored journey qualification (preparation branch)
+
+The contained-parent preparation now has a complete sequential journey through
+normal queued admission, the scheduler and runner, a contained parent, actual
+Goobers MCP child tools, a generated child, durable wait, result disposition and
+parent completion. These tests exercise the Portal's production read service
+for the parked stage, accepted-child history and child-to-parent link.
+
+The external model is replaced by `cmd/goobers/testdata/qualification-claude.cjs`.
+The production Claude adapter launches that deterministic fixture, which launches
+the supplied real Goobers MCP server. The host's test Claude executable supports
+preflight only and refuses inference, making accidental local execution fail.
+Temporal, Kubernetes, signed credential/blob/journal APIs and PID 1 cleanup remain
+real. Forge and model credentials are synthetic; no external account is used.
+
+For the parent image, use the Dockerfile above and copy the fixture into the image
+as `/usr/local/bin/claude` with executable permissions before the `USER` line.
+Build the binary and image with a matching `haw-parent-<commit>` version/tag, and
+set `GOOBERS_PARENT_QUALIFICATION_IMAGE` to its local registry reference. Reuse the
+explicit kubeconfig and Temporal CLI described above:
+
+```sh
+GOOBERS_CHILD_KUBE_QUALIFICATION=1 \
+GOOBERS_CHILD_QUALIFICATION_KUBECONFIG=/path/to/private-kind-kubeconfig \
+GOOBERS_PARENT_QUALIFICATION_IMAGE="localhost:45081/goobers:haw-parent-<commit>" \
+go test -race -tags=integration ./cmd/goobers \
+  -run '^TestIntegrationContainedParent(AuthorsChild|ReconcilesChildWorkspace)ThroughRealWorkers$' \
+  -count=1 -timeout=15m -v
+```
+
+The scratch-child case verifies creation, completion and discard. Repository
+cases separately verify merge, replace and discard: the child sees the parent's
+pre-fork uncommitted file, commits its own new file, and the resumed parent checks
+whether that file and a later parent-only file were retained as each decision
+requires. Every physical invocation must report its exact pod UID, stopped
+writers and surrendered result, with confirmed cleanup.
+
+The scratch/Portal journey and all three repository decisions passed with host
+race detection in the disposable environment on 2026-10-09. The repository cases
+first exposed a Kubernetes finalizer version race; their passing rerun includes
+the bounded, exact-UID retry. This is preparation-branch evidence, not public
+activation or qualification of parallel parents, real daemon/worker-loss recovery,
+delegated PR publication, or cancellation of the complete authored journey.
