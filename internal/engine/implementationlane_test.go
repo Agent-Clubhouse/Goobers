@@ -860,32 +860,41 @@ func TestSuppressedFindingsTurnNeedsChangesIntoPass(t *testing.T) {
 
 // TestSalvageOnTimeoutKeepsCommittedWork: a timed-out agentic attempt on a task
 // declaring onTimeout: salvage, whose workspace holds committed work, succeeds
-// AND leaves the marker artifact behind.
+// AND leaves the marker artifact behind. Under DSL 3.1 the salvaged success is
+// runner-synthesized, so the stage's declared expectedOutputs do not fail it
+// (#5175).
 func TestSalvageOnTimeoutKeepsCommittedWork(t *testing.T) {
-	spec := linearSpec()
-	spec.Tasks[0].OnTimeout = apiv1.TaskOnTimeoutSalvage
-	ws := testWorkspaces(t)
-	ws.scriptDiff("implement", []byte("diff --git a/main.go b/main.go\n+// salvaged work\n"))
-	inv := &fakeInvoker{
-		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-			return apiv1.ResultEnvelope{}, invoke.Timeout(errors.New("agent session exceeded its wall clock"))
-		},
-	}
-	env := laneEnv(t, inv, ws)
-	env.ExecuteWorkflow(Run, runInput("linear", spec))
+	for _, dslVersion := range []string{"", "3.1"} {
+		t.Run("dsl="+dslVersion, func(t *testing.T) {
+			spec := linearSpec()
+			spec.Tasks[0].OnTimeout = apiv1.TaskOnTimeoutSalvage
+			spec.Tasks[0].ExpectedOutputs = []string{"changed-files"}
+			ws := testWorkspaces(t)
+			ws.scriptDiff("implement", []byte("diff --git a/main.go b/main.go\n+// salvaged work\n"))
+			inv := &fakeInvoker{
+				invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+					return apiv1.ResultEnvelope{}, invoke.Timeout(errors.New("agent session exceeded its wall clock"))
+				},
+			}
+			env := laneEnv(t, inv, ws)
+			in := runInput("linear", spec)
+			in.DSLVersion = dslVersion
+			env.ExecuteWorkflow(Run, in)
 
-	res := laneResult(t, env)
-	if res.Status != StatusCompleted {
-		t.Fatalf("status = %q, want completed: a salvaged timeout keeps the work", res.Status)
-	}
-	proj := laneJournal(t, env)
-	marker := laneArtifact(t, proj, runner.SalvageOnTimeoutArtifactName("implement"))
-	var decoded map[string]any
-	if err := json.Unmarshal(marker, &decoded); err != nil {
-		t.Fatalf("decode salvage marker: %v", err)
-	}
-	if decoded["diffBytes"] == nil {
-		t.Errorf("salvage marker = %v, want the salvaged diff size", decoded)
+			res := laneResult(t, env)
+			if res.Status != StatusCompleted {
+				t.Fatalf("status = %q (%s: %s), want completed: a salvaged timeout keeps the work", res.Status, res.FailureCode, res.FailureMessage)
+			}
+			proj := laneJournal(t, env)
+			marker := laneArtifact(t, proj, runner.SalvageOnTimeoutArtifactName("implement"))
+			var decoded map[string]any
+			if err := json.Unmarshal(marker, &decoded); err != nil {
+				t.Fatalf("decode salvage marker: %v", err)
+			}
+			if decoded["diffBytes"] == nil {
+				t.Errorf("salvage marker = %v, want the salvaged diff size", decoded)
+			}
+		})
 	}
 }
 

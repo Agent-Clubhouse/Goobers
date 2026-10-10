@@ -15,6 +15,9 @@ import (
 )
 
 func TestMigrateV30ToV31Golden(t *testing.T) {
+	notes := map[string][]string{
+		"legacy-artifacts": {`task produce: expectedOutputs ["report" "trace"] are enforced from DSL 3.1; the stage fails if it succeeds without a declared key`},
+	}
 	for _, name := range []string{"legacy-artifacts", "undeclared-outputs"} {
 		t.Run(name, func(t *testing.T) {
 			before, err := os.ReadFile("testdata/v3_0/" + name + ".yaml")
@@ -32,8 +35,8 @@ func TestMigrateV30ToV31Golden(t *testing.T) {
 			if result.Before != string(before) || result.After != string(want) || !result.Changed {
 				t.Fatalf("migration differs from golden: %+v", result)
 			}
-			if len(result.Notes) != 0 {
-				t.Fatalf("pin-only migration has transform notes: %v", result.Notes)
+			if !reflect.DeepEqual(result.Notes, notes[name]) {
+				t.Fatalf("migration notes = %q, want %q", result.Notes, notes[name])
 			}
 			var specs []apiv1.WorkflowSpec
 			for _, source := range [][]byte{before, []byte(result.After)} {

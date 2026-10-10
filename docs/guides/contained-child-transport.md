@@ -2,11 +2,15 @@
 
 ## Availability
 
-This is the worker transport foundation for generated child workflows. Public
-child execution remains disabled. The daemon has no installed isolated child
-factory, and the ordinary token minter does not satisfy the dispatcher's dedicated
-child-token requirement. This guide describes internal preparation, not an enabled
-Kubernetes, Temporal, Fleet or local host execution journey.
+This is the worker transport foundation for generated child workflows. The daemon
+connects an isolated child factory when its Temporal client, configured pod signing
+key, surrender store and journal service are available. Narrow authenticated
+child routes serve retained kits, credentials, journal observations and surrender.
+Missing execution dependencies leave accepted children queued.
+
+Public parent workflow execution with child-workflow policy remains gated. The
+connected components have separate qualification tests; they do not yet establish
+a supported complete parent-to-child-to-parent execution journey.
 
 The [child workflow design](../design/agent-authored-child-workflows.md) and
 [admission guide](child-workflow-admission.md) track the remaining lifecycle work.
@@ -48,11 +52,13 @@ confirm that unverified results are not deleted.
 
 ## Follow-up requirements
 
-Before runtime enablement, connect and qualify exact signed attempt authority,
-authenticated child-only artifact storage, retained agent kits, the isolated host
-factory, returned-tree application, and rejoin/reconciliation after worker loss.
-The internal contract digest and pod environment comparisons do not replace the
-host's authentication checks.
+The connected factory and authenticated routes cover exact signed attempt
+authority, child-only artifact storage, retained agent kits, returned-tree
+application and recovery of an uncertain worker. Before public runtime enablement,
+qualify these together with the originating parent invocation, durable wait and
+continuation. A simulated worker transport or an isolated process-shutdown test
+does not establish that full journey. Contract digests and pod environment
+comparisons do not replace the host's authentication checks.
 
 ### Private Linux process-namespace qualification
 
@@ -102,3 +108,81 @@ linked run unavailable. The projection covers recorded waits, with the complete
 accepted-child queue, history and intervention controls still requiring the
 remaining Portal and HITL work. It provides no cancellation or stopped-writer
 confirmation. Runtime enablement continues to require the qualification above.
+
+## Disposable Kubernetes qualification
+
+`TestIntegrationQueuedChildUsesRealKubernetesWorker` exercises the actual durable
+queue, retained runtime builder, child runner, Temporal server/worker, Kubernetes
+pod dispatcher, signed worker API, process shutdown, terminal result capture and
+parent disposition acknowledgement. The child runs a deterministic shell command
+in a scratch workspace. The originating parent stage and its wait/continuation
+records are fixtures. This does **not** qualify agent-authored child creation,
+managed-repository return, public parent admission, parallel parents or recovery
+from a lost real worker.
+
+This opt-in test is intended for Docker Desktop and a disposable **kind** cluster.
+It never reads the default kubeconfig: an explicit file, a `kind-haw-child-` context
+and a literal-loopback API endpoint are required. The test creates and deletes its
+own namespace. It serves a private test daemon on host loopback, reached from the
+worker through Docker Desktop's `host.docker.internal` address. Its signing key and
+all run state are synthetic test data; no provider or model account is used.
+
+Prepare kind following its [quick start](https://kind.sigs.k8s.io/docs/user/quick-start/)
+and [local registry guide](https://kind.sigs.k8s.io/docs/user/local-registry/), with:
+
+- a cluster name starting with `haw-child-`;
+- a separate kubeconfig file passed to `kind create cluster --kubeconfig`;
+- a registry published only at `127.0.0.1:45081`, with the node's
+  `localhost:45081` registry host mapped to that registry container;
+- the node and worker image built for the same architecture.
+
+Build the worker from the checkout under test. For a temporary image context,
+copy the Linux `goobers` binary beside this minimal Dockerfile:
+
+```dockerfile
+FROM docker.io/library/node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+RUN apt-get update && apt-get install --no-install-recommends -y git ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY goobers /usr/local/bin/goobers
+USER 1000:1000
+ENTRYPOINT ["goobers"]
+```
+
+Use a unique image tag such as `qualification-<commit>`, embed that same value in
+`internal/version.Version` with `go build -ldflags`, and push the image to
+`localhost:45081/goobers:<tag>`. The test retains the production `Always` pull
+policy, signature checks, namespace isolation and exact pod-UID custody checks.
+Provide the repository-pinned Temporal CLI (`v1.8.2`) through
+`GOOBERS_TEMPORAL_CLI`, then run:
+
+```sh
+GOOBERS_CHILD_KUBE_QUALIFICATION=1 \
+GOOBERS_CHILD_QUALIFICATION_KUBECONFIG=/path/to/private-kind-kubeconfig \
+GOOBERS_CHILD_QUALIFICATION_IMAGE="localhost:45081/goobers:qualification-<commit>" \
+go test -tags=integration ./cmd/goobers \
+  -run '^TestIntegrationQueuedChildUsesRealKubernetesWorker$' -count=1 -timeout=8m -v
+```
+
+A passing run reports the real pod UID, confirmed writer termination and durable
+surrender, then verifies the parent's authenticated result decision and releases
+its unfinished-child slot. A failed or interrupted run may retain an unconfirmed
+pod through its custody finalizer. Delete the **disposable cluster** and its local
+registry when qualification ends; do not clear production custody finalizers to
+imitate a passing test.
+
+### Cancelling an active child pod
+
+`TestIntegrationParentCancellationStopsRealKubernetesChild` uses the same
+explicit disposable environment. Its child shell signals that execution has
+started before the test sends a parent cancellation through the daemon cancel
+service. The durable family fence records cancellation intent; the bounded queue
+sweep then delivers it to the live child runner. The test requires a cancelled
+retained result and independently verifies the exact pod UID, stopped workspace
+writers and durable surrender. A cancellation request alone is never treated as
+stop confirmation.
+
+The startup signal is a test-only loopback HTTP endpoint reachable from the
+local container; it grants no Goobers authority. Cancelling before command
+startup can instead preserve a failed child outcome when the execution fence
+refuses startup first. This does not rewrite an already-recorded terminal
+outcome. The originating parent remains a fixture, so this test does not qualify
+cancellation of a complete agent-authored parent/child journey.

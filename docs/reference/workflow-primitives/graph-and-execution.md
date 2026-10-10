@@ -77,6 +77,18 @@ Declares scalar outputs or artifacts that later states rely on. Shell stages
 that emit scalar outputs use an `inputs.resultFile` contract; kind-backed and
 agentic stages emit through their executors/harnesses.
 
+Through DSL 3.0 the declaration is advisory (`VER003`). From `dslVersion: "3.1"`
+any stage (shell, kind-backed, or agentic) that reports success without every
+declared key fails with `missing_expected_outputs`. The diagnostic names the
+stage's output channel (the result file, the built-in kind, or the agent
+result) and the missing keys, never output values. A shell result file must be
+a flat JSON object (UTF-8, optional byte-order mark). Declare only keys a
+stage emits on every successful outcome; for example, `ci-poll` emits
+`ciFailedChecks` only when checks fail. Successes the runner synthesizes
+itself (an `onTimeout: salvage` completion, or committed work preserved across
+an infrastructure failure) are exempt, because their committed diff is verified
+downstream.
+
 ### `outbox`
 
 Exports declared workspace-relative files or directories into the durable run
@@ -248,9 +260,30 @@ limit is set, including inherited limits and `--no-wait` runs. Start
 `--no-api` file delegation to a live daemon remains supported.
 
 Readiness fields (`maxConcurrentRuns`, `desiredConcurrentRuns`,
-`maxRunsPerHour`, `maxRunsPerDay`, `maxChainDepth`, and `maxOpenPRs`) govern
+`maxRunsPerHour`, `maxRunsPerDay`, `maxChainDepth`, `maxOpenPRs`, and
+`requireProviderAuthorization`) govern
 admission rather than stage execution. `maxOpenPRs` counts the open pull
 requests under the workflow's run-branch namespace in the gaggle's project
 repository, on GitHub and Azure DevOps alike, and ignores PRs labelled
 `goobers:merge-escalated` in any casing. Until a count has been read, and
 whenever a read fails, admission is not held back by the cap.
+
+`requireProviderAuthorization: true` makes provider authorization health a
+pre-claim predicate. Before each autonomous dispatch the scheduler resolves the
+workflow repository's credential through the instance's normal credential
+resolution and performs a read-only check that it can read the repository and
+its issues. Unlike `maxOpenPRs`, this check fails closed: a missing, revoked,
+under-scoped, unsupported (non-GitHub), or unverifiable credential refuses the
+dispatch before any slot is reserved or work is claimed. The refusal is
+journaled as `tick.skipped` with the reason prefix
+`conditions: provider-auth-unhealthy` and one of the stable codes
+`provider_auth_missing`, `provider_auth_rejected`,
+`provider_auth_insufficient`, `provider_auth_unverified`, or
+`provider_auth_unsupported`, and `goobers status` lists the workflow under
+refused workflows until a run starts or the scheduler refuses it for another
+reason. Results are cached per provider,
+repository, credential fingerprint, and configuration revision (healthy for 5
+minutes, unhealthy for at most 1 minute), so rotating the credential or
+reloading configuration re-checks immediately. Token values are never
+recorded. Manual `goobers run` is not gated, so an operator can still run the
+workflow to diagnose the credential.

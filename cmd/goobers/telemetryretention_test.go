@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -1158,5 +1159,62 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 		!strings.Contains(enforced.String(), "pruned 7 run") ||
 		!strings.Contains(enforced.String(), "history retained back to 24h0m0s ago") {
 		t.Fatalf("enforced status = %q", enforced.String())
+	}
+}
+
+// TestTelemetryRetentionPassJournaledReadsFromPassWatermark pins #7031: the
+// dedupe check re-parsed the whole instance journal. It must read only what
+// was appended after the pass was created, and a legacy pass with no
+// watermark must still be found by a full read.
+func TestTelemetryRetentionPassJournaledReadsFromPassWatermark(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	for i := 0; i < 1000; i++ {
+		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "w", Reason: "conditions: max-parallel"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}
+	pass, err := newTelemetryRetentionPass(layout, config, now, true, nil, time.Time{}, retention.Summary{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pass.JournalSeq == 0 {
+		t.Fatal("pass recorded no journal watermark")
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: map[string]any{"passId": pass.ID}}); err != nil {
+		t.Fatal(err)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	journaled, err := telemetryRetentionPassJournaled(layout, *pass)
+	work := readprobe.Take()
+	readprobe.Disable()
+	if err != nil || !journaled {
+		t.Fatalf("pass journaled = %v, %v; want true", journaled, err)
+	}
+	path, err := journal.InstanceEventsPath(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.InstanceTailReads != 1 || work.InstanceTailBytes*2 > uint64(info.Size()) {
+		t.Fatalf("dedupe read %d bytes in %d reads of a %d-byte journal, want one bounded read",
+			work.InstanceTailBytes, work.InstanceTailReads, info.Size())
+	}
+
+	legacy := *pass
+	legacy.JournalSeq = 0
+	if journaled, err := telemetryRetentionPassJournaled(layout, legacy); err != nil || !journaled {
+		t.Fatalf("legacy pass journaled = %v, %v; want true", journaled, err)
 	}
 }

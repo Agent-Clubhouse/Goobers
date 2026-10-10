@@ -104,6 +104,10 @@ type WorkflowEntry struct {
 	// disabled by spec.enabled=false (#5200): refused before admission with
 	// this named diagnostic, while in-flight runs finish normally.
 	DisabledReason string
+	// ProviderAuth evaluates provider authorization health before autonomous
+	// dispatch when Readiness.RequireProviderAuthorization is set (#5317).
+	// Nil with the readiness flag set fails closed.
+	ProviderAuth ProviderAuthGate
 }
 
 func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
@@ -2760,6 +2764,10 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 
 	if reason, refused := s.permanentDispatchRefusal(entry); refused {
 		s.journalDispatchRefusal(entry, identity, now, triggerReason, reason)
+		span.Complete(telemetry.OutcomeBlocked, false)
+		return "", false, reason
+	}
+	if reason, refused := s.providerAuthDispatchRefusal(ctx, entry, identity, trigger, now, triggerReason); refused {
 		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}

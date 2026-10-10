@@ -51,6 +51,11 @@ type handoffBinding struct {
 }
 
 func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJournal, machine *workflow.Machine, task apiv1.Task, attempt int, class journal.AttemptClass, pointers []apiv1.ContextPointer) (context.Context, *handoffcheck.Report, error) {
+	schemas, err := producerPublicationSchemas(task, r.cfg.HandoffSchemaLoader)
+	if err != nil {
+		return ctx, nil, err
+	}
+	ctx = handoffcheck.WithPublicationSchemas(ctx, schemas)
 	report := buildHandoffValidationReport(ctx, jr.Dir(), handoffBindingsForContext(machine, pointers), pointers, r.cfg.HandoffSchemaLoader)
 	if report == nil {
 		return ctx, nil, nil
@@ -62,6 +67,31 @@ func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJourn
 		return ctx, nil, fmt.Errorf("task %q: journal handoff validation: %w", task.Name, err)
 	}
 	return handoffcheck.WithReport(ctx, *report), report, nil
+}
+
+// producerPublicationSchemas loads the stage's own schema-bound
+// application/json artifact slots so the producer is held to its declared
+// contract when it publishes (#6868), not only when a consumer reads it. A
+// schema that cannot be loaded fails the stage before the model runs.
+func producerPublicationSchemas(task apiv1.Task, load HandoffSchemaLoader) (map[string]*handoffcheck.Schema, error) {
+	if load == nil {
+		return nil, nil
+	}
+	var schemas map[string]*handoffcheck.Schema
+	for _, slot := range task.ArtifactSlots {
+		if slot.SchemaPath == "" || slot.MediaType != "application/json" {
+			continue
+		}
+		schema, err := load(slot.SchemaPath)
+		if err != nil {
+			return nil, fmt.Errorf("task %q: load artifact slot %q schema %q: %w", task.Name, slot.Name, slot.SchemaPath, err)
+		}
+		if schemas == nil {
+			schemas = map[string]*handoffcheck.Schema{}
+		}
+		schemas[slot.Name] = schema
+	}
+	return schemas, nil
 }
 
 func handoffBindingsForContext(machine *workflow.Machine, pointers []apiv1.ContextPointer) map[string]handoffBinding {

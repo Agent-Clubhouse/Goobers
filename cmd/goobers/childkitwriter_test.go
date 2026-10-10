@@ -24,16 +24,22 @@ import (
 )
 
 type childKitFixture struct {
-	driver  *runner.Runner
-	writer  childKitWriter
-	attempt dispatcher.Attempt
-	parent  pinnedChildFixture
-	child   triggerqueue.ChildRecord
-	manager *worktree.Manager
+	driver      *runner.Runner
+	writer      childKitWriter
+	attempt     dispatcher.Attempt
+	parent      pinnedChildFixture
+	child       triggerqueue.ChildRecord
+	manager     *worktree.Manager
+	parentRun   *journal.Run
+	parentEnv   apiv1.InvocationEnvelope
+	parentToken string
 }
 
 type childKitFixtureOptions struct {
 	gooberCapabilities []string
+	runnerImage        string
+	runnerShell        bool
+	podTokenKeyFile    string
 	isolated           bool
 	queued             bool
 	parent             string
@@ -74,10 +80,22 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 			if err := yaml.Unmarshal([]byte(readFileContent(t, configPath)), &document); err != nil {
 				t.Fatal(err)
 			}
+			if options.podTokenKeyFile != "" {
+				api, _ := document["api"].(map[string]any)
+				if api == nil {
+					api = map[string]any{}
+				}
+				api["podTokenKeyFile"] = options.podTokenKeyFile
+				document["api"] = api
+			}
 			delete(document, "runner")
 			document["schemaVersion"] = 2
 			document["engine"] = map[string]any{"hostPort": "temporal:7233"}
-			document["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": "ghcr.io/example/child:1", "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "capabilities": []string{"isolated-child"}}}}
+			image := options.runnerImage
+			if image == "" {
+				image = "ghcr.io/example/child:1"
+			}
+			document["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": image, "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "shell": options.runnerShell, "capabilities": []string{"isolated-child"}}}}
 			data, err := yaml.Marshal(document)
 			if err != nil {
 				t.Fatal(err)
@@ -86,7 +104,7 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 		}
 
 	})
-	_, parentEnv := configuredChildStage(t, f)
+	parentRun, parentEnv := configuredChildStage(t, f)
 	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +187,7 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 		id := journal.RunIdentity{InstanceID: f.parent.InstanceID, RunID: accepted.RunID, Gaggle: parentEnv.Gaggle,
 			Workflow: proposal.Workflow.Name, WorkflowVersion: proposal.Machine.Def.Version, WorkflowDigest: proposal.Machine.Digest(),
 			ConfigGeneration: ref.Envelope.ConfigGeneration, GooberDigest: gooberDigest, Child: &ref.Lineage}
-		return childKitFixture{manager: manager, driver: driver, writer: childKitWriter{service: service, identity: id}, parent: f, child: ref.Child}
+		return childKitFixture{parentRun: parentRun, parentEnv: parentEnv, parentToken: access.BearerToken, manager: manager, driver: driver, writer: childKitWriter{service: service, identity: id}, parent: f, child: ref.Child}
 	}
 	ceiling := proposal.CredentialCeiling()
 	_, err = driver.Start(t.Context(), runner.StartInput{RepoRef: f.applied.Gaggles[0].Spec.Project, ChildWorkspace: workspace, RunID: accepted.RunID, Gaggle: parentEnv.Gaggle, Child: &ref.Lineage, Machine: proposal.Machine, GooberDigest: gooberDigest, ChildCredentials: &ceiling, OnJournalPublished: func() error { return errors.New("publication interrupted") }})
@@ -199,7 +217,7 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	}
 	t.Cleanup(func() { _ = recorder.Close() })
 	env := apiv1.InvocationEnvelope{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, WorkflowID: id.Workflow, ConfigGeneration: id.ConfigGeneration, GooberDigest: id.GooberDigest, Goober: "coder", TaskID: id.RunID + ":check", Attempt: 1, Capabilities: []string{"agent:model"}}
-	return childKitFixture{manager: manager, driver: driver, writer: childKitWriter{service: service, identity: id, blobs: blobs, recorder: recorder}, attempt: dispatcher.Attempt{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow, Stage: "check", Number: 1, Agentic: true, Envelope: &env}, parent: f, child: ref.Child}
+	return childKitFixture{parentRun: parentRun, parentEnv: parentEnv, parentToken: access.BearerToken, manager: manager, driver: driver, writer: childKitWriter{service: service, identity: id, blobs: blobs, recorder: recorder}, attempt: dispatcher.Attempt{InstanceID: id.InstanceID, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow, Stage: "check", Number: 1, Agentic: true, Envelope: &env}, parent: f, child: ref.Child}
 }
 
 func TestChildKitWriterUsesRealAcceptedSourceAndRetainedInstructions(t *testing.T) {

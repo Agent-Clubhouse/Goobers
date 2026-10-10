@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func linearSpec() apiv1.WorkflowSpec {
@@ -461,8 +462,13 @@ func TestCheckWarningsAcceptedButInertField(t *testing.T) {
 		t.Fatalf("warnings = %v, want expectedOutputs warning", warnings)
 	}
 	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
-	if !strings.Contains(warnings[0], want) {
+	if !strings.Contains(warnings[0], want) || !strings.Contains(warnings[0], "so it is inert") {
 		t.Errorf("warnings = %v, want warning containing %q", warnings, want)
+	}
+
+	def.DSLVersion = supportmatrix.V31DSLVersion
+	if warnings := CheckWarnings(def); len(warnings) != 1 || !strings.Contains(warnings[0], "fails with missing_expected_outputs") {
+		t.Errorf("DSL 3.1 warnings = %v, want the enforced consequence", warnings)
 	}
 }
 

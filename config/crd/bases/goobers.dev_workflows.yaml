@@ -528,6 +528,17 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  requireProviderAuthorization:
+                    description: |-
+                      RequireProviderAuthorization makes provider authorization health a
+                      pre-claim readiness predicate (#5317). When true, autonomous dispatch
+                      first verifies, without mutating anything, that the instance's resolved
+                      credential for the gaggle's provider repository is valid and can read the
+                      repository and its issues. An invalid, revoked, insufficient, unsupported,
+                      or unverifiable credential fails closed: no run starts, no work is
+                      claimed, and the scheduler reports a stable provider-auth-unhealthy
+                      reason. Manual `goobers run` stays available for diagnosis.
+                    type: boolean
                 type: object
               requires:
                 description: |-
@@ -633,7 +644,7 @@ spec:
                         ArtifactSlots declares named artifact positions this producer may publish
                         in DSL 3.1 and later. The names are producer-local stable handles; runtime
                         resolution still uses the existing positional/context-pointer artifact
-                        transport. ExpectedOutputs remains advisory and unchanged.
+                        transport. ExpectedOutputs does not name artifact slots.
                       items:
                         description: ArtifactSlot declares one named artifact a producer
                           task may publish.
@@ -751,8 +762,9 @@ spec:
                       type: boolean
                     expectedOutputs:
                       description: |-
-                        ExpectedOutputs declares intended task postconditions. The V0 local runner
-                        accepts but does not enforce this field; validation emits VER003 when set.
+                        ExpectedOutputs declares intended task postconditions. Through DSL 3.0 it
+                        is advisory and validation emits VER003 when set. From DSL 3.1 a stage
+                        fails when it succeeds without emitting every declared key.
                       items:
                         type: string
                       type: array
