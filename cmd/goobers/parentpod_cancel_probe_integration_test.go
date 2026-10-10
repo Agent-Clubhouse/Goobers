@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // This test-only endpoint proves that the generated shell actually began. It
@@ -85,4 +86,9 @@ func assertCancelledParentRetained(t *testing.T, f pinnedChildFixture, runID str
 	if err != nil || string(data) != "parent before child\n" {
 		t.Fatal("cancellation lost parent work", string(data), err)
 	}
+}
+
+func TestIntegrationContainedParentCancellationStopsAuthoredChild(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	qualifyContainedParentJourney(t, "cancel")
 }

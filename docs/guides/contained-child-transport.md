@@ -330,3 +330,41 @@ an actual dispatch-process kill, a fresh worker, and exact original-pod custody
 reconciliation without another dispatch. It passed with host race detection
 (23.93 seconds). This fixture can travel with the isolated recovery PR while
 the broader agent-authored parent journey remains on its preparation branch.
+
+### Daemon process loss while a parent waits
+
+`TestIntegrationContainedParentSurvivesDaemonProcessLoss` runs production
+`goobers up` in a separate process, submits through its normal HTTP trigger
+route, and kills that process after the Portal shows a durable parent wait and
+the generated child's shell has actually started. The replacement process uses
+the same protected instance storage and pod key; its queue, authority registry,
+read model and journal owners are reconstructed by normal startup. Journal fsync
+is enabled for both daemon processes. Temporal, the dispatch Host and Kubernetes
+remain alive. Only the external model and forge are disposable local fixtures.
+
+This exposed three integration defects: loopback mode did not authenticate pod
+principals; the child-tool grant advertised a daemon-local URL to a remote pod;
+and generic startup resumed the generated child before original pod custody was
+reconciled. The repairs keep local administration available while enforcing
+signed machine scopes, keep child tools on the worker-configured daemon origin,
+and leave generated-child stop/join and resume with the existing custody queue.
+The queue preserves the accepted child identity and transfers its reconciled
+capacity only when it takes exclusive journal ownership.
+
+The complete process-kill journey passed with host race detection on 2026-10-10
+(153.64 seconds), using image `haw-parent-daemon-proof-v2` at digest
+`sha256:31facf60b590f37a5235d260b34755cd7724bdb44f12a92d20cd717dd80232a1`.
+It verifies the same accepted child, stage occurrence and acceptance time; the
+completed acknowledged result and both Portal links; and all three parent plus
+two child physical invocations against their exact retained inputs. Every
+invocation requires a distinct pod UID, stopped writers, surrender, disposal,
+and a host-authored joined marker. Restart reconciles the interrupted physical
+child attempt before resuming that same accepted child; it does not accept a
+second child workflow.
+
+This qualifies daemon loss at the durable parent-wait point. It does not claim
+all crash cut points, loss during custody reconciliation, parallel parent
+activation, recursive children or delegated PR publication. Those remaining
+qualification boundaries still gate public activation. The loopback auth and
+startup-owner fixes are extracted as independent main-based delivery slices;
+this preparation branch is not a single merge unit.

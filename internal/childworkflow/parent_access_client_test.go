@@ -57,3 +57,24 @@ func TestParentPodGrantNeverFollowsRedirectOrLeaksRefusalBody(t *testing.T) {
 		t.Fatal(count, err)
 	}
 }
+
+func TestParentAccessKeepsWorkerReachableOrigin(t *testing.T) {
+	for _, advertised := range []string{"http://127.0.0.1:8085", "https://other.invalid"} {
+		t.Run(advertised, func(t *testing.T) {
+			c := ParentAccessClient{Endpoint: "https://worker-daemon.invalid", Token: "parent-only", ContractDigest: "sha256:" + strings.Repeat("a", 64), Client: &http.Client{Transport: parentAccessRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host != "worker-daemon.invalid" {
+					t.Fatal("request left configured origin")
+				}
+				data, _ := json.Marshal(mcpio.ChildWorkflowAccess{Endpoint: advertised, BearerToken: "goobers-child.exact"})
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(data)))}, nil
+			})}}
+			access, err := c.Acquire(t.Context(), strings.Repeat("a", 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if access.Endpoint != c.Endpoint {
+				t.Fatal("child tools adopted daemon-local or unrelated origin")
+			}
+		})
+	}
+}

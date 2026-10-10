@@ -1233,6 +1233,17 @@ func (u *upSession) activateAPI() int {
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
 		u.apiAuthorizer = httpapi.RequireRoles()
 	}
+	if instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) && (u.setup.Config.API.Auth == nil || u.setup.Config.API.Auth.OIDC == nil) {
+		// Local administrators remain anonymous. Signed machine callers retain their
+		// exact principal and route restrictions even on a loopback-only daemon.
+		chained, err := podauth.NewAuthenticator(podVerifier, httpapi.NullAuthenticator{})
+		if err != nil {
+			return reportDaemonStartupError(u.stderr, "initialize local pod authentication", err)
+		}
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(u.credentialPlane.grantKey()).WithChildWorkflowGrants(u.credentialPlane.grantKey())))
+		u.apiAuthorizer = httpapi.LocalAdminWithScopedPrincipals()
+	}
+
 	handler, err := httpapi.NewHandler(u.reads, u.apiAuthorizer, u.apiLog, u.apiHandlerOpts...)
 	if err != nil {
 		pf(u.stderr, "error: initialize HTTP API: %v\n", err)

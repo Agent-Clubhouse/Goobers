@@ -82,6 +82,13 @@ func (c ParentAccessClient) Acquire(ctx context.Context, run string) (*mcpio.Chi
 	if err = access.Validate(run); err != nil {
 		return nil, err
 	}
+	// The worker already reached this configured daemon origin to exchange its
+	// contract. A daemon-local listen address is not reachable from another pod,
+	// and a response must not redirect the freshly minted bearer to another host.
+	access.Endpoint = c.Endpoint
+	if err = access.Validate(run); err != nil {
+		return nil, err
+	}
 	return &access, nil
 }
 

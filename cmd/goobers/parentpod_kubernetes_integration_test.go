@@ -55,11 +55,6 @@ func TestIntegrationContainedParentReconcilesChildWorkspaceThroughRealWorkers(t 
 	}
 }
 
-func TestIntegrationContainedParentCancellationStopsAuthoredChild(t *testing.T) {
-	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
-	qualifyContainedParentJourney(t, "cancel")
-}
-
 func TestIntegrationContainedParentIteratesChildrenThroughRealWorkers(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	qualifyContainedParentJourney(t, "iterate")

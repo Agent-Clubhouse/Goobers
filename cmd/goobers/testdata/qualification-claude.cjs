@@ -54,8 +54,8 @@ async function main() {
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
-  if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart'].includes(mode)) throw new Error('unknown qualification mode');
-  const scratch = ['scratch','iterate','worker-restart'].includes(mode);
+  if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
+  const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
   if (['iterate','worker-restart'].includes(mode) && !status.error && status.value.acknowledged) {
@@ -66,7 +66,7 @@ async function main() {
     const sourceFile = 'generated-child.yaml';
     fs.writeFileSync('parent-before-child.txt', 'parent before child\n');
     let command = scratch ? 'echo real-generated-child' : 'test "$(cat parent-before-child.txt)" = "parent before child" && printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Child work"';
-    if (['cancel','worker-restart'].includes(mode)) {
+    if (['cancel','worker-restart','daemon-restart'].includes(mode)) {
       const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
       if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid qualification signal');
       command = `node -e 'require("http").get(${JSON.stringify(notify)}, r => r.resume())'; sleep ${mode === 'cancel' ? 60 : invocationKey === 'qualification-child' ? 45 : 10}`;
