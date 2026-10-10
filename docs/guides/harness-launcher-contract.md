@@ -157,6 +157,11 @@ completion, usage, model, tool, credential, and sandbox contracts; this is not a
 new harness type. The wrapper must also support version and authentication probes
 on its complete configured launch prefix.
 
+Every mode delivers the task and completion-repair prompts on the launcher's
+standard input, with an empty `-p=` prompt-mode flag in argv. A wrapper must
+forward stdin to the CLI unchanged; see
+[Harness prompt transport](harness-prompt-transport.md).
+
 The handshake is an explicit compatibility declaration. The behavioral fallback
 is proof only of direct local session forwarding, not of every launcher feature.
 Goobers separately probes whether a launcher accepts the version-supported

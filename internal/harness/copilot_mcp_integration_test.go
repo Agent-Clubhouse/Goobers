@@ -136,11 +136,9 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServersAndTools(t *testing.
 
 	adapter := &CopilotAdapter{
 		// The trailing "--" ends the test binary's own flag parsing, so the
-		// adapter's prompt and the Copilot flags after it are positional
-		// arguments this helper ignores. Previously the prompt itself ended
-		// flag parsing by being the first non-flag argument; it is now bound
-		// to its flag (copilotPromptArg), so the terminator has to be
-		// explicit or the helper rejects "--resume" and exits 2.
+		// adapter's empty prompt-mode flag and the Copilot flags after it are
+		// positional arguments this helper ignores; without it the helper
+		// rejects "--resume" and exits 2. The prompt itself arrives on stdin.
 		Command:           []string{os.Args[0], "-test.run=^TestCopilotMCPClientHelper$", "--"},
 		PromptFlag:        "-p",
 		ExtraArgs:         []string{"--resume"},

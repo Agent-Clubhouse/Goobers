@@ -20,6 +20,10 @@
 
 ## Workflow enrollment
 
+For an operator walkthrough of enabling Backprop, reading attribution and
+fault-audit findings, and verifying fixes, see the
+[Backprop user guide](../guides/backprop.md).
+
 Backprop is opt-in per workflow on DSL 3.0:
 
 ```yaml
@@ -78,10 +82,12 @@ cohort never counts as recovery. Stored audit passes durably record report
 cooldowns and operator fix markers in `scheduler/backprop-audit/state.json`;
 cooldowns are scoped by gaggle and workflow so a narrow read cannot suppress a
 broader cross-workflow classification. Only the candidate-findings pass that
-feeds filing applies and records the cooldown; `goobers telemetry stats` and
-the other status/read surfaces show every current finding and record only
+feeds filing applies and records the cooldown; the daemon's telemetry stats
+read API (`GET /api/v1/telemetry/stats`) and the other status/read surfaces
+show every current finding and record only
 verification baselines, so viewing a finding never hides it from the filing
-pass. Unfixed cooldowns and baselines older than 30 days are pruned; fix
+pass. (The `goobers telemetry stats` CLI reads only the local rollup and does
+not include attribution cohorts or fault-audit findings.) Unfixed cooldowns and baselines older than 30 days are pruned; fix
 markers and the baselines they verify against are kept. Operators record a deployed fix with
 `goobers telemetry mark-fix --finding=<backprop-id>` (optionally pinning its
 RFC3339 deployment time with `--applied-at`). This is auditor metadata only
