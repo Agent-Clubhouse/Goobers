@@ -93,6 +93,59 @@ markers and the baselines they verify against are kept. Operators record a deplo
 RFC3339 deployment time with `--applied-at`). This is auditor metadata only
 and does not mutate workflows, issues, or run journals.
 
+## Ground-truth labels
+
+Terminal phase is not the same as correctness: a run can succeed and still be
+wrong, or fail for reasons the user does not care about. Operators record their
+own verdict for an enrolled run with
+
+```sh
+goobers telemetry label --run=<run-id> --outcome=correct|incorrect \
+  [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+```
+
+Each label is appended to `labels.json` (schema
+`goobers.dev/backprop/labels/v1`) beside the run's `attribution.json`, with
+provenance: who recorded it (`--by`, defaulting to the OS user), its source
+(`human` today), when the verdict was reached (`labeledAt`), and when it was
+stored (`recordedAt`). Only runs that already carry an attribution record can
+be labeled. The history is append-only and keyed by a content-derived ID, so
+re-recording an identical verdict is a no-op and an earlier label is never
+rewritten.
+
+Labels may land long after the run. Aggregates are recomputed from the stored
+records on every read, and each run contributes its *effective* label: the one
+with the latest `labeledAt`, ties broken by ID. That rule is independent of the
+order labels were recorded in, so a late label re-scores its cohort
+deterministically. Cohort aggregates expose a `groundTruth` summary
+(`labeledRunCount`, `correctRunCount`, `incorrectRunCount`) beside `runCount`,
+omitted when no run in the cohort is labeled, so partial label coverage stays
+visible rather than being presented as the whole cohort.
+
+The effective label also weights scores. A correct verdict confirms a run's
+journal-derived attribution and an incorrect verdict contradicts it:
+
+| Effective label | Run weight | Run confidence `c` becomes |
+|---|---|---|
+| none | 1 | `c` |
+| `correct` | 2 | `c + (1 - c) / 2` |
+| `incorrect` | 0.5 | `c / 2` |
+
+A cohort's `topContributingPaths[].share` and `.confidence` are weighted means
+over the cohort's runs using the run weight and calibrated confidence, and a
+fault-audit finding's `confidence` is the weighted mean of its signals'
+calibrated cause confidences (before the existing sparse, provenance, and
+mixed-domain caps). Unlabeled cohorts score exactly as before. Labels do not
+change fault-domain classification, finding IDs, or verification state.
+
+Labels are read-only inputs. Recording one never touches the run journal, the
+attribution record, the run's phase, or any gate verdict.
+
+Not yet implemented (follow-ups under #7121): declaring ground-truth sources in
+workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
+bug, reopened issue, main CI breakage), user-provided checker commands, and
+feeding labels into per-run credit propagation (`attribution.json` itself).
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and

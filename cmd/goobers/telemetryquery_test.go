@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -229,6 +230,13 @@ func TestDetectCandidateFindingsLoadsStoredAttributionCohorts(t *testing.T) {
 	root := initDemo(t)
 	runID := "attribution-run-1"
 	writeAttributedCreditRun(t, root, runID)
+	labeledAt := time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
+	if _, err := readservice.RecordGroundTruthLabel(context.Background(), root, creditgraph.GroundTruthLabel{
+		RunID: runID, Outcome: creditgraph.LabelCorrect, Source: creditgraph.LabelSourceHuman,
+		LabeledBy: "reviewer", LabeledAt: labeledAt, RecordedAt: labeledAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	rebuildTelemetryQueryRollup(t, root)
 
 	db, err := rollup.Open(instance.NewLayout(root).TelemetryDB())
@@ -266,6 +274,9 @@ func TestDetectCandidateFindingsLoadsStoredAttributionCohorts(t *testing.T) {
 	cohort := result.AttributionCohorts[0]
 	if cohort.RunCount != 1 || cohort.Workload != string(journal.TriggerManual) || len(cohort.TopContributingPaths) == 0 {
 		t.Fatalf("stored cohort = %+v", cohort)
+	}
+	if want := (creditgraph.GroundTruthSummary{LabeledRunCount: 1, CorrectRunCount: 1}); cohort.GroundTruth == nil || *cohort.GroundTruth != want {
+		t.Fatalf("stored cohort ground truth = %+v, want %+v", cohort.GroundTruth, want)
 	}
 	link := cohort.TopContributingPaths[0].Evidence[0]
 	if link.RunID != runID || link.JournalSequence == 0 || link.JournalPath == "" || link.ArtifactDigest == "" {
