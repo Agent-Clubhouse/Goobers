@@ -77,8 +77,8 @@ func qualifyContainedParentJourney(t *testing.T, action string) {
 		action = "cancel"
 	}
 	parallel := action == "parallel" || action == "parallel-cancel"
-	cancelParent := action == "cancel" || action == "parallel-cancel"
-	generatedParallel := action == "generated-parallel"
+	cancelParent := action == "cancel" || action == "parallel-cancel" || action == "generated-parallel-cancel"
+	generatedParallel := strings.HasPrefix(action, "generated-parallel")
 	workerRestart := action == "worker-restart" || action == "worker-crash"
 	modelMode := action
 	if action == "worker-crash" {
@@ -483,6 +483,9 @@ esac
 	wantGenerated := wantChildren
 	if generatedParallel {
 		wantGenerated = 3
+		if cancelParent {
+			wantGenerated = 2
+		}
 		select {
 		case <-childStarted:
 		default:

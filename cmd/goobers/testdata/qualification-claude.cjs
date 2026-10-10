@@ -74,7 +74,7 @@ async function main() {
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
   if (['parallel','parallel-cancel','parallel-daemon-restart'].includes(mode)) return parallelJourney();
-  if (mode === 'generated-parallel') return generatedParallelJourney();
+  if (mode.startsWith('generated-parallel')) return generatedParallelJourney(mode);
   if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
   const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
@@ -179,7 +179,8 @@ main().catch(() => {
   process.exitCode = 1;
 });
 
-async function generatedParallelJourney() {
+async function generatedParallelJourney(mode) {
+  const delay = mode === 'generated-parallel-cancel' ? 60000 : mode === 'generated-parallel-daemon-restart' ? 45000 : 0;
   const invocationKey = 'qualification-child';
   const status = await tool('get_child_workflow', { invocationKey });
   if (status.error) {
@@ -188,7 +189,7 @@ async function generatedParallelJourney() {
     const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
     if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid parallel child signal');
     const tasks = ['left', 'right'].map(branch => {
-      const observe = `if(require("fs").readFileSync("parent-before-child.txt","utf8")!=="parent before child\\n")throw Error("fork source changed");require("http").get(${JSON.stringify(notify + '?branch=' + branch)},r=>{r.resume();r.on("end",()=>{if(r.statusCode!==204)process.exitCode=1})}).on("error",()=>{process.exitCode=1})`;
+      const observe = `if(require("fs").readFileSync("parent-before-child.txt","utf8")!=="parent before child\\n")throw Error("fork source changed");require("http").get(${JSON.stringify(notify + '?branch=' + branch)},r=>{r.resume();r.on("end",()=>{if(r.statusCode!==204)process.exitCode=1;else if(${delay})setTimeout(()=>{},${delay})})}).on("error",()=>{process.exitCode=1})`;
       return { name: 'inspect-' + branch, type: 'deterministic', goal: 'Inspect the isolated child view', timeoutSeconds: 120, runsOn: { os: 'linux', capabilities: ['isolated-child'] }, run: { workspace: 'repo-readonly', command: ['node','-e',observe] }, next: '@join' };
     });
     tasks.push({ name: 'collate', type: 'deterministic', goal: 'Return the joined child result', runsOn: { os: 'linux', capabilities: ['isolated-child'] }, run: { workspace: 'repo', command: ['sh','-c','printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Joined child work"'] } });
