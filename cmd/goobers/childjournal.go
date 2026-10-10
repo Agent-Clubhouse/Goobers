@@ -95,7 +95,10 @@ func childObservationOp(c childpod.Contract, op livejournal.Op) (livejournal.Op,
 		if op.Event == nil {
 			return op, childJournalRefusal()
 		}
-		e := *op.Event
+		e, err := childObservationScope(c, *op.Event)
+		if err != nil {
+			return op, err
+		}
 		if err := childObservationEvent(e); err != nil {
 			return op, err
 		}

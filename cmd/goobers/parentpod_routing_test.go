@@ -7,6 +7,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 )
@@ -115,5 +117,37 @@ func TestParentRoutingOpaqueRecorderNeverAcquiresParentAuthority(t *testing.T) {
 	env.ChildWorkflowOrigin = nil
 	if _, err := routed.Invoke(t.Context(), env); err != nil || ordinary.invokes != 1 {
 		t.Fatal("ordinary adapter lost compatibility", err)
+	}
+}
+
+func TestParentRoutingConstructsGuardedHostExecutorOnlyForOrdinaryCalls(t *testing.T) {
+	f := containedParentFixture(t)
+	run, env := configuredChildStage(t, f)
+	constructed := 0
+	factory := func() (invoke.Goober, error) { constructed++; return nil, harness.ErrGuardedCredentialFiles }
+	fence := func(ctx context.Context, _ apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
+		return ctx, func() {}, nil
+	}
+	routed, err := bindParentRouting(f.layout.Root, env.Goober, run, factory, true, fence)
+	if err != nil || constructed != 0 {
+		t.Fatal("parent constructed local executor", constructed, err)
+	}
+	if !routed.(interface{ HasAssetBundle() bool }).HasAssetBundle() || constructed != 0 {
+		t.Fatal("asset guard constructed local executor")
+	}
+	if _, err = routed.Invoke(t.Context(), env); !errors.Is(err, childworkflow.ErrAuthorityUnavailable) || constructed != 0 {
+		t.Fatal("parent transport refusal fell back locally", constructed, err)
+	}
+	plain := env
+	plain.TaskID = env.RunID + ":ordinary"
+	plain.ChildWorkflowOrigin = nil
+	if _, err = routed.Invoke(t.Context(), plain); !errors.Is(err, harness.ErrGuardedCredentialFiles) || constructed != 1 {
+		t.Fatal("ordinary invocation lost credential guard", constructed, err)
+	}
+	if _, err = routed.Review(t.Context(), plain); !errors.Is(err, harness.ErrGuardedCredentialFiles) || constructed != 1 {
+		t.Fatal("ordinary reviewer lost cached credential guard", constructed, err)
+	}
+	if _, err = bindParentRouting(f.layout.Root, env.Goober, runnerWiringHarnessRecorder{dir: t.TempDir()}, factory, false, nil); !errors.Is(err, harness.ErrGuardedCredentialFiles) || constructed != 2 {
+		t.Fatal("ordinary construction lost eager credential guard", constructed, err)
 	}
 }

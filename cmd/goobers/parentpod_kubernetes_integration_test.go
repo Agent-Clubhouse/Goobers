@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -47,18 +48,23 @@ func TestIntegrationContainedParentAuthorsChildThroughRealWorkers(t *testing.T) 
 		t.Fatal("explicit locally built parent qualification image required")
 	}
 	testdep.Require(t, "git")
-	testdep.Require(t, "node")
+	testdep.Require(t, "sh")
 	api, namespace := childQualificationKubernetes(t)
 	keyPath := filepath.Join(t.TempDir(), "pod.key")
 	if err := os.WriteFile(keyPath, []byte(strings.Repeat("q", 32)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	model, err := os.ReadFile("testdata/qualification-claude.cjs")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Host preflight may inspect the CLI, but actual parent inference must
+	// execute in the contained worker. Any host invocation fails this probe.
+	hostProbe := `#!/bin/sh
+case "$*" in
+  --version) printf '%s\n' '2.1.0 (qualification preflight)' ;;
+  'auth status') printf '%s\n' '{"loggedIn":true}' ;;
+  *) printf '%s\n' 'parent execution reached the host' >&2; exit 70 ;;
+esac
+`
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), model, 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(hostProbe), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -90,6 +96,8 @@ func TestIntegrationContainedParentAuthorsChildThroughRealWorkers(t *testing.T) 
 	endpoint := "host.docker.internal:" + strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)
 	s := newDaemonCredentialService(f.layout, f.cfg, nil, journal.NewRegistryScrubber(), instanceLog).withStageGrants(f.layout.Root, endpoint, false)
 	t.Cleanup(func() { unregisterDaemonStageGrants(f.layout.Root, s) })
+	s.childDispatch = dispatch
+	s.Replace(credentialPlaneDefinitionsFromSet(f.applied))
 	if err := s.enableChildWorkflows(triggers.queue, f.applied); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +129,11 @@ func TestIntegrationContainedParentAuthorsChildThroughRealWorkers(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Config.Handler = handler
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("qualification HTTP begin %s %s", r.Method, r.URL.Path)
+		handler.ServeHTTP(w, r)
+		log.Printf("qualification HTTP end %s %s", r.Method, r.URL.Path)
+	})
 	server.Start()
 	t.Cleanup(server.Close)
 	podDispatcher, err := dispatcher.New(dispatcher.Config{InstanceID: f.parent.InstanceID, Owner: "parent-qualification", GaggleNamespaces: map[string]string{"example": namespace}, GaggleServiceAccounts: map[string]string{"example": "qualification-stage"}, EmbeddedVersion: strings.TrimPrefix(image, "localhost:45081/goobers:"), TokenMinter: key, BlobEndpoint: "http://" + endpoint, WriteAPIBase: "http://" + endpoint, SupervisionInterval: 100 * time.Millisecond, LinuxScheduleToStart: 30 * time.Second}, dispatcher.NewKubernetesPodAPI(api), nil, dispatcher.PlaneSurrenderGate{Plane: plane}, nil)
@@ -156,7 +168,7 @@ func TestIntegrationContainedParentAuthorsChildThroughRealWorkers(t *testing.T) 
 	t.Cleanup(func() { _ = retainer.Close() })
 	var wg sync.WaitGroup
 	build := func(layout instance.Layout, generation string, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
-		return buildSchedulerDefinitions(schedulerDefinitionsInput{Layout: layout, Config: f.cfg, Definitions: set, Validation: report, RunnerRegistry: registry, ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer}, PinnedGeneration: generation, InstanceLog: instanceLog, WaitGroup: &wg})
+		return buildSchedulerDefinitions(schedulerDefinitionsInput{Layout: layout, Config: f.cfg, Definitions: set, Validation: report, RunnerRegistry: registry, ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer}, PinnedGeneration: generation, SharedRegistry: s.shared, InstanceLog: instanceLog, WaitGroup: &wg})
 	}
 	set, report, err := loadConfigDirectory(f.retainedPath)
 	if err != nil {

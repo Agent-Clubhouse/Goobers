@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
@@ -52,10 +53,12 @@ func routeContainedParent(root, goober string, rec runner.ArtifactRecorder, ordi
 }
 
 type parentRoutedGoober struct {
-	root, goober string
-	rec          runner.OwnedJournalRecorder
-	ordinary     invoke.Goober
-	tasks        map[string]string
+	root, goober    string
+	rec             runner.OwnedJournalRecorder
+	ordinary        invoke.Goober
+	ordinaryFactory func() (invoke.Goober, error)
+	hasAssets       bool
+	tasks           map[string]string
 }
 
 func (g *parentRoutedGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
@@ -64,7 +67,11 @@ func (g *parentRoutedGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 		return apiv1.ResultEnvelope{}, errors.New("parent stage opt-in differs from pinned invocation")
 	}
 	if !selected {
-		return g.ordinary.Invoke(ctx, env)
+		ordinary, err := g.ordinaryExecutor()
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		return ordinary.Invoke(ctx, env)
 	}
 	service, ok := stageGrantMinterFor(g.root).(*daemonCredentialService)
 	if !ok || service.parentExecutors == nil {
@@ -81,18 +88,46 @@ func (g *parentRoutedGoober) Review(ctx context.Context, env apiv1.InvocationEnv
 	if g.tasks[env.TaskID] != "" || env.ChildWorkflowOrigin != nil {
 		return apiv1.Verdict{}, errors.New("parent task cannot route through a gate reviewer")
 	}
-	return g.ordinary.Review(ctx, env)
+	ordinary, err := g.ordinaryExecutor()
+	if err != nil {
+		return apiv1.Verdict{}, err
+	}
+	return ordinary.Review(ctx, env)
+}
+
+func (g *parentRoutedGoober) ordinaryExecutor() (invoke.Goober, error) {
+	if g.ordinaryFactory != nil {
+		return g.ordinaryFactory()
+	}
+	return g.ordinary, nil
 }
 
 func (g *parentRoutedGoober) HasAssetBundle() bool {
+	if g.ordinaryFactory != nil {
+		return g.hasAssets
+	}
 	assets, ok := g.ordinary.(interface{ HasAssetBundle() bool })
 	return ok && assets.HasAssetBundle()
 }
 
-func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, ordinary invoke.Goober, fence executionFenceStart) (invoke.Goober, error) {
-	routed, err := routeContainedParent(root, goober, rec, ordinary)
+// Local construction stays eager for ordinary workflows. A pinned parent task
+// does not construct a host harness or resolve its model credentials. Shared
+// profiles still construct the guarded local executor when an ordinary task or
+// gate actually uses it; a failed parent route never falls back to that path.
+func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory func() (invoke.Goober, error), hasAssets bool, fence executionFenceStart) (invoke.Goober, error) {
+	routed, err := routeContainedParent(root, goober, rec, nil)
 	if err != nil {
 		return nil, err
+	}
+	parent := routed.(*parentRoutedGoober)
+	if len(parent.tasks) == 0 {
+		parent.ordinary, err = factory()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		parent.ordinaryFactory = sync.OnceValues(factory)
+		parent.hasAssets = hasAssets
 	}
 	return claimFencedGoober{Goober: routed, start: fence}, nil
 }
