@@ -54,6 +54,7 @@ async function main() {
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
+  if (mode === 'parallel') return parallelJourney();
   if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
   const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
@@ -97,12 +98,54 @@ async function main() {
     if (fs.existsSync('parent-after-child.txt') !== (action !== 'replace')) throw new Error('parent state disposition mismatch');
     if (fs.readFileSync('parent-before-child.txt','utf8') !== 'parent before child\n') throw new Error('parent fork content lost');
   }
+  return complete();
+}
+function complete() {
   const match = prompt.match(/write your [^\n]+ as JSON to `([^`]+)`/);
   if (!match || path.isAbsolute(match[1]) || match[1].split('/').includes('..')) throw new Error('completion contract unavailable');
   fs.mkdirSync(path.dirname(match[1]), { recursive: true });
   fs.writeFileSync(match[1], JSON.stringify({ status: 'success', outputs: { summary: 'Generated child completed and disposition acknowledged' } }));
   process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'Child completed', usage: { input_tokens: 1, output_tokens: 1 } }) + '\n');
   mcp.stdin.end();
+}
+async function parallelJourney() {
+  const branch = prompt.match(/QUALIFICATION_BRANCH=(left|right|join)/)?.[1];
+  if (!branch) throw new Error('parallel branch marker missing');
+  if (branch === 'join') {
+    for (const name of ['left','right']) {
+      if (fs.readFileSync(`parent-${name}.txt`, 'utf8') !== `${name} before child\n` ||
+          fs.readFileSync(`parent-after-${name}.txt`, 'utf8') !== `${name} after child\n`) throw new Error('parallel return lost branch work');
+    }
+    if (fs.readFileSync('source.txt','utf8') !== 'parent source\n') throw new Error('parallel join changed base');
+    return complete();
+  }
+  const other = branch === 'left' ? 'right' : 'left';
+  if (fs.existsSync(`parent-${other}.txt`)) throw new Error('branch observed sibling workspace');
+  const invocationKey = 'qualification-child';
+  const status = await tool('get_child_workflow', { invocationKey });
+  if (status.error) {
+    fs.writeFileSync(`parent-${branch}.txt`, `${branch} before child\n`);
+    const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
+    if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid parallel barrier');
+    const command = `node -e 'require("http").get(${JSON.stringify(notify+'?branch='+branch)}, r => r.resume())'`;
+    const sourceFile = `generated-${branch}.yaml`;
+    const run = JSON.stringify({ workspace:'scratch', command:['sh','-c',command] });
+    fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      timeoutSeconds: 120\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: '+run+'\n');
+    const validation = await tool('validate_child_workflow', { sourceFile });
+    if (validation.error || !validation.value.valid) throw new Error('parallel generated source rejected');
+    const accepted = await tool('start_child_workflow', { sourceFile, invocationKey });
+    if (accepted.error) throw new Error('parallel child acceptance failed');
+    return waitForHost();
+  }
+  if (!status.value.resultRef) return waitForHost();
+  if (status.value.state !== 'completed') throw new Error('parallel child did not complete');
+  if (!status.value.acknowledged) {
+    fs.writeFileSync(`parent-after-${branch}.txt`, `${branch} after child\n`);
+    const disposition = await tool('resolve_child_workflow', { invocationKey, action:'discard', resultRef:status.value.resultRef });
+    if (disposition.error) throw new Error('parallel child disposition failed');
+    return waitForHost();
+  }
+  return complete();
 }
 main().catch(() => {
   process.stderr.write('qualification model protocol failed\n');

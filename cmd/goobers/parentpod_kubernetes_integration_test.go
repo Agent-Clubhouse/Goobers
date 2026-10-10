@@ -107,7 +107,7 @@ esac
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("QUALIFICATION_MODEL_TOKEN", "qualification-model-only")
-	f := realParentQualificationFixture(t, image, keyPath)
+	f := realParentQualificationFixture(t, image, keyPath, action)
 	sourceRepo := t.TempDir()
 	recoveryCLIGit(t, sourceRepo, "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(sourceRepo, "source.txt"), []byte("parent source\n"), 0600); err != nil {
@@ -119,6 +119,8 @@ esac
 	var childStarted <-chan struct{}
 	if action == "cancel" || workerRestart {
 		childStarted = parentQualificationCancellationProbe(t, sourceRepo)
+	} else if action == "parallel" {
+		childStarted = parallelQualificationBarrier(t, sourceRepo)
 	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
 	recoveryCLIGit(t, sourceRepo, "commit", "-m", "qualification base")
@@ -199,7 +201,7 @@ esac
 		queues[pin.Queue] = true
 	}
 	journeyTimeout := 3 * time.Minute
-	if action == "iterate" || workerRestart {
+	if action == "iterate" || action == "parallel" || workerRestart {
 		// Two child returns require five separate contained parent invocations.
 		journeyTimeout = 6 * time.Minute
 	}
@@ -305,6 +307,9 @@ esac
 	if action == "iterate" || workerRestart {
 		wantChildren, wantParents = 2, 5
 	}
+	if action == "parallel" {
+		wantChildren, wantParents = 2, 7
+	}
 	if action == "cancel" {
 		wantPhase, wantChild, wantParents = journal.PhaseAborted, triggerqueue.ChildCancelled, 1
 	}
@@ -363,7 +368,7 @@ esac
 			if err != nil {
 				t.Fatal("read parent qualification detail", err)
 			}
-			if a := detail.ChildActivity; a != nil && a.Status == "recorded" && a.Parked && len(a.Waits) == 1 && a.Waits[0].Stage == "plan" {
+			if a := detail.ChildActivity; a != nil && a.Status == "recorded" && a.Parked && ((action == "parallel" && len(a.Waits) == 2) || (action != "parallel" && len(a.Waits) == 1 && a.Waits[0].Stage == "plan")) {
 				sawParked = true
 			}
 			phase, err := reader.PhaseBounded(ctx)
@@ -415,6 +420,9 @@ esac
 		if first.Sequence != 1 || second.Sequence != 2 || first.Identity.StageOccurrence != second.Identity.StageOccurrence || first.Identity.InvocationKey != "qualification-child" || second.Identity.InvocationKey != "qualification-child-2" || first.AcknowledgedAt.After(second.AcceptedAt) {
 			t.Fatal("iterative children lost their sequential stage ownership", children)
 		}
+	}
+	if action == "parallel" {
+		assertParallelQualificationChildren(t, children, childStarted)
 	}
 	if action == "cancel" && (!cancellationSent || !children[0].CancellationRequested) {
 		t.Fatal("missing authored-child family cancellation")
@@ -475,11 +483,14 @@ esac
 	}
 }
 
-func realParentQualificationFixture(t *testing.T, image, keyPath string) pinnedChildFixture {
+func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ...string) pinnedChildFixture {
 	t.Helper()
 	return newPinnedChildFixture(t, func(root string) {
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
 		parent = strings.Replace(parent, "allowPRPublication: true", "allowPRPublication: false", 1)
+		if len(mode) != 0 && mode[0] == "parallel" {
+			parent = parallelQualificationDefinition(t, parent)
+		}
 		writeFileContent(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), parent)
 		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
 		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))
