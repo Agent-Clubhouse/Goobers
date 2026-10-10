@@ -256,3 +256,25 @@ parent invocations, two actual child workers, and exact physical custody for
 every invocation. This passed with host race detection in the disposable
 environment on 2026-10-09 (112.03 seconds). No recursion or parallel parent
 admission is enabled by this qualification.
+
+The SDK dispatch-worker restart probe stops and recreates the actual Temporal
+workers while the first generated child's shell is active. Its first run exposed
+a lost completion: SDK 1.49 outbound processing used the stopped worker's
+cancelled background context and replaced its final custody report with a
+context-cancelled activity failure. The candidate repair completes the exact
+activity through the existing authenticated Temporal client and returns the
+SDK's pending-completion signal only after that completion succeeds.
+
+With that repair, the two-child restart journey passed with host race detection
+on 2026-10-09 (133.02 seconds): the interrupted child remains failed, the parent
+acknowledges and discards that result, then authors a distinct successful child.
+Both children remain in history; all five parent and two child pod invocations
+require exact UID, stopped writers, surrender and disposal proof. A separate
+real Temporal test verifies a denied completion cannot become successful custody.
+
+This is SDK-worker restart evidence within a surviving host process. It does
+not qualify killing the whole worker process or restarting the daemon. Before
+landing the candidate repair, the production worker host must preserve the
+pending-completion sentinel and keep its client alive during bounded cleanup
+after the SDK drain expires. These lifecycle requirements remain part of the
+public activation gate.

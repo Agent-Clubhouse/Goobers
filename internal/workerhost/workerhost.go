@@ -287,6 +287,10 @@ func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interc
 	if err == nil {
 		return result, nil
 	}
+	if errors.Is(err, activity.ErrResultPending) {
+		// This is an SDK control signal, not a failed activity attempt.
+		return result, activity.ErrResultPending
+	}
 	if temporal.IsCanceledError(err) || temporal.IsTerminatedError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil, err
 	}
