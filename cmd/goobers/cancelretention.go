@@ -18,9 +18,11 @@ func deferredFamilyCancellation(phase journal.RunPhase, err error) bool {
 }
 
 func onlyCancellationRetention(err error) bool {
-	switch cause := err.(type) {
-	case interface{ Unwrap() []error }:
-		children := cause.Unwrap()
+	// Find the first branching node through any unary wrappers. Every branch
+	// is then inspected, so errors.As cannot hide a sibling failure.
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		children := joined.Unwrap()
 		if len(children) == 0 {
 			return false
 		}
@@ -30,9 +32,10 @@ func onlyCancellationRetention(err error) bool {
 			}
 		}
 		return true
-	case interface{ Unwrap() error }:
-		return onlyCancellationRetention(cause.Unwrap())
-	default:
-		return err == invoke.ErrChildCustodyPending || err == worktree.ErrCleanupDeferred || err == journal.ErrRecoveryBusy
 	}
+	var wrapped interface{ Unwrap() error }
+	if errors.As(err, &wrapped) {
+		return onlyCancellationRetention(wrapped.Unwrap())
+	}
+	return errors.Is(err, invoke.ErrChildCustodyPending) || errors.Is(err, worktree.ErrCleanupDeferred) || errors.Is(err, journal.ErrRecoveryBusy)
 }

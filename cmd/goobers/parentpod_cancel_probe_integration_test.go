@@ -4,12 +4,6 @@ package main
 
 import (
 	"errors"
-	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/invoke"
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/triggerqueue"
-	"github.com/goobers/goobers/internal/worktree"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +12,13 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // This test-only endpoint proves that the generated shell actually began. It
