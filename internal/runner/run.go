@@ -77,7 +77,7 @@ const localCIStageName = "local-ci"
 
 // DefaultMaxInfrastructureAttempts bounds transient infrastructure failures
 // independently of a task's policy retry allowance.
-const DefaultMaxInfrastructureAttempts int32 = 2
+const DefaultMaxInfrastructureAttempts int32 = runcontrol.DefaultMaxInfrastructureAttempts
 
 // StageHeartbeatInterval coalesces observable executor progress into at most
 // one compact liveness event per minute.

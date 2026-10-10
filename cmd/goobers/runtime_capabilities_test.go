@@ -48,6 +48,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	assertActionClass(t, cliSurfaceActions(), "telemetry stats", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "telemetry errors", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "telemetry mark-fix", apicontract.ActionMaintenance)
+	assertActionClass(t, cliSurfaceActions(), "telemetry label", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "telemetry prune-orphans", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "journal redact", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "claims list", apicontract.ActionReadOnlyNavigation)
@@ -87,6 +88,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// status are execution-plane operations, like claims/list, rather than
 		// human-facing navigation or an alternate admission authority.
 		"childWorkflowValidate": true, "childWorkflowStart": true, "childWorkflowStatus": true, "childWorkflowResolve": true,
+		"childWorkflowAccessAcquire": true, "childWorkflowAccessRevoke": true,
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true, "claimVerify": true,
 		// A resident worker reports a config comparison transition into the
 		// daemon-owned instance journal. This authenticated machine-to-daemon

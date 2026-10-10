@@ -791,6 +791,46 @@ func TestTelemetryMarkFixFeedsSubsequentStoredAudit(t *testing.T) {
 	}
 }
 
+func TestTelemetryLabelRecordsGroundTruthForStoredCohorts(t *testing.T) {
+	root := initDemo(t)
+	writeAttributedCreditRun(t, root, "attribution-run-label")
+	store, err := readmodel.Open(instance.NewLayout(root).ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	code, stdout, stderr := runArgs(t, "telemetry", "label", "--run=attribution-run-label", "--outcome=maybe", root)
+	if code != 2 || !strings.Contains(stderr, "--outcome must be") {
+		t.Fatalf("invalid outcome: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runArgs(t, "telemetry", "label", "--run=missing-run", "--outcome=correct", "--by=alice", root)
+	if code != 1 {
+		t.Fatalf("missing run: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runArgs(
+		t, "telemetry", "label",
+		"--run=attribution-run-label", "--outcome=incorrect", "--reason=PR was reverted",
+		"--by=alice", "--labeled-at=2026-09-30T09:00:00Z",
+		root,
+	)
+	if code != 0 || !strings.Contains(stdout, `labeled run="attribution-run-label" outcome=incorrect`) {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	cohorts, err := readservice.StoredAttributionCohorts(
+		context.Background(), root, store,
+		readservice.StoredAttributionQuery{Gaggle: "example", Workflow: "default-implement"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := creditgraph.GroundTruthSummary{LabeledRunCount: 1, IncorrectRunCount: 1}
+	if len(cohorts) != 1 || cohorts[0].GroundTruth == nil || *cohorts[0].GroundTruth != want {
+		t.Fatalf("cohorts = %+v, want %+v", cohorts, want)
+	}
+}
+
 func TestTelemetryRejectsInvalidTimeWindow(t *testing.T) {
 	code, _, stderr := runArgs(
 		t,

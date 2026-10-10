@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY LABEL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry label \- record a ground-truth verdict for a Backprop-enrolled run
+.SH SYNOPSIS
+\fBgoobers telemetry label\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+
+Record a user-defined ground-truth verdict for a Backprop-enrolled terminal
+run. Labels are appended to labels.json beside the run's attribution.json
+with provenance (who, when, source) and may arrive long after the run; the
+latest --labeled-at verdict wins when cohort aggregates are re-scored. Labels
+are read-only inputs and never change the run's phase, journal, or gate
+verdicts. --by defaults to the current OS user; --labeled-at defaults to now.
+Exit codes: 0 = recorded, 1 = store error, 2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry label --run=run-123 --outcome=incorrect --reason="PR was reverted"
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

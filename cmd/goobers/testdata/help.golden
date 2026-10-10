@@ -174,7 +174,7 @@ Advanced operator commands:
   service task-stop stop a per-user Windows Scheduled Task supervisor
   service task-uninstall remove a per-user Windows Scheduled Task supervisor
   speech            preflight and test local speech notifications
-  telemetry         configure, test, query, export, mark fixes, prune, or compact telemetry
+  telemetry         configure, test, query, export, mark fixes, label runs, prune, or compact telemetry
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
@@ -3134,7 +3134,7 @@ see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -3143,6 +3143,7 @@ stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
+label:   record a ground-truth verdict for a Backprop-enrolled run
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -3184,6 +3185,17 @@ Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
 Every discovered run journal is validated before output; missing, corrupt, or
 unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 1 = journal data error, 2 = usage/output error.
+
+### telemetry label
+Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+
+Record a user-defined ground-truth verdict for a Backprop-enrolled terminal
+run. Labels are appended to labels.json beside the run's attribution.json
+with provenance (who, when, source) and may arrive long after the run; the
+latest --labeled-at verdict wins when cohort aggregates are re-scored. Labels
+are read-only inputs and never change the run's phase, journal, or gate
+verdicts. --by defaults to the current OS user; --labeled-at defaults to now.
+Exit codes: 0 = recorded, 1 = store error, 2 = usage/config error.
 
 ### telemetry mark-fix
 Usage: goobers telemetry mark-fix --finding=<backprop-id> [--applied-at=RFC3339] [path]

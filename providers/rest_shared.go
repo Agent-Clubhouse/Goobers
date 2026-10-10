@@ -622,6 +622,7 @@ type restClosedPull struct {
 type restOpenedPull struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
+	Draft   *bool  `json:"draft"`
 }
 
 func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks) (PullRequestResult, error) {
@@ -653,7 +654,7 @@ func createRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind Pr
 		return PullRequestResult{}, err
 	}
 	recordRESTPullRequestMutation(ctx, c, kind, req, out, "open", title, prBody)
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL, Draft: out.Draft}, nil
 }
 
 func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, req PullRequestRequest, number int, title, prBody string) (PullRequestResult, error) {
@@ -666,7 +667,7 @@ func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind Pro
 		return PullRequestResult{}, err
 	}
 	recordRESTPullRequestMutation(ctx, c, kind, req, out, "update", title, prBody)
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL, Draft: out.Draft}, nil
 }
 
 func recordRESTPullRequestMutation(ctx context.Context, c restMutationRecorder, kind ProviderKind, req PullRequestRequest, out restOpenedPull, operation, title, body string) {
