@@ -169,3 +169,97 @@ func TestAggregateAttributionEvidenceRescoresLateGroundTruthDeterministically(t 
 		t.Fatalf("re-scored aggregate depends on observation order:\n%s\n%s", first, again)
 	}
 }
+
+func labeledCohort(shares []float64, outcomes []LabelOutcome) []AttributionObservation {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	observations := make([]AttributionObservation, 0, len(shares))
+	for i, share := range shares {
+		runID := "run-" + string(rune('a'+i))
+		observation := AttributionObservation{
+			RunID: runID, EffectiveVersion: "ev", Workload: "manual",
+			Attribution: Attribution{RunID: runID, Contributions: []Contribution{{
+				NodeID: "tool:edit", Stage: "implement", Path: []string{"stage:implement", "tool:edit"},
+				Share: share, Confidence: 0.6,
+			}}},
+		}
+		if outcomes[i] != "" {
+			label := humanLabel(runID, outcomes[i], at)
+			observation.GroundTruth = &label
+		}
+		observations = append(observations, observation)
+	}
+	return observations
+}
+
+func topPath(t *testing.T, observations []AttributionObservation) ContributingPath {
+	t.Helper()
+	cohorts := AggregateAttributionEvidence(observations)
+	if len(cohorts) != 1 || len(cohorts[0].TopContributingPaths) != 1 {
+		t.Fatalf("cohorts = %+v, want one cohort with one path", cohorts)
+	}
+	return cohorts[0].TopContributingPaths[0]
+}
+
+func assertNear(t *testing.T, name string, got, want float64) {
+	t.Helper()
+	if diff := got - want; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("%s = %v, want %v", name, got, want)
+	}
+}
+
+func TestGroundTruthLabelsWeightCohortPathScores(t *testing.T) {
+	shares := []float64{0.4, 0.4, 0.4}
+	for _, tc := range []struct {
+		name    string
+		outcome LabelOutcome
+		want    float64
+	}{
+		{name: "unlabeled", outcome: "", want: 0.6},
+		{name: "correct", outcome: LabelCorrect, want: 0.8},
+		{name: "incorrect", outcome: LabelIncorrect, want: 0.3},
+	} {
+		path := topPath(t, labeledCohort(shares, []LabelOutcome{tc.outcome, tc.outcome, tc.outcome}))
+		assertNear(t, tc.name+" confidence", path.Confidence, tc.want)
+		assertNear(t, tc.name+" share", path.Share, 0.4)
+	}
+
+	mixed := labeledCohort([]float64{0.2, 0.8}, []LabelOutcome{LabelCorrect, LabelIncorrect})
+	path := topPath(t, mixed)
+	assertNear(t, "mixed share", path.Share, (2*0.2+0.5*0.8)/2.5)
+	assertNear(t, "mixed confidence", path.Confidence, (2*0.8+0.5*0.3)/2.5)
+	reversed := topPath(t, []AttributionObservation{mixed[1], mixed[0]})
+	if reversed.Share != path.Share || reversed.Confidence != path.Confidence {
+		t.Fatalf("weighted path depends on observation order: %+v vs %+v", path, reversed)
+	}
+	unlabeled := topPath(t, labeledCohort([]float64{0.2, 0.8}, []LabelOutcome{"", ""}))
+	assertNear(t, "unlabeled mixed share", unlabeled.Share, 0.5)
+}
+
+func TestGroundTruthLabelsWeightFaultAuditConfidence(t *testing.T) {
+	audit := func(outcome LabelOutcome) FaultFinding {
+		at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+		var observations []AttributionObservation
+		for _, runID := range []string{"run-1", "run-2", "run-3"} {
+			observation := auditObservation(runID, "implementation", "version-a", "implement",
+				"workflow selected an unsuitable tool", ClassBadToolChoice, 0.6, "stage:implement/tool:one")
+			if outcome != "" {
+				label := humanLabel(runID, outcome, at)
+				observation.GroundTruth = &label
+			}
+			observations = append(observations, observation)
+		}
+		report := AuditFaultDomains(observations, FaultAuditConfig{Now: at.Add(time.Hour), Since: at.Add(-time.Hour)})
+		if len(report.WorkflowFindings) != 1 {
+			t.Fatalf("report = %+v, want one workflow finding", report)
+		}
+		return report.WorkflowFindings[0]
+	}
+	unlabeled, correct, incorrect := audit(""), audit(LabelCorrect), audit(LabelIncorrect)
+	if unlabeled.Confidence != 0.6 || correct.Confidence != 0.8 || incorrect.Confidence != 0.3 {
+		t.Fatalf("confidence unlabeled=%v correct=%v incorrect=%v, want 0.6/0.8/0.3",
+			unlabeled.Confidence, correct.Confidence, incorrect.Confidence)
+	}
+	if again := audit(LabelIncorrect); again.ID != incorrect.ID || again.Confidence != incorrect.Confidence {
+		t.Fatalf("labeled audit is not deterministic: %+v vs %+v", incorrect, again)
+	}
+}

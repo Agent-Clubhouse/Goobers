@@ -232,3 +232,45 @@ func EffectiveLabel(labels []GroundTruthLabel) (GroundTruthLabel, bool) {
 	})
 	return sorted[len(sorted)-1], true
 }
+
+// Ground-truth weighting. A correct verdict confirms a run's journal-derived
+// attribution and an incorrect verdict contradicts it, so labeled runs move
+// cohort averages and audit confidence relative to unlabeled runs, which keep
+// their unweighted values.
+const (
+	groundTruthCorrectWeight   = 2.0
+	groundTruthUnlabeledWeight = 1.0
+	groundTruthIncorrectWeight = 0.5
+)
+
+// groundTruthWeight is a run's weight in cohort and fault-audit averages.
+func groundTruthWeight(label *GroundTruthLabel) float64 {
+	if label == nil {
+		return groundTruthUnlabeledWeight
+	}
+	switch label.Outcome {
+	case LabelCorrect:
+		return groundTruthCorrectWeight
+	case LabelIncorrect:
+		return groundTruthIncorrectWeight
+	default:
+		return groundTruthUnlabeledWeight
+	}
+}
+
+// groundTruthConfidence calibrates one run's confidence by its verdict: a
+// correct label halves the remaining uncertainty and an incorrect label halves
+// the confidence.
+func groundTruthConfidence(confidence float64, label *GroundTruthLabel) float64 {
+	if label == nil {
+		return confidence
+	}
+	switch label.Outcome {
+	case LabelCorrect:
+		return confidence + (1-confidence)/2
+	case LabelIncorrect:
+		return confidence / 2
+	default:
+		return confidence
+	}
+}

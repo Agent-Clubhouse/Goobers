@@ -122,13 +122,29 @@ deterministically. Cohort aggregates expose a `groundTruth` summary
 omitted when no run in the cohort is labeled, so partial label coverage stays
 visible rather than being presented as the whole cohort.
 
+The effective label also weights scores. A correct verdict confirms a run's
+journal-derived attribution and an incorrect verdict contradicts it:
+
+| Effective label | Run weight | Run confidence `c` becomes |
+|---|---|---|
+| none | 1 | `c` |
+| `correct` | 2 | `c + (1 - c) / 2` |
+| `incorrect` | 0.5 | `c / 2` |
+
+A cohort's `topContributingPaths[].share` and `.confidence` are weighted means
+over the cohort's runs using the run weight and calibrated confidence, and a
+fault-audit finding's `confidence` is the weighted mean of its signals'
+calibrated cause confidences (before the existing sparse, provenance, and
+mixed-domain caps). Unlabeled cohorts score exactly as before. Labels do not
+change fault-domain classification, finding IDs, or verification state.
+
 Labels are read-only inputs. Recording one never touches the run journal, the
 attribution record, the run's phase, or any gate verdict.
 
 Not yet implemented (follow-ups under #7121): declaring ground-truth sources in
 workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
 bug, reopened issue, main CI breakage), user-provided checker commands, and
-weighting credit propagation and the fault auditor by labeled outcome.
+feeding labels into per-run credit propagation (`attribution.json` itself).
 
 ## Why
 

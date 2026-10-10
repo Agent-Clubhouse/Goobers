@@ -39,6 +39,7 @@ type ContributingPath struct {
 	Confidence float64                   `json:"confidence"`
 	Evidence   []AttributionEvidenceLink `json:"evidence,omitempty"`
 	samples    int
+	weight     float64
 }
 
 // CohortAggregation summarizes repeated attribution evidence across runs in one cohort.
@@ -121,9 +122,11 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...)}
 					byPath[key] = path
 				}
+				weight := groundTruthWeight(observation.GroundTruth)
 				path.samples++
-				path.Share += contribution.Share
-				path.Confidence += contribution.Confidence
+				path.weight += weight
+				path.Share += weight * contribution.Share
+				path.Confidence += weight * groundTruthConfidence(contribution.Confidence, observation.GroundTruth)
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
 				path.Evidence = append(path.Evidence, observationEvidence(
 					observation,
@@ -151,12 +154,11 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 
 		paths := make([]ContributingPath, 0, len(byPath))
 		for _, path := range byPath {
-			if path.samples == 0 {
+			if path.samples == 0 || path.weight == 0 {
 				continue
 			}
-			count := float64(path.samples)
-			path.Share /= count
-			path.Confidence /= count
+			path.Share /= path.weight
+			path.Confidence /= path.weight
 			paths = append(paths, *path)
 		}
 		sort.Slice(paths, func(i, j int) bool {
