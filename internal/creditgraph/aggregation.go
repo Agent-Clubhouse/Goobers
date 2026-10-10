@@ -48,6 +48,16 @@ type CohortAggregation struct {
 	RunCount             int                       `json:"runCount"`
 	TopContributingPaths []ContributingPath        `json:"topContributingPaths,omitempty"`
 	CounterEvidence      []AttributionEvidenceLink `json:"counterEvidence,omitempty"`
+	GroundTruth          *GroundTruthSummary       `json:"groundTruth,omitempty"`
+}
+
+// GroundTruthSummary counts a cohort's runs by their effective user-defined
+// ground-truth label. Unlabeled runs are counted only in RunCount, so
+// LabeledRunCount shows how much of the cohort the verdicts cover.
+type GroundTruthSummary struct {
+	LabeledRunCount   int `json:"labeledRunCount"`
+	CorrectRunCount   int `json:"correctRunCount"`
+	IncorrectRunCount int `json:"incorrectRunCount"`
 }
 
 // AttributionObservation is one run's attribution record placed in a cohort.
@@ -65,6 +75,7 @@ type AttributionObservation struct {
 	Failure          string                    `json:"failure,omitempty"`
 	Attribution      Attribution               `json:"attribution"`
 	Evidence         []AttributionEvidenceLink `json:"evidence,omitempty"`
+	GroundTruth      *GroundTruthLabel         `json:"groundTruth,omitempty"`
 }
 
 // AggregateAttributionEvidence summarizes repeated attribution evidence by cohort.
@@ -93,6 +104,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 			Workload:         key.Workload,
 			RunCount:         len(group),
 		}
+		aggregation.GroundTruth = summarizeGroundTruth(group)
 		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
 			for _, contribution := range observation.Attribution.Contributions {
@@ -180,6 +192,28 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		return out[i].EffectiveVersion < out[j].EffectiveVersion
 	})
 	return out
+}
+
+func summarizeGroundTruth(group []AttributionObservation) *GroundTruthSummary {
+	var summary GroundTruthSummary
+	for _, observation := range group {
+		if observation.GroundTruth == nil {
+			continue
+		}
+		switch observation.GroundTruth.Outcome {
+		case LabelCorrect:
+			summary.CorrectRunCount++
+		case LabelIncorrect:
+			summary.IncorrectRunCount++
+		default:
+			continue
+		}
+		summary.LabeledRunCount++
+	}
+	if summary.LabeledRunCount == 0 {
+		return nil
+	}
+	return &summary
 }
 
 func surfaceContributionPath(contribution Contribution) bool {

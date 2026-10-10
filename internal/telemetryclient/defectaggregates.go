@@ -255,6 +255,15 @@ type AttributionCohort struct {
 	RunCount             int                       `json:"runCount"`
 	TopContributingPaths []ContributingPath        `json:"topContributingPaths,omitempty"`
 	CounterEvidence      []AttributionEvidenceLink `json:"counterEvidence,omitempty"`
+	GroundTruth          *GroundTruthSummary       `json:"groundTruth,omitempty"`
+}
+
+// GroundTruthSummary counts a cohort's runs by their effective user-defined
+// ground-truth label.
+type GroundTruthSummary struct {
+	LabeledRunCount   int `json:"labeledRunCount"`
+	CorrectRunCount   int `json:"correctRunCount"`
+	IncorrectRunCount int `json:"incorrectRunCount"`
 }
 
 // FaultFinding is one evidence-backed failure signature and its likely owner.

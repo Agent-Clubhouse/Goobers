@@ -618,6 +618,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "finding", takesArg: true, desc: "Backprop finding ID to verify"},
 		{name: "applied-at", takesArg: true, desc: "Fix deployment time as RFC3339"},
 	},
+	"telemetry label": {
+		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
+		{name: "outcome", takesArg: true, desc: "Ground-truth verdict (correct or incorrect)"},
+		{name: "reason", takesArg: true, desc: "Why the result is correct or incorrect"},
+		{name: "by", takesArg: true, desc: "Who is recording the label"},
+		{name: "labeled-at", takesArg: true, desc: "Verdict time as RFC3339"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},
