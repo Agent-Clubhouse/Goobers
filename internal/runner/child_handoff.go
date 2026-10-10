@@ -161,16 +161,6 @@ func ParkedChildRequestForOrigin(events []journal.Event, origin apiv1.ChildWorkf
 	return ChildHandoffRequest{}, journal.Event{}, false, nil
 }
 
-// ParkedChildRequest returns the exact validated host receipt currently holding
-// workspace custody. Callers must match the whole receipt before applying effects.
-func ParkedChildRequest(events []journal.Event) (ChildHandoffRequest, bool, error) {
-	pending, _, err := pendingChildWait(events)
-	if err != nil || pending == nil {
-		return ChildHandoffRequest{}, false, err
-	}
-	return pending.Request, true, nil
-}
-
 func decodeChildWaitEvent(event, started journal.Event) (*childWaitRecord, error) {
 	if _, err := journal.DecodeChildWaitHeader(event, started); err != nil {
 		return nil, err
