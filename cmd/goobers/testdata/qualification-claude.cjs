@@ -253,7 +253,10 @@ async function parallelJourney() {
   }
   return complete();
 }
-main().catch(() => {
+main().catch(error => {
+  const known = ['child return bytes mismatch', 'agentic child evidence did not return', 'generated agentic child acquired recursive workflow authority', 'generated agentic child received parent instructions', 'child model credential differs', 'child return disposition mismatch', 'parent state disposition mismatch', 'parent fork content lost', 'parent authoring catalog differs', 'parent authoring guidance did not reach the model', 'completion contract unavailable'];
+  const code = known.includes(error.message) ? error.message.replaceAll(' ', '-') : error.code === 'ENOENT' ? 'file-not-found' : 'unclassified';
+  process.stderr.write(`qualification failure code: ${code}\n`);
   process.stderr.write(`qualification model protocol failed at ${diagnosticPhase}\n`);
   mcp.kill();
   process.exitCode = 1;

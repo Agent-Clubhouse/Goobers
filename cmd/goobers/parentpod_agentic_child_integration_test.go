@@ -3,6 +3,10 @@
 package main
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -16,4 +20,26 @@ func TestIntegrationParentComposesExistingGooberThroughRealWorkers(t *testing.T)
 			qualifyContainedParentJourney(t, "agentic")
 		})
 	}
+}
+
+// Emit only fixed fixture classifications, never model output, MCP config or secrets.
+func logQualificationFixturePhases(t *testing.T, root string) {
+	t.Helper()
+	marker := regexp.MustCompile(`(?m)^qualification (?:phase|failure code): [a-z0-9-]+$`)
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || entry.Name() != "stderr.log" || !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || info.Size() > 64<<10 {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err == nil {
+			for _, line := range marker.FindAll(data, -1) {
+				t.Logf("fixture: %s", line)
+			}
+		}
+		return nil
+	})
 }
