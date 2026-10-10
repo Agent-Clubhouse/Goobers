@@ -2,7 +2,7 @@
 
 > Status: approved — lifecycle contract and staged implementation plan
 > Area: DSL, agent tools, execution, workspaces, journal, Portal
-> Original design baseline: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
+> Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
 
 > Design approved for incremental delivery on 2026-10-06. The incremental delivery
 > ledger records landed slices. Later implementation notes describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
