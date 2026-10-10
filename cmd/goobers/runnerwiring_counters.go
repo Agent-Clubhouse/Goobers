@@ -469,7 +469,7 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 	var fieldExpression string
 	found := false
 	for _, tr := range wf.Spec.Triggers {
-		if tr.Type == apiv1.TriggerBacklogItem {
+		if tr.Type == apiv1.TriggerBacklogItem && !triggerDisabled(tr) {
 			selector = tr.Selector
 			expression = tr.LabelPredicate
 			fieldExpression = tr.FieldPredicate

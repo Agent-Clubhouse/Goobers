@@ -39,6 +39,8 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 With --runs-only, skip workflow health and provider-backed status queries and return
 only the bounded run table, without recovery decoration; combine it with --json and
 --limit for fast operator probes. A ready, current status projection is required.
+The workflow summary's A/D/MAX column shows active, desired, and maximum runs;
+see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 .fi
 .SH EXAMPLES
