@@ -955,7 +955,7 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 			t.Fatalf("prompt text leaked into argv[%d] = %q, which a CLI may parse as flags", i, arg)
 		}
 	}
-	promptText, ok := copilotPromptArgValue(runner.lastReq.Command)
+	promptText, ok := copilotSentPrompt(runner.lastReq)
 	if !ok {
 		t.Fatalf("unexpected command: %v", runner.lastReq.Command)
 	}
@@ -1229,7 +1229,7 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			if tc.externalMCP && slices.Contains(runner.lastReq.Command, "--disable-builtin-mcps") {
 				t.Fatalf("declared GitHub group was disabled by external MCP isolation: %v", runner.lastReq.Command)
 			}
-			prompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+			prompt, ok := copilotSentPrompt(runner.lastReq)
 			if !ok {
 				t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
 			}
@@ -1398,7 +1398,7 @@ func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("transcript events = %#v, want user and assistant events", events)
 	}
-	sentPrompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+	sentPrompt, ok := copilotSentPrompt(runner.lastReq)
 	if !ok {
 		t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
 	}
@@ -1548,7 +1548,7 @@ func TestCopilotAdapterRepairsInvalidResponseAndRecordsScrubbedDiagnostic(t *tes
 	if len(calls) != 2 {
 		t.Fatalf("process calls = %d, want initial call plus one repair", len(calls))
 	}
-	prompt, ok := copilotPromptArgValue(calls[1].Command)
+	prompt, ok := copilotSentPrompt(calls[1])
 	if !ok || !strings.Contains(prompt, "/outputs/token") || !strings.Contains(prompt, "expected") {
 		t.Fatalf("repair prompt = %q, want schema path and validation message", prompt)
 	}
@@ -1694,7 +1694,8 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		},
 	}
 	initialReq := ProcessRequest{
-		Command: []string{copilotPromptArg(defaultPromptFlag, "initial")},
+		Command: []string{copilotPromptArg(defaultPromptFlag, "")},
+		Stdin:   []byte("initial"),
 		Dir:     workspace,
 		Env:     []string{"COPILOT_GITHUB_TOKEN=initial-installation-token"},
 		Timeout: time.Second,
@@ -1715,9 +1716,6 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		func(_ context.Context, env []string, _ RunRequest) ([]string, error) {
 			return overrideEnv(env, "COPILOT_GITHUB_TOKEN", "refreshed-installation-token"), nil
 		},
-		0,
-		defaultPromptFlag,
-		nil,
 		true,
 		"",
 		time.Now(),
@@ -1750,9 +1748,6 @@ func TestCopilotCompletionRepairSkipsRefreshWhenBudgetExhausted(t *testing.T) {
 			refreshCalls++
 			return nil, errors.New("refresh should not run")
 		},
-		0,
-		defaultPromptFlag,
-		nil,
 		false,
 		"",
 		time.Now().Add(-time.Second),
@@ -1793,9 +1788,6 @@ func TestCopilotCompletionRepairBoundsCredentialRefreshByRemainingBudget(t *test
 			<-ctx.Done()
 			return env, ctx.Err()
 		},
-		0,
-		defaultPromptFlag,
-		nil,
 		false,
 		"",
 		started,
@@ -1903,7 +1895,7 @@ func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing
 	if !firstOK || !secondOK || firstSession != secondSession {
 		t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
 	}
-	prompt, ok := copilotPromptArgValue(calls[1].Command)
+	prompt, ok := copilotSentPrompt(calls[1])
 	if !ok {
 		t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 	}
@@ -2000,7 +1992,7 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 			if !firstOK || !secondOK || firstSession != secondSession {
 				t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
 			}
-			recoveryPrompt, ok := copilotPromptArgValue(calls[1].Command)
+			recoveryPrompt, ok := copilotSentPrompt(calls[1])
 			if !ok {
 				t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
 			}
@@ -3503,16 +3495,20 @@ func TestCopilotResolveConfigUnverifiedAllowsCapabilityGatedOptions(t *testing.T
 	}
 }
 
-// copilotPromptArgValue returns the prompt the adapter actually sent. The
-// prompt is bound to its flag in one argv element (`-p=<text>`) so that no
-// prompt content can be reparsed as flags — see copilotPromptArg.
-func copilotPromptArgValue(command []string) (string, bool) {
-	for _, arg := range command {
+// copilotSentPrompt returns the prompt the adapter actually sent. The prompt
+// travels on stdin (#6871); argv carries only the empty prompt-mode flag, so
+// ok is false when any argv element binds prompt content to the flag.
+func copilotSentPrompt(req ProcessRequest) (string, bool) {
+	sawFlag := false
+	for _, arg := range req.Command {
 		if value, ok := strings.CutPrefix(arg, defaultPromptFlag+"="); ok {
-			return value, true
+			if value != "" {
+				return "", false
+			}
+			sawFlag = true
 		}
 	}
-	return "", false
+	return string(req.Stdin), sawFlag
 }
 
 // Every goober body opens with YAML frontmatter, so the rendered prompt starts
@@ -3527,7 +3523,7 @@ func TestCopilotPromptWithLeadingDashesStaysBoundToItsFlag(t *testing.T) {
 	if !strings.HasPrefix(arg, defaultPromptFlag+"=") {
 		t.Fatalf("prompt argument is not bound to its flag: %q", arg)
 	}
-	got, ok := copilotPromptArgValue([]string{"copilot", arg, "--silent"})
+	got, ok := strings.CutPrefix(arg, defaultPromptFlag+"=")
 	if !ok || got != prompt {
 		t.Fatalf("prompt did not round-trip: %q, %v", got, ok)
 	}

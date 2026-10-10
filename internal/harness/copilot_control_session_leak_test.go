@@ -94,7 +94,7 @@ func runControlledCopilotOnce(t *testing.T, i int) (weak.Pointer[copilot.Session
 	runner := &copilotControlledRunner{base: base, request: req, promptIndex: 1, mcpConfig: config}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err = runner.Run(ctx, ProcessRequest{Command: []string{"copilot", "-p=prompt " + strings.Repeat("x", i), "--session-id", "owned-test-session", "--allow-all-tools"}, Dir: req.Workspace, Env: baseEnv(nil, nil), StdoutCapture: newTranscriptBuffer(8192), Timeout: 2 * time.Second})
+	_, err = runner.Run(ctx, ProcessRequest{Stdin: []byte("prompt " + strings.Repeat("x", i)), Command: []string{"copilot", "-p=", "--session-id", "owned-test-session", "--allow-all-tools"}, Dir: req.Workspace, Env: baseEnv(nil, nil), StdoutCapture: newTranscriptBuffer(8192), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

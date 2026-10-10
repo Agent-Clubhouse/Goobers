@@ -364,13 +364,7 @@ func runCapturedScenario(t *testing.T, binaryPath string, scenario fixtureScenar
 
 func (r *captureReplayRunner) Run(_ context.Context, request harness.ProcessRequest) (harness.ProcessResult, error) {
 	r.t.Helper()
-	var prompt string
-	for _, arg := range request.Command {
-		if value, ok := strings.CutPrefix(arg, "-p="); ok {
-			prompt = value
-			break
-		}
-	}
+	prompt := string(request.Stdin)
 	if prompt == "" {
 		return harness.ProcessResult{}, fmt.Errorf("captured Copilot invocation has no prompt")
 	}
