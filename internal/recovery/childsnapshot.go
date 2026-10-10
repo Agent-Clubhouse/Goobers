@@ -150,7 +150,7 @@ func (s ChildSnapshot) validate() error {
 	if err := s.Policy.Validate(); err != nil {
 		return err
 	}
-	if err := s.Record.validateRestorable(); err != nil {
+	if err := s.Record.ValidateRestorable(); err != nil {
 		return err
 	}
 	if s.Record.BaseRef != s.Record.BaseSHA || !gitObjectID.MatchString(s.TreeSHA) || !patchDigest.MatchString(s.IndexDigest) {

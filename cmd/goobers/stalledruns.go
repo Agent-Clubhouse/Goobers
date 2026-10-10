@@ -147,6 +147,7 @@ func cleanDaemonDowntime(events []journal.Event) []daemonDowntime {
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
+	reconcileContained     func(context.Context, journal.RunIdentity) error
 	childCustody           map[string]chan struct{}
 	resolveGeneration      executionGenerationResolver
 	resolveChildGeneration executionGenerationResolver

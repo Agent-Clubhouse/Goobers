@@ -147,6 +147,21 @@ func ParkedOnChild(events []journal.Event) bool {
 	return err == nil && parked
 }
 
+// ParkedChildRequestForOrigin selects one exact occurrence/attempt even when a
+// sibling remains runnable. It grants only that branch's workspace custody.
+func ParkedChildRequestForOrigin(events []journal.Event, origin apiv1.ChildWorkflowOrigin) (ChildHandoffRequest, journal.Event, bool, error) {
+	projection, err := journal.ProjectChildWaits(events)
+	if err != nil {
+		return ChildHandoffRequest{}, journal.Event{}, false, err
+	}
+	for _, wait := range projection.Waits {
+		if wait.Header.Request.Origin == origin {
+			return ChildHandoffRequest(wait.Header.Request), wait.Started, true, nil
+		}
+	}
+	return ChildHandoffRequest{}, journal.Event{}, false, nil
+}
+
 // ParkedChildRequest returns the exact validated host receipt currently holding
 // workspace custody. Callers must match the whole receipt before applying effects.
 func ParkedChildRequest(events []journal.Event) (ChildHandoffRequest, bool, error) {

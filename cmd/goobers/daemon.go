@@ -810,7 +810,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
 			Starter: selectEntryStarter(entryStarterInput{
-				runnerStarter: &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: input.WaitGroup, l: l.ForGaggle(wf.Spec.Gaggle), tel: input.Telemetry, rollupDB: input.RollupDB, watermarks: input.Watermarks, log: input.InstanceLog, runners: input.RunnerRegistry},
+				runnerStarter: &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: selections[identity].parentCoordinatorHostCapabilities(requiredCaps), wg: input.WaitGroup, l: l.ForGaggle(wf.Spec.Gaggle), tel: input.Telemetry, rollupDB: input.RollupDB, watermarks: input.Watermarks, log: input.InstanceLog, runners: input.RunnerRegistry},
 				selection:     selections[identity],
 				runtime:       engineRuntimeHolder,
 				hooks:         engineHooks[wf.Spec.Gaggle],
@@ -1401,6 +1401,8 @@ func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Man
 	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, input.TerminalNotifier)
 	childHandoff := &daemonChildHandoff{layout: input.Layout, worktrees: manager, repoCloneURL: runnerCfg.RepoCloneURL, project: input.GaggleProject}
 	runnerCfg.ChildHandoff, runnerCfg.ChildParentCapacity = childHandoff, childHandoff
+	runnerCfg.BorrowParentJournal = containedParentJournalOwner(input.Layout.Root, input.Layout.Gaggle())
+	runnerCfg.AdmitParentExecution = containedParentAdmission(input.Layout, generation)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, nil, err

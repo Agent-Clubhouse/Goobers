@@ -146,6 +146,7 @@ func placementRefusals(
 			// impossible rather than silently skipping the solve.
 			return placementDecisions{}, fmt.Errorf("workflow %q placement requirements: %w", identity.Workflow, err)
 		}
+		requirements = selections[identity].hostStageRequirements(requirements)
 		unsatisfiable := runnersolve.SolveExecutable(inventory, requirements).Unsatisfiable()
 		if len(unsatisfiable) == 0 {
 			continue

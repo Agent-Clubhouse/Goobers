@@ -102,6 +102,27 @@ func (wt *Worktree) ReleaseChildHold(ctx context.Context) error {
 	return err
 }
 
+// HeldCleanupTarget reads the immutable cumulative base and exact ownership
+// from a held checkout. A caller must already own its run execution lease.
+func (wt *Worktree) HeldCleanupTarget(ctx context.Context) (CleanupTarget, error) {
+	var target CleanupTarget
+	found, err := wt.manager.WithExistingMirror(ctx, wt.repoURL, func(string) error {
+		mk, _, err := wt.custodyMarkers()
+		if err != nil {
+			return err
+		}
+		if mk.Status != statusCleanupRetained || mk.CleanupDisposition != childWaitDisposition {
+			return fmt.Errorf("worktree: cleanup target lacks held custody")
+		}
+		target = CleanupTarget{Path: wt.Path, WorktreeID: wt.RunID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RetainOnCleanup: mk.RetainOnCleanup, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt}
+		return nil
+	})
+	if err == nil && !found {
+		err = fmt.Errorf("worktree: held cleanup mirror unavailable")
+	}
+	return target, err
+}
+
 func (wt *Worktree) custodyMarkers() (marker, marker, error) {
 	primary, err := readMarker(wt.manager.markerPath(wt.key, wt.RunID))
 	if err != nil {

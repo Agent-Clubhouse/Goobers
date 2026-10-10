@@ -21,6 +21,8 @@ import (
 // engineSelection is the per-entry answer to "does this lane dispatch onto the
 // tier-3 engine, or stay on the local runner?".
 type engineSelection struct {
+	ContainedParentStages  map[string]bool
+	ParentHostCapabilities []string
 	// UseEngine is the decision.
 	UseEngine bool
 	// FallbackReason names, in operator language, why the lane stayed on the
@@ -49,6 +51,9 @@ type engineSelection struct {
 func (selection engineSelection) schedulerSelfCapabilities(required []string) []string {
 	if selection.UseEngine {
 		return nil
+	}
+	if len(selection.ContainedParentStages) != 0 {
+		return append([]string(nil), selection.ParentHostCapabilities...)
 	}
 	return required
 }
@@ -235,6 +240,14 @@ func engineSelections(
 			continue
 		}
 		selection := selectEngineForEntry(machine.Def, placements)
+		if hasChildParent(machine.Def.Spec) {
+			parent, err := containedParentSelection(cfg, set, machine)
+			if err == nil {
+				selection = parent
+			} else {
+				selection = engineSelection{ReasonClass: "contained_parent_refused", Refusal: err, FallbackReason: err.Error()}
+			}
+		}
 		selection.PlacementDeclared = entryDeclaresPlacement(machine, set, identity.Gaggle)
 		out[identity] = selection
 	}

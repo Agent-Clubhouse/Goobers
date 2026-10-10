@@ -85,7 +85,7 @@ func validateChildDisposition(fork, parent ChildSnapshot, result Record, action 
 	if !reflect.DeepEqual(parent.Policy, fork.Policy) {
 		return fmt.Errorf("child disposition changed the snapshot exclusion policy")
 	}
-	return result.validateRestorable()
+	return result.ValidateRestorable()
 }
 
 func childDispositionTree(ctx context.Context, repository string, fork, parent ChildSnapshot, result Record, action ChildDisposition, maxPatchBytes int64) (string, error) {

@@ -304,18 +304,17 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
-			exec, err := buildAgenticExecutor(agenticExecutorInput{
-				GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
-				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
-				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
-				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
-				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
-				ChildWorkflows: childWorkflowAccessFor(instanceRoot, reg),
-			})
-			if err != nil {
-				return nil, err
+			ordinary := func() (invoke.Goober, error) {
+				return buildAgenticExecutor(agenticExecutorInput{
+					GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
+					HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
+					Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
+					SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
+					GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
+					ChildWorkflows: childWorkflowAccessFor(instanceRoot, reg),
+				})
 			}
-			return claimFencedGoober{Goober: exec, start: executionFence}, nil
+			return bindParentRouting(instanceRoot, gooberName, rec, ordinary, assetsByGoober[gooberName] != nil, executionFence)
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a
@@ -394,6 +393,13 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	}
 	cfg.IssueOwnershipAssignees = input.IssueOwnershipAssignees
 	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
+	cloneURL := cfg.RepoCloneURL
+	if cloneURL == nil {
+		cloneURL = runner.DefaultRepoCloneURL
+	}
+	archives := parentArchiveRestorer{layout: input.Layout, config: input.Config, worktrees: cfg.Worktrees, cloneURL: cloneURL, scrubber: input.SharedRegistry}
+	cfg.RestoreParentArchive = archives.restore
+	cfg.RetireParentWorkspaces = archives.retire
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {

@@ -92,6 +92,11 @@ type CreateOptions struct {
 	// cleanup must publish recovery before the workspace can be reset or
 	// released. Ordinary per-stage worktrees leave this false.
 	RetainOnCleanup bool
+	// parentRestoreHead is set only by CreateParentRestore after the caller
+	// supplies verified archive custody. Ordinary Create keeps its lost-branch
+	// refusal and stale-workspace behavior.
+	parentRestoreHead  string
+	parentRestoreStart string
 }
 
 // BaseSyncConflictError identifies a genuine content conflict while merging a
@@ -241,10 +246,8 @@ func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDi
 		}
 	}()
 
-	if preserveChild {
-		if existing, found, err := m.existingChildWorktree(ctx, key, repoDir, path, opts); found || err != nil {
-			return existing, err
-		}
+	if existing, found, err := m.existingPreservedWorkspace(ctx, key, repoDir, path, opts, preserveChild); found || err != nil {
+		return existing, err
 	}
 	if err := m.prepareBranchAcquisition(ctx, key, repoDir, path, opts); err != nil {
 		return nil, err
@@ -284,19 +287,20 @@ func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDi
 	pid := os.Getpid()
 	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
 	mk := marker{
-		RepositoryDigest: RepositoryDigest(opts.RepoURL),
-		RunID:            opts.RunID,
-		OwnerRunID:       opts.OwnerRunID,
-		Gaggle:           opts.Gaggle,
-		Directory:        directory,
-		BaseRef:          cleanupBaseRef,
-		Branch:           opts.Branch,
-		RetainOnCleanup:  opts.RetainOnCleanup,
-		Writer:           m.writerIdentity,
-		PID:              pid,
-		PIDStartedAt:     startedAt,
-		CreatedAt:        time.Now(),
-		Status:           statusActive,
+		RepositoryDigest:  RepositoryDigest(opts.RepoURL),
+		RunID:             opts.RunID,
+		OwnerRunID:        opts.OwnerRunID,
+		Gaggle:            opts.Gaggle,
+		Directory:         directory,
+		BaseRef:           cleanupBaseRef,
+		Branch:            opts.Branch,
+		RetainOnCleanup:   opts.RetainOnCleanup,
+		ParentRestoreHead: opts.parentRestoreHead,
+		Writer:            m.writerIdentity,
+		PID:               pid,
+		PIDStartedAt:      startedAt,
+		CreatedAt:         time.Now(),
+		Status:            statusActive,
 	}
 	// Persist ownership before git creates the directory so a crash during
 	// worktree add never leaves an opaque hash that cleanup cannot resolve.
@@ -330,7 +334,7 @@ func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDi
 	} else if err := runGit(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("worktree: create for run %s: %w", opts.RunID, err)
 	}
-	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
+	startRef, err := initialWorktreeRef(ctx, path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, err)
 	}
@@ -399,7 +403,8 @@ func (m *Manager) createInMirror(ctx context.Context, opts CreateOptions, repoDi
 	}
 
 	mk.StartRef = startRef
-	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
+	mk.ParentRestoreHead = ""
+	if err := m.persistCreatedWorktree(key, opts, mk); err != nil {
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 

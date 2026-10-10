@@ -100,12 +100,12 @@ func (r Record) Validate() error {
 	return nil
 }
 
-// validateRestorable accepts a record from EITHER durability tier: a retained
+// ValidateRestorable accepts a record from EITHER durability tier: a retained
 // record with its archive binding, or an overflow record that declares no
 // archive because its objects are restored from the pinned mirror ref rather
 // than from a bundle (#5370). Nothing that consults the archive fields may
 // use it — it is for the restore path, which reads objects, not bytes on disk.
-func (r Record) validateRestorable() error {
+func (r Record) ValidateRestorable() error {
 	if r.ArchiveDigest == "" && r.ArchiveBytes == 0 && r.ArchiveFormat == "" {
 		return r.validateSnapshot()
 	}

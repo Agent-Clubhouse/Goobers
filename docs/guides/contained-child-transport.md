@@ -208,3 +208,44 @@ Missing or changed receipts, replacement pods and missing stopped-writer or
 surrender proof remain refusals. Loss before the first durable receipt, loss
 during reconciliation and daemon reconstruction are not qualified by this test.
 Public/parallel admission remains gated.
+
+### Sequential agent-authored parents
+
+The daemon coordinates opted-in parent stages through their pinned Linux image
+runners. Configure the existing authenticated worker transport, an eligible
+Claude Code or Codex API-authenticated Goober, a managed repository workspace,
+and the stage's child-workflow policy. Standalone execution and missing contained
+services remain refused. Ordinary stages retain their existing placement policy.
+
+The parent can submit a child composed of allowed existing Goobers, then wait
+without consuming its concurrency permit. The wait retains the accepted child,
+source generation, stage context, human instructions and cumulative accounting.
+After the child settles, the parent reacquires capacity and continues. The portal
+can read the linked parent/child history. Repeated children use separate physical
+attempts and retain their own outcomes.
+
+The daemon records the parent workspace hold before dispatch. Returned committed,
+staged and working state remain distinct. On terminal completion, verified
+recovery inventory owns the archive before the checkout is released; interrupted
+retirement retries under the journal lease. Resume restores the exact recorded
+archive before another executor starts. Missing custody evidence, unfinished or
+unacknowledged children, changed source policy or intervening checkout changes
+prevent cleanup or replacement.
+
+The production-path qualification replaces only the external model and forge
+with deterministic fixtures. Build `cmd/goobers/testdata/qualification-claude.cjs`
+into the local worker image as `/usr/local/bin/claude`, and set
+`GOOBERS_PARENT_QUALIFICATION_IMAGE` to a unique
+`localhost:45081/goobers:haw-parent-...` tag. With the explicit disposable kubeconfig
+and Temporal CLI above, run the `TestIntegrationContainedParent` tests using
+`go test -race -tags=integration ./cmd/goobers -count=1 -timeout=25m -v` and an
+appropriate `-run` filter. The daemon-loss case kills a real fsync-enabled daemon
+process and starts a fresh one, requiring the same accepted child and exact
+physical stop/surrender/disposal evidence before completion.
+
+Parallel parent admission remains refused pending separate fork/fan-in
+qualification; children per parallel stage remain planned. Recursive children
+and generated Goober definitions are outside v1. Delegated child PR publication
+requires its own provider-write and ambiguous-result recovery qualification.
+Loss before a durable worker receipt or during reconciliation is not proved by
+the parked-parent daemon-loss test. A closed connection never proves work stopped.
