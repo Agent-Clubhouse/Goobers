@@ -37,6 +37,9 @@ type childKitFixture struct {
 
 type childKitFixtureOptions struct {
 	gooberCapabilities []string
+	runnerImage        string
+	runnerShell        bool
+	podTokenKeyFile    string
 	isolated           bool
 	queued             bool
 	parent             string
@@ -77,10 +80,22 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 			if err := yaml.Unmarshal([]byte(readFileContent(t, configPath)), &document); err != nil {
 				t.Fatal(err)
 			}
+			if options.podTokenKeyFile != "" {
+				api, _ := document["api"].(map[string]any)
+				if api == nil {
+					api = map[string]any{}
+				}
+				api["podTokenKeyFile"] = options.podTokenKeyFile
+				document["api"] = api
+			}
 			delete(document, "runner")
 			document["schemaVersion"] = 2
 			document["engine"] = map[string]any{"hostPort": "temporal:7233"}
-			document["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": "ghcr.io/example/child:1", "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "capabilities": []string{"isolated-child"}}}}
+			image := options.runnerImage
+			if image == "" {
+				image = "ghcr.io/example/child:1"
+			}
+			document["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": image, "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "shell": options.runnerShell, "capabilities": []string{"isolated-child"}}}}
 			data, err := yaml.Marshal(document)
 			if err != nil {
 				t.Fatal(err)
