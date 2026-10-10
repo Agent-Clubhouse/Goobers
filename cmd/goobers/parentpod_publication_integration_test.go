@@ -31,7 +31,7 @@ func TestIntegrationContainedParentDelegatesChildPublicationThroughRealWorkers(t
 	}
 }
 
-func configureParentPublicationQualification(t *testing.T, root string) {
+func configureParentPublicationQualification(t *testing.T, root string, provider ...string) {
 	t.Helper()
 	parentPath := filepath.Join(root, "config/gaggles/example/workflows/default-implement.yaml")
 	parent := readFileContent(t, parentPath)
@@ -58,6 +58,9 @@ func configureParentPublicationQualification(t *testing.T, root string) {
 		grants = append(grants, map[string]any{"capability": key, "token": map[string]any{"env": env}})
 	}
 	doc["credentials"] = grants
+	if len(provider) != 0 && provider[0] == "ado" {
+		configureADOParentPublication(t, root, doc)
+	}
 	data, err := yaml.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -65,26 +68,31 @@ func configureParentPublicationQualification(t *testing.T, root string) {
 	writeFileContent(t, path, string(data))
 }
 
-// Only the external Git remote and GitHub HTTPS endpoint are substituted.
+// Only the external Git remote and provider HTTPS endpoint are substituted.
 // The actual publisher, credential broker and native provider adapter run.
 type parentPublicationQualification struct {
 	mu                            sync.Mutex
 	remote, endpoint, head, child string
 	creates                       int
 	lostReply                     bool
+	ado                           bool
 }
 
-func newParentPublicationQualification(t *testing.T, mode, source string) *parentPublicationQualification {
+func newParentPublicationQualification(t *testing.T, mode, source string, provider ...string) *parentPublicationQualification {
 	t.Helper()
 	if !strings.HasPrefix(mode, "publication") {
 		return nil
 	}
-	p := &parentPublicationQualification{remote: filepath.Join(t.TempDir(), "forge.git"), lostReply: mode == "publication-lost-reply"}
+	p := &parentPublicationQualification{remote: filepath.Join(t.TempDir(), "forge.git"), lostReply: mode == "publication-lost-reply", ado: len(provider) != 0 && provider[0] == "ado"}
 	recoveryCLIGit(t, source, "init", "--bare", p.remote)
 	recoveryCLIGit(t, source, "push", p.remote, "main")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
+		if p.ado {
+			p.serveADO(t, w, req)
+			return
+		}
 		if req.Header.Get("Authorization") != "Bearer host-only-publication-provider:pr:write" || req.URL.Path != "/repos/your-org/your-repo/pulls" {
 			t.Error("publication request escaped its credential or repository boundary")
 			http.Error(w, "unexpected request", http.StatusForbidden)
@@ -147,12 +155,23 @@ func (p *parentPublicationQualification) install(t *testing.T, service *daemonCr
 		p.mu.Lock()
 		p.head, p.child = target.Head, target.Child.RunID
 		p.mu.Unlock()
+		if p.ado && (scheme != "basic" || target.Repository.Provider != providers.ProviderADO || target.Repository.Project != "child-project") {
+			return publisher, errors.New("ADO publication changed its delivered scheme or project")
+		}
 		if publisher.PRs != nil {
-			provider, ok := publisher.PRs.(*providers.GitHubProvider)
-			if !ok {
-				return publisher, errors.New("expected native GitHub provider")
+			if p.ado {
+				provider, ok := publisher.PRs.(*providers.ADOProvider)
+				if !ok {
+					return publisher, errors.New("expected native Azure DevOps provider")
+				}
+				provider.BaseURL = p.endpoint
+			} else {
+				provider, ok := publisher.PRs.(*providers.GitHubProvider)
+				if !ok {
+					return publisher, errors.New("expected native GitHub provider")
+				}
+				provider.BaseURL = p.endpoint
 			}
-			provider.BaseURL = p.endpoint
 		}
 		return publisher, nil
 	}
@@ -186,7 +205,7 @@ func (p *parentPublicationQualification) verify(t *testing.T, ctx context.Contex
 	if statuses[0].State != "confirmed" || statuses[1].State != wantPR || statuses[1].NeedsHuman != p.lostReply {
 		t.Fatal("publication uncertainty lost", statuses)
 	}
-	if !p.lostReply && (statuses[1].PullRequestNumber != 7 || statuses[1].PullRequestURL != "https://github.com/your-org/your-repo/pull/7") {
+	if !p.lostReply && (statuses[1].PullRequestNumber != 7 || statuses[1].PullRequestURL != p.expectedPRURL()) {
 		t.Fatal("confirmed PR link lost")
 	}
 	dir, err := fixture.layout.FindRunDir(parent)

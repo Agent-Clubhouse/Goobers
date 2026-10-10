@@ -70,7 +70,7 @@ func TestIntegrationContainedParentSurvivesDispatchProcessLoss(t *testing.T) {
 	qualifyContainedParentJourney(t, "worker-crash")
 }
 
-func qualifyContainedParentJourney(t *testing.T, action string) {
+func qualifyContainedParentJourney(t *testing.T, action string, provider ...string) {
 	t.Helper()
 	fenceFirst := action == "cancel-fence-first"
 	if fenceFirst {
@@ -107,7 +107,7 @@ esac
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("QUALIFICATION_MODEL_TOKEN", "qualification-model-only")
-	f := realParentQualificationFixture(t, image, keyPath, action)
+	f := realParentQualificationFixture(t, image, keyPath, append([]string{action}, provider...)...)
 	sourceRepo := t.TempDir()
 	recoveryCLIGit(t, sourceRepo, "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(sourceRepo, "source.txt"), []byte("parent source\n"), 0600); err != nil {
@@ -122,7 +122,7 @@ esac
 	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
 	recoveryCLIGit(t, sourceRepo, "commit", "-m", "qualification base")
-	publication := newParentPublicationQualification(t, action, sourceRepo)
+	publication := newParentPublicationQualification(t, action, sourceRepo, provider...)
 	originalClone := repoCloneURL
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return sourceRepo, nil }
 	t.Cleanup(func() { repoCloneURL = originalClone })
@@ -507,7 +507,7 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		}
 		writeFileContent(t, path, string(data))
 		if len(mode) != 0 && strings.HasPrefix(mode[0], "publication") {
-			configureParentPublicationQualification(t, root)
+			configureParentPublicationQualification(t, root, mode[1:]...)
 		}
 	})
 }
