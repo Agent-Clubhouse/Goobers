@@ -201,3 +201,32 @@ receive `rejected` / `live_delivery_unsupported`. This does **not** mean the
 message is queued for a later attempt: the engine has no such consumer.
 Terminal runs receive `rejected` / `target_terminal` in their journal without
 trying to reopen or update a closed Temporal workflow.
+
+### Operator-message conformance
+
+`TestOperatorMessageLocalTemporalConformance` (`cmd/goobers`) submits the same
+request vectors through the local-runner and Temporal-engine daemon fixtures and
+compares the normalized journal records (request identity, target, principal,
+delivery mode, acknowledgement and terminal outcome), per-submission responses,
+and per-agent adapter deliveries. The following are equivalent across both
+adapters: selected-agent isolation, live mode negotiation (between-turn
+preferred over interrupt-and-continue), duplicate idempotency keys, expiry,
+retry of an accepted or acknowledged request without redelivery, typed adapter
+failure and cancellation, unauthorized principals (`rejected` /
+`not_authorized` with the verified principal preserved), foreign-run addresses,
+and scrubbed persistence.
+
+The only declared divergences arise when no live adapter can take the message.
+The local runner records an `accepted` `next-attempt` request with no outcome,
+while the Temporal engine records a typed rejection because it has no queued
+message consumer:
+
+| Case | Local runner | Temporal engine |
+| --- | --- | --- |
+| Live agent with no reachable adapter | `accepted`, `next-attempt` | `rejected` / `live_delivery_unsupported` |
+| Unknown agent address | `accepted`, `next-attempt` | `rejected` / `target_unavailable` |
+| Stale agent address (stage restarted) | `accepted`, `next-attempt` | `rejected` / `target_unavailable` |
+| Terminated run | `accepted`, `next-attempt` | `rejected` / `target_terminal` |
+
+Each divergence is pinned per adapter, and the suite fails if an undeclared
+divergence appears or if a declared one stops diverging.
