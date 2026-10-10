@@ -31,7 +31,7 @@ func TestParentBlobHTTPPinsAttemptAndStopsAfterJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := childPodStarted(reader, "plan", 1, false)
+	started, err := childPodStarted(reader, "plan", 1, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -141,7 +140,14 @@ func appendInterruptedAttemptClosure(branchJournal *branchJournal, history []jou
 	}); err != nil {
 		return err
 	}
-	if checkMutation && interruptedAttemptMutated(history, state, attempt) {
+	if checkMutation {
+		return refuseInterruptedMutation(history, state, attempt)
+	}
+	return nil
+}
+
+func refuseInterruptedMutation(history []journal.Event, state string, attempt int) error {
+	if interruptedAttemptMutated(history, state, attempt) {
 		return fmt.Errorf(
 			"runner: refusing to resume stage %q: attempt %d already touched an external mutation before the runner was interrupted; redispatching would duplicate it — reconcile manually, then rerun",
 			state, attempt,
@@ -151,6 +157,7 @@ func appendInterruptedAttemptClosure(branchJournal *branchJournal, history []jou
 }
 
 type parallelBranchResult struct {
+	slot              *parallelBranchSlot
 	index             int
 	status            journal.BranchStatus
 	lastStage         string
@@ -210,11 +217,11 @@ func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Par
 
 			if task, ok := machine.Task(state); ok {
 				mode := taskWorkspaceMode(task)
-				if mode != apiv1.WorkspaceScratch && mode != apiv1.WorkspaceRepoReadOnly {
+				if !parallelWorkspaceAllowed(machine, p, mode) {
 					return fmt.Errorf("parallel %q: maxConcurrentBranches %d requires every branch stage to use scratch or repo-readonly; branch %q task %q resolves to workspace %q",
 						p.Name, p.MaxConcurrentBranches, branch.Name, task.Name, mode)
 				}
-				if task.Run != nil && task.Run.SyncBase {
+				if task.Run != nil && task.Run.SyncBase && !parallelHasChildStage(machine, p) {
 					return fmt.Errorf("parallel %q: branch %q task %q requests syncBase, which requires a writable repo workspace",
 						p.Name, branch.Name, task.Name)
 				}
@@ -224,7 +231,7 @@ func validateConcurrentParallelWorkspaces(machine *workflow.Machine, p apiv1.Par
 				}
 				if g.Evaluator == apiv1.EvaluatorAgentic {
 					mode := gateWorkspaceMode(g)
-					if mode != apiv1.WorkspaceScratch && mode != apiv1.WorkspaceRepoReadOnly {
+					if !parallelWorkspaceAllowed(machine, p, mode) {
 						return fmt.Errorf("parallel %q: maxConcurrentBranches %d requires every branch stage to use scratch or repo-readonly; branch %q gate %q resolves to workspace %q",
 							p.Name, p.MaxConcurrentBranches, branch.Name, g.Name, mode)
 					}
@@ -287,6 +294,10 @@ func (r *Runner) runConcurrentParallel(
 		workspaceBranch = lastWorkspaceBranch(rootEvents, in.Machine, r.branchNamespaceFor(in.Gaggle))
 	}
 	branchEvents := newParallelBranchEventIndex(events, p.Name)
+	runtime, err := r.prepareParallelRuntime(ctx, jr, in, par, workspaceBranch, events)
+	if err != nil {
+		return concurrentParallelResult{}, err
+	}
 
 	limit := int(p.MaxConcurrentBranches)
 	if limit > len(p.Branches) {
@@ -318,14 +329,19 @@ func (r *Runner) runConcurrentParallel(
 		return concurrentParallelResult{parallel: par, paused: true}, nil
 	}
 
-	dispatch := &parallelDispatch{queue: queue, limit: limit, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
+	slots := newParallelBranchSlots(limit)
+	dispatch := &parallelDispatch{released: slots.changed, queue: queue, outcomes: outcomes, results: results, cancel: cancel, failurePolicy: p.FailurePolicy, terminalTriggered: terminalTriggered}
 	dispatch.settle = func(result parallelBranchResult) error {
-		return settleConcurrentBranch(jr, par, p.Name, result)
+		return r.settleParallelRuntimeBranch(ctx, jr, in, par, runtime, result)
 	}
 	dispatch.cancelQueued = func() error {
-		return cancelQueuedParallelBranches(jr, par, p, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in)
+		return cancelQueuedParallelBranches(par, queue, &dispatch.next, outcomes, baseCompleted, branchEvents, in, dispatch.settle)
 	}
-	dispatch.launch = func(index int) error {
+	dispatch.launch = func(index int) (bool, error) {
+		slot, available := slots.tryAcquire()
+		if !available {
+			return false, nil
+		}
 		branch := par.branchSnapshot(index)
 		if !branch.started {
 			var cursors []journal.BranchCursor
@@ -338,17 +354,21 @@ func (r *Runner) runConcurrentParallel(
 				BranchName: branch.name,
 				Stage:      branch.start,
 			}); err != nil {
-				return err
+				slot.release()
+				return false, err
 			}
 		}
+		branchInput := parallelBranchInput(in, runtime, slot, branch.id, workspaceBranch)
 		go func() {
-			results <- r.runParallelBranch(
-				branchCtx, jr, par, in, branch, basePointers, baseLastStage,
-				baseLastResult, baseCompleted, workspaceBranch, reg,
+			result := r.runParallelBranch(
+				branchCtx, jr, par, branchInput, branch, basePointers, baseLastStage,
+				baseLastResult, baseCompleted, branchInput.WorkspaceBranch, reg,
 				branchEvents.events(branch.id), stepBudget,
 			)
+			result.slot = slot
+			results <- result
 		}()
-		return nil
+		return true, nil
 	}
 
 	if err := dispatch.run(); err != nil {
@@ -358,6 +378,9 @@ func (r *Runner) runConcurrentParallel(
 		return concurrentParallelResult{parallel: par, paused: true}, nil
 	}
 
+	if err := r.verifyParallelForkResults(ctx, jr, in, p, runtime, outcomes); err != nil {
+		return concurrentParallelResult{}, err
+	}
 	mergedCompleted := cloneStageOutputs(baseCompleted)
 	lastStage, lastResult := baseLastStage, baseLastResult
 	workspaceRevision := in.workspaceRevision.DeepCopy()
@@ -392,6 +415,9 @@ func (r *Runner) runConcurrentParallel(
 	target, runJoin := par.route()
 	if terminalTarget != "" {
 		target, runJoin = terminalTarget, false
+	}
+	if err := r.joinParallelForks(ctx, jr, in, p, runtime, outcomes, runJoin); err != nil {
+		return concurrentParallelResult{}, err
 	}
 	jr.SetBranchCursors(nil)
 	if err := jr.Append(journal.Event{
@@ -492,83 +518,18 @@ func (r *Runner) runParallelBranch(
 		state = retryTarget
 	}
 
-	var replayTask *apiv1.ResultEnvelope
-	var replayGate *gate.Result
-	var replayGateEvent *journal.Event
-	startAttempt := int32(1)
-	var firstClass journal.AttemptClass
-	var committedWorkOnInfra bool
-	var resumeAccounting *resumeRetryAccounting
-	var retryInstructionAddendum string
-	if boundary, ok := lastParallelBoundary(history); ok {
-		if task, isTask := in.Machine.Task(state); isTask {
-			switch {
-			case boundary.Type == journal.EventStageFinished && boundary.Stage == state && !isInterruptedAttemptMarker(boundary):
-				replayed := result.lastResult
-				replayTask = &replayed
-			case boundary.Type == journal.EventStageStarted && boundary.Stage == state:
-				attempt := boundary.Attempt
-				if attempt == 0 {
-					attempt = 1
-				}
-				errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
-				runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
-				if task.Type == apiv1.TaskAgentic {
-					limits, err := workflow.TaskLimits(in.Machine, task)
-					if err != nil {
-						result.status, result.err = journal.BranchFailed, err
-						return result
-					}
-					if usageBudgetConfigured(limits) {
-						interrupted := interruptedStageBudgetFailure(limits)
-						replayTask = &interrupted
-						errorDetail = errorDetailFrom(interrupted)
-						runnerDetail = nil
-					}
-				}
-				if err := appendInterruptedAttemptClosure(branchJournal, history, state, attempt, errorDetail, runnerDetail, replayTask == nil); err != nil {
-					result.status, result.err = journal.BranchFailed, err
-					return result
-				}
-				if replayTask == nil {
-					startAttempt = int32(attempt) + 1
-					firstClass = journal.AttemptInfra
-					committedWorkOnInfra = infraFailedAttemptCommittedWork(history, state, attempt)
-					resumeAccounting = &resumeRetryAccounting{
-						policyAttempts:            policyAttemptsBefore(history, state, attempt),
-						infrastructureFailures:    infrastructureFailuresBefore(history, state, attempt),
-						replacementConsumesPolicy: boundary.AttemptClass != journal.AttemptInfra,
-					}
-				}
-			}
-		} else if _, isGate := in.Machine.Gate(state); isGate &&
-			boundary.Type == journal.EventGateEvaluated && boundary.Gate == state {
-			gr := gateResultFromEvent(boundary)
-			replayGate = &gr
-			event := boundary
-			replayGateEvent = &event
-		}
+	restored, err := recoverParallelStage(branchJournal, in.Machine, state, result.lastResult, history)
+	if err != nil {
+		result.status, result.err = journal.BranchFailed, err
+		return result
 	}
+	replayTask, replayGate, replayGateEvent := restored.task, restored.gate, restored.gateEvent
+	startAttempt, firstClass := restored.attempt, restored.class
+	committedWorkOnInfra, resumeAccounting := restored.committed, restored.accounting
+	var retryInstructionAddendum string
 
 	for {
-		if ctx.Err() != nil {
-			result.status = journal.BranchCancelled
-			result.paused = parallelDrainCancellation(ctx)
-			return result
-		}
-		// Exceeding branchTimeoutSeconds terminates at the next stage
-		// boundary (never mid-stage — see the field's doc comment), so this
-		// is a plain check here, not a context deadline: a stage that is
-		// already running finishes on its own, exactly like the sequential
-		// path (run.go).
-		if deadline := branch.deadline(par.spec.BranchTimeoutSeconds); !deadline.IsZero() && !time.Now().Before(deadline) {
-			result.status = journal.BranchTimedOut
-			result.failed = true
-			return result
-		}
-		if stepBudget.Add(1) > int64(r.maxSteps) {
-			result.status = journal.BranchFailed
-			result.err = fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps)
+		if r.stopParallelBranchAtBoundary(ctx, jr, in, par, branch, stepBudget, &result, restored) {
 			return result
 		}
 		branchJournal.SetMachineState(state)
@@ -580,21 +541,23 @@ func (r *Runner) runParallelBranch(
 			replayed := replayTask != nil
 			if replayed {
 				stageResult = *replayTask
-				replayTask = nil
+				replayTask, restored.child, restored.parent = nil, nil, false
 			} else {
 				attemptAddendum := retryInstructionAddendum
 				retryInstructionAddendum = ""
+				frame := taskFrame{
+					jr: branchJournal, in: in, ex: ex, t: task,
+					upstream:        branchContextPointers(basePointers, result.pointers),
+					upstreamResult:  result.lastResult,
+					completed:       result.completed,
+					workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
+					workspaceRevision: &in.workspaceRevision,
+					repoRef:           &in.RepoRef,
+				}
+				applyChildTaskResume(&frame, restored.child)
+				restored.child, restored.parent = nil, false
 				stageResult, produced, err = r.runTask(
-					ctx,
-					taskFrame{
-						jr: branchJournal, in: in, ex: ex, t: task,
-						upstream:        branchContextPointers(basePointers, result.pointers),
-						upstreamResult:  result.lastResult,
-						completed:       result.completed,
-						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded, reboundRecorded: &reboundRecorded,
-						workspaceRevision: &in.workspaceRevision,
-						repoRef:           &in.RepoRef,
-					},
+					ctx, frame,
 					branch.id, startAttempt, firstClass, attemptAddendum,
 					nil, committedWorkOnInfra, resumeAccounting,
 				)
@@ -602,8 +565,7 @@ func (r *Runner) runParallelBranch(
 				firstClass = ""
 				resumeAccounting = nil
 			}
-			if err = taskDispatchError(task.Name, stageResult, err); err != nil {
-				result.status, result.err = journal.BranchFailed, err
+			if parallelInvocationFailed(taskDispatchError(task.Name, stageResult, err), &result) {
 				return result
 			}
 			if !replayed {
@@ -728,8 +690,7 @@ func (r *Runner) runParallelBranch(
 					return result
 				}
 			}
-			if err != nil {
-				result.status, result.err = journal.BranchFailed, err
+			if parallelInvocationFailed(err, &result) {
 				return result
 			}
 			retryClass, _, retryable := retryFailureClassForGateResult(g, result.lastResult, gr.Outcome)

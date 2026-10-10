@@ -3,7 +3,6 @@ package runner
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -28,6 +27,9 @@ func ParentRetirementCandidates(reader *journal.Reader) ([]ParentRetirementCandi
 	}
 	events, err := reader.Events()
 	if err != nil {
+		return nil, err
+	}
+	if err := requireParallelForkArchiveOwnership(reader, events); err != nil {
 		return nil, err
 	}
 	branches, err := heldParentBranches(events)
@@ -81,8 +83,9 @@ func parentEventCustody(event journal.Event) (ContainedParentWorkspaceCustody, b
 	if event.Type != journal.EventRunnerAnnotation {
 		return custody, false, nil
 	}
-	if kind, _ := event.Runner["kind"].(string); strings.HasPrefix(kind, "isolated.parent.fork.") {
-		return custody, true, errors.New("parallel parent archive ownership is not supported")
+	if event.Runner["kind"] == ParentForkReadyKind || event.Runner["kind"] == ParentForkRootReadyKind {
+		fork, err := decodeParentForkCustody(event)
+		return ContainedParentWorkspaceCustody{Version: 1, Workspace: fork.Workspace}, true, err
 	}
 	if event.Runner["kind"] != ContainedParentWorkspaceKind {
 		return custody, false, nil

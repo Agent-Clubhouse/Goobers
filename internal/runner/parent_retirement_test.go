@@ -62,25 +62,3 @@ func TestParentRetirementFailureDoesNotSkipTerminalFinalization(t *testing.T) {
 		t.Fatal("retirement failure lacked durable diagnosis")
 	}
 }
-
-func TestParentRetirementRefusesUnsupportedForkHistory(t *testing.T) {
-	for _, kind := range []string{"isolated.parent.fork.ready", "isolated.parent.fork.root.ready", "isolated.parent.fork.preparing"} {
-		t.Run(kind, func(t *testing.T) {
-			run, err := journal.Create(t.TempDir(), journal.RunIdentity{RunID: "unsupported-fork"}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = run.Close() }()
-			if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": kind}}); err != nil {
-				t.Fatal(err)
-			}
-			reader, err := journal.OpenReadOnly(run.Dir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if candidates, err := ParentRetirementCandidates(reader); err == nil || len(candidates) != 0 {
-				t.Fatal("unsupported workspace ownership was treated as safe to retire", candidates, err)
-			}
-		})
-	}
-}

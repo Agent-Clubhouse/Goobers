@@ -55,6 +55,9 @@ func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJour
 	if archive.Custody.Workspace.RepositoryDigest != worktree.RepositoryDigest(url) {
 		return errors.New("parent restore repository differs from custody")
 	}
+	if err := r.importArchivedForkSource(ctx, rec, reader, archive); err != nil {
+		return err
+	}
 	policy, _ := resolveRecoveryPolicy(r.layout, r.config)
 	maxBytes := policy.MaxArchiveBytesEffective()
 	var state recovery.RetainedParentState
