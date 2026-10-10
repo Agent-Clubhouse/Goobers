@@ -33,14 +33,14 @@ func recordedChildWait(t *testing.T) (*Runner, *journal.Run, taskFrame, []journa
 }
 
 func TestRunExecutionElapsedExcludesChildWaitAndStopsAtSettlement(t *testing.T) {
-	_, _, _, events, marker := recordedChildWait(t)
+	_, _, frame, events, marker := recordedChildWait(t)
 	start := marker.Time.Add(-time.Minute)
 	now := marker.Time.Add(30 * 24 * time.Hour)
 	elapsed, err := RunExecutionElapsed(events, start, now)
 	if err != nil || elapsed != time.Minute {
 		t.Fatalf("parked execution elapsed = %s, %v", elapsed, err)
 	}
-	request, parked, err := ParkedChildRequest(events)
+	request, _, parked, err := ParkedChildRequestForOrigin(events, *frame.childOrigin)
 	if err != nil || !parked {
 		t.Fatal(request, parked, err)
 	}

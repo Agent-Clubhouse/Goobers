@@ -71,6 +71,10 @@ func invokeChildAgent(ctx context.Context, tf taskFrame, invocation *gooberInvoc
 // or run.finished closes an earlier unacknowledged scope. A crashed writer
 // requires independently verified owner cleanup before recovery can continue.
 func VerifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdentity, events []journal.Event) error {
+	return verifyChildWorkspaceQuiescence(reader, id, events, nil)
+}
+
+func verifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdentity, events []journal.Event, branch *int) error {
 	if err := verifyChildWriterPolicy(reader, id); err != nil {
 		return err
 	}
@@ -98,8 +102,10 @@ func VerifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdenti
 		}
 		delete(pending, scope)
 	}
-	if len(pending) != 0 {
-		return invoke.ErrWorkspaceNotQuiescent
+	for _, scope := range pending {
+		if childWriterBlocksBranch(scope.Branch, branch) {
+			return invoke.ErrWorkspaceNotQuiescent
+		}
 	}
 	return nil
 }
@@ -149,5 +155,17 @@ func childWriterCustodyReady(jr journalAppender) error {
 	if err != nil {
 		return err
 	}
-	return VerifyChildWorkspaceQuiescence(reader, id, events)
+	recorder, ok := jr.(ArtifactRecorder)
+	if !ok {
+		return invoke.ErrWorkspaceNotQuiescent
+	}
+	_, branch, err := OwnedJournalScope(recorder)
+	if err != nil {
+		return err
+	}
+	return verifyChildWorkspaceQuiescence(reader, id, events, &branch)
+}
+
+func childWriterBlocksBranch(owner int, branch *int) bool {
+	return branch == nil || *branch == 0 || owner == 0 || owner == *branch
 }

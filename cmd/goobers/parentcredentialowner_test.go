@@ -47,7 +47,7 @@ func TestParentCredentialsRequireActiveAttemptAndCurrentModelPermission(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			started, err := childPodStarted(rd, "plan", 1, false)
+			started, err := childPodStarted(rd, "plan", 1, false, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

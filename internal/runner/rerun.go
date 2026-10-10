@@ -153,7 +153,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			RunControls:      runControls,
 		}
 		branch := 0
-		if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 {
+		if activeParallel != nil && !parallelUsesDispatcher(in.Machine, activeParallel.spec) {
 			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
 				branch = owner.id
 			}

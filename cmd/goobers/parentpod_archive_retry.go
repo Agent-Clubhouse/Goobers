@@ -15,12 +15,21 @@ func (r parentArchiveRestorer) retryRetirement(reader *journal.Reader) error {
 	if err != nil {
 		return err
 	}
-	missing := false
+	missing := len(work.joins) != 0 || len(work.forks) != 0 || len(work.preparations) != 0
 	for _, candidate := range work.candidates {
 		missing = missing || candidate.RetirementSeq == 0
 	}
 	if !missing {
-		return nil
+		retired, err := runner.RetiredParentForks(reader)
+		if err != nil {
+			return err
+		}
+		for _, value := range retired {
+			missing = missing || !value.ReleaseRecorded
+		}
+		if !missing {
+			return nil
+		}
 	}
 	phase, err := reader.Phase()
 	if err != nil {
@@ -38,14 +47,4 @@ func (r parentArchiveRestorer) retryRetirement(reader *journal.Reader) error {
 	// branches and never replaces existing retirement authority.
 	retireErr := r.retire(writer)
 	return errors.Join(retireErr, writer.Close())
-}
-
-type parentRetirementWork struct {
-	candidates []runner.ParentRetirementCandidate
-}
-
-func (w parentRetirementWork) empty() bool { return len(w.candidates) == 0 }
-func readParentRetirementWork(reader *journal.Reader) (parentRetirementWork, error) {
-	candidates, err := runner.ParentRetirementCandidates(reader)
-	return parentRetirementWork{candidates: candidates}, err
 }

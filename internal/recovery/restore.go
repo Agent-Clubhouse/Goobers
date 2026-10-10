@@ -70,6 +70,12 @@ func restoredSnapshotTree(ctx context.Context, repository string, record Record,
 // applySnapshotTree only prepares a tree in a private index. Callers validate
 // the record, protected paths and their own ancestry contract before entering.
 func applySnapshotTree(ctx context.Context, repository string, record Record, currentMain string, maxPatchBytes int64) (string, error) {
+	return applySnapshotTrees(ctx, repository, []Record{record}, currentMain, maxPatchBytes)
+}
+
+// A single private index accumulates fork-relative patches in declaration order.
+// The byte budget is shared across all patches, including empty results.
+func applySnapshotTrees(ctx context.Context, repository string, records []Record, currentMain string, maxPatchBytes int64) (string, error) {
 	directory, err := privateGitDirectory(ctx, repository, "goobers-recovery-restore-*")
 	if err != nil {
 		return "", err
@@ -93,8 +99,11 @@ func applySnapshotTree(ctx context.Context, repository string, record Record, cu
 	if err := recoveryGitWithEnv(ctx, repository, io.Discard, environment, "read-tree", currentMain); err != nil {
 		return "", err
 	}
-	if err := applyRetainedPatch(ctx, repository, directory, environment, record, maxPatchBytes); err != nil {
-		return "", err
+	budget := maxPatchBytes
+	for index, record := range records {
+		if err := applyRetainedPatch(ctx, repository, directory, environment, record, &budget); err != nil {
+			return "", fmt.Errorf("result %d: %w", index+1, err)
+		}
 	}
 	var tree boundedRefOutput
 	if err := recoveryGitWithEnv(ctx, repository, &tree, environment, "write-tree"); err != nil {
@@ -107,18 +116,23 @@ func applySnapshotTree(ctx context.Context, repository string, record Record, cu
 	return id, nil
 }
 
-func applyRetainedPatch(ctx context.Context, repository, directory string, environment []string, record Record, budget int64) error {
-	file, err := os.OpenFile(filepath.Join(directory, "retained.patch"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+func applyRetainedPatch(ctx context.Context, repository, directory string, environment []string, record Record, budget *int64) error {
+	file, err := os.OpenFile(filepath.Join(directory, "retained.patch"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = file.Close() }()
-	digest, err := WriteSnapshotPatch(ctx, repository, record.BaseSHA, record.SnapshotSHA, &archiveBudgetWriter{destination: file, remaining: budget})
+	writer := &archiveBudgetWriter{destination: file, remaining: *budget}
+	digest, err := WriteSnapshotPatch(ctx, repository, record.BaseSHA, record.SnapshotSHA, writer)
+	*budget = writer.remaining
 	if err != nil {
 		return err
 	}
 	if digest != record.PatchDigest {
 		return fmt.Errorf("retained patch digest changed before restore")
+	}
+	if digest == emptyPatchDigest {
+		return nil
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err

@@ -107,12 +107,8 @@ func TestRecoveredAcceptedWaitPreservesIndependentParallelBranches(t *testing.T)
 	}
 	reader, _ := journal.OpenReadOnly(run.Dir())
 	events, err := reader.Events()
-	if err != nil {
-		t.Fatal(err)
-	}
-	projection, err := journal.ProjectChildWaits(events)
-	if err != nil || len(projection.Waits) != 2 {
-		t.Fatal("both branch wait records not retained", err)
+	if err != nil || !ParkedOnChild(events) {
+		t.Fatal("both branch waits not retained", err)
 	}
 	for i, request := range requests {
 		actual, started, waiting, err := ParkedChildRequestForOrigin(events, request.Origin)

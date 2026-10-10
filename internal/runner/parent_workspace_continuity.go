@@ -81,29 +81,35 @@ func selectHeldParentContribution(events []journal.Event, runID, branch string) 
 	if state.retiredAt != 0 {
 		return parentContribution{}, false, errors.New("parent contribution has been retired")
 	}
-	return state.contribution, state.returnedAt != 0, nil
+	return state.contribution, state.returnedAt != 0 && state.fork == nil, nil
 }
 
 func inheritedParentCustody(reader *journal.Reader, events []journal.Event, runID, branch string) (worktree.StageCustody, bool, error) {
-	contribution, found, err := selectHeldParentContribution(events, runID, branch)
-	if err != nil || !found {
+	state, err := readParentWorkspaceState(events, runID, branch)
+	if err != nil {
 		return worktree.StageCustody{}, false, err
 	}
-	if _, err := reader.ArtifactBytesBounded(contribution.Output, maxParentContributionBytes); err != nil {
-		return worktree.StageCustody{}, false, err
+	if state.retiredAt != 0 {
+		return worktree.StageCustody{}, false, errors.New("parent contribution has been retired")
 	}
-	return contribution.Custody.Workspace, true, nil
-}
-
-func (r *Runner) ownedStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, branch string) (*stageWorkspace, error) {
-	if in.heldChildWorkspace != nil {
-		return in.heldChildWorkspace, nil
+	if state.returnedAt == 0 {
+		return worktree.StageCustody{}, false, nil
 	}
-	if inherited, err := r.inheritedParentWorkspace(ctx, in, mode, syncBase, branch); inherited != nil || err != nil {
-		return inherited, err
+	if state.fork != nil {
+		if state.branch != 0 {
+			return worktree.StageCustody{}, false, errors.New("branch fork cannot replace the root workspace")
+		}
+		if _, _, err := ParentForkArchivePlan(reader, state.archiveValue(journal.Ref{})); err != nil {
+			return worktree.StageCustody{}, false, err
+		}
+	} else {
+		contribution, found, err := selectHeldParentContribution(events, runID, branch)
+		if err != nil || !found {
+			return worktree.StageCustody{}, false, err
+		}
+		if _, err := reader.ArtifactBytesBounded(contribution.Output, maxParentContributionBytes); err != nil {
+			return worktree.StageCustody{}, false, err
+		}
 	}
-	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
-		return r.createChildStageWorkspace(ctx, in, stageName, mode, syncBase, branch)
-	}
-	return nil, nil
+	return state.hold.Workspace, true, nil
 }
