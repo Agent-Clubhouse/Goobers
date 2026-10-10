@@ -3,8 +3,9 @@
 package main
 
 import (
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"testing"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationParentAuthorsParallelChildThroughRealWorkers(t *testing.T) {
