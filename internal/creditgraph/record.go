@@ -21,6 +21,10 @@ const (
 	RecordSchemaVersion = "goobers.dev/backprop/record/v1"
 	// RecordFileName is the immutable, run-scoped Backprop result.
 	RecordFileName = "attribution.json"
+	// ShadowRecordFileName is the run-scoped shadow-mode result. It lives in a
+	// separate namespace so filing passes, gates, and default read surfaces,
+	// which only read RecordFileName, never consume shadow attribution.
+	ShadowRecordFileName = "attribution.shadow.json"
 )
 
 // RecordStatus distinguishes a completed estimate from an honest refusal and
@@ -41,6 +45,7 @@ type RunRecord struct {
 	Schema           string                    `json:"schema"`
 	Status           RecordStatus              `json:"status"`
 	ContractVersion  string                    `json:"contractVersion"`
+	Mode             apiv1.BackpropMode        `json:"mode,omitempty"`
 	RunID            string                    `json:"runId"`
 	Gaggle           string                    `json:"gaggle"`
 	Workflow         string                    `json:"workflow"`
@@ -61,8 +66,10 @@ type pinnedDefinition struct {
 }
 
 // WriteRunRecord computes and atomically publishes attribution for an enrolled
-// run. Local terminalization passes nil after run.finished is durable; terminal
-// remains available to callers analyzing an immutable synthetic event stream.
+// run. Active runs publish RecordFileName; shadow runs publish only
+// ShadowRecordFileName. Local terminalization passes nil after run.finished is
+// durable; terminal remains available to callers analyzing an immutable
+// synthetic event stream.
 func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 	record, enrolled, err := AnalyzeRun(runDir, terminal)
 	if !enrolled {
@@ -77,7 +84,7 @@ func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 		return true, fmt.Errorf("encode attribution record: %w", marshalErr)
 	}
 	data = append(data, '\n')
-	if writeErr := journal.WriteFileAtomic(filepath.Join(runDir, RecordFileName), data, 0o600); writeErr != nil {
+	if writeErr := journal.WriteFileAtomic(filepath.Join(runDir, recordFileNameFor(record.Mode)), data, 0o600); writeErr != nil {
 		return true, fmt.Errorf("write attribution record: %w", writeErr)
 	}
 	return true, err
@@ -99,6 +106,7 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 	}
 	record := RunRecord{
 		Schema: RecordSchemaVersion, Status: RecordComplete, ContractVersion: config.Version,
+		Mode:  config.EffectiveMode(),
 		RunID: identity.RunID, Gaggle: identity.Gaggle, Workflow: identity.Workflow,
 		WorkflowVersion: identity.WorkflowVersion, WorkflowDigest: identity.WorkflowDigest,
 		EffectiveVersion: (rollup.EffectiveVersion{
@@ -393,14 +401,16 @@ func enrolledBackprop(reader *journal.Reader, identity journal.RunIdentity) (api
 	if err := json.Unmarshal(data, &definition); err != nil {
 		return apiv1.BackpropConfig{}, false, fmt.Errorf("decode pinned workflow definition: %w", err)
 	}
-	if definition.Spec.Backprop == nil || !definition.Spec.Backprop.Enabled {
+	switch definition.Spec.Backprop.EffectiveMode() {
+	case apiv1.BackpropModeActive, apiv1.BackpropModeShadow:
+	default:
 		return apiv1.BackpropConfig{}, false, nil
 	}
 	return *definition.Spec.Backprop, true, nil
 }
 
 // RunEnrolled reports whether a run's trusted pinned workflow opted into
-// Backprop without performing attribution.
+// Backprop in active or shadow mode without performing attribution.
 func RunEnrolled(runDir string) (bool, error) {
 	reader, err := journal.OpenReadOnly(runDir)
 	if err != nil {
@@ -426,7 +436,31 @@ func attributionInsufficient(graph *Graph, attribution Attribution) bool {
 	return true
 }
 
-// ReadRunRecord reads a previously published attribution result.
+func recordFileNameFor(mode apiv1.BackpropMode) string {
+	if mode == apiv1.BackpropModeShadow {
+		return ShadowRecordFileName
+	}
+	return RecordFileName
+}
+
+// RecordPublished reports whether an active or shadow record already exists,
+// so recovery does not recompute attribution for a run that has one.
+func RecordPublished(runDir string) (bool, error) {
+	for _, name := range []string{RecordFileName, ShadowRecordFileName} {
+		_, err := os.Stat(filepath.Join(runDir, name))
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// ReadRunRecord reads a previously published active attribution result. It
+// never reads the shadow namespace and rejects a shadow record found in the
+// active one, so shadow attribution cannot reach filing or gates.
 func ReadRunRecord(runDir string) (RunRecord, error) {
 	data, err := os.ReadFile(filepath.Join(runDir, RecordFileName))
 	if err != nil {
@@ -438,6 +472,9 @@ func ReadRunRecord(runDir string) (RunRecord, error) {
 	}
 	if record.Schema != RecordSchemaVersion {
 		return RunRecord{}, fmt.Errorf("unsupported attribution schema %q", record.Schema)
+	}
+	if record.Mode == apiv1.BackpropModeShadow {
+		return RunRecord{}, fmt.Errorf("attribution record for run %q is a shadow record", record.RunID)
 	}
 	return record, nil
 }

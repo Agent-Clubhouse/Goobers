@@ -551,13 +551,6 @@ type statusWorkflowSummary struct {
 	FailureRate *statusFailureRate `json:"failureRate,omitempty"`
 }
 
-func statusWorkflowBackprop(config *apiv1.BackpropConfig) readservice.WorkflowBackprop {
-	if config == nil {
-		return readservice.WorkflowBackprop{}
-	}
-	return readservice.WorkflowBackprop{Enabled: config.Enabled, Version: config.Version}
-}
-
 // statusFailureStreak names a run of consecutive infra-classified failures
 // for a workflow (#4263), computed over its full terminal-run history rather
 // than the fixed statusSuccessRateWindow — a sustained streak must not go
@@ -817,7 +810,7 @@ func buildStatusFleetSummary(
 		workflowSummary := statusWorkflowSummary{
 			Workflow:          def.Name,
 			Gaggle:            def.Spec.Gaggle,
-			Backprop:          statusWorkflowBackprop(def.Spec.Backprop),
+			Backprop:          readservice.WorkflowBackpropFor(def.Spec.Backprop),
 			MaxConcurrentRuns: maxConcurrent,
 			NextFire:          nextFire,
 		}
@@ -1054,8 +1047,8 @@ func renderStatusFleetAnnotations(stdout io.Writer, name string, workflow status
 	if workflow.AdmissionBlocked != "" {
 		pf(stdout, "  %-19.19s blocked: %.45s\n", name, workflow.AdmissionBlocked)
 	}
-	if workflow.Backprop.Enabled {
-		pf(stdout, "  %-19.19s backprop: enabled (%s)\n", name, workflow.Backprop.Version)
+	if mode := workflow.Backprop.Mode; mode != "" && mode != string(apiv1.BackpropModeOff) {
+		pf(stdout, "  %-19.19s backprop: %s (%s)\n", name, mode, workflow.Backprop.Version)
 	}
 	if streak := workflow.FailureStreak; streak != nil {
 		pf(stdout, "ALARM: %s has failed %d consecutive times (infra) since %s: %.80s\n",

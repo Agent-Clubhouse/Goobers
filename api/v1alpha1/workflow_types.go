@@ -959,8 +959,9 @@ type WorkflowSpec struct {
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 	// Backprop explicitly enrolls terminal runs in provenance-aware credit
-	// attribution. Omitted and enabled=false both preserve legacy execution
-	// without attribution work.
+	// attribution, either actively or in shadow mode. Omitted, mode=off, and
+	// enabled=false without a mode all preserve legacy execution without
+	// attribution work.
 	// +optional
 	Backprop *BackpropConfig `json:"backprop,omitempty" yaml:"backprop,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where this
@@ -1030,13 +1031,48 @@ type WorkflowSpec struct {
 // BackpropConfig is the versioned workflow-level enrollment contract for
 // post-outcome credit attribution.
 type BackpropConfig struct {
-	// Enabled opts terminal runs into attribution.
-	// +kubebuilder:validation:Required
+	// Enabled is the legacy enrollment switch: true means active mode when
+	// Mode is omitted.
+	// +optional
 	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Mode selects off, shadow, or active attribution. When set it is
+	// authoritative over Enabled. Shadow writes attribution to a separate
+	// shadow record that filing passes, gates, and default read surfaces
+	// never consume.
+	// +kubebuilder:validation:Enum=off;shadow;active
+	// +optional
+	Mode BackpropMode `json:"mode,omitempty" yaml:"mode,omitempty"`
 	// Version pins the attribution contract interpreted for the run.
 	// +kubebuilder:validation:Enum=v1
 	// +kubebuilder:validation:Required
 	Version string `json:"version" yaml:"version"`
+}
+
+// BackpropMode is how a workflow participates in Backprop attribution.
+type BackpropMode string
+
+// Backprop modes. Off performs no attribution work; shadow computes
+// attribution into an isolated shadow record; active publishes the record
+// consumed by the fault audit and other Backprop read surfaces.
+const (
+	BackpropModeOff    BackpropMode = "off"
+	BackpropModeShadow BackpropMode = "shadow"
+	BackpropModeActive BackpropMode = "active"
+)
+
+// EffectiveMode resolves Mode, falling back to the legacy Enabled switch. A
+// nil config is off.
+func (c *BackpropConfig) EffectiveMode() BackpropMode {
+	if c == nil {
+		return BackpropModeOff
+	}
+	if c.Mode != "" {
+		return c.Mode
+	}
+	if c.Enabled {
+		return BackpropModeActive
+	}
+	return BackpropModeOff
 }
 
 // BranchFailurePolicy declares what a parallel does when one of its branches

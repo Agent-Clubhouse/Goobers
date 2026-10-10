@@ -163,6 +163,7 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	if def.Spec.Backprop != nil {
 		features = append(features,
 			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+			binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 			binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		)
 	}
@@ -249,6 +250,7 @@ func binaryLayerFeatures() []Feature {
 		binaryLayerFeature("workflow.spec.enabled"),
 		binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}
 }

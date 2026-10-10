@@ -240,9 +240,12 @@ type WorkflowDefinition struct {
 	Digest  string `json:"digest"`
 }
 
-// WorkflowBackprop reports the workflow's explicit attribution enrollment.
+// WorkflowBackprop reports the workflow's attribution mode. Enabled is true
+// only in active mode; shadow-mode workflows report Mode "shadow" with
+// Enabled false because their attribution never reaches filing or gates.
 type WorkflowBackprop struct {
 	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode,omitempty"`
 	Version string `json:"version,omitempty"`
 }
 
@@ -884,16 +887,19 @@ func (s *Local) workflowSummary(
 		Owners:      owners,
 		StageCount:  len(graph.Nodes),
 		Definition:  WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
-		Backprop:    workflowBackprop(def.Spec.Backprop),
+		Backprop:    WorkflowBackpropFor(def.Spec.Backprop),
 		Warnings:    workflowWarnings(inventory, def),
 	}
 }
 
-func workflowBackprop(config *apiv1.BackpropConfig) WorkflowBackprop {
+// WorkflowBackpropFor projects a workflow's Backprop config onto the read
+// surface. An omitted config reports no mode.
+func WorkflowBackpropFor(config *apiv1.BackpropConfig) WorkflowBackprop {
 	if config == nil {
 		return WorkflowBackprop{}
 	}
-	return WorkflowBackprop{Enabled: config.Enabled, Version: config.Version}
+	mode := config.EffectiveMode()
+	return WorkflowBackprop{Enabled: mode == apiv1.BackpropModeActive, Mode: string(mode), Version: config.Version}
 }
 
 func workflowStages(def *apiv1.Workflow) []StageDefinition {

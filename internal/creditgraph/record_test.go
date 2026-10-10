@@ -19,11 +19,15 @@ func TestWriteRunRecordRequiresExplicitEnrollment(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		backprop any
-		want     bool
+		want     apiv1.BackpropMode
 	}{
 		{name: "omitted"},
 		{name: "disabled", backprop: map[string]any{"enabled": false, "version": "v1"}},
-		{name: "enabled", backprop: map[string]any{"enabled": true, "version": "v1"}, want: true},
+		{name: "enabled", backprop: map[string]any{"enabled": true, "version": "v1"}, want: apiv1.BackpropModeActive},
+		{name: "mode off", backprop: map[string]any{"mode": "off", "version": "v1"}},
+		{name: "mode active", backprop: map[string]any{"mode": "active", "version": "v1"}, want: apiv1.BackpropModeActive},
+		{name: "mode shadow", backprop: map[string]any{"mode": "shadow", "version": "v1"}, want: apiv1.BackpropModeShadow},
+		{name: "shadow overrides enabled", backprop: map[string]any{"enabled": true, "mode": "shadow", "version": "v1"}, want: apiv1.BackpropModeShadow},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			run, runDir := recordTestRun(t, test.backprop)
@@ -38,17 +42,55 @@ func TestWriteRunRecordRequiresExplicitEnrollment(t *testing.T) {
 			if err != nil {
 				t.Fatalf("WriteRunRecord: %v", err)
 			}
-			if wrote != test.want {
-				t.Fatalf("wrote = %v, want %v", wrote, test.want)
+			if wrote != (test.want != "") {
+				t.Fatalf("wrote = %v, want mode %q", wrote, test.want)
 			}
-			_, statErr := os.Stat(filepath.Join(runDir, RecordFileName))
-			if test.want && statErr != nil {
-				t.Fatalf("record missing: %v", statErr)
+			published, err := RecordPublished(runDir)
+			if err != nil || published != wrote {
+				t.Fatalf("RecordPublished = %v, %v; want %v", published, err, wrote)
 			}
-			if !test.want && !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("unenrolled run record stat = %v, want not exist", statErr)
+			_, activeErr := os.Stat(filepath.Join(runDir, RecordFileName))
+			shadowData, shadowErr := os.ReadFile(filepath.Join(runDir, ShadowRecordFileName))
+			switch test.want {
+			case apiv1.BackpropModeActive:
+				record, readErr := ReadRunRecord(runDir)
+				if readErr != nil || record.Mode != apiv1.BackpropModeActive {
+					t.Fatalf("active record = %+v, %v", record, readErr)
+				}
+				if !errors.Is(shadowErr, os.ErrNotExist) {
+					t.Fatalf("active run shadow record stat = %v, want not exist", shadowErr)
+				}
+			case apiv1.BackpropModeShadow:
+				if !errors.Is(activeErr, os.ErrNotExist) {
+					t.Fatalf("shadow run active record stat = %v, want not exist", activeErr)
+				}
+				if _, readErr := ReadRunRecord(runDir); !errors.Is(readErr, os.ErrNotExist) {
+					t.Fatalf("ReadRunRecord on shadow run = %v, want not exist", readErr)
+				}
+				var record RunRecord
+				if shadowErr != nil || json.Unmarshal(shadowData, &record) != nil || record.Mode != apiv1.BackpropModeShadow || record.Status == "" {
+					t.Fatalf("shadow record = %+v, %v", record, shadowErr)
+				}
+			default:
+				if !errors.Is(activeErr, os.ErrNotExist) || !errors.Is(shadowErr, os.ErrNotExist) {
+					t.Fatalf("unenrolled run record stats = %v, %v; want not exist", activeErr, shadowErr)
+				}
 			}
 		})
+	}
+}
+
+func TestReadRunRecordRejectsShadowRecordInActiveNamespace(t *testing.T) {
+	runDir := t.TempDir()
+	data, err := json.Marshal(RunRecord{Schema: RecordSchemaVersion, Status: RecordComplete, Mode: apiv1.BackpropModeShadow, RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, RecordFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRunRecord(runDir); err == nil || !strings.Contains(err.Error(), "shadow record") {
+		t.Fatalf("ReadRunRecord = %v, want shadow rejection", err)
 	}
 }
 

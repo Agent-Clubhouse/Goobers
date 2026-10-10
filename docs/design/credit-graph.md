@@ -24,20 +24,32 @@ For an operator walkthrough of enabling Backprop, reading attribution and
 fault-audit findings, and verifying fixes, see the
 [Backprop user guide](../guides/backprop.md).
 
-Backprop is opt-in per workflow on DSL 3.0:
+Backprop is opt-in per workflow on DSL 3.0 and 3.1 (preview):
 
 ```yaml
 dslVersion: "3.0"
 spec:
   backprop:
-    enabled: true
+    mode: active   # off | shadow | active
     version: v1
 ```
 
-Omitting `backprop`, or setting `enabled: false`, performs no attribution work.
+`mode` selects how a workflow takes part:
+
+| Mode | Attribution work | Record | Consumed by fault audit, filing, cohorts, `goobers trace` |
+|---|---|---|---|
+| `off` | none | none | no |
+| `shadow` | computed after terminalization | `attribution.shadow.json` | **no** |
+| `active` | computed after terminalization | `attribution.json` | yes |
+
+The legacy `enabled` switch remains supported: `enabled: true` without a mode
+means `active`, and omitting `backprop` or setting `enabled: false` without a
+mode performs no attribution work. When `mode` is set it is authoritative;
+`enabled: true` together with `mode: off` is rejected as contradictory.
+
 For an enrolled workflow, terminalization durably appends `run.finished` and
-then writes `attribution.json` beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,
-workload, run ID, contract version, deterministic attribution, and an explicit
+then writes the record beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,
+workload, run ID, contract version, mode, deterministic attribution, and an explicit
 `complete`, `insufficient-evidence`, or `failed` analysis status. Analysis is
 read-only and best effort: a failure is reported independently and never changes
 the run's phase, gate verdict, CI admission, or publication path.
@@ -47,10 +59,36 @@ for every analysis status so incompatible runs cannot enter the same cohort.
 Runs containing more than one model/harness pair have no defined
 EffectiveVersion and are excluded from cohort aggregation.
 
+### Shadow mode
+
+Shadow mode lets an operator try Backprop on an existing workflow without
+enrolling it. A shadow run runs the same post-terminal analysis, off the hot
+path, and publishes it only to `attribution.shadow.json`. Nothing that files,
+gates, or reports reads that namespace: `creditgraph.ReadRunRecord` — the only
+reader behind the fault audit, candidate-findings filing pass, cohort and
+contributing-path surfaces, and `goobers trace` — reads `attribution.json`
+alone and rejects a shadow-mode record found there. A shadow run therefore
+never starts a filing cooldown, records a verification baseline, or produces a
+finding. Run phase, scheduling, CI admission, and gate verdicts are unchanged.
+
+`goobers status` prints `backprop: shadow (v1)` or `backprop: active (v1)` per
+workflow, and the status JSON, read API, and portal workflow page report
+`backprop.mode`; `backprop.enabled` stays true only for active workflows.
+
+**Promotion path.** Run a workflow in `mode: shadow`, inspect the per-run
+`attribution.shadow.json` records for the analysis status and causes you would
+expect, then change the workflow to `mode: active` and redeploy. New terminal
+runs then write `attribution.json` and enter the fault audit; earlier shadow
+records are never backfilled into the active namespace, so promotion does not
+retroactively file findings. Demote by setting `mode: shadow` or `off`.
+
+Not yet implemented (Backprop scopes epic, #7121): a gaggle/daemon-level mode
+override and a shadow-vs-active comparison report.
+
 ## Cross-workflow fault audit
 
-The read-only Backprop fault auditor consumes only persisted records from
-enrolled workflows. Its default seven-day window, sample floor, observation
+The read-only Backprop fault auditor consumes only persisted active-mode records
+from enrolled workflows; shadow records are never read. Its default seven-day window, sample floor, observation
 cap, finding budget, evidence/run caps, and cooldown make every pass bounded;
 the output is always `report-only` and never files an issue, edits a workflow,
 or rolls back a run. Operators can select a narrower gaggle, workflow, or time
@@ -340,7 +378,8 @@ No credit data migrates between the two stores, and none needs to:
   derived projection of run journals. They are rebuilt from the journals, not
   from creditgraph, and their meaning does not change.
 - Per-run attribution is the `attribution.json` record written at
-  terminalization for a workflow enrolled in `backprop` (DSL 3.0). The read
+  terminalization for a workflow enrolled in `backprop` in active mode (DSL
+  3.0/3.1). Shadow-mode runs write `attribution.shadow.json` instead. The read
   service reads that record, and rebuilds the graph from the journal only for
   evidence links and environment labels. Runs with no record (unenrolled, or
   finished before enrollment) are skipped. They are not backfilled from the

@@ -197,7 +197,7 @@ function WorkflowDetailWorkspace({
             <div>
               <dt>Backprop</dt>
               <dd>
-                {workflow.backprop?.enabled ? `Enabled (${workflow.backprop.version})` : "Disabled"}
+                {backpropLabel(workflow.backprop)}
               </dd>
             </div>
             <div>
@@ -244,6 +244,13 @@ function WorkflowDetailWorkspace({
       <RecentRuns runs={runs} workflow={workflow} />
     </div>
   );
+}
+
+function backpropLabel(backprop: WorkflowDetail["backprop"]): string {
+  const mode = backprop?.mode ?? (backprop?.enabled ? "active" : "off");
+  if (mode === "active") return `Active (${backprop?.version})`;
+  if (mode === "shadow") return `Shadow (${backprop?.version})`;
+  return "Disabled";
 }
 
 function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {

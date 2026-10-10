@@ -52,12 +52,26 @@ spec:
               backprop:
                 description: |-
                   Backprop explicitly enrolls terminal runs in provenance-aware credit
-                  attribution. Omitted and enabled=false both preserve legacy execution
-                  without attribution work.
+                  attribution, either actively or in shadow mode. Omitted, mode=off, and
+                  enabled=false without a mode all preserve legacy execution without
+                  attribution work.
                 properties:
                   enabled:
-                    description: Enabled opts terminal runs into attribution.
+                    description: |-
+                      Enabled is the legacy enrollment switch: true means active mode when
+                      Mode is omitted.
                     type: boolean
+                  mode:
+                    description: |-
+                      Mode selects off, shadow, or active attribution. When set it is
+                      authoritative over Enabled. Shadow writes attribution to a separate
+                      shadow record that filing passes, gates, and default read surfaces
+                      never consume.
+                    enum:
+                    - "off"
+                    - shadow
+                    - active
+                    type: string
                   version:
                     description: Version pins the attribution contract interpreted
                       for the run.
@@ -65,7 +79,6 @@ spec:
                     - v1
                     type: string
                 required:
-                - enabled
                 - version
                 type: object
               displayName:

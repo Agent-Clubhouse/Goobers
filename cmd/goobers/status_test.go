@@ -56,22 +56,42 @@ func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedA
 }
 
 func TestStatusSurfacesBackpropEnrollment(t *testing.T) {
-	config := &apiv1.BackpropConfig{Enabled: true, Version: "v1"}
-	got := statusWorkflowBackprop(config)
-	if !got.Enabled || got.Version != "v1" {
-		t.Fatalf("status backprop = %+v", got)
-	}
-	var output strings.Builder
-	renderStatusFleetSummary(&output, statusFleetSummary{
-		SuccessRateWindow: 20,
-		Workflows: []statusWorkflowSummary{{
-			Workflow: "implementation",
-			Gaggle:   "goobers",
-			Backprop: got,
-		}},
-	}, time.Now())
-	if !strings.Contains(output.String(), "backprop: enabled (v1)") {
-		t.Fatalf("status output = %q", output.String())
+	for _, test := range []struct {
+		name        string
+		config      *apiv1.BackpropConfig
+		wantEnabled bool
+		wantLine    string
+	}{
+		{name: "legacy enabled", config: &apiv1.BackpropConfig{Enabled: true, Version: "v1"}, wantEnabled: true, wantLine: "backprop: active (v1)"},
+		{name: "active", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeActive, Version: "v1"}, wantEnabled: true, wantLine: "backprop: active (v1)"},
+		{name: "shadow", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"}, wantLine: "backprop: shadow (v1)"},
+		{name: "off", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}},
+		{name: "omitted"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := readservice.WorkflowBackpropFor(test.config)
+			if got.Enabled != test.wantEnabled {
+				t.Fatalf("status backprop = %+v, want enabled=%v", got, test.wantEnabled)
+			}
+			var output strings.Builder
+			renderStatusFleetSummary(&output, statusFleetSummary{
+				SuccessRateWindow: 20,
+				Workflows: []statusWorkflowSummary{{
+					Workflow: "implementation",
+					Gaggle:   "goobers",
+					Backprop: got,
+				}},
+			}, time.Now())
+			if test.wantLine == "" {
+				if strings.Contains(output.String(), "backprop:") {
+					t.Fatalf("status output = %q, want no backprop line", output.String())
+				}
+				return
+			}
+			if !strings.Contains(output.String(), test.wantLine) {
+				t.Fatalf("status output = %q, want %q", output.String(), test.wantLine)
+			}
+		})
 	}
 }
 

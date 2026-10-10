@@ -370,6 +370,7 @@ trigger.schedule                                         3.0          ga        
 trigger.signal                                           3.0          ga               preview          dev
 trigger.webhook                                          3.0          ga               preview          dev
 workflow.spec.backprop.enabled                           3.0          ga               preview          dev
+workflow.spec.backprop.mode                              3.0          ga               preview          dev
 workflow.spec.backprop.version                           3.0          ga               preview          dev
 workflow.spec.displayName                                3.0          ga               preview          dev
 workflow.spec.docsRoots                                  3.0          ga               preview          dev
@@ -598,6 +599,7 @@ trigger.schedule                                         3.1          ga        
 trigger.signal                                           3.1          ga               preview          dev
 trigger.webhook                                          3.1          ga               preview          dev
 workflow.spec.backprop.enabled                           3.1          ga               preview          dev
+workflow.spec.backprop.mode                              3.1          ga               preview          dev
 workflow.spec.backprop.version                           3.1          ga               preview          dev
 workflow.spec.displayName                                3.1          ga               preview          dev
 workflow.spec.docsRoots                                  3.1          ga               preview          dev
@@ -636,4 +638,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-636 feature/version row(s)
+638 feature/version row(s)

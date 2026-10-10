@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +297,57 @@ func TestStoredFaultAuditScopesCooldownToQuery(t *testing.T) {
 	}
 	if global.Suppressed != 0 || len(global.ProductFindings) != 1 {
 		t.Fatalf("global report = %+v, want unsuppressed cross-workflow product finding", global)
+	}
+}
+
+func TestShadowBackpropRecordNeverReachesFaultAuditFiling(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	writeAuditRecordWithEnvironment(t, root, "shadow", "v1", true, "windows")
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), "shadow")
+	data, err := os.ReadFile(filepath.Join(runDir, creditgraph.RecordFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record creditgraph.RunRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	record.Mode = "shadow"
+	if data, err = json.Marshal(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(runDir, creditgraph.ShadowRecordFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(runDir, creditgraph.RecordFileName)); err != nil {
+		t.Fatal(err)
+	}
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{terminalAuditRow("shadow", now.Add(-time.Hour))},
+	}}}
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+
+	preview, err := PreviewStoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filed, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, report := range map[string]creditgraph.FaultAuditReport{"preview": preview, "filing": filed} {
+		findings := len(report.ProductFindings) + len(report.ExternalFindings) + len(report.WorkflowFindings) + len(report.UnknownFindings)
+		if report.ObservationsScanned != 0 || findings != 0 || report.Suppressed != 0 {
+			t.Fatalf("%s report = %+v, want shadow attribution invisible", name, report)
+		}
+	}
+	state, err := os.ReadFile(faultAuditStatePath(root))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(state), "backprop-") {
+		t.Fatalf("fault audit state = %s, want no cooldown or baseline from shadow attribution", state)
 	}
 }
 

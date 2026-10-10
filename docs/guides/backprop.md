@@ -20,12 +20,14 @@ back runs. The contract and its limits are specified in the
 
 ## Preview status
 
-Backprop is a **preview** feature (`workflow.spec.backprop.enabled` and
-`workflow.spec.backprop.version` in the [feature matrix](../feature-matrix.md)).
+Backprop is a **preview** feature (`workflow.spec.backprop.enabled`,
+`workflow.spec.backprop.mode`, and `workflow.spec.backprop.version` in the
+[feature matrix](../feature-matrix.md)).
 Today:
 
-- Enrollment is **per workflow** only. There is no gaggle-wide switch and no
-  shadow mode over unenrolled workflows yet.
+- Enrollment is **per workflow** only. Shadow mode is set in each workflow's
+  spec; there is no gaggle-wide switch or daemon-level shadow override, and no
+  shadow-vs-active comparison report yet.
 - Attribution is computed **once, at run end**. There are no per-stage
   checkpoints.
 - Learning uses the run journal plus any ground-truth labels you record by
@@ -61,10 +63,13 @@ spec:
     version: v1
 ```
 
-- `enabled` and `version` are both required. `v1` is the only supported
-  attribution contract.
-- Omitting `backprop`, or setting `enabled: false`, performs no attribution
-  work.
+- `version` is required, together with `enabled` or `mode`. `v1` is the only
+  supported attribution contract.
+- `enabled: true` is the same as `mode: active`. `enabled: true` is rejected
+  alongside `mode: off` or `mode: shadow`. To try Backprop without enrolling,
+  see [Observe a workflow in shadow mode](#observe-a-workflow-in-shadow-mode).
+- Omitting `backprop`, or setting `enabled: false` or `mode: off`, performs no
+  attribution work.
 - The preview acknowledgement belongs on each Workflow. A Manifest-level
   annotation is deprecated and does not authorize anything.
 - A workflow pinned to an older `dslVersion` that declares `backprop` fails
@@ -82,10 +87,34 @@ goobers status ./instance
 ```
 
 The workflow summary in `goobers status` prints
-`backprop: enabled (v1)` beneath each enrolled workflow.
+`backprop: active (v1)` (or `backprop: shadow (v1)`) beneath each
+participating workflow.
 
 Only runs that **start** after enrollment are attributed. Runs that finished
 earlier are not backfilled.
+
+## Observe a workflow in shadow mode
+
+Shadow mode runs the same post-run analysis without enrolling the workflow:
+
+```yaml
+spec:
+  backprop:
+    mode: shadow
+    version: v1
+```
+
+Each shadow run writes `attribution.shadow.json` beside the run journal
+instead of `attribution.json`. The fault audit, finding filing, cohorts, and
+`goobers trace` read only `attribution.json` and refuse shadow records, so
+shadow output never files findings or affects gates. `goobers status` prints
+`backprop: shadow (v1)` and the portal workflow page shows **Shadow (v1)**.
+
+To promote, inspect the `attribution.shadow.json` records, then change the
+workflow to `mode: active`. Only runs that start after promotion enter the
+fault audit; earlier shadow records are never backfilled. Set `mode: shadow`
+or `mode: off` to demote. See
+[Shadow mode](../design/credit-graph.md#shadow-mode) for the design.
 
 ## Read one run's attribution
 
