@@ -214,7 +214,7 @@ GOOBERS_CHILD_KUBE_QUALIFICATION=1 \
 GOOBERS_CHILD_QUALIFICATION_KUBECONFIG=/path/to/private-kind-kubeconfig \
 GOOBERS_PARENT_QUALIFICATION_IMAGE="localhost:45081/goobers:haw-parent-<commit>" \
 go test -race -tags=integration ./cmd/goobers \
-  -run '^TestIntegrationContainedParent(AuthorsChildThroughRealWorkers|ReconcilesChildWorkspaceThroughRealWorkers|CancellationStopsAuthoredChild)$' \
+  -run '^TestIntegrationContainedParent(AuthorsChildThroughRealWorkers|ReconcilesChildWorkspaceThroughRealWorkers|CancellationStopsAuthoredChild|IteratesChildrenThroughRealWorkers)$' \
   -count=1 -timeout=15m -v
 ```
 
@@ -247,3 +247,12 @@ typed causes. Storage, permission or unrelated cleanup failures remain errors;
 they cannot be hidden by a pending child in the same aggregate. The full
 cancellation case passed with host race detection on 2026-10-09. These proofs
 still do not qualify real daemon/worker-loss recovery or parallel parent starts.
+
+The iterative-child case completes two scratch child workflows from the same
+parent stage visit. The second is accepted only after the first result is
+acknowledged, under a distinct invocation key and the next occurrence sequence.
+It verifies both retained outcomes and Portal parent links, five contained
+parent invocations, two actual child workers, and exact physical custody for
+every invocation. This passed with host race detection in the disposable
+environment on 2026-10-09 (112.03 seconds). No recursion or parallel parent
+admission is enabled by this qualification.
