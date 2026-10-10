@@ -602,7 +602,10 @@ validates and is routed by role. Steps 1–6 landed as follows:
 - **Step 3.** `open-pr` and the ADO merge commit write the issue's full URL.
   `post-merge` closes only URL references into the backlog. A bare `#N` is
   ignored.
-- **Step 5.** The PR-coupled extras are skipped.
+- **Step 5.** The open-PR backstop reads the project provider's active PRs under
+  the run-branch namespace (#6919). In (b) only full-URL references into the
+  backlog count. With an ADO backlog, `#N` body references and native work-item
+  links count. The other PR-coupled extras are skipped.
 - **Step 6.** The N1 gate has a (b) column (`test/providermatrix`). The live
   (b) scenario belongs to the ADO-N16 leg.
 
