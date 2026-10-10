@@ -29,6 +29,17 @@ func executionGenerationStore(layout instance.Layout) (configgeneration.Store, e
 	return configgeneration.Store{Root: filepath.Join(layout.Root, "config-generations"), Blobs: blobs}, nil
 }
 
+// All execution paths rebuild through the same captured-definition compiler.
+func bindGenerationRuntimes(definitions *schedulerDefinitions, input schedulerDefinitionsInput, layout instance.Layout, generation string) *schedulerDefinitions {
+	build := schedulerGenerationBuilder(input)
+	retainer := firstGenerationRetainer(input.Generations)
+	definitions.ExecutionGeneration = generation
+	definitions.OrdinaryRuntime = ordinaryRuntimeBuilderFor(layout, retainer, build)
+	definitions.ChildRuntime = childRuntimeBuilderFor(layout, retainer, input.Config, build)
+	definitions.GenerationResolver = generationResolverFor(layout, retainer, build)
+	return definitions
+}
+
 func newExecutionGenerationRetainer(layout instance.Layout) (*configgeneration.Retainer, error) {
 	store, err := executionGenerationStore(layout)
 	if err != nil {

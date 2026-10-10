@@ -856,13 +856,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
-	buildGeneration := schedulerGenerationBuilder(input)
-	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), buildGeneration)
-	return &schedulerDefinitions{
-		ExecutionGeneration: generation,
-		OrdinaryRuntime:     ordinaryRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), buildGeneration),
-		ChildRuntime:        childRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), input.Config, buildGeneration),
-		GenerationResolver:  resolveGeneration,
+	return bindGenerationRuntimes(&schedulerDefinitions{
 		Set:                 input.Definitions,
 		Validation:          input.Validation,
 		HarnessPreflight:    harnessInfo,
@@ -879,7 +873,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		EngineRuntime:       engineRuntimeHolder,
 		Worktrees:           firstWorktrees,
 		WorktreesByGaggle:   input.WorktreeManagers,
-	}, nil
+	}, input, l, generation), nil
 }
 
 func schedulerGenerationBuilder(input schedulerDefinitionsInput) generationDefinitionBuilder {
