@@ -8,9 +8,11 @@ key, surrender store and journal service are available. Narrow authenticated
 child routes serve retained kits, credentials, journal observations and surrender.
 Missing execution dependencies leave accepted children queued.
 
-Public parent workflow execution with child-workflow policy remains gated. The
-connected components have separate qualification tests; they do not yet establish
-a supported complete parent-to-child-to-parent execution journey.
+Opted-in parent stages can execute through configured contained workers when the
+daemon has all required authority, queue, workspace and recovery services. The
+sequential parent qualification below covers authoring, durable wait and return.
+Missing services and standalone execution remain refused. Delegated publication
+and human intervention have separate qualification requirements.
 
 The [child workflow design](../design/agent-authored-child-workflows.md) and
 [admission guide](child-workflow-admission.md) track the remaining lifecycle work.
@@ -54,11 +56,11 @@ confirm that unverified results are not deleted.
 
 The connected factory and authenticated routes cover exact signed attempt
 authority, child-only artifact storage, retained agent kits, returned-tree
-application and recovery of an uncertain worker. Before public runtime enablement,
-qualify these together with the originating parent invocation, durable wait and
-continuation. A simulated worker transport or an isolated process-shutdown test
-does not establish that full journey. Contract digests and pod environment
-comparisons do not replace the host's authentication checks.
+application and recovery of an uncertain worker. The parent qualification below
+exercises those services together with the originating parent invocation, durable
+wait and continuation. Additional execution shapes need equivalent qualification;
+a simulated transport or isolated shutdown test does not establish that journey.
+Contract digests and pod environment comparisons do not replace authentication.
 
 ### Private Linux process-namespace qualification
 
@@ -90,9 +92,9 @@ The ordinary integration suite skips this test unless explicitly opted in.
 Neither cluster access nor provider or model credentials are needed.
 
 Delegated branch/PR publication follows that host factory and requires the
-parent's upfront permission. Parallel parent stages and human intervention use
-their own subsequent lifecycle qualification. This slice introduces no storage
-migration and grants no new provider or human permissions.
+parent's upfront permission. Parallel parent stages and human intervention have
+their own lifecycle qualification. Worker transport grants no new provider or
+human permissions.
 
 ## Recorded child activity in the Portal
 
@@ -104,10 +106,10 @@ Malformed or mismatched custody is shown as unavailable.
 
 This read-only view uses the existing run-detail read surface and permissions.
 Links identify recorded runs; queued execution and expired history can make a
-linked run unavailable. The projection covers recorded waits, with the complete
-accepted-child queue, history and intervention controls still requiring the
-remaining Portal and HITL work. It provides no cancellation or stopped-writer
-confirmation. Runtime enablement continues to require the qualification above.
+linked run unavailable. The projection includes recorded waits and accepted-child
+history. Human intervention controls require the remaining HITL work. A displayed
+cancellation request provides no stopped-writer confirmation; the runtime
+separately verifies physical custody before releasing a worker or workspace.
 
 ## Disposable Kubernetes qualification
 
@@ -207,7 +209,8 @@ Temporal CLI and locally built parent qualification image using the same
 Missing or changed receipts, replacement pods and missing stopped-writer or
 surrender proof remain refusals. Loss before the first durable receipt, loss
 during reconciliation and daemon reconstruction are not qualified by this test.
-Public/parallel admission remains gated.
+That test alone does not qualify the parent lifecycle; see the parent journey
+tests below.
 
 ### Sequential agent-authored parents
 
