@@ -39,9 +39,9 @@ const (
 
 // Reliability budget kinds, in display order.
 const (
-	budgetImplementationReview = "implementation-review"
-	budgetStagePolicy          = "stage-policy"
-	budgetLocalInfra           = "local-infra"
+	budgetImplementationReview = readmodel.BudgetImplementationReview
+	budgetStagePolicy          = readmodel.BudgetStagePolicy
+	budgetLocalInfra           = readmodel.BudgetLocalInfra
 	budgetLocalValidation      = readmodel.BudgetLocalValidation
 	budgetProviderRemediation  = readmodel.BudgetProviderRemediation
 	budgetCIPoll               = readmodel.BudgetCIPoll
@@ -102,8 +102,10 @@ type ReliabilityBudget struct {
 	// Remaining is the number of attempts left, nil when unknown.
 	Remaining *int `json:"remaining"`
 	// Evidence is "journal" when Consumed is the run-wide count projected from
-	// journal events, "pinnedDefinition" when Consumed is the gate's journaled
-	// budget counter and Remaining its allowance in the run's pinned workflow
+	// journal events (a run without a pinned definition), "pinnedDefinition"
+	// when Consumed is the journaled counter of the budget the runner enforces
+	// (per repair target, per polling gate, or the latest stage's current
+	// pass) and Remaining its allowance in the run's pinned workflow
 	// definition, "terminalCause" when both counts come from the recorded
 	// terminal cause (scoped to its selector), otherwise "unknown".
 	Evidence string `json:"evidence"`
@@ -230,10 +232,17 @@ func reliabilityBudgets(summary RunSummary) []ReliabilityBudget {
 		return ReliabilityBudget{Kind: kind, Consumed: &consumed, Evidence: reliabilityEvidenceJournal}
 	}
 	facts := summary.reliabilityFacts
+	// Without a pinned allowance, fall back to the run-wide journal count.
+	pinnedOr := func(kind string, consumed int) ReliabilityBudget {
+		if budget := pinnedBudget(kind, facts); budget.Remaining != nil {
+			return budget
+		}
+		return measured(kind, consumed)
+	}
 	return []ReliabilityBudget{
-		measured(budgetImplementationReview, summary.RepassCount),
-		measured(budgetStagePolicy, summary.PolicyRetryCount),
-		measured(budgetLocalInfra, summary.InfraRetryCount),
+		pinnedOr(budgetImplementationReview, summary.RepassCount),
+		pinnedOr(budgetStagePolicy, summary.PolicyRetryCount),
+		pinnedOr(budgetLocalInfra, summary.InfraRetryCount),
 		pinnedBudget(budgetLocalValidation, facts),
 		pinnedBudget(budgetProviderRemediation, facts),
 		pinnedBudget(budgetCIPoll, facts),
@@ -242,17 +251,31 @@ func reliabilityBudgets(summary RunSummary) []ReliabilityBudget {
 
 // pinnedBudget reports the most constrained pinned allowance of kind. Repair
 // budgets are per target stage, so a target shared with another gate reports
-// the shared counter it actually escalates on. Without a pinned allowance (a
-// legacy run, or a workflow with no such gate) the budget stays unknown.
+// the shared counter it actually escalates on. Stage retry budgets are per
+// stage pass and report the most recently started stage. Without a pinned
+// allowance (a legacy run, or a workflow with no such gate) the budget stays
+// unknown.
 func pinnedBudget(kind string, facts readmodel.ReliabilityFacts) ReliabilityBudget {
 	out := ReliabilityBudget{Kind: kind, Evidence: reliabilityUnknown}
 	for _, allowance := range facts.Allowances {
 		if allowance.Kind != kind {
 			continue
 		}
-		consumed := facts.PolicyRepasses[allowance.Target]
-		if kind == budgetCIPoll {
+		var consumed int
+		switch kind {
+		case budgetCIPoll:
 			consumed = facts.TimeoutPolls[allowance.Gate]
+		case budgetStagePolicy, budgetLocalInfra:
+			if allowance.Target != facts.LastStage {
+				continue
+			}
+			retries := facts.StageRetries[allowance.Target]
+			consumed = retries.Policy
+			if kind == budgetLocalInfra {
+				consumed = retries.Infra
+			}
+		default:
+			consumed = facts.PolicyRepasses[allowance.Target]
 		}
 		// The rejected (limit+1) charge that escalated never executed.
 		consumed = min(consumed, allowance.Allowed)

@@ -85,9 +85,34 @@ func TestReliabilityFactsFoldGateBudgetCounters(t *testing.T) {
 	}
 }
 
+func TestReliabilityFactsFoldStageRetriesPerPass(t *testing.T) {
+	start := func(class journal.AttemptClass) journal.Event {
+		return journal.Event{Type: journal.EventStageStarted, Stage: "implement", AttemptClass: class}
+	}
+	retried := foldReliability(start(""), start(journal.AttemptPolicy), start(journal.AttemptInfra), start(journal.AttemptPolicy))
+	if want := (StageRetries{Policy: 2, Infra: 1}); retried.LastStage != "implement" || retried.StageRetries["implement"] != want {
+		t.Fatalf("retries = %q %+v, want %+v", retried.LastStage, retried.StageRetries, want)
+	}
+	// A fresh pass of the stage resets its per-pass retry counters without
+	// mutating the earlier snapshot.
+	fresh := retried.After(journal.Event{Schema: journal.EventSchema, Type: journal.EventStageStarted, Stage: "implement"})
+	if len(fresh.StageRetries) != 0 || retried.StageRetries["implement"].Policy != 2 {
+		t.Fatalf("fresh pass = %+v, earlier = %+v", fresh.StageRetries, retried.StageRetries)
+	}
+	moved := retried.After(journal.Event{Schema: journal.EventSchema, Type: journal.EventStageStarted, Stage: "open-pr", AttemptClass: journal.AttemptHuman})
+	if moved.LastStage != "open-pr" || moved.StageRetries["implement"].Policy != 2 || len(moved.StageRetries) != 1 {
+		t.Fatalf("other stage = %q %+v", moved.LastStage, moved.StageRetries)
+	}
+}
+
 func TestReliabilityAllowancesClassifyPinnedGates(t *testing.T) {
-	spec := apiv1.WorkflowSpec{Gates: []apiv1.Gate{
-		{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Branches: map[string]string{"needs-changes": "implement"}},
+	spec := apiv1.WorkflowSpec{Tasks: []apiv1.Task{
+		{Name: "implement", Retry: &apiv1.RetryPolicy{MaxAttempts: 3}},
+		{Name: "open-pr"},
+	}, Gates: []apiv1.Gate{
+		// Approval, escalation, infra, and timeout routes are not review repairs.
+		{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Branches: map[string]string{
+			"needs-changes": "implement", "approve": "open-pr", "escalate": "@escalate", "infra": "implement"}},
 		{Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "failure-class"},
 			Branches: map[string]string{"pass": "open-pr", "fail": "implement", "infra": "local-ci"}},
 		{Name: "ci-gate", Evaluator: apiv1.EvaluatorAutomated, MaxRepasses: 2,
@@ -95,6 +120,11 @@ func TestReliabilityAllowancesClassifyPinnedGates(t *testing.T) {
 			Branches:  map[string]string{"pass": "@complete", "fail": "remediate-ci", "timeout": "ci-poll"}},
 	}}
 	want := []ReliabilityAllowance{
+		{Kind: BudgetStagePolicy, Target: "implement", Allowed: 2},
+		{Kind: BudgetLocalInfra, Target: "implement", Allowed: 1},
+		{Kind: BudgetStagePolicy, Target: "open-pr", Allowed: 0},
+		{Kind: BudgetLocalInfra, Target: "open-pr", Allowed: 1},
+		{Kind: BudgetImplementationReview, Gate: "review", Target: "implement", Allowed: 5},
 		{Kind: BudgetLocalValidation, Gate: "local-gate", Target: "implement", Allowed: 5},
 		{Kind: BudgetProviderRemediation, Gate: "ci-gate", Target: "remediate-ci", Allowed: 2},
 		{Kind: BudgetCIPoll, Gate: "ci-gate", Target: "ci-poll", Allowed: 30},

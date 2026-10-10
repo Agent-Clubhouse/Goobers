@@ -107,9 +107,10 @@ func intPtr(n int) *int { return &n }
 func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	machine := fixtureMachine(t)
+	pinned := pinnedBudgetMachine(t)
 	trigger := journal.Trigger{Kind: journal.TriggerItem, Ref: "5313"}
 
-	active, clock := createFixtureRun(t, layout, machine, "reliability-active", "implementation", "goobers", fixedTime, trigger, true)
+	active, clock := createPinnedRun(t, layout, pinned, "reliability-active", fixedTime)
 	appendReliabilityEvents(t, active, clock,
 		journal.Event{Type: journal.EventStageStarted, Stage: "map-acceptance", Attempt: 1},
 		journal.Event{Type: journal.EventStageFinished, Stage: "map-acceptance", Attempt: 1, Status: string(apiv1.ResultSuccess),
@@ -120,11 +121,13 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	retrying, clock := createFixtureRun(t, layout, machine, "reliability-retrying", "implementation", "goobers", fixedTime.Add(time.Minute), trigger, true)
+	retrying, clock := createPinnedRun(t, layout, pinned, "reliability-retrying", fixedTime.Add(time.Minute))
 	appendReliabilityEvents(t, retrying, clock,
 		journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultFailure)},
+		journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptPolicy},
 		journal.Event{
-			Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultFailure),
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, Status: string(apiv1.ResultFailure),
 			Error: &journal.ErrorDetail{Code: "workspace_failed", Causes: []journal.ErrorCause{{Code: "workspace_failed", Class: " Infra "}}},
 		},
 		journal.Event{Type: journal.EventRunnerAnnotation, Stage: "implement", Attempt: 2, Runner: map[string]any{
@@ -137,7 +140,7 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	escalated, clock := createFixtureRun(t, layout, machine, "reliability-escalated", "implementation", "goobers", fixedTime.Add(2*time.Minute), trigger, true)
+	escalated, clock := createPinnedRun(t, layout, pinned, "reliability-escalated", fixedTime.Add(2*time.Minute))
 	appendReliabilityEvents(t, escalated, clock,
 		journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
 		journal.Event{Type: journal.EventError, Stage: "implement", Error: &journal.ErrorDetail{
@@ -195,8 +198,14 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		got.NextAction != "finish implement" || got.HumanInterventionReason != "" {
 		t.Fatalf("active reliability = %+v", got)
 	}
-	for _, kind := range []string{"local-validation", "provider-remediation", "ci-poll"} {
-		assertBudget(t, "active", budgetByKind(t, got, kind), nil, nil, "unknown")
+	// Every budget is bounded by the allowance pinned at run start: the
+	// inherited MaxRepasses (5), the ci-gate override (2), its polling bound
+	// (6), and implement's retry policy (3 attempts) and infra allowance.
+	for kind, remaining := range map[string]int{
+		"implementation-review": 5, "stage-policy": 2, "local-infra": 1,
+		"local-validation": 5, "provider-remediation": 2, "ci-poll": 6,
+	} {
+		assertBudget(t, "active", budgetByKind(t, got, kind), intPtr(0), intPtr(remaining), "pinnedDefinition")
 	}
 
 	got = fromJournal["reliability-retrying"]
@@ -206,10 +215,12 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		got.Failure.Classification != "infra" || got.Failure.EvidenceRule != "latestError.causes.class" || got.Failure.Code != "workspace_failed" {
 		t.Fatalf("retrying reliability = %+v", got)
 	}
-	assertBudget(t, "retrying", budgetByKind(t, got, "local-infra"), intPtr(0), nil, "journal")
-	assertBudget(t, "retrying", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
+	assertBudget(t, "retrying", budgetByKind(t, got, "stage-policy"), intPtr(1), intPtr(1), "pinnedDefinition")
+	assertBudget(t, "retrying", budgetByKind(t, got, "local-infra"), intPtr(0), intPtr(1), "pinnedDefinition")
+	assertBudget(t, "retrying", budgetByKind(t, got, "implementation-review"), intPtr(0), intPtr(5), "pinnedDefinition")
 	if line := got.StatusLine(); !strings.HasPrefix(line, "retrying implement attempt 2; failure infra") ||
-		!strings.Contains(line, "local-infra 0 used/? left") || !strings.Contains(line, "ci-poll ? used/? left") {
+		!strings.Contains(line, "stage-policy 1 used/1 left") || !strings.Contains(line, "local-infra 0 used/1 left") ||
+		!strings.Contains(line, "ci-poll 0 used/6 left") {
 		t.Fatalf("retrying status line = %q", line)
 	}
 
@@ -224,10 +235,10 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		t.Fatalf("escalated reliability = %+v", got)
 	}
 	assertBudget(t, "escalated", budgetByKind(t, got, "local-infra"), intPtr(1), intPtr(2), "terminalCause")
-	assertBudget(t, "escalated", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
-	assertBudget(t, "escalated", budgetByKind(t, got, "ci-poll"), nil, nil, "unknown")
+	assertBudget(t, "escalated", budgetByKind(t, got, "implementation-review"), intPtr(0), intPtr(5), "pinnedDefinition")
+	assertBudget(t, "escalated", budgetByKind(t, got, "ci-poll"), intPtr(0), intPtr(6), "pinnedDefinition")
 	if line := got.StatusLine(); !strings.Contains(line, "local-infra 1 used/2 left") ||
-		!strings.Contains(line, "retained pr 42 (draft)") ||
+		!strings.Contains(line, "retained branch goobers/5313@abc123, pr 42 (draft)") ||
 		!strings.HasSuffix(line, "; needs human: reviewer requested a human decision") {
 		t.Fatalf("escalated status line = %q", line)
 	}
@@ -239,6 +250,10 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 		got.Failure.EvidenceRule != "terminal-cause-not-recorded" || got.HumanInterventionReason != "unknown" {
 		t.Fatalf("legacy escalated reliability must mark missing cause unknown: %+v", got)
 	}
+	// Without a pinned definition no allowance is known, so remaining counts
+	// stay unknown rather than read from today's configuration.
+	assertBudget(t, "legacy", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
+	assertBudget(t, "legacy", budgetByKind(t, got, "ci-poll"), nil, nil, "unknown")
 
 	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
 	if err != nil {
@@ -276,13 +291,15 @@ func pinnedBudgetMachine(t *testing.T) *workflow.Machine {
 			Gaggle: "goobers",
 			Start:  "implement",
 			Tasks: []apiv1.Task{
-				{Name: "implement", Type: apiv1.TaskAgentic, Goal: "implement the issue", Next: "local-gate"},
+				{Name: "implement", Type: apiv1.TaskAgentic, Goal: "implement the issue", Next: "review", Retry: &apiv1.RetryPolicy{MaxAttempts: 3}},
 				{Name: "local-ci", Type: apiv1.TaskAgentic, Goal: "run local validation", Next: "local-gate"},
 				{Name: "open-pr", Type: apiv1.TaskAgentic, Goal: "open the pull request", Next: "ci-gate"},
 				{Name: "remediate-ci", Type: apiv1.TaskAgentic, Goal: "repair CI", Next: "ci-gate"},
 				{Name: "ci-poll", Type: apiv1.TaskAgentic, Goal: "poll CI", Next: "ci-gate"},
 			},
 			Gates: []apiv1.Gate{
+				{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+					Branches: map[string]string{"pass": "local-gate", "needs-changes": "implement", "fail": "implement"}},
 				{Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "failure-class"},
 					Branches: map[string]string{"pass": "open-pr", "fail": "implement", "infra": "local-ci"}},
 				{Name: "ci-gate", Evaluator: apiv1.EvaluatorAutomated, MaxRepasses: 2,
@@ -406,7 +423,7 @@ func TestRunReliabilityProjectsPinnedGateBudgetsAndOrdinaryWorkspaceBranch(t *te
 
 	got = fromJournal["reliability-ci-exhausted"]
 	assertBudget(t, "exhausted", budgetByKind(t, got, "provider-remediation"), intPtr(2), intPtr(0), "terminalCause")
-	assertBudget(t, "exhausted", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
+	assertBudget(t, "exhausted", budgetByKind(t, got, "implementation-review"), intPtr(0), intPtr(5), "pinnedDefinition")
 	assertBudget(t, "exhausted", budgetByKind(t, got, "ci-poll"), intPtr(0), intPtr(6), "pinnedDefinition")
 	if got.Retained.Branch != "goobers/5313" || !strings.Contains(got.StatusLine(), "provider-remediation 2 used/0 left") {
 		t.Fatalf("exhausted reliability = %s", got.StatusLine())
