@@ -36,6 +36,13 @@ func TestParentRoutingRequiresTransportAndPinnedTask(t *testing.T) {
 	if _, err = routed.Invoke(t.Context(), env); !errors.Is(err, childworkflow.ErrAuthorityUnavailable) {
 		t.Fatal("missing worker transport did not refuse", err)
 	}
+	for _, taskID := range []string{"plan", "different-run:plan", env.RunID + ":plan:extra"} {
+		mismatched := env
+		mismatched.TaskID = taskID
+		if _, err := routed.Invoke(t.Context(), mismatched); err == nil {
+			t.Fatal("mismatched qualified parent task gained execution", taskID)
+		}
+	}
 	missing := env
 	missing.ChildWorkflowOrigin = nil
 	if _, err = routed.Invoke(t.Context(), missing); err == nil {

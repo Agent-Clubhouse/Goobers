@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -42,28 +43,30 @@ func routeContainedParent(root, goober string, rec runner.ArtifactRecorder, ordi
 	tasks := map[string]string{}
 	for _, task := range machine.Def.Spec.Tasks {
 		if task.ChildWorkflows != nil {
-			tasks[id.RunID+":"+task.Name] = task.Goober
+			tasks[task.Name] = task.Goober
 		}
 	}
 	if len(tasks) == 0 {
 		return routed, nil
 	}
+	routed.runID = id.RunID
 	routed.tasks = tasks
 	return routed, nil
 }
 
 type parentRoutedGoober struct {
-	root, goober    string
-	rec             runner.OwnedJournalRecorder
-	ordinary        invoke.Goober
-	ordinaryFactory func() (invoke.Goober, error)
-	hasAssets       bool
-	tasks           map[string]string
+	root, goober, runID string
+	rec                 runner.OwnedJournalRecorder
+	ordinary            invoke.Goober
+	ordinaryFactory     func() (invoke.Goober, error)
+	hasAssets           bool
+	tasks               map[string]string
 }
 
 func (g *parentRoutedGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-	selected := g.tasks[env.TaskID] != ""
-	if selected != (env.ChildWorkflowOrigin != nil) || (selected && g.tasks[env.TaskID] != g.goober) {
+	taskRun, stage, qualified := strings.Cut(env.TaskID, ":")
+	selected := qualified && taskRun == g.runID && g.tasks[stage] != ""
+	if selected != (env.ChildWorkflowOrigin != nil) || (selected && g.tasks[stage] != g.goober) {
 		return apiv1.ResultEnvelope{}, errors.New("parent stage opt-in differs from pinned invocation")
 	}
 	if !selected {
@@ -85,7 +88,8 @@ func (g *parentRoutedGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g *parentRoutedGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	if g.tasks[env.TaskID] != "" || env.ChildWorkflowOrigin != nil {
+	taskRun, stage, qualified := strings.Cut(env.TaskID, ":")
+	if (qualified && taskRun == g.runID && g.tasks[stage] != "") || env.ChildWorkflowOrigin != nil {
 		return apiv1.Verdict{}, errors.New("parent task cannot route through a gate reviewer")
 	}
 	ordinary, err := g.ordinaryExecutor()

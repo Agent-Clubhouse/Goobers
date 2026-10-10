@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -126,7 +127,8 @@ func (p *parentStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelo
 	if err != nil {
 		return request, pin, nil, nil, err
 	}
-	if started.Seq == 0 || started.Seq > 1<<31-1 || started.Time.IsZero() || started.Attempt != int(env.Attempt) || env.TaskID != p.identity.RunID+":"+started.Stage {
+	taskRun, taskStage, qualified := strings.Cut(env.TaskID, ":")
+	if started.Seq == 0 || started.Seq > 1<<31-1 || started.Time.IsZero() || started.Attempt != int(env.Attempt) || !qualified || taskRun != p.identity.RunID || taskStage != started.Stage {
 		return request, pin, nil, nil, errors.New("parent invocation has no exact physical attempt")
 	}
 	_, branch, err := runner.OwnedJournalScope(p.journal)
