@@ -130,7 +130,7 @@ async function parallelJourney() {
     const command = `node -e 'require("http").get(${JSON.stringify(notify+'?branch='+branch)}, r => r.resume())'`;
     const sourceFile = `generated-${branch}.yaml`;
     const run = JSON.stringify({ workspace:'scratch', command:['sh','-c',command] });
-    fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      timeoutSeconds: 120\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: '+run+'\n');
+    fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      goal: Wait for the sibling child\n      timeoutSeconds: 120\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: '+run+'\n');
     const validation = await tool('validate_child_workflow', { sourceFile });
     if (validation.error || !validation.value.valid) throw new Error('parallel generated source rejected');
     const accepted = await tool('start_child_workflow', { sourceFile, invocationKey });
