@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -402,5 +403,46 @@ func TestStaleScanDoesNotMatchTheLiveStore(t *testing.T) {
 			t.Fatalf("the orphan scan matched the LIVE store %s; startup recovery would "+
 				"delete the read model on every boot", file)
 		}
+	}
+}
+
+func TestSwapSidecarMoveFailureLeavesStoreUsable(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "read.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runID := fmt.Sprintf("%032x", 1)
+	if err := store.UpsertRun(ctx, completed(runID, 5)); err != nil {
+		t.Fatal(err)
+	}
+	rebuild, err := store.BeginRebuild(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rebuild.Target().UpsertRun(ctx, completed(runID, 6)); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := moveSidecar
+	moveSidecar = func(string, string) error { return errors.New("injected") }
+	t.Cleanup(func() { moveSidecar = orig })
+
+	if err := rebuild.Swap(ctx); err == nil {
+		t.Fatal("swap succeeded despite an injected sidecar move failure")
+	}
+
+	row, ok, err := store.GetRun(ctx, runID)
+	if err != nil || !ok {
+		t.Fatalf("store unusable after sidecar failure: ok=%v err=%v", ok, err)
+	}
+	if row.LastSeq != 5 {
+		t.Errorf("live run at %d after rolled-back swap, want 5", row.LastSeq)
+	}
+	if err := store.UpsertRun(ctx, completed(runID, 7)); err != nil {
+		t.Errorf("store not writable after rollback: %v", err)
 	}
 }

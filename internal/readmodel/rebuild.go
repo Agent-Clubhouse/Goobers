@@ -326,6 +326,9 @@ func (r *RebuildState) Abort() error {
 	return removeDatabaseFiles(r.Path)
 }
 
+// moveSidecar is a seam so tests can inject a sidecar move failure.
+var moveSidecar = os.Rename
+
 // removeDatabaseFiles removes a SQLite database and its WAL sidecars.
 //
 // All three, because leaving a -wal behind next to a removed main file makes the
@@ -461,9 +464,20 @@ func (r *RebuildState) Swap(ctx context.Context) error {
 	}
 	// The old sidecars belong to the old inode and must not be inherited by the
 	// new file, which has its own.
+	rollback := func() {
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			_ = os.RemoveAll(live + suffix)
+		}
+		_ = os.Rename(previous, live)
+		_ = r.store.reopenLocked()
+	}
 	for _, suffix := range []string{"-wal", "-shm"} {
-		_ = os.Remove(live + suffix)
-		if err := os.Rename(r.Path+suffix, live+suffix); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(live + suffix); err != nil && !os.IsNotExist(err) {
+			rollback()
+			return fmt.Errorf("readmodel: clear stale %s sidecar: %w", suffix, err)
+		}
+		if err := moveSidecar(r.Path+suffix, live+suffix); err != nil && !os.IsNotExist(err) {
+			rollback()
 			return fmt.Errorf("readmodel: move %s sidecar: %w", suffix, err)
 		}
 	}
