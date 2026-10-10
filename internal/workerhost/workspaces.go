@@ -241,6 +241,9 @@ func shortSHA(sha string) string {
 	if sha == "" {
 		return "(absent)"
 	}
+	if len(sha) > 8 {
+		return sha[:8]
+	}
 	return sha
 }
 
