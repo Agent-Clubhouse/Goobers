@@ -64,6 +64,11 @@ func TestIntegrationContainedParentIteratesChildrenThroughRealWorkers(t *testing
 	qualifyContainedParentJourney(t, "iterate")
 }
 
+func TestIntegrationContainedParentSurvivesDispatchWorkerRestart(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	qualifyContainedParentJourney(t, "worker-restart")
+}
+
 func qualifyContainedParentJourney(t *testing.T, action string) {
 	t.Helper()
 	image := os.Getenv("GOOBERS_PARENT_QUALIFICATION_IMAGE")
@@ -102,7 +107,7 @@ esac
 		t.Fatal(err)
 	}
 	var childStarted <-chan struct{}
-	if action == "cancel" {
+	if action == "cancel" || action == "worker-restart" {
 		childStarted = parentQualificationCancellationProbe(t, sourceRepo)
 	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
@@ -182,14 +187,25 @@ esac
 	for _, pin := range pins {
 		queues[pin.Queue] = true
 	}
-	for queue := range queues {
-		worker := temporalworker.New(dev.Client(), queue, temporalworker.Options{DeadlockDetectionTimeout: temporaltest.DeadlockDetectionTimeout, WorkerStopTimeout: time.Second})
-		engine.RegisterWith(worker, &engine.Activities{Dispatcher: podDispatcher, Surrenders: plane})
-		if err := worker.Start(); err != nil {
-			t.Fatal(err)
+	var workers []temporalworker.Worker
+	startWorkers := func() {
+		for queue := range queues {
+			worker := temporalworker.New(dev.Client(), queue, temporalworker.Options{DeadlockDetectionTimeout: temporaltest.DeadlockDetectionTimeout, WorkerStopTimeout: time.Second})
+			engine.RegisterWith(worker, &engine.Activities{Dispatcher: podDispatcher, Surrenders: plane})
+			if err := worker.Start(); err != nil {
+				t.Fatal(err)
+			}
+			workers = append(workers, worker)
 		}
-		t.Cleanup(worker.Stop)
 	}
+	stopWorkers := func() {
+		for _, worker := range workers {
+			worker.Stop()
+		}
+		workers = nil
+	}
+	startWorkers()
+	t.Cleanup(stopWorkers)
 	store, err := executionGenerationStore(f.layout)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +243,7 @@ esac
 		t.Fatal(err)
 	}
 	runID := strings.TrimPrefix(accepted.AcceptanceID, "trigger-")
-	sawParked, cancellationSent := false, false
+	sawParked, cancellationSent, workerRestarted := false, false, false
 	cancelInput := httpapi.CancelRunRequest{RunID: runID, Gaggle: "example", Actor: "qualification-human", IdempotencyKey: "qualification-parent-cancel"}
 	var cancelReply httpapi.CancelRunResult
 	wantPhase, wantChild, wantParents := journal.PhaseCompleted, triggerqueue.ChildCompleted, 3
@@ -242,7 +258,7 @@ esac
 		if err := triggers.Drain(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if !cancellationSent {
+		if action == "cancel" && !cancellationSent {
 			select {
 			case <-childStarted:
 				result, err := cancels.Cancel(ctx, cancelInput)
@@ -259,6 +275,18 @@ esac
 					t.Errorf("cancellation claimed an unsupported outcome: %+v", result)
 				}
 				cancellationSent = true
+			default:
+			}
+		}
+		if action == "worker-restart" && !workerRestarted {
+			select {
+			case <-childStarted:
+				// Restart the actual dispatch workers while the generated shell
+				// is running. Temporal and Kubernetes remain alive; no result,
+				// receipt or run state is supplied by this test.
+				stopWorkers()
+				startWorkers()
+				workerRestarted = true
 			default:
 			}
 		}
@@ -321,6 +349,9 @@ esac
 	}
 	if action == "cancel" && (!cancellationSent || !children[0].CancellationRequested) {
 		t.Fatal("missing authored-child family cancellation")
+	}
+	if action == "worker-restart" && !workerRestarted {
+		t.Fatal("dispatch workers were never restarted")
 	}
 	if !sawParked {
 		t.Fatal("Portal run detail never exposed the durable parent wait")

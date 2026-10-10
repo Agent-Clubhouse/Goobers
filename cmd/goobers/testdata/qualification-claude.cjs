@@ -54,8 +54,8 @@ async function main() {
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
-  if (!['scratch','merge','replace','discard','cancel','iterate'].includes(mode)) throw new Error('unknown qualification mode');
-  const scratch = ['scratch','iterate'].includes(mode);
+  if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart'].includes(mode)) throw new Error('unknown qualification mode');
+  const scratch = ['scratch','iterate','worker-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
   if (mode === 'iterate' && !status.error && status.value.acknowledged) {
@@ -66,10 +66,10 @@ async function main() {
     const sourceFile = 'generated-child.yaml';
     fs.writeFileSync('parent-before-child.txt', 'parent before child\n');
     let command = scratch ? 'echo real-generated-child' : 'test "$(cat parent-before-child.txt)" = "parent before child" && printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Child work"';
-    if (mode === 'cancel') {
+    if (['cancel','worker-restart'].includes(mode)) {
       const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
       if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid qualification signal');
-      command = `node -e 'require("http").get(${JSON.stringify(notify)}, r => r.resume())'; sleep 60`;
+      command = `node -e 'require("http").get(${JSON.stringify(notify)}, r => r.resume())'; sleep ${mode === 'cancel' ? 60 : 10}`;
     }
     const run = JSON.stringify({ workspace: (scratch || mode === 'cancel') ? 'scratch' : 'repo', command: ['sh','-c',command] });
     fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      goal: Verify the generated workstream\n      timeoutSeconds: 60\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: ' + run + '\n');
