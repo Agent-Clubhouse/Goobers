@@ -375,7 +375,7 @@ func TestClientApplier_RetryPrunesAfterAmbiguousCommittedSwitch(t *testing.T) {
 	assertNoPendingPrune(t, retryClient)
 }
 
-func TestClientApplier_BlocksNewGenerationWhilePrunePending(t *testing.T) {
+func TestClientApplier_NewGenerationCompletesPendingPrune(t *testing.T) {
 	a, c := newApplier(t, managedGaggle("stale"))
 	if err := a.Apply(context.Background(), gaggleSet("stale")); err != nil {
 		t.Fatalf("seed apply: %v", err)
@@ -392,16 +392,16 @@ func TestClientApplier_BlocksNewGenerationWhilePrunePending(t *testing.T) {
 	published := authoritative(t, failingClient)
 
 	next, nextClient := newApplier(t, seedManaged(t, failingClient)...)
-	err := next.Apply(context.Background(), gaggleSet("api"))
-	if err == nil {
-		t.Fatal("new generation should wait for pending prune to finish")
+	if err := next.Apply(context.Background(), gaggleSet("api")); err != nil {
+		t.Fatalf("new generation should complete the pending prune and apply: %v", err)
 	}
-	if phase := applyErrorOf(t, err).Phase; phase != "switch" {
-		t.Fatalf("phase = %q, want switch", phase)
+	if got := authoritative(t, nextClient); got == published {
+		t.Fatalf("authoritative generation still %s, want new generation", got)
 	}
-	if got := authoritative(t, nextClient); got != published {
-		t.Fatalf("authoritative generation = %s, want pending-prune generation %s", got, published)
+	if got, want := selectedGaggleNames(t, nextClient, authoritative(t, nextClient)), []string{"api"}; !equalStrings(got, want) {
+		t.Fatalf("selected gaggles = %v, want %v", got, want)
 	}
+	assertNoPendingPrune(t, nextClient)
 }
 
 func TestClientApplier_DoesNotStampCallerObjects(t *testing.T) {
