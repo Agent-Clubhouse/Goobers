@@ -146,6 +146,57 @@ workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
 bug, reopened issue, main CI breakage), user-provided checker commands, and
 feeding labels into per-run credit propagation (`attribution.json` itself).
 
+## Attribution accuracy eval
+
+Ground-truth labels say whether a run's *result* was right; they do not say
+whether Backprop blamed the right thing. The attribution eval measures that.
+`test/attributioneval/testdata/v1.json` (schema
+`goobers.dev/backprop/attribution-eval/v1`) is a versioned set of failed runs,
+each carrying its journal and span content inline plus a label naming the
+responsible fault domain, workflow, stage, decisive step (graph node ID), and
+failure class. Label sources are `synthetic` (a failure injected at a known
+step), `human`, or `fix-marker`; v1 is synthetic only.
+
+`go run ./test/attributioneval` builds and attributes each case, takes the most
+confident cause, derives its fault domain with `creditgraph.CauseFaultDomain`
+(the auditor's per-signal rule), and scores it independently at each
+granularity (`domain`, `workflow`, `stage`, `step`, `class`). Workflow is credited when the blamed
+cause sits in a stage of the labeled workflow, so it only discriminates
+run-level from stage-level blame. A case for which attribution produces no
+cause earns no credit at any granularity and is counted as `unattributed`. The
+report also gives the Brier score and
+expected calibration error (five equal-width bins) of cause confidence against
+step-level correctness. Results are ordered by case ID and the set digest is
+order-independent, so a fixed set always yields the same report.
+
+It prints per-granularity accuracy and writes the full JSON report with
+`-report=PATH`. The same command, and `TestAttributionEvalRegressionGuard` in
+CI, fails when accuracy at any granularity falls below
+`test/attributioneval/testdata/v1.baseline.json`, or when the set's version
+or content digest no longer matches the baseline. After an intended change,
+record a new baseline with `go run ./test/attributioneval -update`.
+
+Labels use [MAST](https://arxiv.org/abs/2503.13657)'s top-level categories as
+the vocabulary, extended with a bucket for failures outside the agent system
+and an explicit unknown. A label's MAST category must match its class:
+
+| Failure class | MAST category | Default fault domain |
+|---|---|---|
+| `weak-instructions`, `routing` | `specification` | `workflow-definition` |
+| `bad-tool-choice`, `topology` | `inter-agent-misalignment` | `workflow-definition` |
+| `bad-interpretation` | `task-verification` | `workflow-definition` |
+| `model`, `environment` | `outside-agent-system` | `harness-model-provider-environment` |
+| `bad-tool-result`, `unknown` | `unknown` | `mixed-or-unknown` |
+
+The default domain applies when the cause's text names no shared runtime or
+external component; the auditor's keyword rules can override it either way.
+
+Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
+command, building cases from real journals with human and fix-marker labels,
+publishing the report to telemetry and the portal, deriving auditor filing
+confidence thresholds from the calibration, and counterfactual
+fault-injection generators.
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and
