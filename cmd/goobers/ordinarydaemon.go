@@ -19,6 +19,7 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 	if s.Generations == nil || s.OrdinaryRuntime == nil || triggers == nil {
 		return errors.New("ordinary durable admission unavailable")
 	}
+	triggers.directEngine = directEngineService(layout, triggers.queue, s.Config)
 	catalog := &ordinaryStartCatalog{generation: s.ExecutionGeneration, entries: append([]localscheduler.WorkflowEntry(nil), s.Entries...), store: s.Generations.Store}
 	s.OrdinaryCatalog = catalog
 	engine := s.EngineRuntime
