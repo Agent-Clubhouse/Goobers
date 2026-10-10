@@ -107,7 +107,7 @@ esac
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("QUALIFICATION_MODEL_TOKEN", "qualification-model-only")
-	f := realParentQualificationFixture(t, image, keyPath)
+	f := realParentQualificationFixture(t, image, keyPath, action)
 	sourceRepo := t.TempDir()
 	recoveryCLIGit(t, sourceRepo, "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(sourceRepo, "source.txt"), []byte("parent source\n"), 0600); err != nil {
@@ -122,6 +122,7 @@ esac
 	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
 	recoveryCLIGit(t, sourceRepo, "commit", "-m", "qualification base")
+	publication := newParentPublicationQualification(t, action, sourceRepo)
 	originalClone := repoCloneURL
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return sourceRepo, nil }
 	t.Cleanup(func() { repoCloneURL = originalClone })
@@ -142,6 +143,7 @@ esac
 	s := newDaemonCredentialService(f.layout, f.cfg, nil, journal.NewRegistryScrubber(), instanceLog).withStageGrants(f.layout.Root, endpoint, false)
 	t.Cleanup(func() { unregisterDaemonStageGrants(f.layout.Root, s) })
 	s.childDispatch = dispatch
+	publication.install(t, s)
 	s.Replace(credentialPlaneDefinitionsFromSet(f.applied))
 	if err := s.enableChildWorkflows(triggers.queue, f.applied); err != nil {
 		t.Fatal(err)
@@ -301,6 +303,9 @@ esac
 	cancelInput := httpapi.CancelRunRequest{RunID: runID, Gaggle: "example", Actor: "qualification-human", IdempotencyKey: "qualification-parent-cancel"}
 	var cancelReply httpapi.CancelRunResult
 	wantPhase, wantChild, wantParents := journal.PhaseCompleted, triggerqueue.ChildCompleted, 3
+	if action == "publication-lost-reply" {
+		wantChild = triggerqueue.ChildFailed
+	}
 	wantChildren := 1
 	if action == "iterate" || workerRestart {
 		wantChildren, wantParents = 2, 5
@@ -473,9 +478,10 @@ esac
 			t.Fatal("durable cancellation replay changed its original acceptance", replay, err)
 		}
 	}
+	publication.verify(t, ctx, f, triggers.queue, runID, children)
 }
 
-func realParentQualificationFixture(t *testing.T, image, keyPath string) pinnedChildFixture {
+func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ...string) pinnedChildFixture {
 	t.Helper()
 	return newPinnedChildFixture(t, func(root string) {
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
@@ -500,5 +506,8 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string) pinnedC
 			t.Fatal(err)
 		}
 		writeFileContent(t, path, string(data))
+		if len(mode) != 0 && strings.HasPrefix(mode[0], "publication") {
+			configureParentPublicationQualification(t, root)
+		}
 	})
 }
