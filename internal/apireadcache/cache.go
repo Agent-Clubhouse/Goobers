@@ -188,7 +188,7 @@ func CleanStaleLocks(schedulerDir string) {
 			continue
 		}
 		path := filepath.Join(schedulerDir, name)
-		held, err := tryAcquireAPIReadCacheLock(path, apiReadCacheLockAcquireTimeout, lock.TryAcquire)
+		held, err := acquireAPIReadCacheLock(path, apiReadCacheLockAcquireTimeout, lock.TryAcquire)
 		if err != nil {
 			continue // a live peer holds it (or it's otherwise unavailable) — leave it
 		}
@@ -502,10 +502,6 @@ func (a *apiReadCacheLockAttempt) acquired() (*lock.Handle, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.result.handle, a.result.err
-}
-
-func tryAcquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
-	return apiReadCacheLocks.acquire(lockPath, timeout, acquire)
 }
 
 // withAPIReadCacheLock fails open on contention or a blocked file open. The
