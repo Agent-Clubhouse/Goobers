@@ -375,6 +375,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
+	"signal": {
+		{name: "request-id", takesArg: true, desc: "Idempotency key for the accepted signal recipient set"},
+	},
 	"run": {
 		{name: "no-api", desc: "Explicitly use local execution or file delegation"},
 		{name: "api-timeout", takesArg: true, desc: "Bound API validation and acceptance"},

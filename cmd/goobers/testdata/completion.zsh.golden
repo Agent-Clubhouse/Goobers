@@ -183,6 +183,9 @@ _goobers_completion()
         rerun-stage)
             flags+=(--addendum --actor --api)
             ;;
+        signal)
+            flags+=(--request-id)
+            ;;
         workflow)
             case "${words[3]:-}" in
                 show) flags+=(--dot) ;;
