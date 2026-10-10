@@ -174,7 +174,8 @@ func awaitQualificationChildCustody(t *testing.T, ctx context.Context, transport
 	defer cancel()
 	for {
 		for id, input := range transport.snapshot() {
-			if input.Attempt.WorkflowParent {
+			// The generated child fixture uses stage check; parent invocations use plan.
+			if input.Attempt.Stage != "check" {
 				continue
 			}
 			description, err := transport.DescribeWorkflowExecution(deadline, id, "")
