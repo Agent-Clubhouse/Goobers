@@ -162,12 +162,8 @@ func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool) {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	probe := "#!/bin/sh\ncase \"$*\" in\n --version) echo '2.1.0 (qualification preflight)' ;;\n 'auth status') echo '{\"loggedIn\":true}' ;;\n *) echo 'parent execution reached the host' >&2; exit 70 ;;\nesac\n"
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(probe), 0700); err != nil {
-		t.Fatal(err)
-	}
+	installQualificationParentProbe(t, bin)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("QUALIFICATION_MODEL_TOKEN", "qualification-model-only")
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "qualification-for-local-git-only")
 	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "qualification forge does not implement this operation", http.StatusNotFound)

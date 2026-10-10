@@ -94,21 +94,9 @@ func qualifyContainedParentJourney(t *testing.T, action string) {
 	if err := os.WriteFile(keyPath, []byte(strings.Repeat("q", 32)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Host preflight may inspect the CLI, but actual parent inference must
-	// execute in the contained worker. Any host invocation fails this probe.
-	hostProbe := `#!/bin/sh
-case "$*" in
-  --version) printf '%s\n' '2.1.0 (qualification preflight)' ;;
-  'auth status') printf '%s\n' '{"loggedIn":true}' ;;
-  *) printf '%s\n' 'parent execution reached the host' >&2; exit 70 ;;
-esac
-`
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(hostProbe), 0700); err != nil {
-		t.Fatal(err)
-	}
+	installQualificationParentProbe(t, bin)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("QUALIFICATION_MODEL_TOKEN", "qualification-model-only")
 	f := realParentQualificationFixture(t, image, keyPath, action)
 	sourceRepo := t.TempDir()
 	recoveryCLIGit(t, sourceRepo, "init", "--initial-branch=main")
@@ -497,6 +485,7 @@ esac
 
 func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ...string) pinnedChildFixture {
 	t.Helper()
+	selectedHarness := qualificationParentHarness(t)
 	return newPinnedChildFixture(t, func(root string) {
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
 		parent = strings.Replace(parent, "allowPRPublication: true", "allowPRPublication: false", 1)
@@ -506,7 +495,7 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		}
 		writeFileContent(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), parent)
 		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
-		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))
+		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: "+selectedHarness, 1))
 		path = filepath.Join(root, "instance.yaml")
 		var doc map[string]any
 		if err := yaml.Unmarshal([]byte(readFileContent(t, path)), &doc); err != nil {
@@ -523,10 +512,10 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		delete(doc, "runner")
 		doc["schemaVersion"] = 2
 		grants, _ := doc["credentials"].([]any)
-		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": "claude-code", "token": map[string]any{"env": "QUALIFICATION_MODEL_TOKEN"}})
+		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": selectedHarness, "token": map[string]any{"env": "QUALIFICATION_MODEL_TOKEN"}})
 		doc["engine"] = map[string]any{"hostPort": "temporal:7233"}
 		doc["api"] = map[string]any{"podTokenKeyFile": keyPath}
-		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": image, "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "shell": true, "capabilities": []string{"isolated-parent", "isolated-child"}}}}
+		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": image, "provides": map[string]any{"os": "linux", "harnesses": []string{selectedHarness}, "shell": true, "capabilities": []string{"isolated-parent", "isolated-child"}}}}
 		data, err := yaml.Marshal(doc)
 		if err != nil {
 			t.Fatal(err)
