@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -21,7 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|prune|prune-orphans|compact> [flags] [path]\n\n" +
 	"configure: enable or disable customer-owned Application Insights export\n" +
 	"test:    send one secret-safe direct-ingestion connectivity probe\n" +
 	"merges: confirmed PR landings and daily counts by originating instance\n" +
@@ -29,6 +31,7 @@ const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|err
 	"errors: recent errors across runs, by class, with run/stage refs\n" +
 	"export: re-emit a span-start-time window from journaled OTLP/JSON\n" +
 	"mark-fix: mark a Backprop finding for post-fix verification\n" +
+	"label:   record a ground-truth verdict for a Backprop-enrolled run\n" +
 	"prune:   remove terminal runs outside the configured retention bounds\n" +
 	"prune-orphans: report or delete old run directories that lack run.yaml\n" +
 	"compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)\n"
@@ -80,6 +83,81 @@ func runTelemetryMarkFixAt(args []string, stdout, stderr io.Writer, now time.Tim
 		return 1
 	}
 	pf(stdout, "marked finding=%q fixedAt=%s\n", strings.TrimSpace(*findingID), appliedAt.UTC().Format(time.RFC3339Nano))
+	return 0
+}
+
+const telemetryLabelHelp = "Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]\n\n" +
+	"Record a user-defined ground-truth verdict for a Backprop-enrolled terminal\n" +
+	"run. Labels are appended to labels.json beside the run's attribution.json\n" +
+	"with provenance (who, when, source) and may arrive long after the run; the\n" +
+	"latest --labeled-at verdict wins when cohort aggregates are re-scored. Labels\n" +
+	"are read-only inputs and never change the run's phase, journal, or gate\n" +
+	"verdicts. --by defaults to the current OS user; --labeled-at defaults to now.\n" +
+	"Exit codes: 0 = recorded, 1 = store error, 2 = usage/config error.\n"
+
+func runTelemetryLabel(args []string, stdout, stderr io.Writer) int {
+	return runTelemetryLabelAt(args, stdout, stderr, time.Now().UTC())
+}
+
+func runTelemetryLabelAt(args []string, stdout, stderr io.Writer, now time.Time) int {
+	fs := newCLIFlagSet("telemetry label", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	runID := fs.String("run", "", "Backprop-enrolled terminal run id to label (required)")
+	outcomeValue := fs.String("outcome", "", "ground-truth verdict: correct or incorrect (required)")
+	reason := fs.String("reason", "", "why the run's result is correct or incorrect")
+	labeledBy := fs.String("by", "", "who is recording the label (default current OS user)")
+	labeledAtValue := fs.String("labeled-at", "", "when the verdict was reached as RFC3339 (default now)")
+	fs.Usage = helpUsage(stderr, "telemetry label")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 || strings.TrimSpace(*runID) == "" {
+		fs.Usage()
+		return 2
+	}
+	outcome, err := creditgraph.ParseLabelOutcome(*outcomeValue)
+	if err != nil {
+		pf(stderr, "error: --%v\n", err)
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+	layout := instance.NewLayout(root)
+	if _, err := os.Stat(layout.ConfigFile()); err != nil {
+		pf(stderr, "error: %s not found (not an instance root - run `goobers init` first)\n", layout.ConfigFile())
+		return 2
+	}
+	labeledAt := now
+	if strings.TrimSpace(*labeledAtValue) != "" {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, *labeledAtValue)
+		if parseErr != nil {
+			pf(stderr, "error: --labeled-at must be an RFC3339 timestamp\n")
+			return 2
+		}
+		labeledAt = parsed
+	}
+	by := strings.TrimSpace(*labeledBy)
+	if by == "" {
+		if current, userErr := user.Current(); userErr == nil {
+			by = strings.TrimSpace(current.Username)
+		}
+	}
+	if by == "" {
+		pf(stderr, "error: could not determine the current user; pass --by\n")
+		return 2
+	}
+	label, err := readservice.RecordGroundTruthLabel(context.Background(), root, creditgraph.GroundTruthLabel{
+		RunID: *runID, Outcome: outcome, Reason: *reason, Source: creditgraph.LabelSourceHuman,
+		LabeledBy: by, LabeledAt: labeledAt, RecordedAt: now,
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "labeled run=%q outcome=%s id=%s labeledAt=%s\n",
+		label.RunID, label.Outcome, label.ID, label.LabeledAt.Format(time.RFC3339Nano))
 	return 0
 }
 

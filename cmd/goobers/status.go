@@ -1800,6 +1800,9 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 			pf(stdout, "  work: #%s %s\n", r.Operator.Issue.Number, r.Operator.Issue.Title)
 		}
 		renderStatusReview(stdout, r.Operator.Review)
+		if r.Operator.Reliability != nil {
+			pf(stdout, "  reliability: %s\n", r.Operator.Reliability.StatusLine())
+		}
 		if len(r.Operator.PotentialBlockers) > 0 {
 			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
 		}

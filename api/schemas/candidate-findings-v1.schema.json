@@ -323,6 +323,29 @@
           "items": {
             "$ref": "#/$defs/attributionEvidenceLink"
           }
+        },
+        "groundTruth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["labeledRunCount", "correctRunCount", "incorrectRunCount"],
+          "description": "Counts of this cohort's runs by their effective user-defined ground-truth label; omitted when no run is labeled.",
+          "properties": {
+            "labeledRunCount": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The number of cohort runs carrying a ground-truth label."
+            },
+            "correctRunCount": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The number of labeled cohort runs whose effective label is correct."
+            },
+            "incorrectRunCount": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The number of labeled cohort runs whose effective label is incorrect."
+            }
+          }
         }
       }
     },

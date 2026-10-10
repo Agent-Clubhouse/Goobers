@@ -270,6 +270,7 @@ func TestDefectAggregateAttributionCohortWireShapeMatches(t *testing.T) {
 			JournalSequence: 7,
 			JournalPath:     "gaggles/example/runs/run-1/events.jsonl",
 		}},
+		GroundTruth: &creditgraph.GroundTruthSummary{LabeledRunCount: 2, CorrectRunCount: 1, IncorrectRunCount: 1},
 	}
 	wire := telemetryclient.AttributionCohort{
 		EffectiveVersion: cohort.EffectiveVersion,
@@ -300,6 +301,11 @@ func TestDefectAggregateAttributionCohortWireShapeMatches(t *testing.T) {
 			JournalSequence: cohort.CounterEvidence[0].JournalSequence,
 			JournalPath:     cohort.CounterEvidence[0].JournalPath,
 		}},
+		GroundTruth: &telemetryclient.GroundTruthSummary{
+			LabeledRunCount:   cohort.GroundTruth.LabeledRunCount,
+			CorrectRunCount:   cohort.GroundTruth.CorrectRunCount,
+			IncorrectRunCount: cohort.GroundTruth.IncorrectRunCount,
+		},
 	}
 	cohortJSON := mustMarshal(t, cohort)
 	wireJSON := mustMarshal(t, wire)
