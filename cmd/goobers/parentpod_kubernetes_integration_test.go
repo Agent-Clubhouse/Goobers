@@ -385,6 +385,16 @@ func qualifyContainedParentJourney(t *testing.T, action string, provider ...stri
 							t.Logf("parent %s: error=%+v cause=%+v", event.Type, event.Error, event.TerminalCause)
 						}
 					}
+					if action == "agentic" {
+						logQualificationFixturePhases(t, dir)
+						children, _ := triggers.queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: runID}, "", 10)
+						for _, child := range children {
+							logQualificationChildOutcome(t, f.layout, child.RunID)
+							if childDir, err := f.layout.FindRunDir(child.RunID); err == nil {
+								logQualificationFixturePhases(t, childDir)
+							}
+						}
+					}
 					t.Fatal("parent did not complete", phase)
 				}
 				children, childErr := triggers.queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: runID}, "", 10)

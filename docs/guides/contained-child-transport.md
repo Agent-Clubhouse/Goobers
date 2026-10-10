@@ -379,3 +379,20 @@ the original accepted child identity and each physical worker's stopped,
 surrendered and disposed state. Human intervention remains a separate HITL slice;
 these tests do not qualify interruption before a durable worker receipt or during
 workspace disposition.
+
+### Existing Goober tasks in generated children
+
+`TestIntegrationParentComposesExistingGooberThroughRealWorkers` exercises an
+agentic child with each supported parent adapter, Claude and Codex. The parent
+selects an existing Goober from its installed authoring catalog and authors a
+child task using that Goober's admitted capabilities and declared runner. The
+child receives the captured parent tree, writes its result through the real
+agentic worker path, and returns to the parent for merge and continuation.
+
+The deterministic CLI fixture queries the child's actual MCP tool catalog and
+refuses recursive child-workflow tools. The returned evidence identifies the
+adapter that executed the child. The shared journey assertions verify durable
+wait/lineage plus stopped-writer, surrender and disposal evidence for every
+physical parent and child invocation. No Goober definition is created at runtime.
+As with the other journeys, the external model is a fixture; this is a Goobers
+adapter/worker qualification, not live-model certification.
