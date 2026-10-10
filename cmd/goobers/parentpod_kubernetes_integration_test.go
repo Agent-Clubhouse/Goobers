@@ -77,7 +77,8 @@ func qualifyContainedParentJourney(t *testing.T, action string) {
 		action = "cancel"
 	}
 	parallel := action == "parallel" || action == "parallel-cancel"
-	cancelParent := action == "cancel" || action == "parallel-cancel"
+	cancelParent := action == "cancel" || action == "parallel-cancel" || action == "generated-parallel-cancel"
+	generatedParallel := strings.HasPrefix(action, "generated-parallel")
 	workerRestart := action == "worker-restart" || action == "worker-crash"
 	modelMode := action
 	if action == "worker-crash" {
@@ -94,21 +95,9 @@ func qualifyContainedParentJourney(t *testing.T, action string) {
 	if err := os.WriteFile(keyPath, []byte(strings.Repeat("q", 32)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Host preflight may inspect the CLI, but actual parent inference must
-	// execute in the contained worker. Any host invocation fails this probe.
-	hostProbe := `#!/bin/sh
-case "$*" in
-  --version) printf '%s\n' '2.1.0 (qualification preflight)' ;;
-  'auth status') printf '%s\n' '{"loggedIn":true}' ;;
-  *) printf '%s\n' 'parent execution reached the host' >&2; exit 70 ;;
-esac
-`
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(hostProbe), 0700); err != nil {
-		t.Fatal(err)
-	}
+	installQualificationParentProbe(t, bin)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("QUALIFICATION_MODEL_TOKEN", "qualification-model-only")
 	f := realParentQualificationFixture(t, image, keyPath, action)
 	sourceRepo := t.TempDir()
 	recoveryCLIGit(t, sourceRepo, "init", "--initial-branch=main")
@@ -119,7 +108,7 @@ esac
 		t.Fatal(err)
 	}
 	var childStarted <-chan struct{}
-	if parallel {
+	if parallel || generatedParallel {
 		childStarted = parallelQualificationBarrier(t, sourceRepo)
 	} else if cancelParent || workerRestart {
 		childStarted = parentQualificationCancellationProbe(t, sourceRepo)
@@ -479,7 +468,19 @@ esac
 			generated++
 		}
 	}
-	if parents != wantParents || generated != wantChildren {
+	wantGenerated := wantChildren
+	if generatedParallel {
+		wantGenerated = 3
+		if cancelParent {
+			wantGenerated = 2
+		}
+		select {
+		case <-childStarted:
+		default:
+			t.Fatal("generated child branches did not overlap")
+		}
+	}
+	if parents != wantParents || generated != wantGenerated {
 		t.Fatal("unexpected parent/child physical invocations", parents, generated)
 	}
 	if cancelParent {
@@ -497,6 +498,7 @@ esac
 
 func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ...string) pinnedChildFixture {
 	t.Helper()
+	selectedHarness := qualificationParentHarness(t)
 	return newPinnedChildFixture(t, func(root string) {
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
 		parent = strings.Replace(parent, "allowPRPublication: true", "allowPRPublication: false", 1)
@@ -506,7 +508,7 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		}
 		writeFileContent(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), parent)
 		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
-		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))
+		writeFileContent(t, path, qualificationParentGoober(t, readFileContent(t, path), selectedHarness))
 		path = filepath.Join(root, "instance.yaml")
 		var doc map[string]any
 		if err := yaml.Unmarshal([]byte(readFileContent(t, path)), &doc); err != nil {
@@ -523,10 +525,10 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		delete(doc, "runner")
 		doc["schemaVersion"] = 2
 		grants, _ := doc["credentials"].([]any)
-		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": "claude-code", "token": map[string]any{"env": "QUALIFICATION_MODEL_TOKEN"}})
+		doc["credentials"] = append(grants, map[string]any{"capability": "agent:model", "harness": selectedHarness, "token": map[string]any{"env": "QUALIFICATION_MODEL_TOKEN"}})
 		doc["engine"] = map[string]any{"hostPort": "temporal:7233"}
 		doc["api"] = map[string]any{"podTokenKeyFile": keyPath}
-		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": image, "provides": map[string]any{"os": "linux", "harnesses": []string{"claude-code", "claude"}, "shell": true, "capabilities": []string{"isolated-parent", "isolated-child"}}}}
+		doc["runners"] = []any{map[string]any{"name": "self", "host": "self"}, map[string]any{"name": "isolated", "host": image, "provides": map[string]any{"os": "linux", "harnesses": []string{selectedHarness}, "shell": true, "capabilities": []string{"isolated-parent", "isolated-child"}}}}
 		data, err := yaml.Marshal(doc)
 		if err != nil {
 			t.Fatal(err)

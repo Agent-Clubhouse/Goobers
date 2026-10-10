@@ -290,6 +290,34 @@ requires its own provider-write and ambiguous-result recovery qualification.
 Loss before a durable worker receipt or during reconciliation is not proved by
 the parked-parent daemon-loss test. A closed connection never proves work stopped.
 
+### Codex parent adapter qualification
+
+For the Codex variant, install the same deterministic fixture as
+`/usr/local/bin/codex` in the qualification image. The fixture reads the private
+MCP configuration produced by the real Codex adapter, requires the child tool
+allowlist, launches the supplied MCP server with its explicit environment, and
+emits Codex session/completion events. It verifies that only the Codex model
+credential reaches that invocation. This exercises the Goobers adapter and
+transport; it does not execute a live Codex model or qualify an external CLI
+release.
+
+Configure the parent Goober without a restrictive built-in `tools` declaration:
+the Codex adapter refuses that unsupported configuration. Child admission,
+capability ceilings, scoped MCP grants and contained placement remain enforced.
+The host CLI probe permits only preflight, so accidental host inference fails.
+
+With the same disposable cluster, image and Temporal settings, run:
+
+```sh
+go test -race -tags=integration ./cmd/goobers -count=1 -timeout=25m -v \
+  -run '^(TestIntegrationCodexParentAuthorsChildThroughRealWorkers|TestIntegrationCodexParentCancellationStopsAuthoredChild|TestIntegrationContainedParentSurvivesDaemonProcessLossCodex)$'
+```
+
+These journeys cover parent-authored repository child creation and merge,
+cancellation while the child is active, and fsync-enabled daemon process loss
+while the parent waits. Recovery must retain the accepted child and lineage,
+resume the parent, and prove exact physical worker stop, surrender and disposal.
+
 ### Parallel parents with one child per stage
 
 Each parallel parent stage can author one active child using its own workspace
@@ -300,7 +328,7 @@ workflow concurrency limits apply to child starts, so configure sufficient
 capacity when concurrent children are intended.
 
 Admission requires the complete fork, source, result and join services. Generated
-children remain sequential; recursion and child-authored parallel DSL are refused.
+children may also compose parallel stages as described below; recursion is refused.
 Cancellation fences the parent family, stops each unfinished child and retains
 unresolved branch workspaces until physical custody is verified.
 
@@ -318,3 +346,36 @@ The following tests use the same disposable environment and actual worker image:
 These tests passed together against one source/image. They do not qualify loss
 before a durable worker receipt, interruption during reconciliation, delegated
 publication or human intervention.
+
+### Parallel stages inside a generated child
+
+A parent may author a child workflow that uses the ordinary DSL's parallel
+stages, existing tasks and supported workspace modes. This remains one child
+owned by the originating parent stage. It does not enable recursive generation
+or define new Goobers, capabilities, credentials or branch-write permissions.
+
+The qualified journey runs two repository read-only child branches against the
+parent's forked snapshot, then a writable root join returns the combined result.
+The parent adopts that result using the ordinary workspace disposition contract.
+Each physical branch worker retains its own journal identity and stop/surrender
+evidence. After a daemon crash, recovery reconciles the original workers before
+resuming the same child; it does not create a replacement child.
+
+Startup cleanup retains detached stage views while their repository writers are
+unacknowledged. Reconciled stage views can retire independently, while the shared
+child fork remains protected until every repository writer is settled. A stage
+finish or a closed connection alone cannot authorize cleanup.
+
+Using the disposable environment above, these tests passed together with race
+detection against the same source and worker image:
+
+- `TestIntegrationParentAuthorsParallelChildThroughRealWorkers`
+- `TestIntegrationCancelParentWithParallelGeneratedChild`
+- `TestIntegrationContainedParentSurvivesDaemonProcessLossGeneratedParallel`
+
+They cover overlapping child branches, parent cancellation while both branches
+are active, and a real fsync-enabled daemon kill/restart. The recovery case checks
+the original accepted child identity and each physical worker's stopped,
+surrendered and disposed state. Human intervention remains a separate HITL slice;
+these tests do not qualify interruption before a durable worker receipt or during
+workspace disposition.
