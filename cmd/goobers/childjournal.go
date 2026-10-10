@@ -167,7 +167,7 @@ func childObservationEvent(e journal.Event) error {
 	case journal.EventRunnerAnnotation:
 		kind, _ := e.Runner["kind"].(string)
 		switch kind {
-		case "agent-telemetry-fidelity", "goobers-io-input-inspection-receipts", "credit-span-provenance", "required-mcp-readiness", "mcp-server-unavailable":
+		case "agent-telemetry-fidelity", "goobers-io-input-inspection-receipts", "goobers-io-publication-diagnostics", "credit-span-provenance", "required-mcp-readiness", "mcp-server-unavailable":
 			return nil
 		}
 	}

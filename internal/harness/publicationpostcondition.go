@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // ErrorCodeInvalidPublication names a success completion whose declared,
@@ -24,8 +25,11 @@ const ErrorCodeInvalidPublication = "INVALID_PUBLICATION"
 var ErrInvalidPublication = errors.New(ErrorCodeInvalidPublication + ": the stage reported success but its declared output was not accepted")
 
 // publicationPostcondition is armed for an invoke whose publication contract
-// binds at least one slot to a JSON Schema.
-type publicationPostcondition struct{}
+// binds at least one slot to a JSON Schema. It remembers every completion-
+// boundary check so the outcome can be journaled.
+type publicationPostcondition struct {
+	checks []publicationCheck
+}
 
 // armPostconditions hands goobers-io the declared publication schemas and arms
 // both completion postconditions; the publication check wraps the commit check
@@ -34,6 +38,19 @@ func (e *Executor) armPostconditions(ctx context.Context, mode Mode, env apiv1.I
 	req.PublicationSchemas = publicationSchemasFor(ctx, env)
 	commit := armCommitPostcondition(ctx, mode, env, req)
 	return commit, e.armPublicationPostcondition(ctx, mode, env, req)
+}
+
+// runSettled runs the adapter and settles both completion postconditions. For
+// a stage with schema-bound slots it clears a prior invocation's publication
+// receipts first and journals this attempt's publication diagnostics after.
+func (e *Executor) runSettled(ctx context.Context, env apiv1.InvocationEnvelope, req RunRequest, nested NestedPolicyCapability, commit *commitPostcondition, publication *publicationPostcondition) (Outcome, error) {
+	if len(req.PublicationSchemas) > 0 {
+		if err := mcpio.ResetPublicationReceipts(req.Workspace, goobersIOPublicationReceiptFile()); err != nil {
+			return Outcome{}, fmt.Errorf("harness: reset goobers-io publication receipts: %w", err)
+		}
+	}
+	out, err := publication.settle(commit.settle(e.runAdapter(ctx, req, nested)))
+	return out, errors.Join(err, e.journalPublicationDiagnostics(env, req, publication))
 }
 
 // armPublicationPostcondition wraps req's completion validator so a success
@@ -48,6 +65,7 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 	if !ok || manifest == "" {
 		return nil
 	}
+	p := &publicationPostcondition{}
 	base := req.ValidateCompletion
 	req.ValidateCompletion = func(payload []byte) error {
 		var commitErr error
@@ -65,6 +83,7 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 			return commitErr
 		}
 		err := e.checkDeclaredPublication(ctx, env, manifest)
+		p.record(err)
 		if err == nil {
 			return commitErr
 		}
@@ -75,7 +94,7 @@ func (e *Executor) armPublicationPostcondition(ctx context.Context, mode Mode, e
 		}
 		return errors.Join(commitErr, publicationErr)
 	}
-	return &publicationPostcondition{}
+	return p
 }
 
 // checkDeclaredPublication runs the lift-time validation without recording
