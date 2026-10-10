@@ -191,7 +191,7 @@ esac
 	startWorkers := func() {
 		for queue := range queues {
 			worker := temporalworker.New(dev.Client(), queue, temporalworker.Options{DeadlockDetectionTimeout: temporaltest.DeadlockDetectionTimeout, WorkerStopTimeout: time.Second})
-			engine.RegisterWith(worker, &engine.Activities{Dispatcher: podDispatcher, Surrenders: plane})
+			bootstrap.RegisterEngine(worker, dev.Client(), bootstrap.EngineDeps{Dispatcher: podDispatcher, Surrenders: plane})
 			if err := worker.Start(); err != nil {
 				t.Fatal(err)
 			}
@@ -229,7 +229,7 @@ esac
 		t.Fatal(err)
 	}
 	journeyTimeout := 3 * time.Minute
-	if action == "iterate" {
+	if action == "iterate" || action == "worker-restart" {
 		// Two child returns require five separate contained parent invocations.
 		journeyTimeout = 6 * time.Minute
 	}
@@ -248,7 +248,7 @@ esac
 	var cancelReply httpapi.CancelRunResult
 	wantPhase, wantChild, wantParents := journal.PhaseCompleted, triggerqueue.ChildCompleted, 3
 	wantChildren := 1
-	if action == "iterate" {
+	if action == "iterate" || action == "worker-restart" {
 		wantChildren, wantParents = 2, 5
 	}
 	if action == "cancel" {
@@ -336,11 +336,15 @@ esac
 		t.Fatal("child result did not reach the expected retained outcome", children, err)
 	}
 	for _, child := range children {
-		if child.State != wantChild || child.ResultRef == "" || (action != "cancel" && child.AcknowledgedAt.IsZero()) {
+		expectedState := wantChild
+		if action == "worker-restart" && child.Sequence == 1 {
+			expectedState = triggerqueue.ChildFailed
+		}
+		if child.State != expectedState || child.ResultRef == "" || (action != "cancel" && child.AcknowledgedAt.IsZero()) {
 			t.Fatal("child result did not reach the expected retained outcome", child)
 		}
 	}
-	if action == "iterate" {
+	if action == "iterate" || action == "worker-restart" {
 		slices.SortFunc(children, func(a, b triggerqueue.ChildRecord) int { return a.Sequence - b.Sequence })
 		first, second := children[0], children[1]
 		if first.Sequence != 1 || second.Sequence != 2 || first.Identity.StageOccurrence != second.Identity.StageOccurrence || first.Identity.InvocationKey != "qualification-child" || second.Identity.InvocationKey != "qualification-child-2" || first.AcknowledgedAt.After(second.AcceptedAt) {
@@ -363,7 +367,7 @@ esac
 	for _, child := range children {
 		found := false
 		for _, item := range history.Items {
-			if item.RunID == child.RunID && item.State == wantChild && (action == "cancel" || item.AcknowledgedAt != nil) {
+			if item.RunID == child.RunID && item.State == child.State && (action == "cancel" || item.AcknowledgedAt != nil) {
 				found = true
 			}
 		}

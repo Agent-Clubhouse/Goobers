@@ -48,6 +48,9 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
+	// ChildDispatchCompletion commits a stopped worker's final custody report
+	// through its existing Temporal connection before the activity returns.
+	ChildDispatchCompletion ChildDispatchCompletion
 	// AdmitSelfExecution checks current instance policy before any local stage side effect.
 	AdmitSelfExecution func(stage string) error
 	Goober             invoke.Goober

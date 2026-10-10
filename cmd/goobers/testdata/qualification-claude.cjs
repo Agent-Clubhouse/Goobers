@@ -58,7 +58,7 @@ async function main() {
   const scratch = ['scratch','iterate','worker-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
-  if (mode === 'iterate' && !status.error && status.value.acknowledged) {
+  if (['iterate','worker-restart'].includes(mode) && !status.error && status.value.acknowledged) {
     invocationKey = 'qualification-child-2';
     status = await tool('get_child_workflow', { invocationKey });
   }
@@ -80,6 +80,10 @@ async function main() {
     return waitForHost();
   }
   if (!status.value.resultRef) return waitForHost();
+  if (mode === 'worker-restart') {
+    const expectedState = invocationKey === 'qualification-child' ? 'failed' : 'completed';
+    if (status.value.state !== expectedState) throw new Error('worker restart child outcome changed');
+  }
   if (!status.value.acknowledged) {
     fs.writeFileSync('parent-after-child.txt', 'parent after child\n');
     const disposition = await tool('resolve_child_workflow', { invocationKey, action, resultRef: status.value.resultRef });

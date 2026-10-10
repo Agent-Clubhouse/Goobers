@@ -134,7 +134,7 @@ func (a *Activities) DispatchChildPod(ctx context.Context, in ChildDispatchInput
 	default:
 		out.Failure = "dispatch"
 	}
-	return out, nil
+	return a.completeChildDispatch(ctx, out)
 }
 
 // DispatchError reconstructs a conservative typed failure from the worker wire
