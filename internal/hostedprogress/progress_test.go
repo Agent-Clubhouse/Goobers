@@ -803,3 +803,47 @@ func testJournalWith(t *testing.T, finished bool) (string, []journal.Event) {
 	}
 	return filepath.Join(runsDir, runID), events
 }
+
+func TestBoundContractMarshalCountIsLogarithmicAndMatchesLinearDrop(t *testing.T) {
+	build := func(n int) Contract {
+		events := make([]journal.Event, 0, n)
+		for i := 1; i <= n; i++ {
+			events = append(events, journal.Event{
+				Seq:   uint64(i),
+				Type:  journal.EventError,
+				Error: &journal.ErrorDetail{Code: "large", Message: strings.Repeat("x", 200)},
+			})
+		}
+		return Contract{Schema: Schema, Revision: uint64(n), Events: events}
+	}
+
+	reference := build(2000)
+	for {
+		raw, _ := json.Marshal(reference)
+		if len(raw) <= maxPayloadBytes || len(reference.Events) <= 1 {
+			break
+		}
+		reference.TruncatedBefore = reference.Events[1].Seq
+		reference.Events = append(reference.Events[:1], reference.Events[2:]...)
+	}
+
+	calls := 0
+	orig := marshalContract
+	marshalContract = func(v any) ([]byte, error) {
+		calls++
+		return orig(v)
+	}
+	defer func() { marshalContract = orig }()
+
+	contract := build(2000)
+	boundContract(&contract)
+
+	want, _ := json.Marshal(reference)
+	got, _ := json.Marshal(contract)
+	if string(want) != string(got) {
+		t.Fatal("bounded contract differs from linear-drop reference")
+	}
+	if calls > 20 {
+		t.Fatalf("marshal calls = %d, want logarithmic in 2000 events", calls)
+	}
+}
