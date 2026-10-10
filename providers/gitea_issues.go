@@ -44,16 +44,14 @@ func (p *GiteaProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequ
 
 	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
 	if callerPaged {
-		page := req.Page
-		if page < 1 {
-			page = 1
-		}
+		page := max(req.Page, 1)
+		skip := 0
 		if req.Cursor != "" {
-			n, err := strconv.Atoi(req.Cursor)
-			if err != nil || n < 1 {
-				return nil, fmt.Errorf("invalid gitea work-item cursor %q", req.Cursor)
+			var err error
+			page, skip, err = parseGiteaWorkItemCursor(req.Cursor, pageSize)
+			if err != nil {
+				return nil, err
 			}
-			page = n
 		}
 		values.Set("page", strconv.Itoa(page))
 		values.Set("limit", strconv.Itoa(pageSize))
@@ -69,12 +67,25 @@ func (p *GiteaProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequ
 		if err != nil {
 			return nil, err
 		}
+		fetched := len(issues)
+		issues = issues[min(skip, fetched):]
+		budgetCapped := req.MaxCandidates > 0 && len(issues) > req.MaxCandidates
+		if budgetCapped {
+			issues = issues[:req.MaxCandidates]
+		}
 		if req.PageInfo != nil {
 			req.PageInfo.CandidateCount = len(issues)
+			req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, false)
 			req.PageInfo.HasNext = page*pageSize < total
 			req.PageInfo.NextCursor = ""
 			if req.PageInfo.HasNext {
 				req.PageInfo.NextCursor = strconv.Itoa(page + 1)
+			}
+			if budgetCapped {
+				// The raw-candidate budget cut this page short: resume
+				// inside it, after the last inspected candidate.
+				req.PageInfo.HasNext = true
+				req.PageInfo.NextCursor = fmt.Sprintf("%d:%d", page, skip+len(issues))
 			}
 		}
 		return giteaIssuesToWorkItems(issues, req)
@@ -147,6 +158,25 @@ func (p *GiteaProvider) listIssuesPage(ctx context.Context, endpoint string) ([]
 		}
 	}
 	return issues, total, nil
+}
+
+// parseGiteaWorkItemCursor reads a caller-paged cursor: "page", or
+// "page:skip" when a raw-candidate budget stopped inside that page after skip
+// records.
+func parseGiteaWorkItemCursor(cursor string, pageSize int) (int, int, error) {
+	pagePart, skipPart, hasSkip := strings.Cut(cursor, ":")
+	page, err := strconv.Atoi(pagePart)
+	if err != nil || page < 1 {
+		return 0, 0, fmt.Errorf("invalid gitea work-item cursor %q", cursor)
+	}
+	if !hasSkip {
+		return page, 0, nil
+	}
+	skip, err := strconv.Atoi(skipPart)
+	if err != nil || skip < 1 || skip >= pageSize {
+		return 0, 0, fmt.Errorf("invalid gitea work-item cursor %q", cursor)
+	}
+	return page, skip, nil
 }
 
 func giteaIssuesToWorkItems(issues []giteaIssue, req ListWorkItemsRequest) ([]WorkItem, error) {

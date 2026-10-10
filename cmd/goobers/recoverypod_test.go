@@ -168,6 +168,44 @@ func TestPodRecoveryMissingClaimPreservesSource(t *testing.T) {
 	}
 }
 
+// #6920: a writable-repo stage that failed before its checkout created .git
+// has no repository to take into custody. Probing one fails with "not a git
+// repository" and used to stop the pod from ever surrendering.
+func TestPodRecoveryUnmaterializedWorkspaceNeedsNoCustody(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/v1/claims/list" {
+			t.Errorf("recovery request = %s, want only a claim lookup", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"entries":[{"runId":"pod-recovery","gaggle":"web","itemId":"42","expiresAt":"2030-01-01T00:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv(dispatcher.EnvStageWorkspace, "repo")
+	t.Setenv(dispatcher.EnvRunID, "pod-recovery")
+	t.Setenv(dispatcher.EnvGaggle, "web")
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvPodToken, "parent-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
+
+	var phases []string
+	err := publishPodRecovery(t.Context(), t.TempDir(), func(phase string, _ time.Duration, err error) {
+		phases = append(phases, phase)
+		if err != nil {
+			t.Errorf("recovery phase %s failed: %v", phase, err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("unmaterialized workspace recovery: %v", err)
+	}
+	if requests != 1 || len(phases) != 1 || phases[0] != "claim lookup" {
+		t.Fatalf("recovery made %d requests through phases %v, want only the claim lookup", requests, phases)
+	}
+}
+
 func TestPodRecoveryEmptyDiffNeedsNoCustody(t *testing.T) {
 	root := t.TempDir()
 	recoveryPodTestGit(t, root, "init", "--quiet", "-b", "main")

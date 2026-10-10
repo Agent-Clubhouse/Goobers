@@ -1209,6 +1209,8 @@ const statusHelp = "Usage: goobers status [--api=<url>] [--daemon | --agents | -
 	"With --runs-only, skip workflow health and provider-backed status queries and return\n" +
 	"only the bounded run table, without recovery decoration; combine it with --json and\n" +
 	"--limit for fast operator probes. A ready, current status projection is required.\n" +
+	"The workflow summary's A/D/MAX column shows active, desired, and maximum runs;\n" +
+	"see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
 const runsListHelp = "Usage: goobers runs list [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +

@@ -38,7 +38,9 @@ const downHelp = "Usage: goobers down [path]\n\n" +
 	"has been delivered — the daemon picks it up and begins draining on its\n" +
 	"next sweep. With no live daemon for this instance, fails fast with a\n" +
 	"clear message rather than hanging. Exit codes: 0 = shutdown requested,\n" +
-	"1 = no live daemon found, 2 = usage/IO error.\n"
+	"1 = no live daemon found, 2 = usage/IO error.\n" +
+	"A supervisor restarts the daemon at boot or logon; to keep work paused,\n" +
+	"see docs/guides/desired-concurrency-and-pause.md.\n"
 
 func runDown(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("down", flag.ContinueOnError)

@@ -1318,6 +1318,14 @@ type ListWorkItemsRequest struct {
 	// PageInfo receives raw-candidate pagination metadata. Providers populate it
 	// before applying exact predicates or dropping non-work-item API records.
 	PageInfo *ListWorkItemsPageInfo `json:"-"`
+	// MaxCandidates, when positive on a caller-paged read (PageInfo or
+	// Cursor set), is a hard raw-candidate budget for the call: the provider
+	// inspects at most this many candidates, overriding any oversized window
+	// it would otherwise read for post-fetch filters, so
+	// PageInfo.CandidateCount never exceeds it. A window the budget cuts short
+	// reports HasNext with a cursor resuming after the last inspected
+	// candidate.
+	MaxCandidates int `json:"-"`
 	// OldestFirst, when set, asks the provider to return items in creation
 	// order (oldest filed first) rather than its own default. This matters
 	// whenever Limit truncates the result set: a FIFO consumer (#532) must
@@ -1332,6 +1340,37 @@ type ListWorkItemsPageInfo struct {
 	CandidateCount int
 	HasNext        bool
 	NextCursor     string
+	// QueryNarrowed names the request filters the provider query that
+	// actually served this window applied server-side: QueryNarrowedLabels,
+	// QueryNarrowedState, and QueryNarrowedFieldPrefix+<field> for each
+	// pushed-down native-field equality. Filters absent here, if requested,
+	// were applied only after retrieval.
+	QueryNarrowed []string
+	// QueryNarrowingFallback reports that the provider rejected its narrowed
+	// query and re-read the window without its field clauses.
+	QueryNarrowingFallback bool
+}
+
+// ListWorkItemsPageInfo.QueryNarrowed entries.
+const (
+	QueryNarrowedLabels      = "labels"
+	QueryNarrowedState       = "state"
+	QueryNarrowedFieldPrefix = "fieldPredicate:"
+)
+
+// issueListQueryNarrowed is QueryNarrowed for GitHub and Gitea, whose
+// issue-list state parameter filters server-side. GitHub's labels parameter
+// does too; Gitea silently discards label names it cannot resolve to a
+// repository label (organization labels included), so it never claims labels.
+func issueListQueryNarrowed(req ListWorkItemsRequest, labelsNarrow bool) []string {
+	narrowed := []string{}
+	if labelsNarrow && len(req.Labels) > 0 {
+		narrowed = append(narrowed, QueryNarrowedLabels)
+	}
+	if req.State != "" && req.State != "all" {
+		narrowed = append(narrowed, QueryNarrowedState)
+	}
+	return narrowed
 }
 
 // MatchesLabelPredicate applies the request's exact client-side label filter.
