@@ -33,8 +33,14 @@ import (
 var ErrAbandonedWork = errors.New("workerhost: drain timeout expired with activities still in flight")
 
 // DefaultDrainTimeout bounds how long Stop waits for in-flight activities
-// after a shutdown signal before abandoning them.
+// after a shutdown signal before cancelling them. Child custody settlement
+// then gets its own bounded window before the client closes.
 const DefaultDrainTimeout = 30 * time.Second
+
+// ChildSettlementTimeout covers 150s of pod termination observation, 30s each
+// for surrender, disposal and Temporal completion, plus scheduling margin.
+// It applies only to DispatchChildPod activities still alive after SDK Stop.
+const ChildSettlementTimeout = 5 * time.Minute
 
 const (
 	placementBuildEnv  = "GOOBERS_RUNNER_BUILD"
@@ -87,9 +93,10 @@ type Host struct {
 	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
 	// describeRouting and its cadence back the #5950 routing health check.
-	describeRouting func(ctx context.Context, c client.Client) (client.WorkerDeploymentRoutingConfig, error)
-	routingDelay    time.Duration
-	routingInterval time.Duration
+	describeRouting        func(ctx context.Context, c client.Client) (client.WorkerDeploymentRoutingConfig, error)
+	routingDelay           time.Duration
+	routingInterval        time.Duration
+	childSettlementTimeout time.Duration
 }
 
 // New validates cfg and builds a Host.
@@ -120,6 +127,7 @@ func New(cfg Config) (*Host, error) {
 	h.describeRouting = describeDeploymentRouting
 	h.routingDelay = routingCheckDelay
 	h.routingInterval = routingCheckInterval
+	h.childSettlementTimeout = ChildSettlementTimeout
 	return h, nil
 }
 
@@ -163,7 +171,8 @@ func (h *Host) versioned() bool {
 // Run serves the configured task queues until ctx is cancelled (SIGTERM/
 // SIGINT via the caller's signal context), then drains: workers stop polling
 // and in-flight activities get up to DrainTimeout to complete. Returns nil on
-// a clean drain and ErrAbandonedWork when work was cut short.
+// a clean drain and ErrAbandonedWork when work was cut short. Child dispatch
+// cleanup gets up to ChildSettlementTimeout after the SDK drain expires.
 func (h *Host) Run(ctx context.Context) error {
 	c, err := h.dial(h.cfg.HostPort, h.cfg.Namespace, h.cfg.TLS)
 	if err != nil {
@@ -207,6 +216,7 @@ func (h *Host) Run(ctx context.Context) error {
 			}()
 		}
 		draining.Wait()
+		h.tracker.waitForChildSettlement(h.childSettlementTimeout)
 	}
 	for _, queue := range h.cfg.TaskQueues {
 		w := h.newWorker(c, queue, opts)
@@ -239,9 +249,10 @@ func (h *Host) Run(ctx context.Context) error {
 // a non-zero count is work the drain window abandoned.
 type activityTracker struct {
 	interceptor.WorkerInterceptorBase
-	n       atomic.Int64
-	buildID string
-	worker  string
+	n        atomic.Int64
+	children atomic.Int64
+	buildID  string
+	worker   string
 }
 
 func (t *activityTracker) inFlight() int64 { return t.n.Load() }
@@ -271,7 +282,13 @@ func currentActivityInfo(ctx context.Context) (_ activity.Info, ok bool) {
 
 func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (interface{}, error) {
 	a.tracker.n.Add(1)
-	defer a.tracker.n.Add(-1)
+	child := false
+	defer func() {
+		a.tracker.n.Add(-1)
+		if child {
+			a.tracker.children.Add(-1)
+		}
+	}()
 	identity := attemptidentity.Identity{
 		BuildID:        a.tracker.buildID,
 		WorkerIdentity: a.tracker.worker,
@@ -281,6 +298,10 @@ func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interc
 		identity.ActivityID = info.ActivityID
 		identity.ActivityType = info.ActivityType.Name
 		identity.Attempt = info.Attempt
+		child = info.ActivityType.Name == "DispatchChildPod"
+		if child {
+			a.tracker.children.Add(1)
+		}
 	}
 	ctx = attemptidentity.WithContext(ctx, identity)
 	result, err := a.Next.ExecuteActivity(ctx, in)

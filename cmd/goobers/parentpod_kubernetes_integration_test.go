@@ -36,6 +36,7 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workerhost"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -187,8 +188,33 @@ esac
 	for _, pin := range pins {
 		queues[pin.Queue] = true
 	}
+	journeyTimeout := 3 * time.Minute
+	if action == "iterate" || action == "worker-restart" {
+		// Two child returns require five separate contained parent invocations.
+		journeyTimeout = 6 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), journeyTimeout)
+	defer cancel()
 	var workers []temporalworker.Worker
+	var stopHost context.CancelFunc
+	var hostDone chan error
 	startWorkers := func() {
+		if action == "worker-restart" {
+			taskQueues := make([]string, 0, len(queues))
+			for queue := range queues {
+				taskQueues = append(taskQueues, queue)
+			}
+			host, err := workerhost.New(workerhost.Config{HostPort: dev.FrontendHostPort(), Namespace: "default", TaskQueues: taskQueues, DrainTimeout: time.Second, Deps: bootstrap.EngineDeps{Dispatcher: podDispatcher, Surrenders: plane}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostCtx, cancel := context.WithCancel(ctx)
+			stopHost = cancel
+			hostDone = make(chan error, 1)
+			done := hostDone
+			go func() { done <- host.Run(hostCtx) }()
+			return
+		}
 		for queue := range queues {
 			worker := temporalworker.New(dev.Client(), queue, temporalworker.Options{DeadlockDetectionTimeout: temporaltest.DeadlockDetectionTimeout, WorkerStopTimeout: time.Second})
 			bootstrap.RegisterEngine(worker, dev.Client(), bootstrap.EngineDeps{Dispatcher: podDispatcher, Surrenders: plane})
@@ -199,6 +225,19 @@ esac
 		}
 	}
 	stopWorkers := func() {
+		if stopHost != nil {
+			stopHost()
+			select {
+			case err := <-hostDone:
+				if err != nil {
+					t.Error("production worker host failed to drain child custody", err)
+				}
+			case <-ctx.Done():
+				t.Error("production worker host did not stop before qualification deadline", ctx.Err())
+			}
+			stopHost = nil
+			return
+		}
 		for _, worker := range workers {
 			worker.Stop()
 		}
@@ -228,12 +267,7 @@ esac
 	if err := s.installQueuedChildren(setup, triggers, &wg); err != nil {
 		t.Fatal(err)
 	}
-	journeyTimeout := 3 * time.Minute
-	if action == "iterate" || action == "worker-restart" {
-		// Two child returns require five separate contained parent invocations.
-		journeyTimeout = 6 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), journeyTimeout)
+
 	scheduler := localscheduler.New(definitions.Entries, instanceLog)
 	dispatch.AttachScheduler(scheduler)
 	dispatch.AttachDispatchContext(ctx)
@@ -281,9 +315,10 @@ esac
 		if action == "worker-restart" && !workerRestarted {
 			select {
 			case <-childStarted:
-				// Restart the actual dispatch workers while the generated shell
+				// Restart the production worker Host while the generated shell
 				// is running. Temporal and Kubernetes remain alive; no result,
-				// receipt or run state is supplied by this test.
+				// receipt or run state is supplied by this test. The old Host
+				// must finish bounded custody settlement and close its client.
 				stopWorkers()
 				startWorkers()
 				workerRestarted = true

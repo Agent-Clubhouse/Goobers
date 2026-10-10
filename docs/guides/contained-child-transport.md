@@ -272,9 +272,21 @@ Both children remain in history; all five parent and two child pod invocations
 require exact UID, stopped writers, surrender and disposal proof. A separate
 real Temporal test verifies a denied completion cannot become successful custody.
 
-This is SDK-worker restart evidence within a surviving host process. It does
-not qualify killing the whole worker process or restarting the daemon. Before
-landing the candidate repair, the production worker host must preserve the
-pending-completion sentinel and keep its client alive during bounded cleanup
-after the SDK drain expires. These lifecycle requirements remain part of the
-public activation gate.
+The same two-child journey now runs through the production worker Host:
+shutdown stops all queue pollers, preserves the pending-completion sentinel,
+and keeps its authenticated client alive for bounded child custody settlement
+before closing it. A fresh Host opens its own client and resumes from Temporal
+history. This passed with actual Kubernetes pods and host race detection on
+2026-10-09 (135.91 seconds). A separate real Temporal Host regression verifies
+exactly one durable completion and no duplicate dispatch.
+
+After the configured SDK drain, only unfinished child dispatch activities get
+up to five additional minutes for pod termination, surrender, disposal and
+completion. Expiry still reports abandoned work. The reference deployment
+allows 360 seconds for the default 30-second drain, settlement and process exit;
+increase that pod grace when increasing the drain timeout.
+
+This qualifies graceful production Host shutdown/recreation in a surviving
+test process. It does not qualify abruptly killing the worker process or
+restarting the daemon. Those recovery journeys remain part of the public
+activation gate.
