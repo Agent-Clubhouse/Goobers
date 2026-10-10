@@ -4006,12 +4006,17 @@ manual run. All other run conditions remain enforced. --force cannot be
 combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
-submits through its API automatically — dispatched through
-the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
+submits through its API automatically. Both paths durably capture a
+start before normal scheduler admission. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
 escalated. The submission-only --no-wait mode exits 0 on durable API
 acceptance, before dispatch.
+Standalone and detached starts accept --request-id for exact retries.
+They queue a pinned definition and attempt only their own receipt.
+If capacity holds it, the command prints its receipt and request ID,
+then exits nonzero; retry that ID or start `goobers up` to drain it.
+Standalone --no-wait still returns after admission.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. When TLS publishes only a wildcard bind address, the CLI

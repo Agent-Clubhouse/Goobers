@@ -8,6 +8,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
 // VerifyIdentity compares published execution to the exact accepted pins.
@@ -23,6 +24,9 @@ func VerifyIdentity(id journal.RunIdentity, record triggerqueue.Record) error {
 	want := journal.Trigger{Kind: journal.TriggerManual, Ref: t.Workflow}
 	if e.Request.SourceRun != "" {
 		want = journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + e.Request.SourceRun}
+	}
+	if e.Request.PullRequest > 0 {
+		want = journal.Trigger{Kind: journal.TriggerSignal, Ref: webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: e.Request.PullRequest})}
 	}
 
 	if id.Trigger != want {
