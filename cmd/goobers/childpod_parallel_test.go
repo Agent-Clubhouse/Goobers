@@ -145,6 +145,10 @@ func testProductionChildParallel(t *testing.T, lost bool) {
 		t.Fatal(err)
 	}
 	journals := childFactoryJournals(t, s)
+	// These requests exercise scope and durable custody, not response latency.
+	// Allow the in-process plane to make progress under the full race/coverage suite.
+	const planeDeadline = 10 * time.Second
+	const siblingDeadline = 30 * time.Second
 	var server *httptest.Server
 	var mu sync.Mutex
 	arrived := make(chan struct{})
@@ -158,7 +162,7 @@ func testProductionChildParallel(t *testing.T, lost bool) {
 		if err != nil {
 			return out, err
 		}
-		blobs := &dispatcher.BlobClient{BaseURL: server.URL, Token: token, RetryDeadline: time.Second}
+		blobs := &dispatcher.BlobClient{BaseURL: server.URL, Token: token, RetryDeadline: planeDeadline}
 		data, err := blobs.Get(ctx, a.ChildExecutionDigest)
 		if err != nil {
 			return out, err
@@ -182,21 +186,21 @@ func testProductionChildParallel(t *testing.T, lost bool) {
 			case <-arrived:
 			case <-ctx.Done():
 				return out, ctx.Err()
-			case <-time.After(10 * time.Second):
+			case <-time.After(siblingDeadline):
 				return out, errors.New("parallel worker sibling never dispatched")
 			}
 		}
-		resolved, err := (&dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: token, RetryDeadline: time.Second}).ResolveStage(ctx, a.RunID, a.Stage, []string{"agent:model"})
+		resolved, err := (&dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: token, RetryDeadline: planeDeadline}).ResolveStage(ctx, a.RunID, a.Stage, []string{"agent:model"})
 		if err != nil || len(resolved.Credentials) != 1 {
 			return out, fmt.Errorf("parallel model credential: %w", err)
 		}
 		if a.Stage == "inspect-a" {
-			_, err := (&dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: token, RetryDeadline: time.Second}).ResolveStage(ctx, a.RunID, "inspect-b", []string{"agent:model"})
+			_, err := (&dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: token, RetryDeadline: planeDeadline}).ResolveStage(ctx, a.RunID, "inspect-b", []string{"agent:model"})
 			if err == nil {
 				return out, errors.New("parallel worker acquired sibling stage credentials")
 			}
 		}
-		emitter := &livejournal.HTTPEmitter{BaseURL: server.URL, Token: token, RetryDeadline: time.Second}
+		emitter := &livejournal.HTTPEmitter{BaseURL: server.URL, Token: token, RetryDeadline: planeDeadline}
 		_, forgedErr := emitter.Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "forged-branch", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number, Branch: want + 1}}}})
 		if forgedErr == nil {
 			return out, errors.New("worker selected an observation branch")
@@ -212,7 +216,7 @@ func testProductionChildParallel(t *testing.T, lost bool) {
 		}
 		surrendered := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"inspection": a.Stage}}}
 		data, _ = json.Marshal(surrendered)
-		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: token, RetryDeadline: time.Second}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
+		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: token, RetryDeadline: planeDeadline}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			return out, err
 		}
 		if a.Stage != "collate" {
@@ -226,7 +230,7 @@ func testProductionChildParallel(t *testing.T, lost bool) {
 			case <-returned:
 			case <-ctx.Done():
 				return out, ctx.Err()
-			case <-time.After(10 * time.Second):
+			case <-time.After(siblingDeadline):
 				return out, errors.New("sibling never surrendered")
 			}
 		}
