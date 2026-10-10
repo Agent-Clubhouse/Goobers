@@ -1481,12 +1481,12 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), guidedRunJobTimeout)
 	job := newGuidedJob(guidedJobKindRun)
+	job.cancel = cancel
 	s.job = job
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), guidedRunJobTimeout)
-	job.cancel = cancel
 	command := guidedExecCommand(ctx, s.executable, "run", workflow, s.instancePath)
 	// stdout and stderr interleave into the job's bounded ring, exactly as a
 	// terminal user would see them.

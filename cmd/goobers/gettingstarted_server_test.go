@@ -1608,6 +1608,40 @@ func TestGettingStartedSecondRunWhileRunningConflicts(t *testing.T) {
 	}
 }
 
+func TestGettingStartedCloseDuringRunStartupStopsJob(t *testing.T) {
+	t.Setenv(connectDefaultTokenEnv, "token-value")
+	server := newTestGuidedServer(t, t.TempDir())
+	handler := http.HandlerFunc(server.serveGuided)
+	stubGuidedExec(t, `sleep 5`)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		guidedPost(handler, "/guided/actions/run", `{}`)
+	}()
+	for {
+		server.mu.Lock()
+		job := server.job
+		server.mu.Unlock()
+		if job != nil {
+			if job.cancel == nil {
+				t.Error("job visible before cancel was set")
+			}
+			job.stop()
+			break
+		}
+		select {
+		case <-done:
+			t.Fatal("run finished without publishing a job")
+		default:
+		}
+	}
+	<-done
+	if err := server.close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGettingStartedAPIUnavailableThenReady(t *testing.T) {
 	workdir := t.TempDir()
 	server := newTestGuidedServer(t, workdir)
