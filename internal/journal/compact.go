@@ -349,20 +349,31 @@ func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (Instance
 	if err != nil || result.Dropped == 0 {
 		return result, err
 	}
+	if err := l.installCompactedGeneration(currentGen, compacted, &result); err != nil {
+		return InstanceEventsCompaction{}, err
+	}
+	return result, nil
+}
+
+// installCompactedGeneration writes compacted as the generation after
+// currentGen, advances the pointer, moves this handle's appends onto it and
+// reclaims the generations it superseded. The caller holds l.mu and the
+// journal lock.
+func (l *InstanceLog) installCompactedGeneration(currentGen int, compacted []byte, result *InstanceEventsCompaction) error {
 	nextGen := currentGen + 1
 	nextPath := filepath.Join(l.dir, instanceEventsFilename(nextGen))
 	if err := writeFileSynced(nextPath, compacted, 0o644); err != nil {
-		return InstanceEventsCompaction{}, fmt.Errorf("journal: checkpoint live instance log: %w", err)
+		return fmt.Errorf("journal: checkpoint live instance log: %w", err)
 	}
 	if err := fsyncDir(l.dir); err != nil {
-		return InstanceEventsCompaction{}, fmt.Errorf("journal: fsync instance log dir: %w", err)
+		return fmt.Errorf("journal: fsync instance log dir: %w", err)
 	}
 	if err := advanceInstanceEventsPointer(l.dir, nextGen); err != nil {
-		return InstanceEventsCompaction{}, fmt.Errorf("journal: advance instance log pointer: %w", err)
+		return fmt.Errorf("journal: advance instance log pointer: %w", err)
 	}
 	if err := l.reopenFile(nextPath); err != nil {
-		return InstanceEventsCompaction{}, err
+		return err
 	}
 	result.StaleGenerationsRemoved, result.StaleGenerationCleanupErr = cleanupStaleInstanceEventsGenerations(l.dir, nextGen)
-	return result, nil
+	return nil
 }

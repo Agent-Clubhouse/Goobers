@@ -643,3 +643,30 @@ func hasUnsupportedHandoffAnnotation(events []journal.Event) bool {
 	}
 	return false
 }
+
+func TestProducerPublicationSchemasLoadsOnlySchemaBoundJSONSlots(t *testing.T) {
+	task := apiv1.Task{Name: "produce", ArtifactSlots: []apiv1.ArtifactSlot{
+		{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.schema.json"},
+		{Name: "notes", MediaType: "text/markdown", SchemaPath: "schemas/notes.schema.json"},
+		{Name: "raw", MediaType: "application/json"},
+	}}
+	if got, err := producerPublicationSchemas(task, nil); err != nil || got != nil {
+		t.Fatalf("nil loader: got %v, %v", got, err)
+	}
+	var loaded []string
+	load := func(schemaPath string) (*handoffcheck.Schema, error) {
+		loaded = append(loaded, schemaPath)
+		return testHandoffSchemaLoader(t)(schemaPath)
+	}
+	got, err := producerPublicationSchemas(task, load)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got["report"] == nil || len(loaded) != 1 || loaded[0] != "schemas/report.schema.json" {
+		t.Fatalf("schemas = %v, loaded = %v", got, loaded)
+	}
+	failing := func(string) (*handoffcheck.Schema, error) { return nil, os.ErrNotExist }
+	if _, err := producerPublicationSchemas(task, failing); err == nil || !strings.Contains(err.Error(), `slot "report"`) {
+		t.Fatalf("loader error = %v", err)
+	}
+}

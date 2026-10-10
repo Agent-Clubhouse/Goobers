@@ -56,3 +56,44 @@ func TestOfflineBacklogRejectsPrivateAndInvalidEvidence(t *testing.T) {
 		t.Fatal("missing observation time accepted")
 	}
 }
+
+func TestBacklogClaimableEvidenceIsBoundToItsReason(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	evidence := func(state, reason, coverage string, pending, claimable any) map[string]any {
+		attrs := map[string]any{"backlogState": state, "backlogReasonCode": reason, "backlogCoverage": coverage, "backlogPendingCount": pending, "backlogObservedAt": now.Format(time.RFC3339Nano)}
+		if claimable != nil {
+			attrs["backlogClaimableCount"] = claimable
+		}
+		return attrs
+	}
+	for name, attrs := range map[string]map[string]any{
+		"observed":  evidence("pending", "claimable_observed", "partial", 3, 1),
+		"attention": evidence("attention", "claimable_without_confirmed_progress", "complete", 3, 3),
+		"held":      evidence("pending", "pending_held", "complete", 2, 0),
+	} {
+		if _, err := DecodeBacklogHealth(attrs, now); err != nil {
+			t.Errorf("%s rejected: %v", name, err)
+		}
+	}
+	for name, attrs := range map[string]map[string]any{
+		"zero claimable":      evidence("pending", "claimable_observed", "complete", 3, 0),
+		"missing claimable":   evidence("pending", "claimable_observed", "complete", 3, nil),
+		"exceeds pending":     evidence("pending", "claimable_observed", "complete", 1, 2),
+		"attention observed":  evidence("attention", "claimable_observed", "complete", 3, 1),
+		"partial held":        evidence("pending", "pending_held", "partial", 2, 0),
+		"positive held":       evidence("pending", "pending_held", "complete", 2, 1),
+		"unknown with count":  evidence("pending", "claimability_unknown", "complete", 2, 1),
+		"pending stall count": evidence("attention", "pending_without_confirmed_progress", "complete", 2, 0),
+	} {
+		if _, err := DecodeBacklogHealth(attrs, now); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	h, err := DecodeBacklogHealth(evidence("pending", "claimable_observed", "complete", 3, 2), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := backlogReport(h, true, now.Add(time.Minute+time.Nanosecond)); got.ClaimableCount != nil || h.ClaimableCount == nil {
+		t.Fatal("stale claimable evidence survived expiry")
+	}
+}

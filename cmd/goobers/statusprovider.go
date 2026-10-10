@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/providers"
 )
@@ -16,7 +17,7 @@ func statusWorkItemLookup(root string, definitions *instance.ConfigSet) readserv
 			if configured.Name != gaggle {
 				continue
 			}
-			repo, err := backlogProviderRef(gaggle, configured.Spec.Project, configured.Spec.Backlog)
+			repo, err := providerconfig.BacklogProviderRef(gaggle, configured.Spec.Project, configured.Spec.Backlog)
 			if err != nil {
 				return providers.WorkItem{}, err
 			}

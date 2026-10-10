@@ -180,6 +180,16 @@ type ReadinessConditions struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	DesiredConcurrentRuns int32 `json:"desiredConcurrentRuns,omitempty" yaml:"desiredConcurrentRuns,omitempty"`
+	// RequireProviderAuthorization makes provider authorization health a
+	// pre-claim readiness predicate (#5317). When true, autonomous dispatch
+	// first verifies, without mutating anything, that the instance's resolved
+	// credential for the gaggle's provider repository is valid and can read the
+	// repository and its issues. An invalid, revoked, insufficient, unsupported,
+	// or unverifiable credential fails closed: no run starts, no work is
+	// claimed, and the scheduler reports a stable provider-auth-unhealthy
+	// reason. Manual `goobers run` stays available for diagnosis.
+	// +optional
+	RequireProviderAuthorization bool `json:"requireProviderAuthorization,omitempty" yaml:"requireProviderAuthorization,omitempty"`
 }
 
 // TaskType is the execution kind of a task: code-driven or goober-executed.

@@ -248,9 +248,30 @@ limit is set, including inherited limits and `--no-wait` runs. Start
 `--no-api` file delegation to a live daemon remains supported.
 
 Readiness fields (`maxConcurrentRuns`, `desiredConcurrentRuns`,
-`maxRunsPerHour`, `maxRunsPerDay`, `maxChainDepth`, and `maxOpenPRs`) govern
+`maxRunsPerHour`, `maxRunsPerDay`, `maxChainDepth`, `maxOpenPRs`, and
+`requireProviderAuthorization`) govern
 admission rather than stage execution. `maxOpenPRs` counts the open pull
 requests under the workflow's run-branch namespace in the gaggle's project
 repository, on GitHub and Azure DevOps alike, and ignores PRs labelled
 `goobers:merge-escalated` in any casing. Until a count has been read, and
 whenever a read fails, admission is not held back by the cap.
+
+`requireProviderAuthorization: true` makes provider authorization health a
+pre-claim predicate. Before each autonomous dispatch the scheduler resolves the
+workflow repository's credential through the instance's normal credential
+resolution and performs a read-only check that it can read the repository and
+its issues. Unlike `maxOpenPRs`, this check fails closed: a missing, revoked,
+under-scoped, unsupported (non-GitHub), or unverifiable credential refuses the
+dispatch before any slot is reserved or work is claimed. The refusal is
+journaled as `tick.skipped` with the reason prefix
+`conditions: provider-auth-unhealthy` and one of the stable codes
+`provider_auth_missing`, `provider_auth_rejected`,
+`provider_auth_insufficient`, `provider_auth_unverified`, or
+`provider_auth_unsupported`, and `goobers status` lists the workflow under
+refused workflows until a run starts or the scheduler refuses it for another
+reason. Results are cached per provider,
+repository, credential fingerprint, and configuration revision (healthy for 5
+minutes, unhealthy for at most 1 minute), so rotating the credential or
+reloading configuration re-checks immediately. Token values are never
+recorded. Manual `goobers run` is not gated, so an operator can still run the
+workflow to diagnose the credential.

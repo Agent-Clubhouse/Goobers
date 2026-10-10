@@ -218,6 +218,7 @@ func (d runtimeDeps) openPRRefresher(cfg *instance.Config, workflows []apiv1.Wor
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
 	observation     backlogPollObservation
+	claim           *backlogClaimTarget
 	mu              sync.Mutex
 	ref             string
 	repo            providers.RepositoryRef
@@ -353,6 +354,7 @@ func (b *backlogCounter) EligibleSnapshot(ctx context.Context) (snapshot localsc
 			}
 			if matched {
 				snapshot.Count++
+				observation.retainCandidate(item)
 				if readyAt := backlogItemReadyAt(item); !readyAt.IsZero() &&
 					(snapshot.OldestReadyAt.IsZero() || readyAt.Before(snapshot.OldestReadyAt)) {
 					snapshot.OldestReadyAt = readyAt
@@ -410,6 +412,14 @@ func newCounterGitHubProvider(
 	// attempt is reserved through the quota gate above.
 	opts = append(opts, providers.WithMaxRateLimitRetries(0))
 	return newGitHubProvider(token, opts...), cleanup, nil
+}
+
+// verifyGitHubRepositoryReadAccess is the daemon-side pre-claim authorization
+// probe (#5317). Like the backlog counter it reads with an instance-resolved
+// token and never consults AuthenticatedLogin. It bypasses the API read cache
+// so a revoked credential is observed live.
+func verifyGitHubRepositoryReadAccess(ctx context.Context, token string, repo providers.RepositoryRef) error {
+	return newGitHubProvider(token, providers.WithMaxRateLimitRetries(0)).VerifyRepositoryReadAccess(ctx, repo)
 }
 
 func (b *backlogCounter) ProviderQuotaGuarded() bool {
@@ -500,6 +510,7 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 	if quota != nil {
 		counter.quota = quota
 	}
+	counter.claim = newBacklogClaimTarget(wf, counter.repo, gaggle.Spec.Backlog.Provider)
 	return counter, nil
 }
 
@@ -581,6 +592,7 @@ func buildRefillDemandCounter(
 		schedulerDir:    schedulerDir,
 		quota:           quota,
 	}
+	counter.claim = newBacklogClaimTarget(wf, counter.repo, gaggle.Spec.Backlog.Provider)
 	return counter, nil
 }
 

@@ -65,11 +65,8 @@ func Prepare(ctx context.Context, workspace, manifestPath string, sanitize Sanit
 	if err != nil {
 		return nil, err
 	}
-	var manifest Manifest
-	if err := decodeDocument(data, &manifest); err != nil {
-		return nil, err
-	}
-	if err := validateManifest(manifest); err != nil {
+	manifest, err := ParseManifest(data)
+	if err != nil {
 		return nil, err
 	}
 	sort.Slice(manifest.Entries, func(i, j int) bool { return manifest.Entries[i].Name < manifest.Entries[j].Name })
@@ -97,20 +94,43 @@ func Prepare(ctx context.Context, workspace, manifestPath string, sanitize Sanit
 	return result, nil
 }
 
+// ParseManifest decodes and validates a staging manifest exactly as Prepare
+// does, without reading any payload. publish_output uses it so a manifest it
+// accepts is one Prepare also accepts at completion (#6868).
+func ParseManifest(data []byte) (Manifest, error) {
+	if len(data) > MaxIndexBytes {
+		return Manifest{}, fmt.Errorf("%w: manifest exceeds byte limit", ErrInvalid)
+	}
+	var manifest Manifest
+	if err := decodeDocument(data, &manifest); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateManifest(manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
 func validateManifest(manifest Manifest) error {
-	if manifest.SchemaVersion != SchemaVersion || manifest.Entries == nil || len(manifest.Entries) > MaxEntries {
-		return fmt.Errorf("%w: manifest schema or entry count", ErrInvalid)
+	if manifest.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("%w: manifest schemaVersion must be %q", ErrInvalid, SchemaVersion)
+	}
+	if manifest.Entries == nil || len(manifest.Entries) > MaxEntries {
+		return fmt.Errorf("%w: manifest entries must be an array of at most %d entries", ErrInvalid, MaxEntries)
 	}
 	seen := make(map[string]bool, len(manifest.Entries))
-	for _, entry := range manifest.Entries {
-		if !semanticName.MatchString(entry.Name) || seen[entry.Name] || entry.MediaType == "" || len(entry.MediaType) > 128 {
-			return fmt.Errorf("%w: invalid manifest entry", ErrInvalid)
+	for i, entry := range manifest.Entries {
+		if !semanticName.MatchString(entry.Name) || seen[entry.Name] {
+			return fmt.Errorf("%w: manifest entry %d: name is invalid or repeated", ErrInvalid, i)
+		}
+		if entry.MediaType == "" || len(entry.MediaType) > 128 {
+			return fmt.Errorf("%w: manifest entry %d: invalid mediaType", ErrInvalid, i)
 		}
 		seen[entry.Name] = true
 		// Validate the path without touching the filesystem; the subsequent
 		// os.Root open supplies race-safe symlink containment.
 		if err := (apiv1.ArtifactPointer{Path: entry.Path, Digest: apiv1.Digest(nil)}).Validate(); err != nil {
-			return fmt.Errorf("%w: invalid workspace path", ErrInvalid)
+			return fmt.Errorf("%w: manifest entry %d: invalid workspace path", ErrInvalid, i)
 		}
 	}
 	return nil

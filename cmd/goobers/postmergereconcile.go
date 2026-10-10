@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -263,7 +264,7 @@ func newReconcilePostMergeADOProviders(root string, repo, backlogRepo providers.
 	}
 	// A backlog on another provider (topology (b)) is closed through that
 	// provider with the github:issues:write credential bound to it.
-	issuesProvider, err := newMergeReviewProvider(root, backlogProviderRepo(repo, backlogRepo), false,
+	issuesProvider, err := newMergeReviewProvider(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 	)
 	if err != nil {

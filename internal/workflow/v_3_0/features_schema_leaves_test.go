@@ -39,11 +39,12 @@ var schemaLeafExceptions = map[string]string{
 	// Publication policy belongs to the binary, not this interpreter.
 	// The public registry and TestCostPublicationFeatureIsIndependentOfWorkflowPin
 	// cover its registration and availability across supported workflow pins.
-	"gaggle.spec.cost.enabled":       "binary-layer publication policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"gaggle.spec.enabled":            "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"workflow.spec.enabled":          "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"workflow.spec.backprop.enabled": "binary-layer terminal analysis policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
-	"workflow.spec.backprop.version": "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.cost.enabled":                             "binary-layer publication policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.enabled":                                  "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.enabled":                                "binary-layer scheduling policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.readiness.requireProviderAuthorization": "binary-layer scheduling policy (#5317); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.enabled":                       "binary-layer terminal analysis policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.version":                       "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	// Gaggle-health policy is one binary-layer feature (gaggle.spec.health);
 	// its leaves are payload, not separately versioned DSL capabilities.
 	"gaggle.spec.health.enabled":                         "binary-layer gaggle-health policy (#4424); folded into gaggle.spec.health, registered in internal/workflow/features.go, independent of the DSL interpreter",
