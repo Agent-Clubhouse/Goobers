@@ -1,10 +1,15 @@
 package readmodel
 
 import (
+	"encoding/json"
+	"maps"
 	"strconv"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Stage-result conventions the reliability projection reads (#5313). A stage
@@ -23,6 +28,34 @@ const (
 	AcceptanceStateRecorded = "recorded"
 )
 
+// Budget kinds a pinned workflow definition bounds through an automated
+// gate's check (#5313): a failure-class gate's fail branch is local
+// validation repair, a ci-status gate's fail branch is provider remediation,
+// and its timeout branch is CI polling.
+const (
+	BudgetLocalValidation     = "local-validation"
+	BudgetProviderRemediation = "provider-remediation"
+	BudgetCIPoll              = "ci-poll"
+)
+
+const (
+	checkFailureClass = "failure-class"
+	checkCIStatus     = "ci-status"
+	outcomeFail       = "fail"
+	outcomeInfra      = "infra"
+	outcomeTimeout    = "timeout"
+)
+
+// ReliabilityAllowance is one budget the run's pinned definition bounds: the
+// gate that charges it, the target stage it re-enters, and the allowance in
+// effect when the run started.
+type ReliabilityAllowance struct {
+	Kind    string
+	Gate    string
+	Target  string
+	Allowed int
+}
+
 // ReliabilityFacts are the journal facts the implementation reliability
 // projection needs beyond the run summary's own fields. Both read paths fold
 // them with After so list views agree with run detail.
@@ -36,6 +69,15 @@ type ReliabilityFacts struct {
 	AcceptanceState string `json:",omitempty"`
 	// AcceptanceDigest identifies the latest acceptance mapping artifact.
 	AcceptanceDigest string `json:",omitempty"`
+	// PolicyRepasses is the cumulative policy repass count per re-entered
+	// target stage, as the gate journaled it (repassTarget/repassAttempt).
+	PolicyRepasses map[string]int `json:",omitempty"`
+	// TimeoutPolls is each gate's consecutive timeout-poll count; a
+	// non-timeout outcome resets it.
+	TimeoutPolls map[string]int `json:",omitempty"`
+	// Allowances are the budgets the run's trusted pinned definition bounds;
+	// nil when no such definition is recorded. Not folded from events.
+	Allowances []ReliabilityAllowance `json:",omitempty"`
 }
 
 // PullRequestDraft is a stage-reported draft state for one pull request.
@@ -59,6 +101,8 @@ func (f ReliabilityFacts) After(event journal.Event) ReliabilityFacts {
 		f.TerminalCause = nil
 	case journal.EventStageFinished:
 		f = f.afterStageOutputs(event.Outputs)
+	case journal.EventGateEvaluated:
+		f = f.afterGateEvaluated(event)
 	case journal.EventArtifactRecorded:
 		if event.Name == AcceptanceMappingArtifact && event.Ref != nil && event.Ref.Digest != "" {
 			f.AcceptanceDigest = event.Ref.Digest
@@ -89,6 +133,116 @@ func (f ReliabilityFacts) afterStageOutputs(outputs map[string]any) ReliabilityF
 		f.PullRequestDraft = &PullRequestDraft{ID: id, Draft: draft}
 	}
 	return f
+}
+
+// afterGateEvaluated mirrors runcontrol.RepassBudget from the journaled
+// charge: human overrides and interrupted evaluations charge nothing.
+func (f ReliabilityFacts) afterGateEvaluated(event journal.Event) ReliabilityFacts {
+	if event.Actor != "" || event.Gate == "" {
+		return f
+	}
+	if interrupted, _ := event.Runner["interrupted"].(bool); interrupted {
+		return f
+	}
+	if event.Verdict == outcomeTimeout {
+		if polls := runnerCount(event.Runner["pollAttempt"]); polls > 0 {
+			f.TimeoutPolls = withCount(f.TimeoutPolls, event.Gate, polls)
+		}
+		return f
+	}
+	if _, polling := f.TimeoutPolls[event.Gate]; polling {
+		f.TimeoutPolls = maps.Clone(f.TimeoutPolls)
+		delete(f.TimeoutPolls, event.Gate)
+	}
+	target, _ := event.Runner["repassTarget"].(string)
+	if attempt := event.RepassAttempt(); target != "" && event.Verdict != outcomeInfra && attempt > 0 {
+		f.PolicyRepasses = withCount(f.PolicyRepasses, target, attempt)
+	}
+	return f
+}
+
+func withCount(counts map[string]int, key string, count int) map[string]int {
+	counts = maps.Clone(counts)
+	if counts == nil {
+		counts = make(map[string]int)
+	}
+	counts[key] = count
+	return counts
+}
+
+func runnerCount(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
+// PinnedReliabilityAllowances reads the budgets the run's trusted pinned
+// definition bounds. It returns nil when the definition is missing or fails
+// its integrity checks, so the projection reports those budgets as unknown
+// rather than reading today's configuration.
+func PinnedReliabilityAllowances(reader *journal.Reader, identity journal.RunIdentity) []ReliabilityAllowance {
+	def, ok := trustedPinnedDefinition(reader, identity)
+	if !ok {
+		return nil
+	}
+	inherited := 0
+	if identity.RunControls != nil {
+		inherited = int(identity.RunControls.MaxRepasses)
+	}
+	return reliabilityAllowances(def.Spec, inherited)
+}
+
+func trustedPinnedDefinition(reader *journal.Reader, identity journal.RunIdentity) (workflow.Definition, bool) {
+	for _, input := range identity.Inputs {
+		if input.Name != journal.PinnedWorkflowDefinitionInputName {
+			continue
+		}
+		if input.Integrity != apiv1.IntegrityTrusted {
+			return workflow.Definition{}, false
+		}
+		data, err := reader.ArtifactBytes(input.Ref)
+		if err != nil {
+			return workflow.Definition{}, false
+		}
+		var def workflow.Definition
+		if json.Unmarshal(data, &def) != nil || def.Name != identity.Workflow || def.Version != identity.WorkflowVersion {
+			return workflow.Definition{}, false
+		}
+		digest, err := workflow.ComputeDigest(def)
+		if err != nil || (identity.WorkflowDigest != "" && digest != identity.WorkflowDigest) {
+			return workflow.Definition{}, false
+		}
+		return def, true
+	}
+	return workflow.Definition{}, false
+}
+
+func reliabilityAllowances(spec apiv1.WorkflowSpec, inherited int) []ReliabilityAllowance {
+	var out []ReliabilityAllowance
+	add := func(kind string, gate apiv1.Gate, outcome string, allowed int) {
+		if target := gate.Branches[outcome]; target != "" && !strings.HasPrefix(target, "@") {
+			out = append(out, ReliabilityAllowance{Kind: kind, Gate: gate.Name, Target: target, Allowed: allowed})
+		}
+	}
+	for _, gate := range spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAutomated || gate.Automated == nil {
+			continue
+		}
+		switch gate.Automated.Check {
+		case checkFailureClass:
+			add(BudgetLocalValidation, gate, outcomeFail, runcontrol.MaxRepassesForGate(gate, inherited))
+		case checkCIStatus:
+			add(BudgetProviderRemediation, gate, outcomeFail, runcontrol.MaxRepassesForGate(gate, inherited))
+			add(BudgetCIPoll, gate, outcomeTimeout, runcontrol.MaxTimeoutPollsForGate(gate))
+		}
+	}
+	return out
 }
 
 func cloneTerminalCause(cause journal.TerminalCause) *journal.TerminalCause {

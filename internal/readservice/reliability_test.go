@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 func appendReliabilityEvents(t *testing.T, run *journal.Run, clock *fixtureClock, events ...journal.Event) {
@@ -198,13 +200,15 @@ func TestRunReliabilityProjectsActiveRetryingAndEscalatedRuns(t *testing.T) {
 	}
 
 	got = fromJournal["reliability-retrying"]
-	if got.State != "retrying" || got.NextAction != "wait for retry backoff on implement" ||
+	// No attempt is active during backoff; the backing-off attempt is current.
+	if got.State != "retrying" || got.CurrentStage != "implement" || got.CurrentAttempt != 2 ||
+		got.NextAction != "wait for retry backoff on implement" ||
 		got.Failure.Classification != "infra" || got.Failure.EvidenceRule != "latestError.causes.class" || got.Failure.Code != "workspace_failed" {
 		t.Fatalf("retrying reliability = %+v", got)
 	}
 	assertBudget(t, "retrying", budgetByKind(t, got, "local-infra"), intPtr(0), nil, "journal")
 	assertBudget(t, "retrying", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
-	if line := got.StatusLine(); !strings.HasPrefix(line, "retrying; failure infra") ||
+	if line := got.StatusLine(); !strings.HasPrefix(line, "retrying implement attempt 2; failure infra") ||
 		!strings.Contains(line, "local-infra 0 used/? left") || !strings.Contains(line, "ci-poll ? used/? left") {
 		t.Fatalf("retrying status line = %q", line)
 	}
@@ -253,12 +257,158 @@ func TestRunReliabilityCompletedRunIgnoresRecoveredErrorAndShowsRetainedRefs(t *
 	summary := RunSummary{Phase: journal.PhaseCompleted, Terminal: true}
 	summary.Operator.LatestError = &journal.ErrorDetail{Code: "workspace_failed", Causes: []journal.ErrorCause{{Class: "infra"}}}
 	summary.Operator.PullRequest = &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"}
-	summary.Lineage = &RunLineage{WorkspaceBranch: "goobers/5313", WorkspaceBranchSHA: "abc123"}
+	summary.workspaceBranch, summary.workspaceBranchSHA = "goobers/5313", "abc123"
 	got := projectRunReliability(summary)
 	if got.Failure.Classification != "none" || got.Failure.EvidenceRule != "run-completed" {
 		t.Fatalf("completed run failure = %+v", got.Failure)
 	}
 	if line := got.StatusLine(); !strings.Contains(line, "; retained branch goobers/5313@abc123, pr 42 (unknown);") {
 		t.Fatalf("status line missing retained refs: %q", line)
+	}
+}
+
+func pinnedBudgetMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name:    "implementation",
+		Version: 4,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers",
+			Start:  "implement",
+			Tasks: []apiv1.Task{
+				{Name: "implement", Type: apiv1.TaskAgentic, Goal: "implement the issue", Next: "local-gate"},
+				{Name: "local-ci", Type: apiv1.TaskAgentic, Goal: "run local validation", Next: "local-gate"},
+				{Name: "open-pr", Type: apiv1.TaskAgentic, Goal: "open the pull request", Next: "ci-gate"},
+				{Name: "remediate-ci", Type: apiv1.TaskAgentic, Goal: "repair CI", Next: "ci-gate"},
+				{Name: "ci-poll", Type: apiv1.TaskAgentic, Goal: "poll CI", Next: "ci-gate"},
+			},
+			Gates: []apiv1.Gate{
+				{Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+					Branches: map[string]string{"pass": "open-pr", "fail": "implement", "infra": "local-ci"}},
+				{Name: "ci-gate", Evaluator: apiv1.EvaluatorAutomated, MaxRepasses: 2,
+					Automated: &apiv1.AutomatedGate{Check: "ci-status", MaxTimeoutPolls: 6},
+					Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": "remediate-ci", "timeout": "ci-poll"}},
+			},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return machine
+}
+
+// createPinnedRun records an ordinary (non-continuation) run the way the
+// runner does: trusted pinned definition, inherited run controls, and the
+// workspace branch it executes.
+func createPinnedRun(t *testing.T, layout instance.Layout, machine *workflow.Machine, runID string, startedAt time.Time) (*journal.Run, *fixtureClock) {
+	t.Helper()
+	graph, err := json.Marshal(machine.Graph())
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := json.Marshal(machine.Def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &fixtureClock{now: startedAt}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+		Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerItem, Ref: "5313"}, StartedAt: startedAt,
+		RunControls:     &apiv1.RunControls{MaxRepasses: 5},
+		WorkspaceBranch: "goobers/5313", WorkspaceBranchSHA: "abc123",
+	}, map[string][]byte{
+		journal.PinnedWorkflowGraphInputName:      graph,
+		journal.PinnedWorkflowDefinitionInputName: definition,
+	}, journal.WithClock(func() time.Time { return clock.now }), journal.WithInputIntegrity(map[string]apiv1.Integrity{
+		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run, clock
+}
+
+func gateCharge(gate, verdict, target string, runner map[string]any) journal.Event {
+	return journal.Event{Type: journal.EventGateEvaluated, Gate: gate, Verdict: verdict, Target: target, Runner: runner}
+}
+
+// TestRunReliabilityProjectsPinnedGateBudgetsAndOrdinaryWorkspaceBranch
+// covers #5313's local-validation, provider-remediation, and CI-poll budgets:
+// both list paths count the gates' journaled charges against the allowances
+// pinned at run start, and an ordinary run retains its workspace branch.
+func TestRunReliabilityProjectsPinnedGateBudgetsAndOrdinaryWorkspaceBranch(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	machine := pinnedBudgetMachine(t)
+
+	polling, clock := createPinnedRun(t, layout, machine, "reliability-polling", fixedTime)
+	stage := func(name string) []journal.Event {
+		return []journal.Event{
+			{Type: journal.EventStageStarted, Stage: name, Attempt: 1},
+			{Type: journal.EventStageFinished, Stage: name, Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		}
+	}
+	// The runner charges a budget only when the branch re-enters a completed
+	// stage, so first visits to remediate-ci and ci-poll charge nothing.
+	var events []journal.Event
+	events = append(events, stage("implement")...)
+	events = append(events, gateCharge("local-gate", "fail", "implement", map[string]any{"repassAttempt": 1, "repassTarget": "implement"}))
+	events = append(events, stage("implement")...)
+	events = append(events, gateCharge("local-gate", "pass", "open-pr", map[string]any{"repassAttempt": 0}))
+	events = append(events, stage("open-pr")...)
+	events = append(events, gateCharge("ci-gate", "fail", "remediate-ci", map[string]any{"repassAttempt": 0}))
+	events = append(events, stage("remediate-ci")...)
+	events = append(events, gateCharge("ci-gate", "fail", "remediate-ci", map[string]any{"repassAttempt": 1, "repassTarget": "remediate-ci"}))
+	events = append(events, stage("remediate-ci")...)
+	events = append(events, gateCharge("ci-gate", "timeout", "ci-poll", map[string]any{"repassAttempt": 0}))
+	events = append(events, stage("ci-poll")...)
+	events = append(events, gateCharge("ci-gate", "timeout", "ci-poll", map[string]any{"repassAttempt": 0, "pollAttempt": 1, "pollTarget": "ci-poll"}))
+	appendReliabilityEvents(t, polling, clock, events...)
+	if err := polling.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	exhausted, clock := createPinnedRun(t, layout, machine, "reliability-ci-exhausted", fixedTime.Add(time.Minute))
+	appendReliabilityEvents(t, exhausted, clock,
+		gateCharge("ci-gate", "fail", journal.TargetEscalate, map[string]any{"repassAttempt": 3, "repassTarget": "remediate-ci", "escalated": true}),
+		journal.Event{
+			Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated),
+			TerminalCause: &journal.TerminalCause{
+				Schema: journal.TerminalCauseSchema, Phase: journal.PhaseEscalated,
+				Classification: journal.TerminalPolicyExhaustion, SelectorKind: "gate", Selector: "ci-gate",
+				Verdict: "fail", Target: journal.TargetEscalate, Code: runcontrol.ReasonRepassBudgetExhausted,
+				Message: "CI kept failing", CausalEventSeq: exhausted.Seq(),
+				Repass: &journal.TerminalBudget{Consumed: 2, Allowed: 2},
+			},
+		},
+	)
+	if err := exhausted.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runIDs := []string{"reliability-polling", "reliability-ci-exhausted"}
+	fromJournal := reliabilityByRun(t, LocalSources{Layout: layout, Definitions: testDefinitions()})
+	store := projectReliabilityRuns(t, layout, runIDs...)
+	fromReadModel := reliabilityByRun(t, LocalSources{Layout: layout, Definitions: testDefinitions(), ReadModel: store})
+	for _, runID := range runIDs {
+		if !reflect.DeepEqual(fromJournal[runID], fromReadModel[runID]) {
+			t.Fatalf("%s: journal reliability %s != read model %s", runID, fromJournal[runID].StatusLine(), fromReadModel[runID].StatusLine())
+		}
+	}
+
+	got := fromJournal["reliability-polling"]
+	assertBudget(t, "polling", budgetByKind(t, got, "local-validation"), intPtr(1), intPtr(4), "pinnedDefinition")
+	assertBudget(t, "polling", budgetByKind(t, got, "provider-remediation"), intPtr(1), intPtr(1), "pinnedDefinition")
+	assertBudget(t, "polling", budgetByKind(t, got, "ci-poll"), intPtr(1), intPtr(5), "pinnedDefinition")
+	if got.Retained.Branch != "goobers/5313" || got.Retained.BranchSHA != "abc123" || got.Retained.RecoveryRunID != "" {
+		t.Fatalf("ordinary run retained refs = %+v", got.Retained)
+	}
+
+	got = fromJournal["reliability-ci-exhausted"]
+	assertBudget(t, "exhausted", budgetByKind(t, got, "provider-remediation"), intPtr(2), intPtr(0), "terminalCause")
+	assertBudget(t, "exhausted", budgetByKind(t, got, "implementation-review"), intPtr(0), nil, "journal")
+	assertBudget(t, "exhausted", budgetByKind(t, got, "ci-poll"), intPtr(0), intPtr(6), "pinnedDefinition")
+	if got.Retained.Branch != "goobers/5313" || !strings.Contains(got.StatusLine(), "provider-remediation 2 used/0 left") {
+		t.Fatalf("exhausted reliability = %s", got.StatusLine())
 	}
 }

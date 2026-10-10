@@ -1072,7 +1072,7 @@ export interface ReliabilityBudget {
   kind: string;
   consumed: number | null;
   remaining: number | null;
-  evidence: "journal" | "terminalCause" | "unknown";
+  evidence: "journal" | "pinnedDefinition" | "terminalCause" | "unknown";
 }
 
 /** Implementation reliability state; missing evidence is reported as "unknown". */

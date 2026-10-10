@@ -18,6 +18,9 @@ const (
 	reliabilityStateRetrying = "retrying"
 
 	reliabilityEvidenceJournal = "journal"
+	// reliabilityEvidencePinned marks a journaled per-target budget counter
+	// bounded by the allowance in the run's pinned workflow definition.
+	reliabilityEvidencePinned = "pinnedDefinition"
 
 	pullRequestDraftDraft            = "draft"
 	pullRequestDraftReady            = "ready"
@@ -39,9 +42,9 @@ const (
 	budgetImplementationReview = "implementation-review"
 	budgetStagePolicy          = "stage-policy"
 	budgetLocalInfra           = "local-infra"
-	budgetLocalValidation      = "local-validation"
-	budgetProviderRemediation  = "provider-remediation"
-	budgetCIPoll               = "ci-poll"
+	budgetLocalValidation      = readmodel.BudgetLocalValidation
+	budgetProviderRemediation  = readmodel.BudgetProviderRemediation
+	budgetCIPoll               = readmodel.BudgetCIPoll
 )
 
 // RunReliability is the implementation reliability projection shared by
@@ -54,8 +57,9 @@ type RunReliability struct {
 	State string `json:"state"`
 	// CurrentStage is the stage or gate the run is executing, if any.
 	CurrentStage string `json:"currentStage,omitempty"`
-	// CurrentAttempt is the active attempt number of CurrentStage; zero means
-	// no attempt is active or the attempt is not recorded.
+	// CurrentAttempt is the active attempt number of CurrentStage, or during
+	// retry backoff the attempt that is backing off; zero means no attempt is
+	// recorded.
 	CurrentAttempt int `json:"currentAttempt,omitempty"`
 	// Failure classifies a running run's latest recorded error, or a terminal
 	// run's recorded terminal cause; a terminal run without one is unknown.
@@ -98,7 +102,9 @@ type ReliabilityBudget struct {
 	// Remaining is the number of attempts left, nil when unknown.
 	Remaining *int `json:"remaining"`
 	// Evidence is "journal" when Consumed is the run-wide count projected from
-	// journal events, "terminalCause" when both counts come from the recorded
+	// journal events, "pinnedDefinition" when Consumed is the gate's journaled
+	// budget counter and Remaining its allowance in the run's pinned workflow
+	// definition, "terminalCause" when both counts come from the recorded
 	// terminal cause (scoped to its selector), otherwise "unknown".
 	Evidence string `json:"evidence"`
 }
@@ -135,7 +141,7 @@ func withRunReliability(summary RunSummary) RunSummary {
 }
 
 func projectRunReliability(summary RunSummary) RunReliability {
-	attempt := currentAttempt(summary)
+	stage, attempt := currentAttempt(summary)
 	state := string(summary.Phase)
 	if summary.Phase == journal.PhaseRunning {
 		state = reliabilityStateActive
@@ -145,7 +151,7 @@ func projectRunReliability(summary RunSummary) RunReliability {
 	}
 	out := RunReliability{
 		State:          state,
-		CurrentStage:   summary.Operator.CurrentStage,
+		CurrentStage:   stage,
 		CurrentAttempt: attempt,
 		Failure:        reliabilityFailure(summary),
 		Budgets:        reliabilityBudgets(summary),
@@ -164,7 +170,7 @@ func projectRunReliability(summary RunSummary) RunReliability {
 		out.HumanInterventionReason = reliabilityUnknown
 	}
 	if summary.Terminal {
-		applyTerminalCause(&out, summary.Phase, summary.reliabilityFacts.TerminalCause)
+		applyTerminalCause(&out, summary.Phase, summary.reliabilityFacts)
 	}
 	return out
 }
@@ -176,17 +182,20 @@ func reliabilityAcceptance(facts readmodel.ReliabilityFacts) ReliabilityAcceptan
 	return ReliabilityAcceptance{State: facts.AcceptanceState, Digest: facts.AcceptanceDigest}
 }
 
-func currentAttempt(summary RunSummary) int {
+func currentAttempt(summary RunSummary) (string, int) {
 	stage := summary.Operator.CurrentStage
-	if stage == "" {
-		return 0
-	}
 	for _, active := range summary.ActiveStages {
-		if active.Name == stage {
-			return active.Attempt
+		if stage != "" && active.Name == stage {
+			return stage, active.Attempt
 		}
 	}
-	return 0
+	// No attempt is active while a failed one backs off before its retry.
+	for _, wait := range summary.RetryBackoff.Waits {
+		if stage == "" || wait.Stage == stage {
+			return wait.Stage, wait.Attempt
+		}
+	}
+	return stage, 0
 }
 
 func reliabilityFailure(summary RunSummary) ReliabilityFailure {
@@ -213,24 +222,46 @@ func reliabilityFailure(summary RunSummary) ReliabilityFailure {
 }
 
 // reliabilityBudgets reports journal-measured consumption where a standard
-// attempt counter exists. No read source records per-target limits yet, so
-// every Remaining is unknown rather than guessed from configuration that may
-// have changed since the run started.
+// attempt counter exists, and gate budgets bounded by the run's pinned
+// definition. Remaining is never guessed from configuration that may have
+// changed since the run started.
 func reliabilityBudgets(summary RunSummary) []ReliabilityBudget {
 	measured := func(kind string, consumed int) ReliabilityBudget {
 		return ReliabilityBudget{Kind: kind, Consumed: &consumed, Evidence: reliabilityEvidenceJournal}
 	}
-	unknown := func(kind string) ReliabilityBudget {
-		return ReliabilityBudget{Kind: kind, Evidence: reliabilityUnknown}
-	}
+	facts := summary.reliabilityFacts
 	return []ReliabilityBudget{
 		measured(budgetImplementationReview, summary.RepassCount),
 		measured(budgetStagePolicy, summary.PolicyRetryCount),
 		measured(budgetLocalInfra, summary.InfraRetryCount),
-		unknown(budgetLocalValidation),
-		unknown(budgetProviderRemediation),
-		unknown(budgetCIPoll),
+		pinnedBudget(budgetLocalValidation, facts),
+		pinnedBudget(budgetProviderRemediation, facts),
+		pinnedBudget(budgetCIPoll, facts),
 	}
+}
+
+// pinnedBudget reports the most constrained pinned allowance of kind. Repair
+// budgets are per target stage, so a target shared with another gate reports
+// the shared counter it actually escalates on. Without a pinned allowance (a
+// legacy run, or a workflow with no such gate) the budget stays unknown.
+func pinnedBudget(kind string, facts readmodel.ReliabilityFacts) ReliabilityBudget {
+	out := ReliabilityBudget{Kind: kind, Evidence: reliabilityUnknown}
+	for _, allowance := range facts.Allowances {
+		if allowance.Kind != kind {
+			continue
+		}
+		consumed := facts.PolicyRepasses[allowance.Target]
+		if kind == budgetCIPoll {
+			consumed = facts.TimeoutPolls[allowance.Gate]
+		}
+		// The rejected (limit+1) charge that escalated never executed.
+		consumed = min(consumed, allowance.Allowed)
+		remaining := allowance.Allowed - consumed
+		if out.Remaining == nil || remaining < *out.Remaining {
+			out = ReliabilityBudget{Kind: kind, Consumed: &consumed, Remaining: &remaining, Evidence: reliabilityEvidencePinned}
+		}
+	}
+	return out
 }
 
 func retainedRefs(summary RunSummary) ReliabilityRetainedRefs {
@@ -248,9 +279,9 @@ func retainedRefs(summary RunSummary) ReliabilityRetainedRefs {
 			}
 		}
 	}
+	refs.Branch = summary.workspaceBranch
+	refs.BranchSHA = summary.workspaceBranchSHA
 	if summary.Lineage != nil {
-		refs.Branch = summary.Lineage.WorkspaceBranch
-		refs.BranchSHA = summary.Lineage.WorkspaceBranchSHA
 		if refs.RecoveryRunID == "" && summary.Lineage.Source != nil {
 			refs.RecoveryRunID = summary.Lineage.Source.ID
 		}
@@ -347,7 +378,8 @@ func (r ReliabilityRetainedRefs) summary() string {
 // configured allowances pinned at run start. Both list paths fold the record
 // from run.finished; legacy causes rebuilt from log text never reach here, so
 // heuristics never look authoritative.
-func applyTerminalCause(out *RunReliability, phase journal.RunPhase, record *journal.TerminalCause) {
+func applyTerminalCause(out *RunReliability, phase journal.RunPhase, facts readmodel.ReliabilityFacts) {
+	record := facts.TerminalCause
 	if record == nil {
 		return
 	}
@@ -359,13 +391,29 @@ func applyTerminalCause(out *RunReliability, phase journal.RunPhase, record *jou
 	if phase == journal.PhaseEscalated {
 		out.HumanInterventionReason = cmp.Or(record.Message, record.Code, reliabilityUnknown)
 	}
-	repassKind := budgetImplementationReview
-	if record.Code == runcontrol.ReasonInfrastructureBudgetExhausted {
-		repassKind = budgetLocalInfra
+	// A polling exhaustion's repass count is the timeout outcome's zero
+	// charge, not repair evidence.
+	if record.Code != runcontrol.ReasonPollingBudgetExhausted {
+		applyTerminalBudget(out.Budgets, terminalRepassKind(record, facts.Allowances), record.Repass)
 	}
-	applyTerminalBudget(out.Budgets, repassKind, record.Repass)
 	applyTerminalBudget(out.Budgets, budgetStagePolicy, record.Retry)
 	applyTerminalBudget(out.Budgets, budgetCIPoll, record.Poll)
+}
+
+// terminalRepassKind maps the terminal gate's repass budget onto the kind its
+// pinned allowance classifies, defaulting to implementation review.
+func terminalRepassKind(record *journal.TerminalCause, allowances []readmodel.ReliabilityAllowance) string {
+	if record.Code == runcontrol.ReasonInfrastructureBudgetExhausted {
+		return budgetLocalInfra
+	}
+	if record.SelectorKind == "gate" {
+		for _, allowance := range allowances {
+			if allowance.Gate == record.Selector && allowance.Kind != budgetCIPoll {
+				return allowance.Kind
+			}
+		}
+	}
+	return budgetImplementationReview
 }
 
 // applyTerminalBudget replaces a budget with the terminal record's

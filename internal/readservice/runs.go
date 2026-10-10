@@ -203,6 +203,10 @@ type RunSummary struct {
 	stageAttempts  map[string][]StageAttempt
 	// reliabilityFacts feeds the #5313 reliability projection.
 	reliabilityFacts readmodel.ReliabilityFacts
+	// workspaceBranch and workspaceBranchSHA are the run's pinned workspace
+	// refs, recorded for every run rather than only continuations.
+	workspaceBranch    string
+	workspaceBranchSHA string
 }
 
 // RunLineage is the canonical continuation projection shared by every read
@@ -1691,6 +1695,16 @@ func summarizeRun(run runRead, observedAt time.Time) (RunSummary, error) {
 	return summarizeRunForStage(run, observedAt, "")
 }
 
+// withRunIdentity adds the facts summarizeRunForStage reads from the run's
+// identity and pinned inputs rather than its events.
+func withRunIdentity(summary RunSummary, run runRead) RunSummary {
+	summary.Lineage = continuationLineageFromIdentity(run.identity)
+	summary.workspaceBranch = run.identity.WorkspaceBranch
+	summary.workspaceBranchSHA = run.identity.WorkspaceBranchSHA
+	summary.reliabilityFacts.Allowances = readmodel.PinnedReliabilityAllowances(run.reader, run.identity)
+	return summary
+}
+
 func continuationLineageFromIdentity(identity journal.RunIdentity) *RunLineage {
 	if identity.ContinuedFromRunID == "" {
 		return nil
@@ -1932,7 +1946,7 @@ func summarizeRunForStage(
 		return RunSummary{}, err
 	}
 
-	return withRunActivity(RunSummary{
+	return withRunActivity(withRunIdentity(RunSummary{
 		ID:               run.identity.RunID,
 		Workflow:         run.identity.Workflow,
 		WorkflowVersion:  run.identity.WorkflowVersion,
@@ -1951,7 +1965,6 @@ func summarizeRunForStage(
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
-		Lineage:          continuationLineageFromIdentity(run.identity),
 		NoWork:           noWork,
 		TerminalReason:   terminalReason,
 		Operator:         operator,
@@ -1960,7 +1973,7 @@ func summarizeRunForStage(
 		RetryBackoff:     observations.retryBackoff,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
-	}, observations), nil
+	}, run), observations), nil
 }
 
 func projectOperatorStageOutputs(operator *OperatorRunSummary, event journal.Event, claimedIssueFound bool) bool {

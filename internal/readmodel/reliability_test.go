@@ -1,8 +1,11 @@
 package readmodel
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -48,5 +51,55 @@ func TestReliabilityFactsFoldTerminalCauseDraftAndAcceptance(t *testing.T) {
 	partial := foldReliability(journal.Event{Type: journal.EventStageFinished, Outputs: map[string]any{"prNumber": "9", "draft": "maybe"}})
 	if partial.PullRequestDraft != nil {
 		t.Fatalf("unparseable draft output must stay unknown: %+v", partial.PullRequestDraft)
+	}
+}
+
+func TestReliabilityFactsFoldGateBudgetCounters(t *testing.T) {
+	charge := func(gate, verdict, target string, runner map[string]any) journal.Event {
+		return journal.Event{Type: journal.EventGateEvaluated, Gate: gate, Verdict: verdict, Target: target, Runner: runner}
+	}
+	before := foldReliability(
+		charge("local-gate", "fail", "implement", map[string]any{"repassAttempt": float64(1), "repassTarget": "implement"}),
+		charge("review", "needs-changes", "implement", map[string]any{"repassAttempt": float64(2), "repassTarget": "implement"}),
+		// Infra repasses, interrupted evaluations, and human overrides charge
+		// no policy budget.
+		charge("local-gate", "infra", "local-ci", map[string]any{"repassAttempt": float64(1), "repassTarget": "local-ci"}),
+		charge("ci-gate", "fail", "remediate-ci", map[string]any{"repassAttempt": float64(1), "repassTarget": "remediate-ci", "interrupted": true}),
+		journal.Event{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: "fail", Target: "remediate-ci", Actor: "operator",
+			Runner: map[string]any{"repassAttempt": float64(3), "repassTarget": "remediate-ci"}},
+		charge("ci-gate", "timeout", "ci-poll", map[string]any{"repassAttempt": float64(0), "pollAttempt": float64(1), "pollTarget": "ci-poll"}),
+		charge("ci-gate", "timeout", "ci-poll", map[string]any{"repassAttempt": float64(0), "pollAttempt": float64(2), "pollTarget": "ci-poll"}),
+	)
+	if want := map[string]int{"implement": 2}; !maps.Equal(before.PolicyRepasses, want) {
+		t.Fatalf("policy repasses = %v, want %v", before.PolicyRepasses, want)
+	}
+	if want := map[string]int{"ci-gate": 2}; !maps.Equal(before.TimeoutPolls, want) {
+		t.Fatalf("timeout polls = %v, want %v", before.TimeoutPolls, want)
+	}
+	// A non-timeout outcome resets the consecutive polling window without
+	// mutating the earlier snapshot.
+	after := before.After(journal.Event{Schema: journal.EventSchema, Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: "fail",
+		Target: "remediate-ci", Runner: map[string]any{"repassAttempt": float64(1), "repassTarget": "remediate-ci"}})
+	if len(after.TimeoutPolls) != 0 || after.PolicyRepasses["remediate-ci"] != 1 || before.TimeoutPolls["ci-gate"] != 2 || before.PolicyRepasses["remediate-ci"] != 0 {
+		t.Fatalf("after fail: polls %v repasses %v; before polls %v repasses %v", after.TimeoutPolls, after.PolicyRepasses, before.TimeoutPolls, before.PolicyRepasses)
+	}
+}
+
+func TestReliabilityAllowancesClassifyPinnedGates(t *testing.T) {
+	spec := apiv1.WorkflowSpec{Gates: []apiv1.Gate{
+		{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Branches: map[string]string{"needs-changes": "implement"}},
+		{Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+			Branches: map[string]string{"pass": "open-pr", "fail": "implement", "infra": "local-ci"}},
+		{Name: "ci-gate", Evaluator: apiv1.EvaluatorAutomated, MaxRepasses: 2,
+			Automated: &apiv1.AutomatedGate{Check: "ci-status", MaxTimeoutPolls: 30},
+			Branches:  map[string]string{"pass": "@complete", "fail": "remediate-ci", "timeout": "ci-poll"}},
+	}}
+	want := []ReliabilityAllowance{
+		{Kind: BudgetLocalValidation, Gate: "local-gate", Target: "implement", Allowed: 5},
+		{Kind: BudgetProviderRemediation, Gate: "ci-gate", Target: "remediate-ci", Allowed: 2},
+		{Kind: BudgetCIPoll, Gate: "ci-gate", Target: "ci-poll", Allowed: 30},
+	}
+	if got := reliabilityAllowances(spec, 5); !slices.Equal(got, want) {
+		t.Fatalf("allowances = %+v, want %+v", got, want)
 	}
 }

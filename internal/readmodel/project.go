@@ -627,6 +627,7 @@ func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []jou
 func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
 	projection.Run.Operator.QueueEligibility = projectQueueEligibility(reader, identity, events)
+	projection.Run.Operator.Reliability.Allowances = PinnedReliabilityAllowances(reader, identity)
 	projection.Remediation = projectRemediationExamples(identity, projection.Run, events)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
