@@ -63,6 +63,9 @@ func (w parentKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attemp
 	if err := narrowChildKit(kit, ceiling); err != nil {
 		return "", err
 	}
+	if err := childworkflow.AttachParentAuthoringSkill(kit, lease.Authority); err != nil {
+		return "", err
+	}
 	kit.Envelope.Workspace = ""
 	data, digest, err := agentickit.Marshal(kit)
 	if err != nil {
