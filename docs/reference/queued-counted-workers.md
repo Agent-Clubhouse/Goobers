@@ -46,8 +46,8 @@ up. Queue capacity/retention tuning and generic event debounce are separate work
 ## Scope and evidence
 
 This LAND-E01 slice covers backlog-count and completion-refill worker starts.
-Demand-sized schedule fires still use their prior custody path and need a
-separate adapter. Ordinary item claims, provider credential selection and shared
+Demand-sized schedule fires use the separate
+[durable schedule-demand adapter](queued-schedule-demand.md). Ordinary item claims, provider credential selection and shared
 provider-read infrastructure are unchanged by this queue adapter.
 
 The implementation narrowly adapts counted-worker and occupancy parts of

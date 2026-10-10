@@ -64,7 +64,10 @@ func (s *Service) Observe(ctx context.Context, record triggerqueue.Record) (bool
 // RetainedGenerations fails closed if any accepted typed envelope is corrupt.
 // Already dispatched runs use the ordinary retained-journal generation owner.
 func RetainedGenerations(ctx context.Context, queue *triggerqueue.Store) (map[string]bool, error) {
-	pins := map[string]bool{}
+	pins, err := retainedScheduleDemandGenerations(ctx, queue)
+	if err != nil {
+		return nil, err
+	}
 	var after string
 	for {
 		page, err := queue.RetainedPage(ctx, after, 100)

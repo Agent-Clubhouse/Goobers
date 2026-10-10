@@ -14,6 +14,9 @@ import (
 
 // Validate checks the closed source provenance retained by the host.
 func (source SourceTrigger) Validate() error {
+	if err := source.validateScheduleOrdinal(); err != nil {
+		return err
+	}
 	if source.WorkerKind != "" || !source.ObservedAt.IsZero() || source.ObservedCount != 0 || source.WorkerOrdinal != 0 {
 		return source.validateWorker()
 	}

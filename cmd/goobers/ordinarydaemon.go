@@ -23,16 +23,17 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 	catalog := &ordinaryStartCatalog{generation: s.ExecutionGeneration, entries: append([]localscheduler.WorkflowEntry(nil), s.Entries...), store: s.Generations.Store}
 	s.OrdinaryCatalog = catalog
 	engine := s.EngineRuntime
-	s.SourceStarts = &startintent.Sources{Queue: triggers.queue, Acquire: func(ctx context.Context, target startintent.Target) (func(), error) {
+	build := func(ctx context.Context, target startintent.Target) (startintent.Prepared, error) {
+		return s.OrdinaryRuntime(ctx, target, engine)
+	}
+	s.SourceStarts = &startintent.Sources{Queue: triggers.queue, Build: build, Acquire: func(ctx context.Context, target startintent.Target) (func(), error) {
 		_, lease, err := s.Generations.Store.Acquire(ctx, target.ConfigGeneration)
 		if err != nil {
 			return nil, err
 		}
 		return func() { _ = lease.Release() }, nil
 	}}
-	triggers.ordinary = &startintent.Service{Queue: triggers.queue, Capture: catalog.capture, Build: func(ctx context.Context, target startintent.Target) (startintent.Prepared, error) {
-		return s.OrdinaryRuntime(ctx, target, engine)
-	}, Scheduler: func() *localscheduler.Scheduler {
+	triggers.ordinary = &startintent.Service{Queue: triggers.queue, Capture: catalog.capture, Build: build, Scheduler: func() *localscheduler.Scheduler {
 		if triggers.dispatch.schedulerReady != nil && !triggers.dispatch.schedulerReady() {
 			return nil
 		}
