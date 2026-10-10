@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 // ParentArchiveRestorer runs under the owning runner's journal/execution lease.
@@ -17,7 +16,7 @@ type ParentArchiveRestorer func(context.Context, OwnedJournalRecorder, ParentWor
 // Complete admission and recover physical custody before constructing any
 // executor. Both new walks and resumed walks use this same boundary.
 func (r *Runner) prepareWalkExecution(ctx context.Context, ws *walkState) error {
-	if err := workflow.RefuseChildWorkflowExecution(ws.in.Machine.Def.Spec); err != nil {
+	if err := r.admitParentExecution(ctx, ws.in.Machine); err != nil {
 		return err
 	}
 	return r.restoreParentWorkspaceArchives(ctx, ws.jr)

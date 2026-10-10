@@ -446,7 +446,9 @@ type Config struct {
 	// BorrowParentJournal lends the owned writer to contained parent observations.
 	// Release must join all remote appends before the runner closes its writer.
 	BorrowParentJournal func(string, string, *journal.Run) (func(), error)
-	SelfExecutionDenied bool
+	// AdmitParentExecution verifies the pinned source and contained daemon plane.
+	AdmitParentExecution func(context.Context, *workflow.Machine) error
+	SelfExecutionDenied  bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
@@ -1059,7 +1061,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	effectiveControls, err := r.resolveRunControls(&in.RunControls)
@@ -3388,7 +3390,12 @@ type taskFrame struct {
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	if r.cfg.SelfExecutionDenied {
-		return r.refuseSelfTask(tf)
+		if tf.t.ChildWorkflows == nil {
+			return r.refuseSelfTask(tf)
+		}
+		if err := r.admitParentExecution(ctx, tf.in.Machine); err != nil {
+			return apiv1.ResultEnvelope{}, nil, err
+		}
 	}
 	if err := r.prepareRecoveredTaskContext(ctx, &tf, branch, &startAttempt, &firstClass, &resumeAccounting); err != nil {
 		return apiv1.ResultEnvelope{}, nil, err
@@ -3489,8 +3496,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// this feature existed, and an unconditional per-attempt event would
 		// change every one of them. A journal that cannot be written is fatal
 		// (§2.6), same as stage.started above.
-		r.observeSelfExecution(false)
-		if r.recordsPlacement() {
+		if t.ChildWorkflows == nil {
+			r.observeSelfExecution(false)
+		}
+		if t.ChildWorkflows == nil && r.recordsPlacement() {
 			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
 				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
 				span.Fail(err)

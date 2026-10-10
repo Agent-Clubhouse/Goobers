@@ -48,10 +48,12 @@ import (
 // guard is bypassed. Run only against the disposable kind cluster described in
 // the transport guide, with a freshly built Goobers worker image.
 func TestIntegrationQueuedChildUsesRealKubernetesWorker(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	testRealKubernetesChild(t, false)
 }
 
 func TestIntegrationParentCancellationStopsRealKubernetesChild(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	testRealKubernetesChild(t, true)
 }
 

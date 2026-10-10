@@ -44,7 +44,7 @@ func (r *Runner) ForChildExecution(id journal.RunIdentity, factories ChildExecut
 	cfg.PrepareTerminal, cfg.FinalizeTerminal, cfg.NotifyTerminal = nil, nil, nil
 	cfg.BaselineHealth, cfg.LookPathFunc = nil, nil
 	cfg.ChildHandoff, cfg.ChildParentCapacity = nil, nil
-	cfg.BorrowParentJournal = nil
+	cfg.BorrowParentJournal, cfg.AdmitParentExecution = nil, nil
 	cfg.AdditionalRepos = nil
 	// The supplied factories exclusively dispatch remote attempts; their pinned
 	// placement admission owns host capability and self-deny enforcement.
