@@ -72,6 +72,10 @@ func TestIntegrationContainedParentSurvivesDispatchProcessLoss(t *testing.T) {
 
 func qualifyContainedParentJourney(t *testing.T, action string) {
 	t.Helper()
+	fenceFirst := action == "cancel-fence-first"
+	if fenceFirst {
+		action = "cancel"
+	}
 	workerRestart := action == "worker-restart" || action == "worker-crash"
 	modelMode := action
 	if action == "worker-crash" {
@@ -306,7 +310,7 @@ esac
 	}
 	for {
 		if err := triggers.Drain(ctx); err != nil {
-			t.Fatal(err)
+			t.Fatal("drain parent qualification queue", err)
 		}
 		if action == "cancel" && !cancellationSent {
 			select {
@@ -325,6 +329,9 @@ esac
 					t.Errorf("cancellation claimed an unsupported outcome: %+v", result)
 				}
 				cancellationSent = true
+				if fenceFirst {
+					awaitQualificationFencedChild(t, ctx, registry, triggers.queue, runID)
+				}
 			default:
 			}
 		}
@@ -354,14 +361,14 @@ esac
 			}
 			detail, err := reads.GetRun(ctx, runID)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatal("read parent qualification detail", err)
 			}
 			if a := detail.ChildActivity; a != nil && a.Status == "recorded" && a.Parked && len(a.Waits) == 1 && a.Waits[0].Stage == "plan" {
 				sawParked = true
 			}
 			phase, err := reader.PhaseBounded(ctx)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatal("read parent qualification phase", err)
 			}
 			if phase != journal.PhaseRunning {
 				if phase != wantPhase {
@@ -375,7 +382,7 @@ esac
 				}
 				children, childErr := triggers.queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: runID}, "", 10)
 				if childErr != nil {
-					t.Fatal(childErr)
+					t.Fatal("read parent qualification children", childErr)
 				}
 				if len(children) == wantChildren && !slices.ContainsFunc(children, func(c triggerqueue.ChildRecord) bool { return !c.State.Terminal() }) {
 					break
@@ -398,6 +405,7 @@ esac
 			expectedState = triggerqueue.ChildFailed
 		}
 		if child.State != expectedState || child.ResultRef == "" || (action != "cancel" && child.AcknowledgedAt.IsZero()) {
+			logQualificationChildOutcome(t, f.layout, child.RunID)
 			t.Fatal("child result did not reach the expected retained outcome", child)
 		}
 	}

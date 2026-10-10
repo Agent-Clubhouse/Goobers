@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -91,4 +93,57 @@ func assertCancelledParentRetained(t *testing.T, f pinnedChildFixture, runID str
 func TestIntegrationContainedParentCancellationStopsAuthoredChild(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	qualifyContainedParentJourney(t, "cancel")
+}
+
+// Preserve the host-owned cause in failed qualification output before TempDir
+// cleanup removes the disposable journal. Never infer cancellation from a flag.
+func logQualificationChildOutcome(t *testing.T, layout instance.Layout, runID string) {
+	t.Helper()
+	dir, err := layout.FindRunDir(runID)
+	if err != nil {
+		t.Log("child diagnostic journal", err)
+		return
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		t.Log("child diagnostic reader", err)
+		return
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Log("child diagnostic events", err)
+		return
+	}
+	for _, event := range events {
+		if event.Error != nil || event.TerminalCause != nil || event.Type == journal.EventStageFinished || event.Type == journal.EventRunFinished {
+			t.Logf("child %s stage=%s attempt=%d status=%s reason=%s error=%+v cause=%+v outputs=%+v", event.Type, event.Stage, event.Attempt, event.Status, event.Reason, event.Error, event.TerminalCause, event.Outputs)
+		}
+	}
+}
+
+func TestIntegrationContainedParentCancellationFencePrecedesQueueDelivery(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	qualifyContainedParentJourney(t, "cancel-fence-first")
+}
+
+// Hold the next queue sweep until the worker has observed the durable fence.
+// This is a real delivery ordering, not an injected terminal result.
+func awaitQualificationFencedChild(t *testing.T, ctx context.Context, registry *daemonRunnerRegistry, queue *triggerqueue.Store, parentRunID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	for {
+		children, err := queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: parentRunID}, "", 10)
+		if err != nil || len(children) != 1 {
+			t.Fatal("find fenced child", children, err)
+		}
+		if _, live := registry.Resolve(children[0].RunID, "example", nil); !live {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("worker owner did not release after family fence", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
