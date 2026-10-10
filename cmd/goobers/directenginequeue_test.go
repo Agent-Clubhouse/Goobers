@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -169,17 +170,36 @@ func TestDirectEngineCLIPersistsExactInputBeforeProviderAndReplaysAcrossSourceCh
 	}
 }
 
-func TestDirectEngineDaemonReconcilesLostReplyWithConfiguredSealedCodec(t *testing.T) {
+func TestDirectEngineDaemonReconcilesLostReplyWithConfiguredCodec(t *testing.T) {
+	for _, sealed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "sealed-file-key"}[sealed], func(t *testing.T) { testDirectEngineLostReply(t, sealed) })
+	}
+}
+
+func testDirectEngineLostReply(t *testing.T, sealed bool) {
+	t.Helper()
 	root := initDeterministicDemo(t)
-	cfg := configureTestTemporalCodec(t, root)
 	layout := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sealed {
+		cfg = configureTestTemporalCodec(t, root)
+	}
 	c := &directHistoryClient{lost: true}
 	installDirectHistoryClient(t, c)
 	var stdout, stderr bytes.Buffer
 	if code := runEngineStart(directArgs(root), &stdout, &stderr); code != 1 || c.starts != 1 {
 		t.Fatal(code, c.starts, stderr.String())
 	}
-	assertSealedConverter(t, c.dc)
+	// File-key deliberately requires POSIX-private directory/file modes, which
+	// Windows mode bits cannot establish. Its refusal must retain uncertainty;
+	// default-codec lost-response reconciliation still runs on every platform.
+	refusedFileKey := sealed && runtime.GOOS == "windows"
+	if sealed && !refusedFileKey {
+		assertSealedConverter(t, c.dc)
+	}
 	service, err := newDurableTriggerService(filepath.Join(layout.SchedulerDir(), "accepted-triggers.db"), newDaemonTriggerService())
 	if err != nil {
 		t.Fatal(err)
@@ -198,6 +218,25 @@ func TestDirectEngineDaemonReconcilesLostReplyWithConfiguredSealedCodec(t *testi
 	pins, err := retainedExecutionGenerationPins(t.Context(), layout)
 	if err != nil || !pins[e.ConfigGeneration] {
 		t.Fatal(pins, err)
+	}
+	if refusedFileKey {
+		if c.started != nil {
+			t.Fatal("unsupported file-key unexpectedly produced provider history")
+		}
+		if _, err := c.dc.ToPayload("private-input"); err == nil {
+			t.Fatal("file-key silently fell back to plaintext")
+		}
+		if err := service.Drain(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		retained, err := service.queue.Get(t.Context(), record.ID, enginestartintent.Actor)
+		if err != nil || retained.State != triggerqueue.Dispatching || c.starts != 1 {
+			t.Fatal("key refusal released or replayed uncertain custody", retained, err, c.starts)
+		}
+		return
+	}
+	if c.started == nil {
+		t.Fatal("fixture did not persist successful provider history before losing reply")
 	}
 	c.hide = true
 	if err = service.Drain(t.Context()); err != nil {

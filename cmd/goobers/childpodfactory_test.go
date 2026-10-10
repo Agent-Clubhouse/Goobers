@@ -108,6 +108,9 @@ func TestProductionChildFactoryQueueRecoversLostWorkerBeforeContinuing(t *testin
 
 func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 	t.Helper()
+	// Custody and scope assertions must survive full-suite contention. These
+	// in-process requests do not test response latency.
+	const planeDeadline = 10 * time.Second
 	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, queued: options.queued})
 	s := f.writer.service
 
@@ -148,12 +151,12 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		if err != nil {
 			return engine.ChildDispatchResult{}, err
 		}
-		remoteBlobs := &dispatcher.BlobClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
+		remoteBlobs := &dispatcher.BlobClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: planeDeadline}
 		if options.resume || options.queued {
 			if !journals.IsOpen(a.RunID) {
 				return engine.ChildDispatchResult{}, errors.New("child driver did not lend its journal before dispatch")
 			}
-			_, err := (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: fmt.Sprintf("child-worker-heartbeat-%d", a.PodAttempt), Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
+			_, err := (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: planeDeadline}).Emit(ctx, livejournal.EmitRequest{RunID: a.RunID, Gaggle: a.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: fmt.Sprintf("child-worker-heartbeat-%d", a.PodAttempt), Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: a.Stage, Attempt: a.Number}}}})
 			if err != nil {
 				return engine.ChildDispatchResult{}, fmt.Errorf("remote observation could not use the driver-owned journal: %w", err)
 			}
@@ -185,7 +188,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 			return engine.ChildDispatchResult{}, fmt.Errorf("startup execution observer refused worker: %w", err)
 		}
 		defer stop()
-		credentialClient := &dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}
+		credentialClient := &dispatcher.CredentialResolveClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: planeDeadline}
 		resolved, err := credentialClient.ResolveStage(owned, a.RunID, a.Stage, []string{"agent:model"})
 		if err != nil {
 			return engine.ChildDispatchResult{}, fmt.Errorf("startup credential owner refused worker: %w", err)
@@ -220,7 +223,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		}
 		surrendered := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
 		data, _ := json.Marshal(surrendered)
-		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
+		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: planeDeadline}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			return engine.ChildDispatchResult{}, err
 		}
 		return engine.ChildDispatchResult{Report: dispatcher.Report{Runner: "isolated", ChildCreateAttempted: true, ChildPodUID: fmt.Sprintf("exact-worker-%d", a.PodAttempt), WorkspaceWritersStopped: true, SurrenderConfirmed: true}}, nil
@@ -295,7 +298,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 			}
 			// The original physical attempt can still return its observations
 			// after the driver has parked. Recovery must use that attempt.
-			_, err = (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: time.Second}).Emit(t.Context(), livejournal.EmitRequest{RunID: f.writer.identity.RunID, Gaggle: f.writer.identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "after-park", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: "check", Attempt: 1}}}})
+			_, err = (&livejournal.HTTPEmitter{BaseURL: server.URL, Token: workerToken, RetryDeadline: planeDeadline}).Emit(t.Context(), livejournal.EmitRequest{RunID: f.writer.identity.RunID, Gaggle: f.writer.identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "after-park", Time: time.Now(), Event: &journal.Event{Type: journal.EventStageHeartbeat, Stage: "check", Attempt: 1}}}})
 			if err != nil {
 				t.Fatal("pending worker lost final journal custody", err)
 			}
