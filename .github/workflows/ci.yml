@@ -2033,10 +2033,10 @@ jobs:
         run: go test ./internal/credentials ./internal/fleet
 
       - name: Windows child proposal validation
-        run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent -count=1
+        run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook -count=1
 
       - name: Windows child admission authority
-        run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild|TestOrdinaryRecovery|TestDirectEngine' -count=1
+        run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild|TestOrdinaryRecovery|TestDirectEngine|TestSource' -count=1
 
       - name: Windows child custody and waits
         run: go test ./internal/localscheduler ./internal/runner ./cmd/goobers -run 'TestChild|TestTriggerChild|TestDaemonChild|TestQueuedChild|TestRunExecutionElapsed|TestExpireRunUsesChild' -count=1

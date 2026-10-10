@@ -47,12 +47,8 @@ func (s *Store) AcceptDirectEngine(ctx context.Context, key, actor string, paylo
 	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ?", now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return Record{}, false, err
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM triggers").Scan(&count); err != nil {
+	if err := triggerSlotCapacity(ctx, tx, 1); err != nil {
 		return Record{}, false, err
-	}
-	if count >= MaxRecords {
-		return Record{}, false, ErrFull
 	}
 	if err = childByteCapacity(ctx, tx, len(input)+len(payload)+len(key)+len(actor)); err != nil {
 		return Record{}, false, err

@@ -6,7 +6,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -231,19 +230,12 @@ func testUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t *testing.
 		t.Fatalf("valid delivery took %s, want at most 1s", elapsed)
 	}
 
-	var runID string
-	events, err := journal.ReadInstanceLog(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
+	// HTTP 202 confirms durable acceptance; the daemon publishes the run later.
+	started := waitForConfigEvent(t, l.SchedulerDir(), journal.EventRunStarted, 1)
+	if started.Workflow != "default-implement" || started.RunID == "" {
+		t.Fatalf("unexpected webhook run: %+v", started)
 	}
-	for _, event := range events {
-		if event.Type == journal.EventRunStarted && event.Workflow == "default-implement" {
-			runID = event.RunID
-		}
-	}
-	if runID == "" {
-		t.Fatalf("valid delivery did not dispatch a run: %+v", events)
-	}
+	runID := started.RunID
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	phase, err := waitForRunTerminal(waitCtx, l.ForGaggle("example").RunsDir(), runID)
 	waitCancel()
@@ -258,30 +250,21 @@ func testUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t *testing.
 		t.Fatalf("replayed delivery status = %d, want %d", status, http.StatusAccepted)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for delivery := 2; ; delivery++ {
-		if status := postWebhook(t, address, secret, "issues", fmt.Sprintf("delivery-%d", delivery), body); status != http.StatusAccepted {
-			t.Fatalf("readiness-limited delivery status = %d, want %d", status, http.StatusAccepted)
-		}
-		events, err = journal.ReadInstanceLog(l.SchedulerDir())
+	if status := postWebhook(t, address, secret, "issues", "delivery-2", body); status != http.StatusAccepted {
+		t.Fatalf("readiness-limited delivery status = %d, want %d", status, http.StatusAccepted)
+	}
+	events := waitForConfigValue(t, "queued webhook readiness budget", func() ([]journal.Event, bool) {
+		events, err := journal.ReadInstanceLog(l.SchedulerDir())
 		if err != nil {
 			t.Fatal(err)
 		}
-		var budgetSkipped bool
 		for _, event := range events {
 			if event.Type == journal.EventTickSkipped && event.Workflow == "default-implement" && strings.Contains(event.Reason, "budget") {
-				budgetSkipped = true
-				break
+				return events, true
 			}
 		}
-		if budgetSkipped {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("webhook deliveries never reached the hourly readiness budget: %+v", events)
-		}
-		time.Sleep(10 * time.Millisecond) // Polling interval; readiness is exposed only through journal events.
-	}
+		return events, false
+	})
 
 	var invalidNotes, starts, budgetSkips int
 	for _, event := range events {
