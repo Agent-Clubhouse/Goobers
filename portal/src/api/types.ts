@@ -539,6 +539,7 @@ export interface StorageHealthStatus {
   warningFloorPercent?: number;
   criticalFloorBytes?: number;
   criticalFloorPercent?: number;
+  criticalResumeBytes?: number;
   measuredAt?: string;
   error?: string;
 }

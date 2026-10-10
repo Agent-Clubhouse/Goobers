@@ -427,6 +427,7 @@ export const goWireFixtures = {
       "totalBytes": 107374182400,
       "warningFloorBytes": 10737418240,
       "criticalFloorBytes": 5368709120,
+      "criticalResumeBytes": 5905580032,
       "measuredAt": "2026-07-18T12:32:56Z"
     },
     "telemetryExporterHealth": {
