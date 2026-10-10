@@ -40,6 +40,10 @@ func newChildWaitProjector() *childWaitProjector {
 // branch. It supports the runner's non-nested parallel graph and fails closed
 // if a parallel declaration cannot account for every owner.
 func ProjectChildWaits(events []Event) (ChildWaitProjection, error) {
+	return projectChildWaits(events, nil)
+}
+
+func projectChildWaits(events []Event, observe func(Event, *childWaitProjector) error) (ChildWaitProjection, error) {
 	p := newChildWaitProjector()
 	if !hasChildWait(events) {
 		return p.projection(), nil
@@ -47,6 +51,11 @@ func ProjectChildWaits(events []Event) (ChildWaitProjection, error) {
 	for _, event := range events {
 		if err := p.consume(event); err != nil {
 			return ChildWaitProjection{}, err
+		}
+		if observe != nil {
+			if err := observe(event, p); err != nil {
+				return ChildWaitProjection{}, err
+			}
 		}
 	}
 	return p.projection(), nil
