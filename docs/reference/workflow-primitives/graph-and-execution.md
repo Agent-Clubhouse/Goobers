@@ -77,6 +77,18 @@ Declares scalar outputs or artifacts that later states rely on. Shell stages
 that emit scalar outputs use an `inputs.resultFile` contract; kind-backed and
 agentic stages emit through their executors/harnesses.
 
+Through DSL 3.0 the declaration is advisory (`VER003`). From `dslVersion: "3.1"`
+any stage (shell, kind-backed, or agentic) that reports success without every
+declared key fails with `missing_expected_outputs`. The diagnostic names the
+stage's output channel (the result file, the built-in kind, or the agent
+result) and the missing keys, never output values. A shell result file must be
+a flat JSON object (UTF-8, optional byte-order mark). Declare only keys a
+stage emits on every successful outcome; for example, `ci-poll` emits
+`ciFailedChecks` only when checks fail. Successes the runner synthesizes
+itself (an `onTimeout: salvage` completion, or committed work preserved across
+an infrastructure failure) are exempt, because their committed diff is verified
+downstream.
+
 ### `outbox`
 
 Exports declared workspace-relative files or directories into the durable run

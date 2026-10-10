@@ -160,6 +160,7 @@ func (r *Runner) prepareTaskResult(
 	}
 	result.Artifacts = normalizeArtifactIntegrity(task.Type, result.Artifacts)
 	*result = r.validateDependencyResult(jr, task.Name, *result, upstream)
+	*result = EnforceExpectedOutputs(in.dslVersion(), task, *result)
 	if result.Status != apiv1.ResultSuccess {
 		result.WorkspaceRevision = nil
 	}
