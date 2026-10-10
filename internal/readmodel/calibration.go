@@ -50,7 +50,7 @@ func (s *Store) HarvestCalibration(ctx context.Context, since, until time.Time, 
 	where := ""
 	if !since.IsZero() {
 		where += " WHERE r.started_at >= ?"
-		args = append(args, since.UTC().Format(time.RFC3339Nano))
+		args = append(args, formatTime(since))
 	}
 	if !until.IsZero() {
 		if where == "" {
@@ -58,7 +58,7 @@ func (s *Store) HarvestCalibration(ctx context.Context, since, until time.Time, 
 		} else {
 			where += " AND r.started_at <= ?"
 		}
-		args = append(args, until.UTC().Format(time.RFC3339Nano))
+		args = append(args, formatTime(until))
 	}
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM run r"+where, args...).Scan(&snapshot.Runs); err != nil {
 		return CalibrationSnapshot{}, fmt.Errorf("readmodel: count calibration runs: %w", err)
