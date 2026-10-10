@@ -149,7 +149,8 @@ func TestIntegrationContainedParentSurvivesDaemonProcessLossParallel(t *testing.
 	qualifyParentDaemonProcessLoss(t, true)
 }
 
-func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool) {
+func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool, childParallel ...bool) {
+	generatedParallel := len(childParallel) != 0 && childParallel[0]
 	t.Helper()
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	image := os.Getenv("GOOBERS_PARENT_QUALIFICATION_IMAGE")
@@ -172,6 +173,11 @@ func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool) {
 	t.Setenv("GOOBERS_TEST_GITHUB_API_URL", forge.URL)
 	mode, fixtureMode := "daemon-restart", ""
 	wantChildren, wantParents := 1, 3
+	wantChildAttempts := 2
+	if generatedParallel {
+		mode = "generated-parallel-daemon-restart"
+		wantChildAttempts = 5
+	}
 	if parallel {
 		mode, fixtureMode = "parallel-daemon-restart", "parallel"
 		wantChildren, wantParents = 2, 7
@@ -191,7 +197,7 @@ func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool) {
 	writeFileContent(t, filepath.Join(source, "source.txt"), "parent source\n")
 	writeFileContent(t, filepath.Join(source, "qualification-mode"), mode)
 	var childStarted <-chan struct{}
-	if parallel {
+	if parallel || generatedParallel {
 		childStarted = parallelQualificationBarrier(t, source)
 	} else {
 		childStarted = parentQualificationCancellationProbe(t, source)
@@ -235,7 +241,7 @@ func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool) {
 		}
 	})
 	journeyTimeout := 4 * time.Minute
-	if parallel {
+	if parallel || generatedParallel {
 		journeyTimeout = 6 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), journeyTimeout)
@@ -275,7 +281,7 @@ func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool) {
 					if childDetail.ChildActivity == nil || childDetail.ChildActivity.Parent == nil || childDetail.ChildActivity.Parent.RunID != runID {
 						t.Fatal("recovered child lost its Portal parent link")
 					}
-					assertDaemonQualificationCustody(t, ctx, f.layout, dev.Client(), child.RunID, 2)
+					assertDaemonQualificationCustody(t, ctx, f.layout, dev.Client(), child.RunID, wantChildAttempts)
 				}
 				assertDaemonQualificationCustody(t, ctx, f.layout, dev.Client(), runID, wantParents)
 				break
