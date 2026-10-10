@@ -1875,6 +1875,9 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			outcome.report(progress)
 			continue
 		}
+		if outcome.deferGeneratedChildToQueue(id, progress) {
+			continue
+		}
 		rn, machine, gooberDigest, repoRef := runtime.runner, runtime.machine, runtime.gooberDigest, runtime.repoRef
 		// Never reinterpret a historical run under the current workflow
 		// merely because the name still matches.
