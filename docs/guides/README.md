@@ -32,6 +32,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Custom deterministic stage cookbook](custom-stage-cookbook.md)
 - [Daemon readiness and trigger progress](daemon-readiness.md)
 - [Decision-gate A/B harness and reliability report](decision-gate-ab-harness.md)
+- [Desired concurrency, refill, and pausing work](desired-concurrency-and-pause.md)
 - [Diagnostics bundle](diagnostics-bundle.md)
 - [Use the Goobers agent toolkit](dsl-authoring-skill.md)
 - [Engine fallback observability](engine-fallback-observability.md)
