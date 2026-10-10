@@ -114,3 +114,27 @@ func TestUntilWrapsDeadlineError(t *testing.T) {
 		t.Fatalf("Until error = %q, want %q", err, wantText)
 	}
 }
+
+// A request can begin just before the retry budget expires and return only a
+// context error, even after the server explained why every earlier call failed.
+func TestUntilInterruptedAttemptRetainsServerFailure(t *testing.T) {
+	for _, retryable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retryable=%t", retryable), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			want := errors.New("server returned 500")
+			attempts := 0
+			err := Until(ctx, time.Minute, Policy{}, func(ctx context.Context) (bool, error) {
+				attempts++
+				if attempts == 1 {
+					return true, want
+				}
+				cancel()
+				return retryable, fmt.Errorf("request interrupted: %w", ctx.Err())
+			})
+			if attempts != 2 || !errors.Is(err, want) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("Until = %v after %d attempts; want server failure and cancellation", err, attempts)
+			}
+		})
+	}
+}
