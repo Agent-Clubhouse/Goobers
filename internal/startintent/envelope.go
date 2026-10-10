@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -19,7 +20,7 @@ const Kind = "goobers.workflow-start/v1"
 var ErrInvalid = errors.New("startintent: invalid ordinary selection")
 
 // Request retains the caller's selection, independently of host-derived pins.
-// PullRequest is currently supplied only by the standalone/detached CLI.
+// PullRequest is supplied by local CLI and file-delegated targeted starts.
 type Request struct {
 	Workflow    string `json:"workflow"`
 	Gaggle      string `json:"gaggle,omitempty"`
@@ -41,9 +42,11 @@ type Target struct {
 
 // Envelope is stored once. Repeated requests reuse its original target.
 type Envelope struct {
-	Kind    string  `json:"kind"`
-	Request Request `json:"request"`
-	Target  Target  `json:"target"`
+	// Deadline bounds admission, not the lifetime of a run already launched.
+	Deadline time.Time `json:"deadline,omitzero"`
+	Kind     string    `json:"kind"`
+	Request  Request   `json:"request"`
+	Target   Target    `json:"target"`
 }
 
 // Validate rejects unbounded and contradictory selectors before acceptance.
