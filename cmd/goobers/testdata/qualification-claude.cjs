@@ -14,7 +14,7 @@ if (args[0] === 'auth' && args[1] === 'status') {
   process.stdout.write('{"loggedIn":true,"authMethod":"api_key"}\n');
   process.exit(0);
 }
-const prompt = args.at(-1);
+const prompt = fs.readFileSync(0, 'utf8');
 const index = args.indexOf('--mcp-config');
 if (index < 0) throw new Error('qualification requires real Goobers MCP registration');
 const registered = JSON.parse(args[index + 1]).mcpServers['goobers-io'];
