@@ -38,7 +38,7 @@ func Decode(reader io.Reader) (Record, error) {
 // identity that may have been published to either tier and must not refuse
 // the one that never had an archive.
 func decodeRestorable(reader io.Reader) (Record, error) {
-	return decodeRecord(reader, Record.validateRestorable)
+	return decodeRecord(reader, Record.ValidateRestorable)
 }
 
 func decodeRecord(reader io.Reader, validate func(Record) error) (Record, error) {

@@ -15,7 +15,7 @@ import (
 
 func TestIntegrationReservedStageHoldPreservesDirtyStateAcrossRestart(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, state := range []string{"active", "held", "interrupted-hold", "foreign-owner", "foreign-start", "replacement-owner", "replacement-start", "cleanup", "changed-branch"} {
+	for _, state := range []string{"active", "held", "interrupted-hold", "foreign-owner", "foreign-start", "replacement-owner", "replacement-start", "cleanup", "partial-restore", "changed-branch"} {
 		t.Run(state, func(t *testing.T) { verifyReservedStageHold(t, state) })
 	}
 }
@@ -106,6 +106,8 @@ func mutateReservedStageFixture(t *testing.T, wt *Worktree, state string, primar
 		primary.StartRef, ownership.StartRef = strings.TrimSpace(head), strings.TrimSpace(head)
 	case "cleanup":
 		primary.Status, ownership.Status = statusCleanupPending, statusCleanupPending
+	case "partial-restore":
+		primary.ParentRestoreHead, ownership.ParentRestoreHead = primary.StartRef, primary.StartRef
 	case "changed-branch":
 		runTestGit(t, wt.Path, "checkout", "-b", "foreign")
 	}

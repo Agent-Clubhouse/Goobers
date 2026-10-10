@@ -105,12 +105,15 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 type daemonCredentialService struct {
 	childPublisher func(childpublication.Target, string, httpapi.MintedCredential, string) (childpublication.Publisher, error)
 	// Installed before serving. Current child authority lease spans materialization.
-	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
-	childExecutors   childExecutorProvider
-	childPodRecovery func(context.Context, *journal.Reader, string, childPodScope) error
-	layout           instance.Layout
-	config           *instance.Config
-	stores           credentials.StoreResolver
+	childCredentials    func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
+	childExecutors      childExecutorProvider
+	parentRecovery      func(context.Context, journal.RunIdentity) error
+	parentExecutors     runner.NewAgenticFunc
+	parentBorrowJournal func(string, string, *journal.Run) (func(), error)
+	childPodRecovery    func(context.Context, *journal.Reader, string, childPodScope) error
+	layout              instance.Layout
+	config              *instance.Config
+	stores              credentials.StoreResolver
 	// shared is the instance-global exact-value scrubber registry. Every
 	// value the plane materializes is registered here (the Injector registers
 	// each value before returning it), which is what makes later journal/log

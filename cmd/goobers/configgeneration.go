@@ -179,12 +179,18 @@ func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity
 	}
 	r.mu.RLock()
 	resolve := r.resolveGeneration
+	reconcile := r.reconcileContained
 	if identity.Child != nil {
 		resolve = r.resolveChildGeneration
 	}
 	r.mu.RUnlock()
 	if resolve == nil {
 		return executionGenerationRuntime{}, errors.New("no resolver for pinned execution generation")
+	}
+	if identity.Child == nil && reconcile != nil {
+		if err := reconcile(ctx, identity); err != nil {
+			return executionGenerationRuntime{}, err
+		}
 	}
 	return resolve(ctx, identity)
 }

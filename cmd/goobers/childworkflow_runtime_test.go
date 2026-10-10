@@ -125,6 +125,30 @@ func TestChildWorkflowConfiguredHarnessRegistersAndRevokesGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An opaque host recorder cannot route an opted-in parent. Verify that the
+	// new contained route refuses before exercising the lower harness grant
+	// lifecycle, which remains independently owned by buildAgenticExecutor.
+	if _, err := agent.Invoke(t.Context(), env); err == nil || calls != 0 {
+		t.Fatal("unowned parent reached the host harness", err)
+	}
+	resolver, grants, err := buildGaggleCredentials(f.cfg, nil, apiv1.RepoRef{}, apiv1.BacklogRef{}, nil, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapters := harness.NewRegistry()
+	if err := adapters.RegisterAs(string(authority.Admission.Goobers[f.stage.Goober].Harness), newAgenticAdapter(f.stage.Goober, nil)); err != nil {
+		t.Fatal(err)
+	}
+	agent, err = buildAgenticExecutor(agenticExecutorInput{
+		GooberName: f.stage.Goober, Goobers: authority.Admission.Goobers,
+		Instructions: instructions, AdapterRegistry: adapters, Resolver: resolver, Grants: grants,
+		SharedRegistry: shared, RunsDir: f.layout.ForGaggle(f.parent.Gaggle).RunsDir(),
+		SandboxPosture: instance.SandboxDisabled, ArtifactRecorder: runnerWiringHarnessRecorder{dir: env.Workspace},
+		SecretRegistrar: perRun, ChildWorkflows: childWorkflowAccessFor(f.layout.Root, perRun),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := agent.Invoke(t.Context(), env); err != nil {
 		t.Fatal(err)
 	}
