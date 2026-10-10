@@ -80,12 +80,16 @@ General human restart and recursive child execution remain separate workstreams.
 
 ### Complete contained-parent journey
 
-`TestIntegrationContainedParentDelegatesChildPublicationThroughRealWorkers`
-uses the disposable Kubernetes environment described in the transport guide.
+`TestIntegrationContainedParentDelegatesChildPublicationThroughRealWorkers` and
+`TestIntegrationContainedParentDelegatesADOChildPublicationThroughRealWorkers`
+use the disposable Kubernetes environment described in the transport guide.
 The deterministic model substitute authors a child through the actual MCP tools.
 A real child worker edits its private repository fork; canonical host stages then
 publish the branch and PR using the configured delegated credentials. The native
-GitHub adapter talks to a local HTTP fixture, and Git uses a local bare remote.
+GitHub and Azure DevOps adapters talk to local HTTP fixtures, and Git uses a
+local bare remote. The ADO fixture selects an explicit repository PAT source and
+verifies the broker-delivered Basic authorization scheme, exact organization,
+project and repository, and the requested base/source branches.
 No real provider or model account is involved.
 
 The confirmed case checks the published child edits, exact PR destination,
@@ -98,5 +102,6 @@ as permission to create again.
 
 These cases qualify the sequential execution and parent-return path. The Portal's
 child history still needs its own publication-link and uncertainty projection;
-human reconciliation remains LAND-H06. The existing native-provider tests cover
-ADO request/reconciliation behavior, but this full worker journey uses GitHub.
+human reconciliation remains LAND-H06. Both provider journeys cover confirmed
+and lost-response publication. ADO Entra bearer delivery and credential expiry
+have separate broker/provider tests; the whole-worker ADO journey uses a PAT.
