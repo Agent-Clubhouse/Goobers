@@ -1038,7 +1038,7 @@ type BackpropConfig struct {
 	// Mode selects off, shadow, or active attribution. When set it is
 	// authoritative over Enabled. Shadow writes attribution to a separate
 	// shadow record that filing passes, gates, and default read surfaces
-	// never consume.
+	// never consume. Enabled=true is accepted only with mode=active.
 	// +kubebuilder:validation:Enum=off;shadow;active
 	// +optional
 	Mode BackpropMode `json:"mode,omitempty" yaml:"mode,omitempty"`

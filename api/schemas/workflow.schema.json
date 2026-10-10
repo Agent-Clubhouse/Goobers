@@ -65,7 +65,7 @@
           "anyOf": [{ "required": ["enabled"] }, { "required": ["mode"] }],
           "properties": {
             "enabled": { "type": "boolean", "description": "Legacy enrollment switch: true means mode=active when mode is omitted." },
-            "mode": { "enum": ["off", "shadow", "active"], "description": "Attribution mode. off performs no work; shadow writes attribution only to an isolated shadow record that filing, gates, and default read surfaces never consume; active publishes the attribution record. Overrides enabled when set; enabled=true with mode=off is rejected." },
+            "mode": { "enum": ["off", "shadow", "active"], "description": "Attribution mode. off performs no work; shadow writes attribution only to an isolated shadow record that filing, gates, and default read surfaces never consume; active publishes the attribution record. Overrides enabled when set; enabled=true is accepted only with mode=active." },
             "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." }
           }
         },

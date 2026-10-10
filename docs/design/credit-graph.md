@@ -45,7 +45,9 @@ spec:
 The legacy `enabled` switch remains supported: `enabled: true` without a mode
 means `active`, and omitting `backprop` or setting `enabled: false` without a
 mode performs no attribution work. When `mode` is set it is authoritative;
-`enabled: true` together with `mode: off` is rejected as contradictory.
+`enabled: true` is accepted only with `mode: active`; combining it with `off`
+or `shadow` is rejected, because binaries that predate `mode` read only
+`enabled` and would otherwise publish a shadow run's record as active.
 
 For an enrolled workflow, terminalization durably appends `run.finished` and
 then writes the record beside the run journal. The record pins the workflow identity and digest, EffectiveVersion,

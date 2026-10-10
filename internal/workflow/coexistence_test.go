@@ -306,7 +306,7 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 		wantErr string
 	}{
 		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"}},
-		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeShadow, Version: "v1"}},
+		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeShadow, Version: "v1"}, wantErr: `backprop.enabled=true contradicts backprop.mode="shadow"`},
 		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeActive, Version: "v1"}},
 		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}},
 		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeOff, Version: "v1"}, wantErr: "contradicts backprop.mode"},
