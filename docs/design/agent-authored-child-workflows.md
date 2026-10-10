@@ -2,7 +2,7 @@
 
 > Status: approved — lifecycle contract and staged implementation plan
 > Area: DSL, agent tools, execution, workspaces, journal, Portal
-> Verified: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
+> Original design baseline: 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03)
 
 > Design approved for incremental delivery on 2026-10-06. The incremental delivery
 > ledger records landed slices. Later implementation notes describe the unmerged [review snapshot](https://github.com/Agent-Clubhouse/Goobers/pull/6807),
@@ -21,7 +21,37 @@ The [landing plan](../hitl-advanced-workflows-landing-plan.md) splits the snapsh
 into independently reviewed changes. Keep this design approved until the full
 journey and its enabled backends are qualified.
 
-| Slice | Scope included in this slice | Remaining boundary |
+### Current delivery status (2026-10-10)
+
+Main checkpoint: `198ffe319` (includes generated child parallelism in #7179).
+
+The historical rows below describe each slice at its landing point; their
+remaining-boundary columns are not a statement of current availability. Current
+supported execution and qualification limits are described in the
+[contained child transport guide](../guides/contained-child-transport.md).
+
+| Delivered area | Landed changes | Remaining boundary |
+| --- | --- | --- |
+| Workspace isolation and result custody | Parallel dispatch [#7080](https://github.com/Agent-Clubhouse/Goobers/pull/7080), merge isolation [#7081](https://github.com/Agent-Clubhouse/Goobers/pull/7081), repository selection [#7083](https://github.com/Agent-Clubhouse/Goobers/pull/7083), read-only workspace [#7086](https://github.com/Agent-Clubhouse/Goobers/pull/7086), sync base [#7087](https://github.com/Agent-Clubhouse/Goobers/pull/7087), result return [#7092](https://github.com/Agent-Clubhouse/Goobers/pull/7092) | Human resolution of retained or uncertain child work belongs to HITL. |
+| Contained worker lifecycle | Runtime qualification [#7122](https://github.com/Agent-Clubhouse/Goobers/pull/7122), cancellation [#7143](https://github.com/Agent-Clubhouse/Goobers/pull/7143), finalizer retry [#7144](https://github.com/Agent-Clubhouse/Goobers/pull/7144), portable bytes [#7146](https://github.com/Agent-Clubhouse/Goobers/pull/7146), worker settlement [#7150](https://github.com/Agent-Clubhouse/Goobers/pull/7150), startup custody [#7157](https://github.com/Agent-Clubhouse/Goobers/pull/7157), workspace holds [#7159](https://github.com/Agent-Clubhouse/Goobers/pull/7159), crash recovery [#7160](https://github.com/Agent-Clubhouse/Goobers/pull/7160) | Qualification uses an explicit disposable Kubernetes/Temporal environment. It does not establish every runner image or external harness release. |
+| Contained parent lifecycle | Wait clock [#7141](https://github.com/Agent-Clubhouse/Goobers/pull/7141), pod authority [#7161](https://github.com/Agent-Clubhouse/Goobers/pull/7161), parent transport [#7162](https://github.com/Agent-Clubhouse/Goobers/pull/7162), cancellation ordering [#7163](https://github.com/Agent-Clubhouse/Goobers/pull/7163), capture ordering [#7165](https://github.com/Agent-Clubhouse/Goobers/pull/7165) and sequential coordinator [#7167](https://github.com/Agent-Clubhouse/Goobers/pull/7167) | Installed authoring guidance and separately recorded Codex qualification remain in the next slices. No recursive children or new Goober definitions. |
+| Parallel composition | Parallel parent stages [#7176](https://github.com/Agent-Clubhouse/Goobers/pull/7176) and parallel stages inside generated children [#7179](https://github.com/Agent-Clubhouse/Goobers/pull/7179) | One unfinished child per parent stage occurrence. Root joins reconcile writable state; parent and child workspaces remain separate. |
+| Portal visibility | Lineage [#7089](https://github.com/Agent-Clubhouse/Goobers/pull/7089), retained history [#7090](https://github.com/Agent-Clubhouse/Goobers/pull/7090) and publication outcomes [#7177](https://github.com/Agent-Clubhouse/Goobers/pull/7177) | Read-only lineage and verified publication visibility do not implement human intervention controls. |
+
+Publication journey qualification [#7178](https://github.com/Agent-Clubhouse/Goobers/pull/7178) and captured worker-skill delivery [#7183](https://github.com/Agent-Clubhouse/Goobers/pull/7183)
+are open at this checkpoint. [Codex lifecycle qualification](https://github.com/Agent-Clubhouse/Goobers/tree/codex/haw-c07-codex-parent-qualification)
+and the [installed child-authoring skill/catalog](https://github.com/Agent-Clubhouse/Goobers/tree/codex/haw-c07-child-authoring)
+are published as separate preparation branches; they are not merged acceptance
+evidence.
+
+The four-workstream program remains incomplete: the HITL design [#6804](https://github.com/Agent-Clubhouse/Goobers/pull/6804) still has
+requested changes, Fleet authentication [#6865](https://github.com/Agent-Clubhouse/Goobers/pull/6865) remains a separate draft, and
+broader event/queue and backlog workbench delivery remains ahead. The reference
+implementation [#6807](https://github.com/Agent-Clubhouse/Goobers/pull/6807) must not be merged as a single change.
+
+### Historical slice boundaries
+
+| Slice | Scope included at landing | Remaining boundary at that landing |
 | --- | --- | --- |
 | [LAND-C01 / #6880](https://github.com/Agent-Clubhouse/Goobers/pull/6880) / HAW-CHD-001 and validation portion of HAW-CHD-002 | **Merged in #6880** (`7ba3f512c15c3c509ab62a962b4f532dc74ebc18`). Preview DSL 3.1 opt-in, bounded proposal checks and `goobers workflow validate-child` against the configured parent; typed diagnostics, policy identity and publication ceilings | Validation is advisory. Runtime admission, credentials, child starts, durable waits and workspace handoff are not enabled; both runtimes explicitly refuse opted-in execution. |
 | [LAND-C02a / #6881](https://github.com/Agent-Clubhouse/Goobers/pull/6881) / identity prerequisite of HAW-CHD-003 | **Merged in #6881** (`caad196059ca85c3c06b708483892130c29e2963`). Journal-bound stage occurrence and attempt identities, carried through the runner invocation and agent dispatch kit; retries/recovery retain an occurrence, revisits and parallel branches get distinct occurrences | Identity alone grants no child authority. Public runtime entry points continue to refuse child-enabled execution until admission, custody and launch wiring are qualified. Temporal projection ordinals are never presented as committed journal identities. |
@@ -29,8 +59,8 @@ journey and its enabled backends are qualified.
 | [LAND-C03 / LAND-C04 foundation / #6915](https://github.com/Agent-Clubhouse/Goobers/pull/6915) | Separate parent snapshot/fork and result custody, process-writer evidence, queued launcher/reconciler, durable serial-parent wait and recovery | Public execution remains refused. Isolated backend qualification, result disposition, parallel-parent execution and Portal lineage remain pending. See the [custody and wait boundary](../guides/child-workflow-admission.md#workspace-and-wait-foundation). |
 | [LAND-C05 local disposition / #6916](https://github.com/Agent-Clubhouse/Goobers/pull/6916) | Durable merge/replace/discard requests, exact-revision adoption, bounded history, stopped-writer application and crash reconciliation | Public execution, delegated PR publication and Portal controls remain pending. See [parent result disposition](../guides/child-workflow-admission.md#parent-result-disposition). |
 | [LAND-C06a contained worker transport / #6947](https://github.com/Agent-Clubhouse/Goobers/pull/6947) | Private portable workspace carrier, dispatcher pod containment, writer-stop/surrender evidence and custody-aware orphan cleanup | Public execution remains disabled. Exact signed attempt/blob authority, host factory, returned-tree application and recovery remain follow-ups. See [contained transport boundary](../guides/contained-child-transport.md). |
-
-| LAND-C06c / delegated publication portion of LAND-C05 | Canonical host push/PR stages, immutable bounded publication intent, create-only provider effects and parent publication status | Public activation and Portal qualification remain pending; stopped-child human reconciliation is LAND-H06. See [child workflow publication](../guides/child-workflow-publication.md). |
+| [LAND-C06b / #7061](https://github.com/Agent-Clubhouse/Goobers/pull/7061) | Connected contained execution, exact-attempt authority and recovery | Parent lifecycle and real-worker qualification followed in later slices. |
+| [LAND-C06c / #7063](https://github.com/Agent-Clubhouse/Goobers/pull/7063) / delegated publication portion of LAND-C05 | Canonical host push/PR stages, immutable bounded publication intent, create-only provider effects and parent publication status | Public activation and Portal qualification remain pending; stopped-child human reconciliation is LAND-H06. See [child workflow publication](../guides/child-workflow-publication.md). |
 
 The later implementation notes in this document remain evidence from the reference
 snapshot; they are not a claim that those later slices have landed on main.
