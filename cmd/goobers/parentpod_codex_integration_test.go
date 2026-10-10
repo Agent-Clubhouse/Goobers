@@ -5,9 +5,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/test/testsupport/testdep"
+	"gopkg.in/yaml.v3"
 )
 
 func TestIntegrationCodexParentAuthorsChildThroughRealWorkers(t *testing.T) {
@@ -54,4 +56,28 @@ func installQualificationParentProbe(t *testing.T, bin string) {
 		t.Fatal(err)
 	}
 	t.Setenv("QUALIFICATION_MODEL_TOKEN", key)
+}
+
+func qualificationParentGoober(t *testing.T, source, selectedHarness string) string {
+	t.Helper()
+	source = strings.Replace(source, "harness: copilot", "harness: "+selectedHarness, 1)
+	if selectedHarness != "codex" {
+		return source
+	}
+	// Codex does not support a built-in tool allowlist. Configure its supported
+	// invocation shape; child admission and scoped MCP grants remain enforced.
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(source), &doc); err != nil {
+		t.Fatal(err)
+	}
+	spec, ok := doc["spec"].(map[string]any)
+	if !ok {
+		t.Fatal("qualification Goober has no spec")
+	}
+	delete(spec, "tools")
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

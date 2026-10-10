@@ -495,7 +495,7 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		}
 		writeFileContent(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), parent)
 		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
-		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: "+selectedHarness, 1))
+		writeFileContent(t, path, qualificationParentGoober(t, readFileContent(t, path), selectedHarness))
 		path = filepath.Join(root, "instance.yaml")
 		var doc map[string]any
 		if err := yaml.Unmarshal([]byte(readFileContent(t, path)), &doc); err != nil {
