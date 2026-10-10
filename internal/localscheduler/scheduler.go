@@ -1085,6 +1085,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.evaluateRefillOpportunities(allCandidates, now)
 	s.paceQuotaResumedCandidates(allCandidates)
 	s.recordQueueSaturation(ctx, allCandidates, now)
+	s.queueCountWorkers(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 || candidate.refillRemaining > 0 {

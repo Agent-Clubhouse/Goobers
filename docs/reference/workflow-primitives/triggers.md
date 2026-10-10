@@ -68,7 +68,9 @@ triggers:
 
 Starts from provider backlog eligibility. This trigger does not claim an item;
 an autonomous consumer normally begins with a deterministic
-`goobers backlog-query --claim` task.
+`goobers backlog-query --claim` task. Counted worker starts use
+[durable queued acceptance](../queued-counted-workers.md), including accounting
+for workers already queued while waiting for capacity.
 
 | Parameter | Required | Description |
 | --- | --- | --- |

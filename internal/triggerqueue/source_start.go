@@ -35,6 +35,7 @@ type SourceBatch struct {
 	Key, Actor, Fingerprint string
 	Starts                  []SourceStart
 	Advance                 *SourceAdvance
+	PendingLimit            *WorkflowPendingLimit
 }
 
 // SourceReceipt also records no-match deliveries, preventing later rematching.
@@ -87,6 +88,9 @@ func (s *Store) AcceptSource(ctx context.Context, b SourceBatch, now time.Time) 
 		return prior, true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return SourceReceipt{}, false, err
+	}
+	if err = checkWorkerOccupancy(ctx, tx, b); err != nil {
 		return SourceReceipt{}, false, err
 	}
 	if err = prepareSourceBatch(ctx, tx, b, now); err != nil {

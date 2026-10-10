@@ -12,8 +12,11 @@ import (
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
-// Validate checks the closed signal or schedule provenance retained by the host.
+// Validate checks the closed source provenance retained by the host.
 func (source SourceTrigger) Validate() error {
+	if source.WorkerKind != "" || !source.ObservedAt.IsZero() || source.ObservedCount != 0 || source.WorkerOrdinal != 0 {
+		return source.validateWorker()
+	}
 	if source.Signal == "" {
 		if source.Ref != "" || source.Webhook || source.ScheduledFrom.IsZero() || !source.ScheduledAt.After(source.ScheduledFrom) {
 			return errors.New("localscheduler: invalid queued schedule")
@@ -33,8 +36,11 @@ func (source SourceTrigger) Validate() error {
 	return nil
 }
 
-// Trigger returns exact journal provenance for accepted signals and schedules.
+// Trigger returns exact journal provenance for the accepted source.
 func (source SourceTrigger) Trigger(workflow string) journal.Trigger {
+	if source.WorkerKind != "" {
+		return journal.Trigger{Kind: journal.TriggerItem, Ref: workflow}
+	}
 	if source.Signal == "" {
 		return journal.Trigger{Kind: journal.TriggerSchedule, Ref: workflow}
 	}
@@ -58,6 +64,9 @@ func (s *Scheduler) dispatchPreparedSource(executionCtx context.Context, entry W
 	s.mu.Lock()
 	current := s.workflows[entryIdentity(entry)]
 	s.mu.Unlock()
+	if source.WorkerKind != "" {
+		return s.dispatchPreparedWorker(executionCtx, entry, current, runID, source, now)
+	}
 	var indexes []int
 	reason := "signal"
 	if source.Signal != "" {
