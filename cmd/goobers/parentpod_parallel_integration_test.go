@@ -51,6 +51,9 @@ func parallelQualificationDefinition(t *testing.T, source string) string {
 		tasks = append(tasks, task)
 	}
 	spec["tasks"], spec["start"] = tasks, "fan"
+	// Both children charge their parent workflow budget. The overlap barrier
+	// requires two slots rather than the default serial admission limit.
+	spec["readiness"] = map[string]any{"maxConcurrentRuns": 2}
 	spec["parallels"] = []any{map[string]any{"name": "fan", "maxConcurrentBranches": 2, "join": "join", "failurePolicy": "continue_on_error", "branches": []any{map[string]any{"name": "left", "start": "plan"}, map[string]any{"name": "right", "start": "right"}}}}
 	out, err := yaml.Marshal(doc)
 	if err != nil {
