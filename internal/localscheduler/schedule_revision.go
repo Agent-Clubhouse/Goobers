@@ -15,15 +15,15 @@ type authoredSchedule struct {
 }
 
 func (s authoredSchedule) scheduleIdentity() (string, error) { return s.expression, nil }
-func (s locatedSchedule) scheduleIdentity() (string, error) {
-	identity, err := scheduleIdentity(s.s)
+func (l locatedSchedule) scheduleIdentity() (string, error) {
+	identity, err := scheduleIdentity(l.s)
 	if err != nil {
 		return "", err
 	}
-	if s.loc == nil {
+	if l.loc == nil {
 		return "", errors.New("localscheduler: schedule timezone unavailable")
 	}
-	raw, err := json.Marshal([]string{identity, s.loc.String()})
+	raw, err := json.Marshal([]string{identity, l.loc.String()})
 	return string(raw), err
 }
 func scheduleIdentity(s Schedule) (string, error) {
