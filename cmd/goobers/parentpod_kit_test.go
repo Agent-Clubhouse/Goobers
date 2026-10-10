@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
@@ -69,6 +70,14 @@ func TestParentKitUsesRetainedSourceAndModelOnlyCredentials(t *testing.T) {
 	}
 	if kit.Envelope.Workspace != "" || !reflect.DeepEqual(kit.Envelope.ChildWorkflowOrigin, env.ChildWorkflowOrigin) || kit.Envelope.ConfigGeneration != id.ConfigGeneration {
 		t.Fatal("parent kit lost retained invocation authority")
+	}
+	files := kit.SkillPackages[childworkflow.ParentAuthoringSkillName]
+	if len(files) != 2 || files[0].Path != "SKILL.md" || files[1].Path != "catalog.json" {
+		t.Fatal("actual parent kit omitted authoring inputs")
+	}
+	var catalog childworkflow.AuthoringCatalog
+	if err := json.Unmarshal([]byte(files[1].Content), &catalog); err != nil || catalog.Gaggle != id.Gaggle || len(catalog.Goobers) != 1 || catalog.Goobers[0].Name != "coder" {
+		t.Fatal("actual parent authoring catalog lost pinned scope", err)
 	}
 	if len(kit.Grants) != 1 {
 		t.Fatalf("expected exactly one model grant, got %d", len(kit.Grants))

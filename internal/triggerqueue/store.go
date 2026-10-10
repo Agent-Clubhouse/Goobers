@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, childPublicationSchema}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childStorageSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, childPublicationSchema, directEngineSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -212,7 +212,7 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]Record, error) {
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: batch limit must be 1..100")
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='accepted' ORDER BY accepted_ns,id LIMIT ?", limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='accepted' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) ORDER BY accepted_ns,id LIMIT ?", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +239,7 @@ func (s *Store) BeginDispatch(ctx context.Context, id string) error {
 // request payloads. Later dispatches must not enter this set: their asynchronous
 // starter may still be publishing a journal in the current process.
 func (s *Store) UncertainIDs(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM triggers WHERE state='dispatching' LIMIT ?", MaxRecords+1)
+	rows, err := s.db.QueryContext(ctx, "SELECT id FROM triggers WHERE state='dispatching' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) LIMIT ?", MaxRecords+1)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func (s *Store) Uncertain(ctx context.Context, after string, limit int) ([]Recor
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: batch limit must be 1..100")
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='dispatching' AND id>? ORDER BY id LIMIT ?", after, limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='dispatching' AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id) AND id>? ORDER BY id LIMIT ?", after, limit)
 	if err != nil {
 		return nil, err
 	}
