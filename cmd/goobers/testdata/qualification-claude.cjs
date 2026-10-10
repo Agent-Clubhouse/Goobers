@@ -67,6 +67,14 @@ function waitForHost() {
   // The ordinary parent driver must own the durable yield and interrupt us.
   setInterval(() => {}, 1000);
 }
+function childAuthoringCatalog() {
+  const directory = path.join(path.basename(process.argv[1]) === 'codex' ? '.agents' : '.claude', 'skills', 'goobers-child-workflows');
+  const skill = fs.readFileSync(path.join(directory, 'SKILL.md'), 'utf8');
+  const catalog = JSON.parse(fs.readFileSync(path.join(directory, 'catalog.json'), 'utf8'));
+  if (!prompt.includes(directory + '/SKILL.md') || !skill.includes('validate_child_workflow') || !skill.includes('resolve_child_workflow')) throw new Error('parent authoring guidance did not reach the model');
+  if (catalog.schemaVersion !== 'goobers-child-authoring/v1' || !catalog.newSubmissionsAvailable || catalog.dslVersion !== '3.1' || !catalog.goobers.some(g => g.name === 'coder') || catalog.maxStates !== 128) throw new Error('parent authoring catalog differs');
+  return catalog;
+}
 async function main() {
   const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'qualification-model', version: '1' } });
   if (init.error) throw new Error('MCP initialization failed');
@@ -75,6 +83,7 @@ async function main() {
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
   if (['parallel','parallel-cancel','parallel-daemon-restart'].includes(mode)) return parallelJourney();
   if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
+  const authoring = childAuthoringCatalog();
   const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
@@ -91,8 +100,10 @@ async function main() {
       if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid qualification signal');
       command = `node -e 'require("http").get(${JSON.stringify(notify)}, r => r.resume())'; sleep ${mode === 'cancel' ? 60 : invocationKey === 'qualification-child' ? 45 : 10}`;
     }
-    const run = JSON.stringify({ workspace: (scratch || mode === 'cancel') ? 'scratch' : 'repo', command: ['sh','-c',command] });
-    fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      goal: Verify the generated workstream\n      timeoutSeconds: 60\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: ' + run + '\n');
+    const runner = authoring.runners.find(value => value.os === 'linux' && value.shell);
+    if (!runner) throw new Error('catalog has no declared shell runner');
+    const run = { workspace: (scratch || mode === 'cancel') ? 'scratch' : 'repo', command: ['sh','-c',command] };
+    fs.writeFileSync(sourceFile, JSON.stringify({ apiVersion: 'goobers.dev/v1alpha1', kind: 'Workflow', dslVersion: authoring.dslVersion, metadata: { name: 'generated-check' }, spec: { gaggle: authoring.gaggle, triggers: [{ type: 'manual' }], start: 'check', tasks: [{ name: 'check', type: 'deterministic', goal: 'Verify the generated workstream', timeoutSeconds: 60, runsOn: { os: runner.os, capabilities: runner.capabilities }, run }] } }));
     const validation = await tool('validate_child_workflow', { sourceFile });
     if (validation.error || !validation.value.valid) throw new Error('generated source rejected');
     const accepted = await tool('start_child_workflow', { sourceFile, invocationKey });
