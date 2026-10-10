@@ -32,7 +32,6 @@ var bodyLengthSeedCeilings = map[string]int{
 	"internal/harness/claude.go\t(*ClaudeAdapter).Run":               228,
 	"internal/harness/copilot.go\t(*CopilotAdapter).Run":             288,
 	"internal/harness/executor.go\t(*Executor).run":                  300,
-	"internal/localscheduler/scheduler.go\t(*Scheduler).Tick":        203,
 	"internal/readmodel/project.go\tProjectRun":                      272,
 	"internal/readservice/runs.go\tsummarizeRunForStage":             258,
 	"internal/readservice/telemetry.go\t(*Telemetry).TelemetryStats": 217,

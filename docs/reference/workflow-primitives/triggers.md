@@ -52,6 +52,8 @@ Starts when a cron or supported interval expression becomes due.
 | `idleBackoff.ceiling` | no | Positive Go duration not below `floor`; defaults to `15m`. |
 
 Multiple schedule triggers are allowed. The scheduler fires when any is due.
+Plain schedules use [durable queued acceptance](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md);
+readiness limits apply when the accepted firing is dispatched.
 
 ```yaml
 triggers:

@@ -23,11 +23,18 @@ const MaxSourceStarts = 32
 // SourceStart is one already pinned workflow start in a trusted source batch.
 type SourceStart struct{ Payload []byte }
 
+// SourceAdvance moves a durable schedule cursor in the same transaction as starts.
+type SourceAdvance struct {
+	Scope         string
+	Before, After time.Time
+}
+
 // SourceBatch identifies the authenticated delivery independently of recipients.
 // A duplicate keeps the first accepted recipient set, even after configuration changes.
 type SourceBatch struct {
 	Key, Actor, Fingerprint string
 	Starts                  []SourceStart
+	Advance                 *SourceAdvance
 }
 
 // SourceReceipt also records no-match deliveries, preventing later rematching.
@@ -61,7 +68,7 @@ func readSourceReceipt(ctx context.Context, q sourceQuerier, key string) (Source
 	return r, nil
 }
 
-// AcceptSource atomically records every pinned signal recipient. Queue
+// AcceptSource atomically records every pinned source recipient. Queue
 // exhaustion or any invalid recipient rolls the entire batch back.
 func (s *Store) AcceptSource(ctx context.Context, b SourceBatch, now time.Time) (SourceReceipt, bool, error) {
 	if err := validateSourceBatch(b, now); err != nil {
@@ -101,6 +108,9 @@ func (s *Store) AcceptSource(ctx context.Context, b SourceBatch, now time.Time) 
 	if _, err = tx.ExecContext(ctx, `INSERT INTO source_start_receipts(source_key,actor,fingerprint,acceptance_ids,accepted_ns) VALUES(?,?,?,?,?)`, b.Key, b.Actor, b.Fingerprint, raw, now.UnixNano()); err != nil {
 		return SourceReceipt{}, false, err
 	}
+	if err = advanceSourceCursor(ctx, tx, b.Advance); err != nil {
+		return SourceReceipt{}, false, err
+	}
 	return r, false, tx.Commit()
 }
 
@@ -112,6 +122,9 @@ func validateSourceBatch(b SourceBatch, now time.Time) error {
 		if len(start.Payload) == 0 || len(start.Payload) > MaxPayloadBytes {
 			return errors.New("triggerqueue: invalid source start")
 		}
+	}
+	if a := b.Advance; a != nil && (!validChildText(a.Scope, 256, true) || a.Before.IsZero() || !a.After.After(a.Before)) {
+		return errors.New("triggerqueue: invalid source advance")
 	}
 	return nil
 }
@@ -137,10 +150,10 @@ func sourceRecipientKey(key string, ordinal int) string {
 	return "source-start:" + hex.EncodeToString(digest[:])
 }
 
-// Shared receipt pressure includes empty signal deliveries as well as starts.
+// Shared receipt pressure includes cursors and empty deliveries as well as starts.
 func triggerSlotCapacity(ctx context.Context, tx *sql.Tx, additional int) error {
 	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT (SELECT COUNT(*) FROM triggers)+(SELECT COUNT(*) FROM source_start_receipts)").Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT (SELECT COUNT(*) FROM triggers)+(SELECT COUNT(*) FROM source_start_receipts)+(SELECT COUNT(*) FROM source_start_cursors)").Scan(&count); err != nil {
 		return err
 	}
 	if additional < 0 || count > MaxRecords-additional {
