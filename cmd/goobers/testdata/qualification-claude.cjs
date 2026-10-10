@@ -44,15 +44,21 @@ function request(method, params) {
     mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   });
 }
-async function tool(name, arguments_) {
+async function tool(name, arguments_, retries = 0) {
   phase(`tool-${name}`);
   const response = await request('tools/call', { name, arguments: arguments_ });
   if (response.error || response.result?.isError) {
     // Print only known local classifications, never remote response text.
-    const safeCodes = ['child_workflow_not_found','child_workflow_authority_changed','child_workflow_grant_invalid','child_workflow_wrong_parent','child_workflow_custody_unavailable','child_workflow_unavailable'];
+    const safeCodes = ['class_saturated','child_workflow_not_found','child_workflow_authority_changed','child_workflow_grant_invalid','child_workflow_wrong_parent','child_workflow_custody_unavailable','child_workflow_unavailable'];
     const encoded = JSON.stringify(response);
     const code = safeCodes.find(value => encoded.includes(value)) || 'unclassified';
     phase(`tool-${name}-refused-${code}`);
+    // The real API sheds excess concurrent mutations with Retry-After: 1.
+    // Repeat the exact source/key/result; never retry an authority refusal.
+    if (code === 'class_saturated' && retries < 4) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return tool(name, arguments_, retries + 1);
+    }
     return { error: true, code };
   }
   return { value: JSON.parse(response.result.content.find(item => item.type === 'text').text) };
