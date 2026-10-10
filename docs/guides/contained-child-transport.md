@@ -268,6 +268,34 @@ requires its own provider-write and ambiguous-result recovery qualification.
 Loss before a durable worker receipt or during reconciliation is not proved by
 the parked-parent daemon-loss test. A closed connection never proves work stopped.
 
+### Codex parent adapter qualification
+
+For the Codex variant, install the same deterministic fixture as
+`/usr/local/bin/codex` in the qualification image. The fixture reads the private
+MCP configuration produced by the real Codex adapter, requires the child tool
+allowlist, launches the supplied MCP server with its explicit environment, and
+emits Codex session/completion events. It verifies that only the Codex model
+credential reaches that invocation. This exercises the Goobers adapter and
+transport; it does not execute a live Codex model or qualify an external CLI
+release.
+
+Configure the parent Goober without a restrictive built-in `tools` declaration:
+the Codex adapter refuses that unsupported configuration. Child admission,
+capability ceilings, scoped MCP grants and contained placement remain enforced.
+The host CLI probe permits only preflight, so accidental host inference fails.
+
+With the same disposable cluster, image and Temporal settings, run:
+
+```sh
+go test -race -tags=integration ./cmd/goobers -count=1 -timeout=25m -v \
+  -run '^(TestIntegrationCodexParentAuthorsChildThroughRealWorkers|TestIntegrationCodexParentCancellationStopsAuthoredChild|TestIntegrationContainedParentSurvivesDaemonProcessLossCodex)$'
+```
+
+These journeys cover parent-authored repository child creation and merge,
+cancellation while the child is active, and fsync-enabled daemon process loss
+while the parent waits. Recovery must retain the accepted child and lineage,
+resume the parent, and prove exact physical worker stop, surrender and disposal.
+
 ### Parallel parents with one child per stage
 
 Each parallel parent stage can author one active child using its own workspace
