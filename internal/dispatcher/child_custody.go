@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -34,26 +35,12 @@ func observeCreatedChild(ctx context.Context, custody ChildPodCustody) {
 // Missing objects, changed UIDs, or changed ownership cannot become proof.
 func (d *Dispatcher) ReconcileChildPod(ctx context.Context, attempt Attempt, custody ChildPodCustody) (Report, error) {
 	report := Report{ChildCreateAttempted: true, ChildPodUID: custody.UID, Pod: custody.Name}
-	namespace, err := d.cfg.namespaceFor(attempt.Gaggle)
-	if err != nil || !childContractDigest.MatchString(attempt.ChildExecutionDigest) || custody.UID == "" || custody.Namespace != namespace || custody.Name != PodName(attempt) || d.cfg.InstanceID == "" {
-		return report, ErrChildIsolation
-	}
 	api, ok := d.pods.(childPodAPI)
 	if !ok {
 		return report, ErrChildIsolation
 	}
-	pod, err := d.pods.GetPod(ctx, custody.Namespace, custody.Name)
+	pod, err := d.recordedChildPod(ctx, attempt, custody)
 	if err != nil {
-		return report, err
-	}
-	if pod == nil {
-		return report, ErrChildIsolation
-	}
-	identity, valid := podAttempt(pod)
-	if !valid || string(pod.UID) != custody.UID || pod.Labels[LabelInstance] != d.cfg.InstanceID || identity.RunID != attempt.RunID || identity.Stage != attempt.Stage || identity.Attempt != attempt.Number || pod.Labels[LabelPodAttempt] != strconv.Itoa(attempt.PodAttempt) || identity.OwningWorkflowID != attempt.OwningWorkflowID {
-		return report, ErrChildIsolation
-	}
-	if err := validateChildPod(pod, attempt); err != nil {
 		return report, err
 	}
 	report.Image = stageContainerImage(pod)
@@ -85,4 +72,27 @@ func (d *Dispatcher) ReconcileChildPod(ctx context.Context, attempt Attempt, cus
 	// Recovery settles custody after a lost control path; the parent owns any
 	// retry. The surrendered output still carries the actual command result.
 	return report, errors.New("isolated child dispatch worker lost")
+}
+
+// Resolve and validate the retained identity before any stop or disposal effect.
+func (d *Dispatcher) recordedChildPod(ctx context.Context, attempt Attempt, custody ChildPodCustody) (*corev1.Pod, error) {
+	namespace, err := d.cfg.namespaceFor(attempt.Gaggle)
+	if err != nil || !childContractDigest.MatchString(attempt.ChildExecutionDigest) || custody.UID == "" || custody.Namespace != namespace || custody.Name != PodName(attempt) || d.cfg.InstanceID == "" {
+		return nil, ErrChildIsolation
+	}
+	pod, err := d.pods.GetPod(ctx, custody.Namespace, custody.Name)
+	if err != nil {
+		return nil, err
+	}
+	if pod == nil {
+		return nil, ErrChildIsolation
+	}
+	identity, valid := podAttempt(pod)
+	if !valid || string(pod.UID) != custody.UID || pod.Labels[LabelInstance] != d.cfg.InstanceID || identity.RunID != attempt.RunID || identity.Stage != attempt.Stage || identity.Attempt != attempt.Number || pod.Labels[LabelPodAttempt] != strconv.Itoa(attempt.PodAttempt) || identity.OwningWorkflowID != attempt.OwningWorkflowID {
+		return nil, ErrChildIsolation
+	}
+	if err := validateChildPod(pod, attempt); err != nil {
+		return nil, err
+	}
+	return pod, nil
 }
