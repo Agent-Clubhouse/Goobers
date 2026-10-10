@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
-	"sigs.k8s.io/yaml"
 )
 
 func sourceBacklogFixture(t *testing.T, baseURL string) (instance.Layout, string, string, string) {
