@@ -120,6 +120,9 @@ files, and untracked workspace files do not survive between stages. To pass a
 file from one stage to a later stage, see
 [Stage-to-stage fan-in](#stage-to-stage-fan-in).
 
+For which evidence a failed task keeps and which a later stage receives, see
+[Failed-task evidence contract](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/failed-task-evidence.md).
+
 #### Local outbox mirror (`outboxMirrorPath`)
 
 `outboxMirrorPath` can be set on a task, a workflow, or a gaggle. It names an
