@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
@@ -45,6 +46,13 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 	if err := verifyParentArchiveChildren(ctx, r.layout, id); err != nil {
 		return err
 	}
+	if err := r.recoverForkPlans(ctx, run, reader, work.forks); err != nil {
+		return err
+	}
+	joinService := parallelworkspace.Service{Worktrees: r.worktrees, CloneURL: r.cloneURL}
+	if err := joinService.RecoverJoins(ctx, run); err != nil {
+		return err
+	}
 	candidates, err := runner.ParentRetirementCandidates(reader)
 	if err != nil {
 		return err
@@ -63,7 +71,10 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 	if failures != nil {
 		return failures
 	}
-	return nil
+	if err := r.releaseForkSources(ctx, run, reader); err != nil {
+		return err
+	}
+	return r.releaseForkPreparations(ctx, run, reader, captureAt)
 }
 
 func (r parentArchiveRestorer) captureRetirement(ctx context.Context, reader *journal.Reader, rec runner.OwnedJournalRecorder, candidate runner.ParentRetirementCandidate, captureAt time.Time) error {
@@ -150,4 +161,12 @@ func (r parentArchiveRestorer) retirementWorkspace(ctx context.Context, reader *
 	}
 	wt, err := r.worktrees.AdoptHeldStage(ctx, url, value.Custody.Workspace)
 	return wt, key, url, err
+}
+
+func retirementCandidatesBeforeForkRecovery(reader *journal.Reader, pending []runner.ParentForkRecovery) ([]runner.ParentRetirementCandidate, error) {
+	candidates, err := runner.ParentRetirementCandidates(reader)
+	if errors.Is(err, runner.ErrParentReturnPending) && len(pending) != 0 {
+		return nil, nil
+	}
+	return candidates, err
 }

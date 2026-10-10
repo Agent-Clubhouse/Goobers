@@ -8,6 +8,7 @@ import (
 
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 )
@@ -20,12 +21,24 @@ type parentArchiveAuthority struct {
 }
 
 // Resolve typed source authority before archive creation, restoration or cleanup.
-// A returned pod requires its exact
+// A fork is authorized by the host plan; a returned pod still requires its exact
 // verified worker contract and independently acknowledged writer custody.
 func parentArchiveSource(ctx context.Context, reader *journal.Reader, archive runner.ParentWorkspaceArchive) (parentArchiveAuthority, error) {
 	var authority parentArchiveAuthority
-	if len(archive.Fork) != 0 {
-		return authority, errors.New("parallel parent archive ownership is not supported")
+	if archive.Fork != nil {
+		plan, branch, err := runner.ParentForkArchivePlan(reader, archive)
+		if err != nil {
+			return authority, err
+		}
+		source, err := parallelworkspace.ReadSource(reader, plan.Source, plan.Parallel, plan.Sequence)
+		if err != nil {
+			return authority, err
+		}
+		id, err := reader.Identity()
+		if err != nil {
+			return authority, err
+		}
+		return parentArchiveAuthority{identity: id, branch: branch, repositoryKey: source.Record.RepositoryKey, policy: source.Policy}, nil
 	}
 	data, err := reader.ArtifactBytesBounded(archive.Output, childpod.MaxContractBytes)
 	if err != nil {

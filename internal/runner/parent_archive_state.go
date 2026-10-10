@@ -21,7 +21,7 @@ type ParentWorkspaceArchive struct {
 	Custody        ContainedParentWorkspaceCustody `json:"custody"`
 	ContractDigest string                          `json:"contractDigest"`
 	Output         journal.Ref                     `json:"output"`
-	Fork           json.RawMessage                 `json:"fork,omitempty"`
+	Fork           *ParentForkCustody              `json:"fork,omitempty"`
 	Archive        journal.Ref                     `json:"archive"`
 	HoldSeq        uint64                          `json:"holdSeq"`
 	ReturnSeq      uint64                          `json:"returnSeq"`
@@ -33,6 +33,7 @@ var ErrParentReturnPending = errors.New("parent workspace has no acknowledged re
 type parentWorkspaceState struct {
 	hold                          ContainedParentWorkspaceCustody
 	contribution                  parentContribution
+	fork                          *ParentForkCustody
 	heldAt, returnedAt, retiredAt uint64
 	archive                       ParentWorkspaceArchive
 	branch                        int
@@ -57,8 +58,8 @@ func readParentWorkspaceState(events []journal.Event, runID, branch string) (par
 
 func (s *parentWorkspaceState) consume(event journal.Event, runID, branch string) error {
 	switch event.Runner["kind"] {
-	case "isolated.parent.fork.ready", "isolated.parent.fork.root.ready":
-		return errors.New("parallel parent archive ownership is not supported")
+	case ParentForkReadyKind, ParentForkRootReadyKind:
+		return s.consumeFork(event, runID, branch)
 	case ContainedParentWorkspaceKind:
 		return s.consumeHold(event, runID, branch)
 	case ParentContributionKind:
@@ -81,6 +82,7 @@ func (s *parentWorkspaceState) consumeHold(event journal.Event, runID, branch st
 	if s.retiredAt != 0 {
 		return errors.New("parent workspace was reused before restoration")
 	}
+	s.fork = nil
 	s.hold, s.heldAt = value, event.Seq
 	s.branch, s.restoredRetirement = event.Branch, 0
 	return nil
@@ -97,7 +99,7 @@ func (s *parentWorkspaceState) consumeReturn(event journal.Event, runID, branch 
 	if value.Custody.Workspace.Branch != branch {
 		return nil
 	}
-	if s.retiredAt != 0 || s.heldAt == 0 || event.Branch != s.branch || event.Seq <= s.heldAt || value.Custody.Workspace != s.hold.Workspace || !reflect.DeepEqual(value.Custody.Origin, s.hold.Origin) {
+	if s.retiredAt != 0 || s.heldAt == 0 || event.Branch != s.branch || event.Seq <= s.heldAt || value.Custody.Workspace != s.hold.Workspace || !reflect.DeepEqual(value.Custody.Origin, s.hold.Origin) || s.fork != nil {
 		return errors.New("parent contribution differs from retained workspace")
 	}
 	s.contribution, s.returnedAt = value, event.Seq
@@ -154,18 +156,4 @@ func decodeParentWorkspaceArchive(event journal.Event) (ParentWorkspaceArchive, 
 		return value, errors.New("invalid parent archive provenance")
 	}
 	return value, nil
-}
-
-func (s parentWorkspaceState) archiveValue(ref journal.Ref) ParentWorkspaceArchive {
-	return ParentWorkspaceArchive{Version: 1, Custody: s.hold, ContractDigest: s.contribution.ContractDigest, Output: s.contribution.Output, Archive: ref, HoldSeq: s.heldAt, ReturnSeq: s.returnedAt}
-}
-func (s parentWorkspaceState) matchesArchiveSource(value ParentWorkspaceArchive) bool {
-	return len(value.Fork) == 0 && reflect.DeepEqual(value.Custody, s.hold) && value.ContractDigest == s.contribution.ContractDigest && value.Output == s.contribution.Output
-}
-func validateParentArchiveSource(value ParentWorkspaceArchive) error {
-	if len(value.Fork) != 0 {
-		return errors.New("parallel parent archive ownership is not supported")
-	}
-	_, err := decodeParentContribution(journal.Event{Runner: map[string]any{"contractDigest": value.ContractDigest, "contribution": value.contribution()}})
-	return err
 }

@@ -37,13 +37,27 @@ func TestChildHistoryPagesOnlyRecordedParentGaggle(t *testing.T) {
 		}
 	}
 	service.sources.ChildHistory = queue.Children
+	publicationReads := 0
+	service.sources.ChildPublications = func(_ context.Context, child triggerqueue.ChildIdentity) ([]ChildPublicationObservation, error) {
+		if child.Gaggle != "goobers" || child.ParentRunID != "parent" {
+			t.Fatal("foreign publication queried")
+		}
+		publicationReads++
+		return nil, nil
+	}
 	first, err := service.RunChildren(t.Context(), "parent", "")
 	if err != nil || first.Status != "recorded" || len(first.Items) != 50 || first.NextCursor == "" {
 		t.Fatalf("first = %+v, %v", first, err)
 	}
+	if publicationReads != 50 {
+		t.Fatal("publication lookup exceeded the displayed page", publicationReads)
+	}
 	last, err := service.RunChildren(t.Context(), "parent", first.NextCursor)
 	if err != nil || len(last.Items) != 1 || last.NextCursor != "" || last.Items[0].ChildID <= first.Items[49].ChildID {
 		t.Fatalf("last = %+v, %v", last, err)
+	}
+	if publicationReads != 51 {
+		t.Fatal("publication pagination read the wrong children", publicationReads)
 	}
 	if first.Items[0].State != triggerqueue.ChildQueued || first.Items[0].TerminalAt != nil {
 		t.Fatal("queued child presented as terminal")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,8 @@ func (p *pendingChildExecutor) Review(context.Context, apiv1.InvocationEnvelope)
 
 func pendingChildRunner(t *testing.T, kind string, executor *pendingChildExecutor) (*Runner, StartInput) {
 	t.Helper()
+	parallel := strings.HasPrefix(kind, "parallel-")
+	kind = strings.TrimPrefix(kind, "parallel-")
 	root := t.TempDir()
 	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
 	if err != nil {
@@ -60,6 +63,15 @@ func pendingChildRunner(t *testing.T, kind string, executor *pendingChildExecuto
 	if kind == "reviewer" {
 		definition.Spec.Start = "review"
 		definition.Spec.Gates = []apiv1.Gate{{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "coder", Workspace: apiv1.WorkspaceScratch, Retry: &apiv1.RetryPolicy{MaxAttempts: 3}}, Branches: map[string]string{"pass": "work", "needs-changes": "work", "fail": workflow.TargetAbort}}}
+	}
+	if parallel {
+		first := definition.Spec.Start
+		definition.Spec.Tasks[0].Next = workflow.TargetJoin
+		definition.Spec.Tasks = append(definition.Spec.Tasks,
+			apiv1.Task{Name: "queued", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "queued sibling", Workspace: apiv1.WorkspaceScratch, Next: workflow.TargetJoin},
+			apiv1.Task{Name: "collate", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "collate", Workspace: apiv1.WorkspaceScratch})
+		definition.Spec.Start = "fan"
+		definition.Spec.Parallels = []apiv1.Parallel{{Name: "fan", Join: "collate", MaxConcurrentBranches: 1, FailurePolicy: apiv1.BranchAllOrNothing, OnFailure: workflow.TargetAbort, Branches: []apiv1.Branch{{Name: "active", Start: first}, {Name: "queued", Start: "queued"}}}}
 	}
 	machine, err := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
 	if err != nil {
@@ -93,14 +105,14 @@ func assertChildPendingHistory(t *testing.T, r *Runner, in StartInput) {
 		t.Fatal(err)
 	}
 	for _, event := range events {
-		if event.Type == journal.EventRunFinished || event.Type == journal.EventStageFinished || event.Type == journal.EventReviewerFinished || event.Type == journal.EventGateEvaluated {
+		if event.Type == journal.EventRunFinished || event.Type == journal.EventStageFinished || event.Type == journal.EventReviewerFinished || event.Type == journal.EventGateEvaluated || event.Type == journal.EventBranchFinished {
 			t.Fatal("pending custody manufactured an outcome", event)
 		}
 	}
 }
 
 func TestChildPendingCustodyDoesNotRetryOrFinishAnyExecutorKind(t *testing.T) {
-	for _, kind := range []string{"agentic", "deterministic", "reviewer"} {
+	for _, kind := range []string{"agentic", "deterministic", "reviewer", "parallel-agentic", "parallel-deterministic", "parallel-reviewer"} {
 		t.Run(kind, func(t *testing.T) {
 			executor := &pendingChildExecutor{}
 			r, in := pendingChildRunner(t, kind, executor)

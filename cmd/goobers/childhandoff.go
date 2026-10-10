@@ -205,21 +205,11 @@ func (h *daemonChildHandoff) parkedParent(request runner.ChildHandoffRequest) (j
 	if err != nil {
 		return id, "", err
 	}
-	parked, waiting, err := runner.ParkedChildRequest(events)
+	parked, started, waiting, err := runner.ParkedChildRequestForOrigin(events, request.Origin)
 	if err != nil || !waiting || parked != request {
 		return id, "", childworkflow.ErrAuthorityUnavailable
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type != journal.EventStageStarted {
-			continue
-		}
-		origin, err := journal.ChildWorkflowOriginForEvent(id.RunID, events[i])
-		if err != nil || *origin != request.Origin {
-			return id, "", childworkflow.ErrAuthorityChanged
-		}
-		return id, events[i].Stage, nil
-	}
-	return id, "", childworkflow.ErrAuthorityUnavailable
+	return id, started.Stage, nil
 }
 
 func (h *daemonChildHandoff) validateAccepted(ctx context.Context, s *daemonCredentialService, request runner.ChildHandoffRequest, child triggerqueue.ChildRecord, id journal.RunIdentity, pinned childworkflow.PinnedStageAdmission) error {

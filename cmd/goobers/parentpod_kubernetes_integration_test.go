@@ -76,6 +76,8 @@ func qualifyContainedParentJourney(t *testing.T, action string, provider ...stri
 	if fenceFirst {
 		action = "cancel"
 	}
+	parallel := action == "parallel" || action == "parallel-cancel"
+	cancelParent := action == "cancel" || action == "parallel-cancel"
 	workerRestart := action == "worker-restart" || action == "worker-crash"
 	modelMode := action
 	if action == "worker-crash" {
@@ -117,7 +119,9 @@ esac
 		t.Fatal(err)
 	}
 	var childStarted <-chan struct{}
-	if action == "cancel" || workerRestart {
+	if parallel {
+		childStarted = parallelQualificationBarrier(t, sourceRepo)
+	} else if cancelParent || workerRestart {
 		childStarted = parentQualificationCancellationProbe(t, sourceRepo)
 	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
@@ -182,6 +186,9 @@ esac
 		t.Fatal(err)
 	}
 	server.Config.Handler = handler
+	if parallel {
+		server.Config.Handler = parallelQualificationHTTPTrace(t, handler)
+	}
 	server.Start()
 	t.Cleanup(server.Close)
 	podDispatcher, err := dispatcher.New(dispatcher.Config{InstanceID: f.parent.InstanceID, Owner: "parent-qualification", GaggleNamespaces: map[string]string{"example": namespace}, GaggleServiceAccounts: map[string]string{"example": "qualification-stage"}, EmbeddedVersion: strings.TrimPrefix(image, "localhost:45081/goobers:"), TokenMinter: key, BlobEndpoint: "http://" + endpoint, WriteAPIBase: "http://" + endpoint, SupervisionInterval: 100 * time.Millisecond, LinuxScheduleToStart: 30 * time.Second}, dispatcher.NewKubernetesPodAPI(api), nil, dispatcher.PlaneSurrenderGate{Plane: plane}, nil)
@@ -201,7 +208,7 @@ esac
 		queues[pin.Queue] = true
 	}
 	journeyTimeout := 3 * time.Minute
-	if action == "iterate" || workerRestart {
+	if action == "iterate" || parallel || workerRestart {
 		// Two child returns require five separate contained parent invocations.
 		journeyTimeout = 6 * time.Minute
 	}
@@ -290,7 +297,7 @@ esac
 		t.Fatal(err)
 	}
 
-	scheduler := localscheduler.New(definitions.Entries, instanceLog)
+	scheduler := localscheduler.New(definitions.Entries, instanceLog, localscheduler.WithInstanceRunConditions(f.cfg.RunConditions.MaxParallelRuns, f.cfg.RunConditions.WorkflowBudgets, f.cfg.RunConditions.WorkflowDailyBudgets))
 	dispatch.AttachScheduler(scheduler)
 	dispatch.AttachDispatchContext(ctx)
 	t.Cleanup(func() { cancel(); scheduler.Wait(); wg.Wait() })
@@ -310,14 +317,20 @@ esac
 	if action == "iterate" || workerRestart {
 		wantChildren, wantParents = 2, 5
 	}
-	if action == "cancel" {
+	if parallel {
+		wantChildren, wantParents = 2, 7
+	}
+	if cancelParent {
 		wantPhase, wantChild, wantParents = journal.PhaseAborted, triggerqueue.ChildCancelled, 1
+		if parallel {
+			wantParents = 2
+		}
 	}
 	for {
 		if err := triggers.Drain(ctx); err != nil {
 			t.Fatal("drain parent qualification queue", err)
 		}
-		if action == "cancel" && !cancellationSent {
+		if cancelParent && !cancellationSent {
 			select {
 			case <-childStarted:
 				result, err := cancels.Cancel(ctx, cancelInput)
@@ -368,7 +381,7 @@ esac
 			if err != nil {
 				t.Fatal("read parent qualification detail", err)
 			}
-			if a := detail.ChildActivity; a != nil && a.Status == "recorded" && a.Parked && len(a.Waits) == 1 && a.Waits[0].Stage == "plan" {
+			if a := detail.ChildActivity; a != nil && a.Status == "recorded" && a.Parked && ((parallel && len(a.Waits) == 2) || (!parallel && len(a.Waits) == 1 && a.Waits[0].Stage == "plan")) {
 				sawParked = true
 			}
 			phase, err := reader.PhaseBounded(ctx)
@@ -409,7 +422,7 @@ esac
 		if workerRestart && child.Sequence == 1 {
 			expectedState = triggerqueue.ChildFailed
 		}
-		if child.State != expectedState || child.ResultRef == "" || (action != "cancel" && child.AcknowledgedAt.IsZero()) {
+		if child.State != expectedState || child.ResultRef == "" || (!cancelParent && child.AcknowledgedAt.IsZero()) {
 			logQualificationChildOutcome(t, f.layout, child.RunID)
 			t.Fatal("child result did not reach the expected retained outcome", child)
 		}
@@ -421,7 +434,10 @@ esac
 			t.Fatal("iterative children lost their sequential stage ownership", children)
 		}
 	}
-	if action == "cancel" && (!cancellationSent || !children[0].CancellationRequested) {
+	if parallel {
+		assertParallelQualificationChildren(t, children, childStarted)
+	}
+	if cancelParent && (!cancellationSent || slices.ContainsFunc(children, func(child triggerqueue.ChildRecord) bool { return !child.CancellationRequested })) {
 		t.Fatal("missing authored-child family cancellation")
 	}
 	if workerRestart && !workerRestarted {
@@ -437,7 +453,7 @@ esac
 	for _, child := range children {
 		found := false
 		for _, item := range history.Items {
-			if item.RunID == child.RunID && item.State == child.State && (action == "cancel" || item.AcknowledgedAt != nil) {
+			if item.RunID == child.RunID && item.State == child.State && (cancelParent || item.AcknowledgedAt != nil) {
 				found = true
 			}
 		}
@@ -471,8 +487,12 @@ esac
 	if parents != wantParents || generated != wantChildren {
 		t.Fatal("unexpected parent/child physical invocations", parents, generated)
 	}
-	if action == "cancel" {
-		assertCancelledParentRetained(t, f, runID, children[0])
+	if cancelParent {
+		if parallel {
+			assertCancelledParallelParentsRetained(t, f, runID, children)
+		} else {
+			assertCancelledParentRetained(t, f, runID, children[0])
+		}
 		replay, err := cancels.Cancel(ctx, cancelInput)
 		if err != nil || replay != cancelReply {
 			t.Fatal("durable cancellation replay changed its original acceptance", replay, err)
@@ -486,6 +506,10 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 	return newPinnedChildFixture(t, func(root string) {
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
 		parent = strings.Replace(parent, "allowPRPublication: true", "allowPRPublication: false", 1)
+		parallel := len(mode) != 0 && (mode[0] == "parallel" || mode[0] == "parallel-cancel")
+		if parallel {
+			parent = parallelQualificationDefinition(t, parent)
+		}
 		writeFileContent(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), parent)
 		path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
 		writeFileContent(t, path, strings.Replace(readFileContent(t, path), "harness: copilot", "harness: claude-code", 1))
@@ -493,6 +517,14 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		var doc map[string]any
 		if err := yaml.Unmarshal([]byte(readFileContent(t, path)), &doc); err != nil {
 			t.Fatal(err)
+		}
+		if parallel {
+			conditions, _ := doc["runConditions"].(map[string]any)
+			if conditions == nil {
+				conditions = map[string]any{}
+			}
+			conditions["maxParallelRuns"] = 2
+			doc["runConditions"] = conditions
 		}
 		delete(doc, "runner")
 		doc["schemaVersion"] = 2

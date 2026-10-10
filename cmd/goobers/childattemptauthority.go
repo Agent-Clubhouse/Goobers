@@ -84,7 +84,7 @@ func (a childAttemptCustody) active(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	event, err := childPodStarted(a.reader, a.contract.Stage, a.contract.Attempt, a.review)
+	event, err := childPodStarted(a.reader, a.contract.Stage, a.contract.Attempt, a.review, a.contract.ChildBranch)
 	if err != nil {
 		return err
 	}

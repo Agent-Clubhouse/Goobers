@@ -57,6 +57,14 @@ when confirmed, and a `needsHuman` indication for uncertain effects. That status
 is observational data and grants no new authority. Merge/replace/discard changes
 the parent's workspace; discard does not retract a published branch or PR.
 
+The Portal's accepted-child history shows locally verified publication observations:
+confirmed branch names, links to confirmed PRs, and a needs-human notice when the
+provider outcome is unconfirmed. Prepared intents are labelled as prepared, not
+published. Missing or invalid custody is explicitly unavailable; expired child
+records do not expose publication links. Reads use the existing parent-run access
+boundary and perform no provider calls, credential acquisition, reconciliation or
+writes. A needs-human notice does not itself authorize a recovery action.
+
 Cancellation and result acknowledgement preserve uncertain publication custody
 and its reserved receipt capacity. The production lineage pruner keeps that
 family until confirmation. Publication retry owns automatic reconciliation while

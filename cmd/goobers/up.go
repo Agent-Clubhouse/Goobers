@@ -953,6 +953,7 @@ func (u *upSession) startServices() int {
 		// of the divergence it exists to remove).
 		ReadModel:                    u.setup.ReadModel,
 		ChildHistory:                 u.readChildHistory,
+		ChildPublications:            u.readChildPublications,
 		RetentionStats:               u.setup.RetentionStats,
 		InstanceLogStats:             u.setup.InstanceLog.Stats,
 		StorageHealthStats:           u.storageGate.Stats,

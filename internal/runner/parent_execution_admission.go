@@ -19,10 +19,10 @@ func (r *Runner) admitParentExecution(ctx context.Context, machine *workflow.Mac
 	if r.cfg.childExecution != nil || r.cfg.AdmitParentExecution == nil || r.cfg.ChildHandoff == nil || r.cfg.ChildParentCapacity == nil || r.cfg.BorrowParentJournal == nil || r.cfg.RestoreParentArchive == nil {
 		return refusal
 	}
-	// Parallel parent admission follows the independent fork/fan-in runtime
-	// qualification. This boundary must not infer it from serial transport.
-	if len(machine.Def.Spec.Parallels) != 0 {
-		return fmt.Errorf("%w: parallel parent coordination is not qualified", refusal)
+	// Parallel parents additionally require the host-owned fork/result/join
+	// lifecycle; the serial transport alone cannot provide branch custody.
+	if len(machine.Def.Spec.Parallels) != 0 && (r.cfg.PrepareParentForkSource == nil || r.cfg.PrepareParentForkResult == nil || r.cfg.JoinParentFork == nil) {
+		return fmt.Errorf("%w: parallel parent workspace owners unavailable", refusal)
 	}
 	return r.cfg.AdmitParentExecution(ctx, machine)
 }

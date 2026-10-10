@@ -43,7 +43,7 @@ func childExecutionHTTPFixture(t *testing.T, observe httpapi.ChildExecutionObser
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := childPodStarted(rd, "check", 1, false)
+	event, err := childPodStarted(rd, "check", 1, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

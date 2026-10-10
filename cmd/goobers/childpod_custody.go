@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 const childPodWriterStarted = "isolated.child.writer.started"
@@ -26,7 +27,7 @@ type childPodScope struct {
 
 type childInvocationBlobs struct {
 	childpod.ScopedBlobs
-	recorder    *journal.Run
+	recorder    runner.OwnedJournalRecorder
 	contract    childpod.Contract
 	digest      string
 	started     bool
@@ -165,7 +166,7 @@ func readChildPodContract(ctx context.Context, store childpod.ScopedBlobs, reade
 		if started.Seq != uint64(contract.PodAttempt) {
 			continue
 		}
-		if started.Type == kind && started.Stage == event.Stage && started.Attempt == event.Attempt && started.Branch == 0 && event.Branch == 0 && started.Time.Equal(contract.StartedAt) && event.Seq > started.Seq {
+		if started.Type == kind && started.Stage == event.Stage && started.Attempt == event.Attempt && started.Branch == contract.ChildBranch && event.Branch == contract.ChildBranch && started.Time.Equal(contract.StartedAt) && event.Seq > started.Seq {
 			return contract, nil
 		}
 		break
@@ -181,15 +182,25 @@ func (s *daemonCredentialService) reconcileChildPodCustody(ctx context.Context, 
 	if len(pending) == 0 {
 		return nil
 	}
-	if len(pending) != 1 || s.childPodRecovery == nil {
+	if len(pending) > 128 || s.childPodRecovery == nil {
 		return fmt.Errorf("%w: generated worker custody requires exact reconciliation", invoke.ErrWorkspaceNotQuiescent)
 	}
-	for digest, scope := range pending {
-		eligible, err := s.childPodCustodyPending(ctx, reader, digest)
-		if err != nil || !eligible {
-			return errors.Join(invoke.ErrWorkspaceNotQuiescent, err)
+	var digest string
+	var scope childPodScope
+	for key, value := range pending {
+		if digest == "" || value.Event.Seq < scope.Event.Seq {
+			digest, scope = key, value
 		}
-		return s.childPodRecovery(ctx, reader, digest, scope)
+	}
+	eligible, err := s.childPodCustodyPending(ctx, reader, digest)
+	if err != nil || !eligible {
+		return errors.Join(invoke.ErrWorkspaceNotQuiescent, err)
+	}
+	if err := s.childPodRecovery(ctx, reader, digest, scope); err != nil {
+		return err
+	}
+	if len(pending) > 1 {
+		return invoke.ErrChildCustodyPending
 	}
 	return nil
 }
@@ -217,4 +228,15 @@ func readChildRetainedAttempt(ctx context.Context, reader *journal.Reader, store
 		return retained, invoke.ErrWorkspaceNotQuiescent
 	}
 	return retained, nil
+}
+
+// Root stages and terminal settlement require the whole family to be quiet.
+// Static sibling branches own independent scratch/read-only stage workspaces.
+func childBranchHasPending(pending map[string]childPodScope, branch int) bool {
+	for _, scope := range pending {
+		if branch == 0 || scope.Event.Branch == 0 || scope.Event.Branch == branch {
+			return true
+		}
+	}
+	return false
 }

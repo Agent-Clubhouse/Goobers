@@ -154,7 +154,7 @@ func (p *childWaitProjector) annotation(event Event) error {
 		return nil
 	}
 	started := p.started[event.Branch]
-	header, err := decodeBoundChildWaitHeader(event, started)
+	header, err := DecodeChildWaitHeader(event, started)
 	if err != nil {
 		return err
 	}

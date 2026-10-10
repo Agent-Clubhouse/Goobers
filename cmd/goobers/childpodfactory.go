@@ -108,14 +108,15 @@ type childPodFactory struct {
 
 type childStagePod struct {
 	childPodFactory
-	journal  *journal.Run
+	journal  runner.OwnedJournalRecorder
+	branch   int
 	identity journal.RunIdentity
 	goober   string
 }
 
 func (f childPodFactory) executor(rec runner.ArtifactRecorder, goober string) (*childStagePod, error) {
-	jr, ok := rec.(*journal.Run)
-	if !ok {
+	jr, branch, err := runner.OwnedJournalScope(rec)
+	if err != nil {
 		return nil, errors.New("child pod execution requires its owned journal writer")
 	}
 	r, err := journal.OpenReadOnly(jr.Dir())
@@ -129,7 +130,7 @@ func (f childPodFactory) executor(rec runner.ArtifactRecorder, goober string) (*
 	if id.RunID != f.start.Child.RunID || id.Gaggle != f.start.Envelope.Gaggle || !reflect.DeepEqual(id.Child, &f.start.Lineage) || id.WorkflowDigest != f.start.Envelope.WorkflowDigest || id.ConfigGeneration != f.start.Envelope.ConfigGeneration || id.GooberDigest != f.runtime.gooberDigest {
 		return nil, errors.New("child pod factory journal differs from accepted source")
 	}
-	return &childStagePod{childPodFactory: f, journal: jr, identity: id, goober: goober}, nil
+	return &childStagePod{childPodFactory: f, journal: jr, identity: id, goober: goober, branch: branch}, nil
 }
 
 func (p *childStagePod) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -245,10 +246,10 @@ func (p *childStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelop
 		return empty, noPin, nil, err
 	}
 	pending, _, err := p.service.pendingChildPodScopes(ctx, reader)
-	if err != nil || len(pending) != 0 {
+	if err != nil || childBranchHasPending(pending, p.branch) {
 		return empty, noPin, nil, errors.Join(invoke.ErrWorkspaceNotQuiescent, err)
 	}
-	started, err := childPodStarted(reader, stage, int(env.Attempt), review)
+	started, err := childPodStarted(reader, stage, int(env.Attempt), review, p.branch)
 	if err != nil {
 		return empty, noPin, nil, err
 	}
@@ -268,7 +269,7 @@ func (p *childStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelop
 		remote.Workspace = ""
 		a.Envelope = &remote
 	}
-	request := childpod.Request{Identity: p.identity, Attempt: a, Eligible: pin.Eligible, Ceiling: ceiling.ModelOnly(), StartedAt: started.Time}
+	request := childpod.Request{ChildBranch: p.branch, Identity: p.identity, Attempt: a, Eligible: pin.Eligible, Ceiling: ceiling.ModelOnly(), StartedAt: started.Time}
 	request.Workspace, err = p.workspace(ctx, reader, env, workspace)
 	return request, pin, reader, err
 }
