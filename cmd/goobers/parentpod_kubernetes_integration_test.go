@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -33,6 +32,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/podauth"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -43,6 +43,18 @@ import (
 // Kubernetes, signed worker APIs, durable wait and return all execute normally.
 func TestIntegrationContainedParentAuthorsChildThroughRealWorkers(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	qualifyContainedParentJourney(t, "scratch")
+}
+
+func TestIntegrationContainedParentReconcilesChildWorkspaceThroughRealWorkers(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	for _, action := range []string{"merge", "replace", "discard"} {
+		t.Run(action, func(t *testing.T) { qualifyContainedParentJourney(t, action) })
+	}
+}
+
+func qualifyContainedParentJourney(t *testing.T, action string) {
+	t.Helper()
 	image := os.Getenv("GOOBERS_PARENT_QUALIFICATION_IMAGE")
 	if !strings.HasPrefix(image, "localhost:45081/goobers:haw-parent-") {
 		t.Fatal("explicit locally built parent qualification image required")
@@ -73,6 +85,9 @@ esac
 	sourceRepo := t.TempDir()
 	recoveryCLIGit(t, sourceRepo, "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(sourceRepo, "source.txt"), []byte("parent source\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRepo, "qualification-mode"), []byte(action), 0600); err != nil {
 		t.Fatal(err)
 	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
@@ -125,15 +140,15 @@ esac
 	})
 	opts := s.installChildPodPlane(transport, plane, journals, observe, nil)
 	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.key)), httpapi.WithChildWorkflowService(s.children.HTTPService()))
-	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
+	reads, err := readservice.NewLocal(readservice.LocalSources{Layout: f.layout, Config: f.cfg, Definitions: f.applied, ChildHistory: triggers.queue.Children}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("qualification HTTP begin %s %s", r.Method, r.URL.Path)
-		handler.ServeHTTP(w, r)
-		log.Printf("qualification HTTP end %s %s", r.Method, r.URL.Path)
-	})
+	handler, err := httpapi.NewHandler(reads, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Config.Handler = handler
 	server.Start()
 	t.Cleanup(server.Close)
 	podDispatcher, err := dispatcher.New(dispatcher.Config{InstanceID: f.parent.InstanceID, Owner: "parent-qualification", GaggleNamespaces: map[string]string{"example": namespace}, GaggleServiceAccounts: map[string]string{"example": "qualification-stage"}, EmbeddedVersion: strings.TrimPrefix(image, "localhost:45081/goobers:"), TokenMinter: key, BlobEndpoint: "http://" + endpoint, WriteAPIBase: "http://" + endpoint, SupervisionInterval: 100 * time.Millisecond, LinuxScheduleToStart: 30 * time.Second}, dispatcher.NewKubernetesPodAPI(api), nil, dispatcher.PlaneSurrenderGate{Plane: plane}, nil)
@@ -182,7 +197,7 @@ esac
 	if err := s.installQueuedChildren(setup, triggers, &wg); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	scheduler := localscheduler.New(definitions.Entries, instanceLog)
 	dispatch.AttachScheduler(scheduler)
 	dispatch.AttachDispatchContext(ctx)
@@ -192,6 +207,7 @@ esac
 		t.Fatal(err)
 	}
 	runID := strings.TrimPrefix(accepted.AcceptanceID, "trigger-")
+	sawParked := false
 	for {
 		if err := triggers.Drain(ctx); err != nil {
 			t.Fatal(err)
@@ -200,6 +216,13 @@ esac
 			reader, err := journal.OpenReadOnly(dir)
 			if err != nil {
 				t.Fatal(err)
+			}
+			detail, err := reads.GetRun(ctx, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a := detail.ChildActivity; a != nil && a.Status == "recorded" && a.Parked && len(a.Waits) == 1 && a.Waits[0].Stage == "plan" {
+				sawParked = true
 			}
 			phase, err := reader.PhaseBounded(ctx)
 			if err != nil {
@@ -227,6 +250,21 @@ esac
 	children, err := triggers.queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: runID}, "", 10)
 	if err != nil || len(children) != 1 || children[0].State != triggerqueue.ChildCompleted || children[0].AcknowledgedAt.IsZero() {
 		t.Fatal("child result was not completed and acknowledged", children, err)
+	}
+	if !sawParked {
+		t.Fatal("Portal run detail never exposed the durable parent wait")
+	}
+	history, err := reads.RunChildren(ctx, runID, "")
+	if err != nil || history.Status != "recorded" || len(history.Items) != 1 || history.Items[0].RunID != children[0].RunID || history.Items[0].State != triggerqueue.ChildCompleted || history.Items[0].AcknowledgedAt == nil {
+		t.Fatal("Portal child history lost the completed acknowledged child", history, err)
+	}
+	parentDetail, err := reads.GetRun(ctx, runID)
+	if err != nil || parentDetail.ChildActivity != nil {
+		t.Fatal("Portal retained a cleared parent wait", parentDetail.ChildActivity, err)
+	}
+	childDetail, err := reads.GetRun(ctx, children[0].RunID)
+	if err != nil || childDetail.ChildActivity == nil || childDetail.ChildActivity.Parent == nil || childDetail.ChildActivity.Parent.RunID != runID {
+		t.Fatal("Portal child detail lost its parent link", childDetail.ChildActivity, err)
 	}
 	var parents, generated int
 	for id, in := range transport.snapshot() {

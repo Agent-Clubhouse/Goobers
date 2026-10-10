@@ -53,10 +53,16 @@ async function main() {
   if (init.error) throw new Error('MCP initialization failed');
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   const invocationKey = 'qualification-child';
+  const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
+  if (!['scratch','merge','replace','discard'].includes(mode)) throw new Error('unknown qualification mode');
+  const action = mode === 'scratch' ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
   if (status.error) {
     const sourceFile = 'generated-child.yaml';
-    fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      goal: Verify the generated workstream\n      timeoutSeconds: 60\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: {workspace: scratch, command: [sh, -c, "echo real-generated-child"]}\n');
+    fs.writeFileSync('parent-before-child.txt', 'parent before child\n');
+    const command = mode === 'scratch' ? 'echo real-generated-child' : 'test "$(cat parent-before-child.txt)" = "parent before child" && printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Child work"';
+    const run = JSON.stringify({ workspace: mode === 'scratch' ? 'scratch' : 'repo', command: ['sh','-c',command] });
+    fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      goal: Verify the generated workstream\n      timeoutSeconds: 60\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: ' + run + '\n');
     const validation = await tool('validate_child_workflow', { sourceFile });
     if (validation.error || !validation.value.valid) throw new Error('generated source rejected');
     const accepted = await tool('start_child_workflow', { sourceFile, invocationKey });
@@ -65,9 +71,17 @@ async function main() {
   }
   if (!status.value.resultRef) return waitForHost();
   if (!status.value.acknowledged) {
-    const disposition = await tool('resolve_child_workflow', { invocationKey, action: 'discard', resultRef: status.value.resultRef });
+    fs.writeFileSync('parent-after-child.txt', 'parent after child\n');
+    const disposition = await tool('resolve_child_workflow', { invocationKey, action, resultRef: status.value.resultRef });
     if (disposition.error) throw new Error('child disposition failed');
     return waitForHost();
+  }
+  if (mode !== 'scratch') {
+    const hasChild = fs.existsSync('child-return.txt');
+    if (hasChild !== (action !== 'discard')) throw new Error('child return disposition mismatch');
+    if (hasChild && fs.readFileSync('child-return.txt','utf8') !== 'child return\n') throw new Error('child return bytes mismatch');
+    if (fs.existsSync('parent-after-child.txt') !== (action !== 'replace')) throw new Error('parent state disposition mismatch');
+    if (fs.readFileSync('parent-before-child.txt','utf8') !== 'parent before child\n') throw new Error('parent fork content lost');
   }
   const match = prompt.match(/write your [^\n]+ as JSON to `([^`]+)`/);
   if (!match || path.isAbsolute(match[1]) || match[1].split('/').includes('..')) throw new Error('completion contract unavailable');
