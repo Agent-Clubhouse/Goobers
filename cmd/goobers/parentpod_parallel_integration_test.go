@@ -41,14 +41,17 @@ func parallelQualificationDefinition(t *testing.T, source string) string {
 		}
 		task["name"], task["goal"], task["timeoutSeconds"] = name, "QUALIFICATION_BRANCH="+name, 180
 		if name == "join" {
-			task["repoFrom"] = []string{"left", "right"}
+			task["repoFrom"] = []string{"plan", "right"}
 		} else {
 			task["next"] = "@join"
+			if name == "left" {
+				task["name"] = "plan" // Retain the shared compiler fixture's selected stage.
+			}
 		}
 		tasks = append(tasks, task)
 	}
 	spec["tasks"], spec["start"] = tasks, "fan"
-	spec["parallels"] = []any{map[string]any{"name": "fan", "maxConcurrentBranches": 2, "join": "join", "failurePolicy": "continue_on_error", "branches": []any{map[string]any{"name": "left", "start": "left"}, map[string]any{"name": "right", "start": "right"}}}}
+	spec["parallels"] = []any{map[string]any{"name": "fan", "maxConcurrentBranches": 2, "join": "join", "failurePolicy": "continue_on_error", "branches": []any{map[string]any{"name": "left", "start": "plan"}, map[string]any{"name": "right", "start": "right"}}}}
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
