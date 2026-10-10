@@ -1089,6 +1089,9 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			return false, errors.New("append op carries no event")
 		}
 		ev := *op.Event
+		if branch, scoped := ctx.Value(requestBranchKey{}).(int); scoped {
+			ev.Branch = branch
+		}
 		if ev.Type == journal.EventGateEvaluated && ev.Name != "" {
 			ref, ok := run.artifactRefs[ev.Name]
 			if !ok && run.adopted {
@@ -1130,7 +1133,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 	case OpArtifact:
 		return w.applyArtifact(ctx, run, op)
 	case OpSpan:
-		if handled, err := run.adoptCompletedTranscript(runID, op); handled {
+		if handled, err := run.adoptCompletedTranscript(runID, requestBranch(ctx), op); handled {
 			return err == nil, err
 		}
 		s := op.Span
@@ -1145,7 +1148,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			// internal/engine/projection.go adoptSpan).
 			spanErr := fmt.Errorf("span %q (%s): %w", s.Name, s.Ref.Digest, err)
 			appendErr := run.jr.Append(journal.Event{
-				Type: journal.EventError, Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
+				Type: journal.EventError, Branch: requestBranch(ctx), Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
 				Error:  journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
 				Runner: map[string]any{EmitKeyRunnerField: op.Key},
 			})
@@ -1154,12 +1157,12 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			}
 			run.keys[op.Key] = run.jr.Seq()
 			w.notifyEvent(runID, journal.Event{
-				Type: journal.EventError, Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
+				Type: journal.EventError, Branch: requestBranch(ctx), Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
 				Error: journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
 			})
 			return true, nil
 		}
-		if _, err := run.jr.RecordSpanAnnotated(s.Stage, s.Name, s.DataSchema, data, map[string]any{EmitKeyRunnerField: op.Key}); err != nil {
+		if _, err := run.jr.RecordBranchSpanAnnotated(requestBranch(ctx), s.Stage, s.Name, s.DataSchema, data, map[string]any{EmitKeyRunnerField: op.Key}); err != nil {
 			return false, err
 		}
 		run.keys[op.Key] = run.jr.Seq()

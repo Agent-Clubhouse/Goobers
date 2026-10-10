@@ -23,13 +23,15 @@ type Origin struct {
 // execution definitions intersected with current permissions. Actor must be the
 // stable logical principal across replacement attempts, not the grant nonce.
 type Authority struct {
-	Origin               Origin
-	Actor                string
-	Admission            AdmissionContext
-	ConfigGeneration     string
-	ParentWorkflow       string
-	ParentWorkflowDigest string
-	ParentGooberDigest   string
+	// ParentExecutionCapabilities is independent of permission to delegate to children.
+	ParentExecutionCapabilities []string
+	Origin                      Origin
+	Actor                       string
+	Admission                   AdmissionContext
+	ConfigGeneration            string
+	ParentWorkflow              string
+	ParentWorkflowDigest        string
+	ParentGooberDigest          string
 }
 
 // AuthorityResolver must verify current grant ownership, active attempt,

@@ -22,3 +22,14 @@ func WithGeneratedChildExecutionObserver(observer ChildExecutionObserver) Handle
 		return nil
 	}
 }
+
+// WithWorkflowParentExecutionObserver installs the exact active parent owner.
+func WithWorkflowParentExecutionObserver(observer ChildExecutionObserver) HandlerOption {
+	return func(config *handlerConfig) error {
+		if observer == nil {
+			return fmt.Errorf("httpapi: nil parent execution observer")
+		}
+		config.workflowParentExecution = observer
+		return nil
+	}
+}

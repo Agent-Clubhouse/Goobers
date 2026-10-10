@@ -91,6 +91,17 @@ func WithGeneratedChildJournalService(service JournalService) HandlerOption {
 	}
 }
 
+// WithWorkflowParentJournalService installs the exact parent observation owner.
+func WithWorkflowParentJournalService(service JournalService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("workflow parent journal owner is required")
+		}
+		config.workflowParentJournal = service
+		return nil
+	}
+}
+
 func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteJournalEmit, func(w http.ResponseWriter, request *http.Request) {
 		journal := config.journal
@@ -103,6 +114,15 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 				return
 			}
 			journal = config.generatedChildJournal
+		}
+		parent := authenticated && principal.Issuer == WorkflowParentPrincipalIssuer
+		if parent {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if config.workflowParentJournal == nil || principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+				writeError(w, http.StatusForbidden, "parent_journal_unavailable", "workflow parent journal authority is not available")
+				return
+			}
+			journal = config.workflowParentJournal
 		}
 		if journal == nil {
 			writeError(w, http.StatusServiceUnavailable, "journal_unavailable", "the journal plane is not available from this server")
@@ -118,23 +138,13 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 			return
 		}
 		run := request.PathValue("run")
-		if !apiv1.ValidRunID(run) {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
-			return
-		}
-		if input.RunID != "" && input.RunID != run {
-			writeError(w, http.StatusBadRequest, "run_mismatch", "request body run id does not match the route")
-			return
-		}
-		input.RunID = run
-		if len(input.Ops) == 0 {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "ops are required")
+		if !bindJournalEmitRun(w, &input, run) {
 			return
 		}
 		// Per-run containment: a pod token proves "I am run X's stage pod",
 		// which authorizes journal emission for run X and no other — the same
 		// body-level binding the claims plane applies.
-		if authenticated && (IsPodPrincipal(principal) || generated) {
+		if authenticated && (IsPodPrincipal(principal) || generated || parent) {
 			if principal.Subject != podPrincipalSubject(run) {
 				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only emit into its own run's journal")
 				return
@@ -166,4 +176,21 @@ func writeJournalPlaneError(w http.ResponseWriter, errorLog *log.Logger, err err
 	default:
 		writePlaneError(w, errorLog, "emit journal events", err)
 	}
+}
+
+func bindJournalEmitRun(w http.ResponseWriter, input *livejournal.EmitRequest, run string) bool {
+	if !apiv1.ValidRunID(run) {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
+		return false
+	}
+	if input.RunID != "" && input.RunID != run {
+		writeError(w, http.StatusBadRequest, "run_mismatch", "request body run id does not match the route")
+		return false
+	}
+	input.RunID = run
+	if len(input.Ops) == 0 {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "ops are required")
+		return false
+	}
+	return true
 }

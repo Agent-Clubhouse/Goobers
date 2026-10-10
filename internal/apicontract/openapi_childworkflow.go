@@ -1,5 +1,9 @@
 package apicontract
 
+func parentAccessRoute(id RouteID) bool {
+	return id == RouteChildWorkflowAccessAcquire || id == RouteChildWorkflowAccessRevoke
+}
+
 func childWorkflowRoute(id RouteID) bool {
 	return id == RouteChildWorkflowValidate || id == RouteChildWorkflowStart || id == RouteChildWorkflowStatus || id == RouteChildWorkflowResolve
 }
@@ -22,6 +26,8 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"resultRef": stringSchema(), "workspaceRef": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
 	})
 	return map[string]any{
+		"ChildWorkflowAccessRequest":  closedChildObject([]string{"contractDigest"}, map[string]any{"contractDigest": digest}),
+		"ChildWorkflowAccessResponse": closedChildObject([]string{"endpoint", "bearerToken"}, map[string]any{"endpoint": stringSchema(), "bearerToken": map[string]any{"type": "string", "description": "Short-lived secret delivered only to the authenticated parent attempt"}}),
 		"ChildWorkflowSourceRequest": closedChildObject([]string{"source"}, map[string]any{
 			"source": map[string]any{"type": "string", "minLength": 1, "maxLength": MaxChildWorkflowSourceBytes,
 				"x-goobers-max-bytes": MaxChildWorkflowSourceBytes, "description": "UTF-8 Workflow DSL; at most 1 MiB after JSON decoding. No policy or origin is accepted in the request."},
