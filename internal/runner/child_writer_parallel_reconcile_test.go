@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestReconcileChildWriterPreservesInterleavedSiblingCustody(t *testing.T) {
@@ -55,6 +56,26 @@ func TestReconcileChildWriterPreservesInterleavedSiblingCustody(t *testing.T) {
 			pods[event.Branch] = event
 		}
 	}
+	leftID, err := worktree.ChildReadOnlyViewID(id.Gaggle, "child-owned", "left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightID, err := worktree.ChildReadOnlyViewID(id.Gaggle, "child-owned", "right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCleanup := func(workspace string, allowed bool) {
+		t.Helper()
+		target := worktree.CleanupTarget{WorktreeID: workspace, OwnerRunID: id.RunID, Gaggle: id.Gaggle, RepositoryDigest: strings.Repeat("2", 64)}
+		err := VerifyChildWorkspaceCleanup(rd, id, target)
+		if (err == nil) != allowed || !allowed && !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+			t.Fatalf("cleanup %s: allowed=%v, error=%v", workspace, allowed, err)
+		}
+	}
+	assertCleanup(leftID, false)
+	assertCleanup(rightID, false)
+	assertCleanup("child-owned", false)
+	assertCleanup("foreign-view", false)
 	foreign := pods[1]
 	foreign.Branch = 2
 	if err := ReconcileChildWorkspaceWriter(rd, jr, id, origins[1], foreign); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
@@ -68,10 +89,15 @@ func TestReconcileChildWriterPreservesInterleavedSiblingCustody(t *testing.T) {
 	if err := verifyChildWriterJournal(t, jr); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
 		t.Fatal("left recovery settled the whole family", err)
 	}
+	assertCleanup(leftID, true)
+	assertCleanup(rightID, false)
+	assertCleanup("child-owned", false)
 	if err := ReconcileChildWorkspaceWriter(rd, jr, id, origins[2], pods[2]); err != nil {
 		t.Fatal("exact right recovery", err)
 	}
 	if err := verifyChildWriterJournal(t, jr); err != nil {
 		t.Fatal("settled siblings retained a writer", err)
 	}
+	assertCleanup(rightID, true)
+	assertCleanup("child-owned", true)
 }
