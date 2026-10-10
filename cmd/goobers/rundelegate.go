@@ -683,18 +683,9 @@ func readPendingTriggerRequests(requestEntries []pendingTriggerCandidate) ([]*pe
 	return parsed, readErr
 }
 
-// sweepPendingTriggers preserves the legacy direct sweep. The daemon calls
-// sweepPendingTriggersWithAdmission, which first adopts any existing durable
-// receipt and transfers new requests before execution. Legacy dispatch markers
-// remain fail-closed; they cannot opt a new production request out of the queue.
-func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time) error {
-	return sweepPendingTriggersWithOptions(ctx, schedulerDir, log, sched, now, triggerSweepOptions{})
-}
-
-func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time, options triggerSweepOptions) error {
-	return sweepPendingTriggersWithAdmission(ctx, schedulerDir, log, sched, now, options, nil)
-}
-
+// sweepPendingTriggersWithAdmission adopts existing durable receipts before
+// applying fresh-file rules and transfers new requests before execution.
+// Legacy dispatch markers cannot bypass the queue in the production daemon.
 func sweepPendingTriggersWithAdmission(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time, options triggerSweepOptions, admission delegatedAdmission) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, exists, err := readDirectory(reqDir)
