@@ -25,7 +25,7 @@ func TestChildPublicationUpgradePreservesCustody(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := &Store{db: db}
-			child := acceptChildTest(t, before, reservedChildRequest("publication-parent"), childTestTime)
+			child := seedLegacyChild(t, before, reservedChildRequest("publication-parent"), childTestTime)
 			result := childResultValue("retained-result", "retained-bundle")
 			if err = before.KeepChildResult(t.Context(), child, result); err != nil {
 				t.Fatal(err)
