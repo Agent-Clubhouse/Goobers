@@ -23,7 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|prune|prune-orphans|compact> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|shadow|prune|prune-orphans|compact> [flags] [path]\n\n" +
 	"configure: enable or disable customer-owned Application Insights export\n" +
 	"test:    send one secret-safe direct-ingestion connectivity probe\n" +
 	"merges: confirmed PR landings and daily counts by originating instance\n" +
@@ -32,6 +32,7 @@ const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|err
 	"export: re-emit a span-start-time window from journaled OTLP/JSON\n" +
 	"mark-fix: mark a Backprop finding for post-fix verification\n" +
 	"label:   record a ground-truth verdict for a Backprop-enrolled run\n" +
+	"shadow:  compare Backprop shadow-mode findings with actual run outcomes\n" +
 	"prune:   remove terminal runs outside the configured retention bounds\n" +
 	"prune-orphans: report or delete old run directories that lack run.yaml\n" +
 	"compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)\n"

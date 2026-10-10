@@ -207,6 +207,7 @@ gaggle.spec.backlog.labels                               3.0          ga        
 gaggle.spec.backlog.provider.ado                         3.0          ga               preview          dev
 gaggle.spec.backlog.provider.gitea                       3.0          ga               preview          dev
 gaggle.spec.backlog.provider.github                      3.0          ga               preview          dev
+gaggle.spec.backprop.mode                                3.0          ga               preview          dev
 gaggle.spec.branchNamespace                              3.0          ga               preview          dev
 gaggle.spec.ciCommand                                    3.0          ga               preview          dev
 gaggle.spec.cost.enabled                                 3.0          ga               preview          v0.4.0
@@ -422,6 +423,7 @@ gaggle.spec.backlog.labels                               3.1          ga        
 gaggle.spec.backlog.provider.ado                         3.1          ga               preview          dev
 gaggle.spec.backlog.provider.gitea                       3.1          ga               preview          dev
 gaggle.spec.backlog.provider.github                      3.1          ga               preview          dev
+gaggle.spec.backprop.mode                                3.1          ga               preview          dev
 gaggle.spec.branchNamespace                              3.1          ga               preview          dev
 gaggle.spec.ciCommand                                    3.1          ga               preview          dev
 gaggle.spec.cost.enabled                                 3.1          ga               preview          v0.4.0
@@ -638,4 +640,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-638 feature/version row(s)
+640 feature/version row(s)

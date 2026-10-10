@@ -15,6 +15,10 @@ function __goobers_completion_escalations
     command goobers __complete escalations 2>/dev/null
 end
 
+function __goobers_completion_gaggles
+    command goobers __complete gaggles 2>/dev/null
+end
+
 complete -c goobers -e
 complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard run signal workflow status stats cost trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
@@ -52,7 +56,7 @@ complete -c goobers -n '__fish_seen_subcommand_from escalations; and test (count
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_escalations)'
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish powershell'
-complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'configure test merges stats errors export mark-fix label prune prune-orphans compact'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'configure test merges stats errors export mark-fix label shadow prune prune-orphans compact'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
 complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (commandline -opc)) -eq 2' -f -a 'all stages instance gaggle goober workflow stage gate harness capability'
 
@@ -412,6 +416,11 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_s
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from label' -l reason -r -d 'Why the result is correct or incorrect'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from label' -l by -r -d 'Who is recording the label'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from label' -l labeled-at -r -d 'Verdict time as RFC3339'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l json -d 'Emit the shadow comparison report as JSON'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l gaggle -r -a '(__goobers_completion_gaggles)' -d 'Filter to one gaggle'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Filter to one workflow'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l since -r -d 'Include runs at or after this RFC3339 timestamp'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from shadow' -l until -r -d 'Include runs at or before this RFC3339 timestamp'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune' -l dry-run -d 'Report eligible runs without deleting them'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l delete -d 'Delete eligible orphan directories (opt-in; default dry-run)'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from prune-orphans' -l min-age -r -d 'Minimum inactivity age (at least 24h)'

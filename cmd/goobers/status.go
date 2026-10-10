@@ -810,7 +810,7 @@ func buildStatusFleetSummary(
 		workflowSummary := statusWorkflowSummary{
 			Workflow:          def.Name,
 			Gaggle:            def.Spec.Gaggle,
-			Backprop:          readservice.WorkflowBackpropFor(def.Spec.Backprop),
+			Backprop:          readservice.WorkflowBackpropFor(def.Spec.Backprop, nil),
 			MaxConcurrentRuns: maxConcurrent,
 			NextFire:          nextFire,
 		}
@@ -1457,7 +1457,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		projectionRequired: runsOnlyMode,
 	}
 	loadRuns := runLoader.Load
-	loadFleetSummary := newStatusFleetSummaryLoader(l, runLoader, statusLocation)
+	loadFleetSummary := withStatusBackpropOverrides(newStatusFleetSummaryLoader(l, runLoader, statusLocation), set.Gaggles)
 	prLabelCounts := newStatusPRLabelCountCache()
 	parkedBacklog := newStatusParkedBacklogCache()
 	loadTimeToFirstPR := reads.TimeToFirstPR

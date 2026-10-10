@@ -75,6 +75,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.branchNamespace",
       "stability": "ga",
       "sinceVersion": "dev"

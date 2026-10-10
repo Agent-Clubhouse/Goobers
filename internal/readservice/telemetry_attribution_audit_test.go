@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -348,6 +349,103 @@ func TestShadowBackpropRecordNeverReachesFaultAuditFiling(t *testing.T) {
 	}
 	if strings.Contains(string(state), "backprop-") {
 		t.Fatalf("fault audit state = %s, want no cooldown or baseline from shadow attribution", state)
+	}
+}
+
+func TestShadowBackpropReportEnrollsOverrideRunsWithoutReachingFiling(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := json.Marshal(map[string]any{"Name": "implementation", "Version": 1, "dslVersion": "3.0", "Spec": map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []readmodel.RunRow
+	for _, runID := range []string{"override-1", "override-2"} {
+		run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+			RunID: runID, Workflow: "implementation", WorkflowVersion: 1,
+			WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober", Gaggle: "goobers",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual}, StartedAt: now.Add(-2 * time.Hour),
+		}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition},
+			journal.WithInputIntegrity(map[string]apiv1.Integrity{journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range []journal.Event{
+			{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+			{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: "failed"},
+			{Type: journal.EventRunFinished, Status: "failed"},
+		} {
+			if err := run.Append(event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		row := terminalAuditRow(runID, now.Add(-time.Hour))
+		row.Gaggle, row.Workflow, row.Phase = "goobers", "implementation", journal.PhaseFailed
+		rows = append(rows, row)
+	}
+	reader := func() readmodel.Reader {
+		return &pagedAttributionReader{pages: []readmodel.ListPage{{Runs: rows}}}
+	}
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+	overrides := map[string]*apiv1.GaggleBackprop{"goobers": {Mode: apiv1.BackpropModeShadow}}
+
+	report, err := StoredShadowBackprop(context.Background(), root, reader(), StoredAttributionQuery{}, overrides, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Runs) != 2 || report.Runs[0].Source != ShadowSourceGaggleOverride || report.WouldFile.Mode != "shadow" {
+		t.Fatalf("shadow report runs = %+v mode %q, want two override-enrolled runs", report.Runs, report.WouldFile.Mode)
+	}
+	if report.WouldFile.ObservationsScanned != 2 || len(report.Comparisons) == 0 {
+		t.Fatalf("shadow report = %+v, want would-file findings from override runs", report)
+	}
+	for _, comparison := range report.Comparisons {
+		if comparison.ActuallyFiled || comparison.ActualPhases[journal.PhaseFailed] == 0 || comparison.RecommendedAction == "" {
+			t.Fatalf("comparison = %+v, want unfiled recommendation beside failed actual outcome", comparison)
+		}
+	}
+	unobserved, err := StoredShadowBackprop(context.Background(), root, reader(), StoredAttributionQuery{}, nil, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unobserved.Runs) != 0 {
+		t.Fatalf("report without override = %+v, want off workflows unobserved", unobserved.Runs)
+	}
+
+	preview, err := PreviewStoredFaultAudit(context.Background(), root, reader(), StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filed, err := StoredFaultAudit(context.Background(), root, reader(), StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, audit := range map[string]creditgraph.FaultAuditReport{"preview": preview, "filing": filed} {
+		if audit.ObservationsScanned != 0 {
+			t.Fatalf("%s audit = %+v, want override shadow runs invisible", name, audit)
+		}
+	}
+	for _, runID := range []string{"override-1", "override-2"} {
+		runDir := filepath.Join(layout.RunsDir(), runID)
+		for _, name := range []string{creditgraph.RecordFileName, creditgraph.ShadowRecordFileName} {
+			if _, err := os.Stat(filepath.Join(runDir, name)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s/%s stat = %v, want shadow report to write nothing", runID, name, err)
+			}
+		}
+	}
+	state, err := os.ReadFile(faultAuditStatePath(root))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(state), "backprop-") {
+		t.Fatalf("fault audit state = %s, want no state from shadow report", state)
 	}
 }
 

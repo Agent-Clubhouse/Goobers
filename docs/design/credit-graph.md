@@ -84,8 +84,13 @@ runs then write `attribution.json` and enter the fault audit; earlier shadow
 records are never backfilled into the active namespace, so promotion does not
 retroactively file findings. Demote by setting `mode: shadow` or `off`.
 
-Not yet implemented (Backprop scopes epic, #7121): a gaggle/daemon-level mode
-override and a shadow-vs-active comparison report.
+**Gaggle override.** `gaggle.spec.backprop.mode: off|shadow` observes every
+workflow in the gaggle that does not declare its own mode. Precedence:
+workflow `mode`, then workflow `enabled: true`, then the gaggle override, then
+off. An override run writes nothing at terminalization; `goobers telemetry
+shadow` analyzes it from the journal on request and compares the findings the
+fault audit would have filed with actual run phases and actual filings. That
+report is read-only and is not read by any gate, filing pass, or default view.
 
 ## Cross-workflow fault audit
 

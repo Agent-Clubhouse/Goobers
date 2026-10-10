@@ -45,6 +45,7 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.spec.readiness.requireProviderAuthorization": "binary-layer scheduling policy (#5317); registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.enabled":                       "binary-layer terminal analysis policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.mode":                          "binary-layer terminal analysis mode; registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.backprop.mode":                            "binary-layer gaggle Backprop shadow override; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.version":                       "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	// Gaggle-health policy is one binary-layer feature (gaggle.spec.health);
 	// its leaves are payload, not separately versioned DSL capabilities.

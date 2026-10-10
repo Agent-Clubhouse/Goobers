@@ -80,6 +80,75 @@ func TestWriteRunRecordRequiresExplicitEnrollment(t *testing.T) {
 	}
 }
 
+func TestObserveShadowRunHonorsGaggleOverridePrecedence(t *testing.T) {
+	shadowOverride := &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}
+	for _, test := range []struct {
+		name         string
+		backprop     any
+		override     *apiv1.GaggleBackprop
+		wantObserved bool
+		wantOverride bool
+	}{
+		{name: "omitted without override"},
+		{name: "omitted with shadow override", override: shadowOverride, wantObserved: true, wantOverride: true},
+		{name: "enabled false with shadow override", backprop: map[string]any{"enabled": false, "version": "v1"}, override: shadowOverride, wantObserved: true, wantOverride: true},
+		{name: "omitted with off override", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeOff}},
+		{name: "explicit off opts out of override", backprop: map[string]any{"mode": "off", "version": "v1"}, override: shadowOverride},
+		{name: "active is not shadowed", backprop: map[string]any{"mode": "active", "version": "v1"}, override: shadowOverride},
+		{name: "legacy enabled is not shadowed", backprop: map[string]any{"enabled": true, "version": "v1"}, override: shadowOverride},
+		{name: "workflow shadow", backprop: map[string]any{"mode": "shadow", "version": "v1"}, wantObserved: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run, runDir := recordTestRun(t, test.backprop)
+			for _, event := range []journal.Event{
+				{Type: journal.EventStageStarted, Stage: "act", Attempt: 1},
+				{Type: journal.EventStageFinished, Stage: "act", Attempt: 1, Status: "failed"},
+				{Type: journal.EventRunFinished, Status: "failed"},
+			} {
+				if err := run.Append(event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := run.Close(); err != nil {
+				t.Fatal(err)
+			}
+			wrote, err := WriteRunRecord(runDir, &journal.Event{Type: journal.EventRunFinished, Status: "failed"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadDir(runDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation, observed, err := ObserveShadowRun(runDir, test.override)
+			if err != nil {
+				t.Fatalf("ObserveShadowRun: %v", err)
+			}
+			if observed != test.wantObserved || observation.ViaOverride != test.wantOverride {
+				t.Fatalf("observed = %v via override %v, want %v via override %v", observed, observation.ViaOverride, test.wantObserved, test.wantOverride)
+			}
+			if observed && (observation.Record.Mode != apiv1.BackpropModeShadow || observation.Record.RunID != "run-enabled") {
+				t.Fatalf("shadow observation = %+v", observation.Record)
+			}
+			after, err := os.ReadDir(runDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("ObserveShadowRun changed run dir entries %d -> %d", len(before), len(after))
+			}
+			if test.wantOverride {
+				if wrote {
+					t.Fatal("override-observed run published an attribution record at terminalization")
+				}
+				if _, err := ReadRunRecord(runDir); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("ReadRunRecord on override-observed run = %v, want not exist", err)
+				}
+			}
+		})
+	}
+}
+
 func TestReadRunRecordRejectsShadowRecordInActiveNamespace(t *testing.T) {
 	runDir := t.TempDir()
 	data, err := json.Marshal(RunRecord{Schema: RecordSchemaVersion, Status: RecordComplete, Mode: apiv1.BackpropModeShadow, RunID: "run-1"})

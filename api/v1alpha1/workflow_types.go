@@ -1075,6 +1075,20 @@ func (c *BackpropConfig) EffectiveMode() BackpropMode {
 	return BackpropModeOff
 }
 
+// ResolveBackpropMode applies Backprop precedence for one workflow: an
+// explicit workflow mode (including off, which opts out of any override),
+// then legacy enabled=true (active), then the gaggle override, then off. The
+// gaggle override can only resolve to shadow.
+func ResolveBackpropMode(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropMode {
+	if workflow != nil && (workflow.Mode != "" || workflow.Enabled) {
+		return workflow.EffectiveMode()
+	}
+	if gaggle != nil && gaggle.Mode == BackpropModeShadow {
+		return BackpropModeShadow
+	}
+	return BackpropModeOff
+}
+
 // BranchFailurePolicy declares what a parallel does when one of its branches
 // fails. It is required — there is no default — because parallelism without an
 // explicit failure policy bakes ambiguity in permanently (#1310).

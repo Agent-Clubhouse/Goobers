@@ -141,6 +141,9 @@ func telemetryCLICommand() cliCommand {
 		subcommand("telemetry label", "label", apicontract.ActionMaintenance, runTelemetryLabel).
 			withHelp("record a ground-truth verdict for a Backprop-enrolled run", telemetryLabelHelp).
 			withExamples("goobers telemetry label --run=run-123 --outcome=incorrect --reason=\"PR was reverted\""),
+		subcommand("telemetry shadow", "shadow", apicontract.ActionReadOnlyNavigation, runTelemetryShadow).
+			withHelp("compare Backprop shadow-mode findings with actual run outcomes", telemetryShadowHelp).
+			withExamples("goobers telemetry shadow", "goobers telemetry shadow --json --gaggle=goobers"),
 		subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 			withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 			withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),

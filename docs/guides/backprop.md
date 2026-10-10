@@ -21,13 +21,12 @@ back runs. The contract and its limits are specified in the
 ## Preview status
 
 Backprop is a **preview** feature (`workflow.spec.backprop.enabled`,
-`workflow.spec.backprop.mode`, and `workflow.spec.backprop.version` in the
-[feature matrix](../feature-matrix.md)).
+`workflow.spec.backprop.mode`, `workflow.spec.backprop.version`, and
+`gaggle.spec.backprop.mode` in the [feature matrix](../feature-matrix.md)).
 Today:
 
-- Enrollment is **per workflow** only. Shadow mode is set in each workflow's
-  spec; there is no gaggle-wide switch or daemon-level shadow override, and no
-  shadow-vs-active comparison report yet.
+- Active enrollment is **per workflow** only. A gaggle can observe its
+  workflows in shadow mode, but it cannot enroll them.
 - Attribution is computed **once, at run end**. There are no per-stage
   checkpoints.
 - Learning uses the run journal plus any ground-truth labels you record by
@@ -110,7 +109,51 @@ instead of `attribution.json`. The fault audit, finding filing, cohorts, and
 shadow output never files findings or affects gates. `goobers status` prints
 `backprop: shadow (v1)` and the portal workflow page shows **Shadow (v1)**.
 
-To promote, inspect the `attribution.shadow.json` records, then change the
+### Observe a whole gaggle without editing its workflows
+
+To observe existing workflows without editing or redeploying them, set the
+shadow override on their Gaggle:
+
+```yaml
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: goobers
+spec:
+  backprop:
+    mode: shadow   # off | shadow
+```
+
+Each workflow's effective mode is resolved in this order:
+
+1. The workflow's own `backprop.mode`, if set. `mode: off` opts a workflow out
+   of its gaggle's override.
+2. The workflow's `backprop.enabled: true` (active).
+3. The gaggle's `backprop.mode`.
+4. Otherwise, off.
+
+The override can only produce shadow mode, never active, so it never files
+findings. Override-observed runs write nothing at run end. Their analysis is
+computed from the run journal when you request the comparison report, and
+`goobers status` and the portal show them as `shadow (v1)`.
+
+### Compare shadow findings with what happened
+
+```sh
+goobers telemetry shadow ./instance
+goobers telemetry shadow --json --gaggle=goobers ./instance
+```
+
+The report lists each shadow run (from a workflow's `mode: shadow` or a
+gaggle override) with its actual phase. It then lists the findings the active
+fault audit would have filed: domain, recommended owner and action, the actual
+phases of the runs behind each finding, and whether the active audit also
+filed it. The report is read-only. It records no filing, cooldown, or
+verification state, and no gate, filing pass, or default portal view reads it.
+
+### Promote
+
+To promote, inspect the comparison report, then change the
 workflow to `mode: active`. Only runs that start after promotion enter the
 fault audit; earlier shadow records are never backfilled. Set `mode: shadow`
 or `mode: off` to demote. See

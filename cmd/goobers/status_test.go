@@ -59,6 +59,7 @@ func TestStatusSurfacesBackpropEnrollment(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		config      *apiv1.BackpropConfig
+		override    *apiv1.GaggleBackprop
 		wantEnabled bool
 		wantLine    string
 	}{
@@ -67,9 +68,14 @@ func TestStatusSurfacesBackpropEnrollment(t *testing.T) {
 		{name: "shadow", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"}, wantLine: "backprop: shadow (v1)"},
 		{name: "off", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}},
 		{name: "omitted"},
+		{name: "gaggle override shadows omitted", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}, wantLine: "backprop: shadow (v1)"},
+		{name: "gaggle override shadows enabled false", config: &apiv1.BackpropConfig{Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}, wantLine: "backprop: shadow (v1)"},
+		{name: "explicit off beats gaggle override", config: &apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}},
+		{name: "legacy enabled beats gaggle override", config: &apiv1.BackpropConfig{Enabled: true, Version: "v1"}, override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow}, wantEnabled: true, wantLine: "backprop: active (v1)"},
+		{name: "gaggle override off", override: &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeOff}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := readservice.WorkflowBackpropFor(test.config)
+			got := readservice.WorkflowBackpropFor(test.config, test.override)
 			if got.Enabled != test.wantEnabled {
 				t.Fatalf("status backprop = %+v, want enabled=%v", got, test.wantEnabled)
 			}

@@ -89,6 +89,12 @@ type GaggleSpec struct {
 	// defaults: observation is enabled and destructive behavior is disabled.
 	// +optional
 	Health *GaggleHealthPolicy `json:"health,omitempty" yaml:"health,omitempty"`
+	// Backprop overrides Backprop attribution for this gaggle's workflows
+	// without editing them. mode=shadow observes every workflow that declares
+	// neither its own backprop.mode nor enabled=true; the override can never
+	// activate filing. Omitted or mode=off applies no override.
+	// +optional
+	Backprop *GaggleBackprop `json:"backprop,omitempty" yaml:"backprop,omitempty"`
 	// OutboxMirrorPath is the default local filesystem root where workflows in
 	// this gaggle mirror their durable journal outbox. A workflow or task may
 	// override it. The local runner appends the run id and journal outbox layout
@@ -149,6 +155,16 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// GaggleBackprop is the gaggle-level Backprop override.
+type GaggleBackprop struct {
+	// Mode is the override applied to workflows without their own mode.
+	// Only off and shadow are accepted: a gaggle cannot enroll workflows
+	// in active filing.
+	// +kubebuilder:validation:Enum=off;shadow
+	// +kubebuilder:validation:Required
+	Mode BackpropMode `json:"mode" yaml:"mode"`
 }
 
 // GaggleHealthPolicy is the gaggle-scoped health contract. Runtime code resolves

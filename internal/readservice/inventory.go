@@ -887,19 +887,32 @@ func (s *Local) workflowSummary(
 		Owners:      owners,
 		StageCount:  len(graph.Nodes),
 		Definition:  WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
-		Backprop:    WorkflowBackpropFor(def.Spec.Backprop),
+		Backprop:    WorkflowBackpropFor(def.Spec.Backprop, gaggleBackprop(inventory, def.Spec.Gaggle)),
 		Warnings:    workflowWarnings(inventory, def),
 	}
 }
 
-// WorkflowBackpropFor projects a workflow's Backprop config onto the read
-// surface. An omitted config reports no mode.
-func WorkflowBackpropFor(config *apiv1.BackpropConfig) WorkflowBackprop {
+// WorkflowBackpropFor projects a workflow's Backprop config, resolved against
+// its gaggle's override, onto the read surface. A workflow with neither
+// reports no mode.
+func WorkflowBackpropFor(config *apiv1.BackpropConfig, override *apiv1.GaggleBackprop) WorkflowBackprop {
+	mode := apiv1.ResolveBackpropMode(config, override)
 	if config == nil {
-		return WorkflowBackprop{}
+		if mode == apiv1.BackpropModeOff {
+			return WorkflowBackprop{}
+		}
+		return WorkflowBackprop{Mode: string(mode), Version: "v1"}
 	}
-	mode := config.EffectiveMode()
 	return WorkflowBackprop{Enabled: mode == apiv1.BackpropModeActive, Mode: string(mode), Version: config.Version}
+}
+
+func gaggleBackprop(inventory *inventoryProjection, name string) *apiv1.GaggleBackprop {
+	for i := range inventory.definitions.Gaggles {
+		if inventory.definitions.Gaggles[i].Name == name {
+			return inventory.definitions.Gaggles[i].Spec.Backprop
+		}
+	}
+	return nil
 }
 
 func workflowStages(def *apiv1.Workflow) []StageDefinition {
