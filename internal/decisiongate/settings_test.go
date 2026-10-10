@@ -35,6 +35,30 @@ func TestSettingsRejectInlineSecrets(t *testing.T) {
 	}
 }
 
+func TestHandoffSchemasValidateAndStayInertWhileOff(t *testing.T) {
+	binding := HandoffSchemaBinding{Workflow: "implementation", Stage: "query-backlog", SchemaPath: "s.json"}
+	on := Settings{Mode: ModeShadow, BaseURLEnv: "U", KeyEnv: "K", ModelEnv: "M", Fallback: FallbackAgent, HandoffSchemas: []HandoffSchemaBinding{binding}}
+	if err := on.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := on.ResultSchemas()["implementation"]["query-backlog"]; got != "s.json" {
+		t.Fatalf("ResultSchemas = %v", on.ResultSchemas())
+	}
+	if off := (Settings{HandoffSchemas: on.HandoffSchemas}); off.ResultSchemas() != nil {
+		t.Fatal("an off gate must bind nothing")
+	}
+	for name, bindings := range map[string][]HandoffSchemaBinding{
+		"missing stage": {{Workflow: "implementation", SchemaPath: "s.json"}},
+		"duplicate":     {binding, binding},
+	} {
+		s := on
+		s.HandoffSchemas = bindings
+		if s.Validate() == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
 func TestResolveReadsEnvAndNeverEchoesKey(t *testing.T) {
 	s := Settings{Mode: ModeShadow, BaseURLEnv: "U", KeyEnv: "K", ModelEnv: "M", Fallback: FallbackAgent}
 	env := map[string]string{"U": "http://127.0.0.1:1", "K": "super-secret-value", "M": "m"}

@@ -186,6 +186,20 @@
         "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the model name." },
         "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
         "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
+        "handoffSchemas": {
+          "type": "array",
+          "description": "Binds a producer stage's sole JSON result to a JSON Schema so consumers' handoff validity (the shadow record's inputValid) is checked for workflows that cannot declare schema-bound artifactSlots. Inert while the gate is off.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["workflow", "stage", "schemaPath"],
+            "properties": {
+              "workflow": { "type": "string", "minLength": 1, "description": "Name of the workflow that declares the producer stage." },
+              "stage": { "type": "string", "minLength": 1, "description": "Name of the producer stage whose JSON result is validated." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "JSON Schema (draft 2020-12) path, relative to and contained within the config directory." }
+            }
+          }
+        },
         "gate": {
           "type": "object",
           "additionalProperties": false,
