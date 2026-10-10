@@ -115,19 +115,23 @@ async function main() {
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
   if (['parallel','parallel-cancel','parallel-daemon-restart'].includes(mode)) return parallelJourney();
   if (mode.startsWith('generated-parallel')) return generatedParallelJourney(mode);
-  if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
+  const publication = ['publication','publication-lost-reply'].includes(mode);
+  if (!publication && !['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
+  if (publication && Object.values(process.env).some(value => value.includes('host-only-publication-'))) throw new Error('publication credential reached parent pod');
   const authoring = childAuthoringCatalog();
   const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
-  const action = scratch ? 'discard' : mode;
+  const action = scratch || publication ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
   if (['iterate','worker-restart'].includes(mode) && !status.error && status.value.acknowledged) {
     invocationKey = 'qualification-child-2';
     status = await tool('get_child_workflow', { invocationKey });
   }
   if (status.error) {
+    if (publication && status.code !== 'child_workflow_not_found') throw new Error('publication status refused');
     const sourceFile = 'generated-child.yaml';
     fs.writeFileSync('parent-before-child.txt', 'parent before child\n');
     let command = scratch ? 'echo real-generated-child' : 'test "$(cat parent-before-child.txt)" = "parent before child" && printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Child work"';
+    if (publication) command = 'test -z "$QUALIFICATION_PUBLICATION_PUSH_TOKEN" && test -z "$QUALIFICATION_PUBLICATION_PR_TOKEN" && test "$(cat parent-before-child.txt)" = "parent before child" && printf "published child return\\n" > child-return.txt';
     if (['cancel','worker-restart','daemon-restart'].includes(mode)) {
       const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
       if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid qualification signal');
@@ -135,8 +139,16 @@ async function main() {
     }
     const runner = authoring.runners.find(value => value.os === 'linux' && value.shell);
     if (!runner) throw new Error('catalog has no declared shell runner');
+    const runsOn = { os: runner.os, capabilities: runner.capabilities };
     const run = { workspace: (scratch || mode === 'cancel') ? 'scratch' : 'repo', command: ['sh','-c',command] };
-    fs.writeFileSync(sourceFile, JSON.stringify({ apiVersion: 'goobers.dev/v1alpha1', kind: 'Workflow', dslVersion: authoring.dslVersion, metadata: { name: 'generated-check' }, spec: { gaggle: authoring.gaggle, triggers: [{ type: 'manual' }], start: 'check', tasks: [{ name: 'check', type: 'deterministic', goal: 'Verify the generated workstream', timeoutSeconds: 60, runsOn: { os: runner.os, capabilities: runner.capabilities }, run }] } }));
+    const tasks = [{ name: 'check', type: 'deterministic', goal: 'Verify the generated workstream', timeoutSeconds: 60, runsOn, run }];
+    if (publication) {
+      if (!authoring.allowPRPublication) throw new Error('catalog did not permit delegated publication');
+      tasks[0].next = 'push';
+      tasks.push({ name: 'push', type: 'deterministic', goal: 'Publish the delegated child branch', runsOn, capabilities: ['repo:push'], policyActions: ['push-repository-branch'], run: { command: ['goobers','push-branch'], workspace: 'repo' }, next: 'open' });
+      tasks.push({ name: 'open', type: 'deterministic', goal: 'Open the delegated child PR', runsOn, capabilities: ['provider:pr:write'], policyActions: ['open-or-update-pr'], run: { command: ['goobers','open-pr'], workspace: 'repo' } });
+    }
+    fs.writeFileSync(sourceFile, JSON.stringify({ apiVersion: 'goobers.dev/v1alpha1', kind: 'Workflow', dslVersion: authoring.dslVersion, metadata: { name: 'generated-check' }, spec: { gaggle: authoring.gaggle, triggers: [{ type: 'manual' }], start: 'check', tasks } }));
     const validation = await tool('validate_child_workflow', { sourceFile });
     if (validation.error || !validation.value.valid) throw new Error('generated source rejected');
     const accepted = await tool('start_child_workflow', { sourceFile, invocationKey });
@@ -144,6 +156,7 @@ async function main() {
     return waitForHost();
   }
   if (!status.value.resultRef) return waitForHost();
+  if (publication && status.value.state !== (mode === 'publication-lost-reply' ? 'failed' : 'completed')) throw new Error('publication child outcome changed');
   if (mode === 'worker-restart') {
     const expectedState = invocationKey === 'qualification-child' ? 'failed' : 'completed';
     if (status.value.state !== expectedState) throw new Error('worker restart child outcome changed');
