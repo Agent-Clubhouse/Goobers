@@ -1,0 +1,1123 @@
+{
+  "schema": "goobers.dev/backprop/attribution-eval/v1",
+  "version": "v1",
+  "cases": [
+    {
+      "id": "bad-tool-result",
+      "description": "Injected unsuccessful bash result in the only tool call of the failing implement stage.",
+      "input": {
+        "runId": "eval-bad-tool-result",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":false}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "mixed-or-unknown",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "toolresult:subagent:root@sha256:span-implement#2",
+        "class": "bad-tool-result",
+        "mast": "unknown"
+      }
+    },
+    {
+      "id": "bad-tool-choice",
+      "description": "Injected wrong tool choice: grep fails where a later bash call succeeds; the decisive step is the grep call.",
+      "input": {
+        "runId": "eval-bad-tool-choice",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"grep\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":false}}\n{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-2\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-2\",\"success\":true}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "toolcall:subagent:root@sha256:span-implement#1",
+        "class": "bad-tool-choice",
+        "mast": "inter-agent-misalignment"
+      }
+    },
+    {
+      "id": "bad-interpretation",
+      "description": "Every tool call succeeded but the implement stage failed: the agent misread good results.",
+      "input": {
+        "runId": "eval-bad-interpretation",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":true}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "bad-interpretation",
+        "mast": "task-verification"
+      }
+    },
+    {
+      "id": "weak-instructions",
+      "description": "Implement stage failed with no recorded tool calls or evidence: the instructions produced no work.",
+      "input": {
+        "runId": "eval-weak-instructions",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "weak-instructions",
+        "mast": "specification"
+      }
+    },
+    {
+      "id": "routing",
+      "description": "Workflow routed the subagent to a model other than the one it requested; routing is workflow configuration.",
+      "input": {
+        "runId": "eval-routing",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "requestedModel": "gpt-5",
+              "resolvedModel": "gpt-4.1",
+              "lifecycle": "completed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {
+                "outputTokens": 12
+              }
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "model:root",
+        "class": "routing",
+        "mast": "specification"
+      }
+    },
+    {
+      "id": "model",
+      "description": "Requested model ran but produced no output tokens.",
+      "input": {
+        "runId": "eval-model",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "requestedModel": "gpt-5",
+              "resolvedModel": "gpt-5",
+              "lifecycle": "completed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {
+                "outputTokens": 0
+              }
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "harness-model-provider-environment",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "model:root",
+        "class": "model",
+        "mast": "outside-agent-system"
+      }
+    },
+    {
+      "id": "topology",
+      "description": "Subagent declared a dependency on a subagent that never ran.",
+      "input": {
+        "runId": "eval-topology",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {},
+              "dependsOn": [
+                "never-ran"
+              ]
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "subagent:root",
+        "class": "topology",
+        "mast": "inter-agent-misalignment"
+      }
+    },
+    {
+      "id": "environment",
+      "description": "Harness raised a stage error after the agent recorded work.",
+      "input": {
+        "runId": "eval-environment",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "error"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "harness-model-provider-environment",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "environment",
+        "mast": "outside-agent-system"
+      }
+    },
+    {
+      "id": "unexplained-stage",
+      "description": "Stage failed with an artifact but no signal that distinguishes a cause; the honest label is unknown.",
+      "input": {
+        "runId": "eval-unexplained-stage",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "mixed-or-unknown",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "unknown",
+        "mast": "unknown"
+      }
+    },
+    {
+      "id": "run-without-failing-stage",
+      "description": "Run failed although every stage succeeded; no stage is responsible.",
+      "input": {
+        "runId": "eval-run-without-failing-stage",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "success"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "mixed-or-unknown",
+        "step": "outcome",
+        "class": "unknown",
+        "mast": "unknown"
+      }
+    },
+    {
+      "id": "harness-error-masks-empty-prompt",
+      "description": "Harness surfaced a stage error, but the agent never started work because its prompt was empty: the fault is the workflow's instructions.",
+      "input": {
+        "runId": "eval-harness-error-masks-empty-prompt",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "error"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "weak-instructions",
+        "mast": "specification"
+      }
+    },
+    {
+      "id": "upstream-plan-misread",
+      "description": "Implement's bash call failed because the plan stage misread its inputs and produced a wrong plan; the decisive step is upstream in plan.",
+      "input": {
+        "runId": "eval-upstream-plan-misread",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "planner",
+              "runId": "run-1",
+              "stage": "plan",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "completed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-plan",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "attempt": 1,
+            "status": "success"
+          },
+          {
+            "schema": "",
+            "seq": 5,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 6,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 7,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":false}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "plan",
+        "step": "stage:plan#1",
+        "class": "bad-interpretation",
+        "mast": "task-verification"
+      }
+    }
+  ]
+}

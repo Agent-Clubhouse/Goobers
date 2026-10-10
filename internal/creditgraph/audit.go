@@ -227,19 +227,7 @@ func selectAuditObservations(observations []AttributionObservation, config Fault
 }
 
 func makeFaultSignal(observation AttributionObservation, cause CauseFinding) faultSignal {
-	text := strings.TrimSpace(cause.Summary)
-	if text == "" && len(cause.Evidence) > 0 {
-		text = cause.Evidence[0]
-	}
-	text = strings.ToLower(unstableSignaturePart.ReplaceAllString(text, "#"))
-	text = strings.Join(strings.Fields(text), " ")
-	if text == "" {
-		text = "stage:" + cause.Stage
-	}
-	if text == "stage:" {
-		text = "unknown-failure"
-	}
-	signature := text
+	signature := causeSignature(cause)
 	var path []string
 	if contribution, ok := observation.Attribution.Contribution(cause.NodeID); ok {
 		path = contributionPath(contribution)
@@ -252,6 +240,23 @@ func makeFaultSignal(observation AttributionObservation, cause CauseFinding) fau
 		}
 	}
 	return faultSignal{observation: observation, cause: cause, signature: signature, path: path, evidence: evidence}
+}
+
+// causeSignature is the stable, run-independent text a cause groups by.
+func causeSignature(cause CauseFinding) string {
+	text := strings.TrimSpace(cause.Summary)
+	if text == "" && len(cause.Evidence) > 0 {
+		text = cause.Evidence[0]
+	}
+	text = strings.ToLower(unstableSignaturePart.ReplaceAllString(text, "#"))
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		text = "stage:" + cause.Stage
+	}
+	if text == "stage:" {
+		text = "unknown-failure"
+	}
+	return text
 }
 
 func faultFindingID(signature string) string {
@@ -395,14 +400,28 @@ func baselineObservations(signals []faultSignal, fixedAt time.Time, limit int) [
 }
 
 func signalDomain(signal faultSignal) FaultDomain {
-	text := strings.ToLower(signal.signature + " " + strings.Join(signal.cause.Evidence, " "))
+	return CauseFaultDomain(signal.cause)
+}
+
+// CauseFaultDomain is the fault domain the auditor assigns one cause before
+// cohort rules (sparse samples, mixed domains, boundary crossing) apply: a
+// cause whose text names a shared runtime or external component routes there,
+// and otherwise its class decides.
+func CauseFaultDomain(cause CauseFinding) FaultDomain {
+	text := strings.ToLower(causeSignature(cause) + " " + strings.Join(cause.Evidence, " "))
 	switch {
 	case containsAny(text, "scheduler", "daemon", "worktree", "journal", "claim", "admission", "publication", "shared ci", "recovery"):
 		return FaultDomainProductRuntime
 	case containsAny(text, "credential", "rate limit", "provider", "model", "network", "filesystem", "antivirus", "operating system", "harness"):
 		return FaultDomainExternal
 	}
-	switch signal.cause.Class {
+	return ClassFaultDomain(cause.Class)
+}
+
+// ClassFaultDomain is the fault domain a failure class implies when the
+// cause's text names no shared runtime or external component.
+func ClassFaultDomain(class FailureClass) FaultDomain {
+	switch class {
 	case ClassBadToolChoice, ClassBadInterpretation, ClassWeakInstructions, ClassRouting, ClassTopology:
 		return FaultDomainWorkflow
 	case ClassModel, ClassEnvironment:
