@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -326,7 +327,7 @@ type backlogQueryEnv struct {
 // (topology (b), docs/design/ado-parity-dsl-2-0.md §7.2), so claims are keyed
 // by the backlog provider.
 func (env backlogQueryEnv) issueRepo() providers.RepositoryRef {
-	return backlogProviderRepo(env.repo, env.backlogRepo)
+	return providerconfig.BacklogProviderRepo(env.repo, env.backlogRepo)
 }
 
 func (env backlogQueryEnv) debugf(format string, args ...interface{}) {
@@ -398,7 +399,7 @@ func adoProviderForBacklogDefaults(provider providers.Provider) *providers.ADOPr
 // backlog's while the pull requests live on Azure DevOps, so the extras are
 // skipped rather than listing the backlog repository's pull requests.
 func backlogPRExtrasAvailable(env backlogQueryEnv) bool {
-	return env.ghIssueProvider != nil && !backlogOnOtherProvider(env.repo, env.backlogRepo)
+	return env.ghIssueProvider != nil && !providerconfig.BacklogOnOtherProvider(env.repo, env.backlogRepo)
 }
 
 func backlogReconcileScope(respectAssignee bool, assignedTo string) backlogReconcileAssigneeScope {
@@ -3502,7 +3503,7 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		// routed code repo, and on the backlog provider when the backlog lives
 		// on another provider (see backlogRepoRefForStage).
 		backlogRepo := backlogRepoRefForStage(root, repo)
-		stageProvider, err := newProviderForStage(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
+		stageProvider, err := newProviderForStage(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
 		if err != nil {
 			return err
 		}

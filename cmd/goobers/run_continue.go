@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
@@ -643,7 +644,7 @@ func continuationWorkItemRepository(root, gaggle string, routed providers.Reposi
 	if set == nil || report == nil {
 		return routed, nil
 	}
-	return applyBacklogProject(set, gaggle, routed), nil
+	return providerconfig.ApplyBacklogProject(set, gaggle, routed), nil
 }
 
 func deleteContinuationRun(dir string) error {

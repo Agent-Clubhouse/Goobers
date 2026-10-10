@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/githubapp"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -86,14 +87,14 @@ var backlogRoleCapabilities = []capability.Capability{
 }
 
 // gaggleBacklogRole returns the credential role binding for a gaggle whose
-// backlog lives on another provider than its project (crossProviderBacklog):
+// backlog lives on another provider than its project (providerconfig.CrossProviderBacklog):
 // the backlog-family capabilities bind to the repos[] entry matching the
 // backlog.project owner/name. It is nil for every other gaggle, which keeps
 // RunnerGrants' single project binding. A malformed backlog.project matches no
 // binding, so those capabilities fail closed instead of falling back to the
 // project's credential.
 func gaggleBacklogRole(project apiv1.RepoRef, backlog apiv1.BacklogRef) *credentials.BacklogRole {
-	if !crossProviderBacklog(project.Provider, backlog.Provider) {
+	if !providerconfig.CrossProviderBacklog(project.Provider, backlog.Provider) {
 		return nil
 	}
 	owner, name, ok := strings.Cut(backlog.Project, "/")

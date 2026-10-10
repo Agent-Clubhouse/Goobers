@@ -593,8 +593,8 @@ Topology (c) needs two *project* providers in one gaggle, which is DSL 3.0.
 **Status (ADO-N31, implemented).** A GitHub or Gitea backlog for ADO code
 validates and is routed by role. Steps 1–6 landed as follows:
 
-- **Steps 1 and 4.** `applyBacklogProject` returns the backlog provider's
-  ref (`backlogProviderRef`, shared with `statusWorkItemLookup`). Each
+- **Steps 1 and 4.** `providerconfig.ApplyBacklogProject` returns the backlog provider's
+  ref (`providerconfig.BacklogProviderRef`, shared with `statusWorkItemLookup`). Each
   backlog stage opens that provider, and claims are keyed by it.
 - **Step 2.** `credentials.RunnerGrants` takes a backlog role. If no
   `repos[]` entry with a credential matches the backlog `owner/name`, the

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -167,7 +166,7 @@ func backlogRepoRefForStage(root string, routed providers.RepositoryRef) provide
 		warnStageGaggleConfigUnavailable("the backlog project override", gaggle, err)
 		return routed
 	}
-	return applyBacklogProject(set, gaggle, routed)
+	return providerconfig.ApplyBacklogProject(set, gaggle, routed)
 }
 
 // stageBacklogProjectEnvVar names the ADO backlog project for a stage that
@@ -222,32 +221,7 @@ func backlogRepoRefForGaggle(l instance.Layout, routed providers.RepositoryRef) 
 	if err != nil || report == nil || set == nil {
 		return routed
 	}
-	return applyBacklogProject(set, gaggle, routed)
-}
-
-// applyBacklogProject delegates pure configuration routing to providerconfig.
-func applyBacklogProject(set *instance.ConfigSet, gaggle string, routed providers.RepositoryRef) providers.RepositoryRef {
 	return providerconfig.ApplyBacklogProject(set, gaggle, routed)
-}
-
-// crossProviderBacklog delegates pure configuration routing to providerconfig.
-func crossProviderBacklog(project, backlog apiv1.Provider) bool {
-	return providerconfig.CrossProviderBacklog(project, backlog)
-}
-
-// backlogProviderRef delegates pure configuration routing to providerconfig.
-func backlogProviderRef(gaggle string, project apiv1.RepoRef, backlog apiv1.BacklogRef) (providers.RepositoryRef, error) {
-	return providerconfig.BacklogProviderRef(gaggle, project, backlog)
-}
-
-// backlogProviderRepo delegates pure configuration routing to providerconfig.
-func backlogProviderRepo(routed, backlog providers.RepositoryRef) providers.RepositoryRef {
-	return providerconfig.BacklogProviderRepo(routed, backlog)
-}
-
-// backlogOnOtherProvider delegates pure configuration routing to providerconfig.
-func backlogOnOtherProvider(routed, backlog providers.RepositoryRef) bool {
-	return providerconfig.BacklogOnOtherProvider(routed, backlog)
 }
 
 // applyGaggleDoneStates sets the ADO provider's predecessor done states from
@@ -267,12 +241,7 @@ func applyGaggleDoneStates(root string, provider *providers.ADOProvider) {
 		warnStageGaggleConfigUnavailable("backlog.doneStates", gaggle, err)
 		return
 	}
-	if states, ok := gaggleADODoneStates(set, gaggle); ok {
+	if states, ok := providerconfig.GaggleADODoneStates(set, gaggle); ok {
 		providers.WithADODoneStates(states)(provider)
 	}
-}
-
-// gaggleADODoneStates delegates pure configuration routing to providerconfig.
-func gaggleADODoneStates(set *instance.ConfigSet, gaggle string) (providers.ADODoneStates, bool) {
-	return providerconfig.GaggleADODoneStates(set, gaggle)
 }

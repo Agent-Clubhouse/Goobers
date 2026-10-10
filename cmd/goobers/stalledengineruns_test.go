@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/readprobe"
 )
 
 // stalledEngineSweepFixture is an engine run whose journal holds only
@@ -338,5 +340,62 @@ func TestSweepStalledRunsCreditsHostSuspensionBeforeTerminatingEngineRun(t *test
 	}
 	if len(awake.terminated) != 1 || len(f.released) != 1 {
 		t.Fatalf("terminated %v released %v, want the run terminated once a timeout of awake time passed", awake.terminated, f.released)
+	}
+}
+
+// TestEngineCancelHistoryFoldsOnlyNewJournalPerSweep pins #7031: the stall
+// sweep dated its cancellations by re-parsing the whole instance journal on
+// every pass. The shared index must read only what each sweep appended, at
+// most once per sweep, and still see cancellations journaled since.
+func TestEngineCancelHistoryFoldsOnlyNewJournalPerSweep(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	log, _, err := journal.OpenInstanceLog(t.TempDir(), journal.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	cancel := func(runID string) {
+		t.Helper()
+		now = now.Add(time.Minute)
+		if err := appendEngineRecovery(log, journal.RunIdentity{RunID: runID, Workflow: "w"}, "stalled", journal.RecoveryActionEngineCancelRequested); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 1000; i++ {
+		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "w", Reason: "conditions: max-parallel"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := now
+	cancel("run-1")
+	first := &engineCancelHistory{log: log}
+	if at, ok, err := first.firstRequestAfter("run-1", start); err != nil || !ok || !at.After(start) {
+		t.Fatalf("first sweep run-1 cancel = %v, %v, %v", at, ok, err)
+	}
+
+	cancel("run-2")
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	second := &engineCancelHistory{log: log}
+	for _, runID := range []string{"run-1", "run-2"} {
+		if _, ok, err := second.firstRequestAfter(runID, start); err != nil || !ok {
+			t.Fatalf("second sweep %s cancel found=%v err=%v", runID, ok, err)
+		}
+	}
+	work := readprobe.Take()
+	readprobe.Disable()
+	if work.InstanceTailReads != 1 {
+		t.Fatalf("instance journal reads in one sweep = %d, want 1", work.InstanceTailReads)
+	}
+	path, err := journal.InstanceEventsPath(log.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.InstanceTailBytes*2 > uint64(info.Size()) {
+		t.Fatalf("second sweep parsed %d bytes of a %d-byte journal it had already folded", work.InstanceTailBytes, info.Size())
 	}
 }
