@@ -149,7 +149,11 @@ func (d *Dispatcher) createAttemptPod(ctx context.Context, pod *corev1.Pod, atte
 	}
 	pod.UID = created.UID
 	report.ChildPodUID = string(created.UID)
-	return validateChildPod(created, attempt)
+	if err := validateChildPod(created, attempt); err != nil {
+		return err
+	}
+	observeCreatedChild(ctx, ChildPodCustody{Namespace: created.Namespace, Name: created.Name, UID: string(created.UID)})
+	return nil
 }
 
 func observeChildWriters(attempt Attempt, pod *corev1.Pod, report *Report) error {
