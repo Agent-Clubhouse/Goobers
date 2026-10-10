@@ -146,6 +146,15 @@ func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childE
 	for _, gate := range runtime.machine.Def.Spec.Gates {
 		required = required || gate.EffectiveWorkspace() != apiv1.WorkspaceScratch
 	}
+	// Scratch execution also waits for the parent's acknowledged handoff.
+	// Otherwise spare family capacity can launch it before Capture commits,
+	// making the parent's first snapshot collide with a running child.
+	if _, err := l.queue.ChildSnapshot(ctx, start.Child.Identity); err != nil {
+		if errors.Is(err, triggerqueue.ErrChildSnapshotPending) {
+			return nil, &childStartDeferred{Reason: err.Error()}
+		}
+		return nil, err
+	}
 	if !required {
 		return nil, nil
 	}

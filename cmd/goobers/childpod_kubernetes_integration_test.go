@@ -320,6 +320,9 @@ func childQualificationKubernetes(t *testing.T) (*kubernetes.Clientset, string) 
 func drainRealQueuedChild(t *testing.T, f childKitFixture, afterDispatch func(*durableTriggerService, *daemonRunnerRegistry)) triggerqueue.ChildRecord {
 	t.Helper()
 	s := f.writer.service
+	// This child-only journey supplies upstream capture as a fixture; full
+	// parent journeys separately exercise real handoff and snapshot creation.
+	keepChildLaunchSnapshotFixture(t, s.childQueue, f.child)
 	store, err := executionGenerationStore(s.layout)
 	if err != nil {
 		t.Fatal(err)
