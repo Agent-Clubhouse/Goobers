@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -16,6 +17,9 @@ import (
 // RunGaggleMemoKey identifies engine runs in Temporal visibility without
 // requiring a namespace-specific search attribute registration.
 const RunGaggleMemoKey = "goobers.run.gaggle.v1"
+
+// RunInputDigestMemoKey binds queued direct starts to their accepted input.
+const RunInputDigestMemoKey = "goobers.run.input_digest.v1"
 
 // RunWorkflowMemoKey, RunWorkflowVersionMemoKey, and RunBacklogItemMemoKey
 // extend RunGaggleMemoKey with the rest of a run's Goobers identity (#2911):
@@ -98,6 +102,24 @@ func NewTemporalStarter(c client.Client, taskQueue string) *TemporalStarter {
 
 // Start launches the engine workflow for in, idempotently on in.RunID.
 func (s *TemporalStarter) Start(ctx context.Context, in RunInput) (StartResult, error) {
+	return s.start(ctx, in, "")
+}
+
+// StartWithInputDigest includes the verified canonical-input digest in Temporal
+// custody. AlreadyRunning still requires exact observation by its queue caller.
+func (s *TemporalStarter) StartWithInputDigest(ctx context.Context, in RunInput, digest string) (StartResult, error) {
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return StartResult{}, err
+	}
+	sum := sha256.Sum256(raw)
+	if digest != "sha256:"+hex.EncodeToString(sum[:]) {
+		return StartResult{}, errors.New("engine: accepted input digest differs")
+	}
+	return s.start(ctx, in, digest)
+}
+
+func (s *TemporalStarter) start(ctx context.Context, in RunInput, digest string) (StartResult, error) {
 	if in.RunID == "" {
 		return StartResult{}, errors.New("engine: RunInput.RunID is required to start a run")
 	}
@@ -107,6 +129,9 @@ func (s *TemporalStarter) Start(ctx context.Context, in RunInput) (StartResult, 
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 		Memo:                                     runMemo(in),
+	}
+	if digest != "" {
+		opts.Memo[RunInputDigestMemoKey] = digest
 	}
 	run, err := s.client.ExecuteWorkflow(ctx, opts, Run, in)
 	if err != nil {
