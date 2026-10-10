@@ -39,7 +39,7 @@ const DefaultDrainTimeout = 30 * time.Second
 
 // ChildSettlementTimeout covers 150s of pod termination observation, 30s each
 // for surrender, disposal and Temporal completion, plus scheduling margin.
-// It applies only to DispatchChildPod activities still alive after SDK Stop.
+// It applies only to child dispatch/reconciliation still alive after SDK Stop.
 const ChildSettlementTimeout = 5 * time.Minute
 
 const (
@@ -298,7 +298,7 @@ func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interc
 		identity.ActivityID = info.ActivityID
 		identity.ActivityType = info.ActivityType.Name
 		identity.Attempt = info.Attempt
-		child = info.ActivityType.Name == "DispatchChildPod"
+		child = info.ActivityType.Name == "DispatchChildPod" || info.ActivityType.Name == "ReconcileChildPod"
 		if child {
 			a.tracker.children.Add(1)
 		}

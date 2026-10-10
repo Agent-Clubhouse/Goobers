@@ -70,8 +70,18 @@ func TestIntegrationContainedParentSurvivesDispatchWorkerRestart(t *testing.T) {
 	qualifyContainedParentJourney(t, "worker-restart")
 }
 
+func TestIntegrationContainedParentSurvivesDispatchProcessLoss(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	qualifyContainedParentJourney(t, "worker-crash")
+}
+
 func qualifyContainedParentJourney(t *testing.T, action string) {
 	t.Helper()
+	workerRestart := action == "worker-restart" || action == "worker-crash"
+	modelMode := action
+	if action == "worker-crash" {
+		modelMode = "worker-restart"
+	}
 	image := os.Getenv("GOOBERS_PARENT_QUALIFICATION_IMAGE")
 	if !strings.HasPrefix(image, "localhost:45081/goobers:haw-parent-") {
 		t.Fatal("explicit locally built parent qualification image required")
@@ -104,11 +114,11 @@ esac
 	if err := os.WriteFile(filepath.Join(sourceRepo, "source.txt"), []byte("parent source\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sourceRepo, "qualification-mode"), []byte(action), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(sourceRepo, "qualification-mode"), []byte(modelMode), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var childStarted <-chan struct{}
-	if action == "cancel" || action == "worker-restart" {
+	if action == "cancel" || workerRestart {
 		childStarted = parentQualificationCancellationProbe(t, sourceRepo)
 	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
@@ -137,7 +147,8 @@ esac
 	if err := s.enableChildWorkflows(triggers.queue, f.applied); err != nil {
 		t.Fatal(err)
 	}
-	plane, err := dispatcher.NewSurrenderDir(t.TempDir())
+	surrenderRoot := t.TempDir()
+	plane, err := dispatcher.NewSurrenderDir(surrenderRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,20 +200,25 @@ esac
 		queues[pin.Queue] = true
 	}
 	journeyTimeout := 3 * time.Minute
-	if action == "iterate" || action == "worker-restart" {
+	if action == "iterate" || workerRestart {
 		// Two child returns require five separate contained parent invocations.
 		journeyTimeout = 6 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), journeyTimeout)
 	defer cancel()
 	var workers []temporalworker.Worker
+	var process *qualificationHostProcess
 	var stopHost context.CancelFunc
 	var hostDone chan error
 	startWorkers := func() {
-		if action == "worker-restart" {
+		if workerRestart {
 			taskQueues := make([]string, 0, len(queues))
 			for queue := range queues {
 				taskQueues = append(taskQueues, queue)
+			}
+			if action == "worker-crash" {
+				process = startQualificationHostProcess(t, qualificationHostConfig{HostPort: dev.FrontendHostPort(), Queues: taskQueues, InstanceID: f.parent.InstanceID, Namespace: namespace, Image: image, Endpoint: endpoint, KeyPath: keyPath, SurrenderRoot: surrenderRoot})
+				return
 			}
 			host, err := workerhost.New(workerhost.Config{HostPort: dev.FrontendHostPort(), Namespace: "default", TaskQueues: taskQueues, DrainTimeout: time.Second, Deps: bootstrap.EngineDeps{Dispatcher: podDispatcher, Surrenders: plane}})
 			if err != nil {
@@ -225,6 +241,11 @@ esac
 		}
 	}
 	stopWorkers := func() {
+		if process != nil {
+			process.stop(t)
+			process = nil
+			return
+		}
 		if stopHost != nil {
 			stopHost()
 			select {
@@ -282,7 +303,7 @@ esac
 	var cancelReply httpapi.CancelRunResult
 	wantPhase, wantChild, wantParents := journal.PhaseCompleted, triggerqueue.ChildCompleted, 3
 	wantChildren := 1
-	if action == "iterate" || action == "worker-restart" {
+	if action == "iterate" || workerRestart {
 		wantChildren, wantParents = 2, 5
 	}
 	if action == "cancel" {
@@ -312,14 +333,20 @@ esac
 			default:
 			}
 		}
-		if action == "worker-restart" && !workerRestarted {
+		if workerRestart && !workerRestarted {
 			select {
 			case <-childStarted:
 				// Restart the production worker Host while the generated shell
 				// is running. Temporal and Kubernetes remain alive; no result,
 				// receipt or run state is supplied by this test. The old Host
 				// must finish bounded custody settlement and close its client.
-				stopWorkers()
+				if action == "worker-crash" {
+					awaitQualificationChildCustody(t, ctx, transport)
+					process.kill(t)
+					process = nil
+				} else {
+					stopWorkers()
+				}
 				startWorkers()
 				workerRestarted = true
 			default:
@@ -372,14 +399,14 @@ esac
 	}
 	for _, child := range children {
 		expectedState := wantChild
-		if action == "worker-restart" && child.Sequence == 1 {
+		if workerRestart && child.Sequence == 1 {
 			expectedState = triggerqueue.ChildFailed
 		}
 		if child.State != expectedState || child.ResultRef == "" || (action != "cancel" && child.AcknowledgedAt.IsZero()) {
 			t.Fatal("child result did not reach the expected retained outcome", child)
 		}
 	}
-	if action == "iterate" || action == "worker-restart" {
+	if action == "iterate" || workerRestart {
 		slices.SortFunc(children, func(a, b triggerqueue.ChildRecord) int { return a.Sequence - b.Sequence })
 		first, second := children[0], children[1]
 		if first.Sequence != 1 || second.Sequence != 2 || first.Identity.StageOccurrence != second.Identity.StageOccurrence || first.Identity.InvocationKey != "qualification-child" || second.Identity.InvocationKey != "qualification-child-2" || first.AcknowledgedAt.After(second.AcceptedAt) {
@@ -389,7 +416,7 @@ esac
 	if action == "cancel" && (!cancellationSent || !children[0].CancellationRequested) {
 		t.Fatal("missing authored-child family cancellation")
 	}
-	if action == "worker-restart" && !workerRestarted {
+	if workerRestart && !workerRestarted {
 		t.Fatal("dispatch workers were never restarted")
 	}
 	if !sawParked {

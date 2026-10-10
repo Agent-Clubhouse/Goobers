@@ -290,3 +290,43 @@ This qualifies graceful production Host shutdown/recreation in a surviving
 test process. It does not qualify abruptly killing the worker process or
 restarting the daemon. Those recovery journeys remain part of the public
 activation gate.
+
+
+### Abrupt dispatch-process loss
+
+A separate qualification starts the production Host in a subprocess, waits
+until a generated child shell is running and Temporal has retained its exact
+API-observed pod identity, then kills the process without running its cleanup.
+The original regression failed after 35.47 seconds: the activity's heartbeat
+timeout closed its dispatch workflow while the original pod was still alive.
+
+The dispatcher now offers the observed namespace, name and UID to the child
+activity's heartbeat recorder. The heartbeat binds that observation to the
+immutable dispatch input. After a heartbeat timeout, a versioned workflow path
+can schedule one bounded reconciliation activity on the existing dispatch
+queue. It verifies the instance, owning workflow, run, stage, physical attempt,
+contract and original UID before conditionally stopping that pod. It observes
+writer termination, confirms surrender and disposes the retained object. This
+path has no create fallback and leaves the parent in charge of retries.
+
+With this repair the actual process-kill journey passed on 2026-10-09 with host
+race detection (149.48 seconds): both child results remain in history, the
+parent explicitly discards the interrupted result and authors a second child,
+and five parent plus two child physical attempts retain exact custody proof.
+Existing real Temporal cancellation and graceful completion regressions also
+passed. Tests refuse absent/mismatched heartbeat custody, changed pod identity,
+missing writer/surrender proof and replay of histories predating recovery.
+
+This evidence covers loss after the API identity reached Temporal. Loss before
+that first durable receipt still fails closed: a pod name alone cannot release
+custody or authorize another execution. Loss during reconciliation and daemon
+process reconstruction remain separate recovery qualification work. Public and
+parallel activation remain gated.
+
+
+The independently runnable child fixture also includes
+`TestIntegrationChildRecoversAfterDispatchProcessLoss`: one durable child start,
+an actual dispatch-process kill, a fresh worker, and exact original-pod custody
+reconciliation without another dispatch. It passed with host race detection
+(23.93 seconds). This fixture can travel with the isolated recovery PR while
+the broader agent-authored parent journey remains on its preparation branch.
