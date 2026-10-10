@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -114,3 +115,27 @@ func assertParallelQualificationChildren(t *testing.T, children []triggerqueue.C
 		}
 	}
 }
+
+// Diagnostics retain only route, status and duration, never headers or bodies.
+func parallelQualificationHTTPTrace(t *testing.T, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		out := &parallelQualificationResponse{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(out, r)
+		if elapsed := time.Since(started); elapsed >= 500*time.Millisecond || out.status >= 400 && out.status != http.StatusNotFound {
+			t.Logf("qualification HTTP %s status=%d duration=%s", r.URL.Path, out.status, elapsed)
+		}
+	})
+}
+
+type parallelQualificationResponse struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *parallelQualificationResponse) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *parallelQualificationResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }

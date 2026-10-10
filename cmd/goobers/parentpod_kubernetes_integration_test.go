@@ -182,6 +182,9 @@ esac
 		t.Fatal(err)
 	}
 	server.Config.Handler = handler
+	if action == "parallel" {
+		server.Config.Handler = parallelQualificationHTTPTrace(t, handler)
+	}
 	server.Start()
 	t.Cleanup(server.Close)
 	podDispatcher, err := dispatcher.New(dispatcher.Config{InstanceID: f.parent.InstanceID, Owner: "parent-qualification", GaggleNamespaces: map[string]string{"example": namespace}, GaggleServiceAccounts: map[string]string{"example": "qualification-stage"}, EmbeddedVersion: strings.TrimPrefix(image, "localhost:45081/goobers:"), TokenMinter: key, BlobEndpoint: "http://" + endpoint, WriteAPIBase: "http://" + endpoint, SupervisionInterval: 100 * time.Millisecond, LinuxScheduleToStart: 30 * time.Second}, dispatcher.NewKubernetesPodAPI(api), nil, dispatcher.PlaneSurrenderGate{Plane: plane}, nil)
