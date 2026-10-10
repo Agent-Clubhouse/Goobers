@@ -124,7 +124,11 @@ type Publisher struct {
 	failures  int
 	retryAt   time.Time
 	lastErr   error
-	mu        sync.Mutex
+	// identity and graph are immutable for a run and loaded once.
+	identity journal.RunIdentity
+	graph    json.RawMessage
+	loaded   bool
+	mu       sync.Mutex
 }
 
 // New creates a publisher. It performs no network operation until Publish.
@@ -193,11 +197,15 @@ func (p *Publisher) Publish(ctx context.Context, events []journal.Event) error {
 }
 
 func (p *Publisher) publishLocked(ctx context.Context, events []journal.Event) error {
-	revision := latestProjectedSequence(events)
-	if revision == 0 || revision <= p.lastSeq {
+	projected := projectEvents(events)
+	if len(projected) == 0 {
 		return nil
 	}
-	contract, err := p.contract(events)
+	revision := projected[len(projected)-1].Seq
+	if revision <= p.lastSeq {
+		return nil
+	}
+	contract, err := p.contract(events, projected, revision)
 	if err != nil {
 		return err
 	}
@@ -326,14 +334,17 @@ func finalizeConclusion(waitErr error) string {
 	return "failure"
 }
 
-func (p *Publisher) contract(events []journal.Event) (Contract, error) {
+func (p *Publisher) loadStatic() error {
+	if p.loaded {
+		return nil
+	}
 	reader, err := journal.OpenRead(p.runDir)
 	if err != nil {
-		return Contract{}, err
+		return err
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return Contract{}, err
+		return err
 	}
 	var graph json.RawMessage
 	for _, input := range identity.Inputs {
@@ -342,23 +353,31 @@ func (p *Publisher) contract(events []journal.Event) (Contract, error) {
 		}
 		raw, readErr := reader.ArtifactBytes(input.Ref)
 		if readErr != nil {
-			return Contract{}, readErr
+			return readErr
 		}
 		if !json.Valid(raw) {
-			return Contract{}, errors.New("hosted progress: pinned workflow graph is not valid JSON")
+			return errors.New("hosted progress: pinned workflow graph is not valid JSON")
 		}
 		graph = raw
 		break
 	}
+	p.identity, p.graph, p.loaded = identity, graph, true
+	return nil
+}
+
+func (p *Publisher) contract(events, projected []journal.Event, revision uint64) (Contract, error) {
+	if err := p.loadStatic(); err != nil {
+		return Contract{}, err
+	}
 	contract := Contract{
 		Schema:        Schema,
-		Revision:      latestProjectedSequence(events),
+		Revision:      revision,
 		ActionsRunID:  p.env.ActionsRunID,
 		ActionsRunURL: strings.TrimRight(p.env.ServerURL, "/") + "/" + p.env.Repository + "/actions/runs/" + p.env.ActionsRunID,
-		Identity:      identity,
+		Identity:      p.identity,
 		Phase:         journal.PhaseFromEvents(events),
-		Graph:         graph,
-		Events:        projectEvents(events),
+		Graph:         p.graph,
+		Events:        projected,
 		UpdatedAt:     time.Now().UTC(),
 	}
 	boundContract(&contract)
@@ -457,14 +476,6 @@ func projectEvents(events []journal.Event) []journal.Event {
 		}
 	}
 	return projected
-}
-
-func latestProjectedSequence(events []journal.Event) uint64 {
-	projected := projectEvents(events)
-	if len(projected) == 0 {
-		return 0
-	}
-	return projected[len(projected)-1].Seq
 }
 
 type checkOutput struct {
