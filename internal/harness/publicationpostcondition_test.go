@@ -177,7 +177,7 @@ func TestClaudeAdapterRepairsInvalidPublicationInSameSession(t *testing.T) {
 	if len(runner.reqs) != 2 || !slices.Contains(runner.reqs[1].Command, "--resume") {
 		t.Fatalf("process calls = %d, want one resumed repair turn", len(runner.reqs))
 	}
-	if prompt := commandPromptValue(runner.reqs[1].Command); !strings.Contains(prompt, "publish_output") || !strings.Contains(prompt, "/summary") {
+	if prompt := string(runner.reqs[1].Stdin); !strings.Contains(prompt, "publish_output") || !strings.Contains(prompt, "/summary") {
 		t.Fatalf("repair prompt = %q, want the publication reason and republish instruction", prompt)
 	}
 	if len(out.InvalidCompletionPayload) != 0 {
