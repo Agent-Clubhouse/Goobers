@@ -52,7 +52,7 @@ Starts when a cron or supported interval expression becomes due.
 | `idleBackoff.ceiling` | no | Positive Go duration not below `floor`; defaults to `15m`. |
 
 Multiple schedule triggers are allowed. The scheduler fires when any is due.
-Plain schedules use [durable queued acceptance](../queued-scheduled-starts.md);
+Plain schedules use [durable queued acceptance](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-scheduled-starts.md);
 readiness limits apply when the accepted firing is dispatched.
 
 ```yaml
@@ -69,7 +69,7 @@ triggers:
 Starts from provider backlog eligibility. This trigger does not claim an item;
 an autonomous consumer normally begins with a deterministic
 `goobers backlog-query --claim` task. Counted worker starts use
-[durable queued acceptance](../queued-counted-workers.md), including accounting
+[durable queued acceptance](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/queued-counted-workers.md), including accounting
 for workers already queued while waiting for capacity.
 
 | Parameter | Required | Description |
