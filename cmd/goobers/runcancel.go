@@ -168,6 +168,8 @@ func executeCancelRequest(
 	}
 	result, cancelled, err := owner.CancelRun(req.RunID, now)
 	switch {
+	case cancelled && deferredFamilyCancellation(result.Phase, err):
+		return cancelResponse{Code: httpapi.CancelCodeRequested, Phase: string(result.Phase)}
 	case err != nil:
 		return cancelResponse{Error: err.Error()}
 	case cancelled:
@@ -340,7 +342,7 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 		pf(stderr, "error: %s\n", result.Error)
 		return 1
 	case result.Code == httpapi.CancelCodeRequested:
-		pf(stdout, "requested cancellation of engine-driven run %s via daemon API; the engine reports the terminal outcome\n", runID)
+		pf(stdout, "requested cancellation of run %s via daemon API; check recorded run and child outcomes for confirmation\n", runID)
 		return 0
 	case result.Code == httpapi.CancelCodeAborted:
 		pf(stdout, "%s run %s (aborted via daemon API)\n", action, runID)

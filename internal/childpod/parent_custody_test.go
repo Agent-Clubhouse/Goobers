@@ -86,12 +86,20 @@ func TestParentCustodySeparatesBranchJoinsAndLateSurrender(t *testing.T) {
 			if wantError != errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
 				t.Fatalf("custody corruption error = %v, want refusal = %v", err, wantError)
 			}
+			if err := VerifyParentCustody(t.Context(), reader); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+				t.Fatalf("unjoined writer lost: %v", err)
+			}
 			if mode == "joined" {
 				if pending, err := ParentCustodyPending(t.Context(), reader, contracts[2]); !pending || err != nil {
 					t.Fatal("sibling borrowed join", pending, err)
 				}
+				if err := VerifyParentBranchCustody(t.Context(), reader, 1); err != nil {
+					t.Fatal(err)
+				}
+				if err := VerifyParentBranchCustody(t.Context(), reader, 2); !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
+					t.Fatal("sibling borrowed join", err)
+				}
 			}
-
 		})
 	}
 }

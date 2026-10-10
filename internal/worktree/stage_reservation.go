@@ -56,7 +56,7 @@ func (wt *Worktree) reservedStageMarkers(allowInterrupted bool) (marker, marker,
 	if directoryErr != nil || directory != filepath.Base(wt.Path) || primary.RepositoryDigest != RepositoryDigest(wt.repoURL) || primary.RunID != wt.RunID || primary.Branch != wt.Branch {
 		return marker{}, marker{}, fmt.Errorf("worktree: reserved stage repository or directory changed")
 	}
-	if !sameWorkspaceIdentity(primary, ownership) || (ownership.StartRef != "" && primary.StartRef != ownership.StartRef) || !reservableStageMarker(primary) || !reservableStageMarker(ownership) {
+	if primary.ParentRestoreHead != "" || ownership.ParentRestoreHead != "" || !sameWorkspaceIdentity(primary, ownership) || (ownership.StartRef != "" && primary.StartRef != ownership.StartRef) || !reservableStageMarker(primary) || !reservableStageMarker(ownership) {
 		return marker{}, marker{}, fmt.Errorf("worktree: reserved stage markers disagree")
 	}
 	return primary, ownership, nil

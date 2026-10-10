@@ -3,6 +3,7 @@ package childpod
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 
 	"github.com/goobers/goobers/internal/blobstore"
@@ -15,6 +16,32 @@ const ParentWriterStarted = "isolated.parent.writer.started"
 
 // ParentWriterJoined records the host's acknowledgement that a writer stopped.
 const ParentWriterJoined = "isolated.parent.writer.joined"
+
+// VerifyParentCustody requires all dispatched parent writers to be joined.
+// Only the host can write these annotations. Pod journal ingress uses a strict
+// observation allowlist. Unknown dispatched custody blocks journal replacement;
+// neither terminal state nor a later attempt can acknowledge an older pod.
+func VerifyParentCustody(ctx context.Context, reader *journal.Reader) error {
+	return verifyParentPodSelectedCustody(ctx, reader, nil)
+}
+
+// VerifyParentBranchCustody checks outstanding writers for one physical branch.
+func VerifyParentBranchCustody(ctx context.Context, reader *journal.Reader, branch int) error {
+	return verifyParentPodSelectedCustody(ctx, reader, &branch)
+}
+
+func verifyParentPodSelectedCustody(ctx context.Context, reader *journal.Reader, branch *int) error {
+	pending, _, err := PendingParentScopes(ctx, reader)
+	if err != nil {
+		return err
+	}
+	for _, scope := range pending {
+		if branch == nil || scope.Event.Branch == *branch {
+			return fmt.Errorf("%w: contained parent worker custody requires reconciliation before retry or resume", invoke.ErrWorkspaceNotQuiescent)
+		}
+	}
+	return nil
+}
 
 // ParentPodScope binds a physical writer receipt to its immutable contract.
 type ParentPodScope struct {

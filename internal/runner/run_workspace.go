@@ -36,6 +36,8 @@ type stageWorkspace struct {
 	retainedChild func(context.Context) error
 	// validateReadOnly checks an immutable stage view before accepting output.
 	validateReadOnly func(context.Context) error
+	// parentContribution retains the imported tree until durable archive retirement.
+	parentContribution bool
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -213,11 +215,8 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
-	if in.heldChildWorkspace != nil {
-		return in.heldChildWorkspace, nil
-	}
-	if in.ChildWorkspace != nil && mode != apiv1.WorkspaceScratch {
-		return r.createChildStageWorkspace(ctx, in, stageName, mode, syncBase, workspaceBranch)
+	if workspace, err := r.ownedStageWorkspace(ctx, in, stageName, mode, syncBase, workspaceBranch); workspace != nil || err != nil {
+		return workspace, err
 	}
 	if err := selectedWorkspaceUnsupported(in, mode); err != nil {
 		return nil, err
