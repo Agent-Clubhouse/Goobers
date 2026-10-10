@@ -26,6 +26,7 @@ type SourceStart struct{ Payload []byte }
 // SourceAdvance moves a durable schedule cursor in the same transaction as starts.
 type SourceAdvance struct {
 	Scope         string
+	Revision      string
 	Before, After time.Time
 }
 
@@ -131,7 +132,7 @@ func validateSourceBatch(b SourceBatch, now time.Time) error {
 			return errors.New("triggerqueue: invalid source start")
 		}
 	}
-	if a := b.Advance; a != nil && (!validChildText(a.Scope, 256, true) || a.Before.IsZero() || !a.After.After(a.Before)) {
+	if a := b.Advance; a != nil && (!validChildText(a.Scope, 256, true) || !validChildText(a.Revision, 128, false) || a.Before.IsZero() || !a.After.After(a.Before)) {
 		return errors.New("triggerqueue: invalid source advance")
 	}
 	return nil

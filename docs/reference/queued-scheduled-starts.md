@@ -7,7 +7,12 @@ that definition. A queued receipt is not a running workflow.
 
 ## Timing and capacity
 
-The scheduler stores an evaluation cursor for each gaggle and workflow. A due
+The scheduler stores an evaluation cursor for each gaggle and workflow, bound
+to a revision of its normalized schedules and configured timezone. A schedule
+edit starts future evaluation at the first observation of that revision. Other
+workflow edits preserve the cursor. Previously accepted starts and partially
+transferred demand keep their original definitions; a stale revision cannot
+advance the new cursor. A due
 observation commits its start and advances that cursor in one transaction. Missed
 intervals between the previous cursor and the current observation coalesce into
 one catch-up start. If storage or configuration capture fails, the cursor does
@@ -37,7 +42,9 @@ committed firing. An outstanding legacy pending fire transfers once into the
 new queue, even before the next cron interval is due. Replaying the old auxiliary
 file cannot resurrect it.
 
-This slice adds the `source_start_cursors` table. Cursors, source receipts and
+This slice adds the `source_start_cursors` table; schedule revision tracking
+adds its `revision` column. Existing unversioned cursors and their pending
+legacy fire are adopted once without resetting them. Cursors, source receipts and
 starts share the existing queue count and byte bounds. Cursors are retained for
 workflow identity continuity; removing a workflow does not erase its cursor.
 Configuration archives stay retained while accepted starts remain unfinished.
@@ -48,10 +55,12 @@ rollback procedure.
 ## Scope
 
 This LAND-E01 adapter covers plain cron/interval schedules, including schedules
-used for polling fallback when they have no demand counter. Demand-sized
-schedule workers, backlog polling and completion refill retain their existing
-paths and require a separate queue adapter. It does not complete the requirement
-that every workflow start use a durable queue.
+used for polling fallback when they have no demand counter.
+[Demand-sized schedules](queued-schedule-demand.md) and
+[counted workers](queued-counted-workers.md) have separate adapters. It does not complete the requirement
+that every workflow start use a durable queue. The accepted design’s one-hour
+default catch-up window and explicit bounded all-occurrences policy still need
+their own implementation; current elapsed intervals coalesce as described above.
 
 The implementation adapts the schedule cursor and pinned schedule-start pieces
 of reference snapshot `fa34a754148ea3076bfd04fe4976a5a461b063f2` to the current

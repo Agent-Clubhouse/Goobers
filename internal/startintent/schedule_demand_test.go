@@ -96,6 +96,11 @@ func TestDemandScheduleSealsCountAndTransfersOriginalPinsAcrossRestart(t *testin
 	newer := entry
 	newer.ConfigGeneration = "new-generation"
 	newer.ScheduleDemandCounter = &demandTestCounter{count: 1000}
+	changed, err := localscheduler.ParseSchedule("@every 2h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer.Schedules = []localscheduler.Schedule{changed}
 	restarted := workerScheduler(t, source, newer)
 	if err = restarted.ReconcileAll(nil, base.Add(20*time.Hour)); err != nil {
 		t.Fatal(err)
@@ -175,7 +180,7 @@ func TestDemandScheduleCaptureFailureNeverFallsBackToDirectStart(t *testing.T) {
 	if entry.Starter.(*workerStarter).calls.Load() != 0 {
 		t.Fatal("missing archive bypassed durable custody")
 	}
-	cursor, _, err := source.ScheduleCursor(t.Context(), entry, base.Add(10*time.Hour), false)
+	cursor, _, err := source.ScheduleCursor(t.Context(), entry, base.Add(10*time.Hour), false, base.Add(10*time.Hour))
 	if err != nil || !cursor.Equal(base) {
 		t.Fatal(cursor, err)
 	}

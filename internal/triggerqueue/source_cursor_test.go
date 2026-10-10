@@ -21,7 +21,7 @@ func TestSourceBatchCursorAndStartsCommitTogether(t *testing.T) {
 	if got, err := testSourceCursor(t, store, "scope", before); err != nil || !got.Equal(before) {
 		t.Fatal(got, err)
 	}
-	batch := SourceBatch{Key: "nominal-fire", Actor: "scheduler", Fingerprint: "source-input", Starts: []SourceStart{{[]byte("first")}, {[]byte("second")}}, Advance: &SourceAdvance{Scope: "scope", Before: before.Add(-time.Minute), After: after}}
+	batch := SourceBatch{Key: "nominal-fire", Actor: "scheduler", Fingerprint: "source-input", Starts: []SourceStart{{[]byte("first")}, {[]byte("second")}}, Advance: &SourceAdvance{Scope: "scope", Revision: "test", Before: before.Add(-time.Minute), After: after}}
 	if _, _, err := store.AcceptSource(t.Context(), batch, after); !errors.Is(err, ErrTransition) {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestSourceCapacityRollbackDoesNotAdvanceCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch := SourceBatch{Key: "new-fire", Actor: "scheduler", Fingerprint: "input", Starts: []SourceStart{{[]byte("start")}}, Advance: &SourceAdvance{Scope: "scope", Before: before, After: before.Add(time.Minute)}}
+	batch := SourceBatch{Key: "new-fire", Actor: "scheduler", Fingerprint: "input", Starts: []SourceStart{{[]byte("start")}}, Advance: &SourceAdvance{Scope: "scope", Revision: "test", Before: before, After: before.Add(time.Minute)}}
 	if _, _, err = store.AcceptSource(t.Context(), batch, before); !errors.Is(err, ErrFull) {
 		t.Fatal(err)
 	}
@@ -89,16 +89,16 @@ func TestSourceCursorAdoptsLegacyOutstandingMarkerOnlyOnce(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "queue.db"))
 	before := time.Now().UTC()
 	after := before.Add(time.Minute)
-	cursor, pending, err := store.SourceCursorWithLegacy(t.Context(), "scope", before, true)
+	cursor, pending, err := store.SourceCursorRevision(t.Context(), "scope", "test", before, before, true)
 	if err != nil || !pending || !cursor.Equal(before) {
 		t.Fatal(cursor, pending, err)
 	}
-	_, _, err = store.AcceptSource(t.Context(), SourceBatch{Key: "legacy", Actor: "scheduler", Fingerprint: "input", Starts: []SourceStart{{[]byte("start")}}, Advance: &SourceAdvance{Scope: "scope", Before: before, After: after}}, after)
+	_, _, err = store.AcceptSource(t.Context(), SourceBatch{Key: "legacy", Actor: "scheduler", Fingerprint: "input", Starts: []SourceStart{{[]byte("start")}}, Advance: &SourceAdvance{Scope: "scope", Revision: "test", Before: before, After: after}}, after)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Crash after transaction but before clearing schedule-demand.json.
-	cursor, pending, err = store.SourceCursorWithLegacy(t.Context(), "scope", before, true)
+	cursor, pending, err = store.SourceCursorRevision(t.Context(), "scope", "test", before, before, true)
 	if err != nil || pending || !cursor.Equal(after) {
 		t.Fatal(cursor, pending, err)
 	}
@@ -106,7 +106,7 @@ func TestSourceCursorAdoptsLegacyOutstandingMarkerOnlyOnce(t *testing.T) {
 
 func testSourceCursor(t *testing.T, store *Store, scope string, initial time.Time) (time.Time, error) {
 	t.Helper()
-	cursor, _, err := store.SourceCursorWithLegacy(t.Context(), scope, initial, false)
+	cursor, _, err := store.SourceCursorRevision(t.Context(), scope, "test", initial, initial, false)
 	return cursor, err
 }
 
@@ -141,7 +141,7 @@ func TestSourceCursorMigrationPreservesSignalCustody(t *testing.T) {
 	if err != nil || record.State != Accepted || string(record.Payload) != "original" {
 		t.Fatal(record, err)
 	}
-	if _, _, err := store.SourceCursorWithLegacy(t.Context(), "schedule", time.Now(), false); err != nil {
+	if _, _, err := store.SourceCursorRevision(t.Context(), "schedule", "test", time.Now(), time.Now(), false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -150,7 +150,7 @@ func TestSourceCursorConcurrentFiringsCommitOnlyOneAdvance(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "queue.db")
 	stores := []*Store{openTestStore(t, path), openTestStore(t, path)}
 	before := time.Now().UTC()
-	if _, _, err := stores[0].SourceCursorWithLegacy(t.Context(), "scope", before, false); err != nil {
+	if _, _, err := stores[0].SourceCursorRevision(t.Context(), "scope", "test", before, before, false); err != nil {
 		t.Fatal(err)
 	}
 	errs := make([]error, 2)
@@ -159,7 +159,7 @@ func TestSourceCursorConcurrentFiringsCommitOnlyOneAdvance(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			batch := SourceBatch{Key: []string{"first", "second"}[i], Actor: "scheduler", Fingerprint: "input", Starts: []SourceStart{{[]byte("original")}}, Advance: &SourceAdvance{Scope: "scope", Before: before, After: before.Add(time.Duration(i+1) * time.Minute)}}
+			batch := SourceBatch{Key: []string{"first", "second"}[i], Actor: "scheduler", Fingerprint: "input", Starts: []SourceStart{{[]byte("original")}}, Advance: &SourceAdvance{Scope: "scope", Revision: "test", Before: before, After: before.Add(time.Duration(i+1) * time.Minute)}}
 			_, _, errs[i] = stores[i].AcceptSource(t.Context(), batch, before)
 		}()
 	}

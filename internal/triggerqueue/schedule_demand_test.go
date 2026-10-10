@@ -18,7 +18,7 @@ func captureDemandTest(t *testing.T, s *Store) (ScheduleDemand, time.Time) {
 	if _, err := testSourceCursor(t, s, "scope", base); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CaptureScheduleDemand(t.Context(), "fire", SourceAdvance{Scope: "scope", Before: base, After: base.Add(time.Hour)}, []byte("original pinned target"), base.Add(time.Hour)); err != nil {
+	if err := s.CaptureScheduleDemand(t.Context(), "fire", SourceAdvance{Scope: "scope", Revision: "test", Before: base, After: base.Add(time.Hour)}, []byte("original pinned target"), base.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ScheduleDemand(t.Context(), "scope")
@@ -40,7 +40,7 @@ func TestScheduleDemandCoalescesAndTransfersExactlyOnce(t *testing.T) {
 	if err := s.ObserveScheduleDemand(t.Context(), d.ID, 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CaptureScheduleDemand(t.Context(), "later-fire", SourceAdvance{Scope: "scope", Before: base.Add(time.Hour), After: base.Add(2 * time.Hour)}, []byte("new generation"), base.Add(2*time.Hour)); err != nil {
+	if err := s.CaptureScheduleDemand(t.Context(), "later-fire", SourceAdvance{Scope: "scope", Revision: "test", Before: base.Add(time.Hour), After: base.Add(2 * time.Hour)}, []byte("new generation"), base.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	same, err := s.ScheduleDemand(t.Context(), "scope")
@@ -133,7 +133,7 @@ func TestScheduleDemandCapacityRefusesWithoutAdvancingCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.CaptureScheduleDemand(t.Context(), "fire", SourceAdvance{Scope: "scope", Before: base, After: base.Add(time.Hour)}, []byte("pins"), base.Add(time.Hour))
+	err = s.CaptureScheduleDemand(t.Context(), "fire", SourceAdvance{Scope: "scope", Revision: "test", Before: base, After: base.Add(time.Hour)}, []byte("pins"), base.Add(time.Hour))
 	if !errors.Is(err, ErrFull) {
 		t.Fatal(err)
 	}

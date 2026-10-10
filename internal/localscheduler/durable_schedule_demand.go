@@ -52,7 +52,7 @@ func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tick
 	state := s.triggers[identity]
 	pending := s.pendingScheduleDemand[identity]
 	s.mu.Unlock()
-	before, legacy, err := s.sourceQueue.ScheduleCursor(ctx, entry, state.LastEval, pending.remaining > 0 || pending.repoll)
+	before, legacy, err := s.sourceQueue.ScheduleCursor(ctx, entry, state.LastEval, pending.remaining > 0 || pending.repoll, now)
 	if err != nil {
 		s.sourceQueueError(entry, err)
 		return true, false

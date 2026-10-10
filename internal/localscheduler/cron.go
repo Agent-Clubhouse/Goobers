@@ -37,7 +37,7 @@ func ParseSchedule(expr string) (Schedule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("localscheduler: invalid schedule %q: %w", expr, err)
 	}
-	return sched, nil
+	return authoredSchedule{Schedule: sched, expression: normalizedScheduleExpression(expr)}, nil
 }
 
 // InLocation returns a Schedule whose Next always computes in loc, regardless
