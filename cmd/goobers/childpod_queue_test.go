@@ -21,6 +21,7 @@ import (
 func testQueuedChildFactory(t *testing.T, f childKitFixture, worker *factoryWorkerClient) {
 	t.Helper()
 	s := f.writer.service
+	keepChildLaunchSnapshotFixture(t, s.childQueue, f.child)
 	store, err := executionGenerationStore(s.layout)
 	if err != nil {
 		t.Fatal(err)
