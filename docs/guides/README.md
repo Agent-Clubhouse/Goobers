@@ -16,6 +16,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Backlog label preflight](backlog-label-preflight.md)
 - [Configuring backlog park-label filtering](backlog-park-filtering.md)
 - [Find ready issues with no label route](backlog-routing-diagnostics.md)
+- [Backprop: attribute run outcomes and verify fixes (preview)](backprop.md)
 - [Child workflow admission internals (preview)](child-workflow-admission.md)
 - [Child workflow publication](child-workflow-publication.md)
 - [Investigation: default-branch CI failures 32040570522 and 32063514602](ci-main-failures-32040570522-32063514602.md)
