@@ -106,9 +106,17 @@ func (t *Toolset) PublishOutput(content string) (bytesWritten int, digest string
 			return 0, "", fmt.Errorf("artifactFile and artifactManifestFile are mutually exclusive")
 		}
 		target = t.cfg.ArtifactManifestFile
-		if err := t.checkPublication(content); err != nil {
-			return 0, "", err
+		accepted, checkErr := t.checkPublication(content)
+		if checkErr != nil {
+			t.recordRejectedPublication(checkErr)
+			return 0, "", checkErr
 		}
+		defer func() {
+			// Only a manifest that was actually written is an accepted publication.
+			if err == nil {
+				t.recordAcceptedPublication(digest, accepted)
+			}
+		}()
 	}
 	if target == "" {
 		return 0, "", fmt.Errorf("this stage declares no artifactFile input — publish_output has nothing to write to")
