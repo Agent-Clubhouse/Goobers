@@ -65,7 +65,7 @@ func (s *Service) Accept(ctx context.Context, key, actor string, request Request
 
 func duplicate(record triggerqueue.Record, actor string, request Request) (triggerqueue.Record, bool, error) {
 	prior, err := Parse(record.Payload)
-	if err != nil || record.Actor != actor || prior.Request != request {
+	if err != nil || record.Actor != actor || prior.Request != request || prior.Source != nil {
 		return triggerqueue.Record{}, false, triggerqueue.ErrConflict
 	}
 	return record, true, nil
@@ -112,7 +112,7 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 		return err
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")
-	admitted, err := scheduler.TriggerPreparedOrdinary(admission, execution, prepared.Entry, runID, localscheduler.PreparedTriggerOptions{Force: e.Request.Force, SourceRun: e.Request.SourceRun}, s.Now())
+	admitted, err := scheduler.TriggerPreparedOrdinary(admission, execution, prepared.Entry, runID, localscheduler.PreparedTriggerOptions{Force: e.Request.Force, SourceRun: e.Request.SourceRun, Source: e.Source}, s.Now())
 	if err != nil {
 		return s.refuseDispatch(admission, record.ID, err)
 	}

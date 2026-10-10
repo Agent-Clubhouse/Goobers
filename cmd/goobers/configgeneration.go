@@ -34,6 +34,9 @@ func bindGenerationRuntimes(definitions *schedulerDefinitions, input schedulerDe
 	build := schedulerGenerationBuilder(input)
 	retainer := firstGenerationRetainer(input.Generations)
 	definitions.ExecutionGeneration = generation
+	for i := range definitions.Entries {
+		definitions.Entries[i].ConfigGeneration = generation
+	}
 	definitions.OrdinaryRuntime = ordinaryRuntimeBuilderFor(layout, retainer, build)
 	definitions.ChildRuntime = childRuntimeBuilderFor(layout, retainer, input.Config, build)
 	definitions.GenerationResolver = generationResolverFor(layout, retainer, build)

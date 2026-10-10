@@ -12,6 +12,7 @@ import (
 // PreparedTriggerOptions retains ordinary trigger semantics without letting a
 // queued request choose execution pins or alter the current capacity policy.
 type PreparedTriggerOptions struct {
+	Source    *SourceTrigger
 	Force     bool
 	SourceRun string
 }
@@ -25,7 +26,7 @@ func (s *Scheduler) TriggerPreparedOrdinary(admission, execution context.Context
 	if !apiv1.ValidRunID(runID) || prepared.Starter == nil || now.IsZero() || s.log == nil {
 		return "", errors.New("localscheduler: invalid prepared ordinary execution")
 	}
-	if options.Force && options.SourceRun != "" {
+	if (options.Force && options.SourceRun != "") || (options.Source != nil && (options.Force || options.SourceRun != "")) {
 		return "", errors.New("localscheduler: incompatible prepared trigger options")
 	}
 	// Keep current eligibility stable until admission.
@@ -47,6 +48,9 @@ func (s *Scheduler) TriggerPreparedOrdinary(admission, execution context.Context
 		return "", errors.New("localscheduler: prepared run already owned")
 	}
 
+	if options.Source != nil {
+		return s.dispatchPreparedSource(execution, prepared, runID, *options.Source, now)
+	}
 	trigger, reason := journal.Trigger{Kind: journal.TriggerManual, Ref: prepared.Workflow}, "manual"
 	if options.SourceRun != "" {
 		trigger = journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + options.SourceRun}

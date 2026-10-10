@@ -15,31 +15,26 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 )
 
-const signalHelp = "Usage: goobers signal <name> [path]\n\n" +
-	"Fire an external signal by name, dispatching every workflow with a\n" +
-	"type=signal trigger subscribed to it, through the same scheduler (run\n" +
-	"conditions, instance journal, single-instance lock) a live `goobers up`\n" +
-	"daemon uses (default path \".\"). A signal may match zero, one, or many\n" +
-	"workflows; waits for every dispatched run to reach a terminal state or\n" +
-	"pause before returning (same blocking UX as `goobers run`).\n" +
-	"Exit codes after waiting: 0 = every admitted run completed (also used when\n" +
-	"none were admitted), 1 = any run failed/aborted or a business error, 2 =\n" +
-	"usage/IO error, 3 = any run escalated. Escalation takes precedence for\n" +
-	"mixed outcomes; successful submission-only modes exit 0 because they do\n" +
-	"not observe a terminal phase.\n"
+const signalHelp = "Usage: goobers signal [--request-id <key>] <name> [path]\n\n" +
+	"Durably accept a named signal and its matching type=signal workflows\n" +
+	"through the instance scheduler (default path \".\"). Reuse --request-id\n" +
+	"to recover the original recipient set after a lost reply; without it, a\n" +
+	"new key is printed before acceptance. A signal may match zero, one, or\n" +
+	"many workflows. Waits for each dispatched run to finish or pause.\n" +
+	"Capacity-held starts remain queued for goobers up or a same-key retry.\n" +
+	"The command requires the instance lock; stop its daemon first.\n\n" +
+	"Exit codes: 0 = all admitted runs completed or no workflows matched,\n" +
+	"1 = a run failed/aborted, a start remains queued, or a business error,\n" +
+	"2 = usage/IO error, 3 = a run escalated. Escalation takes precedence\n" +
+	"when completed runs have mixed outcomes.\n"
 
-// runSignal implements `goobers signal <name>` (#342): fires an external
-// signal by name, dispatching every workflow with a type=signal trigger
-// subscribed to it. TriggerSignal was declared in the schema
-// (api/v1alpha1.TriggerSignal) but compiled and dispatched nowhere before
-// this — this is the first real delivery mechanism for it, mirroring
-// `goobers run <workflow>`'s manual-trigger CLI wiring. An HTTP/webhook sink
-// (#169, once the daemon has a write-capable API surface) is the planned
-// future caller of Scheduler.Signal; this CLI path has no opinion on
-// delivery mechanism and works standalone in the meantime.
+// runSignal accepts a named signal into the host queue and waits for this
+// invocation's dispatched recipients. Capacity-held receipts remain durable
+// for a later daemon drain or retry with the same request key.
 func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	fs := newCLIFlagSet("signal", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	requestID := fs.String("request-id", "", "idempotency key for the accepted signal recipient set")
 	fs.Usage = helpUsage(stderr, "signal")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -60,11 +55,8 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 		return 2
 	}
 
-	// Same single-instance lock `up`/`run` take (issue #134): a manual signal
-	// must not mutate scheduler/run-condition/claim-ledger state concurrently
-	// with a live daemon. Handing off to an already-running daemon is #343's
-	// gap, not this command's — same known limitation `goobers run` already
-	// documents.
+	// Named-signal CLI delivery owns the instance lock. Live daemon delivery
+	// continues to use the authenticated webhook listener.
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -72,8 +64,7 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
 		pf(stderr, "error: %v (a running `goobers up` daemon holds this instance's lock — "+
-			"stop it first; `goobers up` has no live workflow-trigger delegation yet, "+
-			"see the doc comment on cmd/goobers/run.go's lock-acquire step)\n", err)
+			"stop it first or use its configured webhook listener)\n", err)
 		return 1
 	}
 	defer release()
@@ -114,8 +105,24 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 		return 1
 	}
 
+	service, err := installOneShotSignalQueue(l, setup)
+	if err != nil {
+		pf(stderr, "error: initialize signal custody: %v\n", err)
+		return 1
+	}
+	defer func() { _ = service.queue.Close() }()
+	key := *requestID
+	if key == "" {
+		key, err = newRemoteTriggerRequestID()
+		if err != nil {
+			pf(stderr, "error: allocate signal key: %v\n", err)
+			return 1
+		}
+	}
+	pf(stderr, "signal request-id: %s\n", key)
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
+	defer func() { sched.Wait(); wg.Wait() }()
 	runDirs, err := l.RunDirs()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -126,8 +133,15 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 		return 1
 	}
 
-	runIDs := sched.Signal(ctx, name, time.Now())
+	runIDs, pending, err := dispatchQueuedSignal(ctx, service, sched, key, name, stdout)
+	if err != nil {
+		pf(stderr, "error: signal request %q: %v\n", key, err)
+		return 1
+	}
 	if len(runIDs) == 0 {
+		if pending {
+			return 1
+		}
 		pf(stdout, "signal %q delivered: no subscribed workflow was admitted (none subscribed, or run conditions rejected every match)\n", name)
 		return 0
 	}
@@ -195,5 +209,8 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	}
 	wg.Wait()
 	pf(stdout, "inspect with: goobers trace <run-id> %s\n", root)
+	if pending && exitCode == 0 {
+		return 1
+	}
 	return exitCode
 }

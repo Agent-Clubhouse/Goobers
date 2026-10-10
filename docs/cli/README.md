@@ -4685,19 +4685,20 @@ $ goobers set-milestone --item 1227 --milestone 22
 fire an external signal to subscribed workflows
 
 ~~~text
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id <key>] <name> [path]
 
-Fire an external signal by name, dispatching every workflow with a
-type=signal trigger subscribed to it, through the same scheduler (run
-conditions, instance journal, single-instance lock) a live `goobers up`
-daemon uses (default path "."). A signal may match zero, one, or many
-workflows; waits for every dispatched run to reach a terminal state or
-pause before returning (same blocking UX as `goobers run`).
-Exit codes after waiting: 0 = every admitted run completed (also used when
-none were admitted), 1 = any run failed/aborted or a business error, 2 =
-usage/IO error, 3 = any run escalated. Escalation takes precedence for
-mixed outcomes; successful submission-only modes exit 0 because they do
-not observe a terminal phase.
+Durably accept a named signal and its matching type=signal workflows
+through the instance scheduler (default path "."). Reuse --request-id
+to recover the original recipient set after a lost reply; without it, a
+new key is printed before acceptance. A signal may match zero, one, or
+many workflows. Waits for each dispatched run to finish or pause.
+Capacity-held starts remain queued for goobers up or a same-key retry.
+The command requires the instance lock; stop its daemon first.
+
+Exit codes: 0 = all admitted runs completed or no workflows matched,
+1 = a run failed/aborted, a start remains queued, or a business error,
+2 = usage/IO error, 3 = a run escalated. Escalation takes precedence
+when completed runs have mixed outcomes.
 ~~~
 
 **Examples**

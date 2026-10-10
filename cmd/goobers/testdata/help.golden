@@ -1326,13 +1326,21 @@ the workflow through its own engine starter. The run id is the
 scheduler's, and --dedupe-key is refused, because the daemon mints a
 fresh run id per admission.
 
---direct bypasses the daemon and starts the workflow straight on
+--direct bypasses scheduler admission and queues an exact input for
 Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
 workflow and --dedupe-key. That is the only mode in which --dedupe-key
 means anything: a direct start's run id IS its dedupe unit, whereas a
 delegated dispatch dedupes DELIVERIES (by request id) and not work.
 A direct start takes no scheduler slot and fires no terminal hooks.
 --direct is implied when no daemon is running.
+
+Direct starts commit their complete input and exact frontend, namespace
+and task queue to the shared start ledger before contacting Temporal.
+Same-key retries reuse that input. Changed options or credential selectors
+refuse; no current workflow is substituted. The daemon can drain pending
+direct receipts and reconcile an uncertain reply. After any attempted
+start, missing or deleted history remains uncertain and is never resent.
+Confirmation requires the exact input and task queue in Temporal history.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
@@ -3048,19 +3056,20 @@ does not authorize this command. Exit codes: 0 = assigned, 1 = business or
 provider error, 2 = usage/IO error.
 
 ### signal
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id <key>] <name> [path]
 
-Fire an external signal by name, dispatching every workflow with a
-type=signal trigger subscribed to it, through the same scheduler (run
-conditions, instance journal, single-instance lock) a live `goobers up`
-daemon uses (default path "."). A signal may match zero, one, or many
-workflows; waits for every dispatched run to reach a terminal state or
-pause before returning (same blocking UX as `goobers run`).
-Exit codes after waiting: 0 = every admitted run completed (also used when
-none were admitted), 1 = any run failed/aborted or a business error, 2 =
-usage/IO error, 3 = any run escalated. Escalation takes precedence for
-mixed outcomes; successful submission-only modes exit 0 because they do
-not observe a terminal phase.
+Durably accept a named signal and its matching type=signal workflows
+through the instance scheduler (default path "."). Reuse --request-id
+to recover the original recipient set after a lost reply; without it, a
+new key is printed before acceptance. A signal may match zero, one, or
+many workflows. Waits for each dispatched run to finish or pause.
+Capacity-held starts remain queued for goobers up or a same-key retry.
+The command requires the instance lock; stop its daemon first.
+
+Exit codes: 0 = all admitted runs completed or no workflows matched,
+1 = a run failed/aborted, a start remains queued, or a business error,
+2 = usage/IO error, 3 = a run escalated. Escalation takes precedence
+when completed runs have mixed outcomes.
 
 ### speech
 Usage: goobers speech <command> [flags] [path]
