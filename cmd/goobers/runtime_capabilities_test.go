@@ -88,6 +88,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// status are execution-plane operations, like claims/list, rather than
 		// human-facing navigation or an alternate admission authority.
 		"childWorkflowValidate": true, "childWorkflowStart": true, "childWorkflowStatus": true, "childWorkflowResolve": true,
+		"childWorkflowAccessAcquire": true, "childWorkflowAccessRevoke": true,
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true, "claimVerify": true,
 		// A resident worker reports a config comparison transition into the
 		// daemon-owned instance journal. This authenticated machine-to-daemon
