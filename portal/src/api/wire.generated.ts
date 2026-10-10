@@ -983,7 +983,48 @@ export const goWireFixtures = {
             "leaseStatus": "released",
             "providerMarker": "recorded"
           },
-          "potentialBlockers": []
+          "potentialBlockers": [],
+          "reliability": {
+            "state": "escalated",
+            "currentStage": "review",
+            "failure": {
+              "classification": "escalation",
+              "evidenceRule": "terminalCause.classification",
+              "code": "review-escalated"
+            },
+            "budgets": [
+              {
+                "kind": "implementation-review",
+                "consumed": 2,
+                "remaining": 1,
+                "evidence": "terminalCause"
+              },
+              {
+                "kind": "ci-poll",
+                "consumed": null,
+                "remaining": null,
+                "evidence": "unknown"
+              }
+            ],
+            "latestVerdict": "escalate",
+            "acceptance": {
+              "state": "complete",
+              "digest": "sha256:acc"
+            },
+            "retained": {
+              "branch": "goobers/implementation/run-122",
+              "branchSha": "abc123",
+              "pullRequest": {
+                "provider": "github",
+                "kind": "pr",
+                "id": "42"
+              },
+              "pullRequestDraft": "draft",
+              "recoveryRunId": "run-122"
+            },
+            "nextAction": "human intervention required",
+            "humanInterventionReason": "reviewer requested a human decision"
+          }
         }
       }
     ],
@@ -1098,7 +1139,48 @@ export const goWireFixtures = {
         "leaseStatus": "released",
         "providerMarker": "recorded"
       },
-      "potentialBlockers": []
+      "potentialBlockers": [],
+      "reliability": {
+        "state": "escalated",
+        "currentStage": "review",
+        "failure": {
+          "classification": "escalation",
+          "evidenceRule": "terminalCause.classification",
+          "code": "review-escalated"
+        },
+        "budgets": [
+          {
+            "kind": "implementation-review",
+            "consumed": 2,
+            "remaining": 1,
+            "evidence": "terminalCause"
+          },
+          {
+            "kind": "ci-poll",
+            "consumed": null,
+            "remaining": null,
+            "evidence": "unknown"
+          }
+        ],
+        "latestVerdict": "escalate",
+        "acceptance": {
+          "state": "complete",
+          "digest": "sha256:acc"
+        },
+        "retained": {
+          "branch": "goobers/implementation/run-122",
+          "branchSha": "abc123",
+          "pullRequest": {
+            "provider": "github",
+            "kind": "pr",
+            "id": "42"
+          },
+          "pullRequestDraft": "draft",
+          "recoveryRunId": "run-122"
+        },
+        "nextAction": "human intervention required",
+        "humanInterventionReason": "reviewer requested a human decision"
+      }
     },
     "graph": {
       "name": "implementation",

@@ -114,7 +114,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 			InjectedInputs:     append([]journal.InputRef(nil), row.Operator.InjectedInputs...),
 		}
 	}
-	return RunSummary{
+	return withRunReliability(RunSummary{
 		EngineFallback:    row.Operator.EngineFallback,
 		RequiredMCP:       row.Operator.RequiredMCP,
 		RetryBackoff:      row.Operator.RetryBackoff,
@@ -137,19 +137,22 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		FinishedAt:   row.FinishedAt,
 		// Computed at read time, not stored, so a quiet in-flight run keeps
 		// ageing rather than freezing at projection time (§5.3).
-		DurationMillis:   row.Duration(observedAt).Milliseconds(),
-		LastActivityAt:   row.LastActivity,
-		LastSeq:          row.LastSeq,
-		RepassCount:      row.RepassCount,
-		RetryCount:       row.RetryCount,
-		PolicyRetryCount: row.PolicyRetryCount,
-		InfraRetryCount:  row.InfraRetryCount,
-		Lineage:          lineage,
-		NoWork:           row.Disposition == readmodel.DispositionNoWork,
-		TerminalReason:   terminalReasonFromReadModel(row),
-		Operator:         operatorFromReadModel(row, observedAt),
-		Stages:           row.Stages,
-	}
+		DurationMillis:     row.Duration(observedAt).Milliseconds(),
+		LastActivityAt:     row.LastActivity,
+		LastSeq:            row.LastSeq,
+		RepassCount:        row.RepassCount,
+		RetryCount:         row.RetryCount,
+		PolicyRetryCount:   row.PolicyRetryCount,
+		InfraRetryCount:    row.InfraRetryCount,
+		Lineage:            lineage,
+		NoWork:             row.Disposition == readmodel.DispositionNoWork,
+		TerminalReason:     terminalReasonFromReadModel(row),
+		Operator:           operatorFromReadModel(row, observedAt),
+		Stages:             row.Stages,
+		reliabilityFacts:   row.Operator.Reliability,
+		workspaceBranch:    row.Operator.WorkspaceBranch,
+		workspaceBranchSHA: row.Operator.WorkspaceBranchSHA,
+	})
 }
 
 // terminalReasonFromReadModel degrades the terminal-cause projection to what
