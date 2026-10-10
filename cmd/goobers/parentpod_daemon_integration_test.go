@@ -140,10 +140,12 @@ func qualificationDaemonJSON(ctx context.Context, address, method, path string, 
 }
 
 func TestIntegrationContainedParentSurvivesDaemonProcessLoss(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	qualifyParentDaemonProcessLoss(t, false)
 }
 
 func TestIntegrationContainedParentSurvivesDaemonProcessLossParallel(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	qualifyParentDaemonProcessLoss(t, true)
 }
 
