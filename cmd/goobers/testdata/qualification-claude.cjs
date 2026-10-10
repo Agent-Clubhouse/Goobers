@@ -47,7 +47,14 @@ function request(method, params) {
 async function tool(name, arguments_) {
   phase(`tool-${name}`);
   const response = await request('tools/call', { name, arguments: arguments_ });
-  if (response.error || response.result?.isError) return { error: true };
+  if (response.error || response.result?.isError) {
+    // Print only known local classifications, never remote response text.
+    const safeCodes = ['child_workflow_not_found','child_workflow_authority_changed','child_workflow_grant_invalid','child_workflow_wrong_parent','child_workflow_custody_unavailable','child_workflow_unavailable'];
+    const encoded = JSON.stringify(response);
+    const code = safeCodes.find(value => encoded.includes(value)) || 'unclassified';
+    phase(`tool-${name}-refused-${code}`);
+    return { error: true, code };
+  }
   return { value: JSON.parse(response.result.content.find(item => item.type === 'text').text) };
 }
 function waitForHost() {
@@ -131,6 +138,7 @@ async function parallelJourney() {
   if (fs.existsSync(`parent-${other}.txt`)) throw new Error('branch observed sibling workspace');
   const invocationKey = 'qualification-child';
   const status = await tool('get_child_workflow', { invocationKey });
+  if (status.error && status.code !== 'child_workflow_not_found') throw new Error('parallel status refused');
   if (status.error) {
     fs.writeFileSync(`parent-${branch}.txt`, `${branch} before child\n`);
     const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
