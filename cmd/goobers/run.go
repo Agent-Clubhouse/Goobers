@@ -63,12 +63,17 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"combined with --pr because targeted pull-request runs are signal triggers.\n" +
 	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
-	"submits through its API automatically — dispatched through\n" +
-	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
+	"submits through its API automatically. Both paths durably capture a\n" +
+	"start before normal scheduler admission. Exit codes after waiting: 0 =\n" +
 	"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n" +
 	"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n" +
 	"escalated. The submission-only --no-wait mode exits 0 on durable API\n" +
 	"acceptance, before dispatch.\n" +
+	"Standalone and detached starts accept --request-id for exact retries.\n" +
+	"They queue a pinned definition and attempt only their own receipt.\n" +
+	"If capacity holds it, the command prints its receipt and request ID,\n" +
+	"then exits nonzero; retry that ID or start `goobers up` to drain it.\n" +
+	"Standalone --no-wait still returns after admission.\n" +
 	"Without --no-wait, local API callers observe dispatch status then wait\n" +
 	"for the run's terminal journal phase. API failures never silently fall\n" +
 	"back to files. When TLS publishes only a wildcard bind address, the CLI\n" +
@@ -122,7 +127,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	api := fs.String("api", "", "submit the trigger to this daemon API base URL (default $GOOBERS_DAEMON_API)")
 	noAPI := fs.Bool("no-api", false, "explicitly use local execution/file delegation instead of the daemon API")
 	apiTimeout := fs.Duration("api-timeout", remoteTriggerTimeout, "maximum duration for remote API validation and trigger acceptance")
-	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API submission (default: random)")
+	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API or standalone submission (default: random)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -138,6 +143,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	target.PR = *pr
 	target.Force = *force
+	target.RequestID = *requestID
 	if err := validateRunTargetOptions(args, target); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -208,16 +214,17 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if *noWait && runProcessExits {
 		release()
-		return runDetachedTrigger(ctx, l, detachedRunSelector(target), root, stdout, stderr)
+		return runDetachedQueuedTrigger(ctx, l, target, root, stdout, stderr)
 	}
 	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
 }
 
 type runTarget struct {
-	Gaggle   string
-	Workflow string
-	PR       int
-	Force    bool
+	RequestID string
+	Gaggle    string
+	Workflow  string
+	PR        int
+	Force     bool
 }
 
 func (t runTarget) String() string {
@@ -245,7 +252,7 @@ func detachedRunSelector(target runTarget) string {
 	if target.Force {
 		name += "#force"
 	}
-	return name
+	return detachedSelectorWithRequest(name, target.RequestID)
 }
 
 func parseRunTarget(selector, gaggleFlag string) (runTarget, error) {
@@ -387,28 +394,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 			wg.Wait()
 		}
 	}()
-	var runID string
-	if target.Gaggle != "" || target.PR > 0 {
-		identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}
-		if target.PR > 0 {
-			if target.Gaggle != "" {
-				runID, err = sched.TriggerSignalExact(triggerCtx, identity, webhookhttp.SignalName("pull_request"),
-					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
-			} else {
-				runID, err = sched.TriggerSignal(triggerCtx, target.Workflow, webhookhttp.SignalName("pull_request"),
-					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
-			}
-		} else {
-			runID, err = sched.TriggerExactWithOptions(triggerCtx, identity, time.Now(), localscheduler.ManualTriggerOptions{
-				BypassCadenceBudgets: target.Force,
-			})
-		}
-
-	} else {
-		runID, err = sched.TriggerWithOptions(triggerCtx, target.Workflow, time.Now(), localscheduler.ManualTriggerOptions{
-			BypassCadenceBudgets: target.Force,
-		})
-	}
+	runID, err := dispatchStandaloneStart(triggerCtx, l, setup, sched, target, stdout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
