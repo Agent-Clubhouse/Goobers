@@ -54,3 +54,12 @@ writers, prior-schema migration, changed credential bindings, mismatched history
 and a disposable real Temporal frontend with a discarded successful start reply.
 The real-frontend test confirms acceptance and recovery; it does not qualify
 execution of the workflow's stages on worker pods.
+
+## Key-store platform boundary
+
+The existing `file-key` backend requires POSIX-private directory and file modes.
+It cannot prove those modes on Windows and refuses key operations; it does not
+fall back to plaintext. A queued start encountering that refusal retains its
+uncertain receipt until exact provider history can prove the outcome. Default
+codec starts and history reconciliation run on every supported platform. This
+adapter does not add Windows ACL support to `file-key`.
