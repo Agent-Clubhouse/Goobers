@@ -81,10 +81,13 @@ No new DSL is involved. Each stage is routed by role
   backlog into the pull request is rewritten to that backlog issue's URL:
   in the title (which becomes the squash commit title), the issue title and
   acceptance criteria, and the reviewer's summary, rationale and findings.
-- **GitHub pull-request extras are skipped.** In `backlog-query`, the open-PR
-  eligibility backstop and contested-file ordering read GitHub pull requests,
-  and there are none here, so they do not run. Native ADO work-item linking
-  also does not run, because the item is not an ADO work item.
+- **GitHub pull-request extras are skipped.** In `backlog-query`,
+  contested-file ordering and the closed-unmerged requeue read GitHub pull
+  requests, and there are none here, so they do not run. The open-PR
+  eligibility backstop reads the active ADO pull requests instead, and counts
+  only full-URL references into the backlog repository. It needs
+  `github:pr:write` on the `backlog-query` stage. Native ADO work-item linking
+  does not run, because the item is not an ADO work item.
 
 Some behaviour depends on what a stage declares:
 

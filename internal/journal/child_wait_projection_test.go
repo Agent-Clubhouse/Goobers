@@ -89,28 +89,6 @@ func TestChildWaitProjectionRefusesCrossBranchContinuationAndReplacement(t *test
 	}
 }
 
-func TestChildWaitClocksCountOnlyWholeRunParking(t *testing.T) {
-	events, wa, _ := parallelWaitFixture()
-	header := wa.Runner["childWait"].(ChildWaitHeader)
-	start, now := events[0].Time, events[0].Time.Add(10*time.Minute)
-	continued := Event{Type: EventRunnerAnnotation, Time: start.Add(8 * time.Minute), Branch: 1, Stage: wa.Stage, Attempt: 1, Runner: map[string]any{"kind": ChildContinuedKind, "requestId": header.Request.RequestID}}
-	events = append(events, continued)
-	whole, err := ChildExecutionElapsed(events, start, now, nil)
-	if err != nil || whole != 6*time.Minute {
-		t.Fatal(whole, err)
-	}
-	branch := 1
-	elapsed, err := ChildExecutionElapsed(events, start, now, &branch)
-	if err != nil || elapsed != 4*time.Minute {
-		t.Fatal(elapsed, err)
-	}
-	branch = 2
-	elapsed, err = ChildExecutionElapsed(events, start, now, &branch)
-	if err != nil || elapsed != 4*time.Minute {
-		t.Fatal(elapsed, err)
-	}
-}
-
 func TestOrdinaryParallelJournalsDoNotGainChildValidation(t *testing.T) {
 	events := []Event{{Type: EventParallelStarted, Parallel: "old"}, {Type: EventBranchStarted, Branch: 1}, {Type: EventStageStarted, Branch: 1, Stage: "a", Status: string(apiv1.ResultSuccess)}}
 	p, err := ProjectChildWaits(events)

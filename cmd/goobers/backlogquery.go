@@ -340,12 +340,13 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	// Provider-neutral backlog access (#772 ADO parity): the eligibility scan,
 	// claim marking, and list output go through backlogIssueProvider, which both
 	// the GitHub and ADO providers satisfy. GitHub-only extras (curation/reconcile
-	// metadata, the open-PR eligibility backstop, contested-file dispatch) need
+	// metadata, the closed-unmerged requeue, contested-file dispatch) need
 	// the concrete provider and stay gated on ghIssueProvider being non-nil — for
 	// ADO they are simply skipped, exactly like a GitHub stage that never opted
 	// into github:pr:write. In topology (b) ghIssueProvider IS a GitHub provider
 	// (the backlog's), so the pull-request extras are additionally gated on the
-	// code being on GitHub (backlogPRExtrasAvailable).
+	// code being on GitHub (backlogPRExtrasAvailable). The open-PR eligibility
+	// backstop has an ADO-code counterpart (adoOpenPRIssueNumbers, #6919).
 	opts := []stageProviderOption{withStageProviderMutations("issue")}
 	if !readOnly {
 		opts = append(opts, withStageProviderCache())
@@ -397,7 +398,8 @@ func adoProviderForBacklogDefaults(provider providers.Provider) *providers.ADOPr
 // concrete GitHub provider and it is also the code provider. In topology (b)
 // (docs/design/ado-parity-dsl-2-0.md §7.2) the GitHub provider is the
 // backlog's while the pull requests live on Azure DevOps, so the extras are
-// skipped rather than listing the backlog repository's pull requests.
+// skipped rather than listing the backlog repository's pull requests; ADO
+// code gets the open-PR backstop from adoOpenPRIssueNumbers instead.
 func backlogPRExtrasAvailable(env backlogQueryEnv) bool {
 	return env.ghIssueProvider != nil && !providerconfig.BacklogOnOtherProvider(env.repo, env.backlogRepo)
 }
@@ -690,23 +692,30 @@ func backlogPRExtras(ctx context.Context, env backlogQueryEnv, repo providers.Re
 	// The open-PR eligibility backstop and closed-unmerged requeue read pull
 	// requests through the GitHub PR API, so they need both a github:pr:write
 	// token and GitHub code (backlogPRExtrasAvailable). ADO code, topology (b)
-	// included, gets exactly the pre-backstop label-only behavior.
+	// included, gets the open-PR eligibility backstop only (#6919); the
+	// closed-unmerged requeue and contested-file ordering stay GitHub-only.
 	var prProvider *providers.GitHubProvider
-	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
-		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](env.root, repo, false,
-			withStageProviderCapability(capability.GitHubPRWrite),
-			withStageProviderToken(prToken),
-			withStageProviderCache(),
-		)
+	var openIssues map[string]bool
+	var err error
+	if repo.Provider == providers.ProviderADO {
+		openIssues, err = adoOpenPRIssueNumbers(ctx, env, repo)
+	} else {
+		if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
+			prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](env.root, repo, false,
+				withStageProviderCapability(capability.GitHubPRWrite),
+				withStageProviderToken(prToken),
+				withStageProviderCache(),
+			)
+		}
+		if prProvider == nil {
+			return nil, nil, 0
+		}
+		openIssues, err = openPRIssueNumbers(ctx, prProvider, repo)
 	}
-	if prProvider == nil {
-		return nil, nil, 0
-	}
-	openIssues, err := openPRIssueNumbers(ctx, prProvider, repo)
 	if err != nil {
 		return nil, nil, failProviderStage(env.stderr, "list open pull requests", err, "claimed-item.json")
 	}
-	if claim {
+	if claim && prProvider != nil {
 		if err := reconcileClosedUnmergedInReview(ctx, env.ghIssueProvider, prProvider, repo, openIssues); err != nil {
 			return nil, nil, failProviderStage(env.stderr, "reconcile closed pull requests", err, "claimed-item.json")
 		}
@@ -2960,6 +2969,66 @@ func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider,
 		// must exclude it from re-selection, not just one with a closing
 		// keyword.
 		for _, id := range referencedIssueNumbers(pr.Body) {
+			out[id] = true
+		}
+	}
+	return out, nil
+}
+
+// adoOpenPRReferenceReader is the read the Azure DevOps open-PR eligibility
+// backstop makes.
+type adoOpenPRReferenceReader interface {
+	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+	PullRequestReferences(context.Context, providers.RepositoryRef, string) (providers.PullRequestReferences, error)
+}
+
+// adoOpenPRIssueNumbers is openPRIssueNumbers for Azure DevOps code (#6919):
+// the backlog items referenced by an active pull request under the run-branch
+// namespace. Like the GitHub backstop it needs the stage's github:pr:write
+// credential and is skipped without one. Each pull request is read
+// individually because the ADO list carries neither the full description nor
+// the native work-item links.
+func adoOpenPRIssueNumbers(ctx context.Context, env backlogQueryEnv, repo providers.RepositoryRef) (map[string]bool, error) {
+	prToken, err := providerToken(capability.GitHubPRWrite)
+	if err != nil {
+		return nil, nil
+	}
+	reader, err := newProviderForStageSurface[adoOpenPRReferenceReader](env.root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderToken(prToken),
+		withStageProviderCache(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return adoReferencedBacklogItems(ctx, reader, repo, env.issueRepo())
+}
+
+// adoReferencedBacklogItems collects the backlog items active pull requests
+// on repo speak for. With the backlog on Azure DevOps that is every directed
+// "#<id>" body reference (referencedIssueNumbers) and every natively linked
+// work item. In topology (b) a bare "#<id>" and a native link both name ADO
+// work items, not backlog items, so only the backlog issue URLs open-pr
+// writes there (closingIssueURLs) count.
+func adoReferencedBacklogItems(ctx context.Context, reader adoOpenPRReferenceReader, repo, backlog providers.RepositoryRef) (map[string]bool, error) {
+	prs, err := reader.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true})
+	if err != nil {
+		return nil, err
+	}
+	crossProvider := providerconfig.BacklogOnOtherProvider(repo, backlog)
+	out := make(map[string]bool, len(prs))
+	for _, pr := range prs {
+		refs, err := reader.PullRequestReferences(ctx, repo, pr.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read pull request %s references: %w", pr.ID, err)
+		}
+		var ids []string
+		if crossProvider {
+			ids = closingIssueURLs(refs.Body, backlog)
+		} else {
+			ids = append(referencedIssueNumbers(refs.Body), refs.WorkItemIDs...)
+		}
+		for _, id := range ids {
 			out[id] = true
 		}
 	}

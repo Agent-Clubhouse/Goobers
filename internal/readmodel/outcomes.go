@@ -23,7 +23,7 @@ func (s *Store) CountOutcomeVerdict(ctx context.Context, verdict string, since t
 	args := []any{verdict}
 	if !since.IsZero() {
 		query += " AND started_at >= ?"
-		args = append(args, since.UTC().Format(time.RFC3339Nano))
+		args = append(args, formatTime(since))
 	}
 	var count int
 	if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
