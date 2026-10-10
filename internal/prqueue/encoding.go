@@ -38,11 +38,18 @@ func (r Report) MarshalJSON() ([]byte, error) {
 	if err := r.validate(); err != nil {
 		return nil, err
 	}
-	data, err := json.Marshal(reportWire(r))
+	return marshalBounded(reportWire(r))
+}
+
+func marshalBounded(v any) ([]byte, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
 	if len(data) > MaxReportBytes {
 		return nil, errors.New("queue report exceeds byte limit")
 	}
-	return data, err
+	return data, nil
 }
 
 // UnmarshalJSON rejects unknown fields and malformed observations rather than

@@ -60,3 +60,16 @@ func TestReportProducerRejectsUnboundedAndContradictoryEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestMarshalBoundedChecksErrorBeforeSizeLimit(t *testing.T) {
+	atLimit := strings.Repeat("x", MaxReportBytes-2)
+	if data, err := marshalBounded(atLimit); err != nil || len(data) != MaxReportBytes {
+		t.Fatalf("at limit: len=%d err=%v", len(data), err)
+	}
+	if _, err := marshalBounded(atLimit + "x"); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("over limit: %v", err)
+	}
+	if _, err := marshalBounded(make(chan int)); err == nil || strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("marshal error not surfaced: %v", err)
+	}
+}
