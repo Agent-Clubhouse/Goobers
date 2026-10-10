@@ -53,6 +53,11 @@ func TestIntegrationContainedParentReconcilesChildWorkspaceThroughRealWorkers(t 
 	}
 }
 
+func TestIntegrationContainedParentCancellationStopsAuthoredChild(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	qualifyContainedParentJourney(t, "cancel")
+}
+
 func qualifyContainedParentJourney(t *testing.T, action string) {
 	t.Helper()
 	image := os.Getenv("GOOBERS_PARENT_QUALIFICATION_IMAGE")
@@ -90,6 +95,10 @@ esac
 	if err := os.WriteFile(filepath.Join(sourceRepo, "qualification-mode"), []byte(action), 0600); err != nil {
 		t.Fatal(err)
 	}
+	var childStarted <-chan struct{}
+	if action == "cancel" {
+		childStarted = parentQualificationCancellationProbe(t, sourceRepo)
+	}
 	recoveryCLIGit(t, sourceRepo, "add", ".")
 	recoveryCLIGit(t, sourceRepo, "commit", "-m", "qualification base")
 	originalClone := repoCloneURL
@@ -102,11 +111,11 @@ esac
 	t.Cleanup(func() { _ = instanceLog.Close() })
 	registry := newDaemonRunnerRegistry()
 	dispatch := newDaemonTriggerService()
-	triggers, _, _, err := newDaemonCoordinationServices(f.layout, dispatch, registry, instanceLog)
+	triggers, _, cancels, err := newDaemonCoordinationServices(f.layout, dispatch, registry, instanceLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = triggers.queue.Close() })
+	t.Cleanup(func() { _ = triggers.queue.Close(); _ = cancels.receipts.Close() })
 	server := httptest.NewUnstartedServer(nil)
 	endpoint := "host.docker.internal:" + strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)
 	s := newDaemonCredentialService(f.layout, f.cfg, nil, journal.NewRegistryScrubber(), instanceLog).withStageGrants(f.layout.Root, endpoint, false)
@@ -207,10 +216,25 @@ esac
 		t.Fatal(err)
 	}
 	runID := strings.TrimPrefix(accepted.AcceptanceID, "trigger-")
-	sawParked := false
+	sawParked, cancellationSent := false, false
+	wantPhase, wantChild, wantParents := journal.PhaseCompleted, triggerqueue.ChildCompleted, 3
+	if action == "cancel" {
+		wantPhase, wantChild, wantParents = journal.PhaseAborted, triggerqueue.ChildCancelled, 1
+	}
 	for {
 		if err := triggers.Drain(ctx); err != nil {
 			t.Fatal(err)
+		}
+		if !cancellationSent {
+			select {
+			case <-childStarted:
+				result, err := cancels.Cancel(ctx, httpapi.CancelRunRequest{RunID: runID, Gaggle: "example", Actor: "qualification-human", IdempotencyKey: "qualification-parent-cancel"})
+				if err != nil || result.Error != "" {
+					t.Fatal("parent cancellation failed", result, err)
+				}
+				cancellationSent = true
+			default:
+			}
 		}
 		if dir, err := f.layout.FindRunDir(runID); err == nil {
 			reader, err := journal.OpenReadOnly(dir)
@@ -229,7 +253,7 @@ esac
 				t.Fatal(err)
 			}
 			if phase != journal.PhaseRunning {
-				if phase != journal.PhaseCompleted {
+				if phase != wantPhase {
 					events, _ := reader.Events()
 					for _, event := range events {
 						if event.Error != nil || event.TerminalCause != nil {
@@ -238,7 +262,13 @@ esac
 					}
 					t.Fatal("parent did not complete", phase)
 				}
-				break
+				children, childErr := triggers.queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: runID}, "", 10)
+				if childErr != nil {
+					t.Fatal(childErr)
+				}
+				if len(children) == 1 && children[0].State.Terminal() {
+					break
+				}
 			}
 		}
 		select {
@@ -248,14 +278,17 @@ esac
 		}
 	}
 	children, err := triggers.queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: runID}, "", 10)
-	if err != nil || len(children) != 1 || children[0].State != triggerqueue.ChildCompleted || children[0].AcknowledgedAt.IsZero() {
-		t.Fatal("child result was not completed and acknowledged", children, err)
+	if err != nil || len(children) != 1 || children[0].State != wantChild || children[0].ResultRef == "" || (action != "cancel" && children[0].AcknowledgedAt.IsZero()) {
+		t.Fatal("child result did not reach the expected retained outcome", children, err)
+	}
+	if action == "cancel" && (!cancellationSent || !children[0].CancellationRequested) {
+		t.Fatal("missing authored-child family cancellation")
 	}
 	if !sawParked {
 		t.Fatal("Portal run detail never exposed the durable parent wait")
 	}
 	history, err := reads.RunChildren(ctx, runID, "")
-	if err != nil || history.Status != "recorded" || len(history.Items) != 1 || history.Items[0].RunID != children[0].RunID || history.Items[0].State != triggerqueue.ChildCompleted || history.Items[0].AcknowledgedAt == nil {
+	if err != nil || history.Status != "recorded" || len(history.Items) != 1 || history.Items[0].RunID != children[0].RunID || history.Items[0].State != wantChild || (action != "cancel" && history.Items[0].AcknowledgedAt == nil) {
 		t.Fatal("Portal child history lost the completed acknowledged child", history, err)
 	}
 	parentDetail, err := reads.GetRun(ctx, runID)
@@ -281,7 +314,7 @@ esac
 			generated++
 		}
 	}
-	if parents != 3 || generated != 1 {
+	if parents != wantParents || generated != 1 {
 		t.Fatal("unexpected parent/child physical invocations", parents, generated)
 	}
 }
