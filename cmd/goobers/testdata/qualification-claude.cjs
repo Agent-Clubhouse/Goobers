@@ -109,6 +109,7 @@ function childAuthoringCatalog() {
   return catalog;
 }
 async function main() {
+  if (!codex && (process.env.ANTHROPIC_API_KEY !== 'sk-ant-qualification-model-only' || process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.CODEX_API_KEY)) throw new Error('Claude model credential differs');
   const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'qualification-model', version: '1' } });
   if (init.error) throw new Error('MCP initialization failed');
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
@@ -163,6 +164,7 @@ async function main() {
     return waitForHost();
   }
   if (!status.value.resultRef) return waitForHost();
+  if (mode === 'agentic' && status.value.state !== 'completed') throw new Error('agentic child did not complete');
   if (publication && status.value.state !== (mode === 'publication-lost-reply' ? 'failed' : 'completed')) throw new Error('publication child outcome changed');
   if (mode === 'worker-restart') {
     const expectedState = invocationKey === 'qualification-child' ? 'failed' : 'completed';
@@ -186,7 +188,7 @@ async function main() {
 }
 async function agenticChildJourney() {
   phase('agentic-child-authority');
-  if (!codex && process.env.ANTHROPIC_API_KEY !== 'qualification-model-only') throw new Error('child model credential differs');
+  if (!codex && process.env.ANTHROPIC_API_KEY !== 'sk-ant-qualification-model-only') throw new Error('child model credential differs');
   const listed = await request('tools/list', {});
   if (listed.error || !Array.isArray(listed.result?.tools)) throw new Error('child tool catalog missing');
   const names = listed.result.tools.map(value => value.name);
@@ -254,8 +256,8 @@ async function parallelJourney() {
   return complete();
 }
 main().catch(error => {
-  const known = ['child return bytes mismatch', 'agentic child evidence did not return', 'generated agentic child acquired recursive workflow authority', 'generated agentic child received parent instructions', 'child model credential differs', 'child return disposition mismatch', 'parent state disposition mismatch', 'parent fork content lost', 'parent authoring catalog differs', 'parent authoring guidance did not reach the model', 'completion contract unavailable'];
-  const code = known.includes(error.message) ? error.message.replaceAll(' ', '-') : error.code === 'ENOENT' ? 'file-not-found' : 'unclassified';
+  const known = ['Claude model credential differs', 'agentic child did not complete', 'child return bytes mismatch', 'agentic child evidence did not return', 'generated agentic child acquired recursive workflow authority', 'generated agentic child received parent instructions', 'child model credential differs', 'child return disposition mismatch', 'parent state disposition mismatch', 'parent fork content lost', 'parent authoring catalog differs', 'parent authoring guidance did not reach the model', 'completion contract unavailable'];
+  const code = known.includes(error.message) ? error.message.toLowerCase().replaceAll(' ', '-') : error.code === 'ENOENT' ? 'file-not-found' : 'unclassified';
   process.stderr.write(`qualification failure code: ${code}\n`);
   process.stderr.write(`qualification model protocol failed at ${diagnosticPhase}\n`);
   mcp.kill();

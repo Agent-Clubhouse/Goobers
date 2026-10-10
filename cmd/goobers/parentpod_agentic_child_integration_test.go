@@ -26,8 +26,8 @@ func TestIntegrationParentComposesExistingGooberThroughRealWorkers(t *testing.T)
 func logQualificationFixturePhases(t *testing.T, root string) {
 	t.Helper()
 	marker := regexp.MustCompile(`(?m)^qualification (?:phase|failure code): [a-z0-9-]+$`)
-	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || entry.Name() != "stderr.log" || !entry.Type().IsRegular() {
+	_ = filepath.WalkDir(filepath.Join(root, "artifacts"), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !entry.Type().IsRegular() {
 			return nil
 		}
 		info, err := entry.Info()
