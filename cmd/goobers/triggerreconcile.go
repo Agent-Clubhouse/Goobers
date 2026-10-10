@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -52,7 +53,7 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 }
 
 func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
-	if s.observe == nil && s.observeChild == nil {
+	if s.observe == nil && s.observeChild == nil && s.ordinary == nil {
 		return nil
 	}
 	records, err := s.queue.Uncertain(ctx, s.reconcileCursor, 100)
@@ -102,6 +103,16 @@ func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, rec
 	}
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.reconcileChildReceipt(ctx, record)
+	}
+	if header.Kind == startintent.Kind {
+		if s.ordinary == nil {
+			return errors.New("ordinary start custody unavailable")
+		}
+		observed, err := s.ordinary.Observe(ctx, record)
+		if err != nil {
+			return err
+		}
+		return s.reconcileObservation(ctx, record, observed)
 	}
 	if header.Kind != "" {
 		return errors.New("unsupported accepted trigger envelope kind")

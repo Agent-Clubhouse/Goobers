@@ -1055,6 +1055,9 @@ func (u *upSession) configureAPI() int {
 	}
 	defer func() { _ = u.durableTriggers.queue.Close() }()
 	attachChildGenerationPins(u.setup.Generations, u.durableTriggers.queue)
+	if err := u.setup.installOrdinaryStarts(u.l, u.durableTriggers); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize ordinary start custody", err)
+	}
 	defer func() { _ = u.cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
