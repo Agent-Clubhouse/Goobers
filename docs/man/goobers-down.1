@@ -16,6 +16,8 @@ has been delivered — the daemon picks it up and begins draining on its
 next sweep. With no live daemon for this instance, fails fast with a
 clear message rather than hanging. Exit codes: 0 = shutdown requested,
 1 = no live daemon found, 2 = usage/IO error.
+A supervisor restarts the daemon at boot or logon; to keep work paused,
+see docs/guides/desired-concurrency-and-pause.md.
 .fi
 .SH EXAMPLES
 .nf
