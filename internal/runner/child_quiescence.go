@@ -75,8 +75,21 @@ func VerifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdenti
 }
 
 func verifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdentity, events []journal.Event, branch *int) error {
-	if err := verifyChildWriterPolicy(reader, id); err != nil {
+	pending, err := pendingChildWorkspaceWriters(reader, id, events)
+	if err != nil {
 		return err
+	}
+	for _, scope := range pending {
+		if childWriterBlocksBranch(scope.Branch, branch) {
+			return invoke.ErrWorkspaceNotQuiescent
+		}
+	}
+	return nil
+}
+
+func pendingChildWorkspaceWriters(reader *journal.Reader, id journal.RunIdentity, events []journal.Event) (map[string]journal.Event, error) {
+	if err := verifyChildWriterPolicy(reader, id); err != nil {
+		return nil, err
 	}
 	pending := map[string]journal.Event{}
 	seen := map[string]bool{}
@@ -87,27 +100,22 @@ func verifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdenti
 		}
 		scope, ok := event.Runner["writerScope"].(string)
 		if !ok || len(scope) != 32 || !apiv1.ValidRunID(scope) || event.Stage == "" || event.Attempt < 1 {
-			return invoke.ErrWorkspaceNotQuiescent
+			return nil, invoke.ErrWorkspaceNotQuiescent
 		}
 		if kind == childWriterStarted {
 			if seen[scope] {
-				return invoke.ErrWorkspaceNotQuiescent
+				return nil, invoke.ErrWorkspaceNotQuiescent
 			}
 			seen[scope], pending[scope] = true, event
 			continue
 		}
 		started, ok := pending[scope]
 		if !ok || started.Stage != event.Stage || started.Attempt != event.Attempt || started.Branch != event.Branch {
-			return invoke.ErrWorkspaceNotQuiescent
+			return nil, invoke.ErrWorkspaceNotQuiescent
 		}
 		delete(pending, scope)
 	}
-	for _, scope := range pending {
-		if childWriterBlocksBranch(scope.Branch, branch) {
-			return invoke.ErrWorkspaceNotQuiescent
-		}
-	}
-	return nil
+	return pending, nil
 }
 
 func verifyChildWriterPolicy(reader *journal.Reader, id journal.RunIdentity) error {

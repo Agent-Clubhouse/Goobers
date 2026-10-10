@@ -77,7 +77,8 @@ func qualifyContainedParentJourney(t *testing.T, action string) {
 		action = "cancel"
 	}
 	parallel := action == "parallel" || action == "parallel-cancel"
-	cancelParent := action == "cancel" || action == "parallel-cancel"
+	cancelParent := action == "cancel" || action == "parallel-cancel" || action == "generated-parallel-cancel"
+	generatedParallel := strings.HasPrefix(action, "generated-parallel")
 	workerRestart := action == "worker-restart" || action == "worker-crash"
 	modelMode := action
 	if action == "worker-crash" {
@@ -119,7 +120,7 @@ esac
 		t.Fatal(err)
 	}
 	var childStarted <-chan struct{}
-	if parallel {
+	if parallel || generatedParallel {
 		childStarted = parallelQualificationBarrier(t, sourceRepo)
 	} else if cancelParent || workerRestart {
 		childStarted = parentQualificationCancellationProbe(t, sourceRepo)
@@ -479,7 +480,19 @@ esac
 			generated++
 		}
 	}
-	if parents != wantParents || generated != wantChildren {
+	wantGenerated := wantChildren
+	if generatedParallel {
+		wantGenerated = 3
+		if cancelParent {
+			wantGenerated = 2
+		}
+		select {
+		case <-childStarted:
+		default:
+			t.Fatal("generated child branches did not overlap")
+		}
+	}
+	if parents != wantParents || generated != wantGenerated {
 		t.Fatal("unexpected parent/child physical invocations", parents, generated)
 	}
 	if cancelParent {
