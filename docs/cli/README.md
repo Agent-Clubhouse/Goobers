@@ -5428,6 +5428,7 @@ Host a Temporal worker for the tier-3 engine (experimental): connect to the
 configured Temporal frontend, register the engine workflow and activities,
 and serve the named task queue(s) until SIGTERM/SIGINT, then drain — stop
 polling and let in-flight activities finish within --drain-timeout.
+Child dispatch cleanup can take up to 5 additional minutes before exit.
 
 The tier-3 engine is not on the local (V0) execution path; this command is
 the deployable worker shape for the cloud ladder. Automated gate checks and
