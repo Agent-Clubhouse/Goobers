@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/claimability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
@@ -46,13 +47,12 @@ func (b *backlogCounter) backlogClaimTarget() (backlogClaimTarget, bool) {
 }
 
 // newBacklogClaimTarget mirrors the workflow's backlog-query admission: its
-// gaggle namespace, the polled provider, the configured claim visibility and
-// the shortest and longest leases its disagreement backoff could use. A
-// workflow whose admission identity cannot be derived statically, including a
-// gaggle whose backlog admission keys on another provider, yields no target,
-// which keeps its pending work claimability_unknown.
+// gaggle namespace, polled provider, configured claim visibility and the
+// shortest and longest leases its disagreement backoff could use. A workflow
+// whose admission identity cannot be derived statically, including a gaggle
+// whose backlog keys on another provider, yields no target (claimability_unknown).
 func newBacklogClaimTarget(wf *apiv1.Workflow, repo providers.RepositoryRef, backlogProvider apiv1.Provider) *backlogClaimTarget {
-	if crossProviderBacklog(apiv1.Provider(repo.Provider), backlogProvider) {
+	if providerconfig.CrossProviderBacklog(apiv1.Provider(repo.Provider), backlogProvider) {
 		return nil
 	}
 	shared := false
