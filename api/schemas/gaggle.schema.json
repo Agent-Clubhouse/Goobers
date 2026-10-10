@@ -100,6 +100,15 @@
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
         "health": { "$ref": "#/$defs/healthPolicy", "description": "Optional gaggle-health observation, notification, escalation, and hard-safety-bounded repair policy. Omitted uses conservative documented defaults." },
+        "backprop": {
+          "type": "object",
+          "description": "Gaggle-level Backprop override. mode=shadow observes every workflow in this gaggle that declares neither its own backprop.mode nor enabled=true, without editing it; the override can never enroll a workflow in active filing.",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": { "enum": ["off", "shadow"], "description": "Override applied to workflows without their own Backprop mode. off applies no override; shadow attributes their terminal runs into the isolated shadow namespace." }
+          }
+        },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Default absolute local filesystem root (or ~/ path) where workflows additionally mirror durable journal outbox files." },
         "sandbox": {
           "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",

@@ -3050,9 +3050,9 @@ func (r *Runner) attributeAfterTerminalIfMissing(jr *journal.Run) {
 	if r.attributeRun == nil {
 		return
 	}
-	if _, err := os.Stat(filepath.Join(jr.Dir(), creditgraph.RecordFileName)); err == nil {
+	if published, err := creditgraph.RecordPublished(jr.Dir()); published {
 		return
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if err != nil {
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Reason: "Backprop attribution inspection failed",
 			Error: journal.ErrorDetailFor("backprop_attribution_inspection_failed", err),

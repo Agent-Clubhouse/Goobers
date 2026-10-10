@@ -308,6 +308,16 @@ describe("workflow detail page", () => {
     expect(panel).toHaveTextContent("timeoutSeconds: 3600");
   });
 
+  it("labels shadow-mode Backprop separately from active enrollment", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const workflow = fixtures.workflowDetails![fixtureKey("core", "implementation")]!;
+    workflow.backprop = { enabled: false, mode: "shadow", version: "v1" };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const label = await screen.findByText("Backprop");
+    expect(label.nextElementSibling).toHaveTextContent("Shadow (v1)");
+  });
+
   it("titles recent runs by claimed work and omits a trigger ref that repeats the workflow (#5428)", async () => {
     const fixtures = populatedDaemonFixtures();
     const claimed = fixtures.runs.runs.find((run) => run.id === "01JZ441DAEMONAPI");

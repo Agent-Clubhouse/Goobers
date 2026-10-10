@@ -625,6 +625,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "by", takesArg: true, desc: "Who is recording the label"},
 		{name: "labeled-at", takesArg: true, desc: "Verdict time as RFC3339"},
 	},
+	"telemetry shadow": {
+		{name: "json", desc: "Emit the shadow comparison report as JSON"},
+		{name: "gaggle", takesArg: true, valueKind: "gaggles", desc: "Filter to one gaggle"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter to one workflow"},
+		{name: "since", takesArg: true, desc: "Include runs at or after this RFC3339 timestamp"},
+		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},

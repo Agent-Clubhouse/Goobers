@@ -730,6 +730,7 @@ export const goWireFixtures = {
         },
         "backprop": {
           "enabled": true,
+          "mode": "active",
           "version": "v1"
         },
         "warnings": [
@@ -818,6 +819,7 @@ export const goWireFixtures = {
     },
     "backprop": {
       "enabled": true,
+      "mode": "active",
       "version": "v1"
     },
     "warnings": [

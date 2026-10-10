@@ -150,6 +150,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
+| [`goobers telemetry shadow`](#goobers-telemetry-shadow) | compare Backprop shadow-mode findings with actual run outcomes |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry test`](#goobers-telemetry-test) | send one secret-safe Application Insights connectivity probe |
 | [`goobers temporal`](#goobers-temporal) | operate Temporal payload services |
@@ -4850,7 +4851,7 @@ $ goobers status --agents --json
 configure, test, query, export, mark fixes, label runs, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|shadow|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4860,6 +4861,7 @@ errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
 label:   record a ground-truth verdict for a Backprop-enrolled run
+shadow:  compare Backprop shadow-mode findings with actual run outcomes
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -5070,6 +5072,29 @@ Exit codes: 0 = OK, 1 = cleanup error, 2 = usage/config error.
 ~~~console
 $ goobers telemetry prune-orphans
 $ goobers telemetry prune-orphans --delete
+~~~
+
+## `goobers telemetry shadow`
+
+compare Backprop shadow-mode findings with actual run outcomes
+
+~~~text
+Usage: goobers telemetry shadow [--json] [--gaggle=name] [--workflow=name] [--since=RFC3339] [--until=RFC3339] [path]
+
+Compare what Backprop's active fault audit would have filed and recommended
+from shadow-mode attribution with what actually happened to those runs.
+Shadow runs come from workflows with backprop.mode: shadow and from
+workflows observed through a gaggle's backprop.mode: shadow override. This
+report is read-only: it records no filing, cooldown, or verification state,
+and no gate, filing pass, or default portal view reads it. Exit codes:
+0 = OK, 1 = query error, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry shadow
+$ goobers telemetry shadow --json --gaggle=goobers
 ~~~
 
 ## `goobers telemetry stats`

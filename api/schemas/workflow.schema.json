@@ -59,11 +59,13 @@
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
         "backprop": {
           "type": "object",
-          "description": "Explicitly enrolls terminal runs in provenance-aware Backprop attribution. Omitted or enabled=false performs no attribution work.",
+          "description": "Explicitly enrolls terminal runs in provenance-aware Backprop attribution. Omitted, mode=off, or enabled=false without a mode performs no attribution work.",
           "additionalProperties": false,
-          "required": ["enabled", "version"],
+          "required": ["version"],
+          "anyOf": [{ "required": ["enabled"] }, { "required": ["mode"] }],
           "properties": {
-            "enabled": { "type": "boolean", "description": "Whether terminal runs produce attribution records." },
+            "enabled": { "type": "boolean", "description": "Legacy enrollment switch: true means mode=active when mode is omitted." },
+            "mode": { "enum": ["off", "shadow", "active"], "description": "Attribution mode. off performs no work; shadow writes attribution only to an isolated shadow record that filing, gates, and default read surfaces never consume; active publishes the attribution record. Overrides enabled when set; enabled=true is accepted only with mode=active." },
             "version": { "const": "v1", "description": "Pinned Backprop attribution contract version." }
           }
         },

@@ -75,6 +75,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.branchNamespace",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -981,6 +986,11 @@
     },
     {
       "name": "workflow.spec.backprop.enabled",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.backprop.mode",
       "stability": "ga",
       "sinceVersion": "dev"
     },

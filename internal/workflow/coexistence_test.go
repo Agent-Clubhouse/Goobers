@@ -150,6 +150,7 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 func TestBackpropFeatureRegistryReportsDSL30And31(t *testing.T) {
 	for _, id := range []FeatureID{
 		"workflow.spec.backprop.enabled",
+		"workflow.spec.backprop.mode",
 		"workflow.spec.backprop.version",
 	} {
 		feature, ok := LookupFeature(id)
@@ -299,6 +300,25 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 	if _, err := Compile(Definition{Name: "bad-backprop-version", Version: 1, DSLVersion: v30.DSLVersion, Spec: withBackprop},
 		WithPreviewFeatures(true)); err == nil || !strings.Contains(err.Error(), `backprop.version must be "v1"`) {
 		t.Fatalf("Compile(3.0, unknown backprop version) error = %v, want version refusal", err)
+	}
+	for _, test := range []struct {
+		config  apiv1.BackpropConfig
+		wantErr string
+	}{
+		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeShadow, Version: "v1"}},
+		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeShadow, Version: "v1"}, wantErr: `backprop.enabled=true contradicts backprop.mode="shadow"`},
+		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeActive, Version: "v1"}},
+		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}},
+		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeOff, Version: "v1"}, wantErr: "contradicts backprop.mode"},
+		{config: apiv1.BackpropConfig{Mode: "observe", Version: "v1"}, wantErr: `backprop.mode "observe" must be off, shadow, or active`},
+	} {
+		config := test.config
+		withMode := spec(func(s *apiv1.WorkflowSpec) { s.Backprop = &config })
+		_, err := Compile(Definition{Name: "backprop-mode", Version: 1, DSLVersion: v30.DSLVersion, Spec: withMode},
+			WithPreviewFeatures(true))
+		if test.wantErr == "" && err != nil || test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+			t.Fatalf("Compile(3.0, backprop %+v) error = %v, want %q", config, err, test.wantErr)
+		}
 	}
 }
 

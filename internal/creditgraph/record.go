@@ -21,6 +21,10 @@ const (
 	RecordSchemaVersion = "goobers.dev/backprop/record/v1"
 	// RecordFileName is the immutable, run-scoped Backprop result.
 	RecordFileName = "attribution.json"
+	// ShadowRecordFileName is the run-scoped shadow-mode result. It lives in a
+	// separate namespace so filing passes, gates, and default read surfaces,
+	// which only read RecordFileName, never consume shadow attribution.
+	ShadowRecordFileName = "attribution.shadow.json"
 )
 
 // RecordStatus distinguishes a completed estimate from an honest refusal and
@@ -41,6 +45,7 @@ type RunRecord struct {
 	Schema           string                    `json:"schema"`
 	Status           RecordStatus              `json:"status"`
 	ContractVersion  string                    `json:"contractVersion"`
+	Mode             apiv1.BackpropMode        `json:"mode,omitempty"`
 	RunID            string                    `json:"runId"`
 	Gaggle           string                    `json:"gaggle"`
 	Workflow         string                    `json:"workflow"`
@@ -61,8 +66,10 @@ type pinnedDefinition struct {
 }
 
 // WriteRunRecord computes and atomically publishes attribution for an enrolled
-// run. Local terminalization passes nil after run.finished is durable; terminal
-// remains available to callers analyzing an immutable synthetic event stream.
+// run. Active runs publish RecordFileName; shadow runs publish only
+// ShadowRecordFileName. Local terminalization passes nil after run.finished is
+// durable; terminal remains available to callers analyzing an immutable
+// synthetic event stream.
 func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 	record, enrolled, err := AnalyzeRun(runDir, terminal)
 	if !enrolled {
@@ -77,7 +84,7 @@ func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 		return true, fmt.Errorf("encode attribution record: %w", marshalErr)
 	}
 	data = append(data, '\n')
-	if writeErr := journal.WriteFileAtomic(filepath.Join(runDir, RecordFileName), data, 0o600); writeErr != nil {
+	if writeErr := journal.WriteFileAtomic(filepath.Join(runDir, recordFileNameFor(record.Mode)), data, 0o600); writeErr != nil {
 		return true, fmt.Errorf("write attribution record: %w", writeErr)
 	}
 	return true, err
@@ -85,6 +92,10 @@ func WriteRunRecord(runDir string, terminal *journal.Event) (bool, error) {
 
 // AnalyzeRun computes one record without changing the run.
 func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error) {
+	return analyzeRun(runDir, terminal, nil)
+}
+
+func analyzeRun(runDir string, terminal *journal.Event, override *apiv1.GaggleBackprop) (RunRecord, bool, error) {
 	reader, err := journal.OpenReadOnly(runDir)
 	if err != nil {
 		return RunRecord{}, false, fmt.Errorf("open run: %w", err)
@@ -93,12 +104,13 @@ func AnalyzeRun(runDir string, terminal *journal.Event) (RunRecord, bool, error)
 	if err != nil {
 		return RunRecord{}, false, fmt.Errorf("read identity: %w", err)
 	}
-	config, enrolled, err := enrolledBackprop(reader, identity)
+	config, enrolled, err := resolvedBackprop(reader, identity, override)
 	if err != nil || !enrolled {
 		return RunRecord{}, enrolled, err
 	}
 	record := RunRecord{
 		Schema: RecordSchemaVersion, Status: RecordComplete, ContractVersion: config.Version,
+		Mode:  config.EffectiveMode(),
 		RunID: identity.RunID, Gaggle: identity.Gaggle, Workflow: identity.Workflow,
 		WorkflowVersion: identity.WorkflowVersion, WorkflowDigest: identity.WorkflowDigest,
 		EffectiveVersion: (rollup.EffectiveVersion{
@@ -372,6 +384,17 @@ func spanDigest(nodeID string) string {
 }
 
 func enrolledBackprop(reader *journal.Reader, identity journal.RunIdentity) (apiv1.BackpropConfig, bool, error) {
+	return resolvedBackprop(reader, identity, nil)
+}
+
+// resolvedBackprop applies apiv1.ResolveBackpropMode to the run's trusted
+// pinned workflow and an optional gaggle override. The returned config's Mode
+// is the resolved mode.
+func resolvedBackprop(
+	reader *journal.Reader,
+	identity journal.RunIdentity,
+	override *apiv1.GaggleBackprop,
+) (apiv1.BackpropConfig, bool, error) {
 	var ref *journal.InputRef
 	for i := range identity.Inputs {
 		if identity.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
@@ -393,14 +416,23 @@ func enrolledBackprop(reader *journal.Reader, identity journal.RunIdentity) (api
 	if err := json.Unmarshal(data, &definition); err != nil {
 		return apiv1.BackpropConfig{}, false, fmt.Errorf("decode pinned workflow definition: %w", err)
 	}
-	if definition.Spec.Backprop == nil || !definition.Spec.Backprop.Enabled {
+	mode := apiv1.ResolveBackpropMode(definition.Spec.Backprop, override)
+	if mode != apiv1.BackpropModeActive && mode != apiv1.BackpropModeShadow {
 		return apiv1.BackpropConfig{}, false, nil
 	}
-	return *definition.Spec.Backprop, true, nil
+	config := apiv1.BackpropConfig{Mode: mode, Version: defaultBackpropVersion}
+	if definition.Spec.Backprop != nil && definition.Spec.Backprop.Version != "" {
+		config.Version = definition.Spec.Backprop.Version
+	}
+	return config, true, nil
 }
 
+// defaultBackpropVersion is the contract a gaggle override observes a workflow
+// under when the workflow declares no Backprop config of its own.
+const defaultBackpropVersion = "v1"
+
 // RunEnrolled reports whether a run's trusted pinned workflow opted into
-// Backprop without performing attribution.
+// Backprop in active or shadow mode without performing attribution.
 func RunEnrolled(runDir string) (bool, error) {
 	reader, err := journal.OpenReadOnly(runDir)
 	if err != nil {
@@ -426,7 +458,94 @@ func attributionInsufficient(graph *Graph, attribution Attribution) bool {
 	return true
 }
 
-// ReadRunRecord reads a previously published attribution result.
+func recordFileNameFor(mode apiv1.BackpropMode) string {
+	if mode == apiv1.BackpropModeShadow {
+		return ShadowRecordFileName
+	}
+	return RecordFileName
+}
+
+// RecordPublished reports whether an active or shadow record already exists,
+// so recovery does not recompute attribution for a run that has one.
+func RecordPublished(runDir string) (bool, error) {
+	for _, name := range []string{RecordFileName, ShadowRecordFileName} {
+		_, err := os.Stat(filepath.Join(runDir, name))
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// ShadowObservation is one terminal run observed in shadow mode.
+type ShadowObservation struct {
+	Record RunRecord
+	// ViaOverride is true when the run resolves to shadow only through the
+	// gaggle override rather than its own pinned workflow.
+	ViaOverride bool
+}
+
+// ObserveShadowRun returns the shadow-mode record for one terminal run. A run
+// whose pinned workflow declares mode=shadow returns its published shadow
+// record. A run that resolves to shadow only through the gaggle override is
+// analyzed from its persisted journal in memory, off the run's terminal path,
+// and nothing is written. Runs that resolve to active or off, or that already
+// published an active record, are not shadow runs.
+func ObserveShadowRun(runDir string, override *apiv1.GaggleBackprop) (ShadowObservation, bool, error) {
+	if _, err := os.Stat(filepath.Join(runDir, RecordFileName)); err == nil {
+		return ShadowObservation{}, false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ShadowObservation{}, false, err
+	}
+	record, err := readShadowRecord(runDir)
+	if err == nil {
+		return ShadowObservation{Record: record}, true, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return ShadowObservation{}, false, err
+	}
+	record, enrolled, err := analyzeRun(runDir, nil, override)
+	if !enrolled {
+		return ShadowObservation{}, false, err
+	}
+	if record.Mode != apiv1.BackpropModeShadow {
+		return ShadowObservation{}, false, nil
+	}
+	if err != nil {
+		record.Status = RecordFailed
+		record.Failure = err.Error()
+	}
+	ownEnrollment, enrolledErr := RunEnrolled(runDir)
+	if enrolledErr != nil {
+		return ShadowObservation{}, false, enrolledErr
+	}
+	return ShadowObservation{Record: record, ViaOverride: !ownEnrollment}, true, nil
+}
+
+func readShadowRecord(runDir string) (RunRecord, error) {
+	data, err := os.ReadFile(filepath.Join(runDir, ShadowRecordFileName))
+	if err != nil {
+		return RunRecord{}, err
+	}
+	var record RunRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return RunRecord{}, fmt.Errorf("decode shadow attribution record: %w", err)
+	}
+	if record.Schema != RecordSchemaVersion {
+		return RunRecord{}, fmt.Errorf("unsupported attribution schema %q", record.Schema)
+	}
+	if record.Mode != apiv1.BackpropModeShadow {
+		return RunRecord{}, fmt.Errorf("shadow attribution record for run %q has mode %q", record.RunID, record.Mode)
+	}
+	return record, nil
+}
+
+// ReadRunRecord reads a previously published active attribution result. It
+// never reads the shadow namespace and rejects a shadow record found in the
+// active one, so shadow attribution cannot reach filing or gates.
 func ReadRunRecord(runDir string) (RunRecord, error) {
 	data, err := os.ReadFile(filepath.Join(runDir, RecordFileName))
 	if err != nil {
@@ -438,6 +557,9 @@ func ReadRunRecord(runDir string) (RunRecord, error) {
 	}
 	if record.Schema != RecordSchemaVersion {
 		return RunRecord{}, fmt.Errorf("unsupported attribution schema %q", record.Schema)
+	}
+	if record.Mode == apiv1.BackpropModeShadow {
+		return RunRecord{}, fmt.Errorf("attribution record for run %q is a shadow record", record.RunID)
 	}
 	return record, nil
 }

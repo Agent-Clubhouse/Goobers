@@ -809,7 +809,7 @@ export interface WorkflowSummary {
   owners: GooberReference[];
   stageCount: number;
   definition: WorkflowDefinition;
-  backprop?: { enabled: boolean; version?: string };
+  backprop?: { enabled: boolean; mode?: "off" | "shadow" | "active"; version?: string };
   warnings: ValidationWarning[];
 }
 

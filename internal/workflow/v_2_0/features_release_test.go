@@ -48,6 +48,8 @@ var binaryLayerFeatureIDs = map[FeatureID]struct{}{
 	"gaggle.spec.enabled":            {},
 	"workflow.spec.enabled":          {},
 	"workflow.spec.backprop.enabled": {},
+	"workflow.spec.backprop.mode":    {},
+	"gaggle.spec.backprop.mode":      {},
 	"workflow.spec.backprop.version": {},
 }
 

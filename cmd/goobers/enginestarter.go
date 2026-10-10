@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -253,7 +254,7 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 		RunID:    req.RunID,
 		Gaggle:   req.Gaggle,
 		Workflow: s.def.Name,
-		Backprop: s.def.Spec.Backprop != nil && s.def.Spec.Backprop.Enabled,
+		Backprop: s.def.Spec.Backprop.EffectiveMode() != apiv1.BackpropModeOff,
 		Phase:    phase,
 		Result:   result,
 		Item:     req.Item,
