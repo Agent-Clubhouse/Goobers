@@ -162,7 +162,9 @@ func parallelForkResultRequest(reader *journal.Reader, in StartInput, parallel a
 func (r *Runner) settleParallelRuntimeBranch(ctx context.Context, run *journal.Run, in StartInput, par *parallelExec, runtime parallelRuntime, result parallelBranchResult) error {
 	if len(runtime.forks) != 0 {
 		if err := r.captureParallelForkResult(ctx, run, in, par.spec, result, false); err != nil {
-			return err
+			// Custody refusal must not hide why the branch stopped before
+			// its workspace could be captured. Both causes guide recovery.
+			return errors.Join(result.err, err)
 		}
 	}
 	return settleParallelChildBranch(ctx, run, par, runtime.capacity, result)

@@ -4,6 +4,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -54,6 +55,17 @@ func TestIntegrationParallelForkResultsFreezeBeforeSettlement(t *testing.T) {
 	}
 	outcomes := []*parallelBranchResult{{index: 0, status: journal.BranchSucceeded}, {index: 1, status: journal.BranchFailed, failed: true}}
 	runtime := parallelRuntime{forks: forks}
+	branchFailure, captureFailure := errors.New("branch execution failed"), errors.New("capture refused")
+	capture := r.cfg.PrepareParentForkResult
+	r.cfg.PrepareParentForkResult = func(context.Context, OwnedJournalRecorder, spec.ResultRequest, *spec.Source) (spec.Source, error) {
+		return spec.Source{}, captureFailure
+	}
+	failed := *outcomes[0]
+	failed.err = branchFailure
+	if err := r.settleParallelRuntimeBranch(t.Context(), run, frame.in, par, runtime, failed); !errors.Is(err, branchFailure) || !errors.Is(err, captureFailure) {
+		t.Fatal("workspace refusal hid branch failure", err)
+	}
+	r.cfg.PrepareParentForkResult = capture
 	if err := r.verifyParallelForkResults(t.Context(), run, frame.in, parallel, runtime, outcomes); err == nil {
 		t.Fatal("unrecorded results admitted")
 	}
