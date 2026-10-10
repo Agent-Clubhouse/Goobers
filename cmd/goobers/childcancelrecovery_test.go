@@ -75,3 +75,35 @@ func TestChildDrainFinishesCancelledOrphanOnlyAfterWorkerReconciliation(t *testi
 		t.Fatal("cancellation replay duplicated terminalization", finishes)
 	}
 }
+
+func TestChildOutcomeRechecksExactDurableCancellation(t *testing.T) {
+	f := actualChildLaunchFixture(t)
+	id := publishInterruptedChild(t, f)
+	pod := &childStagePod{childPodFactory: childPodFactory{service: &daemonCredentialService{childQueue: f.service.queue}}, identity: id}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := pod.deferCancelledOutcome(ctx); err != nil {
+		t.Fatal("caller cancellation replaced durable family state", err)
+	}
+	if err := f.service.queue.FenceChildParent(t.Context(), f.submission.Child.Identity.ChildParent, "operator", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := pod.deferCancelledOutcome(ctx); !errors.Is(err, invoke.ErrChildCustodyPending) {
+		t.Fatal("durable cancellation did not defer outcome", err)
+	}
+	pod.identity.RunID = "foreign-child"
+	if err := pod.deferCancelledOutcome(t.Context()); !errors.Is(err, invoke.ErrChildCustodyPending) {
+		t.Fatal("unverified child outcome was allowed", err)
+	}
+	dir, err := f.launcher.layout.FindRunDir(id.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, err := reader.Phase(); err != nil || phase != journal.PhaseRunning {
+		t.Fatal("outcome check rewrote journal", phase, err)
+	}
+}

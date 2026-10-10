@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 )
@@ -44,4 +45,21 @@ func (l *queuedChildLauncher) finishCancelledChild(ctx context.Context, reader *
 		}
 	}
 	return true, nil
+}
+
+// A worker can observe the durable family fence before the queue delivers
+// CancelRun to its host owner. Its returned authority error is then a stopped
+// invocation, not a new failed child outcome. Leave terminalization to the
+// existing exclusive queue owner, which verifies physical custody again.
+func (p *childStagePod) deferCancelledOutcome(ctx context.Context) error {
+	owned, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	ref, err := retainedChildExecutionRef(owned, p.service.childQueue, p.identity, false)
+	if err != nil {
+		return errors.Join(invoke.ErrChildCustodyPending, err)
+	}
+	if ref.Child.CancellationRequested {
+		return invoke.ErrChildCustodyPending
+	}
+	return nil
 }
