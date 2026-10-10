@@ -23,6 +23,11 @@ const mcp = spawn(registered.command, registered.args, { stdio: ['pipe', 'pipe',
 // Deliberately do not echo MCP configuration, arguments, stderr or response data.
 const pending = new Map();
 let nextID = 0;
+let diagnosticPhase = 'initialize';
+function phase(value) {
+  diagnosticPhase = value;
+  process.stderr.write(`qualification phase: ${value}\n`);
+}
 readline.createInterface({ input: mcp.stdout }).on('line', line => {
   const response = JSON.parse(line);
   const resolve = pending.get(response.id);
@@ -40,6 +45,7 @@ function request(method, params) {
   });
 }
 async function tool(name, arguments_) {
+  phase(`tool-${name}`);
   const response = await request('tools/call', { name, arguments: arguments_ });
   if (response.error || response.result?.isError) return { error: true };
   return { value: JSON.parse(response.result.content.find(item => item.type === 'text').text) };
@@ -101,6 +107,7 @@ async function main() {
   return complete();
 }
 function complete() {
+  phase('completion-contract');
   const match = prompt.match(/write your [^\n]+ as JSON to `([^`]+)`/);
   if (!match || path.isAbsolute(match[1]) || match[1].split('/').includes('..')) throw new Error('completion contract unavailable');
   fs.mkdirSync(path.dirname(match[1]), { recursive: true });
@@ -111,6 +118,7 @@ function complete() {
 async function parallelJourney() {
   const branch = prompt.match(/QUALIFICATION_BRANCH=(left|right|join)/)?.[1];
   if (!branch) throw new Error('parallel branch marker missing');
+  phase(`parallel-${branch}-workspace`);
   if (branch === 'join') {
     for (const name of ['left','right']) {
       if (fs.readFileSync(`parent-${name}.txt`, 'utf8') !== `${name} before child\n` ||
@@ -137,6 +145,7 @@ async function parallelJourney() {
     if (accepted.error) throw new Error('parallel child acceptance failed');
     return waitForHost();
   }
+  phase(`parallel-status-result-${Boolean(status.value.resultRef)}-ack-${Boolean(status.value.acknowledged)}`);
   if (!status.value.resultRef) return waitForHost();
   if (status.value.state !== 'completed') throw new Error('parallel child did not complete');
   if (!status.value.acknowledged) {
@@ -148,7 +157,7 @@ async function parallelJourney() {
   return complete();
 }
 main().catch(() => {
-  process.stderr.write('qualification model protocol failed\n');
+  process.stderr.write(`qualification model protocol failed at ${diagnosticPhase}\n`);
   mcp.kill();
   process.exitCode = 1;
 });
