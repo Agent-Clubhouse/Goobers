@@ -216,7 +216,7 @@ func (p *childStagePod) execute(ctx context.Context, env apiv1.InvocationEnvelop
 	if blobs.started && custodyErr != nil {
 		callErr = errors.Join(callErr, custodyErr, invoke.ErrChildCustodyPending)
 	}
-	return out, callErr
+	return out, errors.Join(callErr, p.deferCancelledOutcome(ctx))
 }
 
 func (p *childStagePod) admit(ctx context.Context) (func(), error) {

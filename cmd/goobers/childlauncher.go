@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
@@ -232,6 +233,12 @@ func (l *queuedChildLauncher) Cancel(ctx context.Context, ref childExecutionRef)
 		return nil
 	} // restart recovery, not delivery, owns an absent runner
 	_, _, err := owner.CancelRun(ref.Child.RunID, time.Now())
+	if errors.Is(err, invoke.ErrChildCustodyPending) {
+		// The durable outbox still owns this cancellation. Result independently
+		// reconciles physical custody before publishing any terminal outcome;
+		// a parked owner is neither failed delivery nor proof that work stopped.
+		return nil
+	}
 	return err
 }
 
