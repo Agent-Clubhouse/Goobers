@@ -4693,6 +4693,7 @@ to recover the original recipient set after a lost reply; without it, a
 new key is printed before acceptance. A signal may match zero, one, or
 many workflows. Waits for each dispatched run to finish or pause.
 Capacity-held starts remain queued for goobers up or a same-key retry.
+A submission-only receipt still requires dispatch and completion.
 The command requires the instance lock; stop its daemon first.
 
 Exit codes: 0 = all admitted runs completed or no workflows matched,
