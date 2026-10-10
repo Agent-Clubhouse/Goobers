@@ -228,6 +228,28 @@ materialization for both adapters. This provides the delivery path for configure
 skills; it does not itself supply the child-workflow DSL authoring skill or its
 allowed-Goober catalog.
 
+### Installed child-workflow authoring package
+
+Each opted-in contained parent receives the reserved `goobers-child-workflows`
+skill and its adjacent `catalog.json` through the verified worker kit. Parent
+instructions point to its Claude or Codex skill directory. Existing user skills
+remain selected normally; a configured package using the reserved name is a
+refusal, never an overwrite.
+
+The catalog projects the pinned parent policy intersected with current grants:
+DSL version, gaggle and policy/config digests, allowed Goober names and effective
+capabilities, declared Linux image runner claims, placement floor, publication
+ceiling and limits. It omits credentials, launcher commands, images/endpoints,
+model settings, persona instructions and other Goobers. Catalog JSON is bounded
+to 64 KiB and travels with the kit's existing 8 MiB custody limit.
+
+The skill explains composing a proposal, validation, idempotent submission,
+durable wait, workspace reconciliation and uncertain publication. This catalog
+is advisory; proposals and later dispatch still pass ordinary current-authority
+checks. A narrowed policy can disable new submissions while preserving guidance
+for observing or reconciling an already accepted child. Neither editing the
+catalog nor supplying a new workflow changes the signed stage authority.
+
 ### Sequential agent-authored parents
 
 The daemon coordinates opted-in parent stages through their pinned Linux image
