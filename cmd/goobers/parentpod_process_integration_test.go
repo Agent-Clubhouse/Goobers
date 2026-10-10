@@ -26,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/workerhost"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 type qualificationHostConfig struct {
@@ -49,7 +50,7 @@ func startQualificationHostProcess(t *testing.T, cfg qualificationHostConfig) *q
 	if err := os.WriteFile(path, payload, 0600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(os.Args[0], "-test.run=^TestQualificationDispatchHostProcess$", "-test.v")
+	command := exec.Command(os.Args[0], "-test.run=^TestIntegrationQualificationDispatchHostProcess$", "-test.v")
 	command.Env = append(os.Environ(), "GOOBERS_QUALIFICATION_HOST_CONFIG="+path)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	if err := command.Start(); err != nil {
@@ -96,11 +97,9 @@ func (p *qualificationHostProcess) stop(t *testing.T) {
 // This helper runs in a separate OS process so Kill cannot execute Host.Run's
 // deferred cleanup. All runtime owners are production implementations; only
 // their wiring targets the disposable local qualification infrastructure.
-func TestQualificationDispatchHostProcess(t *testing.T) {
+func TestIntegrationQualificationDispatchHostProcess(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_QUALIFICATION_HOST_CONFIG")
 	path := os.Getenv("GOOBERS_QUALIFICATION_HOST_CONFIG")
-	if path == "" {
-		t.Skip("subprocess helper")
-	}
 	if os.Getenv("GOOBERS_CHILD_KUBE_QUALIFICATION") != "1" {
 		t.Fatal("explicit qualification opt-in required")
 	}
