@@ -69,7 +69,8 @@ func parallelQualificationBarrier(t *testing.T, repository string) <-chan struct
 	t.Helper()
 	ready := make(chan struct{})
 	var mu sync.Mutex
-	seen := map[string]bool{}
+	active := map[string]int{}
+	paired := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		branch := req.URL.Query().Get("branch")
 		if branch != "left" && branch != "right" {
@@ -77,13 +78,17 @@ func parallelQualificationBarrier(t *testing.T, repository string) <-chan struct
 			return
 		}
 		mu.Lock()
-		if !seen[branch] {
-			seen[branch] = true
-			if len(seen) == 2 {
-				close(ready)
-			}
+		if req.Context().Err() != nil {
+			mu.Unlock()
+			return
+		}
+		active[branch]++
+		if !paired && active["left"] > 0 && active["right"] > 0 {
+			paired = true
+			close(ready)
 		}
 		mu.Unlock()
+		defer func() { mu.Lock(); active[branch]--; mu.Unlock() }()
 		select {
 		case <-ready:
 			w.WriteHeader(http.StatusNoContent)

@@ -295,7 +295,7 @@ esac
 		t.Fatal(err)
 	}
 
-	scheduler := localscheduler.New(definitions.Entries, instanceLog)
+	scheduler := localscheduler.New(definitions.Entries, instanceLog, localscheduler.WithInstanceRunConditions(f.cfg.RunConditions.MaxParallelRuns, f.cfg.RunConditions.WorkflowBudgets, f.cfg.RunConditions.WorkflowDailyBudgets))
 	dispatch.AttachScheduler(scheduler)
 	dispatch.AttachDispatchContext(ctx)
 	t.Cleanup(func() { cancel(); scheduler.Wait(); wg.Wait() })
@@ -500,7 +500,8 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 	return newPinnedChildFixture(t, func(root string) {
 		parent := strings.Replace(childValidationParent, "      goal:", "      workspace: repo\n      runsOn: {os: linux, capabilities: [isolated-parent]}\n      goal:", 1)
 		parent = strings.Replace(parent, "allowPRPublication: true", "allowPRPublication: false", 1)
-		if len(mode) != 0 && (mode[0] == "parallel" || mode[0] == "parallel-cancel") {
+		parallel := len(mode) != 0 && (mode[0] == "parallel" || mode[0] == "parallel-cancel")
+		if parallel {
 			parent = parallelQualificationDefinition(t, parent)
 		}
 		writeFileContent(t, filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), parent)
@@ -510,6 +511,14 @@ func realParentQualificationFixture(t *testing.T, image, keyPath string, mode ..
 		var doc map[string]any
 		if err := yaml.Unmarshal([]byte(readFileContent(t, path)), &doc); err != nil {
 			t.Fatal(err)
+		}
+		if parallel {
+			conditions, _ := doc["runConditions"].(map[string]any)
+			if conditions == nil {
+				conditions = map[string]any{}
+			}
+			conditions["maxParallelRuns"] = 2
+			doc["runConditions"] = conditions
 		}
 		delete(doc, "runner")
 		doc["schemaVersion"] = 2
