@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -26,6 +27,7 @@ const defaultChildPruneBudget = 250 * time.Millisecond
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
+	ordinary        *startintent.Service
 	childFamilies   *childFamilyLifecycle
 	queue           *triggerqueue.Store
 	dispatch        *daemonTriggerService
@@ -102,6 +104,9 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if strings.TrimSpace(request.Workflow) == "" || (request.SourceRun != "" && request.Gaggle == "") {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "trigger must name its workflow and priority gaggle", nil)
 	}
+	if response, handled, err := s.acceptOrdinary(ctx, request); handled {
+		return response, err
+	}
 	payload, err := json.Marshal(acceptedTriggerPayload{Request: request, PodScoped: request.PodScoped, PodRunID: request.PodRunID})
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
@@ -137,6 +142,19 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 	var payload acceptedTriggerPayload
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return httpapi.TriggerStatusResponse{}, err
+	}
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return httpapi.TriggerStatusResponse{}, err
+	}
+	if header.Kind == startintent.Kind {
+		envelope, err := startintent.Parse(record.Payload)
+		if err != nil {
+			return httpapi.TriggerStatusResponse{}, err
+		}
+		payload.PodScoped, payload.PodRunID = envelope.Request.PodScoped, envelope.Request.PodRunID
 	}
 	if payload.PodScoped != request.PodScoped || (request.PodScoped && payload.PodRunID != request.PodRunID) {
 		return httpapi.TriggerStatusResponse{}, missing
@@ -194,6 +212,9 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// an envelope also contains an ordinary request. Retain durable custody.
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.drainChild(ctx, record)
+	}
+	if header.Kind == startintent.Kind {
+		return s.drainOrdinary(ctx, record)
 	}
 	if header.Kind != "" {
 		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)

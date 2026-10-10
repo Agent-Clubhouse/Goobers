@@ -42,15 +42,18 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
-	ChildRuntime childRuntimeBuilder
-	observation  *schedulerObservation
-	runtime      *schedulerRuntime
-	Generations  *configgeneration.Retainer
-	Root         string
-	Runner       *runner.Runner
-	Runners      map[string]*runner.Runner
-	LegacyRunner *runner.Runner
-	Telemetry    *telemetry.Client
+	ExecutionGeneration string
+	OrdinaryRuntime     ordinaryRuntimeBuilder
+	OrdinaryCatalog     *ordinaryStartCatalog
+	ChildRuntime        childRuntimeBuilder
+	observation         *schedulerObservation
+	runtime             *schedulerRuntime
+	Generations         *configgeneration.Retainer
+	Root                string
+	Runner              *runner.Runner
+	Runners             map[string]*runner.Runner
+	LegacyRunner        *runner.Runner
+	Telemetry           *telemetry.Client
 	// Shared only by this setup's trace, journal, and diagnostic exporters.
 	TelemetryReplayStart <-chan struct{}
 	RollupDB             *rollup.DB
@@ -180,6 +183,8 @@ func logTelemetryOTLPUnavailable(log *journal.InstanceLog, cause error) {
 }
 
 type schedulerDefinitions struct {
+	ExecutionGeneration string
+	OrdinaryRuntime     ordinaryRuntimeBuilder
 	ChildRuntime        childRuntimeBuilder
 	GenerationResolver  executionGenerationResolver
 	Set                 *instance.ConfigSet
@@ -360,6 +365,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		observation:              observation,
 		runtime:                  runtime,
 		ChildRuntime:             definitions.ChildRuntime,
+		ExecutionGeneration:      definitions.ExecutionGeneration,
+		OrdinaryRuntime:          definitions.OrdinaryRuntime,
 		Generations:              runtime.generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
@@ -849,11 +856,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
-	buildGeneration := schedulerGenerationBuilder(input)
-	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), buildGeneration)
-	return &schedulerDefinitions{
-		ChildRuntime:        childRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), input.Config, buildGeneration),
-		GenerationResolver:  resolveGeneration,
+	return bindGenerationRuntimes(&schedulerDefinitions{
 		Set:                 input.Definitions,
 		Validation:          input.Validation,
 		HarnessPreflight:    harnessInfo,
@@ -870,7 +873,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		EngineRuntime:       engineRuntimeHolder,
 		Worktrees:           firstWorktrees,
 		WorktreesByGaggle:   input.WorktreeManagers,
-	}, nil
+	}, input, l, generation), nil
 }
 
 func schedulerGenerationBuilder(input schedulerDefinitionsInput) generationDefinitionBuilder {
