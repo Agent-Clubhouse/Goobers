@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -88,6 +89,22 @@ func TestOrdinaryHTTPKeepsAcceptedDefinitionAfterSourceEdit(t *testing.T) {
 	repeated := submit()
 	if !repeated.Duplicate || repeated.AcceptanceID != accepted.AcceptanceID {
 		t.Fatal(repeated)
+	}
+	// Apply a valid replacement that would fail if the queue resolved today's
+	// definition instead of the accepted snapshot. Use the production reloader.
+	writeFileContent(t, filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml"), strings.Replace(deterministicWorkflowYAML, `command: ["true"]`, `command: ["false"]`, 1))
+	openPRs := newOpenPRLoop(t.Context(), setup.OpenPRRefresher)
+	t.Cleanup(openPRs.Stop)
+	reloader := &configReloader{layout: layout, setup: setup, scheduler: sched, openPRs: openPRs, reads: &readservice.Local{}, wg: &wg, appliedDigest: setup.ConfigDigest, observedDigest: setup.ConfigDigest, digests: newConfigDigestPublisher(setup.ConfigDigest)}
+	applied, _, _, rejected, err := reloader.pollOnce(time.Now())
+	if err != nil || !applied || rejected != "" {
+		t.Fatal("replacement was not applied", applied, rejected, err)
+	}
+	if setup.OrdinaryCatalog.generation == envelope.Target.ConfigGeneration {
+		t.Fatal("reload did not change applied generation")
+	}
+	if afterReload := submit(); !afterReload.Duplicate || afterReload.AcceptanceID != accepted.AcceptanceID {
+		t.Fatal("reload changed existing acceptance", afterReload)
 	}
 	// A fresh boot retainer has no daemon queue attached and no journal yet.
 	fresh, err := newExecutionGenerationRetainer(layout)

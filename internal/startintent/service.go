@@ -112,7 +112,7 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 		return err
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")
-	admitted, err := scheduler.TriggerPreparedOrdinary(admission, execution, prepared.Entry, runID, localscheduler.PreparedTriggerOptions{Force: e.Request.Force, SourceRun: e.Request.SourceRun, PullRequest: e.Request.PullRequest}, s.Now())
+	admitted, err := scheduler.TriggerPreparedOrdinary(admission, execution, prepared.Entry, runID, localscheduler.PreparedTriggerOptions{Force: e.Request.Force, SourceRun: e.Request.SourceRun}, s.Now())
 	if err != nil {
 		return s.refuseDispatch(admission, record.ID, err)
 	}
