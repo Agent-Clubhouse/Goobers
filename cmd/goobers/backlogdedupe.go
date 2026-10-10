@@ -56,14 +56,15 @@ const backlogDedupeHelp = "Usage: goobers backlog-dedupe [path]\n\n" +
 	"compareLabels lists labels every comparison item must carry, sent to the\n" +
 	"provider query; compareFieldPredicate filters retrieved items by native\n" +
 	"fields exactly (Azure DevOps also narrows its query by required exact\n" +
-	"System.AreaPath and System.WorkItemType equalities); compareScanLimit\n" +
-	"(default 10000, at most 50000) bounds the raw candidates read and is never\n" +
-	"exceeded. Claimed items must fall inside the comparison scope to be\n" +
-	"compared. The artifact's input section reports whether collection was\n" +
-	"complete, why it stopped, the claimed items not compared, and that pages\n" +
-	"are not an atomic snapshot. An incomplete input is a usable but partial\n" +
-	"assessment; a complete one with no candidates does not prove that no\n" +
-	"duplicate exists.\n\n" +
+	"System.AreaPath and System.WorkItemType equalities when it accepts them);\n" +
+	"compareScanLimit (default 10000, at most 50000) bounds the raw candidates\n" +
+	"read and is never exceeded. Claimed items must fall inside the comparison\n" +
+	"scope to be compared. The artifact's input section reports whether\n" +
+	"collection was complete, why it stopped, which constraints every provider\n" +
+	"query applied, how many pages fell back to a broader query, the claimed\n" +
+	"items not compared, and that pages are not an atomic snapshot. An\n" +
+	"incomplete input is a usable but partial assessment; a complete one with\n" +
+	"no candidates does not prove that no duplicate exists.\n\n" +
 	"Exit codes: 0 = candidate artifact written, 1 = config/credential/provider\n" +
 	"error, 2 = usage error.\n"
 
@@ -217,8 +218,8 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 }
 
 // dedupeComparisonScope reads the comparison-set inputs: compareState (open,
-// the default, or all), compareLabels (required labels, narrowed by the
-// provider query), compareFieldPredicate (applied after retrieval) and
+// the default, or all), compareLabels (required labels, sent to the provider
+// query), compareFieldPredicate (rechecked after retrieval) and
 // compareScanLimit (the raw candidate budget).
 func dedupeComparisonScope(repo providers.RepositoryRef) (backlogscope.Scope, string, int, error) {
 	state, err := backlogscope.ParseState(providerInput("compareState", backlogscope.StateOpen))

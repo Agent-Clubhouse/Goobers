@@ -222,7 +222,8 @@ func TestCollectADONarrowsByAreaAndTypeServerSide(t *testing.T) {
 	}
 	report := NewReport(scope, "", coverage, items, nil)
 	if !slices.Equal(report.Scope.ProviderNarrowed, []string{"labels", "fieldPredicate:System.WorkItemType", "fieldPredicate:System.AreaPath"}) ||
-		!slices.Equal(report.Scope.FilteredAfterRetrieval, []string{"fieldPredicate"}) {
+		report.Scope.ProviderNarrowingFallbackPages != 0 ||
+		!slices.Equal(report.Scope.FilteredAfterRetrieval, []string{"identity", "provider", "state", "labels", "fieldPredicate"}) {
 		t.Fatalf("scope report = %+v, want type/area provider narrowing with an exact recheck", report.Scope)
 	}
 }
@@ -249,6 +250,11 @@ func TestCollectADOUnknownAreaFallsBackToExactRecheck(t *testing.T) {
 	if len(fake.queries) != 2 || !strings.Contains(fake.queries[0], `[System.AreaPath] = 'project\Gone'`) ||
 		strings.Contains(fake.queries[1], "[System.AreaPath]") || strings.Contains(fake.queries[1], "[System.WorkItemType]") {
 		t.Fatalf("queries = %q, want the narrowed query then an un-narrowed retry", fake.queries)
+	}
+	report := NewReport(adoScope(nil, predicate, StateOpen), "", coverage, items, nil)
+	if len(report.Scope.ProviderNarrowed) != 0 || report.Scope.ProviderNarrowingFallbackPages != 1 ||
+		!slices.Contains(report.Scope.FilteredAfterRetrieval, "fieldPredicate") {
+		t.Fatalf("scope report = %+v, want no provider narrowing claimed and one broad fallback page", report.Scope)
 	}
 }
 
@@ -318,6 +324,9 @@ func TestCollectGitHubBudgetBoundsPostFilterPage(t *testing.T) {
 	if !slices.Equal(pages, []string{"1/100", "2/100"}) {
 		t.Fatalf("pages = %v, want two full-width pages", pages)
 	}
+	if got := NewReport(scope, "", coverage, items, nil).Scope.ProviderNarrowed; !slices.Equal(got, []string{"state"}) {
+		t.Fatalf("providerNarrowed = %v, want only the state GitHub's query filtered", got)
+	}
 }
 
 // TestCollectGiteaBudgetCutsPageAndResumesInside proves the Gitea provider
@@ -355,6 +364,16 @@ func TestCollectGiteaBudgetCutsPageAndResumesInside(t *testing.T) {
 	}
 	if len(resumed) != 30 || resumed[0].ID != "71" || pageInfo.CandidateCount != 30 || !pageInfo.HasNext || pageInfo.NextCursor != "3" {
 		t.Fatalf("resumed %v pageInfo = %+v, want issues 71-100 then page 3", itemIDs(resumed), pageInfo)
+	}
+
+	labeled := &providers.ListWorkItemsPageInfo{}
+	if _, err := provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
+		Repository: repo, State: StateOpen, Labels: []string{"approved"}, Limit: PageSize, PageInfo: labeled,
+	}); err != nil {
+		t.Fatalf("labeled list: %v", err)
+	}
+	if !slices.Equal(labeled.QueryNarrowed, []string{"state"}) {
+		t.Fatalf("queryNarrowed = %v, want state only: Gitea discards label names it cannot resolve", labeled.QueryNarrowed)
 	}
 }
 

@@ -106,7 +106,7 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 			return nil, err
 		}
 	}
-	wiql, err := p.queryNarrowedWIQL(ctx, endpoint, query, adoWIQLFieldClauses(req.FieldPredicate), orderBy)
+	wiql, fellBack, err := p.queryNarrowedWIQL(ctx, endpoint, query, adoWIQLFieldClauses(req.FieldPredicate), orderBy)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +137,8 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		// candidateLimit (fetchWasCapped) — ADO may hold further
 		// candidates beyond what this round asked for.
 		req.PageInfo.CandidateCount = lastScanned + 1
+		req.PageInfo.QueryNarrowed = adoQueryNarrowed(req, requestedState, fellBack)
+		req.PageInfo.QueryNarrowingFallback = fellBack
 		scannedEverything := lastScanned == len(refs)-1
 		fetchWasCapped := candidateLimit > 0 && len(refs) == candidateLimit
 		req.PageInfo.HasNext = boundedScan && candidateLimit > 0 && (!scannedEverything || fetchWasCapped)
@@ -212,16 +214,38 @@ func adoWIQLFieldClauses(predicate *fieldpredicate.Predicate) string {
 // ADO rejects a WIQL area path that names no classification node with HTTP
 // 400 (TF51011); narrowing is only an optimisation over the exact recheck, so
 // a rejected narrowed query is retried without it rather than failing a read
-// that would otherwise just match nothing.
-func (p *ADOProvider) queryNarrowedWIQL(ctx context.Context, endpoint, query, narrowing, orderBy string) (adoWIQLResponse, error) {
-	var wiql adoWIQLResponse
-	err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query + narrowing + orderBy}, &wiql)
+// that would otherwise just match nothing. fellBack reports that retry.
+func (p *ADOProvider) queryNarrowedWIQL(ctx context.Context, endpoint, query, narrowing, orderBy string) (wiql adoWIQLResponse, fellBack bool, err error) {
+	err = p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query + narrowing + orderBy}, &wiql)
 	var responseErr *providerResponseError
 	if err != nil && narrowing != "" && errors.As(err, &responseErr) && responseErr.statusCode == http.StatusBadRequest {
 		wiql = adoWIQLResponse{}
 		err = p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query + orderBy}, &wiql)
+		fellBack = true
 	}
-	return wiql, err
+	return wiql, fellBack, err
+}
+
+// adoQueryNarrowed names the request filters the WIQL query that actually
+// ran applied (ListWorkItemsPageInfo.QueryNarrowed). The common open/closed
+// states are read from each item's state category after retrieval, so only
+// a literal state is narrowed; field equalities are absent after a fallback.
+func adoQueryNarrowed(req ListWorkItemsRequest, requestedState string, fellBack bool) []string {
+	narrowed := []string{}
+	if len(req.Labels) > 0 {
+		narrowed = append(narrowed, QueryNarrowedLabels)
+	}
+	switch requestedState {
+	case "", "all", "open", "closed":
+	default:
+		narrowed = append(narrowed, QueryNarrowedState)
+	}
+	if !fellBack {
+		for _, equality := range ADOQueryFieldEqualities(req.FieldPredicate) {
+			narrowed = append(narrowed, QueryNarrowedFieldPrefix+equality.Field)
+		}
+	}
+	return narrowed
 }
 
 // ADOQueryFieldEqualities returns the required string equalities of predicate

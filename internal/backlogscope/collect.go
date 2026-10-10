@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/goobers/goobers/internal/fieldpredicate"
@@ -55,8 +56,8 @@ type Scope struct {
 	// FieldPredicate is applied exactly to every retrieved item. Azure
 	// DevOps also narrows its query by the predicate's required exact
 	// area-path and work-item-type equalities (providers.
-	// ADOQueryFieldEqualities); other native-field conditions are filtered
-	// only after retrieval.
+	// ADOQueryFieldEqualities) unless it rejects that query; the report
+	// records what each page's query actually applied.
 	FieldPredicate *fieldpredicate.Predicate
 	// State is StateOpen or StateAll.
 	State string
@@ -91,6 +92,32 @@ type Coverage struct {
 	// repeated an item already collected.
 	ScopeMismatches int    `json:"scopeMismatches"`
 	Consistency     string `json:"consistency"`
+
+	// queryNarrowed holds the provider-query filters applied on every page
+	// read; narrowingFallbackPages counts pages whose provider dropped its
+	// field clauses after rejecting the narrowed query.
+	queryNarrowed          []string
+	narrowingFallbackPages int
+}
+
+// recordNarrowing folds one page's provider-reported query narrowing into
+// the collection: a filter counts as provider-narrowed only if every page
+// applied it.
+func (c *Coverage) recordNarrowing(page *providers.ListWorkItemsPageInfo) {
+	if page.QueryNarrowingFallback {
+		c.narrowingFallbackPages++
+	}
+	if c.Pages == 1 {
+		c.queryNarrowed = append([]string{}, page.QueryNarrowed...)
+		return
+	}
+	kept := c.queryNarrowed[:0]
+	for _, name := range c.queryNarrowed {
+		if slices.Contains(page.QueryNarrowed, name) {
+			kept = append(kept, name)
+		}
+	}
+	c.queryNarrowed = kept
 }
 
 // Complete reports whether the whole requested scope was read.
@@ -140,6 +167,7 @@ func Collect(ctx context.Context, provider Lister, scope Scope, maxCandidates in
 		}
 		coverage.Pages++
 		coverage.ExaminedCandidates += pageInfo.CandidateCount
+		coverage.recordNarrowing(pageInfo)
 		for _, item := range page {
 			if seen[item.ID] || !scope.matches(item) {
 				coverage.ScopeMismatches++
@@ -185,6 +213,25 @@ func (s Scope) matches(item providers.WorkItem) bool {
 	return err == nil && matched
 }
 
+// retrievalChecks names the checks matches and Collect's de-duplication
+// apply to every retrieved item for this scope.
+func (s Scope) retrievalChecks() []string {
+	checks := []string{"identity"}
+	if s.Repository.Provider != "" {
+		checks = append(checks, "provider")
+	}
+	if s.State == StateOpen {
+		checks = append(checks, "state")
+	}
+	if len(s.Labels) > 0 {
+		checks = append(checks, "labels")
+	}
+	if !s.FieldPredicate.IsZero() {
+		checks = append(checks, "fieldPredicate")
+	}
+	return checks
+}
+
 // Assessment values a Report carries.
 const (
 	AssessmentComplete   = "complete-input"
@@ -212,11 +259,19 @@ type ScopeReport struct {
 	State          string   `json:"state"`
 	Labels         []string `json:"labels"`
 	FieldPredicate string   `json:"fieldPredicate,omitempty"`
-	// ProviderNarrowed names the scope parts sent to the provider query;
-	// "fieldPredicate:<field>" is a required exact equality on that field.
+	// ProviderNarrowed names the scope parts the provider reported its query
+	// actually applied on every page read ("labels", "state", and
+	// "fieldPredicate:<field>" for a required exact equality on that field).
+	// It is empty when no page was read.
 	ProviderNarrowed []string `json:"providerNarrowed"`
-	// FilteredAfterRetrieval names the scope parts applied exactly to
-	// retrieved items, including any also narrowed by the provider query.
+	// ProviderNarrowingFallbackPages counts pages for which the provider
+	// rejected its narrowed query and read without its field clauses; those
+	// parts were then applied only after retrieval.
+	ProviderNarrowingFallbackPages int `json:"providerNarrowingFallbackPages"`
+	// FilteredAfterRetrieval names the scope checks applied exactly to every
+	// retrieved item, whether or not the provider query also narrowed them:
+	// "identity" (non-empty, not already collected), "provider", "state",
+	// "labels" and "fieldPredicate".
 	FilteredAfterRetrieval []string `json:"filteredAfterRetrieval"`
 }
 
@@ -234,22 +289,12 @@ func NewReport(scope Scope, fieldExpression string, coverage Coverage, items []p
 		}
 	}
 	scopeReport := ScopeReport{
-		State:                  scope.State,
-		Labels:                 append([]string{}, scope.Labels...),
-		FieldPredicate:         strings.TrimSpace(fieldExpression),
-		ProviderNarrowed:       []string{},
-		FilteredAfterRetrieval: []string{},
-	}
-	if len(scope.Labels) > 0 {
-		scopeReport.ProviderNarrowed = append(scopeReport.ProviderNarrowed, "labels")
-	}
-	if scope.Repository.Provider == providers.ProviderADO {
-		for _, equality := range providers.ADOQueryFieldEqualities(scope.FieldPredicate) {
-			scopeReport.ProviderNarrowed = append(scopeReport.ProviderNarrowed, "fieldPredicate:"+equality.Field)
-		}
-	}
-	if !scope.FieldPredicate.IsZero() {
-		scopeReport.FilteredAfterRetrieval = append(scopeReport.FilteredAfterRetrieval, "fieldPredicate")
+		State:                          scope.State,
+		Labels:                         append([]string{}, scope.Labels...),
+		FieldPredicate:                 strings.TrimSpace(fieldExpression),
+		ProviderNarrowed:               append([]string{}, coverage.queryNarrowed...),
+		ProviderNarrowingFallbackPages: coverage.narrowingFallbackPages,
+		FilteredAfterRetrieval:         scope.retrievalChecks(),
 	}
 	assessment := AssessmentComplete
 	if !coverage.Complete() || len(missing) > 0 {

@@ -75,6 +75,7 @@ func (p *GiteaProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequ
 		}
 		if req.PageInfo != nil {
 			req.PageInfo.CandidateCount = len(issues)
+			req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, false)
 			req.PageInfo.HasNext = page*pageSize < total
 			req.PageInfo.NextCursor = ""
 			if req.PageInfo.HasNext {

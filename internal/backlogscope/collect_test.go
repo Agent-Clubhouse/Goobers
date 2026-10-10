@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -23,6 +24,8 @@ type pagedLister struct {
 type listerPage struct {
 	items      []providers.WorkItem
 	candidates int
+	narrowed   []string
+	fallback   bool
 	next       string
 	err        error
 	// waitForDone blocks the page until the caller's context ends.
@@ -45,6 +48,8 @@ func (l *pagedLister) ListWorkItems(ctx context.Context, req providers.ListWorkI
 	req.PageInfo.CandidateCount = page.candidates
 	req.PageInfo.HasNext = page.next != ""
 	req.PageInfo.NextCursor = page.next
+	req.PageInfo.QueryNarrowed = page.narrowed
+	req.PageInfo.QueryNarrowingFallback = page.fallback
 	return page.items, nil
 }
 
@@ -73,14 +78,17 @@ func TestCollectSendsScopeAndPagesToCompletion(t *testing.T) {
 	untyped := item("5", "open", "approved")
 	untyped.Fields = fieldpredicate.Fields{"type": "Bug"}
 	lister := &pagedLister{pages: map[string]listerPage{
-		"": {items: []providers.WorkItem{item("1", "open", "Approved"), item("2", "closed", "approved")}, candidates: 2, next: "2"},
+		"": {
+			items:      []providers.WorkItem{item("1", "open", "Approved"), item("2", "closed", "approved")},
+			candidates: 2, next: "2", narrowed: []string{"labels", "state", "fieldPredicate:type"},
+		},
 		"2": {items: []providers.WorkItem{
 			item("1", "open", "approved"), // repeated across pages
 			item("3", "open", "approved-later"),
 			foreign,
 			untyped,
 			item("6", "open", "approved"),
-		}, candidates: 5},
+		}, candidates: 5, narrowed: []string{"state", "labels"}, fallback: true},
 	}}
 	scope := Scope{
 		Repository:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "o", Name: "r"},
@@ -95,9 +103,17 @@ func TestCollectSendsScopeAndPagesToCompletion(t *testing.T) {
 	if got := itemIDs(items); !slices.Equal(got, []string{"1", "6"}) {
 		t.Fatalf("items = %v, want [1 6]", got)
 	}
-	want := Coverage{Status: StatusComplete, ExaminedCandidates: 7, MaxCandidates: 1000, Pages: 2, ScopeMismatches: 5, Consistency: ConsistencyPaged}
-	if coverage != want {
+	want := Coverage{
+		Status: StatusComplete, ExaminedCandidates: 7, MaxCandidates: 1000, Pages: 2, ScopeMismatches: 5, Consistency: ConsistencyPaged,
+		queryNarrowed: []string{"labels", "state"}, narrowingFallbackPages: 1,
+	}
+	if !reflect.DeepEqual(coverage, want) {
 		t.Fatalf("coverage = %+v, want %+v", coverage, want)
+	}
+	report := NewReport(scope, "", coverage, items, nil)
+	if !slices.Equal(report.Scope.ProviderNarrowed, []string{"labels", "state"}) || report.Scope.ProviderNarrowingFallbackPages != 1 ||
+		!slices.Equal(report.Scope.FilteredAfterRetrieval, []string{"identity", "provider", "state", "labels", "fieldPredicate"}) {
+		t.Fatalf("scope report = %+v, want only the narrowing every page applied, the fallback page and every recheck", report.Scope)
 	}
 	if len(lister.requests) != 2 {
 		t.Fatalf("requests = %d, want 2", len(lister.requests))
@@ -229,7 +245,7 @@ func TestNewReportSeparatesIncompleteInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := Scope{Labels: []string{"approved"}, FieldPredicate: predicate, State: StateAll}
-	complete := Coverage{Status: StatusComplete}
+	complete := Coverage{Status: StatusComplete, Pages: 1, queryNarrowed: []string{"labels"}}
 	items := []providers.WorkItem{item("1", "open"), item("2", "closed")}
 
 	report := NewReport(scope, ` fields["type"] == "Task" `, complete, items, []string{"1"})
@@ -237,7 +253,7 @@ func TestNewReportSeparatesIncompleteInput(t *testing.T) {
 		t.Fatalf("report = %+v, want complete", report)
 	}
 	if !slices.Equal(report.Scope.ProviderNarrowed, []string{"labels"}) ||
-		!slices.Equal(report.Scope.FilteredAfterRetrieval, []string{"fieldPredicate"}) ||
+		!slices.Equal(report.Scope.FilteredAfterRetrieval, []string{"identity", "labels", "fieldPredicate"}) ||
 		report.Scope.FieldPredicate != `fields["type"] == "Task"` || report.Scope.State != StateAll {
 		t.Fatalf("scope report = %+v", report.Scope)
 	}
@@ -248,8 +264,8 @@ func TestNewReportSeparatesIncompleteInput(t *testing.T) {
 	}
 
 	report = NewReport(scope, "", Coverage{Status: StatusIncomplete, Reason: ReasonScanLimit}, nil, nil)
-	if report.Assessment != AssessmentIncomplete {
-		t.Fatalf("report = %+v, want incomplete for an incomplete collection with no candidates", report)
+	if report.Assessment != AssessmentIncomplete || len(report.Scope.ProviderNarrowed) != 0 {
+		t.Fatalf("report = %+v, want incomplete with no provider narrowing for a collection that read no page", report)
 	}
 }
 

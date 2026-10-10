@@ -127,6 +127,7 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 			scannedEverything := scanned == len(issues)
 			fetchWasCapped := fetched == pageSize
 			req.PageInfo.CandidateCount = len(issues)
+			req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, true)
 			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped || budgetCapped
 			req.PageInfo.NextCursor = ""
 			if req.PageInfo.HasNext {

@@ -1340,6 +1340,37 @@ type ListWorkItemsPageInfo struct {
 	CandidateCount int
 	HasNext        bool
 	NextCursor     string
+	// QueryNarrowed names the request filters the provider query that
+	// actually served this window applied server-side: QueryNarrowedLabels,
+	// QueryNarrowedState, and QueryNarrowedFieldPrefix+<field> for each
+	// pushed-down native-field equality. Filters absent here, if requested,
+	// were applied only after retrieval.
+	QueryNarrowed []string
+	// QueryNarrowingFallback reports that the provider rejected its narrowed
+	// query and re-read the window without its field clauses.
+	QueryNarrowingFallback bool
+}
+
+// ListWorkItemsPageInfo.QueryNarrowed entries.
+const (
+	QueryNarrowedLabels      = "labels"
+	QueryNarrowedState       = "state"
+	QueryNarrowedFieldPrefix = "fieldPredicate:"
+)
+
+// issueListQueryNarrowed is QueryNarrowed for GitHub and Gitea, whose
+// issue-list state parameter filters server-side. GitHub's labels parameter
+// does too; Gitea silently discards label names it cannot resolve to a
+// repository label (organization labels included), so it never claims labels.
+func issueListQueryNarrowed(req ListWorkItemsRequest, labelsNarrow bool) []string {
+	narrowed := []string{}
+	if labelsNarrow && len(req.Labels) > 0 {
+		narrowed = append(narrowed, QueryNarrowedLabels)
+	}
+	if req.State != "" && req.State != "all" {
+		narrowed = append(narrowed, QueryNarrowedState)
+	}
+	return narrowed
 }
 
 // MatchesLabelPredicate applies the request's exact client-side label filter.
