@@ -212,6 +212,22 @@ during reconciliation and daemon reconstruction are not qualified by this test.
 That test alone does not qualify the parent lifecycle; see the parent journey
 tests below.
 
+### Captured skills in worker kits
+
+Agentic worker kits include only the selected Goober's resolved skill packages
+from the captured configuration. The package bytes share the kit's verified
+content digest. Pods materialize those bytes through the same harness skill
+owner as local execution, using `.claude/skills` or `.agents/skills` for the
+supported parent adapters. Shared-persona skill precedence is resolved before
+transport. Unselected packages and later edits to the live configuration are
+not sent; pods do not read the instance configuration.
+
+`TestWorkerKitDeliversCapturedSkillsThroughPodExecutor` exercises the actual kit
+writer, blob transport, digest verification, pod executor construction and skill
+materialization for both adapters. This provides the delivery path for configured
+skills; it does not itself supply the child-workflow DSL authoring skill or its
+allowed-Goober catalog.
+
 ### Sequential agent-authored parents
 
 The daemon coordinates opted-in parent stages through their pinned Linux image

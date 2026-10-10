@@ -510,6 +510,7 @@ func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
 		GooberName:       w.Kit.Envelope.Goober,
 		Goobers:          w.Kit.Goobers,
 		Instructions:     w.Kit.Instructions,
+		SkillPackages:    w.Kit.SkillPackages,
 		Assets:           w.Kit.AssetBundles(),
 		HarnessInfo:      w.HarnessInfo,
 		AdapterRegistry:  w.AdapterRegistry,
