@@ -580,7 +580,7 @@ func newWireFixtures() wireFixtures {
 			NextCursor: "next-run",
 		},
 		RunDetail:   wireRunDetail(runSummary, graph, timestamp),
-		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "queued", AcceptedAt: timestamp, UpdatedAt: timestamp, CancellationRequested: true}}},
+		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}}},
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
 			Events: []readservice.RunEvent{{

@@ -7,6 +7,7 @@ import { useLiveQuery } from "../liveQuery";
 import type { Navigate } from "../routing";
 import { Action } from "../ui/Action";
 import { Timestamp } from "../ui/Timestamp";
+import { ChildPublicationSummary } from "./ChildPublicationSummary";
 
 const stateLabels: Record<ChildHistoryItem["state"], string> = {
   queued: "Queued", running: "Started", awaiting_human: "Needs human",
@@ -50,6 +51,7 @@ export function ChildHistoryPanel({ client, runId, gaggle, navigate }: {
           <div>Accepted <Timestamp value={child.acceptedAt} /> · Updated <Timestamp value={child.updatedAt} /></div>
           {child.cancellationRequested && !child.terminalAt && <p>Cancellation requested; stopping is not yet confirmed.</p>}
           {child.acknowledgedAt && <p>Parent acknowledged the outcome <Timestamp value={child.acknowledgedAt} />.</p>}
+          <ChildPublicationSummary publication={child.publication} />
           {child.expiredAt ? <p>Saved child result expired <Timestamp value={child.expiredAt} />. This result is no longer recoverable.</p> :
             child.state !== "queued" && <Action onClick={() => navigate({ page: "run", id: child.runId })} aria-label={`Open child run ${child.runId}`}>Open child run</Action>}
         </li>)}</ul>
