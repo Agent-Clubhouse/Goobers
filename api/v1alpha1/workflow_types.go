@@ -370,14 +370,15 @@ type Task struct {
 	// +kubebuilder:validation:Enum=fail;salvage
 	// +optional
 	OnTimeout string `json:"onTimeout,omitempty" yaml:"onTimeout,omitempty"`
-	// ExpectedOutputs declares intended task postconditions. The V0 local runner
-	// accepts but does not enforce this field; validation emits VER003 when set.
+	// ExpectedOutputs declares intended task postconditions. Through DSL 3.0 it
+	// is advisory and validation emits VER003 when set. From DSL 3.1 a stage
+	// fails when it succeeds without emitting every declared key.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
 	// ArtifactSlots declares named artifact positions this producer may publish
 	// in DSL 3.1 and later. The names are producer-local stable handles; runtime
 	// resolution still uses the existing positional/context-pointer artifact
-	// transport. ExpectedOutputs remains advisory and unchanged.
+	// transport. ExpectedOutputs does not name artifact slots.
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
 	ArtifactSlots []ArtifactSlot `json:"artifactSlots,omitempty" yaml:"artifactSlots,omitempty"`

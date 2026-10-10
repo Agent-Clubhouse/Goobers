@@ -72,6 +72,7 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	done := make(chan struct{})
 	process := &copilotControlProcess{cancel: cancel, done: done}
 	req.Command = command
+	req.Stdin = nil // The prompt goes over session RPC, not the server's stdin.
 	req.Env = overrideEnv(req.Env, "COPILOT_CONNECTION_TOKEN", token)
 	req.StdoutCapture = capture
 	req.Activity = nil             // The session's RPC event stream owns activity observations.

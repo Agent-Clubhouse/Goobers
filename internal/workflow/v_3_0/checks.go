@@ -57,9 +57,13 @@ func CheckWarnings(def Definition) []string {
 		// executor and never through a result file, so expectedOutputs
 		// there is neither inert nor missing anything.
 		if len(task.ExpectedOutputs) > 0 && isShellStage(task) && strings.TrimSpace(task.Inputs["resultFile"]) == "" {
+			consequence := "so it is inert"
+			if EnforcesExpectedOutputs(def.DSLVersion, task) {
+				consequence = "so every successful run of it fails with missing_expected_outputs"
+			}
 			warnings = append(warnings, fmt.Sprintf(
-				`task %q: expectedOutputs is declared but the stage has no inputs.resultFile to emit it through, so it is inert`,
-				task.Name,
+				`task %q: expectedOutputs is declared but the stage has no inputs.resultFile to emit it through, %s`,
+				task.Name, consequence,
 			))
 		}
 		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
