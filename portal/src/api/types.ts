@@ -1096,6 +1096,22 @@ export interface RunReliability {
   humanInterventionReason?: string;
 }
 
+export interface ChildPublicationItem {
+  action: "branch" | "pr";
+  state: "prepared" | "effect_pending" | "confirmed";
+  head: string;
+  base: string;
+  commit: string;
+  pullRequestUrl: string;
+  pullRequestNumber: number;
+  needsHuman: boolean;
+}
+
+export interface ChildPublicationHistory {
+  status: "recorded" | "unavailable" | "expired";
+  items: ChildPublicationItem[];
+}
+
 export interface ChildHistoryItem {
   childId: string;
   runId: string;
@@ -1108,6 +1124,7 @@ export interface ChildHistoryItem {
   acknowledgedAt?: string;
   expiredAt?: string;
   cancellationRequested: boolean;
+  publication?: ChildPublicationHistory;
 }
 
 export interface ChildHistoryPage {

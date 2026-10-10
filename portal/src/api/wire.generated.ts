@@ -1256,10 +1256,36 @@ export const goWireFixtures = {
         "runId": "child-run",
         "stageOccurrence": "inspect/branch0/visit1",
         "invocationKey": "inspect",
-        "state": "queued",
+        "state": "failed",
         "acceptedAt": "2026-07-18T12:34:56Z",
         "updatedAt": "2026-07-18T12:34:56Z",
-        "cancellationRequested": true
+        "terminalAt": "2026-07-18T12:34:56Z",
+        "cancellationRequested": true,
+        "publication": {
+          "status": "recorded",
+          "items": [
+            {
+              "action": "branch",
+              "state": "confirmed",
+              "head": "factory/children/child-run",
+              "base": "main",
+              "commit": "abcdef",
+              "pullRequestUrl": "",
+              "pullRequestNumber": 0,
+              "needsHuman": false
+            },
+            {
+              "action": "pr",
+              "state": "effect_pending",
+              "head": "factory/children/child-run",
+              "base": "main",
+              "commit": "abcdef",
+              "pullRequestUrl": "",
+              "pullRequestNumber": 0,
+              "needsHuman": true
+            }
+          ]
+        }
       }
     ],
     "nextCursor": ""
