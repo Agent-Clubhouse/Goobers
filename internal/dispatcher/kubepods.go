@@ -54,30 +54,47 @@ func (k *kubePodAPI) DeletePodWithIdentity(ctx context.Context, namespace, name 
 // verified termination and surrender. UID and resourceVersion tests prevent
 // replacement/deletion races, and every unrelated finalizer remains intact.
 func (k *kubePodAPI) FinalizePodWithIdentity(ctx context.Context, namespace, name string, uid types.UID) error {
-	pod, err := k.GetPod(ctx, namespace, name)
-	if apierrors.IsNotFound(err) {
-		return nil // caller already holds exact-object terminal evidence
+	var lastVersion string
+	var lastErr error
+	// A status update can invalidate the JSON Patch resource-version test.
+	// Re-read and rebuild at most three times, and only after the same UID's
+	// version actually changes. Never relax the atomic identity/version tests.
+	for range 3 {
+		pod, err := k.GetPod(ctx, namespace, name)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if pod.UID != uid || pod.ResourceVersion == "" {
+			return ErrChildIsolation
+		}
+		if lastErr != nil && pod.ResourceVersion == lastVersion {
+			return lastErr
+		}
+		finalizers := slices.DeleteFunc(slices.Clone(pod.Finalizers), func(value string) bool { return value == childCustodyFinalizer })
+		if len(finalizers) == len(pod.Finalizers) {
+			return nil
+		}
+		patch, err := json.Marshal([]map[string]any{
+			{"op": "test", "path": "/metadata/uid", "value": string(uid)},
+			{"op": "test", "path": "/metadata/resourceVersion", "value": pod.ResourceVersion},
+			{"op": "replace", "path": "/metadata/finalizers", "value": finalizers},
+		})
+		if err != nil {
+			return err
+		}
+		_, err = k.client.CoreV1().Pods(namespace).Patch(ctx, name, types.JSONPatchType, patch, metav1.PatchOptions{})
+		if err == nil || apierrors.IsNotFound(err) {
+			return nil
+		}
+		if !apierrors.IsConflict(err) && !apierrors.IsInvalid(err) {
+			return err
+		}
+		lastVersion, lastErr = pod.ResourceVersion, err
 	}
-	if err != nil {
-		return err
-	}
-	if pod.UID != uid || pod.ResourceVersion == "" {
-		return ErrChildIsolation
-	}
-	finalizers := slices.DeleteFunc(slices.Clone(pod.Finalizers), func(value string) bool { return value == childCustodyFinalizer })
-	if len(finalizers) == len(pod.Finalizers) {
-		return nil
-	}
-	patch, err := json.Marshal([]map[string]any{
-		{"op": "test", "path": "/metadata/uid", "value": string(uid)},
-		{"op": "test", "path": "/metadata/resourceVersion", "value": pod.ResourceVersion},
-		{"op": "replace", "path": "/metadata/finalizers", "value": finalizers},
-	})
-	if err != nil {
-		return err
-	}
-	_, err = k.client.CoreV1().Pods(namespace).Patch(ctx, name, types.JSONPatchType, patch, metav1.PatchOptions{})
-	return err
+	return lastErr
 }
 
 // GetPod reads one pod; a NotFound surfaces as the error the supervise loop
