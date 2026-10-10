@@ -52,21 +52,26 @@ async function main() {
   const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'qualification-model', version: '1' } });
   if (init.error) throw new Error('MCP initialization failed');
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
-  const invocationKey = 'qualification-child';
+  let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
-  if (!['scratch','merge','replace','discard','cancel'].includes(mode)) throw new Error('unknown qualification mode');
-  const action = mode === 'scratch' ? 'discard' : mode;
+  if (!['scratch','merge','replace','discard','cancel','iterate'].includes(mode)) throw new Error('unknown qualification mode');
+  const scratch = ['scratch','iterate'].includes(mode);
+  const action = scratch ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
+  if (mode === 'iterate' && !status.error && status.value.acknowledged) {
+    invocationKey = 'qualification-child-2';
+    status = await tool('get_child_workflow', { invocationKey });
+  }
   if (status.error) {
     const sourceFile = 'generated-child.yaml';
     fs.writeFileSync('parent-before-child.txt', 'parent before child\n');
-    let command = mode === 'scratch' ? 'echo real-generated-child' : 'test "$(cat parent-before-child.txt)" = "parent before child" && printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Child work"';
+    let command = scratch ? 'echo real-generated-child' : 'test "$(cat parent-before-child.txt)" = "parent before child" && printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Child work"';
     if (mode === 'cancel') {
       const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
       if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid qualification signal');
       command = `node -e 'require("http").get(${JSON.stringify(notify)}, r => r.resume())'; sleep 60`;
     }
-    const run = JSON.stringify({ workspace: ['scratch','cancel'].includes(mode) ? 'scratch' : 'repo', command: ['sh','-c',command] });
+    const run = JSON.stringify({ workspace: (scratch || mode === 'cancel') ? 'scratch' : 'repo', command: ['sh','-c',command] });
     fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      goal: Verify the generated workstream\n      timeoutSeconds: 60\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: ' + run + '\n');
     const validation = await tool('validate_child_workflow', { sourceFile });
     if (validation.error || !validation.value.valid) throw new Error('generated source rejected');
@@ -81,7 +86,7 @@ async function main() {
     if (disposition.error) throw new Error('child disposition failed');
     return waitForHost();
   }
-  if (mode !== 'scratch') {
+  if (!scratch) {
     const hasChild = fs.existsSync('child-return.txt');
     if (hasChild !== (action !== 'discard')) throw new Error('child return disposition mismatch');
     if (hasChild && fs.readFileSync('child-return.txt','utf8') !== 'child return\n') throw new Error('child return bytes mismatch');

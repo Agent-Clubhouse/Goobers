@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,11 @@ func TestIntegrationContainedParentReconcilesChildWorkspaceThroughRealWorkers(t 
 func TestIntegrationContainedParentCancellationStopsAuthoredChild(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	qualifyContainedParentJourney(t, "cancel")
+}
+
+func TestIntegrationContainedParentIteratesChildrenThroughRealWorkers(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	qualifyContainedParentJourney(t, "iterate")
 }
 
 func qualifyContainedParentJourney(t *testing.T, action string) {
@@ -206,7 +212,12 @@ esac
 	if err := s.installQueuedChildren(setup, triggers, &wg); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	journeyTimeout := 3 * time.Minute
+	if action == "iterate" {
+		// Two child returns require five separate contained parent invocations.
+		journeyTimeout = 6 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), journeyTimeout)
 	scheduler := localscheduler.New(definitions.Entries, instanceLog)
 	dispatch.AttachScheduler(scheduler)
 	dispatch.AttachDispatchContext(ctx)
@@ -220,6 +231,10 @@ esac
 	cancelInput := httpapi.CancelRunRequest{RunID: runID, Gaggle: "example", Actor: "qualification-human", IdempotencyKey: "qualification-parent-cancel"}
 	var cancelReply httpapi.CancelRunResult
 	wantPhase, wantChild, wantParents := journal.PhaseCompleted, triggerqueue.ChildCompleted, 3
+	wantChildren := 1
+	if action == "iterate" {
+		wantChildren, wantParents = 2, 5
+	}
 	if action == "cancel" {
 		wantPhase, wantChild, wantParents = journal.PhaseAborted, triggerqueue.ChildCancelled, 1
 	}
@@ -277,7 +292,7 @@ esac
 				if childErr != nil {
 					t.Fatal(childErr)
 				}
-				if len(children) == 1 && children[0].State.Terminal() {
+				if len(children) == wantChildren && !slices.ContainsFunc(children, func(c triggerqueue.ChildRecord) bool { return !c.State.Terminal() }) {
 					break
 				}
 			}
@@ -289,8 +304,20 @@ esac
 		}
 	}
 	children, err := triggers.queue.Children(ctx, triggerqueue.ChildParent{Gaggle: "example", ParentRunID: runID}, "", 10)
-	if err != nil || len(children) != 1 || children[0].State != wantChild || children[0].ResultRef == "" || (action != "cancel" && children[0].AcknowledgedAt.IsZero()) {
+	if err != nil || len(children) != wantChildren {
 		t.Fatal("child result did not reach the expected retained outcome", children, err)
+	}
+	for _, child := range children {
+		if child.State != wantChild || child.ResultRef == "" || (action != "cancel" && child.AcknowledgedAt.IsZero()) {
+			t.Fatal("child result did not reach the expected retained outcome", child)
+		}
+	}
+	if action == "iterate" {
+		slices.SortFunc(children, func(a, b triggerqueue.ChildRecord) int { return a.Sequence - b.Sequence })
+		first, second := children[0], children[1]
+		if first.Sequence != 1 || second.Sequence != 2 || first.Identity.StageOccurrence != second.Identity.StageOccurrence || first.Identity.InvocationKey != "qualification-child" || second.Identity.InvocationKey != "qualification-child-2" || first.AcknowledgedAt.After(second.AcceptedAt) {
+			t.Fatal("iterative children lost their sequential stage ownership", children)
+		}
 	}
 	if action == "cancel" && (!cancellationSent || !children[0].CancellationRequested) {
 		t.Fatal("missing authored-child family cancellation")
@@ -299,16 +326,27 @@ esac
 		t.Fatal("Portal run detail never exposed the durable parent wait")
 	}
 	history, err := reads.RunChildren(ctx, runID, "")
-	if err != nil || history.Status != "recorded" || len(history.Items) != 1 || history.Items[0].RunID != children[0].RunID || history.Items[0].State != wantChild || (action != "cancel" && history.Items[0].AcknowledgedAt == nil) {
+	if err != nil || history.Status != "recorded" || len(history.Items) != wantChildren {
 		t.Fatal("Portal child history lost the completed acknowledged child", history, err)
+	}
+	for _, child := range children {
+		found := false
+		for _, item := range history.Items {
+			if item.RunID == child.RunID && item.State == wantChild && (action == "cancel" || item.AcknowledgedAt != nil) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("Portal child history lost retained child", child.RunID)
+		}
+		childDetail, err := reads.GetRun(ctx, child.RunID)
+		if err != nil || childDetail.ChildActivity == nil || childDetail.ChildActivity.Parent == nil || childDetail.ChildActivity.Parent.RunID != runID {
+			t.Fatal("Portal child detail lost its parent link", childDetail.ChildActivity, err)
+		}
 	}
 	parentDetail, err := reads.GetRun(ctx, runID)
 	if err != nil || parentDetail.ChildActivity != nil {
 		t.Fatal("Portal retained a cleared parent wait", parentDetail.ChildActivity, err)
-	}
-	childDetail, err := reads.GetRun(ctx, children[0].RunID)
-	if err != nil || childDetail.ChildActivity == nil || childDetail.ChildActivity.Parent == nil || childDetail.ChildActivity.Parent.RunID != runID {
-		t.Fatal("Portal child detail lost its parent link", childDetail.ChildActivity, err)
 	}
 	var parents, generated int
 	for id, in := range transport.snapshot() {
@@ -325,7 +363,7 @@ esac
 			generated++
 		}
 	}
-	if parents != wantParents || generated != 1 {
+	if parents != wantParents || generated != wantChildren {
 		t.Fatal("unexpected parent/child physical invocations", parents, generated)
 	}
 	if action == "cancel" {
