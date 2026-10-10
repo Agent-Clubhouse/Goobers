@@ -113,6 +113,49 @@ func gaggleCLICommand() cliCommand {
 		withExamples("goobers gaggle export example", "goobers gaggle import --name copied-example example.bundle.json")
 }
 
+func telemetryCLICommand() cliCommand {
+	return groupCommand(
+		"telemetry",
+		runTelemetry,
+		subcommand("telemetry configure", "configure", apicontract.ActionConfigTime, runTelemetryConfigure).
+			withHelp("configure customer-owned Application Insights export from a secret reference", telemetryConfigureHelp).
+			withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry configure --connection-string-file C:\\ProgramData\\Goobers\\secrets\\application-insights.txt C:\\ProgramData\\Goobers\\instance"),
+		subcommand("telemetry test", "test", apicontract.ActionMaintenance, runTelemetryTest).
+			withHelp("send one secret-safe Application Insights connectivity probe", telemetryTestHelp).
+			withExamples("goobers telemetry test ./instance", "goobers telemetry test --json ./instance"),
+		subcommand("telemetry merges", "merges", apicontract.ActionReadOnlyNavigation, runTelemetryMerges).
+			withHelp("confirmed PR landings and daily counts by originating instance", telemetryMergesHelp).
+			withExamples("goobers telemetry merges", "goobers telemetry merges --json"),
+		subcommand("telemetry stats", "stats", apicontract.ActionReadOnlyNavigation, runTelemetryStats).
+			withHelp("success rate and duration aggregates per workflow and stage", telemetryStatsHelp).
+			withExamples("goobers telemetry stats", "goobers telemetry stats --json"),
+		subcommand("telemetry errors", "errors", apicontract.ActionReadOnlyNavigation, runTelemetryErrors).
+			withHelp("recent errors across runs, by class, with run/stage refs", telemetryErrorsHelp).
+			withExamples("goobers telemetry errors", "goobers telemetry errors --limit=50"),
+		subcommand("telemetry export", "export", apicontract.ActionReadOnlyNavigation, runTelemetryExport).
+			withHelp("re-emit a span-start-time window from journaled OTLP/JSON", telemetryExportHelp).
+			withExamples("goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z"),
+		subcommand("telemetry mark-fix", "mark-fix", apicontract.ActionMaintenance, runTelemetryMarkFix).
+			withHelp("mark a Backprop finding for post-fix verification", telemetryMarkFixHelp).
+			withExamples("goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123"),
+		subcommand("telemetry label", "label", apicontract.ActionMaintenance, runTelemetryLabel).
+			withHelp("record a ground-truth verdict for a Backprop-enrolled run", telemetryLabelHelp).
+			withExamples("goobers telemetry label --run=run-123 --outcome=incorrect --reason=\"PR was reverted\""),
+		subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
+			withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
+			withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
+		subcommand("telemetry prune-orphans", "prune-orphans", apicontract.ActionMaintenance, runTelemetryPruneOrphans).
+			withHelp("report or delete old orphan and unfinished run directories", telemetryPruneOrphansHelp).
+			withExamples("goobers telemetry prune-orphans", "goobers telemetry prune-orphans --delete"),
+		subcommand("telemetry compact", "compact", apicontract.ActionMaintenance, runTelemetryCompact).
+			withHelp("drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)", telemetryCompactHelp).
+			withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
+	).
+		withSynopsis(synopsisByID["telemetry"]).
+		withHelp("configure, test, query, export, mark fixes, label runs, prune, or compact telemetry", telemetryHelp).
+		withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123", "goobers telemetry prune --dry-run")
+}
+
 func diagnosticsCLICommand() cliCommand {
 	return groupCommand(
 		"diagnostics",
@@ -690,43 +733,7 @@ func init() {
 			return runCompletionCandidates(args, stdout)
 		}),
 		command("__generate-docs", apicontract.ActionConfigTime, runGenerateDocs),
-		groupCommand(
-			"telemetry",
-			runTelemetry,
-			subcommand("telemetry configure", "configure", apicontract.ActionConfigTime, runTelemetryConfigure).
-				withHelp("configure customer-owned Application Insights export from a secret reference", telemetryConfigureHelp).
-				withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry configure --connection-string-file C:\\ProgramData\\Goobers\\secrets\\application-insights.txt C:\\ProgramData\\Goobers\\instance"),
-			subcommand("telemetry test", "test", apicontract.ActionMaintenance, runTelemetryTest).
-				withHelp("send one secret-safe Application Insights connectivity probe", telemetryTestHelp).
-				withExamples("goobers telemetry test ./instance", "goobers telemetry test --json ./instance"),
-			subcommand("telemetry merges", "merges", apicontract.ActionReadOnlyNavigation, runTelemetryMerges).
-				withHelp("confirmed PR landings and daily counts by originating instance", telemetryMergesHelp).
-				withExamples("goobers telemetry merges", "goobers telemetry merges --json"),
-			subcommand("telemetry stats", "stats", apicontract.ActionReadOnlyNavigation, runTelemetryStats).
-				withHelp("success rate and duration aggregates per workflow and stage", telemetryStatsHelp).
-				withExamples("goobers telemetry stats", "goobers telemetry stats --json"),
-			subcommand("telemetry errors", "errors", apicontract.ActionReadOnlyNavigation, runTelemetryErrors).
-				withHelp("recent errors across runs, by class, with run/stage refs", telemetryErrorsHelp).
-				withExamples("goobers telemetry errors", "goobers telemetry errors --limit=50"),
-			subcommand("telemetry export", "export", apicontract.ActionReadOnlyNavigation, runTelemetryExport).
-				withHelp("re-emit a span-start-time window from journaled OTLP/JSON", telemetryExportHelp).
-				withExamples("goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z"),
-			subcommand("telemetry mark-fix", "mark-fix", apicontract.ActionMaintenance, runTelemetryMarkFix).
-				withHelp("mark a Backprop finding for post-fix verification", telemetryMarkFixHelp).
-				withExamples("goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123"),
-			subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
-				withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
-				withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
-			subcommand("telemetry prune-orphans", "prune-orphans", apicontract.ActionMaintenance, runTelemetryPruneOrphans).
-				withHelp("report or delete old orphan and unfinished run directories", telemetryPruneOrphansHelp).
-				withExamples("goobers telemetry prune-orphans", "goobers telemetry prune-orphans --delete"),
-			subcommand("telemetry compact", "compact", apicontract.ActionMaintenance, runTelemetryCompact).
-				withHelp("drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)", telemetryCompactHelp).
-				withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
-		).
-			withSynopsis(synopsisByID["telemetry"]).
-			withHelp("configure, test, query, export, mark fixes, prune, or compact telemetry", telemetryHelp).
-			withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123", "goobers telemetry prune --dry-run"),
+		telemetryCLICommand(),
 		groupCommand(
 			"journal",
 			runJournal,

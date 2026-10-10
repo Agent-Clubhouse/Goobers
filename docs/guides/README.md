@@ -40,6 +40,7 @@ cannot leave it outside the documented navigation surfaces.
 - [EvalSuite onboarding: running tests and reading reports](evals-onboarding.md)
 - [EvalSuite PR review checklist](evals-review-checklist.md)
 - [External telemetry connectors](external-telemetry-connectors.md)
+- [Failed-task evidence contract](failed-task-evidence.md)
 - [Flake management](flake-management.md)
 - [Fleet diagnostics reference collector and queries](fleet-diagnostics-reference.md)
 - [Portable gaggle bundles](gaggle-bundles.md)
