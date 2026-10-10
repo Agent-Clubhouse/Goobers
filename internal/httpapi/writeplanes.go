@@ -253,7 +253,7 @@ type EscalationService interface {
 // codes: a local run was finalized aborted, an engine cancellation was
 // requested, the run already finished, or the daemon does not own a live run.
 const (
-	// CancelCodeRequested means the engine accepted a request, not a terminal outcome.
+	// CancelCodeRequested means cancellation was accepted, not that all work stopped.
 	CancelCodeRequested  = "cancellation_requested"
 	CancelCodeAborted    = "aborted"
 	CancelCodeTerminal   = "already_terminal"

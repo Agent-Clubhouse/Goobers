@@ -214,7 +214,7 @@ GOOBERS_CHILD_KUBE_QUALIFICATION=1 \
 GOOBERS_CHILD_QUALIFICATION_KUBECONFIG=/path/to/private-kind-kubeconfig \
 GOOBERS_PARENT_QUALIFICATION_IMAGE="localhost:45081/goobers:haw-parent-<commit>" \
 go test -race -tags=integration ./cmd/goobers \
-  -run '^TestIntegrationContainedParent(AuthorsChild|ReconcilesChildWorkspace)ThroughRealWorkers$' \
+  -run '^TestIntegrationContainedParent(AuthorsChildThroughRealWorkers|ReconcilesChildWorkspaceThroughRealWorkers|CancellationStopsAuthoredChild)$' \
   -count=1 -timeout=15m -v
 ```
 
@@ -230,4 +230,20 @@ race detection in the disposable environment on 2026-10-09. The repository cases
 first exposed a Kubernetes finalizer version race; their passing rerun includes
 the bounded, exact-UID retry. This is preparation-branch evidence, not public
 activation or qualification of parallel parents, real daemon/worker-loss recovery,
-delegated PR publication, or cancellation of the complete authored journey.
+delegated PR publication.
+
+The authored-parent cancellation case waits for the generated child's actual
+shell startup before sending a persistent daemon cancellation request. The
+response reports `cancellation_requested` while the parent is aborted and child
+custody still prevents retirement. This is request acceptance, not proof that
+all work stopped. The test separately requires the cancelled child result, both
+workers' exact stopped/surrendered pod custody and cleanup, and stable replay of
+the cancellation receipt. It also verifies that the unacknowledged child still
+protects the original parent checkout and its pre-child work. Cancellation does
+not silently acknowledge or discard that result.
+
+Expected child-retention errors are distinguished from other failures by their
+typed causes. Storage, permission or unrelated cleanup failures remain errors;
+they cannot be hidden by a pending child in the same aggregate. The full
+cancellation case passed with host race detection on 2026-10-09. These proofs
+still do not qualify real daemon/worker-loss recovery or parallel parent starts.

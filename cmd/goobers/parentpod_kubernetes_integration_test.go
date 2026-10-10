@@ -217,6 +217,8 @@ esac
 	}
 	runID := strings.TrimPrefix(accepted.AcceptanceID, "trigger-")
 	sawParked, cancellationSent := false, false
+	cancelInput := httpapi.CancelRunRequest{RunID: runID, Gaggle: "example", Actor: "qualification-human", IdempotencyKey: "qualification-parent-cancel"}
+	var cancelReply httpapi.CancelRunResult
 	wantPhase, wantChild, wantParents := journal.PhaseCompleted, triggerqueue.ChildCompleted, 3
 	if action == "cancel" {
 		wantPhase, wantChild, wantParents = journal.PhaseAborted, triggerqueue.ChildCancelled, 1
@@ -228,9 +230,18 @@ esac
 		if !cancellationSent {
 			select {
 			case <-childStarted:
-				result, err := cancels.Cancel(ctx, httpapi.CancelRunRequest{RunID: runID, Gaggle: "example", Actor: "qualification-human", IdempotencyKey: "qualification-parent-cancel"})
-				if err != nil || result.Error != "" {
-					t.Fatal("parent cancellation failed", result, err)
+				result, err := cancels.Cancel(ctx, cancelInput)
+				cancelReply = result
+				if err != nil {
+					t.Fatal("parent cancellation request failed", result, err)
+				}
+				if result.Error != "" {
+					// Continue observing the physical results so a cleanup
+					// failure cannot conceal whether cancellation stopped work.
+					t.Errorf("parent cancellation returned an error: %s", result.Error)
+				}
+				if result.Code != httpapi.CancelCodeRequested || result.Phase != string(journal.PhaseAborted) {
+					t.Errorf("cancellation claimed an unsupported outcome: %+v", result)
 				}
 				cancellationSent = true
 			default:
@@ -316,6 +327,13 @@ esac
 	}
 	if parents != wantParents || generated != 1 {
 		t.Fatal("unexpected parent/child physical invocations", parents, generated)
+	}
+	if action == "cancel" {
+		assertCancelledParentRetained(t, f, runID, children[0])
+		replay, err := cancels.Cancel(ctx, cancelInput)
+		if err != nil || replay != cancelReply {
+			t.Fatal("durable cancellation replay changed its original acceptance", replay, err)
+		}
 	}
 }
 

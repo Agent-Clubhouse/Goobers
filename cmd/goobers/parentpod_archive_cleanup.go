@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
@@ -79,7 +81,7 @@ func verifyParentArchiveChildren(ctx context.Context, layout instance.Layout, id
 		}
 		for _, child := range children {
 			if !child.State.Terminal() || child.AcknowledgedAt.IsZero() {
-				return errors.New("parent archive has unfinished or unacknowledged child work")
+				return fmt.Errorf("%w: parent archive has unfinished or unacknowledged child work", invoke.ErrChildCustodyPending)
 			}
 			after = child.ChildID
 		}
