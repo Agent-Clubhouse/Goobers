@@ -57,14 +57,26 @@ func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tick
 		s.sourceQueueError(entry, err)
 		return true, false
 	}
-	result := Tick(TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: before}, now)
+	window, err := EvaluateScheduleWindow(entry.Schedules, before, now)
+	if err != nil {
+		s.sourceQueueError(entry, err)
+		return true, false
+	}
+	result := window.Tick
 	if legacy && now.After(before) {
 		result.Fire = true
 		result.LastEval = now
 	}
-	if result.Fire {
-		blocked, reason := s.scheduleBackedOff(identity, entry, dueScheduleIndexes(entry.Schedules, before, now), now)
-		if blocked {
+	if result.Fire || !result.LastEval.Equal(before) {
+		indexes := window.Indexes
+		if legacy {
+			indexes = dueScheduleIndexes(entry.Schedules, before, now)
+		}
+		blocked, reason := s.scheduleBackedOff(identity, entry, indexes, now)
+		if !result.Fire {
+			reason = "schedule catch-up window expired"
+		}
+		if blocked || !result.Fire {
 			s.journalEvent(journal.Event{Type: journal.EventTickSkipped, Workflow: entry.Workflow, Gaggle: entry.Gaggle, Reason: reason})
 			err = s.sourceQueue.AcceptSchedule(ctx, entry, before, result.LastEval, false)
 		} else {

@@ -526,14 +526,18 @@ status projection. On first adoption, its historical baseline seeds the cursor;
 an outstanding legacy fire is transferred once with a durable adoption marker,
 so a crash before clearing the old file cannot resurrect it.
 
-This compatibility adapter retains the current scheduler's one coalesced worker
-per due evaluation interval across all declared schedules. Captured from/through
-times and workflow/configuration pins preserve the accepted occurrence. It does
-not implement the proposed one-hour lookback or configurable all-occurrences
-catch-up policy above. Those remain an explicit policy change; the existing
-catch-up semantics are preserved. Cursors are per gaggle/workflow, survive edits,
-and count against shared bounded custody; deletion/recreation does not silently
-reset them. Explicit retired-cursor cleanup remains follow-up work.
+The adapter coalesces eligible occurrences in the preceding hour into one worker
+per due observation across the declared schedules. Captured from/through times,
+window, occurrence count and configuration pins preserve that accepted work.
+Expired discoveries advance the durable cursor without new work; previously
+accepted starts and partial demand retain custody. The explicit all-occurrences
+policy, bounded to 100 occurrences per sweep, remains follow-up work.
+
+Cursors are per gaggle/workflow and normalized schedule/timezone revision. A
+schedule edit begins future discovery at its first observation; unrelated edits
+preserve the cursor, and old accepted work retains its original definition.
+Cursors count against shared bounded custody; deletion/recreation does not
+silently reset them. Explicit retired-cursor cleanup remains follow-up work.
 
 Authenticated GitHub webhooks retain delivery ID, full authenticated payload
 digest, and repository/event metadata. Acceptance freezes all matching recipients

@@ -29,7 +29,11 @@ func (s *Sources) AcceptSchedule(ctx context.Context, entry localscheduler.Workf
 	fingerprint := sourceHash("schedule", scope, revision, before.UTC().Format(time.RFC3339Nano), after.UTC().Format(time.RFC3339Nano))
 	batch := triggerqueue.SourceBatch{Key: key, Actor: "scheduler", Fingerprint: fingerprint, Advance: &triggerqueue.SourceAdvance{Scope: scope, Revision: revision, Before: before, After: after}}
 	if fire {
-		raw, release, err := s.pin(ctx, entry, localscheduler.SourceTrigger{ScheduledFrom: before.UTC(), ScheduledAt: after.UTC()})
+		source, err := capturedScheduleSource(entry, before, after)
+		if err != nil {
+			return err
+		}
+		raw, release, err := s.pin(ctx, entry, source)
 		if err != nil {
 			return err
 		}
@@ -42,4 +46,19 @@ func (s *Sources) AcceptSchedule(ctx context.Context, entry localscheduler.Workf
 
 func scheduleScope(entry localscheduler.WorkflowEntry) string {
 	return sourceHash("schedule-cursor", entry.Gaggle, entry.Workflow)
+}
+
+// A zero-count forced firing is a previously accepted legacy pending marker.
+// Its custody is adopted even when it predates the new discovery window.
+func capturedScheduleSource(entry localscheduler.WorkflowEntry, before, after time.Time) (localscheduler.SourceTrigger, error) {
+	source := localscheduler.SourceTrigger{ScheduledFrom: before.UTC(), ScheduledAt: after.UTC()}
+	window, err := localscheduler.EvaluateScheduleWindow(entry.Schedules, before, after)
+	if err != nil {
+		return source, err
+	}
+	if window.Tick.Fire {
+		source.ScheduleWindowFrom = window.From.UTC()
+		source.ScheduleFireCount = window.Tick.MissedTicks
+	}
+	return source, nil
 }

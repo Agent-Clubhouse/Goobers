@@ -13,7 +13,11 @@ import (
 
 // CaptureDemand pins a due fire before observing provider demand.
 func (s *Sources) CaptureDemand(ctx context.Context, entry localscheduler.WorkflowEntry, before, after time.Time) error {
-	raw, release, err := s.pin(ctx, entry, localscheduler.SourceTrigger{ScheduledFrom: before.UTC(), ScheduledAt: after.UTC()})
+	source, err := capturedScheduleSource(entry, before, after)
+	if err != nil {
+		return err
+	}
+	raw, release, err := s.pin(ctx, entry, source)
 	if err != nil {
 		return err
 	}
