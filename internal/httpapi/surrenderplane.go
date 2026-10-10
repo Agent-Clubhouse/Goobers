@@ -97,6 +97,15 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 				}
 				plane = config.generatedChildSurrenders
 			}
+			isParent := authenticated && principal.Issuer == WorkflowParentPrincipalIssuer
+			if isParent {
+				w.Header().Set("Cache-Control", "private, no-store")
+				if config.workflowParentSurrenders == nil || principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+					writeError(w, http.StatusForbidden, "parent_surrender_unavailable", "contained parent result authority is not available")
+					return
+				}
+				plane = config.workflowParentSurrenders
+			}
 			if plane == nil {
 				writeError(w, http.StatusServiceUnavailable, "surrender_unavailable", "the surrender plane is not available from this server")
 				return
@@ -123,29 +132,15 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			// Per-run containment: a pod token proves "I am run X's stage pod",
 			// which authorizes surrendering a result for run X and no other —
 			// the same body-level binding the journal plane applies.
-			if authenticated && (IsPodPrincipal(principal) || generated) {
+			if authenticated && (IsPodPrincipal(principal) || generated || isParent) {
 				if principal.Subject != podPrincipalSubject(run) {
 					writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only surrender its own run's results")
 					return
 				}
 			}
-			defer func() { _ = request.Body.Close() }()
-			body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
-			if err != nil {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "request body could not be read")
-				return
-			}
-			if int64(len(body)) > maxSurrenderBody {
-				writeError(w, http.StatusRequestEntityTooLarge, CodeInvalidRequest, "surrendered result body exceeds the size limit")
-				return
-			}
-			var shape surrenderedResultShape
-			if err := json.Unmarshal(body, &shape); err != nil {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "invalid JSON request body")
-				return
-			}
-			if shape.Result.Status == "" {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "surrendered result carries no status")
+			body, status, message := readSurrenderedResult(request)
+			if status != 0 {
+				writeError(w, status, CodeInvalidRequest, message)
 				return
 			}
 			if err := plane.Put(request.Context(), run, stage, attempt, body); err != nil {
@@ -154,4 +149,34 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			}
 			writeJSON(w, http.StatusOK, struct{}{})
 		}})
+}
+
+// WithWorkflowParentSurrenderService installs write-only parent result custody.
+func WithWorkflowParentSurrenderService(plane SurrenderService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if plane == nil {
+			return errors.New("contained parent surrender owner is required")
+		}
+		config.workflowParentSurrenders = plane
+		return nil
+	}
+}
+
+func readSurrenderedResult(request *http.Request) ([]byte, int, string) {
+	defer func() { _ = request.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
+	if err != nil {
+		return nil, http.StatusBadRequest, "request body could not be read"
+	}
+	if int64(len(body)) > maxSurrenderBody {
+		return nil, http.StatusRequestEntityTooLarge, "surrendered result body exceeds the size limit"
+	}
+	var shape surrenderedResultShape
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return nil, http.StatusBadRequest, "invalid JSON request body"
+	}
+	if shape.Result.Status == "" {
+		return nil, http.StatusBadRequest, "surrendered result carries no status"
+	}
+	return body, 0, ""
 }

@@ -71,30 +71,30 @@ func WithBlobService(store blobstore.Store) HandlerOption {
 // trigger planes: a nil store still answers a structured 503 rather than the
 // routes silently not existing, and a mode-1/2 daemon that is never asked to
 // serve a mode-3 stage never receives a request on them at all.
-func registerBlobPlaneRoutes(router *Router, store, childStore blobstore.Store, errorLog *log.Logger) {
+func registerBlobPlaneRoutes(router *Router, store, childStore, parentStore blobstore.Store, errorLog *log.Logger) {
 	router.HandleByMethod(
 		map[string]apicontract.RouteID{
 			http.MethodGet: apicontract.RouteBlobGet,
 			http.MethodPut: apicontract.RouteBlobPut,
 		},
 		map[apicontract.RouteID]http.HandlerFunc{
-			apicontract.RouteBlobGet: childBlobRoute(blobGetHandler(store, errorLog), blobGetScopedHandler(childStore, errorLog, true), childStore),
-			apicontract.RouteBlobPut: childBlobRoute(blobPutHandler(store, errorLog), blobPutScopedHandler(childStore, errorLog, true), childStore),
+			apicontract.RouteBlobGet: scopedBlobRoute(WorkflowParentPrincipalIssuer, childBlobRoute(blobGetHandler(store, errorLog), blobGetScopedHandler(childStore, errorLog, GeneratedChildPrincipalIssuer), childStore), blobGetScopedHandler(parentStore, errorLog, WorkflowParentPrincipalIssuer), parentStore),
+			apicontract.RouteBlobPut: scopedBlobRoute(WorkflowParentPrincipalIssuer, childBlobRoute(blobPutHandler(store, errorLog), blobPutScopedHandler(childStore, errorLog, GeneratedChildPrincipalIssuer), childStore), blobPutScopedHandler(parentStore, errorLog, WorkflowParentPrincipalIssuer), parentStore),
 		},
 	)
 }
 
 func blobGetHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFunc {
-	return blobGetScopedHandler(store, errorLog, false)
+	return blobGetScopedHandler(store, errorLog, "")
 }
 
-func blobGetScopedHandler(store blobstore.Store, errorLog *log.Logger, childOnly bool) http.HandlerFunc {
+func blobGetScopedHandler(store blobstore.Store, errorLog *log.Logger, issuer string) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
 		if store == nil {
 			writeError(w, http.StatusServiceUnavailable, "blobs_unavailable", "the blob plane is not available from this server")
 			return
 		}
-		if !requireBlobOwnerPrincipal(w, request, childOnly) {
+		if !requireBlobOwnerPrincipal(w, request, issuer) {
 			return
 		}
 		digest := request.PathValue("digest")
@@ -117,7 +117,7 @@ func blobGetScopedHandler(store blobstore.Store, errorLog *log.Logger, childOnly
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if childOnly {
+		if issuer != "" {
 			w.Header().Set("Cache-Control", "private, no-store")
 		} else {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
@@ -129,16 +129,16 @@ func blobGetScopedHandler(store blobstore.Store, errorLog *log.Logger, childOnly
 }
 
 func blobPutHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFunc {
-	return blobPutScopedHandler(store, errorLog, false)
+	return blobPutScopedHandler(store, errorLog, "")
 }
 
-func blobPutScopedHandler(store blobstore.Store, errorLog *log.Logger, childOnly bool) http.HandlerFunc {
+func blobPutScopedHandler(store blobstore.Store, errorLog *log.Logger, issuer string) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
 		if store == nil {
 			writeError(w, http.StatusServiceUnavailable, "blobs_unavailable", "the blob plane is not available from this server")
 			return
 		}
-		if !requireBlobOwnerPrincipal(w, request, childOnly) {
+		if !requireBlobOwnerPrincipal(w, request, issuer) {
 			return
 		}
 		digest := request.PathValue("digest")
@@ -148,7 +148,7 @@ func blobPutScopedHandler(store blobstore.Store, errorLog *log.Logger, childOnly
 		}
 		defer func() { _ = request.Body.Close() }()
 		limit := int64(MaxBlobBytes)
-		if childOnly {
+		if issuer != "" {
 			limit = 24 << 20
 		}
 		data, err := io.ReadAll(http.MaxBytesReader(w, request.Body, limit))
@@ -210,9 +210,13 @@ func WithGeneratedChildBlobService(store blobstore.Store) HandlerOption {
 }
 
 func childBlobRoute(ordinary, child http.HandlerFunc, owner blobstore.Store) http.HandlerFunc {
+	return scopedBlobRoute(GeneratedChildPrincipalIssuer, ordinary, child, owner)
+}
+
+func scopedBlobRoute(issuer string, ordinary, child http.HandlerFunc, owner blobstore.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := PrincipalFromRequest(r)
-		if ok && p.Issuer == GeneratedChildPrincipalIssuer {
+		if ok && p.Issuer == issuer {
 			w.Header().Set("Cache-Control", "private, no-store")
 			if owner == nil {
 				writeError(w, http.StatusForbidden, "child_artifacts_unavailable", "generated child artifact authority is not installed")
@@ -225,14 +229,32 @@ func childBlobRoute(ordinary, child http.HandlerFunc, owner blobstore.Store) htt
 	}
 }
 
-func requireBlobOwnerPrincipal(w http.ResponseWriter, r *http.Request, childOnly bool) bool {
-	if !childOnly {
+func requireBlobOwnerPrincipal(w http.ResponseWriter, r *http.Request, issuer string) bool {
+	if issuer == "" {
 		return requireBlobPodPrincipal(w, r)
 	}
 	p, ok := PrincipalFromRequest(r)
-	if !ok || p.Issuer != GeneratedChildPrincipalIssuer || p.GeneratedChild == nil || !blobstore.ValidDigest(p.GeneratedChild.ContractDigest) {
+	digest := ""
+	if p.Issuer == issuer && issuer == GeneratedChildPrincipalIssuer && p.GeneratedChild != nil {
+		digest = p.GeneratedChild.ContractDigest
+	}
+	if p.Issuer == issuer && issuer == WorkflowParentPrincipalIssuer && p.WorkflowParent != nil {
+		digest = p.WorkflowParent.ContractDigest
+	}
+	if !ok || !blobstore.ValidDigest(digest) {
 		writeError(w, http.StatusForbidden, "child_artifact_identity_required", "a signed child execution contract is required")
 		return false
 	}
 	return true
+}
+
+// WithWorkflowParentBlobService installs bounded custody for exact parent attempts.
+func WithWorkflowParentBlobService(store blobstore.Store) HandlerOption {
+	return func(config *handlerConfig) error {
+		if store == nil {
+			return errors.New("contained parent artifact owner is required")
+		}
+		config.workflowParentBlobs = store
+		return nil
+	}
 }

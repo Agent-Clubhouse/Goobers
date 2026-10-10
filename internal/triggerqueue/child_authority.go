@@ -141,6 +141,30 @@ func childParentOpen(ctx context.Context, tx *sql.Tx, parent ChildParent) error 
 	return nil
 }
 
+// CheckChildParentOpen checks the durable cancellation fence before an attempt
+// receives new authority. An absent row is allowed before the first grant;
+// checking does not allocate custody. Call again before delivering a secret.
+func (s *Store) CheckChildParentOpen(ctx context.Context, parent ChildParent) error {
+	if !parent.valid() {
+		return ErrChildAuthorityChanged
+	}
+	var cancelled, settled sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT cancelled_ns,settled_ns FROM child_parents WHERE gaggle=? AND parent_run=?`, parent.Gaggle, parent.ParentRunID).Scan(&cancelled, &settled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if cancelled.Valid {
+		return ErrParentCancelled
+	}
+	if settled.Valid {
+		return ErrParentSettled
+	}
+	return nil
+}
+
 func childAuthorityCapacity(ctx context.Context, tx *sql.Tx, gaggle string) error {
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM child_authorities WHERE gaggle=?`, gaggle).Scan(&count); err != nil {
@@ -189,6 +213,21 @@ func (s *Store) RevokeChildGaggleAuthorities(ctx context.Context, gaggle string)
 // inside the start transaction, so a revoked/replaced attempt cannot race a start.
 func (s *Store) CheckChildAuthority(ctx context.Context, grant ChildAuthority, now time.Time) error {
 	return checkChildAuthority(ctx, s.db, grant, now)
+}
+
+// CheckChildAuthorityDelivery checks both the exact grant and parent cancellation
+// fence in one snapshot before re-delivering a retained secret. Status reads
+// retain their separate authority-only check so cancellation remains observable.
+func (s *Store) CheckChildAuthorityDelivery(ctx context.Context, grant ChildAuthority, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := checkChildAuthority(ctx, tx, grant, now); err != nil {
+		return err
+	}
+	return childParentOpen(ctx, tx, grant.ChildParent)
 }
 
 func checkChildAuthority(ctx context.Context, db childAuthorityReader, grant ChildAuthority, now time.Time) error {

@@ -17,10 +17,13 @@ import (
 // fallback is permitted. The loader must independently verify all three pins.
 // ParentTask is the compiled task from that generation, without policy edits.
 type PinnedStageAdmission struct {
-	Admission        AdmissionContext
-	ConfigGeneration string
-	WorkflowDigest   string
-	GooberDigest     string
+	// ParentExecutionCapabilities intersects the pinned and current parent task.
+	// It is independent of the capabilities the parent may delegate to children.
+	ParentExecutionCapabilities []string
+	Admission                   AdmissionContext
+	ConfigGeneration            string
+	WorkflowDigest              string
+	GooberDigest                string
 }
 
 // JournalAuthorityResolver checks live tool authority against committed stage
@@ -79,7 +82,7 @@ func (r *JournalAuthorityResolver) prepare(ctx context.Context, runID string, or
 	if err != nil || rd == nil {
 		return Authority{}, journal.RunIdentity{}, journal.Event{}, errors.Join(ErrAuthorityUnavailable, err)
 	}
-	id, event, err := activeJournalStage(ctx, rd, runID, origin)
+	id, event, err := VerifyActiveStage(ctx, rd, runID, origin)
 	if err != nil {
 		return Authority{}, id, event, err
 	}
@@ -93,11 +96,12 @@ func (r *JournalAuthorityResolver) prepare(ctx context.Context, runID string, or
 	}
 	// Loading an archive can race completion or replacement. Re-read durable
 	// state before returning; acceptance additionally uses the queue's CAS fence.
-	currentID, currentEvent, err := activeJournalStage(ctx, rd, runID, origin)
+	currentID, currentEvent, err := VerifyActiveStage(ctx, rd, runID, origin)
 	if err != nil || !sameJSON(id, currentID) || !sameJSON(event, currentEvent) {
 		return Authority{}, id, event, errors.Join(ErrAuthorityChanged, err)
 	}
 	authority := Authority{
+		ParentExecutionCapabilities: append([]string(nil), pinned.ParentExecutionCapabilities...),
 		Origin: Origin{Gaggle: id.Gaggle, RunID: id.RunID, StageOccurrence: origin.StageOccurrence,
 			AttemptID: origin.AttemptID, ConfigDigest: admission.ConfigDigest, PolicyDigest: AuthorityPolicyDigest(admission)},
 		Actor:     InvocationActor(id.RunID, origin.StageOccurrence),

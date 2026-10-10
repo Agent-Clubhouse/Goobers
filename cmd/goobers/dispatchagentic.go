@@ -521,6 +521,7 @@ func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
 		SandboxPosture:   instance.SandboxPosture(w.Kit.SandboxPosture),
 		ArtifactRecorder: podCheckpointRecorder(w),
 		SecretRegistrar:  w.Registry,
+		ChildWorkflows:   parentPodAccess(w.Registry),
 		AgenticAdapter:   newAgenticAdapter,
 	}
 }

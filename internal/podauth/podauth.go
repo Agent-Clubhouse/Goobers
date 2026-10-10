@@ -297,6 +297,9 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 // a reserved prefix fail closed instead of reaching human authentication.
 func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	token := bearerToken(request)
+	if strings.HasPrefix(token, workflowParentPodPrefix) {
+		return a.authenticateWorkflowParentPod(token)
+	}
 	if strings.HasPrefix(token, childPodTokenPrefix) {
 		return a.authenticateChildPod(token)
 	}

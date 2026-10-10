@@ -146,7 +146,7 @@ func WithGeneratedChildCredentialService(credentials CredentialService) HandlerO
 	}
 }
 
-func registerCredentialRoute(router *Router, ordinary, child CredentialService, errorLog *log.Logger) {
+func registerCredentialRoute(router *Router, ordinary, child, parent CredentialService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteCredentialResolve, func(w http.ResponseWriter, request *http.Request) {
 		credentials := ordinary
 		principal, authenticated := PrincipalFromRequest(request)
@@ -158,6 +158,15 @@ func registerCredentialRoute(router *Router, ordinary, child CredentialService, 
 				return
 			}
 			credentials = child
+		}
+		isParent := authenticated && principal.Issuer == WorkflowParentPrincipalIssuer
+		if isParent {
+			w.Header().Set("Cache-Control", "private, no-store")
+			if parent == nil || principal.WorkflowParent == nil || !blobstore.ValidDigest(principal.WorkflowParent.ContractDigest) {
+				writeError(w, http.StatusForbidden, "parent_credentials_unavailable", "contained parent credential authority is not available")
+				return
+			}
+			credentials = parent
 		}
 		if credentials == nil {
 			writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "the credential plane is not available from this server")
@@ -181,7 +190,7 @@ func registerCredentialRoute(router *Router, ordinary, child CredentialService, 
 		// caller could pull raw secret material for any run/stage and drive
 		// GitHub App token minting. The gate sits before body decoding — an
 		// unauthenticated caller learns nothing from this surface.
-		if !generated && (!authenticated || !IsPodPrincipal(principal)) {
+		if !generated && !isParent && (!authenticated || !IsPodPrincipal(principal)) {
 			writeError(w, http.StatusForbidden, "credential_plane_requires_pod_principal",
 				"the credential plane requires an authenticated pod principal; it serves stage pods only")
 			return
@@ -191,21 +200,9 @@ func registerCredentialRoute(router *Router, ordinary, child CredentialService, 
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
-		if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId and stage are required")
+		if err := validateCredentialResolveInput(input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
-		}
-		if len(input.Capabilities) > MaxCredentialResolveCapabilities {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
-				fmt.Sprintf("capabilities must name no more than %d entries", MaxCredentialResolveCapabilities))
-			return
-		}
-		for _, capability := range input.Capabilities {
-			if strings.TrimSpace(capability) == "" || len(capability) > MaxCredentialCapabilityBytes {
-				writeError(w, http.StatusBadRequest, CodeInvalidRequest,
-					fmt.Sprintf("capability names must be non-empty and no longer than %d bytes", MaxCredentialCapabilityBytes))
-				return
-			}
 		}
 		// Per-run containment: the pod principal established above may only
 		// resolve credentials for its OWN run's stages.
@@ -219,9 +216,35 @@ func registerCredentialRoute(router *Router, ordinary, child CredentialService, 
 			return
 		}
 		// The body carries live secret material: forbid every cache layer.
-		if !generated {
+		if !generated && !isParent {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		writeJSON(w, http.StatusOK, response)
 	})
+}
+
+// WithWorkflowParentCredentialService installs the active parent attempt owner.
+func WithWorkflowParentCredentialService(service CredentialService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("contained parent credential owner is required")
+		}
+		config.workflowParentCredentials = service
+		return nil
+	}
+}
+
+func validateCredentialResolveInput(input CredentialResolveRequest) error {
+	if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
+		return errors.New("runId and stage are required")
+	}
+	if len(input.Capabilities) > MaxCredentialResolveCapabilities {
+		return fmt.Errorf("capabilities must name no more than %d entries", MaxCredentialResolveCapabilities)
+	}
+	for _, capability := range input.Capabilities {
+		if strings.TrimSpace(capability) == "" || len(capability) > MaxCredentialCapabilityBytes {
+			return fmt.Errorf("capability names must be non-empty and no longer than %d bytes", MaxCredentialCapabilityBytes)
+		}
+	}
+	return nil
 }

@@ -31,6 +31,9 @@ func (l *childCredentialLease) finish(ctx context.Context) error {
 }
 
 func (s *daemonCredentialService) applyChildCredentialCeiling(ctx context.Context, pinned pinnedStage, requestedStage ...string) (context.Context, *childCredentialLease, error) {
+	if principal, ok := httpapi.PrincipalFromContext(ctx); ok && principal.Issuer == httpapi.WorkflowParentPrincipalIssuer {
+		return s.applyParentCredentialCeiling(ctx, pinned, requestedStage)
+	}
 	attempt, err := s.childCredentialAttempt(ctx, pinned.identity, requestedStage)
 	if err != nil {
 		return nil, nil, err
