@@ -1875,14 +1875,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			outcome.report(progress)
 			continue
 		}
-		if id.Child != nil {
-			// The child queue owns physical stop/join and exclusive journal handoff.
-			// Generic Resume could append a new stage before the original pod returns,
-			// invalidating its exact-attempt output authority and stranding custody.
-			// Keep the reconciled capacity until resumeOwnedChild transfers it.
-			outcome.Reattached = append(outcome.Reattached, id.RunID)
-			outcome.updateBlockingCandidate("reattached", "defer generated child to custody queue")
-			outcome.report(progress)
+		if outcome.deferGeneratedChildToQueue(id, progress) {
 			continue
 		}
 		rn, machine, gooberDigest, repoRef := runtime.runner, runtime.machine, runtime.gooberDigest, runtime.repoRef

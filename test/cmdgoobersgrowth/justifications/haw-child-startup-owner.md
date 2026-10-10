@@ -1,6 +1,6 @@
 # LAND-C06 generated-child startup ownership
 
-Ten lines in the existing daemon startup composition defer a nonterminal
+A small helper beside the existing startup progress/result owner defers a nonterminal
 accepted child to its already-wired durable queue after validating its pinned
 generation. The queue owns physical custody reconciliation and exclusive
 journal handoff. This decision belongs in the loop that currently chooses
