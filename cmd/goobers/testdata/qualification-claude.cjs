@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const args = process.argv.slice(2);
+const codex = path.basename(process.argv[1]) === 'codex';
 if (args.includes('--version')) {
   process.stdout.write('2.1.0 (qualification fixture)\n');
   process.exit(0);
@@ -15,11 +16,10 @@ if (args[0] === 'auth' && args[1] === 'status') {
   process.exit(0);
 }
 const prompt = fs.readFileSync(0, 'utf8');
-const index = args.indexOf('--mcp-config');
-if (index < 0) throw new Error('qualification requires real Goobers MCP registration');
-const registered = JSON.parse(args[index + 1]).mcpServers['goobers-io'];
+const registered = codex ? codexRegistration() : claudeRegistration();
 if (!registered) throw new Error('Goobers MCP server missing');
-const mcp = spawn(registered.command, registered.args, { stdio: ['pipe', 'pipe', 'pipe'] });
+const mcp = spawn(registered.command, registered.args, { stdio: ['pipe', 'pipe', 'pipe'], ...(codex ? { env: codexMCPEnvironment(registered) } : {}) });
+if (codex) process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: require('node:crypto').randomUUID() }) + '\n');
 // Deliberately do not echo MCP configuration, arguments, stderr or response data.
 const pending = new Map();
 let nextID = 0;
@@ -27,6 +27,38 @@ let diagnosticPhase = 'initialize';
 function phase(value) {
   diagnosticPhase = value;
   process.stderr.write(`qualification phase: ${value}\n`);
+}
+function claudeRegistration() {
+  const index = args.indexOf('--mcp-config');
+  if (index < 0) throw new Error('qualification requires real Goobers MCP registration');
+  return JSON.parse(args[index + 1]).mcpServers['goobers-io'];
+}
+function codexRegistration() {
+  if (args[0] !== 'exec' || !args.includes('--json') || process.env.CODEX_API_KEY !== 'sk-qualification-model-only' || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN) throw new Error('Codex invocation or model credential differs');
+  const config = fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8');
+  const server = {};
+  let selected = false;
+  for (const line of config.split('\n')) {
+    if (line.startsWith('[')) { selected = line === '[mcp_servers."goobers-io"]'; continue; }
+    if (!selected || !line.includes(' = ')) continue;
+    const index = line.indexOf(' = ');
+    try { server[line.slice(0, index)] = JSON.parse(line.slice(index + 3)); }
+    catch { throw new Error('invalid private Codex MCP configuration'); }
+  }
+  if (typeof server.command !== 'string' || !Array.isArray(server.args) || server.enabled !== true || server.required !== true) throw new Error('required Codex MCP registration missing');
+  for (const tool of ['validate_child_workflow','start_child_workflow','get_child_workflow','resolve_child_workflow']) {
+    if (!server.enabled_tools?.includes(tool)) throw new Error('Codex child tool not enabled');
+  }
+  return server;
+}
+function codexMCPEnvironment(server) {
+  // Honor the adapter's explicit MCP environment. In particular, the model
+  // credential is not an implicit subprocess environment grant.
+  const env = {};
+  for (const name of ['PATH','HOME','USER','TMPDIR', ...(server.env_vars || [])]) {
+    if (process.env[name] !== undefined) env[name] = process.env[name];
+  }
+  return env;
 }
 readline.createInterface({ input: mcp.stdout }).on('line', line => {
   const response = JSON.parse(line);
@@ -132,7 +164,8 @@ function complete() {
   if (!match || path.isAbsolute(match[1]) || match[1].split('/').includes('..')) throw new Error('completion contract unavailable');
   fs.mkdirSync(path.dirname(match[1]), { recursive: true });
   fs.writeFileSync(match[1], JSON.stringify({ status: 'success', outputs: { summary: 'Generated child completed and disposition acknowledged' } }));
-  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'Child completed', usage: { input_tokens: 1, output_tokens: 1 } }) + '\n');
+  const result = codex ? { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } } : { type: 'result', subtype: 'success', is_error: false, result: 'Child completed', usage: { input_tokens: 1, output_tokens: 1 } };
+  process.stdout.write(JSON.stringify(result) + '\n');
   mcp.stdin.end();
 }
 async function parallelJourney() {
