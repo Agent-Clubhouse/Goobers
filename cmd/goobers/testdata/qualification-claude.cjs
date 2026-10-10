@@ -73,7 +73,7 @@ async function main() {
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
-  if (mode === 'parallel' || mode === 'parallel-cancel') return parallelJourney();
+  if (['parallel','parallel-cancel','parallel-daemon-restart'].includes(mode)) return parallelJourney();
   if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
   const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
@@ -149,7 +149,8 @@ async function parallelJourney() {
     fs.writeFileSync(`parent-${branch}.txt`, `${branch} before child\n`);
     const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
     if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid parallel barrier');
-    const delay = fs.readFileSync('qualification-mode','utf8').trim() === 'parallel-cancel' ? ' && sleep 60' : '';
+    const mode = fs.readFileSync('qualification-mode','utf8').trim();
+    const delay = mode === 'parallel-cancel' ? ' && sleep 60' : mode === 'parallel-daemon-restart' ? ' && sleep 45' : '';
     const command = `node -e 'require("http").get(${JSON.stringify(notify+'?branch='+branch)}, r => r.resume())'${delay}`;
     const sourceFile = `generated-${branch}.yaml`;
     const run = JSON.stringify({ workspace:'scratch', command:['sh','-c',command] });

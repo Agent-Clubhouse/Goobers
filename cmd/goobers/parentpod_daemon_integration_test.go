@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -139,6 +140,15 @@ func qualificationDaemonJSON(ctx context.Context, address, method, path string, 
 }
 
 func TestIntegrationContainedParentSurvivesDaemonProcessLoss(t *testing.T) {
+	qualifyParentDaemonProcessLoss(t, false)
+}
+
+func TestIntegrationContainedParentSurvivesDaemonProcessLossParallel(t *testing.T) {
+	qualifyParentDaemonProcessLoss(t, true)
+}
+
+func qualifyParentDaemonProcessLoss(t *testing.T, parallel bool) {
+	t.Helper()
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	image := os.Getenv("GOOBERS_PARENT_QUALIFICATION_IMAGE")
 	if !strings.HasPrefix(image, "localhost:45081/goobers:haw-parent-") {
@@ -162,7 +172,13 @@ func TestIntegrationContainedParentSurvivesDaemonProcessLoss(t *testing.T) {
 	}))
 	t.Cleanup(forge.Close)
 	t.Setenv("GOOBERS_TEST_GITHUB_API_URL", forge.URL)
-	f := realParentQualificationFixture(t, image, keyPath)
+	mode, fixtureMode := "daemon-restart", ""
+	wantChildren, wantParents := 1, 3
+	if parallel {
+		mode, fixtureMode = "parallel-daemon-restart", "parallel"
+		wantChildren, wantParents = 2, 7
+	}
+	f := realParentQualificationFixture(t, image, keyPath, fixtureMode)
 	// The shared compiler fixture creates a synthetic parent for unit tests.
 	// Remove only that fixture journal before the real daemon admits any work.
 	fake, err := f.layout.FindRunDir(f.parent.RunID)
@@ -175,8 +191,13 @@ func TestIntegrationContainedParentSurvivesDaemonProcessLoss(t *testing.T) {
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	writeFileContent(t, filepath.Join(source, "source.txt"), "parent source\n")
-	writeFileContent(t, filepath.Join(source, "qualification-mode"), "daemon-restart")
-	childStarted := parentQualificationCancellationProbe(t, source)
+	writeFileContent(t, filepath.Join(source, "qualification-mode"), mode)
+	var childStarted <-chan struct{}
+	if parallel {
+		childStarted = parallelQualificationBarrier(t, source)
+	} else {
+		childStarted = parentQualificationCancellationProbe(t, source)
+	}
 	recoveryCLIGit(t, source, "add", ".")
 	recoveryCLIGit(t, source, "commit", "-m", "qualification base")
 	t.Setenv("GOOBERS_QUALIFICATION_SOURCE_REPO", source)
@@ -215,7 +236,11 @@ func TestIntegrationContainedParentSurvivesDaemonProcessLoss(t *testing.T) {
 			daemon.stop(t)
 		}
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	journeyTimeout := 4 * time.Minute
+	if parallel {
+		journeyTimeout = 6 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), journeyTimeout)
 	defer cancel()
 	var accepted httpapi.TriggerResponse
 	if err := qualificationDaemonJSON(ctx, address, http.MethodPost, apicontract.TriggerIngestPath, httpapi.TriggerRequest{Gaggle: "example", Workflow: f.parent.Workflow, RequestID: "daemon-restart-qualification"}, &accepted); err != nil {
@@ -223,7 +248,7 @@ func TestIntegrationContainedParentSurvivesDaemonProcessLoss(t *testing.T) {
 	}
 	runID := strings.TrimPrefix(accepted.AcceptanceID, "trigger-")
 	runPath := apicontract.RunsPath + "/" + runID
-	var original readservice.ChildHistoryItem
+	var original []readservice.ChildHistoryItem
 	restarted := false
 	for {
 		var detail readservice.RunDetail
@@ -240,35 +265,38 @@ func TestIntegrationContainedParentSurvivesDaemonProcessLoss(t *testing.T) {
 				if err := qualificationDaemonJSON(ctx, address, http.MethodGet, runPath+"/children", nil, &history); err != nil {
 					t.Fatal(err)
 				}
-				if len(history.Items) != 1 || history.Items[0].ChildID != original.ChildID || history.Items[0].RunID != original.RunID || history.Items[0].StageOccurrence != original.StageOccurrence || !history.Items[0].AcceptedAt.Equal(original.AcceptedAt) || history.Items[0].State != triggerqueue.ChildCompleted || history.Items[0].AcknowledgedAt == nil {
-					t.Fatalf("restart changed accepted child: before=%+v after=%+v", original, history)
-				}
+				assertRecoveredQualificationChildren(t, original, history.Items)
 				if detail.ChildActivity != nil {
 					t.Fatal("completed parent retained wait")
 				}
-				var childDetail readservice.RunDetail
-				if err := qualificationDaemonJSON(ctx, address, http.MethodGet, apicontract.RunsPath+"/"+original.RunID, nil, &childDetail); err != nil {
-					t.Fatal(err)
+				for _, child := range original {
+					var childDetail readservice.RunDetail
+					if err := qualificationDaemonJSON(ctx, address, http.MethodGet, apicontract.RunsPath+"/"+child.RunID, nil, &childDetail); err != nil {
+						t.Fatal(err)
+					}
+					if childDetail.ChildActivity == nil || childDetail.ChildActivity.Parent == nil || childDetail.ChildActivity.Parent.RunID != runID {
+						t.Fatal("recovered child lost its Portal parent link")
+					}
+					assertDaemonQualificationCustody(t, ctx, f.layout, dev.Client(), child.RunID, 2)
 				}
-				if childDetail.ChildActivity == nil || childDetail.ChildActivity.Parent == nil || childDetail.ChildActivity.Parent.RunID != runID {
-					t.Fatal("recovered child lost its Portal parent link")
-				}
-				assertDaemonQualificationCustody(t, ctx, f.layout, dev.Client(), runID, 3)
-				assertDaemonQualificationCustody(t, ctx, f.layout, dev.Client(), original.RunID, 2)
+				assertDaemonQualificationCustody(t, ctx, f.layout, dev.Client(), runID, wantParents)
 				break
 			}
-			if !restarted && detail.ChildActivity != nil && detail.ChildActivity.Parked {
+			if !restarted && detail.ChildActivity != nil && detail.ChildActivity.Parked && len(detail.ChildActivity.Waits) == wantChildren {
 				select {
 				case <-childStarted:
 					var history readservice.ChildHistoryPage
 					if err := qualificationDaemonJSON(ctx, address, http.MethodGet, runPath+"/children", nil, &history); err != nil {
 						t.Fatal(err)
 					}
-					if len(history.Items) != 1 || history.Items[0].State.Terminal() {
+					if len(history.Items) != wantChildren || slices.ContainsFunc(history.Items, func(child readservice.ChildHistoryItem) bool { return child.State.Terminal() }) {
 						t.Fatal("child was not live before crash", history)
 					}
-					original = history.Items[0]
-					t.Logf("kill daemon with parked parent %s and live child %s", runID, original.RunID)
+					original = slices.Clone(history.Items)
+					if parallel && (original[0].ChildID == original[1].ChildID || original[0].RunID == original[1].RunID || original[0].StageOccurrence == original[1].StageOccurrence) {
+						t.Fatal("parallel children lost distinct origins")
+					}
+					t.Logf("kill daemon with parked parent %s and %d live children", runID, len(original))
 					daemon.kill(t)
 					daemon = nil
 					daemon = startQualificationDaemon(t, f.layout.Root, address)
@@ -348,5 +376,26 @@ func assertDaemonQualificationCustody(t *testing.T, ctx context.Context, layout 
 	}
 	if attempts != want {
 		t.Fatalf("physical invocations for %s: got %d, want %d", runID, attempts, want)
+	}
+}
+
+func assertRecoveredQualificationChildren(t *testing.T, before, after []readservice.ChildHistoryItem) {
+	t.Helper()
+	if len(before) != len(after) {
+		t.Fatal("restart changed child count", len(before), len(after))
+	}
+	remaining := make(map[string]readservice.ChildHistoryItem, len(before))
+	for _, child := range before {
+		remaining[child.ChildID] = child
+	}
+	for _, child := range after {
+		original, found := remaining[child.ChildID]
+		if !found || child.RunID != original.RunID || child.StageOccurrence != original.StageOccurrence || child.InvocationKey != original.InvocationKey || !child.AcceptedAt.Equal(original.AcceptedAt) || child.State != triggerqueue.ChildCompleted || child.AcknowledgedAt == nil {
+			t.Fatal("restart changed accepted child identity or result", child.ChildID)
+		}
+		delete(remaining, child.ChildID)
+	}
+	if len(remaining) != 0 {
+		t.Fatal("restart omitted retained child")
 	}
 }
