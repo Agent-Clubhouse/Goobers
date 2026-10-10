@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
@@ -85,5 +88,78 @@ func TestChildFinalizerUsesUIDResourceVersionAndPreservesOthers(t *testing.T) {
 	}
 	if patches != 1 {
 		t.Fatal(patches)
+	}
+}
+
+func TestChildFinalizerRetriesOnlyChangedVersionsOfExactPod(t *testing.T) {
+	for _, scenario := range []string{"changed", "replaced", "unchanged", "churn", "forbidden"} {
+		t.Run(scenario, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "gaggle", Name: "child", UID: "exact", ResourceVersion: "1", Finalizers: []string{childCustodyFinalizer, "foreign/first"}}}
+			client := fake.NewSimpleClientset(pod)
+			resource := schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+			patches := 0
+			client.PrependReactor("patch", "pods", func(action ktesting.Action) (bool, runtime.Object, error) {
+				patches++
+				if scenario == "changed" && patches == 2 {
+					var ops []map[string]any
+					if err := json.Unmarshal(action.(ktesting.PatchAction).GetPatch(), &ops); err != nil {
+						t.Fatal(err)
+					}
+					if ops[0]["value"] != "exact" || ops[1]["value"] != "2" || !reflect.DeepEqual(ops[2]["value"], []any{"foreign/first", "foreign/new"}) {
+						t.Fatal("retry lost identity or another finalizer", ops)
+					}
+					return false, nil, nil
+				}
+				if scenario == "forbidden" {
+					return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "child", errors.New("denied"))
+				}
+				if scenario != "unchanged" {
+					pod.ResourceVersion = strconv.Itoa(patches + 1)
+					if scenario == "replaced" {
+						pod.UID = "replacement"
+					}
+					if scenario == "changed" {
+						pod.Finalizers = append(pod.Finalizers, "foreign/new")
+					}
+					if err := client.Tracker().Update(resource, pod, pod.Namespace); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return true, nil, apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, pod.Name, nil)
+			})
+			err := NewKubernetesPodAPI(client).(childPodAPI).FinalizePodWithIdentity(t.Context(), pod.Namespace, pod.Name, "exact")
+			want := 1
+			switch scenario {
+			case "changed":
+				want = 2
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, getErr := client.CoreV1().Pods(pod.Namespace).Get(t.Context(), pod.Name, metav1.GetOptions{})
+				if getErr != nil || !reflect.DeepEqual(got.Finalizers, []string{"foreign/first", "foreign/new"}) {
+					t.Fatal("foreign finalizers changed", got, getErr)
+				}
+			case "replaced":
+				if !errors.Is(err, ErrChildIsolation) {
+					t.Fatal("replacement accepted", err)
+				}
+			case "churn":
+				want = 3
+				if !apierrors.IsInvalid(err) {
+					t.Fatal("unbounded churn lost refusal", err)
+				}
+			case "unchanged":
+				if !apierrors.IsInvalid(err) {
+					t.Fatal("invalid patch hidden", err)
+				}
+			case "forbidden":
+				if !apierrors.IsForbidden(err) {
+					t.Fatal("authorization error hidden", err)
+				}
+			}
+			if patches != want {
+				t.Fatal("unexpected retry count", patches, want)
+			}
+		})
 	}
 }
