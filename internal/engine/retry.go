@@ -136,6 +136,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				}
 				res.WorkspaceRevision = nil
 				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
+				res = enforceExpectedOutputs(ctx, in.DSLVersion, t, res)
 				// Attempt-scoped implementation-lane artifacts (#3882),
 				// committed BEFORE stage.finished exactly where the local
 				// runner's dispatchTask commits them. The ordering is

@@ -158,6 +158,33 @@ func TestStorageGateHysteresisHoldsCriticalUntilPastTheResumeMargin(t *testing.T
 	}
 }
 
+func TestStorageGateUnderPressureReportsResumeThresholdWhileLatchedAboveFloor(t *testing.T) {
+	const total = 100 << 30
+	criticalFloor := uint64(20 << 30)
+	resumeAt := criticalResumeAt(criticalFloor)
+	gate := gateWith(0, 0, int64(criticalFloor), 0, footprintAt(1<<30, total))
+	gate.Sample()
+
+	// Free space sits between the floor and the resume threshold: still
+	// refused, so the reason must say where admission actually resumes or it
+	// reads as a refusal above the stated floor (#7108).
+	gate.read = func(string) (diskstat.Footprint, error) {
+		return *footprintAt(criticalFloor+(resumeAt-criticalFloor)/2, total), nil
+	}
+	gate.Sample()
+	pressured, detail := gate.UnderPressure()
+	if !pressured {
+		t.Fatal("UnderPressure() = false between the floor and the resume threshold, want true")
+	}
+	want := "floor 20Gi from bytes; admission resumes above 22Gi"
+	if !strings.Contains(detail, want) {
+		t.Fatalf("detail = %q, want it to contain %q", detail, want)
+	}
+	if stats := gate.Stats(); stats.CriticalResumeBytes != resumeAt {
+		t.Fatalf("CriticalResumeBytes = %d, want %d", stats.CriticalResumeBytes, resumeAt)
+	}
+}
+
 func TestStorageGateWarningDoesNotUseHysteresis(t *testing.T) {
 	const total = 100 * 1024 * 1024 * 1024
 	gate := gateWith(10<<30, 0, 0, 0, footprintAt(8<<30, total))
