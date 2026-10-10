@@ -498,6 +498,9 @@ type PullRequestResult struct {
 	ID     string `json:"id"`
 	Number int    `json:"number,omitempty"`
 	URL    string `json:"url"`
+	// Draft is the provider-reported draft state of the PR after the call,
+	// or nil when the provider response did not report it.
+	Draft *bool `json:"draft,omitempty"`
 }
 
 // ReviewRequest describes reviewers to request on a pull request.
