@@ -92,7 +92,8 @@ func (p *ADOProvider) CreatePullRequest(ctx context.Context, req PullRequestRequ
 }
 
 func (p *ADOProvider) adoPullRequestResult(repo RepositoryRef, pr adoPullRequest) PullRequestResult {
-	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: p.pullRequestWebURL(repo, pr)}
+	draft := pr.IsDraft
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: p.pullRequestWebURL(repo, pr), Draft: &draft}
 }
 
 // pullRequestWebURL resolves the browser-navigable URL for a pull request

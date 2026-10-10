@@ -129,6 +129,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		return 1
 	}
 	envelope := outcome.Result
+	logStageFailureEnvelope(stderr, envelope)
 	// Recovery is independent of stage success: a failed attempt can contain
 	// the only copy of reviewed implementation work. Surrender must follow the
 	// host's durable custody acknowledgment, even when the stage was canceled.
@@ -645,6 +646,25 @@ func consumeErrorOutputs(outputs map[string]interface{}) (code, message string, 
 	delete(outputs, executor.OutputErrorMessage)
 	delete(outputs, executor.OutputErrorRetryable)
 	return code, message, retryable
+}
+
+// logStageFailureEnvelope writes a failed stage's code and message to the
+// pod's stderr before recovery custody runs, so a later infrastructure
+// failure that prevents surrender cannot hide the real cause from the pod
+// log (#6920).
+func logStageFailureEnvelope(stderr io.Writer, envelope apiv1.ResultEnvelope) {
+	const maxMessage = 4 << 10
+	if envelope.Status == apiv1.ResultSuccess {
+		return
+	}
+	code, message := "", envelope.Summary
+	if envelope.Error != nil {
+		code, message = envelope.Error.Code, envelope.Error.Message
+	}
+	if len(message) > maxMessage {
+		message = message[:maxMessage] + "...(truncated)"
+	}
+	pf(stderr, "dispatch-exec: stage %s: code=%q message=%q\n", envelope.Status, code, message)
 }
 
 func failureEnvelope(code, message string) apiv1.ResultEnvelope {

@@ -140,11 +140,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
 | [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, prune, or compact telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, label runs, prune, or compact telemetry |
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry label`](#goobers-telemetry-label) | record a ground-truth verdict for a Backprop-enrolled run |
 | [`goobers telemetry mark-fix`](#goobers-telemetry-mark-fix) | mark a Backprop finding for post-fix verification |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
@@ -466,14 +467,31 @@ surface ranked duplicate candidates for curator judgment (a workflow stage)
 Usage: goobers backlog-dedupe [path]
 
 Surface ranked likely-duplicate pairs for the current curation run. The
-command compares this run's claimed issues against every open backlog item
-using title/body similarity, shared closing references, external references,
-and links. It writes a structured candidate artifact for curator judgment;
-it never changes or closes an issue. A candidate's closeEligibleId is present
-only when its newer issue belongs to this run's claimed, trusted batch;
-unclaimed comparison issues are read-only evidence.
+command compares this run's claimed issues against a comparison set (by
+default every open backlog item) using title/body similarity, shared closing
+references, external references, and links. It writes a structured candidate
+artifact for curator judgment; it never changes or closes an issue. A
+candidate's closeEligibleId is present only when its newer issue belongs to
+this run's claimed, trusted batch; unclaimed comparison issues are read-only
+evidence.
 
 The maxCandidates stage input defaults to 20 and must be between 1 and 100.
+It bounds the ranked output only (outputTruncated).
+
+Comparison scope inputs, independent of how the claimed work was selected:
+compareState is open (default) or all (open plus closed history);
+compareLabels lists labels every comparison item must carry, sent to the
+provider query; compareFieldPredicate filters retrieved items by native
+fields exactly (Azure DevOps also narrows its query by required exact
+System.AreaPath and System.WorkItemType equalities when it accepts them);
+compareScanLimit (default 10000, at most 50000) bounds the raw candidates
+read and is never exceeded. Claimed items must fall inside the comparison
+scope to be compared. The artifact's input section reports whether
+collection was complete, why it stopped, which constraints every provider
+query applied, how many pages fell back to a broader query, the claimed
+items not compared, and that pages are not an atomic snapshot. An
+incomplete input is a usable but partial assessment; a complete one with
+no candidates does not prove that no duplicate exists.
 
 Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
 error, 2 = usage error.
@@ -1501,6 +1519,8 @@ has been delivered — the daemon picks it up and begins draining on its
 next sweep. With no live daemon for this instance, fails fast with a
 clear message rather than hanging. Exit codes: 0 = shutdown requested,
 1 = no live daemon found, 2 = usage/IO error.
+A supervisor restarts the daemon at boot or logon; to keep work paused,
+see docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -4110,6 +4130,8 @@ terminal outcome later. Exit codes:
 0 = cancelled or engine cancellation requested, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
+To pause a workflow or gaggle before cancelling its runs, see
+docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -4795,6 +4817,8 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 With --runs-only, skip workflow health and provider-backed status queries and return
 only the bounded run table, without recovery decoration; combine it with --json and
 --limit for fast operator probes. A ready, current status projection is required.
+The workflow summary's A/D/MAX column shows active, desired, and maximum runs;
+see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -4810,10 +4834,10 @@ $ goobers status --agents --json
 
 ## `goobers telemetry`
 
-configure, test, query, export, mark fixes, prune, or compact telemetry
+configure, test, query, export, mark fixes, label runs, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4822,6 +4846,7 @@ stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
+label:   record a ground-truth verdict for a Backprop-enrolled run
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -4920,6 +4945,28 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry label`
+
+record a ground-truth verdict for a Backprop-enrolled run
+
+~~~text
+Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+
+Record a user-defined ground-truth verdict for a Backprop-enrolled terminal
+run. Labels are appended to labels.json beside the run's attribution.json
+with provenance (who, when, source) and may arrive long after the run; the
+latest --labeled-at verdict wins when cohort aggregates are re-scored. Labels
+are read-only inputs and never change the run's phase, journal, or gate
+verdicts. --by defaults to the current OS user; --labeled-at defaults to now.
+Exit codes: 0 = recorded, 1 = store error, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry label --run=run-123 --outcome=incorrect --reason="PR was reverted"
 ~~~
 
 ## `goobers telemetry mark-fix`

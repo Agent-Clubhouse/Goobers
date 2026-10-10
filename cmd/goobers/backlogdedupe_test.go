@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/backlogscope"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -301,10 +303,109 @@ func TestBacklogDedupeScansOpenBacklogAndBoundsArtifact(t *testing.T) {
 	if candidate.CloseEligibleID != "" {
 		t.Fatalf("closeEligibleId = %q, want empty for unclaimed newer comparison item", candidate.CloseEligibleID)
 	}
+	if !artifact.OutputTruncated || artifact.Input.Assessment != backlogscope.AssessmentComplete ||
+		artifact.Input.Status != backlogscope.StatusComplete || artifact.Input.Scope.State != backlogscope.StateOpen {
+		t.Fatalf("input = %+v outputTruncated = %v, want complete open input with truncated output", artifact.Input, artifact.OutputTruncated)
+	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if server.issues[900].state != "open" || server.issues[901].state != "open" {
 		t.Fatal("candidate surfacing must not close issues")
+	}
+}
+
+// TestBacklogDedupeScopedComparisonIncludesRequestedHistory pins #6070: an
+// explicit comparison scope reaches the provider, only in-scope items are
+// ranked, completed history enters only when compareState=all asks for it, and
+// a claimed item outside the scope is reported as not compared rather than
+// silently producing a clean no-candidate result.
+func TestBacklogDedupeScopedComparisonIncludesRequestedHistory(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(101, "Claimed account sync failure", "approved", "env-dev")
+	server.addIssue(102, "Claimed billing export", "approved")
+	server.addIssue(900, "Account sync failure regression", "approved", "env-dev")
+	server.addIssue(901, "Account sync failure in production", "approved", "env-prod")
+	server.closeIssue(900)
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	for _, id := range []string{"101", "102"} {
+		if ok, _, err := ledger.Claim(id, "curation-run", "backlog-curation", time.Hour); err != nil || !ok {
+			t.Fatalf("claim %s: ok=%v err=%v", id, ok, err)
+		}
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_COMPARESTATE", "all")
+	t.Setenv("GOOBERS_INPUT_COMPARELABELS", "approved,env-dev")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-dedupe", root)
+	if code != 0 {
+		t.Fatalf("backlog-dedupe: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "dedupe input is incomplete") {
+		t.Fatalf("stderr = %q, want an incomplete-input warning", stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "dedupe-candidates.json"))
+	if err != nil {
+		t.Fatalf("read candidate artifact: %v", err)
+	}
+	var artifact dedupeCandidateArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("decode candidate artifact: %v", err)
+	}
+	if artifact.ScannedItems != 2 || len(artifact.Candidates) != 1 {
+		t.Fatalf("artifact = %+v, want 2 scoped items and one candidate", artifact)
+	}
+	if got := artifact.Candidates[0]; got.Older.ID != "101" || got.Newer.ID != "900" || got.CloseEligibleID != "" {
+		t.Fatalf("candidate = %+v, want 101 vs completed 900 without close eligibility", got)
+	}
+	input := artifact.Input
+	if input.Status != backlogscope.StatusComplete || input.Assessment != backlogscope.AssessmentIncomplete ||
+		strings.Join(input.ClaimedNotCompared, ",") != "102" || artifact.OutputTruncated {
+		t.Fatalf("input = %+v outputTruncated = %v, want complete collection, claimed 102 not compared", input, artifact.OutputTruncated)
+	}
+	if input.Scope.State != backlogscope.StateAll || strings.Join(input.Scope.Labels, ",") != "approved,env-dev" {
+		t.Fatalf("scope = %+v, want all-state approved,env-dev", input.Scope)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	for _, query := range server.issueListQueries {
+		values, err := url.ParseQuery(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if values.Get("state") != "all" || values.Get("labels") != "approved,env-dev" {
+			t.Fatalf("issue list query %q, want the comparison scope sent to the provider", query)
+		}
+	}
+	if server.issues[900].state != "closed" || server.issues[901].state != "open" {
+		t.Fatal("candidate surfacing must not change issues")
+	}
+}
+
+func TestBacklogDedupeRejectsInvalidComparisonScope(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Chdir(t.TempDir())
+	for name, value := range map[string]string{
+		"GOOBERS_INPUT_COMPARESTATE":     "closed",
+		"GOOBERS_INPUT_COMPARESCANLIMIT": "0",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, value)
+			if code, _, stderr := runArgs(t, "backlog-dedupe", root); code != 1 || !strings.Contains(stderr, "invalid compare") {
+				t.Fatalf("code = %d stderr = %q, want a config error", code, stderr)
+			}
+		})
 	}
 }
 

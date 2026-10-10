@@ -64,6 +64,37 @@ func TestBuildBacklogCounter(t *testing.T) {
 		}
 	})
 
+	t.Run("disabled backlog-item trigger neither fans out nor refills", func(t *testing.T) {
+		disabled := false
+		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+			Start:     "query",
+			Readiness: apiv1.ReadinessConditions{DesiredConcurrentRuns: 1},
+			Triggers: []apiv1.Trigger{{
+				Type:     apiv1.TriggerBacklogItem,
+				Enabled:  &disabled,
+				Selector: map[string]string{"goobers:ready": "true"},
+			}},
+			Tasks: []apiv1.Task{{
+				Name: "query",
+				Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}},
+			}},
+		}}
+		c, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", nil, "")
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
+		if c != nil {
+			t.Fatalf("expected no backlog fan-out for a disabled backlog-item trigger, got %+v", c)
+		}
+		refill, err := buildRefillDemandCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", "", nil)
+		if err != nil {
+			t.Fatalf("buildRefillDemandCounter: %v", err)
+		}
+		if refill != nil {
+			t.Fatalf("expected no refill for a workflow declaring a backlog-item trigger, got %+v", refill)
+		}
+	})
+
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
 		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{Backlog: apiv1.BacklogRef{
 			Labels:         []string{"area:web"},
@@ -222,6 +253,38 @@ func TestBuildBacklogCounter(t *testing.T) {
 		matched, err = refill.labelPredicate.Matches([]string{"area:web", "team:web", "goobers:approved", "goobers:ready", providers.LabelClaimed})
 		if err != nil || matched {
 			t.Fatalf("claimed labels match = %v, err = %v, want false", matched, err)
+		}
+	})
+
+	t.Run("disabled non-backlog triggers do not disable refill", func(t *testing.T) {
+		disabled := false
+		wf := &apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:    "goobers",
+				Triggers:  []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h", Enabled: &disabled}},
+				Readiness: apiv1.ReadinessConditions{DesiredConcurrentRuns: 1},
+				Start:     "query-backlog",
+				Tasks: []apiv1.Task{{
+					Name: "query-backlog",
+					Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}},
+				}},
+			},
+		}
+		counter, err := buildRefillDemandCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counter == nil {
+			t.Fatal("refill must stay wired while only the schedule trigger is disabled")
+		}
+		wf.Spec.Readiness.DesiredConcurrentRuns = 0
+		counter, err = buildRefillDemandCounter(cfg, apiv1.Gaggle{}, wf, repoRef, nil, nil, "", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counter != nil {
+			t.Fatalf("omitting desiredConcurrentRuns must disable refill, got %T", counter)
 		}
 	})
 

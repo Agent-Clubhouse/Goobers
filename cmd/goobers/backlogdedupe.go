@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/goobers/goobers/internal/backlogscope"
+	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -18,6 +20,8 @@ const (
 	defaultDedupeCandidates = 20
 	maxDedupeCandidates     = 100
 	dedupeArtifactVersion   = "v1"
+	defaultDedupeScanLimit  = 10000
+	maxDedupeScanLimit      = 50000
 )
 
 var (
@@ -38,13 +42,29 @@ var dedupeStopWords = map[string]bool{
 
 const backlogDedupeHelp = "Usage: goobers backlog-dedupe [path]\n\n" +
 	"Surface ranked likely-duplicate pairs for the current curation run. The\n" +
-	"command compares this run's claimed issues against every open backlog item\n" +
-	"using title/body similarity, shared closing references, external references,\n" +
-	"and links. It writes a structured candidate artifact for curator judgment;\n" +
-	"it never changes or closes an issue. A candidate's closeEligibleId is present\n" +
-	"only when its newer issue belongs to this run's claimed, trusted batch;\n" +
-	"unclaimed comparison issues are read-only evidence.\n\n" +
-	"The maxCandidates stage input defaults to 20 and must be between 1 and 100.\n\n" +
+	"command compares this run's claimed issues against a comparison set (by\n" +
+	"default every open backlog item) using title/body similarity, shared closing\n" +
+	"references, external references, and links. It writes a structured candidate\n" +
+	"artifact for curator judgment; it never changes or closes an issue. A\n" +
+	"candidate's closeEligibleId is present only when its newer issue belongs to\n" +
+	"this run's claimed, trusted batch; unclaimed comparison issues are read-only\n" +
+	"evidence.\n\n" +
+	"The maxCandidates stage input defaults to 20 and must be between 1 and 100.\n" +
+	"It bounds the ranked output only (outputTruncated).\n\n" +
+	"Comparison scope inputs, independent of how the claimed work was selected:\n" +
+	"compareState is open (default) or all (open plus closed history);\n" +
+	"compareLabels lists labels every comparison item must carry, sent to the\n" +
+	"provider query; compareFieldPredicate filters retrieved items by native\n" +
+	"fields exactly (Azure DevOps also narrows its query by required exact\n" +
+	"System.AreaPath and System.WorkItemType equalities when it accepts them);\n" +
+	"compareScanLimit (default 10000, at most 50000) bounds the raw candidates\n" +
+	"read and is never exceeded. Claimed items must fall inside the comparison\n" +
+	"scope to be compared. The artifact's input section reports whether\n" +
+	"collection was complete, why it stopped, which constraints every provider\n" +
+	"query applied, how many pages fell back to a broader query, the claimed\n" +
+	"items not compared, and that pages are not an atomic snapshot. An\n" +
+	"incomplete input is a usable but partial assessment; a complete one with\n" +
+	"no candidates does not prove that no duplicate exists.\n\n" +
 	"Exit codes: 0 = candidate artifact written, 1 = config/credential/provider\n" +
 	"error, 2 = usage error.\n"
 
@@ -74,14 +94,19 @@ type dedupeCandidate struct {
 }
 
 type dedupeCandidateArtifact struct {
-	Version        string            `json:"version"`
-	ScannedItems   int               `json:"scannedItems"`
-	ClaimedItems   int               `json:"claimedItems"`
-	CandidateCount int               `json:"candidateCount"`
-	TotalMatches   int               `json:"totalMatches"`
-	Truncated      bool              `json:"truncated"`
-	ClaimedIDs     []string          `json:"claimedIds"`
-	Candidates     []dedupeCandidate `json:"candidates"`
+	Version        string `json:"version"`
+	ScannedItems   int    `json:"scannedItems"`
+	ClaimedItems   int    `json:"claimedItems"`
+	CandidateCount int    `json:"candidateCount"`
+	TotalMatches   int    `json:"totalMatches"`
+	// Truncated is OutputTruncated, kept for existing consumers.
+	Truncated bool `json:"truncated"`
+	// OutputTruncated reports omitted ranked pairs; it says nothing about
+	// whether the comparison input was complete (see Input).
+	OutputTruncated bool                `json:"outputTruncated"`
+	Input           backlogscope.Report `json:"input"`
+	ClaimedIDs      []string            `json:"claimedIds"`
+	Candidates      []dedupeCandidate   `json:"candidates"`
 }
 
 func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
@@ -144,20 +169,14 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 	}
 	defer cancel()
 
-	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  backlogRepo,
-		State:       "open",
-		OldestFirst: true,
-	})
+	collectScope, fieldExpression, scanLimit, err := dedupeComparisonScope(backlogRepo)
 	if err != nil {
-		return failProviderStage(stderr, "list open work items for dedupe", err, "dedupe-candidates.json")
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
-	openItems := items[:0]
-	for _, item := range items {
-		if item.State != "" && !strings.EqualFold(item.State, "open") {
-			continue
-		}
-		openItems = append(openItems, item)
+	openItems, coverage, err := backlogscope.Collect(ctx, issueProvider, collectScope, scanLimit)
+	if err != nil {
+		return failProviderStage(stderr, "list comparison work items for dedupe", err, "dedupe-candidates.json")
 	}
 
 	candidates := surfaceDuplicateCandidates(openItems, claimed)
@@ -172,14 +191,16 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		candidates = []dedupeCandidate{}
 	}
 	artifact := dedupeCandidateArtifact{
-		Version:        dedupeArtifactVersion,
-		ScannedItems:   len(openItems),
-		ClaimedItems:   len(claimedIDs),
-		CandidateCount: len(candidates),
-		TotalMatches:   totalMatches,
-		Truncated:      totalMatches > len(candidates),
-		ClaimedIDs:     claimedIDs,
-		Candidates:     candidates,
+		Version:         dedupeArtifactVersion,
+		ScannedItems:    len(openItems),
+		ClaimedItems:    len(claimedIDs),
+		CandidateCount:  len(candidates),
+		TotalMatches:    totalMatches,
+		Truncated:       totalMatches > len(candidates),
+		OutputTruncated: totalMatches > len(candidates),
+		Input:           backlogscope.NewReport(collectScope, fieldExpression, coverage, openItems, claimedIDs),
+		ClaimedIDs:      claimedIDs,
+		Candidates:      candidates,
 	}
 	resultFile := providerInput("resultFile", "dedupe-candidates.json")
 	if code := writeStageResultJSON(stderr, resultFile, artifact, stageResultOptions{
@@ -187,8 +208,45 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 	}); code != 0 {
 		return code
 	}
-	pf(stdout, "surfaced %d likely-duplicate candidate pair(s) from %d open item(s)\n", len(candidates), len(openItems))
+	pf(stdout, "surfaced %d likely-duplicate candidate pair(s) from %d comparison item(s)\n", len(candidates), len(openItems))
+	if artifact.Input.Assessment != backlogscope.AssessmentComplete {
+		pf(stderr, "warning: dedupe input is incomplete (collection %s %s, %d claimed item(s) not compared); "+
+			"no candidate for an item is not evidence that it has no duplicate\n",
+			coverage.Status, coverage.Reason, len(artifact.Input.ClaimedNotCompared))
+	}
 	return 0
+}
+
+// dedupeComparisonScope reads the comparison-set inputs: compareState (open,
+// the default, or all), compareLabels (required labels, sent to the provider
+// query), compareFieldPredicate (rechecked after retrieval) and
+// compareScanLimit (the raw candidate budget).
+func dedupeComparisonScope(repo providers.RepositoryRef) (backlogscope.Scope, string, int, error) {
+	state, err := backlogscope.ParseState(providerInput("compareState", backlogscope.StateOpen))
+	if err != nil {
+		return backlogscope.Scope{}, "", 0, err
+	}
+	fieldExpression := providerInput("compareFieldPredicate", "")
+	fieldFilter, err := fieldpredicate.Compile(fieldExpression)
+	if err != nil {
+		return backlogscope.Scope{}, "", 0, fmt.Errorf("invalid compareFieldPredicate: %w", err)
+	}
+	scanLimit, err := parseIntInput(
+		providerInput("compareScanLimit", strconv.Itoa(defaultDedupeScanLimit)),
+		func(value int) bool { return value >= 1 && value <= maxDedupeScanLimit },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("invalid compareScanLimit %q (want an integer between 1 and %d)", raw, maxDedupeScanLimit)
+		},
+	)
+	if err != nil {
+		return backlogscope.Scope{}, "", 0, err
+	}
+	return backlogscope.Scope{
+		Repository:     repo,
+		Labels:         splitLabelList(providerInput("compareLabels", "")),
+		FieldPredicate: fieldFilter,
+		State:          state,
+	}, fieldExpression, scanLimit, nil
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {

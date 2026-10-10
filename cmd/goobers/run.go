@@ -1103,7 +1103,9 @@ const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] [--req
 	"terminal outcome later. Exit codes:\n" +
 	"0 = cancelled or engine cancellation requested, 1 = business error\n" +
 	"(already terminal, not currently running, or no daemon to cancel it),\n" +
-	"2 = usage/IO error (unknown run).\n"
+	"2 = usage/IO error (unknown run).\n" +
+	"To pause a workflow or gaggle before cancelling its runs, see\n" +
+	"docs/guides/desired-concurrency-and-pause.md.\n"
 
 func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("run cancel", flag.ContinueOnError)

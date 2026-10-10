@@ -120,6 +120,9 @@ files, and untracked workspace files do not survive between stages. To pass a
 file from one stage to a later stage, see
 [Stage-to-stage fan-in](#stage-to-stage-fan-in).
 
+For which evidence a failed task keeps and which a later stage receives, see
+[Failed-task evidence contract](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/failed-task-evidence.md).
+
 #### Local outbox mirror (`outboxMirrorPath`)
 
 `outboxMirrorPath` can be set on a task, a workflow, or a gaggle. It names an
@@ -267,6 +270,8 @@ requests under the workflow's run-branch namespace in the gaggle's project
 repository, on GitHub and Azure DevOps alike, and ignores PRs labelled
 `goobers:merge-escalated` in any casing. Until a count has been read, and
 whenever a read fails, admission is not held back by the cap.
+See [Desired concurrency, refill, and pausing work](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/desired-concurrency-and-pause.md)
+for how `desiredConcurrentRuns` refill works and how to pause it.
 
 `requireProviderAuthorization: true` makes provider authorization health a
 pre-claim predicate. Before each autonomous dispatch the scheduler resolves the
