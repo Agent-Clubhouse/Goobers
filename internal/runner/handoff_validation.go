@@ -48,6 +48,9 @@ type handoffBinding struct {
 	SlotName     string
 	MediaType    string
 	SchemaPath   string
+	// ResultArtifact binds the producer's sole JSON artifact instead of a
+	// named artifact-set slot (see ResultHandoffSchemas).
+	ResultArtifact bool
 }
 
 func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJournal, machine *workflow.Machine, task apiv1.Task, attempt int, class journal.AttemptClass, pointers []apiv1.ContextPointer) (context.Context, *handoffcheck.Report, error) {
@@ -56,7 +59,7 @@ func (r *Runner) handoffValidationContext(ctx context.Context, jr executionJourn
 		return ctx, nil, err
 	}
 	ctx = handoffcheck.WithPublicationSchemas(ctx, schemas)
-	report := buildHandoffValidationReport(ctx, jr.Dir(), handoffBindingsForContext(machine, pointers), pointers, r.cfg.HandoffSchemaLoader)
+	report := buildHandoffValidationReport(ctx, jr.Dir(), handoffBindingsForContext(machine, pointers, r.cfg.ResultHandoffSchemas.forWorkflow(machine)), pointers, r.cfg.HandoffSchemaLoader)
 	if report == nil {
 		return ctx, nil, nil
 	}
@@ -94,7 +97,7 @@ func producerPublicationSchemas(task apiv1.Task, load HandoffSchemaLoader) (map[
 	return schemas, nil
 }
 
-func handoffBindingsForContext(machine *workflow.Machine, pointers []apiv1.ContextPointer) map[string]handoffBinding {
+func handoffBindingsForContext(machine *workflow.Machine, pointers []apiv1.ContextPointer, resultSchemas map[string]string) map[string]handoffBinding {
 	if machine == nil {
 		return nil
 	}
@@ -115,6 +118,10 @@ func handoffBindingsForContext(machine *workflow.Machine, pointers []apiv1.Conte
 	out := map[string]handoffBinding{}
 	for _, task := range machine.Def.Spec.Tasks {
 		if !presentProducers[task.Name] {
+			continue
+		}
+		if binding, ok := resultHandoffBinding(task, resultSchemas[task.Name]); ok {
+			out[binding.LocalName] = binding
 			continue
 		}
 		for _, slot := range task.ArtifactSlots {
@@ -149,7 +156,9 @@ func buildHandoffValidationReport(ctx context.Context, journalRoot string, bindi
 			continue
 		}
 		checks = append(checks, bindingCheck{local: local, binding: binding})
-		requiredByProducer[binding.ProducerTask] = append(requiredByProducer[binding.ProducerTask], binding.SlotName)
+		if !binding.ResultArtifact {
+			requiredByProducer[binding.ProducerTask] = append(requiredByProducer[binding.ProducerTask], binding.SlotName)
+		}
 	}
 	if len(checks) == 0 {
 		return nil
@@ -170,26 +179,17 @@ func buildHandoffValidationReport(ctx context.Context, journalRoot string, bindi
 		errs       []string
 	)
 	for _, check := range checks {
-		payloads, ok := resolvedByProducer[check.binding.ProducerTask]
-		if !ok {
-			payloads, err = artifactset.Resolve(ctx, reader, pointers, check.binding.ProducerTask, requiredByProducer[check.binding.ProducerTask]...)
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s: resolve %s.%s: %v", check.local, check.binding.ProducerTask, check.binding.SlotName, err))
-				continue
-			}
-			resolvedByProducer[check.binding.ProducerTask] = payloads
+		payload, err := resolveHandoffPayload(ctx, reader, pointers, check.binding, requiredByProducer, resolvedByProducer)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", check.local, err))
+			continue
 		}
 		schema, err := load(check.binding.SchemaPath)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: load schema %q: %v", check.local, check.binding.SchemaPath, err))
 			continue
 		}
-		payload, ok := payloads[check.binding.SlotName]
-		if !ok {
-			errs = append(errs, fmt.Sprintf("%s: resolved payload %s.%s missing", check.local, check.binding.ProducerTask, check.binding.SlotName))
-			continue
-		}
-		verdict := schema.Check(payload.Bytes)
+		verdict := schema.Check(payload)
 		entry := handoffcheck.ReportEntry{
 			Input:    check.local,
 			Producer: check.binding.ProducerTask,
@@ -218,6 +218,32 @@ func buildHandoffValidationReport(ctx context.Context, journalRoot string, bindi
 		return nil
 	}
 	return report
+}
+
+// resolveHandoffPayload returns the bytes one binding validates, resolving a
+// producer's artifact set at most once.
+func resolveHandoffPayload(ctx context.Context, reader *artifactset.JournalReader, pointers []apiv1.ContextPointer, binding handoffBinding, requiredByProducer map[string][]string, resolvedByProducer map[string]map[string]artifactset.Payload) ([]byte, error) {
+	if binding.ResultArtifact {
+		data, err := readResultHandoff(ctx, reader, pointers, binding.ProducerTask)
+		if err != nil {
+			return nil, fmt.Errorf("read %s result: %w", binding.ProducerTask, err)
+		}
+		return data, nil
+	}
+	payloads, ok := resolvedByProducer[binding.ProducerTask]
+	if !ok {
+		var err error
+		payloads, err = artifactset.Resolve(ctx, reader, pointers, binding.ProducerTask, requiredByProducer[binding.ProducerTask]...)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s.%s: %w", binding.ProducerTask, binding.SlotName, err)
+		}
+		resolvedByProducer[binding.ProducerTask] = payloads
+	}
+	payload, ok := payloads[binding.SlotName]
+	if !ok {
+		return nil, fmt.Errorf("resolved payload %s.%s missing", binding.ProducerTask, binding.SlotName)
+	}
+	return payload.Bytes, nil
 }
 
 func handoffValidationRunnerFields(report handoffcheck.Report) map[string]any {

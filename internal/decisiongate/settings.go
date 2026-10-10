@@ -38,6 +38,49 @@ type Settings struct {
 	// mode. Zero means 1.
 	ShadowSample float64 `json:"shadowSample,omitempty" yaml:"shadowSample,omitempty"`
 	Gate         Config  `json:"gate,omitempty" yaml:"gate,omitempty"`
+	// HandoffSchemas binds legacy producer results to JSON Schemas so shadow
+	// records carry a real inputValid. Inert while the gate is off.
+	HandoffSchemas []HandoffSchemaBinding `json:"handoffSchemas,omitempty" yaml:"handoffSchemas,omitempty"`
+}
+
+// HandoffSchemaBinding validates one producer stage's sole JSON result, for
+// workflows that cannot declare schema-bound artifactSlots (pre-DSL 3.1).
+type HandoffSchemaBinding struct {
+	Workflow string `json:"workflow" yaml:"workflow"`
+	Stage    string `json:"stage" yaml:"stage"`
+	// SchemaPath is a JSON Schema path relative to the config directory.
+	SchemaPath string `json:"schemaPath" yaml:"schemaPath"`
+}
+
+// ResultSchemas indexes the bindings by workflow then stage. It returns nil
+// when the gate is off so an inert block never changes runner behavior.
+func (s *Settings) ResultSchemas() map[string]map[string]string {
+	if s.EffectiveMode() == ModeOff || len(s.HandoffSchemas) == 0 {
+		return nil
+	}
+	out := map[string]map[string]string{}
+	for _, b := range s.HandoffSchemas {
+		if out[b.Workflow] == nil {
+			out[b.Workflow] = map[string]string{}
+		}
+		out[b.Workflow][b.Stage] = b.SchemaPath
+	}
+	return out
+}
+
+func validateHandoffSchemas(bindings []HandoffSchemaBinding) error {
+	seen := map[[2]string]bool{}
+	for i, b := range bindings {
+		if strings.TrimSpace(b.Workflow) == "" || strings.TrimSpace(b.Stage) == "" || strings.TrimSpace(b.SchemaPath) == "" {
+			return fmt.Errorf("decisionGate.handoffSchemas[%d]: workflow, stage and schemaPath are required", i)
+		}
+		key := [2]string{b.Workflow, b.Stage}
+		if seen[key] {
+			return fmt.Errorf("decisionGate.handoffSchemas[%d]: duplicate binding for %s/%s", i, b.Workflow, b.Stage)
+		}
+		seen[key] = true
+	}
+	return nil
 }
 
 // Allowed fallbacks. agent keeps today's behavior.
@@ -60,6 +103,9 @@ func (s *Settings) EffectiveMode() Mode {
 func (s *Settings) Validate() error {
 	if s == nil {
 		return nil
+	}
+	if err := validateHandoffSchemas(s.HandoffSchemas); err != nil {
+		return err
 	}
 	switch s.EffectiveMode() {
 	case ModeOff:

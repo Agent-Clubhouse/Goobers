@@ -523,6 +523,8 @@ type Config struct {
 	// schema-bound JSON handoffs for agentic stages. Nil preserves historical
 	// behavior.
 	HandoffSchemaLoader HandoffSchemaLoader
+	// ResultHandoffSchemas binds pre-DSL-3.1 producers' JSON results (#6733).
+	ResultHandoffSchemas ResultHandoffSchemas
 	// RerouteInvalidHandoffs sends an invalid schema-bound JSON handoff back to
 	// the producer stage for a bounded retry. False preserves validation-only
 	// behavior.

@@ -149,3 +149,26 @@ That is intentional:
 
 Do not fold unknown-validity records into the valid denominator by hand.
 
+### Bind handoff schemas for DSL 2.0 workflows
+
+`inputValid` comes from deterministic handoff validation, which normally binds
+a producer's schema-bound `artifactSlots`. Workflows pinned below DSL 3.1, such
+as the shipped `implementation` workflow, cannot declare those slots, so every
+record stays unknown. Bind the producer's JSON result file in **both** arms
+instead:
+
+```yaml
+decisionGate:
+  # ...mode, *Env and fallback as above...
+  handoffSchemas:
+    - workflow: implementation
+      stage: query-backlog
+      schemaPath: gaggles/goobers/schemas/claimed-item.schema.json
+```
+
+`schemaPath` is relative to, and must stay inside, the config directory. The
+bound stage must publish exactly one `application/json` artifact (a
+deterministic stage's `.json` `resultFile`). A missing or ambiguous payload, or
+a schema that cannot be loaded, keeps the record unknown rather than guessing.
+Bindings are inert while `decisionGate.mode` is `off`.
+
