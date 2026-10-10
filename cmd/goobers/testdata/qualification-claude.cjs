@@ -74,6 +74,7 @@ async function main() {
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
   if (['parallel','parallel-cancel','parallel-daemon-restart'].includes(mode)) return parallelJourney();
+  if (mode.startsWith('generated-parallel')) return generatedParallelJourney(mode);
   const publication = ['publication','publication-lost-reply'].includes(mode);
   if (!publication && !['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
   if (publication && Object.values(process.env).some(value => value.includes('host-only-publication-'))) throw new Error('publication credential reached parent pod');
@@ -183,3 +184,36 @@ main().catch(() => {
   mcp.kill();
   process.exitCode = 1;
 });
+
+async function generatedParallelJourney(mode) {
+  const delay = mode === 'generated-parallel-cancel' ? 60000 : mode === 'generated-parallel-daemon-restart' ? 45000 : 0;
+  const invocationKey = 'qualification-child';
+  const status = await tool('get_child_workflow', { invocationKey });
+  if (status.error) {
+    if (status.code !== 'child_workflow_not_found') throw new Error('parallel generated child lookup refused');
+    fs.writeFileSync('parent-before-child.txt', 'parent before child\n');
+    const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
+    if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid parallel child signal');
+    const tasks = ['left', 'right'].map(branch => {
+      const observe = `if(require("fs").readFileSync("parent-before-child.txt","utf8")!=="parent before child\\n")throw Error("fork source changed");require("http").get(${JSON.stringify(notify + '?branch=' + branch)},r=>{r.resume();r.on("end",()=>{if(r.statusCode!==204)process.exitCode=1;else if(${delay})setTimeout(()=>{},${delay})})}).on("error",()=>{process.exitCode=1})`;
+      return { name: 'inspect-' + branch, type: 'deterministic', goal: 'Inspect the isolated child view', timeoutSeconds: 120, runsOn: { os: 'linux', capabilities: ['isolated-child'] }, run: { workspace: 'repo-readonly', command: ['node','-e',observe] }, next: '@join' };
+    });
+    tasks.push({ name: 'collate', type: 'deterministic', goal: 'Return the joined child result', runsOn: { os: 'linux', capabilities: ['isolated-child'] }, run: { workspace: 'repo', command: ['sh','-c','printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Joined child work"'] } });
+    const document = { apiVersion: 'goobers.dev/v1alpha1', kind: 'Workflow', dslVersion: '3.1', metadata: { name: 'generated-check' }, spec: { gaggle: 'example', triggers: [{ type: 'manual' }], start: 'fan', tasks, parallels: [{ name: 'fan', join: 'collate', maxConcurrentBranches: 2, failurePolicy: 'all_or_nothing', onFailure: '@abort', branches: [{ name: 'left', start: 'inspect-left' }, { name: 'right', start: 'inspect-right' }] }] } };
+    const sourceFile = 'generated-child.yaml';
+    fs.writeFileSync(sourceFile, JSON.stringify(document));
+    const validation = await tool('validate_child_workflow', { sourceFile });
+    if (validation.error || !validation.value.valid) throw new Error('parallel generated source rejected');
+    if ((await tool('start_child_workflow', { sourceFile, invocationKey })).error) throw new Error('parallel generated acceptance failed');
+    return waitForHost();
+  }
+  if (!status.value.resultRef) return waitForHost();
+  if (status.value.state !== 'completed') throw new Error('parallel generated child failed');
+  if (!status.value.acknowledged) {
+    fs.writeFileSync('parent-after-child.txt', 'parent after child\n');
+    if ((await tool('resolve_child_workflow', { invocationKey, action: 'merge', resultRef: status.value.resultRef })).error) throw new Error('parallel generated return refused');
+    return waitForHost();
+  }
+  if (fs.readFileSync('child-return.txt','utf8') !== 'child return\n' || fs.readFileSync('parent-before-child.txt','utf8') !== 'parent before child\n' || fs.readFileSync('parent-after-child.txt','utf8') !== 'parent after child\n') throw new Error('parallel generated result changed parent content');
+  return complete();
+}
