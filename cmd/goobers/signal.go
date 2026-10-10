@@ -22,6 +22,7 @@ const signalHelp = "Usage: goobers signal [--request-id <key>] <name> [path]\n\n
 	"new key is printed before acceptance. A signal may match zero, one, or\n" +
 	"many workflows. Waits for each dispatched run to finish or pause.\n" +
 	"Capacity-held starts remain queued for goobers up or a same-key retry.\n" +
+	"A submission-only receipt still requires dispatch and completion.\n" +
 	"The command requires the instance lock; stop its daemon first.\n\n" +
 	"Exit codes: 0 = all admitted runs completed or no workflows matched,\n" +
 	"1 = a run failed/aborted, a start remains queued, or a business error,\n" +
