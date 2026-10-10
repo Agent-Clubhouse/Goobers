@@ -33,6 +33,7 @@ import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 import type { FailureReasons } from "../overviewFailures";
 import { configurationWarningKey } from "../configurationWarnings";
+import { reliabilitySummary } from "../reliability";
 
 const attentionSelectionStorageKey = "goobers-overview-attention-selection";
 const emptyFailureReasons: FailureReasons = new Map();
@@ -1435,6 +1436,9 @@ function operatorContext(run: RunSummary): string {
   }
   if (operator.potentialBlockers.length > 0) {
     details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
+  }
+  if (operator.reliability) {
+    details.push(reliabilitySummary(operator.reliability));
   }
   // Kept out of "Blockers" and labelled as a reader limitation: this is what the
   // read invocation could not verify, not something impeding the run (#3346).

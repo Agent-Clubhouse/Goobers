@@ -239,6 +239,56 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	}
 }
 
+func TestStoredAttributionCohortsRescoreWhenLateLabelLands(t *testing.T) {
+	root, store, runID := seedStoredAttributionRun(t)
+	query := StoredAttributionQuery{
+		Gaggle: "core", Workflow: "implementation", Since: time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC),
+	}
+	before, err := StoredAttributionCohorts(context.Background(), root, store, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].GroundTruth != nil {
+		t.Fatalf("cohorts before label = %+v, want one unlabeled cohort", before)
+	}
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	journalBefore, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	labeledAt := time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
+	for _, outcome := range []creditgraph.LabelOutcome{creditgraph.LabelCorrect, creditgraph.LabelIncorrect} {
+		if _, err := RecordGroundTruthLabel(context.Background(), root, creditgraph.GroundTruthLabel{
+			RunID: runID, Outcome: outcome, Source: creditgraph.LabelSourceHuman, LabeledBy: "reviewer",
+			LabeledAt: labeledAt, RecordedAt: labeledAt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		labeledAt = labeledAt.Add(time.Hour)
+	}
+
+	after, err := StoredAttributionCohorts(context.Background(), root, store, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := creditgraph.GroundTruthSummary{LabeledRunCount: 1, IncorrectRunCount: 1}
+	if len(after) != 1 || after[0].GroundTruth == nil || *after[0].GroundTruth != want {
+		t.Fatalf("cohorts after late labels = %+v, want %+v from the latest verdict", after, want)
+	}
+	if after[0].RunCount != before[0].RunCount || after[0].EffectiveVersion != before[0].EffectiveVersion {
+		t.Fatalf("labels changed cohort identity: before %+v after %+v", before[0], after[0])
+	}
+	journalAfter, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(journalAfter) != string(journalBefore) {
+		t.Fatal("recording a ground-truth label mutated the run journal")
+	}
+}
+
 func TestLocalTelemetryAttributionReturnsEnrolledRunRecords(t *testing.T) {
 	root, store, runID := seedStoredAttributionRun(t)
 	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)

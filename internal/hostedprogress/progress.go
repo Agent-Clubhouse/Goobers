@@ -384,21 +384,47 @@ func (p *Publisher) contract(events, projected []journal.Event, revision uint64)
 	return contract, nil
 }
 
+var marshalContract = json.Marshal
+
+// dropMiddleEvents binary-searches the fewest events to drop after the first
+// so the contract fits, keeping the marshal count logarithmic. Payload size
+// shrinks monotonically as more events are dropped.
+func dropMiddleEvents(contract *Contract) {
+	events := contract.Events
+	fits := func(drop int) bool {
+		candidate := *contract
+		candidate.TruncatedBefore = events[drop].Seq
+		candidate.Events = append([]journal.Event{events[0]}, events[drop+1:]...)
+		raw, err := marshalContract(&candidate)
+		return err != nil || len(raw) <= maxPayloadBytes
+	}
+	lo, hi := 1, len(events)-1
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if fits(mid) {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	contract.TruncatedBefore = events[lo].Seq
+	contract.Events = append([]journal.Event{events[0]}, events[lo+1:]...)
+}
+
 func boundContract(contract *Contract) {
 	for {
-		raw, err := json.Marshal(contract)
+		raw, err := marshalContract(contract)
 		if err != nil || len(raw) <= maxPayloadBytes {
 			return
 		}
 		switch {
 		case len(contract.Events) > 1:
-			contract.TruncatedBefore = contract.Events[1].Seq
-			contract.Events = append(contract.Events[:1], contract.Events[2:]...)
+			dropMiddleEvents(contract)
 		case contract.Graph != nil:
 			contract.Graph = nil
 		case len(contract.Events) == 1:
 			contract.Events = []journal.Event{compactEvent(contract.Events[0])}
-			raw, err := json.Marshal(contract)
+			raw, err := marshalContract(contract)
 			if err == nil && len(raw) <= maxPayloadBytes {
 				return
 			}

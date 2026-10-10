@@ -28,8 +28,11 @@ Today:
   shadow mode over unenrolled workflows yet.
 - Attribution is computed **once, at run end**. There are no per-stage
   checkpoints.
-- Learning uses only what the run journal recorded. You cannot supply your own
-  ground truth (for example, "this merged PR was later reverted") yet.
+- Learning uses the run journal plus any ground-truth labels you record by
+  hand with `goobers telemetry label` (see
+  [Label run outcomes](#label-run-outcomes-ground-truth)). Automatic label
+  sources (for example, "this merged PR was later reverted") are not
+  available yet.
 - Cohorts and fault-audit findings are JSON only: the daemon's telemetry stats
   read API and `goobers telemetry-query`. The `goobers telemetry stats` CLI
   (text or `--json`) reads only the local rollup and does not include them.
@@ -160,7 +163,9 @@ Both surfaces return two Backprop fields:
 - `attributionCohorts`: per EffectiveVersion and workload (the run's trigger
   kind), the `runCount`,
   `topContributingPaths` (node path, `share`, `confidence`, evidence links),
-  and `counterEvidence`. EffectiveVersion pins the workflow and goober digests
+  `counterEvidence`, and, when at least one run in the cohort is labeled,
+  `groundTruth` (see [Label run outcomes](#label-run-outcomes-ground-truth)).
+  EffectiveVersion pins the workflow and goober digests
   plus the recorded model and harness version, so runs from different
   versions are never pooled. A run that used more than one model/harness pair
   has no EffectiveVersion and is left out of cohorts.
@@ -210,6 +215,65 @@ finding's baseline and report its `verification`:
 
 Fix markers and the baselines they verify against are retained; unfixed
 cooldowns and baselines older than 30 days are pruned.
+
+## Label run outcomes (ground truth)
+
+A run's terminal phase is not always the truth: a run can succeed and still be
+wrong (its PR was later reverted), or fail for a reason you do not care about.
+Record your own verdict on an attributed run:
+
+```sh
+goobers telemetry label --run=<run-id> --outcome=incorrect --reason="merged PR was reverted" ./instance
+goobers telemetry label --run=<run-id> --outcome=correct --by=alice --labeled-at=2026-10-09T15:00:00Z ./instance
+```
+
+| Flag | Meaning |
+|---|---|
+| `--run` | Run to label (required). The run must already have an `attribution.json`. |
+| `--outcome` | `correct` or `incorrect` (required). |
+| `--reason` | Free-text justification (optional, up to 2048 bytes). |
+| `--by` | Who reached the verdict. Defaults to the OS user; the command fails if that cannot be determined. |
+| `--labeled-at` | When the verdict was reached (RFC3339). Defaults to now. |
+
+Exit codes: `0` recorded, `1` store error (for example, an unknown run or a run
+without attribution), `2` usage error.
+
+**Provenance.** Each label is stored in `labels.json` beside the run's
+`attribution.json` with its `outcome`, `reason`, `source` (`human` today),
+`labeledBy`, `labeledAt`, and `recordedAt`. Labels are append-only and keyed
+by a content-derived ID, so recording an identical verdict twice is a no-op
+and an earlier label is never rewritten. Labeling never touches the run
+journal, `attribution.json`, the run's phase, or any gate verdict.
+
+**Effective label.** A run can carry several labels. The one that counts is
+the label with the latest `labeledAt`; ties go to the highest label ID. The
+rule ignores recording order, so a label that lands days later re-scores the
+run's cohort and findings the same way on every read.
+
+**Effect on scores.** The effective label weights the run in cohort and
+fault-audit averages and calibrates its confidence:
+
+| Effective label | Weight | Confidence `c` becomes |
+|---|---|---|
+| none | 1 | `c` (unchanged) |
+| `correct` | 2 | `c + (1 - c) / 2` |
+| `incorrect` | 0.5 | `c / 2` |
+
+Cohort `topContributingPaths[].share` and `.confidence`, and fault-audit
+finding `confidence`, are weighted means using these values. Unlabeled data
+scores exactly as before; labels do not change finding IDs, owner
+classification, or verification state.
+
+**`groundTruth` cohort fields.** Each cohort in `attributionCohorts` with at
+least one labeled run carries:
+
+| Field | Meaning |
+|---|---|
+| `groundTruth.labeledRunCount` | Runs in the cohort with an effective label. Compare with `runCount` to see label coverage. |
+| `groundTruth.correctRunCount` | Runs whose effective label is `correct`. |
+| `groundTruth.incorrectRunCount` | Runs whose effective label is `incorrect`. |
+
+The field is omitted when no run in the cohort is labeled.
 
 ## Troubleshooting
 
