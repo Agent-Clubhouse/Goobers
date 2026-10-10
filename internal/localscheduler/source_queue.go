@@ -8,15 +8,19 @@ import (
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
-// SourceTrigger retains the host's accepted signal provenance.
+// SourceTrigger retains the host's accepted signal or schedule provenance.
 type SourceTrigger struct {
-	Signal  string `json:"signal"`
-	Ref     string `json:"ref"`
-	Webhook bool   `json:"webhook,omitempty"`
+	Signal        string    `json:"signal,omitempty"`
+	Ref           string    `json:"ref,omitempty"`
+	Webhook       bool      `json:"webhook,omitempty"`
+	ScheduledFrom time.Time `json:"scheduledFrom,omitempty"`
+	ScheduledAt   time.Time `json:"scheduledAt,omitempty"`
 }
 
 // SourceQueue commits starts under tickMu without reentering scheduler/catalog locks.
 type SourceQueue interface {
+	ScheduleCursor(context.Context, WorkflowEntry, time.Time, bool) (time.Time, bool, error)
+	AcceptSchedule(context.Context, WorkflowEntry, time.Time, time.Time, bool) error
 	AcceptSignal(context.Context, []WorkflowEntry, string, string, string, *webhookhttp.Delivery, time.Time) ([]string, error)
 }
 

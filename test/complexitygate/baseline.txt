@@ -91,7 +91,6 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	internal/harness/claude.go	(*ClaudeAdapter).Run	228
 !body-length	internal/harness/copilot.go	(*CopilotAdapter).Run	288
 !body-length	internal/harness/executor.go	(*Executor).run	300
-!body-length	internal/localscheduler/scheduler.go	(*Scheduler).Tick	203
 !body-length	internal/readmodel/project.go	ProjectRun	272
 !body-length	internal/readservice/runs.go	summarizeRunForStage	258
 !body-length	internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	217
