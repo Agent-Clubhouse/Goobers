@@ -1,8 +1,8 @@
 # Child workflow publication
 
-This guide describes the delegated publication backend for generated children.
-Public child execution remains gated until the complete parent/child journey and
-Portal projection are qualified. The backend builds on the
+This guide describes delegated publication for generated children. The qualified
+sequential journey uses a contained parent and child worker with publication on
+the authenticated host. The backend builds on the
 [contained transport](contained-child-transport.md) and
 [parent disposition](child-workflow-admission.md#parent-result-disposition).
 
@@ -77,3 +77,26 @@ and conflicting references. Native provider tests cover GitHub/ADO PR recovery
 and create-only conflicts. Host integration tests exercise the actual child
 factory and runner across publication stages with host-only credentials.
 General human restart and recursive child execution remain separate workstreams.
+
+### Complete contained-parent journey
+
+`TestIntegrationContainedParentDelegatesChildPublicationThroughRealWorkers`
+uses the disposable Kubernetes environment described in the transport guide.
+The deterministic model substitute authors a child through the actual MCP tools.
+A real child worker edits its private repository fork; canonical host stages then
+publish the branch and PR using the configured delegated credentials. The native
+GitHub adapter talks to a local HTTP fixture, and Git uses a local bare remote.
+No real provider or model account is involved.
+
+The confirmed case checks the published child edits, exact PR destination,
+one create request, retained publication receipts, and publication status in the
+parent's completion artifact. Discarding the child workspace leaves the published
+branch intact. The lost-response case closes the HTTP connection after recording
+creation and requires exactly one create request, an `effect_pending` PR intent,
+and `needsHuman` in the parent's retained status. A lost response is never treated
+as permission to create again.
+
+These cases qualify the sequential execution and parent-return path. The Portal's
+child history still needs its own publication-link and uncertainty projection;
+human reconciliation remains LAND-H06. The existing native-provider tests cover
+ADO request/reconciliation behavior, but this full worker journey uses GitHub.
