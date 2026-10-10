@@ -16,6 +16,7 @@ if (args[0] === 'auth' && args[1] === 'status') {
   process.exit(0);
 }
 const prompt = fs.readFileSync(0, 'utf8');
+const agenticChild = prompt.includes('QUALIFICATION_AGENTIC_CHILD_TASK');
 const registered = codex ? codexRegistration() : claudeRegistration();
 if (!registered) throw new Error('Goobers MCP server missing');
 const mcp = spawn(registered.command, registered.args, { stdio: ['pipe', 'pipe', 'pipe'], ...(codex ? { env: codexMCPEnvironment(registered) } : {}) });
@@ -47,7 +48,7 @@ function codexRegistration() {
   }
   if (typeof server.command !== 'string' || !Array.isArray(server.args) || server.enabled !== true || server.required !== true) throw new Error('required Codex MCP registration missing');
   for (const tool of ['validate_child_workflow','start_child_workflow','get_child_workflow','resolve_child_workflow']) {
-    if (!server.enabled_tools?.includes(tool)) throw new Error('Codex child tool not enabled');
+    if (agenticChild ? server.enabled_tools?.includes(tool) : !server.enabled_tools?.includes(tool)) throw new Error('Codex child tool authority differs');
   }
   return server;
 }
@@ -111,16 +112,17 @@ async function main() {
   const init = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'qualification-model', version: '1' } });
   if (init.error) throw new Error('MCP initialization failed');
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  if (agenticChild) return agenticChildJourney();
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
   if (['parallel','parallel-cancel','parallel-daemon-restart'].includes(mode)) return parallelJourney();
   if (mode.startsWith('generated-parallel')) return generatedParallelJourney(mode);
   const publication = ['publication','publication-lost-reply'].includes(mode);
-  if (!publication && !['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
+  if (!publication && !['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart','agentic'].includes(mode)) throw new Error('unknown qualification mode');
   if (publication && Object.values(process.env).some(value => value.includes('host-only-publication-'))) throw new Error('publication credential reached parent pod');
   const authoring = childAuthoringCatalog();
   const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
-  const action = scratch || publication ? 'discard' : mode;
+  const action = mode === 'agentic' ? 'merge' : scratch || publication ? 'discard' : mode;
   let status = await tool('get_child_workflow', { invocationKey });
   if (['iterate','worker-restart'].includes(mode) && !status.error && status.value.acknowledged) {
     invocationKey = 'qualification-child-2';
@@ -142,6 +144,11 @@ async function main() {
     const runsOn = { os: runner.os, capabilities: runner.capabilities };
     const run = { workspace: (scratch || mode === 'cancel') ? 'scratch' : 'repo', command: ['sh','-c',command] };
     const tasks = [{ name: 'check', type: 'deterministic', goal: 'Verify the generated workstream', timeoutSeconds: 60, runsOn, run }];
+    if (mode === 'agentic') {
+      const goober = authoring.goobers.find(value => value.harness === (codex ? 'codex' : 'claude-code') && value.capabilities.includes('agent:model'));
+      if (!goober || !runner.harnesses.includes(goober.harness)) throw new Error('catalog has no compatible existing Goober');
+      tasks[0] = { name: 'check', type: 'agentic', goober: goober.name, goal: 'QUALIFICATION_AGENTIC_CHILD_TASK: verify the captured parent and produce the requested child result', workspace: 'repo', capabilities: goober.capabilities, policyActions: goober.policyActions, timeoutSeconds: 60, runsOn };
+    }
     if (publication) {
       if (!authoring.allowPRPublication) throw new Error('catalog did not permit delegated publication');
       tasks[0].next = 'push';
@@ -171,9 +178,25 @@ async function main() {
     const hasChild = fs.existsSync('child-return.txt');
     if (hasChild !== (action !== 'discard')) throw new Error('child return disposition mismatch');
     if (hasChild && fs.readFileSync('child-return.txt','utf8') !== 'child return\n') throw new Error('child return bytes mismatch');
+    if (mode === 'agentic' && JSON.parse(fs.readFileSync('agentic-child-evidence.json','utf8')).harness !== (codex ? 'codex' : 'claude-code')) throw new Error('agentic child evidence did not return');
     if (fs.existsSync('parent-after-child.txt') !== (action !== 'replace')) throw new Error('parent state disposition mismatch');
     if (fs.readFileSync('parent-before-child.txt','utf8') !== 'parent before child\n') throw new Error('parent fork content lost');
   }
+  return complete();
+}
+async function agenticChildJourney() {
+  phase('agentic-child-authority');
+  if (!codex && process.env.ANTHROPIC_API_KEY !== 'qualification-model-only') throw new Error('child model credential differs');
+  const listed = await request('tools/list', {});
+  if (listed.error || !Array.isArray(listed.result?.tools)) throw new Error('child tool catalog missing');
+  const names = listed.result.tools.map(value => value.name);
+  for (const name of ['validate_child_workflow','start_child_workflow','get_child_workflow','resolve_child_workflow']) {
+    if (names.includes(name)) throw new Error('generated agentic child acquired recursive workflow authority');
+  }
+  if (prompt.includes('Child workflows are enabled for this stage.')) throw new Error('generated agentic child received parent instructions');
+  if (fs.readFileSync('parent-before-child.txt','utf8') !== 'parent before child\n') throw new Error('child did not receive the captured parent tree');
+  fs.writeFileSync('child-return.txt', 'child return\n');
+  fs.writeFileSync('agentic-child-evidence.json', JSON.stringify({ harness: codex ? 'codex' : 'claude-code', tools: names.sort() }));
   return complete();
 }
 function complete() {
