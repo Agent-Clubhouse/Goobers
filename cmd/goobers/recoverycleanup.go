@@ -83,6 +83,9 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
+	if err := runner.VerifyChildWorkspaceCleanup(reader, identity, target); err != nil {
+		return err
+	}
 	retired, err := retiredParentCleanup(ctx, layout, cfg, manager, reader, key, target)
 	if err != nil {
 		return err

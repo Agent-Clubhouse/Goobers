@@ -123,7 +123,7 @@ func childWaitEvent(stage string, attempt int, class journal.AttemptClass, recor
 
 // pendingChildWait validates the marker against the actual durable started
 // event. Observational events do not unpark a parent, and a sibling's marker
-// cannot replace the owner. Parallel parking is deliberately not implemented.
+// cannot replace the owner. Input must identify at most one waiting branch.
 func pendingChildWait(events []journal.Event) (*childWaitRecord, journal.Event, error) {
 	header, marker, err := journal.PendingChildWait(events)
 	if err != nil || header == nil {
@@ -140,11 +140,10 @@ func pendingChildWait(events []journal.Event) (*childWaitRecord, journal.Event, 
 	return &record, marker, nil
 }
 
-// ParkedOnChild reports durable, validated serial parent suspension. Invalid
+// ParkedOnChild reports durable, validated whole-parent suspension. Invalid
 // custody is not presented as a safe capacity release; Resume reports its error.
 func ParkedOnChild(events []journal.Event) bool {
-	_, parked, err := ParkedChildRequest(events)
-	return err == nil && parked
+	return journal.ParkedOnChild(events)
 }
 
 // ParkedChildRequestForOrigin selects one exact occurrence/attempt even when a
@@ -160,16 +159,6 @@ func ParkedChildRequestForOrigin(events []journal.Event, origin apiv1.ChildWorkf
 		}
 	}
 	return ChildHandoffRequest{}, journal.Event{}, false, nil
-}
-
-// ParkedChildRequest returns the exact validated host receipt currently holding
-// workspace custody. Callers must match the whole receipt before applying effects.
-func ParkedChildRequest(events []journal.Event) (ChildHandoffRequest, bool, error) {
-	pending, _, err := pendingChildWait(events)
-	if err != nil || pending == nil {
-		return ChildHandoffRequest{}, false, err
-	}
-	return pending.Request, true, nil
 }
 
 func decodeChildWaitEvent(event, started journal.Event) (*childWaitRecord, error) {

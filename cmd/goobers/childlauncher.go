@@ -137,9 +137,6 @@ func (l *queuedChildLauncher) Start(ctx context.Context, start childExecutionSta
 }
 
 func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime) (*runner.ChildWorkspaceAdmission, error) {
-	if len(runtime.machine.Def.Spec.Parallels) > 0 {
-		return nil, &childStartDeferred{Reason: "child parallel workspace admission unavailable"}
-	}
 	required := false
 	for _, task := range runtime.machine.Def.Spec.Tasks {
 		required = required || task.EffectiveWorkspace() != apiv1.WorkspaceScratch

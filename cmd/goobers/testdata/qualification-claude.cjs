@@ -23,6 +23,11 @@ const mcp = spawn(registered.command, registered.args, { stdio: ['pipe', 'pipe',
 // Deliberately do not echo MCP configuration, arguments, stderr or response data.
 const pending = new Map();
 let nextID = 0;
+let diagnosticPhase = 'initialize';
+function phase(value) {
+  diagnosticPhase = value;
+  process.stderr.write(`qualification phase: ${value}\n`);
+}
 readline.createInterface({ input: mcp.stdout }).on('line', line => {
   const response = JSON.parse(line);
   const resolve = pending.get(response.id);
@@ -39,9 +44,23 @@ function request(method, params) {
     mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   });
 }
-async function tool(name, arguments_) {
+async function tool(name, arguments_, retries = 0) {
+  phase(`tool-${name}`);
   const response = await request('tools/call', { name, arguments: arguments_ });
-  if (response.error || response.result?.isError) return { error: true };
+  if (response.error || response.result?.isError) {
+    // Print only known local classifications, never remote response text.
+    const safeCodes = ['class_saturated','child_workflow_not_found','child_workflow_authority_changed','child_workflow_grant_invalid','child_workflow_wrong_parent','child_workflow_custody_unavailable','child_workflow_unavailable'];
+    const encoded = JSON.stringify(response);
+    const code = safeCodes.find(value => encoded.includes(value)) || 'unclassified';
+    phase(`tool-${name}-refused-${code}`);
+    // The real API sheds excess concurrent mutations with Retry-After: 1.
+    // Repeat the exact source/key/result; never retry an authority refusal.
+    if (code === 'class_saturated' && retries < 4) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return tool(name, arguments_, retries + 1);
+    }
+    return { error: true, code };
+  }
   return { value: JSON.parse(response.result.content.find(item => item.type === 'text').text) };
 }
 function waitForHost() {
@@ -54,6 +73,8 @@ async function main() {
   mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   let invocationKey = 'qualification-child';
   const mode = fs.readFileSync('qualification-mode', 'utf8').trim();
+  if (['parallel','parallel-cancel','parallel-daemon-restart'].includes(mode)) return parallelJourney();
+  if (mode.startsWith('generated-parallel')) return generatedParallelJourney(mode);
   if (!['scratch','merge','replace','discard','cancel','iterate','worker-restart','daemon-restart'].includes(mode)) throw new Error('unknown qualification mode');
   const scratch = ['scratch','iterate','worker-restart','daemon-restart'].includes(mode);
   const action = scratch ? 'discard' : mode;
@@ -97,6 +118,10 @@ async function main() {
     if (fs.existsSync('parent-after-child.txt') !== (action !== 'replace')) throw new Error('parent state disposition mismatch');
     if (fs.readFileSync('parent-before-child.txt','utf8') !== 'parent before child\n') throw new Error('parent fork content lost');
   }
+  return complete();
+}
+function complete() {
+  phase('completion-contract');
   const match = prompt.match(/write your [^\n]+ as JSON to `([^`]+)`/);
   if (!match || path.isAbsolute(match[1]) || match[1].split('/').includes('..')) throw new Error('completion contract unavailable');
   fs.mkdirSync(path.dirname(match[1]), { recursive: true });
@@ -104,8 +129,85 @@ async function main() {
   process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'Child completed', usage: { input_tokens: 1, output_tokens: 1 } }) + '\n');
   mcp.stdin.end();
 }
+async function parallelJourney() {
+  const branch = prompt.match(/QUALIFICATION_BRANCH=(left|right|join)/)?.[1];
+  if (!branch) throw new Error('parallel branch marker missing');
+  phase(`parallel-${branch}-workspace`);
+  if (branch === 'join') {
+    for (const name of ['left','right']) {
+      if (fs.readFileSync(`parent-${name}.txt`, 'utf8') !== `${name} before child\n` ||
+          fs.readFileSync(`parent-after-${name}.txt`, 'utf8') !== `${name} after child\n`) throw new Error('parallel return lost branch work');
+    }
+    if (fs.readFileSync('source.txt','utf8') !== 'parent source\n') throw new Error('parallel join changed base');
+    return complete();
+  }
+  const other = branch === 'left' ? 'right' : 'left';
+  if (fs.existsSync(`parent-${other}.txt`)) throw new Error('branch observed sibling workspace');
+  const invocationKey = 'qualification-child';
+  const status = await tool('get_child_workflow', { invocationKey });
+  if (status.error && status.code !== 'child_workflow_not_found') throw new Error('parallel status refused');
+  if (status.error) {
+    fs.writeFileSync(`parent-${branch}.txt`, `${branch} before child\n`);
+    const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
+    if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid parallel barrier');
+    const mode = fs.readFileSync('qualification-mode','utf8').trim();
+    const delay = mode === 'parallel-cancel' ? ' && sleep 60' : mode === 'parallel-daemon-restart' ? ' && sleep 45' : '';
+    const command = `node -e 'require("http").get(${JSON.stringify(notify+'?branch='+branch)}, r => r.resume())'${delay}`;
+    const sourceFile = `generated-${branch}.yaml`;
+    const run = JSON.stringify({ workspace:'scratch', command:['sh','-c',command] });
+    fs.writeFileSync(sourceFile, 'apiVersion: goobers.dev/v1alpha1\nkind: Workflow\ndslVersion: "3.1"\nmetadata: {name: generated-check}\nspec:\n  gaggle: example\n  triggers: [{type: manual}]\n  start: check\n  tasks:\n    - name: check\n      type: deterministic\n      goal: Wait for the sibling child\n      timeoutSeconds: 120\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: '+run+'\n');
+    const validation = await tool('validate_child_workflow', { sourceFile });
+    if (validation.error || !validation.value.valid) throw new Error('parallel generated source rejected');
+    const accepted = await tool('start_child_workflow', { sourceFile, invocationKey });
+    if (accepted.error) throw new Error('parallel child acceptance failed');
+    return waitForHost();
+  }
+  phase(`parallel-status-result-${Boolean(status.value.resultRef)}-ack-${Boolean(status.value.acknowledged)}`);
+  if (!status.value.resultRef) return waitForHost();
+  if (status.value.state !== 'completed') throw new Error('parallel child did not complete');
+  if (!status.value.acknowledged) {
+    fs.writeFileSync(`parent-after-${branch}.txt`, `${branch} after child\n`);
+    const disposition = await tool('resolve_child_workflow', { invocationKey, action:'discard', resultRef:status.value.resultRef });
+    if (disposition.error) throw new Error('parallel child disposition failed');
+    return waitForHost();
+  }
+  return complete();
+}
 main().catch(() => {
-  process.stderr.write('qualification model protocol failed\n');
+  process.stderr.write(`qualification model protocol failed at ${diagnosticPhase}\n`);
   mcp.kill();
   process.exitCode = 1;
 });
+
+async function generatedParallelJourney(mode) {
+  const delay = mode === 'generated-parallel-cancel' ? 60000 : mode === 'generated-parallel-daemon-restart' ? 45000 : 0;
+  const invocationKey = 'qualification-child';
+  const status = await tool('get_child_workflow', { invocationKey });
+  if (status.error) {
+    if (status.code !== 'child_workflow_not_found') throw new Error('parallel generated child lookup refused');
+    fs.writeFileSync('parent-before-child.txt', 'parent before child\n');
+    const notify = fs.readFileSync('qualification-notify', 'utf8').trim();
+    if (!/^http:\/\/host\.docker\.internal:[0-9]+\/started$/.test(notify)) throw new Error('invalid parallel child signal');
+    const tasks = ['left', 'right'].map(branch => {
+      const observe = `if(require("fs").readFileSync("parent-before-child.txt","utf8")!=="parent before child\\n")throw Error("fork source changed");require("http").get(${JSON.stringify(notify + '?branch=' + branch)},r=>{r.resume();r.on("end",()=>{if(r.statusCode!==204)process.exitCode=1;else if(${delay})setTimeout(()=>{},${delay})})}).on("error",()=>{process.exitCode=1})`;
+      return { name: 'inspect-' + branch, type: 'deterministic', goal: 'Inspect the isolated child view', timeoutSeconds: 120, runsOn: { os: 'linux', capabilities: ['isolated-child'] }, run: { workspace: 'repo-readonly', command: ['node','-e',observe] }, next: '@join' };
+    });
+    tasks.push({ name: 'collate', type: 'deterministic', goal: 'Return the joined child result', runsOn: { os: 'linux', capabilities: ['isolated-child'] }, run: { workspace: 'repo', command: ['sh','-c','printf "child return\\n" > child-return.txt && git add child-return.txt && git -c user.name=Qualification -c user.email=qualification@example.invalid commit -m "Joined child work"'] } });
+    const document = { apiVersion: 'goobers.dev/v1alpha1', kind: 'Workflow', dslVersion: '3.1', metadata: { name: 'generated-check' }, spec: { gaggle: 'example', triggers: [{ type: 'manual' }], start: 'fan', tasks, parallels: [{ name: 'fan', join: 'collate', maxConcurrentBranches: 2, failurePolicy: 'all_or_nothing', onFailure: '@abort', branches: [{ name: 'left', start: 'inspect-left' }, { name: 'right', start: 'inspect-right' }] }] } };
+    const sourceFile = 'generated-child.yaml';
+    fs.writeFileSync(sourceFile, JSON.stringify(document));
+    const validation = await tool('validate_child_workflow', { sourceFile });
+    if (validation.error || !validation.value.valid) throw new Error('parallel generated source rejected');
+    if ((await tool('start_child_workflow', { sourceFile, invocationKey })).error) throw new Error('parallel generated acceptance failed');
+    return waitForHost();
+  }
+  if (!status.value.resultRef) return waitForHost();
+  if (status.value.state !== 'completed') throw new Error('parallel generated child failed');
+  if (!status.value.acknowledged) {
+    fs.writeFileSync('parent-after-child.txt', 'parent after child\n');
+    if ((await tool('resolve_child_workflow', { invocationKey, action: 'merge', resultRef: status.value.resultRef })).error) throw new Error('parallel generated return refused');
+    return waitForHost();
+  }
+  if (fs.readFileSync('child-return.txt','utf8') !== 'child return\n' || fs.readFileSync('parent-before-child.txt','utf8') !== 'parent before child\n' || fs.readFileSync('parent-after-child.txt','utf8') !== 'parent after child\n') throw new Error('parallel generated result changed parent content');
+  return complete();
+}

@@ -246,9 +246,70 @@ appropriate `-run` filter. The daemon-loss case kills a real fsync-enabled daemo
 process and starts a fresh one, requiring the same accepted child and exact
 physical stop/surrender/disposal evidence before completion.
 
-Parallel parent admission remains refused pending separate fork/fan-in
-qualification; children per parallel stage remain planned. Recursive children
-and generated Goober definitions are outside v1. Delegated child PR publication
+Recursive children and generated Goober definitions are outside v1. Delegated
+child PR publication
 requires its own provider-write and ambiguous-result recovery qualification.
 Loss before a durable worker receipt or during reconciliation is not proved by
 the parked-parent daemon-loss test. A closed connection never proves work stopped.
+
+### Parallel parents with one child per stage
+
+Each parallel parent stage can author one active child using its own workspace
+fork. Different stages may reuse an invocation key: stage ownership keeps their
+children distinct. Branch results rejoin only after verified return; one branch
+cannot observe or overwrite another branch's live workspace. Both instance and
+workflow concurrency limits apply to child starts, so configure sufficient
+capacity when concurrent children are intended.
+
+Admission requires the complete fork, source, result and join services. Generated
+children may also compose parallel stages as described below; recursion is refused.
+Cancellation fences the parent family, stops each unfinished child and retains
+unresolved branch workspaces until physical custody is verified.
+
+The following tests use the same disposable environment and actual worker image:
+
+- `TestIntegrationParallelParentsAuthorSeparateChildrenThroughRealWorkers`
+  requires overlapping children, independent stage identities, preserved branch
+  edits, verified joined results and Portal parent/child links.
+- `TestIntegrationParallelParentCancellationStopsBothAuthoredChildren` cancels
+  with both children active and requires exact stopped/surrender/disposal evidence.
+- `TestIntegrationContainedParentSurvivesDaemonProcessLossParallel` kills an
+  fsync-enabled daemon with both children active, then requires the same accepted
+  identities and completed acknowledgements after ordinary startup recovery.
+
+These tests passed together against one source/image. They do not qualify loss
+before a durable worker receipt, interruption during reconciliation, delegated
+publication or human intervention.
+
+### Parallel stages inside a generated child
+
+A parent may author a child workflow that uses the ordinary DSL's parallel
+stages, existing tasks and supported workspace modes. This remains one child
+owned by the originating parent stage. It does not enable recursive generation
+or define new Goobers, capabilities, credentials or branch-write permissions.
+
+The qualified journey runs two repository read-only child branches against the
+parent's forked snapshot, then a writable root join returns the combined result.
+The parent adopts that result using the ordinary workspace disposition contract.
+Each physical branch worker retains its own journal identity and stop/surrender
+evidence. After a daemon crash, recovery reconciles the original workers before
+resuming the same child; it does not create a replacement child.
+
+Startup cleanup retains detached stage views while their repository writers are
+unacknowledged. Reconciled stage views can retire independently, while the shared
+child fork remains protected until every repository writer is settled. A stage
+finish or a closed connection alone cannot authorize cleanup.
+
+Using the disposable environment above, these tests passed together with race
+detection against the same source and worker image:
+
+- `TestIntegrationParentAuthorsParallelChildThroughRealWorkers`
+- `TestIntegrationCancelParentWithParallelGeneratedChild`
+- `TestIntegrationContainedParentSurvivesDaemonProcessLossGeneratedParallel`
+
+They cover overlapping child branches, parent cancellation while both branches
+are active, and a real fsync-enabled daemon kill/restart. The recovery case checks
+the original accepted child identity and each physical worker's stopped,
+surrendered and disposed state. Human intervention remains a separate HITL slice;
+these tests do not qualify interruption before a durable worker receipt or during
+workspace disposition.

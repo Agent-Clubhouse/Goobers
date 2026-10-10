@@ -150,7 +150,7 @@ func testParentFactoryCustody(t *testing.T, lost, committed bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		started, err := childPodStarted(reader, a.Stage, a.Number, false)
+		started, err := childPodStarted(reader, a.Stage, a.Number, false, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

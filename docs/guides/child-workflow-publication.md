@@ -1,8 +1,8 @@
 # Child workflow publication
 
 This guide describes the delegated publication backend for generated children.
-Public child execution remains gated until the complete parent/child journey and
-Portal projection are qualified. The backend builds on the
+Public child execution remains gated until the complete parent/child journey is
+qualified. The backend builds on the
 [contained transport](contained-child-transport.md) and
 [parent disposition](child-workflow-admission.md#parent-result-disposition).
 
@@ -56,6 +56,14 @@ completion artifact includes verified publication status, branch/commit, PR link
 when confirmed, and a `needsHuman` indication for uncertain effects. That status
 is observational data and grants no new authority. Merge/replace/discard changes
 the parent's workspace; discard does not retract a published branch or PR.
+
+The Portal's accepted-child history shows locally verified publication observations:
+confirmed branch names, links to confirmed PRs, and a needs-human notice when the
+provider outcome is unconfirmed. Prepared intents are labelled as prepared, not
+published. Missing or invalid custody is explicitly unavailable; expired child
+records do not expose publication links. Reads use the existing parent-run access
+boundary and perform no provider calls, credential acquisition, reconciliation or
+writes. A needs-human notice does not itself authorize a recovery action.
 
 Cancellation and result acknowledgement preserve uncertain publication custody
 and its reserved receipt capacity. The production lineage pruner keeps that
