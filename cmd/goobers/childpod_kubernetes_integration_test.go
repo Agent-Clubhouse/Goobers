@@ -49,15 +49,20 @@ import (
 // the transport guide, with a freshly built Goobers worker image.
 func TestIntegrationQueuedChildUsesRealKubernetesWorker(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
-	testRealKubernetesChild(t, false)
+	testRealKubernetesChild(t, false, false)
 }
 
 func TestIntegrationParentCancellationStopsRealKubernetesChild(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
-	testRealKubernetesChild(t, true)
+	testRealKubernetesChild(t, true, false)
 }
 
-func testRealKubernetesChild(t *testing.T, cancelParent bool) {
+func TestIntegrationChildRecoversAfterDispatchProcessLoss(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
+	testRealKubernetesChild(t, false, true)
+}
+
+func testRealKubernetesChild(t *testing.T, cancelParent, loseWorker bool) {
 	t.Helper()
 	testdep.RequireEnv(t, "GOOBERS_CHILD_KUBE_QUALIFICATION")
 	testdep.Require(t, "git")
@@ -68,7 +73,7 @@ func testRealKubernetesChild(t *testing.T, cancelParent bool) {
 	api, namespace := childQualificationKubernetes(t)
 	source := strings.Replace(childValidationProposal, "      run: {command: [\"true\"]}", "      timeoutSeconds: 60\n      runsOn: {os: linux, capabilities: [isolated-child]}\n      run: {workspace: scratch, command: [sh, -c, 'test $$ -gt 1; echo real-contained-worker']}", 1)
 	var waitStarted func()
-	if cancelParent {
+	if cancelParent || loseWorker {
 		// A pod can report Running before the worker starts its command. The
 		// side channel proves shell execution without modifying runtime authority.
 		started := make(chan struct{})
@@ -102,7 +107,8 @@ func testRealKubernetesChild(t *testing.T, cancelParent bool) {
 	}
 	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, queued: true, runnerImage: image, runnerShell: true, podTokenKeyFile: keyPath, source: source})
 	s := f.writer.service
-	plane, err := dispatcher.NewSurrenderDir(t.TempDir())
+	surrenderRoot := t.TempDir()
+	plane, err := dispatcher.NewSurrenderDir(surrenderRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,14 +179,31 @@ func testRealKubernetesChild(t *testing.T, cancelParent bool) {
 	for _, pin := range proposal.Placements {
 		queues[pin.Queue] = true
 	}
-	for queue := range queues {
-		worker := temporalworker.New(dev.Client(), queue, temporalworker.Options{DeadlockDetectionTimeout: temporaltest.DeadlockDetectionTimeout, WorkerStopTimeout: time.Second})
-		engine.RegisterWith(worker, &engine.Activities{Dispatcher: dispatch, Surrenders: plane})
-		if err := worker.Start(); err != nil {
-			t.Fatal(err)
+	var process *qualificationHostProcess
+	var processConfig qualificationHostConfig
+	if loseWorker {
+		taskQueues := make([]string, 0, len(queues))
+		for queue := range queues {
+			taskQueues = append(taskQueues, queue)
 		}
-		t.Cleanup(worker.Stop)
+		processConfig = qualificationHostConfig{HostPort: dev.FrontendHostPort(), Queues: taskQueues, InstanceID: f.writer.identity.InstanceID, Namespace: namespace, Image: image, Endpoint: strings.TrimPrefix(endpoint, "http://"), KeyPath: keyPath, SurrenderRoot: surrenderRoot}
+		process = startQualificationHostProcess(t, processConfig)
+		t.Cleanup(func() {
+			if process != nil {
+				process.stop(t)
+			}
+		})
+	} else {
+		for queue := range queues {
+			worker := temporalworker.New(dev.Client(), queue, temporalworker.Options{DeadlockDetectionTimeout: temporaltest.DeadlockDetectionTimeout, WorkerStopTimeout: time.Second})
+			engine.RegisterWith(worker, &engine.Activities{Dispatcher: dispatch, Surrenders: plane})
+			if err := worker.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(worker.Stop)
+		}
 	}
+
 	var finish func()
 	wantState := triggerqueue.ChildCompleted
 	var afterDispatch func(*durableTriggerService, *daemonRunnerRegistry)
@@ -205,6 +228,15 @@ func testRealKubernetesChild(t *testing.T, cancelParent bool) {
 				}
 			}
 		}
+	} else if loseWorker {
+		wantState = triggerqueue.ChildFailed
+		afterDispatch = func(_ *durableTriggerService, _ *daemonRunnerRegistry) {
+			waitStarted()
+			awaitQualificationChildCustody(t, t.Context(), transport)
+			process.kill(t)
+			process = nil
+			process = startQualificationHostProcess(t, processConfig)
+		}
 	} else {
 		finish = prepareQueuedParentReturn(t, f, server.URL)
 	}
@@ -219,7 +251,7 @@ func testRealKubernetesChild(t *testing.T, cancelParent bool) {
 			t.Fatal(err)
 		}
 		report := result.Report
-		if result.BindingDigest != in.BindingDigest() || (!cancelParent && result.DispatchError() != nil) || result.DisposalFailed || report.ChildPodUID == "" || !report.WorkspaceWritersStopped || !report.SurrenderConfirmed {
+		if result.BindingDigest != in.BindingDigest() || (!cancelParent && !loseWorker && result.DispatchError() != nil) || result.DisposalFailed || report.ChildPodUID == "" || !report.WorkspaceWritersStopped || !report.SurrenderConfirmed {
 			t.Fatalf("real worker lacks exact stopped-writer custody: %+v", result)
 		}
 		t.Logf("real pod %s UID %s: stopped=%t surrendered=%t error=%v", report.Pod, report.ChildPodUID, report.WorkspaceWritersStopped, report.SurrenderConfirmed, result.DispatchError())

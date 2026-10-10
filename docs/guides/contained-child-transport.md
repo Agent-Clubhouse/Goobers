@@ -186,3 +186,25 @@ startup can instead preserve a failed child outcome when the execution fence
 refuses startup first. This does not rewrite an already-recorded terminal
 outcome. The originating parent remains a fixture, so this test does not qualify
 cancellation of a complete agent-authored parent/child journey.
+
+### Worker process loss after a durable pod receipt
+
+The child dispatch activity now retains the API-observed namespace, name and UID
+in its Temporal heartbeat, bound to the immutable dispatch input. Following a
+heartbeat timeout, a versioned workflow path can reconcile that exact pod on the
+existing dispatch queue. It verifies instance, owning workflow, run, stage,
+physical attempt, contract and UID before stopping the pod, observing terminated
+writers, confirming surrender and completing disposal. This path cannot create
+a replacement; retry decisions remain with the parent.
+
+`TestIntegrationChildRecoversAfterDispatchProcessLoss` kills an actual worker
+Host subprocess after a running child has a durable receipt, then starts a fresh
+Host. It checks one durable child start and the original pod's stopped-writer,
+surrender and disposal evidence. Run with the explicit disposable kubeconfig,
+Temporal CLI and locally built parent qualification image using the same
+`GOOBERS_CHILD_QUALIFICATION_IMAGE` opt-in as the existing real-child tests.
+
+Missing or changed receipts, replacement pods and missing stopped-writer or
+surrender proof remain refusals. Loss before the first durable receipt, loss
+during reconciliation and daemon reconstruction are not qualified by this test.
+Public/parallel admission remains gated.

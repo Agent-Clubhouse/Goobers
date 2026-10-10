@@ -37,11 +37,22 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 // so heartbeat timeout cannot settle the workflow while cleanup is in flight.
 // Direct non-Temporal callers already own their context and need no heartbeat.
 func heartbeatDispatch(ctx context.Context) func() {
+	return heartbeatDispatchDetails(ctx, nil)
+}
+
+func heartbeatDispatchDetails(ctx context.Context, details func() any) func() {
 	if !activity.IsActivity(ctx) {
 		return func() {}
 	}
 	heartbeatCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	activity.RecordHeartbeat(heartbeatCtx)
+	record := func() {
+		if details == nil {
+			activity.RecordHeartbeat(heartbeatCtx)
+		} else {
+			activity.RecordHeartbeat(heartbeatCtx, details())
+		}
+	}
+	record()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -52,7 +63,7 @@ func heartbeatDispatch(ctx context.Context) func() {
 			case <-heartbeatCtx.Done():
 				return
 			case <-ticker.C:
-				activity.RecordHeartbeat(heartbeatCtx)
+				record()
 			}
 		}
 	}()
