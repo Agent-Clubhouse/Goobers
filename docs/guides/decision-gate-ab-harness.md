@@ -68,6 +68,18 @@ decisionGate:
   shadowSample: 1
 ```
 
+When `open-pr` runs in this mode, it also emits one
+`decisiongate.shadow` record with
+`question="pr_description_agreement"` immediately before publication. Code
+computes the changed-file list, added/deleted line counts, and the
+`empty`/`1-50`/`51-500`/`501+` diff-size bucket; the model only judges whether
+the PR title and description semantically agree with those facts and a bounded
+patch. The record includes the thresholded verdict, probability, bucket, and
+sample size facts, and the outgoing PR description carries a visibly
+shadow-labelled advisory review note. The score never blocks publication;
+unavailable configuration or an unavailable scorer leaves the description and
+existing publication path unchanged.
+
 Keep the implementation workflow routed only to its arm:
 
 ```yaml
@@ -148,4 +160,3 @@ That is intentional:
   sample stays out of valid-versus-invalid percentages.
 
 Do not fold unknown-validity records into the valid denominator by hand.
-

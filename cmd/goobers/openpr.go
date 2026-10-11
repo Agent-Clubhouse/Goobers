@@ -562,6 +562,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	body = observePRDescriptionShadow(root, runID, head, base, title, body, inRepoDir, stderr)
 	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID
