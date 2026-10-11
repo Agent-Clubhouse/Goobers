@@ -33,6 +33,24 @@ type recoveryResumeResult struct {
 	// Provenance binds a resumed or skipped outcome to the exact retained
 	// snapshot (ref, base, head, patch digest), not just its source run.
 	*recovery.Provenance
+	// SourceRun reports the source run's workflow, terminal phase, and latest
+	// run.finished sequence, read from its idle journal; omitted when unknown.
+	*recovery.SourceRun
+}
+
+// recoveryResumeSource is the retained record a resume consumed and the
+// terminal journal evidence of the run that produced it.
+type recoveryResumeSource struct {
+	record recovery.Record
+	run    recovery.SourceRun
+}
+
+func (s recoveryResumeSource) sourceRun() *recovery.SourceRun {
+	if s.record.RunID == "" || !s.run.Known() {
+		return nil
+	}
+	run := s.run
+	return &run
 }
 
 const recoveryResumeHelp = "Usage: goobers recovery-resume [instance]\n\n" +
@@ -45,7 +63,8 @@ const recoveryResumeHelp = "Usage: goobers recovery-resume [instance]\n\n" +
 	"Verified retries resume the prepared result; completed adoption removes its\n" +
 	"preparation branch. Writes recovery-resume.json with resume status and\n" +
 	"source-run provenance (recovery ref, base and snapshot commits, patch\n" +
-	"digest) for the run journal.\n" +
+	"digest, workflow, terminal phase and run.finished sequence) for the run\n" +
+	"journal.\n" +
 	"Does not push, open a PR, release the claim, or remove retained state.\n"
 
 func runRecoveryResume(args []string, stdout, stderr io.Writer) int {
@@ -84,20 +103,20 @@ func runRecoveryResume(args []string, stdout, stderr io.Writer) int {
 // retained work that no longer applies to current main, is the ordinary fresh
 // path: failing the stage would fail every re-claim of the issue until the
 // retention deadline. Every other error stays fail-closed.
-func recoveryResumeOutcome(commit string, source recovery.Record, err error) (recoveryResumeResult, string, error) {
-	sourceRun := source.RunID
+func recoveryResumeOutcome(commit string, source recoveryResumeSource, err error) (recoveryResumeResult, string, error) {
+	sourceRun := source.record.RunID
 	switch {
 	case errors.Is(err, recovery.ErrNoMatchingSnapshot):
 		return recoveryResumeResult{ResumeStatus: "fresh"},
 			"no recoverable implementation matched this claim; starting fresh", nil
 	case errors.Is(err, recovery.ErrIncompatibleSnapshot):
-		return recoveryResumeResult{ResumeStatus: "incompatible", SkippedRun: sourceRun, Provenance: source.Provenance()},
+		return recoveryResumeResult{ResumeStatus: "incompatible", SkippedRun: sourceRun, Provenance: source.record.Provenance(), SourceRun: source.sourceRun()},
 			fmt.Sprintf("retained implementation from run %s does not apply to current main (%v); starting fresh, "+
 				"the retained state remains available to goobers recovery-restore", sourceRun, err), nil
 	case err != nil:
 		return recoveryResumeResult{}, "", err
 	}
-	return recoveryResumeResult{Resumed: true, ResumeStatus: "resumed", ResumedFromRun: sourceRun, RestoredCommit: commit, Provenance: source.Provenance()},
+	return recoveryResumeResult{Resumed: true, ResumeStatus: "resumed", ResumedFromRun: sourceRun, RestoredCommit: commit, Provenance: source.record.Provenance(), SourceRun: source.sourceRun()},
 		fmt.Sprintf("adopted retained implementation from run %s at %s", sourceRun, commit), nil
 }
 
@@ -113,8 +132,8 @@ func writeRecoveryResumeResult(result recoveryResumeResult) error {
 	return nil
 }
 
-func resumeClaimedRecovery(ctx context.Context, layout instance.Layout, registry *journal.RegistryScrubber) (string, recovery.Record, error) {
-	var none recovery.Record
+func resumeClaimedRecovery(ctx context.Context, layout instance.Layout, registry *journal.RegistryScrubber) (string, recoveryResumeSource, error) {
+	var none recoveryResumeSource
 	runID, workflow, err := providerRunContext()
 	if err != nil {
 		return "", none, err
@@ -147,9 +166,9 @@ func resumeClaimedRecovery(ctx context.Context, layout instance.Layout, registry
 	if err != nil {
 		return "", none, fmt.Errorf("read receiving branch head: %w", err)
 	}
-	var source recovery.Record
-	commit, err := withIssueRecoveryRecord(ctx, layout, key, claim.ItemID, func(record recovery.Record, path string) (string, error) {
-		source = record
+	var source recoveryResumeSource
+	commit, err := withIssueRecoveryRecord(ctx, layout, key, claim.ItemID, func(record recovery.Record, run recovery.SourceRun, path string) (string, error) {
+		source = recoveryResumeSource{record: record, run: run}
 		return prepareClaimedRecovery(ctx, layout, directory, runID, path, registry)
 	})
 	if err != nil {

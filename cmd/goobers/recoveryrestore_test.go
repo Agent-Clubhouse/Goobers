@@ -351,7 +351,7 @@ func TestRecoveryAuthenticationEnvironmentExcludesStageAndHostSecrets(t *testing
 // failure stays fail-closed.
 func TestRecoveryResumeOutcomeStartsFreshOnIncompatibleCheckpoint(t *testing.T) {
 	conflict := fmt.Errorf("retained patch cannot be applied cleanly to current main: %w: exit status 1", recovery.ErrIncompatibleSnapshot)
-	source := recovery.Record{
+	record := recovery.Record{
 		RunID:       "run-a",
 		Ref:         "refs/goobers/recovery/run-a/0",
 		BaseRef:     "refs/heads/main",
@@ -359,10 +359,11 @@ func TestRecoveryResumeOutcomeStartsFreshOnIncompatibleCheckpoint(t *testing.T) 
 		SnapshotSHA: strings.Repeat("b", 40),
 		PatchDigest: "sha256:" + strings.Repeat("c", 64),
 	}
+	source := recoveryResumeSource{record: record, run: recovery.SourceRun{Workflow: "implementation", Phase: "escalated", TerminalSeq: 7}}
 	tests := []struct {
 		name       string
 		commit     string
-		source     recovery.Record
+		source     recoveryResumeSource
 		err        error
 		wantStatus string
 		wantErr    bool
@@ -373,6 +374,7 @@ func TestRecoveryResumeOutcomeStartsFreshOnIncompatibleCheckpoint(t *testing.T) 
 		{name: "incompatible retained work", source: source, err: conflict, wantStatus: "incompatible", wantSkip: "run-a"},
 		{name: "other failure", source: source, err: errors.New("receiving issue claim changed"), wantErr: true},
 		{name: "adopted", commit: "abc", source: source, wantStatus: "resumed", wantResume: true},
+		{name: "adopted without source run evidence", commit: "abc", source: recoveryResumeSource{record: record}, wantStatus: "resumed", wantResume: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -400,7 +402,7 @@ func TestRecoveryResumeOutcomeStartsFreshOnIncompatibleCheckpoint(t *testing.T) 
 // assertRecoveryResumeProvenance pins #5312: a resumed or skipped outcome
 // reports the exact retained snapshot as flat result outputs, and a fresh
 // outcome reports none.
-func assertRecoveryResumeProvenance(t *testing.T, result recoveryResumeResult, source recovery.Record) {
+func assertRecoveryResumeProvenance(t *testing.T, result recoveryResumeResult, resumed recoveryResumeSource) {
 	t.Helper()
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -410,12 +412,25 @@ func assertRecoveryResumeProvenance(t *testing.T, result recoveryResumeResult, s
 	if err := json.Unmarshal(data, &outputs); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{
+	source := resumed.record
+	want := map[string]any{
 		"sourceRecoveryRef": source.Ref,
 		"sourceBaseRef":     source.BaseRef,
 		"sourceBaseSha":     source.BaseSHA,
 		"sourceSnapshotSha": source.SnapshotSHA,
 		"sourcePatchDigest": source.PatchDigest,
+	}
+	evidence := []string{"sourceWorkflow", "sourceRunPhase", "sourceTerminalSeq"}
+	if resumed.run.Known() {
+		want["sourceWorkflow"] = resumed.run.Workflow
+		want["sourceRunPhase"] = resumed.run.Phase
+		want["sourceTerminalSeq"] = float64(resumed.run.TerminalSeq)
+	} else {
+		for _, key := range evidence {
+			if got, present := outputs[key]; present {
+				t.Fatalf("outcome without source run evidence reports %s=%v", key, got)
+			}
+		}
 	}
 	for key, value := range want {
 		got, present := outputs[key]
@@ -426,7 +441,7 @@ func assertRecoveryResumeProvenance(t *testing.T, result recoveryResumeResult, s
 			continue
 		}
 		if got != value {
-			t.Fatalf("%s = %v, want %q (outputs %s)", key, got, value, data)
+			t.Fatalf("%s = %v, want %v (outputs %s)", key, got, value, data)
 		}
 	}
 }

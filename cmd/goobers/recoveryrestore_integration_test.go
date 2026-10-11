@@ -242,6 +242,10 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 		if result.Provenance == nil || *result.Provenance != *record.Provenance() {
 			t.Fatalf("resume provenance = %+v, want %+v", result.Provenance, record.Provenance())
 		}
+		wantSource := recovery.SourceRun{Workflow: "implementation", Phase: string(journal.PhaseEscalated), TerminalSeq: lastRecoverySourceSeq(t, instance.NewLayout(root), record.RunID)}
+		if result.SourceRun == nil || *result.SourceRun != wantSource {
+			t.Fatalf("resume source run = %+v, want %+v", result.SourceRun, wantSource)
+		}
 		if err := os.Remove(filepath.Join(destination, recoveryResumeResultFile)); err != nil {
 			t.Fatal(err)
 		}
