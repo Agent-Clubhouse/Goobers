@@ -613,6 +613,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/parallelworkspace",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/platform/cgroupfs",
       "coverage": "none",
       "category": "not-selected",
