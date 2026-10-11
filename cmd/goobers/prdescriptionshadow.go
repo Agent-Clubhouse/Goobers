@@ -44,13 +44,16 @@ func observePRDescriptionShadow(root, runID, head, base, title, body string, inR
 			Name:     decisiongate.PRDescriptionAgreementQuestion,
 			Decision: decisiongate.Uncertain,
 		}, err)
-		return appendPRDescriptionReviewNote(body, state, decisiongate.Outcome{Decision: decisiongate.Uncertain})
+		return body
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	outcome, scoreErr := gate.EvaluatePRDescription(ctx, state)
 	logPRDescriptionShadow(stderr, runID, head, base, state, outcome, scoreErr)
+	if scoreErr != nil || outcome.Decision == decisiongate.Uncertain {
+		return body
+	}
 	return appendPRDescriptionReviewNote(body, state, outcome)
 }
 

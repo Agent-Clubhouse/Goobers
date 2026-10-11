@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -99,6 +102,68 @@ func TestObservePRDescriptionShadowIsOptInAndAdvisory(t *testing.T) {
 	}
 }
 
+func TestObservePRDescriptionShadowPreservesBodyOnUnsureFallbacks(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		response   string
+		inRepo     func(func() error) error
+		wantLog    string
+		setupFacts bool
+	}{
+		{
+			name:    "fact collection error",
+			inRepo:  func(func() error) error { return errors.New("diff unavailable") },
+			wantLog: `error="diff unavailable"`,
+		},
+		{
+			name:       "scorer error",
+			status:     http.StatusBadRequest,
+			response:   "scorer unavailable",
+			wantLog:    `verdict="uncertain"`,
+			setupFacts: true,
+		},
+		{
+			name:       "gray zone",
+			status:     http.StatusOK,
+			response:   `{"model":"m","answers":{"pr_description_agreement":{"type":"noul","noul":0.5}}}`,
+			wantLog:    `probability=0.5`,
+			setupFacts: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+
+			root := initDemo(t)
+			configurePRDescriptionShadow(t, root, server.URL)
+			inRepo := tc.inRepo
+			if tc.setupFacts {
+				repo := initPRDescriptionRepo(t)
+				inRepo = func(fn func() error) error {
+					t.Chdir(repo)
+					return fn()
+				}
+			}
+
+			var stderr bytes.Buffer
+			const body = "Original body\n"
+			got := observePRDescriptionShadow(root, "run-1", "feature", "main", "Title", body, inRepo, &stderr)
+			if got != body {
+				t.Fatalf("body = %q, want unchanged %q", got, body)
+			}
+			if !bytes.Contains(stderr.Bytes(), []byte("decisiongate.shadow")) ||
+				!bytes.Contains(stderr.Bytes(), []byte(tc.wantLog)) {
+				t.Fatalf("shadow log = %q, want record containing %q", stderr.String(), tc.wantLog)
+			}
+		})
+	}
+}
+
 func TestAppendPRDescriptionReviewNote(t *testing.T) {
 	got := appendPRDescriptionReviewNote(
 		"Implements retries.\n",
@@ -109,6 +174,43 @@ func TestAppendPRDescriptionReviewNote(t *testing.T) {
 	if got != want {
 		t.Fatalf("review note = %q, want %q", got, want)
 	}
+}
+
+func configurePRDescriptionShadow(t *testing.T, root, baseURL string) {
+	t.Helper()
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DecisionGate = &decisiongate.Settings{
+		Mode: decisiongate.ModeShadow, BaseURLEnv: "PR_SHADOW_TEST_URL",
+		KeyEnv: "PR_SHADOW_TEST_KEY", ModelEnv: "PR_SHADOW_TEST_MODEL",
+		Fallback: decisiongate.FallbackAgent,
+	}
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PR_SHADOW_TEST_URL", baseURL)
+	t.Setenv("PR_SHADOW_TEST_KEY", "test-key")
+	t.Setenv("PR_SHADOW_TEST_MODEL", "m")
+}
+
+func initPRDescriptionRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runPRDescriptionGit(t, repo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "client.go"), []byte("package client\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPRDescriptionGit(t, repo, "add", ".")
+	runPRDescriptionGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "seed")
+	runPRDescriptionGit(t, repo, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "client.go"), []byte("package client\n\nfunc retry() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPRDescriptionGit(t, repo, "add", ".")
+	runPRDescriptionGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "change")
+	return repo
 }
 
 func runPRDescriptionGit(t *testing.T, dir string, args ...string) {
