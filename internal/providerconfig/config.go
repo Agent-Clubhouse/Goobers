@@ -23,29 +23,31 @@ import (
 // own ref (BacklogProviderRef), so backlog work opens that provider.
 //
 // It returns routed unchanged when the gaggle is absent, the backlog project
-// is undeclared, or the topology is not one this release routes by role.
-func ApplyBacklogProject(set *instance.ConfigSet, gaggle string, routed providers.RepositoryRef) providers.RepositoryRef {
+// is undeclared, or the topology is not one this release routes by role. A
+// malformed cross-provider backlog project is an error, with routed returned
+// alongside it.
+func ApplyBacklogProject(set *instance.ConfigSet, gaggle string, routed providers.RepositoryRef) (providers.RepositoryRef, error) {
 	g := findGaggle(set, gaggle)
 	if g == nil {
-		return routed
+		return routed, nil
 	}
 	backlog := g.Spec.Backlog
 	if backlog.Project == "" {
-		return routed
+		return routed, nil
 	}
 	if CrossProviderBacklog(apiv1.Provider(routed.Provider), backlog.Provider) {
 		ref, err := BacklogProviderRef(g.Name, g.Spec.Project, backlog)
 		if err != nil {
-			return routed
+			return routed, err
 		}
-		return ref
+		return ref, nil
 	}
 	if backlog.Provider != apiv1.ProviderADO {
-		return routed
+		return routed, nil
 	}
 	ref := routed
 	ref.Project = backlog.Project
-	return ref
+	return ref, nil
 }
 
 // findGaggle returns the named gaggle in set, or nil when it is absent.
