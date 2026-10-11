@@ -593,3 +593,21 @@ func TestMakeContainedDirRejectsLexicalEscapes(t *testing.T) {
 		t.Fatalf("contained dir not created: %v", err)
 	}
 }
+
+func TestCollectOutboxFilesDedupesOverlappingEntries(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "a.txt", "a")
+	writeWorkspaceFile(t, root, "reports/b.txt", "b")
+
+	files, err := collectOutboxFiles(root, []string{"a.txt", "./a.txt", "reports", "reports/b.txt", "."})
+	if err != nil {
+		t.Fatalf("collectOutboxFiles: %v", err)
+	}
+	seen := map[string]int{}
+	for _, f := range files {
+		seen[f.RelPath]++
+	}
+	if len(files) != 2 || seen["a.txt"] != 1 || seen["reports/b.txt"] != 1 {
+		t.Fatalf("files = %+v, want a.txt and reports/b.txt once each", files)
+	}
+}
