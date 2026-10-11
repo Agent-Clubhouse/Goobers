@@ -37,7 +37,7 @@ func TestHTTPArchiveSourceRequiresRecognizedPendingProtocol(t *testing.T) {
 			}))
 			defer server.Close()
 			source := HTTPArchiveSource{BaseURL: server.URL, Token: "token", RunID: "receiving-run"}
-			err := source.WithArchive(t.Context(), "repository", "7", func(Record, string) error { t.Fatal("pending response reached consumer"); return nil })
+			err := source.WithArchive(t.Context(), "repository", "7", func(Record, SourceRun, string) error { t.Fatal("pending response reached consumer"); return nil })
 			var pending *OverflowPendingError
 			if mode == "valid" {
 				if !errors.As(err, &pending) || pending.PromotionState != PromotionCapacity {

@@ -16,7 +16,7 @@ import (
 )
 
 func TestHTTPArchiveSourceVerifiedDownload(t *testing.T) {
-	for _, mode := range []string{"valid", "corrupt", "foreign-repository", "own-run", "expired", "refused", "not-found", "consumer-error"} {
+	for _, mode := range []string{"valid", "corrupt", "foreign-repository", "own-run", "expired", "refused", "not-found", "consumer-error", "legacy-daemon", "malformed-source"} {
 		t.Run(mode, func(t *testing.T) {
 			record := storageTestRecord()
 			record.CreatedAt = time.Now().Add(-time.Hour).UTC()
@@ -43,6 +43,7 @@ func TestHTTPArchiveSourceVerifiedDownload(t *testing.T) {
 			if mode == "corrupt" {
 				data[len(data)-1] ^= 1
 			}
+			wantSource := SourceRun{Workflow: "implementation", Phase: "escalated", TerminalSeq: 42}
 			runID := "receiving-run"
 			if mode == "own-run" {
 				runID = record.RunID
@@ -59,14 +60,26 @@ func TestHTTPArchiveSourceVerifiedDownload(t *testing.T) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
+				if mode != "legacy-daemon" {
+					wantSource.SetHeaders(w.Header())
+				}
+				if mode == "malformed-source" {
+					w.Header().Set(SourceTerminalSeqHeader, "0")
+				}
 				_, _ = w.Write(data)
 			}))
 			defer server.Close()
 			source := HTTPArchiveSource{BaseURL: server.URL, Token: "claims-secret", RunID: runID}
 			consumedPath := ""
 			consumerErr := errors.New("consumer failed")
-			err := source.WithArchive(context.Background(), key, "7", func(got Record, path string) error {
+			err := source.WithArchive(context.Background(), key, "7", func(got Record, gotSource SourceRun, path string) error {
 				consumedPath = path
+				if mode == "legacy-daemon" {
+					wantSource = SourceRun{}
+				}
+				if gotSource != wantSource {
+					t.Fatalf("source run evidence = %+v, want %+v", gotSource, wantSource)
+				}
 				gotBytes, err := os.ReadFile(path)
 				if err != nil || got != record || !bytes.Equal(gotBytes, archive) {
 					t.Fatalf("download changed verified state: %v", err)
@@ -76,8 +89,8 @@ func TestHTTPArchiveSourceVerifiedDownload(t *testing.T) {
 				}
 				return nil
 			})
-			if mode == "valid" || mode == "consumer-error" {
-				if consumedPath == "" || (mode == "valid" && err != nil) || (mode == "consumer-error" && !errors.Is(err, consumerErr)) {
+			if mode == "valid" || mode == "consumer-error" || mode == "legacy-daemon" {
+				if consumedPath == "" || (mode != "consumer-error" && err != nil) || (mode == "consumer-error" && !errors.Is(err, consumerErr)) {
 					t.Fatalf("consumer result: path=%q err=%v", consumedPath, err)
 				}
 				if _, err := os.Stat(filepath.Dir(consumedPath)); !os.IsNotExist(err) {
@@ -102,7 +115,7 @@ func TestHTTPArchiveSourceDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer server.Close()
 	source := HTTPArchiveSource{BaseURL: server.URL, Token: "claims-secret", RunID: "receiving-run"}
-	err := source.WithArchive(context.Background(), storageTestRecord().RepositoryKey, "7", func(Record, string) error {
+	err := source.WithArchive(context.Background(), storageTestRecord().RepositoryKey, "7", func(Record, SourceRun, string) error {
 		t.Fatal("redirect reached consumer")
 		return nil
 	})
@@ -122,7 +135,7 @@ func TestHTTPArchiveSourceCancellationStopsBodyRead(t *testing.T) {
 	}))
 	defer server.Close()
 	source := HTTPArchiveSource{BaseURL: server.URL, Token: "claims-secret", RunID: "receiving-run"}
-	err := source.WithArchive(ctx, storageTestRecord().RepositoryKey, "7", func(Record, string) error {
+	err := source.WithArchive(ctx, storageTestRecord().RepositoryKey, "7", func(Record, SourceRun, string) error {
 		t.Fatal("cancelled download reached consumer")
 		return nil
 	})
