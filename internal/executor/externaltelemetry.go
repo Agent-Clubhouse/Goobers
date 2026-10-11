@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/invoke"
@@ -20,7 +21,7 @@ import (
 
 const (
 	// KindExternalTelemetry selects the external telemetry built-in stage.
-	KindExternalTelemetry = "external-telemetry"
+	KindExternalTelemetry = boundedwait.KindExternalTelemetry
 
 	// InputTelemetryConnector and the remaining InputTelemetry* values are the
 	// provider-neutral workflow input keys consumed by this stage.
@@ -32,7 +33,7 @@ const (
 	// InputTelemetryParameters contains a JSON parameter object.
 	InputTelemetryParameters = "parameters"
 	// InputTelemetryWindow contains a relative duration.
-	InputTelemetryWindow = "window"
+	InputTelemetryWindow = boundedwait.InputTelemetryWindow
 	// InputTelemetryWindowStart contains an RFC 3339 start.
 	InputTelemetryWindowStart = "windowStart"
 	// InputTelemetryWindowEnd contains an RFC 3339 end.
@@ -42,13 +43,13 @@ const (
 	// InputTelemetryShape selects point, table, or time-series.
 	InputTelemetryShape = "shape"
 	// InputTelemetryFreshness bounds source watermark age.
-	InputTelemetryFreshness = "freshness"
+	InputTelemetryFreshness = boundedwait.InputTelemetryFreshness
 	// InputTelemetryTimeout tightens the configured timeout.
-	InputTelemetryTimeout = "queryTimeout"
+	InputTelemetryTimeout = boundedwait.InputTelemetryQueryTimeout
 	// InputTelemetryMaxAttempts tightens configured attempts.
 	InputTelemetryMaxAttempts = "queryMaxAttempts"
 	// InputTelemetryRetryBackoff declares a fixed retry delay.
-	InputTelemetryRetryBackoff = "queryRetryBackoff"
+	InputTelemetryRetryBackoff = boundedwait.InputTelemetryQueryRetryBackoff
 	// InputTelemetryMaxRows tightens the configured row limit.
 	InputTelemetryMaxRows = "maxRows"
 	// InputTelemetryMaxBytes tightens the configured byte limit.
