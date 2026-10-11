@@ -8,17 +8,15 @@ import (
 
 // WorkflowParentPodPrefix identifies the separate signed parent token domain.
 // The prefix alone never authenticates a caller.
-const WorkflowParentPodPrefix = workflowParentPodPrefix
-
-const workflowParentPodPrefix = "goobers-workflow-parent-pod."
+const WorkflowParentPodPrefix = "goobers-workflow-parent-pod."
 const workflowParentPodMACDomain = "workflow-parent-pod/v1:"
 
 // MintWorkflowParentPod signs exact parent custody in its own authority domain.
 func (s *SignedKey) MintWorkflowParentPod(runID, contractDigest string, ttl time.Duration) (string, error) {
-	return s.mintContractPod(runID, contractDigest, ttl, workflowParentPodPrefix, workflowParentPodMACDomain)
+	return s.mintContractPod(runID, contractDigest, ttl, WorkflowParentPodPrefix, workflowParentPodMACDomain)
 }
 func (s *SignedKey) verifyWorkflowParentPod(token string) (string, string, error) {
-	return s.verifyContractPod(token, workflowParentPodPrefix, workflowParentPodMACDomain)
+	return s.verifyContractPod(token, WorkflowParentPodPrefix, workflowParentPodMACDomain)
 }
 func (a *Authenticator) authenticateWorkflowParentPod(token string) (*httpapi.Principal, error) {
 	verifier, ok := a.verifier.(interface {
