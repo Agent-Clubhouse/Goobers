@@ -10,6 +10,7 @@ package operator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -429,7 +430,7 @@ func computeStatus(generation int64, gooberCount, readyWorkers int, prev v1alpha
 		Phase:              phase,
 		GooberCount:        int32(gooberCount),
 		ReadyWorkers:       int32(readyWorkers),
-		Conditions:         prev.Conditions,
+		Conditions:         slices.Clone(prev.Conditions),
 	}
 	apimeta.SetStatusCondition(&next.Conditions, metav1.Condition{
 		Type:               readyConditionType,

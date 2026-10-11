@@ -149,6 +149,17 @@ func TestStatusEqual(t *testing.T) {
 	}
 }
 
+func TestComputeStatusDoesNotMutatePrevConditions(t *testing.T) {
+	prev := computeStatus(1, 1, 1, v1alpha1.GaggleStatus{})
+	next := computeStatus(1, 1, 0, prev)
+	if statusEqual(prev, next) {
+		t.Error("Ready-condition-only change must not compare equal")
+	}
+	if c := apimeta.FindStatusCondition(prev.Conditions, readyConditionType); c.Status != metav1.ConditionTrue {
+		t.Errorf("prev condition mutated: %v", c.Status)
+	}
+}
+
 func TestMapFuncs(t *testing.T) {
 	reqs := gooberToGaggle(context.Background(), &v1alpha1.Goober{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "goobers-system"},
