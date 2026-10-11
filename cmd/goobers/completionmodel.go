@@ -636,7 +636,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"pr retry": {
 		{name: "pr", takesArg: true, desc: "Pull request number"},
-		{name: "route", takesArg: true, values: []string{"merge-review", "remediation", "hold"}, desc: "Target route"},
+		{name: "route", takesArg: true, values: []string{prRetryRouteMergeReview, prRetryRouteRemediation, prRetryRouteHold}, desc: "Target route"},
 		{name: "reason", takesArg: true, desc: "Audit reason"},
 		{name: "gaggle", takesArg: true, desc: "Gaggle that owns the PR"},
 		{name: "actor", takesArg: true, desc: "Audit identity"},
