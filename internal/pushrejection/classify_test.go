@@ -51,18 +51,17 @@ func TestIsADOPolicyProtected(t *testing.T) {
 	}
 }
 
-// TestIsRaceAloneCannotTellAPolicyRejectionFromARace documents WHY
-// push-branch's retry loop must check isADOPolicyProtected ahead of IsRace:
-// TF402455's own "failed to push some refs" trailer is exactly the marker
-// IsRace keys on, so read in isolation the two classifiers disagree on the
-// same real ADO rejection text.
-func TestIsRaceAloneCannotTellAPolicyRejectionFromARace(t *testing.T) {
-	err := errors.New(adoTF402455Stderr)
-	if !IsRace(err) {
-		t.Fatal("IsRace = false, want true — precondition: TF402455's trailer text must still look race-shaped in isolation, which is exactly why the ordering in push-branch's retry loop matters")
+// TestIsRaceIgnoresGenericPushTrailer proves git's generic "failed to push
+// some refs" trailer alone, as on a TF402455 or hook-declined refusal, is
+// not a ref race.
+func TestIsRaceIgnoresGenericPushTrailer(t *testing.T) {
+	for _, out := range []string{adoTF402455Stderr, " ! [remote rejected] main -> main (hook declined)\nerror: failed to push some refs"} {
+		if IsRace(errors.New(out)) {
+			t.Fatalf("IsRace(%q) = true, want false", out)
+		}
 	}
-	if !isADOPolicyProtected(err.Error()) {
-		t.Fatal("isADOPolicyProtected = false, want true")
+	if IsRace(Classify("b", adoTF402455Stderr, errors.New("exit status 1"))) {
+		t.Fatal("IsRace on a typed terminal refusal = true, want false")
 	}
 }
 
@@ -82,7 +81,7 @@ func TestClassify(t *testing.T) {
 		{"truncated GitHub workflows-permission rejection", githubWorkflowPermissionTruncatedStderr, true, false, false},
 		{"personal access token missing workflow scope", " ! [remote rejected] b -> b (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)\nerror: failed to push some refs", true, false, false},
 		{"OAuth App missing workflow scope", " ! [remote rejected] b -> b (refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)\nerror: failed to push some refs", true, false, false},
-		{"fragments on separate lines do not match", "remote: refusing to allow a force push\nhint: to create or update workflow files, see docs\nerror: failed to push some refs", false, false, true},
+		{"fragments on separate lines do not match", "remote: refusing to allow a force push\nhint: to create or update workflow files, see docs\nerror: failed to push some refs", false, false, false},
 		{"real ADO TF402455 rejection", adoTF402455Stderr, false, true, false},
 		{"plain ref race", "! [rejected] main -> main (fetch first)\nerror: failed to push some refs", false, false, true},
 		{"non-fast-forward race", "! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs", false, false, true},
