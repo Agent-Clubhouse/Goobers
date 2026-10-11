@@ -26,6 +26,12 @@ func IsRootedOrVolumeBound(path string) bool {
 			((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')))
 }
 
+// escapesRoot reports whether a cleaned relative path climbs out of its root
+// via a leading ".." element.
+func escapesRoot(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // IsLexicallyContained reports whether rel is lexically contained within root
 // (no absolute path, no ".." traversal). When root is empty, the path is
 // validated for containment without being made absolute (used by structural
@@ -41,7 +47,7 @@ func IsLexicallyContained(root, rel string) (string, error) {
 		return "", fmt.Errorf("path escapes root: %q is absolute or volume-bound", rel)
 	}
 	clean := filepath.Clean(rel)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if escapesRoot(clean) {
 		return "", fmt.Errorf("path escapes root: %q", rel)
 	}
 	if root == "" {
@@ -56,7 +62,7 @@ func IsLexicallyContained(root, rel string) (string, error) {
 // with message "symlink escape: <details>".
 func ValidateSymlinkEscape(resolvedRoot, resolved, origRel string) error {
 	relBack, err := filepath.Rel(resolvedRoot, resolved)
-	if err != nil || relBack == ".." || strings.HasPrefix(relBack, ".."+string(filepath.Separator)) {
+	if err != nil || escapesRoot(relBack) {
 		return fmt.Errorf("symlink escape: %q resolves to %q", origRel, resolved)
 	}
 	return nil
@@ -109,7 +115,7 @@ func ResolveRootedPath(root, rel string, createMissingDirs bool) (string, error)
 	}
 	full := filepath.Join(root, rel)
 	relBack, err := filepath.Rel(root, full)
-	if err != nil || relBack == ".." || strings.HasPrefix(relBack, ".."+string(filepath.Separator)) || filepath.IsAbs(relBack) {
+	if err != nil || escapesRoot(relBack) || filepath.IsAbs(relBack) {
 		return "", fmt.Errorf("path escapes root: %q", rel)
 	}
 
@@ -133,7 +139,7 @@ func ResolveRootedPath(root, rel string, createMissingDirs bool) (string, error)
 		return "", fmt.Errorf("resolve %q: %w", rel, err)
 	}
 	relExisting, err := filepath.Rel(root, resolvedExisting)
-	if err != nil || relExisting == ".." || strings.HasPrefix(relExisting, ".."+string(filepath.Separator)) {
+	if err != nil || escapesRoot(relExisting) {
 		return "", fmt.Errorf("path %q's directory escapes the root", rel)
 	}
 
