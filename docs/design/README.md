@@ -15,11 +15,11 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 14 |
-| `approved` | 24 |
+| `approved` | 25 |
 | `implemented` | 29 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **77** |
+| **Total** | **78** |
 
 ## `docs/adr/`
 
@@ -63,6 +63,7 @@ word — read the page, not this table, before depending on it.
 | [Goobernetes smoke — the distributed-shape v1 exit](goobernetes-smoke.md) | `approved` | — | — | — | — | — | — |
 | [Human operations and advanced workflows program](hitl-advanced-workflows-program.md) | `approved` | workflows, human operations, events, provider reads, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Design: Human-in-the-Loop — escalation visibility & intervention](human-in-the-loop.md) | `implemented` | — | — | #3876, #3877, #3883 | — | — | 09db115bb (2026-09-06) |
+| [Design: Interactive factory operations](interactive-factory-operations.md) | `approved` | Portal, runtime, providers, authorization | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster](k8s-infra-shape.md) | `approved` | — | — | — | — | — | — |
 | [Large-repo execution model (#2063)](large-repo-execution-model.md) | `draft` | — | — | — | — | — | — |
 | [Mixed-Platform Cloud Nodes — Windows Node Pools & Platform-Labeled Routing](mixed-platform-cloud-nodes.md) | `superseded` | — | — | #659 | — | [`goobernetes-architecture.md`](goobernetes-architecture.md) | — |
