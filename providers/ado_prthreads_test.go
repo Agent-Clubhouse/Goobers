@@ -105,7 +105,13 @@ func TestADOProviderListPullRequestThreadComments(t *testing.T) {
 					"comments": []map[string]interface{}{
 						{"id": 1, "content": "verdict", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "reviewer-guid"}, "publishedDate": "2026-08-08T10:00:00Z"},
 						{"id": 2, "content": "finding history", "commentType": "text", "author": map[string]string{"displayName": "Reviewer", "id": "other-reviewer-guid"}, "publishedDate": "2026-08-08T10:05:00Z"},
+						{"id": 6, "content": "deleted comment", "commentType": "text", "isDeleted": true, "author": map[string]string{"displayName": "Reviewer"}},
 					},
+				},
+				{
+					"id":        11,
+					"isDeleted": true,
+					"comments":  []map[string]interface{}{{"id": 7, "content": "deleted thread", "commentType": "text", "author": map[string]string{"displayName": "Reviewer"}}},
 				},
 				{
 					// A system thread (vote/status/ref event) must be skipped.
