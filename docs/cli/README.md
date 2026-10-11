@@ -108,6 +108,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension install`](#goobers-portal-extension-install) | install the bundled Goobers Portal extension for the current user |
 | [`goobers portal-extension status`](#goobers-portal-extension-status) | report installed Goobers Portal extension version and drift |
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
+| [`goobers pr`](#goobers-pr) | operator actions on pull requests |
+| [`goobers pr retry`](#goobers-pr-retry) | route an escalated or parked PR to merge-review, remediation, or human hold (audited) |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
 | [`goobers recovery-abandon`](#goobers-recovery-abandon) | explicitly abandon one retained recovery snapshot |
@@ -3299,6 +3301,57 @@ errors), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers post-merge
+~~~
+
+## `goobers pr`
+
+operator actions on pull requests
+
+~~~text
+Usage: goobers pr <retry> [flags]
+
+retry: route an escalated or parked pull request to merge-review,
+       remediation, or human hold with an audited operator reason.
+~~~
+
+## `goobers pr retry`
+
+route an escalated or parked PR to merge-review, remediation, or human hold (audited)
+
+~~~text
+Usage: goobers pr retry --pr <number> --route merge-review|remediation|hold --reason <text>
+                        [--gaggle <name>] [--actor <identity>] [--dry-run] [--json] [path]
+
+Move a parked or escalated pull request to an explicit lifecycle route
+without hand-editing provider labels or durable remediation state:
+  merge-review  clear escalation and remediation labels and reset the
+                durable retry state so merge-review can elect a lander
+  remediation   clear escalation labels, reset the durable retry state
+                and apply goobers:needs-remediation
+  hold          park the PR for a human (goobers:merge-escalated and
+                goobers:needs-human); remediation labels are cleared
+
+--dry-run reports the PR's current labels, claim lease, remediation
+checkpoint and escalation generation, head/base SHA, and the proposed
+transition without mutating anything. Otherwise the transition is applied,
+an audit comment naming the operator and reason is recorded on the PR, and
+the provider state is re-read to verify the result. Re-running a completed
+retry changes nothing. The command refuses a closed, merged, or healthy
+PR, a PR whose claim lease is still live, and a merge-review route for a PR
+with failing CI or both goobers:needs-remediation and
+goobers:blocked-on-sibling.
+--reason is required; --actor defaults to the invoking user. The provider
+credential is read like any stage's (github:pr:write).
+The resulting eligibility is printed and is immediately visible in
+goobers status, which reads the same provider labels.
+Exit codes: 0 = applied, already applied, or dry-run reported; 1 = refused or
+provider error; 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers pr retry --pr 533 --route remediation --reason 'review contract corrected' --dry-run
 ~~~
 
 ## `goobers pr-claim`
