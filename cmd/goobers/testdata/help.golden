@@ -1959,7 +1959,10 @@ the default commit message; supplied by
 apply-verdict), advisoryMode (default false — report only, no merge
 attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
-issues), resultFile (default merge-result.json). Successful merges
+issues), preMergeCheck (optional; one command per line, run without a
+shell on the PR head merged onto the CURRENT base branch tip — a
+failure refuses the merge as pre-merge-check-failed), resultFile
+(default merge-result.json). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked, or
 failed). Exit codes: 0 = evaluated (merged or not — see the result
 file's "merged" field), 1 = business error (missing capability/config,

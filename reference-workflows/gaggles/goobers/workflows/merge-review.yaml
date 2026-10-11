@@ -372,6 +372,14 @@ spec:
         # github:pr:merge grant remains fail-closed either way.
         advisoryMode: "false"
         resultFile: "merge-result.json"
+        # #7132: CI only proves the head against the base its last run used.
+        # Two PRs green alone can break main once both land (one removes a
+        # symbol the other still calls), so compile the head merged onto the
+        # CURRENT base tip before landing and refuse on failure.
+        preMergeCheck: |
+          go build ./...
+          go vet ./...
+          go vet -tags integration ./...
       capabilities:
         # INSTANCE OPT-IN: this per-workflow grant enables auto-merge for this
         # instance. Without it, remove merge-pr/merge-gate/post-merge and route
