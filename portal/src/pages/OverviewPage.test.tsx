@@ -646,12 +646,72 @@ describe("overview recovery inventory capacity (#5343)", () => {
     expect(row).toHaveTextContent(
       "Durable handoffs, worktree cleanup and unrelated runs fail when it is full.",
     );
-    expect(
-      within(row).getByRole("link", { name: "Recovery capacity and operator actions" }),
-    ).toHaveAttribute(
-      "href",
-      expect.stringContaining("retained-implementation.md#inventory-capacity"),
+    expect(within(row).queryByRole("link", { name: "Recovery capacity and operator actions" })).toBeNull();
+    expect(within(row).queryByText(/Abandon:/)).toBeNull();
+  });
+
+  it("lists reclaimable snapshots with the commands that act on them", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.recoveryInventory = {
+      ...fixtures.instance.recoveryInventory!,
+      state: "exhausted",
+      used: 128,
+      reclaimCandidatesTotal: 3,
+      reclaimCandidates: [
+        {
+          runId: "run-old",
+          phase: "completed",
+          ref: "refs/goobers/recovery/run-old",
+          patchDigest: "sha256:abc",
+          repositoryKey: "github|||team|repo|",
+          createdAt: "2026-07-01T00:00:00Z",
+          retainUntil: "2026-08-01T00:00:00Z",
+          inspectCommand: "goobers trace --summary run-old 'C:\\Goobers\\instances\\local-dev'",
+          restoreCommand:
+            "goobers recovery-restore --record 'C:\\r\\record.json' --repository . --branch recovered/run-old 'C:\\Goobers\\instances\\local-dev'",
+          abandonCommand:
+            "goobers recovery-abandon --run run-old --ref refs/goobers/recovery/run-old --confirm-digest sha256:abc 'C:\\Goobers\\instances\\local-dev'",
+        },
+        {
+          runId: "run-gone",
+          phase: "failed",
+          ref: "refs/goobers/recovery/run-gone",
+          patchDigest: "sha256:def",
+          repositoryKey: "github|||team|repo|",
+          createdAt: "2026-07-02T00:00:00Z",
+          retainUntil: "2026-07-03T00:00:00Z",
+          abandoned: true,
+          inspectCommand: "goobers trace --summary run-gone 'C:\\Goobers\\instances\\local-dev'",
+        },
+      ],
+      reclaimHold: {
+        reason: "dry-run",
+        setting: "retention.dryRun: false",
+        configFile: "C:\\Goobers\\instances\\local-dev\\instance.yaml",
+      },
+      statusCommand: "goobers status --all 'C:\\Goobers\\instances\\local-dev'",
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("alert", { name: "Recovery inventory exhausted" });
+    expect(row).toHaveTextContent("Oldest 2 of 3 snapshots from finished runs");
+    expect(row).toHaveTextContent("Retention is in dry-run mode, so abandoned snapshots free no slots.");
+    expect(row).toHaveTextContent("retention.dryRun: false");
+
+    const old = within(row).getByRole("listitem", { name: "Recovery snapshot run-old" });
+    expect(old).toHaveTextContent(
+      "goobers recovery-abandon --run run-old --ref refs/goobers/recovery/run-old --confirm-digest sha256:abc",
     );
+    expect(old).toHaveTextContent("goobers recovery-restore --record");
+    expect(within(old).getByRole("link", { name: "run-old" })).toHaveAttribute("href", expect.stringContaining("run-old"));
+
+    const gone = within(row).getByRole("listitem", { name: "Recovery snapshot run-gone" });
+    expect(gone).not.toHaveTextContent("recovery-abandon");
+    expect(gone).not.toHaveTextContent("recovery-restore");
+    expect(gone).toHaveTextContent("Abandoned; waiting for the next retention pass");
+
+    expect(row).toHaveTextContent("goobers status --all 'C:\\Goobers\\instances\\local-dev'");
   });
 
   it("elevates the high-water warning and names the consequence", async () => {
@@ -691,6 +751,7 @@ describe("overview recovery inventory capacity (#5343)", () => {
       "Durable handoffs, worktree cleanup and unrelated runs fail until capacity is freed.",
     );
     expect(row).toHaveTextContent("1 incomplete reservation still occupying slots");
+    expect(row).toHaveTextContent("No snapshot belongs to a finished run yet");
   });
 
   it("omits the card entirely when the daemon reports no reading", async () => {
