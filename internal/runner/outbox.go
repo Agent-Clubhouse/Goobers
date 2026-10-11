@@ -300,7 +300,14 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 	var candidates []outboxCandidate
 	var totalBytes int64
 
+	seen := map[string]struct{}{}
+
 	addFile := func(relPath, absPath string, size int64) error {
+		relPath = filepath.ToSlash(filepath.Clean(relPath))
+		if _, dup := seen[relPath]; dup {
+			return nil
+		}
+		seen[relPath] = struct{}{}
 		candidates = append(candidates, outboxCandidate{relPath: relPath, absPath: absPath, size: size})
 		totalBytes += size
 		if len(candidates) > journal.MaxOutboxFilesPerAttempt {
