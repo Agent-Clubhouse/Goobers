@@ -25,30 +25,37 @@ import (
 // It returns routed unchanged when the gaggle is absent, the backlog project
 // is undeclared, or the topology is not one this release routes by role.
 func ApplyBacklogProject(set *instance.ConfigSet, gaggle string, routed providers.RepositoryRef) providers.RepositoryRef {
-	for i := range set.Gaggles {
-		g := &set.Gaggles[i]
-		if g.Name != gaggle {
-			continue
-		}
-		backlog := g.Spec.Backlog
-		if backlog.Project == "" {
+	g := findGaggle(set, gaggle)
+	if g == nil {
+		return routed
+	}
+	backlog := g.Spec.Backlog
+	if backlog.Project == "" {
+		return routed
+	}
+	if CrossProviderBacklog(apiv1.Provider(routed.Provider), backlog.Provider) {
+		ref, err := BacklogProviderRef(g.Name, g.Spec.Project, backlog)
+		if err != nil {
 			return routed
 		}
-		if CrossProviderBacklog(apiv1.Provider(routed.Provider), backlog.Provider) {
-			ref, err := BacklogProviderRef(g.Name, g.Spec.Project, backlog)
-			if err != nil {
-				return routed
-			}
-			return ref
-		}
-		if backlog.Provider != apiv1.ProviderADO {
-			return routed
-		}
-		ref := routed
-		ref.Project = backlog.Project
 		return ref
 	}
-	return routed
+	if backlog.Provider != apiv1.ProviderADO {
+		return routed
+	}
+	ref := routed
+	ref.Project = backlog.Project
+	return ref
+}
+
+// findGaggle returns the named gaggle in set, or nil when it is absent.
+func findGaggle(set *instance.ConfigSet, name string) *apiv1.Gaggle {
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == name {
+			return &set.Gaggles[i]
+		}
+	}
+	return nil
 }
 
 // CrossProviderBacklog reports whether a gaggle whose code lives on project
@@ -117,20 +124,17 @@ func BacklogOnOtherProvider(routed, backlog providers.RepositoryRef) bool {
 // provider form. It reports false when the gaggle is absent, its backlog is
 // not ADO, or it declares no doneStates.
 func GaggleADODoneStates(set *instance.ConfigSet, gaggle string) (providers.ADODoneStates, bool) {
-	for i := range set.Gaggles {
-		g := &set.Gaggles[i]
-		if g.Name != gaggle {
-			continue
-		}
-		backlog := g.Spec.Backlog
-		if backlog.Provider != apiv1.ProviderADO || backlog.DoneStates == nil {
-			return providers.ADODoneStates{}, false
-		}
-		states := providers.ADODoneStates{ByType: backlog.DoneStates.ByType}
-		for _, category := range backlog.DoneStates.Categories {
-			states.Categories = append(states.Categories, string(category))
-		}
-		return states, true
+	g := findGaggle(set, gaggle)
+	if g == nil {
+		return providers.ADODoneStates{}, false
 	}
-	return providers.ADODoneStates{}, false
+	backlog := g.Spec.Backlog
+	if backlog.Provider != apiv1.ProviderADO || backlog.DoneStates == nil {
+		return providers.ADODoneStates{}, false
+	}
+	states := providers.ADODoneStates{ByType: backlog.DoneStates.ByType}
+	for _, category := range backlog.DoneStates.Categories {
+		states.Categories = append(states.Categories, string(category))
+	}
+	return states, true
 }
