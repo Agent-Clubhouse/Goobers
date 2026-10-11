@@ -577,3 +577,19 @@ func TestOversizedOutboxPreservesCommandOutcomeAndFailsWorkflow(t *testing.T) {
 		t.Fatalf("oversized outbox was partially published: %v", err)
 	}
 }
+
+func TestMakeContainedDirRejectsLexicalEscapes(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"..", filepath.Join("..", "x"), "/abs", `\rooted`, "C:evil"} {
+		if _, err := makeContainedDir(root, rel); err == nil || err.Error() != apiv1.ErrPathEscape.Error() {
+			t.Errorf("makeContainedDir(%q) err = %v, want ErrPathEscape", rel, err)
+		}
+	}
+	got, err := makeContainedDir(root, filepath.Join("a", "b"))
+	if err != nil {
+		t.Fatalf("contained path rejected: %v", err)
+	}
+	if info, err := os.Stat(got); err != nil || !info.IsDir() {
+		t.Fatalf("contained dir not created: %v", err)
+	}
+}

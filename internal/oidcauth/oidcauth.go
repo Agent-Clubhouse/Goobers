@@ -362,15 +362,22 @@ func (a *Authenticator) fetchKeys(ctx context.Context, jwksURI string) (map[stri
 		return nil, "", fmt.Errorf("fetch JWKS: %w", err)
 	}
 	keys := make(map[string]*rsa.PublicKey, len(document.Keys))
+	var parseErr error
 	for _, key := range document.Keys {
 		if key.Kty != "RSA" || key.Kid == "" || (key.Use != "" && key.Use != "sig") {
 			continue
 		}
 		public, err := rsaPublicKey(key)
 		if err != nil {
-			return nil, "", fmt.Errorf("parse JWKS key %q: %w", key.Kid, err)
+			if parseErr == nil {
+				parseErr = fmt.Errorf("parse JWKS key %q: %w", key.Kid, err)
+			}
+			continue
 		}
 		keys[key.Kid] = public
+	}
+	if len(keys) == 0 && parseErr != nil {
+		return nil, "", parseErr
 	}
 	return keys, jwksURI, nil
 }
