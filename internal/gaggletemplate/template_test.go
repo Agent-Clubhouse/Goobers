@@ -386,3 +386,25 @@ func TestPublishRecoveryBranches(t *testing.T) {
 		}
 	})
 }
+
+func TestSaveWritesSourceAtomically(t *testing.T) {
+	root := t.TempDir()
+	trackedFixture(t, root)
+	dir := filepath.Join(root, MetadataDir)
+	info, err := os.Stat(filepath.Join(dir, "source.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("source.yaml mode = %v", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".template-write-") {
+			t.Fatalf("leftover temp file %s", e.Name())
+		}
+	}
+}
