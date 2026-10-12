@@ -13,7 +13,14 @@ archives, and changes to protected runtime assets refuse restoration.
 Its `recovery-resume.json` result names the source run and, whenever retained
 work was adopted or skipped as incompatible, the exact retained snapshot:
 `sourceRecoveryRef`, `sourceBaseRef` (omitted for version-1 records),
-`sourceBaseSha`, `sourceSnapshotSha`, and `sourcePatchDigest`.
+`sourceBaseSha`, `sourceSnapshotSha`, and `sourcePatchDigest`. Those outcomes
+also report the source run's terminal journal evidence, read in one pass from
+its idle journal: `sourceWorkflow`, `sourceRunPhase`, and `sourceTerminalSeq`
+(the sequence of its latest `run.finished` event, the value
+`goobers run continue --terminal-seq` binds to). `sourceTerminalSeq` is omitted
+when the journal has no `run.finished` event, and all three are omitted when a
+claims-plane daemon that predates them serves the archive; they are never
+inferred.
 
 ## Retirement
 

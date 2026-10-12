@@ -41,12 +41,9 @@ func (s recoveryDeliveryService) StreamRecovery(ctx context.Context, runID, repo
 		if err != nil || identity.RunID != selected.Record.RunID {
 			return fmt.Errorf("recovery source identity changed")
 		}
-		phase, err := reader.PhaseBounded(ctx)
+		sourceRun, err := recovery.ReadTerminalSourceRun(reader, identity)
 		if err != nil {
 			return err
-		}
-		if !terminalRunPhase(phase) {
-			return fmt.Errorf("recovery source is no longer terminal")
 		}
 		current, err := validateRecoverySelection(s.layout, selected, time.Now().UTC())
 		if err != nil {
@@ -60,7 +57,7 @@ func (s recoveryDeliveryService) StreamRecovery(ctx context.Context, runID, repo
 		}
 		transferCtx, transferCancel := context.WithDeadline(ctx, current.RetainUntil)
 		defer transferCancel()
-		return recovery.WriteArchiveEnvelope(transferCtx, filepath.Join(filepath.Dir(selected.RecordPath), recovery.BundleFileName), current, 512<<20, out)
+		return recovery.WriteArchiveEnvelope(transferCtx, filepath.Join(filepath.Dir(selected.RecordPath), recovery.BundleFileName), current, 512<<20, recovery.ReportingSourceRun(out, sourceRun))
 	})
 	if err == nil && !entered {
 		return fmt.Errorf("recovery source is busy")
