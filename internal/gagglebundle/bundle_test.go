@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1024,5 +1025,57 @@ func TestValidateRejectionArms(t *testing.T) {
 				t.Fatalf("Validate error = %v, want ErrInvalidBundle containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestReportSummary(t *testing.T) {
+	errIssue := func(msg string) validate.Issue {
+		return validate.Issue{Severity: validate.Error, Message: msg}
+	}
+	if got := reportSummary(nil); got != "no validation report" {
+		t.Fatalf("nil report = %q", got)
+	}
+	warnOnly := &validate.Report{Issues: []validate.Issue{{Severity: validate.Warning, Message: "w"}}}
+	if got := reportSummary(warnOnly); got != "no validation errors" {
+		t.Fatalf("warning-only = %q", got)
+	}
+	if got := reportSummary(&validate.Report{}); got != "no validation errors" {
+		t.Fatalf("empty = %q", got)
+	}
+	capped := &validate.Report{Issues: []validate.Issue{
+		errIssue("e1"), {Severity: validate.Warning, Message: "skip"}, errIssue("e2"), errIssue("e3"), errIssue("e4"),
+	}}
+	got := reportSummary(capped)
+	if parts := strings.Split(got, "; "); len(parts) != 3 {
+		t.Fatalf("expected 3 errors, got %q", got)
+	}
+	for _, want := range []string{"e1", "e2", "e3"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "e4") || strings.Contains(got, "skip") {
+		t.Fatalf("unexpected content in %q", got)
+	}
+}
+
+func TestMarshalJSONIsIndentedAndUnescaped(t *testing.T) {
+	bundle := apiv1.GaggleBundle{Kind: "A<b>&c", Digest: "d"}
+	first, err := MarshalJSON(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := MarshalJSON(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("output not deterministic")
+	}
+	if !bytes.Contains(first, []byte(`"kind": "A<b>&c"`)) {
+		t.Fatalf("expected unescaped, indented output: %s", first)
+	}
+	if !bytes.HasSuffix(first, []byte("}\n")) {
+		t.Fatalf("expected trailing newline: %q", first)
 	}
 }
