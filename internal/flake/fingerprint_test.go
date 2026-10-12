@@ -149,3 +149,19 @@ func TestNormalizeSignatureFoldsRunnerFlagValues(t *testing.T) {
 		})
 	}
 }
+
+func TestFailureBoilerplateGoTestMarkers(t *testing.T) {
+	for line, want := range map[string]bool{
+		"FAIL":              true,
+		"FAIL\tpkg 0.1s":    true,
+		"FAIL pkg":          true,
+		"PASS":              true,
+		"--- FAIL: TestX":   true,
+		"FAILED: x":         false,
+		"PASSWORD rejected": false,
+	} {
+		if got := failureBoilerplate(line); got != want {
+			t.Errorf("failureBoilerplate(%q) = %v, want %v", line, got, want)
+		}
+	}
+}
