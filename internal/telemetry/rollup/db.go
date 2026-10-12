@@ -13,9 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goobers/goobers/internal/sqlitebusy"
 	_ "modernc.org/sqlite" // pure-Go driver: no cgo, matches the local-runner's
 	// single-binary/no-service-dependency posture (ARCHITECTURE.md §3.1).
+
+	"github.com/goobers/goobers/internal/sqlitebusy"
 )
 
 // DB is an open handle to the local telemetry rollup (telemetry.db, TEL-032).

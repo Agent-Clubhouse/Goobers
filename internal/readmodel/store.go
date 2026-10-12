@@ -38,8 +38,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goobers/goobers/internal/sqlitebusy"
 	_ "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
+
+	"github.com/goobers/goobers/internal/sqlitebusy"
 )
 
 // FileName is read.db's name within an instance root.
