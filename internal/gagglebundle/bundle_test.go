@@ -959,3 +959,70 @@ func readFile(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+func TestValidateRejectionArms(t *testing.T) {
+	source := newBundleSource(t)
+	base, err := Export(source.ConfigDir(), "example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*apiv1.GaggleBundle)
+		refresh bool
+		want    string
+	}{
+		{"wrong apiVersion", func(b *apiv1.GaggleBundle) { b.APIVersion = "v0" }, false, "apiVersion must be"},
+		{"wrong kind", func(b *apiv1.GaggleBundle) { b.Kind = "Other" }, false, "kind must be"},
+		{"wrong schemaVersion", func(b *apiv1.GaggleBundle) { b.SchemaVersion = 99 }, false, "unsupported schemaVersion"},
+		{"empty source name", func(b *apiv1.GaggleBundle) { b.Source.Name = "  " }, false, "source.name is required"},
+		{"empty source apiVersion", func(b *apiv1.GaggleBundle) { b.Source.APIVersion = "" }, false, "source.apiVersion is required"},
+		{"zero exportedAt", func(b *apiv1.GaggleBundle) { b.ExportedAt = time.Time{} }, false, "exportedAt is required"},
+		{"wrong exporter", func(b *apiv1.GaggleBundle) { b.Provenance.Exporter = "other" }, false, "provenance.exporter"},
+		{"empty exporter version", func(b *apiv1.GaggleBundle) { b.Provenance.ExporterVersion = " " }, false, "exporterVersion is required"},
+		{"empty gaggle name", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Name = "" }, false, "definition.gaggle.metadata.name is required"},
+		{"source name mismatch", func(b *apiv1.GaggleBundle) { b.Source.Name = "other" }, false, "does not match definition gaggle"},
+		{"sanitized fields mismatch", func(b *apiv1.GaggleBundle) { b.Provenance.SanitizedFields = []string{"x"} }, false, "sanitizedFields"},
+		{"credential in retained envelope", func(b *apiv1.GaggleBundle) { b.Provenance.ExporterVersion = "password=hunter2hunter2" }, false, "retained envelope"},
+		{"absolute path in retained envelope", func(b *apiv1.GaggleBundle) { b.Source.Name = "/home/user/x"; b.Definition.Gaggle.Name = "/home/user/x" }, false, "retained envelope"},
+		{"tampered definition", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Labels = map[string]string{"k": "v"} }, false, "digest mismatch"},
+		{"tampered digest", func(b *apiv1.GaggleBundle) { b.Digest = "sha256:00" }, false, "digest mismatch"},
+		{"tampered source digest", func(b *apiv1.GaggleBundle) { b.Source.Digest = "sha256:00" }, false, "digest mismatch"},
+		{"project connectionRef", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Spec.Project.ConnectionRef = "c" }, true, "connection references are forbidden"},
+		{"backlog connectionRef", func(b *apiv1.GaggleBundle) { b.Definition.Gaggle.Spec.Backlog.ConnectionRef = "c" }, true, "connection references are forbidden"},
+		{"additional repo connectionRef", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Spec.AdditionalRepos = []apiv1.RepoRef{{ConnectionRef: "c"}}
+		}, true, "repository connection references are forbidden"},
+		{"sibling connectionRef", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Spec.Siblings = []apiv1.GaggleSibling{{Project: apiv1.RepoRef{ConnectionRef: "c"}}}
+		}, true, "sibling repository connection references are forbidden"},
+		{"gaggle label credential", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Labels = map[string]string{"note": "password=hunter2hunter2"}
+		}, true, "gaggle metadata"},
+		{"gaggle annotation absolute path", func(b *apiv1.GaggleBundle) {
+			b.Definition.Gaggle.Annotations = map[string]string{"where": "/home/user/secret"}
+		}, true, "non-portable absolute path"},
+		{"workflow annotation absolute path", func(b *apiv1.GaggleBundle) {
+			b.Definition.Workflows[0].Annotations = map[string]string{"where": "/home/user/secret"}
+		}, true, "workflow "},
+		{"goober label credential", func(b *apiv1.GaggleBundle) {
+			b.Definition.Goobers[0].Labels = map[string]string{"note": "token=abcdefgh12345678"}
+		}, true, "goober "},
+	}
+	if err := Validate(base); err != nil {
+		t.Fatalf("base bundle invalid: %v", err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bundle := cloneBundle(t, base)
+			tt.mutate(&bundle)
+			if tt.refresh {
+				refreshBundleDigest(t, &bundle)
+			}
+			err := Validate(bundle)
+			if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want ErrInvalidBundle containing %q", err, tt.want)
+			}
+		})
+	}
+}
