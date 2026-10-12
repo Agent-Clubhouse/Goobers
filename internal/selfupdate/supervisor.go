@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	hashiversion "github.com/hashicorp/go-version"
 
+	"github.com/goobers/goobers/internal/daemonlog"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/durability"
@@ -408,12 +410,10 @@ func ensureCurrentBinary(opts SupervisorOptions) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	active, err := readVersion(ctx, opts.runner, opts.Root, current)
+	active, err := probeSupervisedVersion(opts, current)
 	if err != nil {
 		_, reportErr := fmt.Fprintf(opts.Stderr,
-			"self-update skew: cannot read supervised daemon version at %s: %v; keeping existing binary\n",
+			"supervised daemon version probe failed at %s: %v; keeping existing binary\n",
 			current, err)
 		return reportErr
 	}
@@ -441,6 +441,100 @@ func ensureCurrentBinary(opts SupervisorOptions) error {
 		"self-update skew: installed supervisor is %s, supervised daemon is %s; keeping existing binary\n",
 		formatVersionInfo(opts.supervisor), formatVersionInfo(active))
 	return reportErr
+}
+
+const (
+	versionProbeAttempts = 3
+	versionProbeTimeout  = 10 * time.Second
+	versionProbeMaxBytes = 512
+)
+
+var versionProbeRetryDelay = 500 * time.Millisecond
+
+type versionProbeError struct {
+	class  string
+	err    error
+	output string
+}
+
+func (e *versionProbeError) Error() string {
+	message := fmt.Sprintf("%s failure: %v", e.class, e.err)
+	if e.output != "" {
+		message += fmt.Sprintf("; output: %q", e.output)
+	}
+	return message
+}
+
+func (e *versionProbeError) Unwrap() error { return e.err }
+
+func (e *versionProbeError) transient() bool { return e.class != "json-validation" }
+
+func boundedScrubbed(raw []byte) string {
+	text := daemonlog.Redact(strings.TrimSpace(string(raw)))
+	if len(text) > versionProbeMaxBytes {
+		text = strings.ToValidUTF8(text[:versionProbeMaxBytes], "") + "...(truncated)"
+	}
+	return text
+}
+
+func classifyVersionProbe(ctx context.Context, raw []byte, err error) *versionProbeError {
+	probe := &versionProbeError{err: err, output: boundedScrubbed(raw)}
+	var exitErr *exec.ExitError
+	switch {
+	case ctx.Err() != nil:
+		probe.class = "timeout"
+	case errors.As(err, &exitErr):
+		probe.class = "non-zero-exit"
+	case isVersionOutputError(err):
+		probe.class = "json-validation"
+	default:
+		probe.class = "process-launch"
+	}
+	return probe
+}
+
+func isVersionOutputError(err error) bool {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr) ||
+		errors.Is(err, errVersionOutputIncomplete) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+func sameBinaryFile(left, right os.FileInfo) bool {
+	return os.SameFile(left, right) && left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
+}
+
+// probeSupervisedVersion retries transient probe failures only while the
+// binary on disk is unchanged; malformed version output fails closed at once.
+func probeSupervisedVersion(opts SupervisorOptions, binary string) (versionInfo, error) {
+	before, err := os.Stat(binary)
+	if err != nil {
+		return versionInfo{}, err
+	}
+	var last *versionProbeError
+	for attempt := 1; attempt <= versionProbeAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
+		raw, runErr := opts.runner.Run(ctx, opts.Root, nil, binary, "version", "--json")
+		var info versionInfo
+		if runErr == nil {
+			info, runErr = parseVersionOutput(raw)
+		}
+		if runErr == nil {
+			cancel()
+			return info, nil
+		}
+		last = classifyVersionProbe(ctx, raw, runErr)
+		cancel()
+		if !last.transient() || attempt == versionProbeAttempts {
+			break
+		}
+		time.Sleep(versionProbeRetryDelay)
+		after, statErr := os.Stat(binary)
+		if statErr != nil || !sameBinaryFile(before, after) {
+			break
+		}
+	}
+	return versionInfo{}, last
 }
 
 func sameVersionInfo(left, right versionInfo) bool {

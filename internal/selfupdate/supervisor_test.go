@@ -421,3 +421,76 @@ func TestAwaitSupervisorStateTimesOutNamingTheAwaitedState(t *testing.T) {
 		t.Fatalf("error = %v, want a timeout naming the awaited state", err)
 	}
 }
+
+type flakyVersionRunner struct {
+	failures int
+	err      error
+	output   []byte
+	calls    int
+	info     versionInfo
+	badJSON  bool
+}
+
+func (r *flakyVersionRunner) Run(context.Context, string, []string, string, ...string) ([]byte, error) {
+	r.calls++
+	if r.badJSON {
+		return []byte("not json"), nil
+	}
+	if r.calls <= r.failures {
+		return r.output, r.err
+	}
+	return []byte(`{"version":"` + r.info.Version + `","commit":"` + r.info.Commit + `"}`), nil
+}
+
+func runProbeScenario(t *testing.T, runner *flakyVersionRunner) string {
+	t.Helper()
+	old := versionProbeRetryDelay
+	versionProbeRetryDelay = time.Millisecond
+	t.Cleanup(func() { versionProbeRetryDelay = old })
+	root := t.TempDir()
+	writeTestExecutable(t, currentBinary(root, "linux"), "old")
+	var stderr strings.Builder
+	err := ensureCurrentBinary(defaultSupervisorOptions(SupervisorOptions{
+		Root: root, GOOS: "linux", Stderr: &stderr, runner: runner,
+		executable: filepath.Join(root, "installed"),
+		supervisor: versionInfo{Version: "v1.2.3", Commit: "old"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stderr.String()
+}
+
+func TestEnsureCurrentBinaryRetriesTransientProbeFailure(t *testing.T) {
+	runner := &flakyVersionRunner{failures: 1, err: errors.New("exit status 1"), info: versionInfo{Version: "v1.2.3", Commit: "old"}}
+	if got := runProbeScenario(t, runner); got != "" {
+		t.Fatalf("stderr = %q, want no diagnostic", got)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("calls = %d, want 2", runner.calls)
+	}
+}
+
+func TestEnsureCurrentBinaryReportsPersistentProbeFailureWithoutSkew(t *testing.T) {
+	runner := &flakyVersionRunner{failures: 99, err: errors.New("boom"), output: []byte("bad token=hunter2")}
+	got := runProbeScenario(t, runner)
+	if runner.calls != versionProbeAttempts {
+		t.Fatalf("calls = %d, want %d", runner.calls, versionProbeAttempts)
+	}
+	for _, want := range []string{"process-launch failure", "keeping existing binary", "bad token=[redacted]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stderr = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "self-update skew") || strings.Contains(got, "hunter2") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestEnsureCurrentBinaryDoesNotRetryMalformedVersionOutput(t *testing.T) {
+	runner := &flakyVersionRunner{badJSON: true}
+	got := runProbeScenario(t, runner)
+	if runner.calls != 1 || !strings.Contains(got, "json-validation failure") {
+		t.Fatalf("calls = %d, stderr = %q", runner.calls, got)
+	}
+}
