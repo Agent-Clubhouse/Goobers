@@ -1,0 +1,4 @@
+{"tool":"list_inputs","success":true}
+{"tool":"read_input","input":"query-backlog.artifact[0]","inputDigest":"sha256:428370f0969c6835c751087f2a068dc5e3b9b3a0c0422161bfc89b5f0c276778","success":true,"startLine":1,"endLine":1,"totalLines":1}
+{"tool":"read_input","input":"query-backlog.artifact[1]","inputDigest":"sha256:72cf74edb4803c68970a5f48d3213e4e077cf71721afaa39ddf42c15fa544f1c","success":true,"startLine":1,"endLine":1,"totalLines":1}
+{"tool":"read_input","input":"query-backlog.artifact[2]","inputDigest":"sha256:71b96badce2781235e5a7e6820fca8dbe64afcfe3f15637366419a9561b583de","success":true,"startLine":1,"endLine":1,"totalLines":1}

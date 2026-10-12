@@ -750,3 +750,60 @@ func ExampleResultArtifact() {
 	fmt.Println(ResultSchemaVersion)
 	// Output: goobers.dev/external-telemetry-query-result/v1alpha1
 }
+
+func TestBoundedFailedArtifactShrinkLadder(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	start := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	descriptor := Descriptor{Kind: long, Version: long, SourceID: long}
+	request := QueryRequest{Shape: ShapeTable, Window: Window{Start: &start, End: &end}}
+	provenance := QueryProvenance{Reference: long, ParameterNames: []string{long}, ParameterDigest: long, Digest: "sha256:abc"}
+	queryErr := &QueryError{Code: long, Kind: long, Retryable: true}
+	build := func(maxBytes int) ResultArtifact {
+		return boundedFailedArtifact(long, descriptor, request, provenance, start, end, 2, QueryLimits{MaxRows: 5, MaxBytes: maxBytes}, queryErr)
+	}
+	size := func(a ResultArtifact) int {
+		data, err := json.Marshal(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(data)
+	}
+
+	full := build(1 << 20)
+	if full.Metadata.Truncated || full.Query.Reference != long || full.Failure.Code != queryErr.Code {
+		t.Fatalf("unbounded artifact was shrunk: %+v", full)
+	}
+
+	seen := map[string]bool{}
+	for _, maxBytes := range []int{4000, 1500, 1024, 700, 500, 400, 300, 200, 100, 1, 0} {
+		a := build(maxBytes)
+		if !a.Metadata.Truncated || a.Query.Digest != "sha256:abc" || a.Failure == nil {
+			t.Fatalf("maxBytes %d: artifact = %+v", maxBytes, a)
+		}
+		if maxBytes >= size(a) {
+			seen["fits"] = true
+		}
+		if a.Failure.Code == "failure_artifact_too_large" {
+			seen["fallback"] = true
+		}
+		if a.Window.Start == nil {
+			seen["window"] = true
+		}
+		if a.Connector.Name == "" {
+			seen["minimal"] = true
+		}
+	}
+	for _, step := range []string{"fits", "fallback", "window", "minimal"} {
+		if !seen[step] {
+			t.Errorf("ladder step %q never exercised", step)
+		}
+	}
+
+	for maxBytes := 0; maxBytes <= 2*MinimumMaxBytes; maxBytes += 7 {
+		a := build(maxBytes)
+		if maxBytes >= MinimumMaxBytes && size(a) > maxBytes {
+			t.Fatalf("maxBytes %d: artifact size %d exceeds limit", maxBytes, size(a))
+		}
+	}
+}
