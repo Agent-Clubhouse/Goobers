@@ -1272,16 +1272,6 @@ func githubProgressEnabled(ctx context.Context) bool {
 	return enabled
 }
 
-// isTerminalPhase reports whether a run has reached one of the four terminal
-// phases waitForRunTerminal waits for.
-func isTerminalPhase(p journal.RunPhase) bool {
-	switch p {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true
-	}
-	return false
-}
-
 func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.RunPhase, error) {
 	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, io.Discard))
 }
@@ -1306,7 +1296,7 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			// appended to, so a second read can see the terminal event that
 			// this one missed, and returning on it would drop the final
 			// stage's "finished" line from user-visible progress (#1557).
-			if phase := journal.PhaseFromEvents(events); isTerminalPhase(phase) {
+			if phase := journal.PhaseFromEvents(events); phase.IsTerminal() {
 				return phase, nil
 			}
 		} else if errors.Is(err, journal.ErrNotRunDirectory) {
@@ -1327,7 +1317,7 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
 				return journal.PhaseRunning, fmt.Errorf("open run %s after wait timeout: %w", runID, err)
 			}
-			if isTerminalPhase(phase) {
+			if phase.IsTerminal() {
 				return phase, nil
 			}
 			return phase, fmt.Errorf("run %s did not reach a terminal phase and made no journal progress for %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)

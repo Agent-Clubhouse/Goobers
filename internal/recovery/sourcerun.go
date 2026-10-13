@@ -51,7 +51,7 @@ func ReadTerminalSourceRun(reader *journal.Reader, identity journal.RunIdentity)
 // refuses a source run that is not terminal.
 func TerminalSourceRun(identity journal.RunIdentity, events []journal.Event) (SourceRun, error) {
 	phase := journal.PhaseFromEvents(events)
-	if !terminalSourcePhase(phase) {
+	if !phase.IsTerminal() {
 		return SourceRun{}, fmt.Errorf("selected recovery run is no longer terminal")
 	}
 	source := SourceRun{Workflow: identity.Workflow, Phase: string(phase)}
@@ -148,17 +148,8 @@ func SourceRunFromHeaders(header http.Header) (SourceRun, error) {
 }
 
 func (s SourceRun) validate() error {
-	if !sourceWorkflowName.MatchString(s.Workflow) || !terminalSourcePhase(journal.RunPhase(s.Phase)) {
+	if !sourceWorkflowName.MatchString(s.Workflow) || !journal.RunPhase(s.Phase).IsTerminal() {
 		return fmt.Errorf("invalid recovery source run evidence")
 	}
 	return nil
-}
-
-func terminalSourcePhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true
-	default:
-		return false
-	}
 }

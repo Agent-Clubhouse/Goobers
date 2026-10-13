@@ -795,12 +795,12 @@ func (s *Service) finishExecution(
 			return result, errors.Join(runErr, phaseErr)
 		}
 	}
-	if !terminalInterventionPhase(phase) {
+	if !phase.IsTerminal() {
 		lease.retainAdmission = true
 	} else if !errors.Is(runErr, runner.ErrTerminalGenerationChanged) {
 		lease.releaseRetained = true
 	}
-	if runErr != nil && terminalInterventionPhase(phase) {
+	if runErr != nil && phase.IsTerminal() {
 		runErr = errors.Join(runErr, lease.releaseReacquiredClaims())
 	}
 	return result, runErr
@@ -913,15 +913,6 @@ func (l *interventionExecutionLease) phase() (journal.RunPhase, error) {
 		return "", fmt.Errorf("inspect run phase after intervention: %w", err)
 	}
 	return phase, nil
-}
-
-func terminalInterventionPhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true
-	default:
-		return false
-	}
 }
 
 func (l *interventionExecutionLease) releaseReacquiredClaims() error {

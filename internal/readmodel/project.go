@@ -542,7 +542,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			// no query predicate expects, and the run would quietly vanish from
 			// every phase-filtered list. Leave the run as it was; repair and the
 			// differential oracle surface the discrepancy.
-			if !terminalPhase(phase) {
+			if !phase.IsTerminal() {
 				continue
 			}
 			row.Phase = phase
@@ -1160,20 +1160,6 @@ func sortedStages(set map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// terminalPhase reports whether phase is a recognised terminal run phase.
-//
-// PhaseRunning is excluded deliberately: a run.finished carrying "running" is
-// contradictory, and accepting it would leave a row marked terminal while its
-// phase says otherwise.
-func terminalPhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseEscalated, journal.PhaseAborted:
-		return true
-	default:
-		return false
-	}
 }
 
 func terminalGatePhase(target string) (journal.RunPhase, bool) {

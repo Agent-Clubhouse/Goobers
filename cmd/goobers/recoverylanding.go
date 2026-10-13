@@ -142,7 +142,7 @@ func recoveryLandingHeads(ctx context.Context, runsRoot string, record recovery.
 
 func readRecoveryLandingJournal(ctx context.Context, reader *journal.Reader, path, provider, route string) ([]recovery.LandedHead, error) {
 	phase, err := reader.PhaseBounded(ctx)
-	if err != nil || !terminalRunPhase(phase) {
+	if err != nil || !phase.IsTerminal() {
 		return nil, err
 	}
 	info, err := os.Lstat(filepath.Join(path, "events.jsonl"))
