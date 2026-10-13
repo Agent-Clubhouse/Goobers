@@ -1,1 +1,1 @@
-claimed 7277: gaggletemplate: write source.yaml atomically
+claimed 7291: perf: git config source spawns one git cat-file process per tracked blob
