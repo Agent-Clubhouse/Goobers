@@ -152,3 +152,94 @@ func TestHasStandardTextMergeAttributesRejectsContentTransforms(t *testing.T) {
 		})
 	}
 }
+
+func TestHasMarkerListContainer(t *testing.T) {
+	tests := []struct {
+		name     string
+		ancestor []string
+		insertAt int
+		indent   string
+		want     bool
+	}{
+		{"empty indent", []string{"items:\n", "- a\n"}, 1, "", false},
+		{"under key", []string{"items:\n", "  - a\n"}, 1, "  ", true},
+		{"after sibling entry", []string{"items:\n", "  - a\n", "  - b\n"}, 2, "  ", true},
+		{"blank lines skipped", []string{"items:\n", "\n", "  - a\n"}, 2, "  ", true},
+		{"nested key", []string{"a:\n", "  b:\n", "    - x\n"}, 2, "    ", true},
+		{"opener without colon", []string{"intro\n", "  - a\n"}, 1, "  ", false},
+		{"no preceding lines", []string{"  - a\n"}, 0, "  ", false},
+		{"only blanks before", []string{"\n", "  - a\n"}, 1, "  ", false},
+		{"indent mismatch tabs vs spaces", []string{"\titems:\n", "  - a\n"}, 1, "  ", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasMarkerListContainer(tt.ancestor, tt.insertAt, tt.indent); got != tt.want {
+				t.Fatalf("hasMarkerListContainer() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasQuotedListContainer(t *testing.T) {
+	tests := []struct {
+		name     string
+		ancestor []string
+		insertAt int
+		indent   string
+		want     bool
+	}{
+		{"bracketed", []string{"x = [\n", "  \"a\",\n", "]\n"}, 2, "  ", true},
+		{"closer with comma", []string{"x = [\n", "  \"a\",\n", "],\n"}, 2, "  ", true},
+		{"insert at start", []string{"x = [\n", "  \"a\",\n", "]\n"}, 1, "  ", true},
+		{"blank lines skipped", []string{"x = [\n", "\n", "  \"a\",\n", "\n", "]\n"}, 3, "  ", true},
+		{"no opener", []string{"  \"a\",\n", "]\n"}, 1, "  ", false},
+		{"non-bracket opener", []string{"x = {\n", "  \"a\",\n", "}\n"}, 2, "  ", false},
+		{"no closer", []string{"x = [\n", "  \"a\",\n"}, 2, "  ", false},
+		{"wrong closer", []string{"x = [\n", "  \"a\",\n", "}\n"}, 2, "  ", false},
+		{"closer indent differs", []string{"x = [\n", "  \"a\",\n", " ]\n"}, 2, "  ", false},
+		{"nested opener indent", []string{"  x = [\n", "    \"a\",\n", "  ]\n"}, 2, "    ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasQuotedListContainer(tt.ancestor, tt.insertAt, tt.indent); got != tt.want {
+				t.Fatalf("hasQuotedListContainer() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMergeAdjacentLineInsertionsListContainerOutcomes(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		ancestor  string
+		upstream  string
+		incoming  string
+		wantMerge bool
+	}{
+		{
+			"yaml list merges", "a.yaml",
+			"items:\n  - a\n", "items:\n  - a\n  - b\n", "items:\n  - a\n  - c\n", true,
+		},
+		{
+			"top-level yaml marker not merged", "a.yaml",
+			"- a\n", "- a\n- b\n", "- a\n- c\n", false,
+		},
+		{
+			"quoted list merges", "a.go",
+			"x = [\n  \"a\",\n]\n", "x = [\n  \"a\",\n  \"b\",\n]\n", "x = [\n  \"a\",\n  \"c\",\n]\n", true,
+		},
+		{
+			"quoted entries in braces not merged", "a.go",
+			"x = {\n  \"a\",\n}\n", "x = {\n  \"a\",\n  \"b\",\n}\n", "x = {\n  \"a\",\n  \"c\",\n}\n", false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := MergeAdjacentLineInsertions(tt.path, []byte(tt.ancestor), []byte(tt.upstream), []byte(tt.incoming))
+			if ok != tt.wantMerge {
+				t.Fatalf("MergeAdjacentLineInsertions() ok = %v, want %v", ok, tt.wantMerge)
+			}
+		})
+	}
+}
