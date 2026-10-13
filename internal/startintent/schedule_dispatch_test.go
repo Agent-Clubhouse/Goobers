@@ -132,7 +132,7 @@ func TestSourceScheduleBackoffCommitsSkipWithoutLosingCursor(t *testing.T) {
 			}
 			scheduler.Wait()
 		}
-		cursor, _, err := source.ScheduleCursor(t.Context(), entry, base, false)
+		cursor, _, err := source.ScheduleCursor(t.Context(), entry, base, false, base)
 		if err != nil || !cursor.Equal(now) {
 			t.Fatal(cursor, err)
 		}
