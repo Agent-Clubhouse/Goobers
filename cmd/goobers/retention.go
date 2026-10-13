@@ -512,15 +512,6 @@ func readRunPhase(runsDir, runID string) (journal.RunPhase, bool, error) {
 	return phase, err == nil, err
 }
 
-func terminalRunPhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true
-	default:
-		return false
-	}
-}
-
 // settledRunPhase is terminalRunPhase minus PhaseEscalated: the phases after
 // which nothing legitimately still holds the run's worktree.
 //

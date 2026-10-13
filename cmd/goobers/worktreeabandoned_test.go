@@ -61,14 +61,14 @@ func TestSettledRunPhaseIsTerminalMinusEscalated(t *testing.T) {
 	for _, phase := range []journal.RunPhase{
 		journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted,
 	} {
-		if !settledRunPhase(phase) || !terminalRunPhase(phase) {
+		if !settledRunPhase(phase) || !phase.IsTerminal() {
 			t.Fatalf("%s must be both settled and terminal", phase)
 		}
 	}
 	if settledRunPhase(journal.PhaseEscalated) {
 		t.Fatal("escalated must not be settled")
 	}
-	if !terminalRunPhase(journal.PhaseEscalated) {
+	if !journal.PhaseEscalated.IsTerminal() {
 		t.Fatal("escalated must remain terminal — only the settled predicate excludes it")
 	}
 }
