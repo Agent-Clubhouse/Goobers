@@ -358,12 +358,7 @@ func daemonTriggerSweep(
 	options triggerSweepOptions,
 ) func() error {
 	return func() error {
-		var sweepErr error
-		if options == (triggerSweepOptions{}) {
-			sweepErr = sweepPendingTriggers(ctx, l.SchedulerDir(), log, sched, time.Now)
-		} else {
-			sweepErr = sweepPendingTriggersWithOptions(ctx, l.SchedulerDir(), log, sched, time.Now, options)
-		}
+		sweepErr := sweepPendingTriggersWithAdmission(ctx, l.SchedulerDir(), log, sched, time.Now, options, durableTriggers.delegatedAdmission())
 		err := errors.Join(durableTriggers.Drain(ctx), sweepErr)
 		return recordTriggerSweepProgress(heartbeat, err, time.Now())
 	}

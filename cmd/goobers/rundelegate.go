@@ -21,24 +21,11 @@ import (
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
-// rundelegate.go implements #343: when a short-lived `goobers run` process
-// finds a live `goobers up` daemon already holding this instance's up.lock,
-// it no longer just fails — it hands the trigger off to that daemon through
-// a small file-based request/response protocol under
-// <SchedulerDir>/pending-triggers/, and the daemon's own periodic sweep
-// (wired in up.go) dispatches it through the exact same Scheduler.Trigger
-// path a local `goobers run` would have used itself.
-//
-// This is deliberately NOT built on #169's planned daemon HTTP API — #169 is
-// unbuilt and explicitly gated ("do not dispatch until its design review"),
-// so depending on it would either mean taking on unreviewed V1 design work
-// or inventing a parallel ad-hoc HTTP surface that risks conflicting with
-// #169's eventual shape. Reusing the daemon's own already-safe-for-
-// concurrent-calls Scheduler (Trigger/Tick already interleave safely under
-// its internal mutex — see scheduler.go's Tick doc comment) and a periodic
-// filesystem sweep (the same idle-between-ticks philosophy the scheduler
-// loop itself uses, no busy-polling) needs no new server, port, or auth
-// surface at all.
+// Same-root callers can submit ordinary and priority starts through request
+// files when the daemon owns the instance lock. The production sweep transfers
+// those files to the shared durable start ledger; files remain the client's
+// acknowledgment/response transport. The older direct sweep is retained only
+// for compatibility callers and uncertain legacy-file recovery.
 
 // pendingTriggersDir is the SchedulerDir subdirectory delegated and internal
 // priority-trigger request/response files live under.
@@ -155,12 +142,14 @@ func suppressExcessOutstanding(parsed []*pendingTriggerRequest) map[string]bool 
 // workflow. Priority requests are internal, targeted, and fire-and-forget;
 // ordinary delegated requests retain the request/response protocol.
 type triggerRequest struct {
-	Workflow  string `json:"workflow"`
-	Gaggle    string `json:"gaggle,omitempty"`
-	PR        int    `json:"pr,omitempty"`
-	Force     bool   `json:"force,omitempty"`
-	SourceRun string `json:"sourceRun,omitempty"`
-	Priority  bool   `json:"priority,omitempty"`
+	QueueTransfer bool   `json:"queueTransfer,omitempty"`
+	AcceptanceID  string `json:"acceptanceId,omitempty"`
+	Workflow      string `json:"workflow"`
+	Gaggle        string `json:"gaggle,omitempty"`
+	PR            int    `json:"pr,omitempty"`
+	Force         bool   `json:"force,omitempty"`
+	SourceRun     string `json:"sourceRun,omitempty"`
+	Priority      bool   `json:"priority,omitempty"`
 	// Key is the idempotency key (#4326). When set, the request FILE is named
 	// from it, so two producers submitting the same logical ask publish to one
 	// path and the atomic rename collapses them. Empty on delegated requests,
@@ -398,6 +387,15 @@ func withdrawTriggerRequest(schedulerDir, requestID string) (bool, error) {
 		}
 		return false, fmt.Errorf("delegate: withdraw trigger request %s: %w", requestID, err)
 	}
+	raw, readErr := os.ReadFile(abandonedPath)
+	var req triggerRequest
+	if readErr == nil {
+		readErr = json.Unmarshal(raw, &req)
+	}
+	// Unknown custody cannot be reported as a successful withdrawal.
+	if readErr != nil || req.AcceptanceID != "" || req.QueueTransfer {
+		return false, errors.Join(readErr, os.Rename(abandonedPath, reqPath))
+	}
 	return true, nil
 }
 
@@ -579,7 +577,7 @@ func recoverActiveTriggerRequest(schedulerDir, reqDir, requestID string) (bool, 
 		return false, fmt.Errorf("delegate: read active trigger request %s: %w", requestID, err)
 	}
 	var req triggerRequest
-	if err := json.Unmarshal(activeData, &req); err == nil && req.DispatchRunID != "" {
+	if err := json.Unmarshal(activeData, &req); err == nil && req.DispatchRunID != "" && req.AcceptanceID == "" {
 		root := filepath.Dir(schedulerDir)
 		if _, err := instance.NewLayout(root).FindRunDir(req.DispatchRunID); err == nil {
 			if err := writeTriggerResponse(reqDir, requestID, triggerResponse{RunID: req.DispatchRunID}); err != nil {
@@ -685,27 +683,10 @@ func readPendingTriggerRequests(requestEntries []pendingTriggerCandidate) ([]*pe
 	return parsed, readErr
 }
 
-// sweepPendingTriggers is the daemon-side half of #343's delegation
-// protocol, called at startup and periodically from runUpContext's sweep
-// goroutine
-// (mirroring the existing claim-recovery ticker's shape). It dispatches
-// every pending request through sched — the exact same Scheduler.Trigger a
-// local `goobers run` invocation would call directly — and writes back a
-// response for pollTriggerResponse to consume.
-//
-// A request file is removed BEFORE dispatch, not after: if the daemon
-// crashed mid-dispatch, a still-present request file would replay on the
-// next process's startup sweep and double-trigger the same nominal request;
-// removing first means a lost response in that narrow window fails the
-// waiting `goobers run` closed (timeout) rather than risking a duplicate
-// run — the same "don't replay an ambiguous firing" principle Scheduler's
-// own trigger.fired-before-dispatch ordering already applies (see dispatch's
-// doc comment in scheduler.go).
-func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time) error {
-	return sweepPendingTriggersWithOptions(ctx, schedulerDir, log, sched, now, triggerSweepOptions{})
-}
-
-func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time, options triggerSweepOptions) error {
+// sweepPendingTriggersWithAdmission adopts existing durable receipts before
+// applying fresh-file rules and transfers new requests before execution.
+// Legacy dispatch markers cannot bypass the queue in the production daemon.
+func sweepPendingTriggersWithAdmission(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time, options triggerSweepOptions, admission delegatedAdmission) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, exists, err := readDirectory(reqDir)
 	if !exists {
@@ -749,6 +730,10 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 		}
 
 		req := p.req
+		if handled, err := recoverDelegatedAdmission(ctx, admission, p.parseErr, reqDir, requestID, activePath, &req); handled {
+			sweepErr = errors.Join(sweepErr, err)
+			continue
+		}
 		resp := triggerResponse{}
 		switch {
 		case p.parseErr != nil:
@@ -756,6 +741,8 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 		case req.CreatedAt.IsZero():
 			resp.Error = fmt.Sprintf("delegate: trigger request %s has no creation time; refusing to dispatch", requestID)
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
+		case admission != nil && req.DispatchRunID != "":
+			resp.Error = "delegate: legacy uncertain dispatch marker requires restart reconciliation; refusing direct replay"
 		case req.Force && (req.PR > 0 || req.Priority):
 			resp.Error = "delegate: force is only valid for an explicit manual trigger"
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
@@ -783,6 +770,11 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 				resp = acceptedTriggerExpiredResponse(requestID, req)
 				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
+				if admission != nil && req.DispatchRunID == "" {
+					_, err := admission(ctx, reqDir, requestID, activePath, &req, false)
+					sweepErr = errors.Join(sweepErr, err)
+					continue
+				}
 				if req.DispatchRunID == "" {
 					runID, err := newDelegatedDispatchRunID()
 					if err != nil {
