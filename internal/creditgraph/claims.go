@@ -326,13 +326,22 @@ func ReadClaimFile(dir string) ([]Claim, int) {
 	return claims, dropped
 }
 
+// claimWire decodes a claim while keeping the schema-required confidence's
+// presence observable: an omitted confidence must be refused, not read as 0.
+type claimWire struct {
+	Claim
+	Confidence *float64 `json:"confidence"`
+}
+
 func decodeClaim(data []byte) (Claim, bool) {
-	var claim Claim
+	var wire claimWire
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&claim) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+	if decoder.Decode(&wire) != nil || decoder.Decode(&struct{}{}) != io.EOF || wire.Confidence == nil {
 		return Claim{}, false
 	}
+	claim := wire.Claim
+	claim.Confidence = *wire.Confidence
 	normalized, err := NormalizeClaim(claim)
 	return normalized, err == nil
 }

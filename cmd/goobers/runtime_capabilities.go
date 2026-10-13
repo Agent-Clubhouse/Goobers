@@ -144,6 +144,9 @@ func telemetryCLICommand() cliCommand {
 		subcommand("telemetry claim", "claim", apicontract.ActionWorkflowExecution, runTelemetryClaim).
 			withHelp("append a Backprop claim from inside an agentic stage", telemetryClaimHelp).
 			withExamples("goobers telemetry claim --kind=reliance --stage=plan --statement=\"used the plan's file list\"", "goobers telemetry claim --kind=blame --stage=implement --evidence=seq:42 --confidence=0.6 --statement=\"tests failed on its change\""),
+		subcommand("telemetry claims", "claims", apicontract.ActionReadOnlyNavigation, runTelemetryClaims).
+			withHelp("print the Backprop claims earlier stages of this run recorded", telemetryClaimsHelp).
+			withExamples("goobers telemetry claims"),
 		subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 			withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 			withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
@@ -155,7 +158,7 @@ func telemetryCLICommand() cliCommand {
 			withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
 	).
 		withSynopsis(synopsisByID["telemetry"]).
-		withHelp("configure, test, query, export, mark fixes, label runs, record claims, prune, or compact telemetry", telemetryHelp).
+		withHelp("configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry", telemetryHelp).
 		withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123", "goobers telemetry prune --dry-run")
 }
 

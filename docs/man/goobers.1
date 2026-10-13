@@ -398,10 +398,13 @@ check the configured local speech engine without emitting sound
 speak the fixed local readiness phrase
 .TP
 \fBgoobers telemetry\fR
-configure, test, query, export, mark fixes, label runs, record claims, prune, or compact telemetry
+configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
 .TP
 \fBgoobers telemetry claim\fR
 append a Backprop claim from inside an agentic stage
+.TP
+\fBgoobers telemetry claims\fR
+print the Backprop claims earlier stages of this run recorded
 .TP
 \fBgoobers telemetry compact\fR
 drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -777,6 +780,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),
 \fBgoobers-telemetry-claim\fR(1),
+\fBgoobers-telemetry-claims\fR(1),
 \fBgoobers-telemetry-compact\fR(1),
 \fBgoobers-telemetry-configure\fR(1),
 \fBgoobers-telemetry-errors\fR(1),

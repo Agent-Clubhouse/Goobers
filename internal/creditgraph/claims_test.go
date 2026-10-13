@@ -116,6 +116,14 @@ func TestAppendClaimBoundsTheAttemptAndReadDropsMalformedLines(t *testing.T) {
 	if len(claims) != MaxClaimsPerAttempt || dropped != 2 {
 		t.Fatalf("ReadClaimFile = %d claims, %d dropped; want %d and 2", len(claims), dropped, MaxClaimsPerAttempt)
 	}
+	// confidence is required by the schema, so an omitted one is refused at
+	// ingestion rather than read as zero.
+	unscored := t.TempDir()
+	_ = os.WriteFile(filepath.Join(unscored, ClaimsFileName), []byte(`{"kind":"reliance","target":{"stage":"plan"}}`+"\n"+
+		`{"kind":"reliance","target":{"stage":"plan"},"confidence":0}`+"\n"), 0o600)
+	if claims, dropped := ReadClaimFile(unscored); len(claims) != 1 || claims[0].Confidence != 0 || dropped != 1 {
+		t.Fatalf("missing vs explicit zero confidence = %+v, %d dropped", claims, dropped)
+	}
 	if claims, dropped := ReadClaimFile(t.TempDir()); claims != nil || dropped != 0 {
 		t.Fatalf("missing file = %v, %d", claims, dropped)
 	}
@@ -176,6 +184,55 @@ func TestClaimLineMatchesItsSchema(t *testing.T) {
 	_ = json.Unmarshal([]byte(`{"kind":"blame","target":{"stage":"plan","agent":"a"},"confidence":1}`), &invalid)
 	if schema.Validate(invalid) == nil {
 		t.Error("schema accepted a two-target claim")
+	}
+	_ = json.Unmarshal([]byte(`{"kind":"reliance","target":{"stage":"plan"}}`), &invalid)
+	if schema.Validate(invalid) == nil {
+		t.Error("schema accepted a claim without confidence")
+	}
+}
+
+// TestRunClaimsSnapshotRoundTripsAndRevalidates pins the read side later
+// stages consume: journaled claims are listed with their runner-attributed
+// writer, and a tampered snapshot entry is dropped rather than returned.
+func TestRunClaimsSnapshotRoundTripsAndRevalidates(t *testing.T) {
+	events := claimRunEvents(claimBatch(7, "implement", 1, "agent-1",
+		Claim{Kind: ClaimReliance, Target: ClaimTarget{Stage: "plan"}, Statement: "used the plan", Confidence: 0.7}))
+	events = append(events, journal.Event{Seq: 8, Type: journal.EventRunnerAnnotation, Runner: map[string]any{
+		SpanProvenanceKeyKind: ClaimsAnnotation, ClaimsKeyClaims: []any{map[string]any{"kind": "reliance", "target": map[string]any{"stage": "plan"}}},
+	}})
+	view := CollectRunClaims(events)
+	if len(view.Claims) != 1 || view.Dropped != 1 {
+		t.Fatalf("CollectRunClaims = %+v", view)
+	}
+	want := RunClaim{ID: "claim:7:0", Seq: 7, Writer: ClaimWriter{Stage: "implement", Attempt: 1, Agent: "agent-1"}, Claim: view.Claims[0].Claim}
+	if view.Claims[0].ID != want.ID || view.Claims[0].Writer != want.Writer || view.Claims[0].Statement != "used the plan" {
+		t.Fatalf("claim = %+v", view.Claims[0])
+	}
+	if graph := buildClaims(t, events); len(graph.Claims)+len(graph.UnverifiedClaims) != 1 ||
+		append(graph.Claims, graph.UnverifiedClaims...)[0].ID != want.ID {
+		t.Fatalf("snapshot ids do not match Backprop's: %+v / %+v", graph.Claims, graph.UnverifiedClaims)
+	}
+	dir := t.TempDir()
+	if err := WriteRunClaims(dir, view); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadRunClaims(dir); err != nil || len(got.Claims) != 1 || got.Claims[0].Writer != want.Writer || got.Dropped != 1 {
+		t.Fatalf("ReadRunClaims = %+v, %v", got, err)
+	}
+	tampered := `{"schema":"` + RunClaimsSchemaVersion + `","claims":[{"id":"claim:7:0","seq":7,"writer":{"stage":"implement","attempt":1},` +
+		`"kind":"reliance","target":{"stage":"plan"}},{"id":"x","seq":1,"writer":{"stage":"plan","attempt":1},"kind":"reliance","target":{"stage":"a"},"confidence":1}]}`
+	_ = os.WriteFile(filepath.Join(dir, RunClaimsFileName), []byte(tampered), 0o600)
+	if got, err := ReadRunClaims(dir); err != nil || len(got.Claims) != 1 || got.Claims[0].ID != "x" || got.Dropped != 1 {
+		t.Fatalf("tampered ReadRunClaims = %+v, %v", got, err)
+	}
+	if err := WriteRunClaims(dir, RunClaims{Schema: RunClaimsSchemaVersion, Error: "run journal unavailable"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRunClaims(dir); err == nil || !strings.Contains(err.Error(), "could not read") {
+		t.Fatalf("an unreadable journal must not read as an empty log: %v", err)
+	}
+	if _, err := ReadRunClaims(t.TempDir()); err == nil {
+		t.Fatal("a missing snapshot read as an empty log")
 	}
 }
 

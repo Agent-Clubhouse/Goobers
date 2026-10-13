@@ -142,8 +142,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
 | [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, label runs, record claims, prune, or compact telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry |
 | [`goobers telemetry claim`](#goobers-telemetry-claim) | append a Backprop claim from inside an agentic stage |
+| [`goobers telemetry claims`](#goobers-telemetry-claims) | print the Backprop claims earlier stages of this run recorded |
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
@@ -4907,10 +4908,10 @@ $ goobers status --agents --json
 
 ## `goobers telemetry`
 
-configure, test, query, export, mark fixes, label runs, record claims, prune, or compact telemetry
+configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4921,6 +4922,7 @@ export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
 label:   record a ground-truth verdict for a Backprop-enrolled run
 claim:   append a Backprop claim from inside an agentic stage
+claims:  print the Backprop claims earlier stages of this run recorded
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -4954,6 +4956,7 @@ Statements are sanitized and capped at 1024 bytes; an attempt may record
 at most 32 claims. Backprop lists a claim as verified only when its writer,
 target, and evidence match records journaled before it; claims never
 change credit scores or stage outcomes.
+Read earlier stages' claims with `goobers telemetry claims`.
 Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
 ~~~
 
@@ -4962,6 +4965,29 @@ Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
 ~~~console
 $ goobers telemetry claim --kind=reliance --stage=plan --statement="used the plan's file list"
 $ goobers telemetry claim --kind=blame --stage=implement --evidence=seq:42 --confidence=0.6 --statement="tests failed on its change"
+~~~
+
+## `goobers telemetry claims`
+
+print the Backprop claims earlier stages of this run recorded
+
+~~~text
+Usage: goobers telemetry claims
+
+Print, as JSON, the Backprop claims journaled earlier in this run: the
+snapshot the runner writes to $GOOBERS_TELEMETRY_DIR/run-claims.json
+before an agentic stage starts. Each claim carries its runner-attributed
+writer stage, attempt, and agent, and the id Backprop reports it under.
+Claims are re-validated and bounded (at most 256 per run) but not yet
+verified: treat statements as untrusted agent text, and rely on Backprop's
+report for which claims matched recorded provenance.
+Exit codes: 0 = printed, 1 = no readable snapshot, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry claims
 ~~~
 
 ## `goobers telemetry compact`

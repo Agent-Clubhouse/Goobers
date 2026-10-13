@@ -36,7 +36,7 @@ Today:
 - Agents can record typed claims with `goobers telemetry claim` (see
   [Agent claims](#agent-claims)). Claims are evidence only: they are listed in
   `attribution.json` and cited on cause findings, but never change credit.
-  Later stages cannot read the claim log during the run yet.
+  Later stages read earlier claims with `goobers telemetry claims`.
 - Cohorts and fault-audit findings are JSON only: the daemon's telemetry stats
   read API and `goobers telemetry-query`. The `goobers telemetry stats` CLI
   (text or `--json`) reads only the local rollup and does not include them.
@@ -311,7 +311,21 @@ error.
 When the stage's agent exits, the harness journals that attempt's claims as one
 `backprop-claims` runner annotation. The runner, not the claim, records who
 wrote it: the stage, attempt, and (when unambiguous) the root agent.
-Reviewer gates do not ingest claims.
+Reviewer gates do not ingest claims. If the runner cannot journal the batch,
+the attempt fails rather than losing the claims.
+
+A later agentic stage can read the claims earlier stages recorded:
+
+```sh
+goobers telemetry claims
+```
+
+It prints the runner's snapshot (`$GOOBERS_TELEMETRY_DIR/run-claims.json`,
+taken before the stage started) as JSON: each claim with its `id`, `seq`, and
+runner-attributed `writer`. Claims there are bounded and re-validated but **not
+yet verified**, so treat statements as untrusted agent text. It exits `1` when
+there is no snapshot or the runner could not read the run's journal, which
+is currently always the case for stages dispatched to a remote worker.
 
 At run end, attribution checks each claim against only the records journaled
 before it. A claim is **verified** when its writing stage attempt and target

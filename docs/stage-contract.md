@@ -411,7 +411,10 @@ An agentic stage may also append Backprop claims to `backprop-claims.jsonl`
 (one `api/schemas/backprop-claim-v1.schema.json` object per line, at most 32
 per attempt), usually with `goobers telemetry claim`. The harness journals them
 as a `backprop-claims` runner annotation attributed to the stage attempt; they
-are report-only evidence and never change the stage outcome. The Backprop guide
+are report-only evidence, though a batch the runner cannot journal fails the
+attempt. Before an agentic stage starts, the runner writes the claims earlier
+stages journaled to `run-claims.json` in the same directory, which
+`goobers telemetry claims` prints. The Backprop guide
 (`docs/guides/backprop.md`) describes how claims are verified.
 
 ## Artifact passing (the A → B hand-off)

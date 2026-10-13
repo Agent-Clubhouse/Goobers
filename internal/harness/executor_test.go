@@ -216,6 +216,113 @@ func TestExecutorJournalsBackpropClaims(t *testing.T) {
 	}
 }
 
+// TestExecutorFailsWhenBackpropClaimsCannotBeJournaled pins that a claim the
+// agent recorded never vanishes silently: a recorder that cannot append it, or
+// a failed append, fails the attempt.
+func TestExecutorFailsWhenBackpropClaimsCannotBeJournaled(t *testing.T) {
+	for name, recorder := range map[string]interface {
+		SpanRecorder
+		ArtifactRecorder
+		ContextResolver
+	}{
+		"append fails":  &fakeRecorder{err: errors.New("journal full")},
+		"cannot append": &minimalRecorder{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+				if _, err := creditgraph.AppendClaim(req.TelemetryDir, creditgraph.Claim{
+					Kind: creditgraph.ClaimReliance, Target: creditgraph.ClaimTarget{Stage: "plan"}, Confidence: 1,
+				}); err != nil {
+					return err
+				}
+				return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			}}
+			exec, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), recorder, recorder, recorder, journal.NewPatternScrubber(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+			if err == nil || !strings.Contains(err.Error(), "journal Backprop claims") {
+				t.Fatalf("Invoke error = %v, want the lost claim batch surfaced", err)
+			}
+		})
+	}
+}
+
+// TestExecutorGivesLaterStagesTheRunsEarlierClaims pins the read side of the
+// run-scoped claim log: a later stage starts with a snapshot of the claims
+// earlier stages journaled, attributed to their writer by the runner.
+func TestExecutorGivesLaterStagesTheRunsEarlierClaims(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-1", Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+	seen := map[string]creditgraph.RunClaims{}
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		view, err := creditgraph.ReadRunClaims(req.TelemetryDir)
+		if err != nil {
+			return err
+		}
+		seen[req.Envelope.TaskID] = view
+		if req.Envelope.TaskID == "plan" {
+			if _, err := creditgraph.AppendClaim(req.TelemetryDir, creditgraph.Claim{
+				Kind: creditgraph.ClaimAssignment, Target: creditgraph.ClaimTarget{Stage: "implement"},
+				Statement: "implement owns the parser change", Confidence: 0.8,
+			}); err != nil {
+				return err
+			}
+		}
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	}}
+	exec, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), jr, jr, NewContextResolver(jr, runsDir), journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := testEnvelope(t.TempDir())
+	plan.TaskID = "plan"
+	if _, err := exec.Invoke(context.Background(), plan); err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatalf("implement: %v", err)
+	}
+	if len(seen["plan"].Claims) != 0 {
+		t.Fatalf("plan saw claims before any were recorded: %+v", seen["plan"])
+	}
+	got := seen["implement"].Claims
+	if len(got) != 1 || got[0].Writer.Stage != "plan" || got[0].Kind != creditgraph.ClaimAssignment ||
+		got[0].Target.Stage != "implement" || got[0].Statement != "implement owns the parser change" {
+		t.Fatalf("implement saw %+v", seen["implement"])
+	}
+}
+
+// TestExecutorReportsAnUnreadableRunJournalToTheStage pins that a stage whose
+// runner has no readable run journal (a dispatched worker's scratch directory)
+// is told so, rather than handed what looks like an empty claim log.
+func TestExecutorReportsAnUnreadableRunJournalToTheStage(t *testing.T) {
+	var readErr error
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		_, readErr = creditgraph.ReadRunClaims(req.TelemetryDir)
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	}}
+	rec := &fakeRecorder{dir: t.TempDir()}
+	exec, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec, journal.NewPatternScrubber(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	if readErr == nil || !strings.Contains(readErr.Error(), "run journal unavailable") {
+		t.Fatalf("ReadRunClaims err = %v, want the unavailable journal reported", readErr)
+	}
+}
+
 // TestExecutorJournalsMCPServerUnavailable pins #3356's detection contract:
 // when an adapter reports that a registered MCP server was not connected at
 // invocation, the executor must journal a loud runner.annotation naming the

@@ -20,6 +20,7 @@ Statements are sanitized and capped at 1024 bytes; an attempt may record
 at most 32 claims. Backprop lists a claim as verified only when its writer,
 target, and evidence match records journaled before it; claims never
 change credit scores or stage outcomes.
+Read earlier stages' claims with `goobers telemetry claims`.
 Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
 .fi
 .SH EXAMPLES

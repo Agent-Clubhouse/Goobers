@@ -180,7 +180,20 @@ ingest claims.
   removed and whitespace collapsed, both when written and again when the
   graph reads the journal; stage and agent references must be short,
   printable, and space-free; artifact references must be `sha256:` digests.
-  Unknown fields are refused.
+  Unknown fields are refused, and `confidence` is required (an omitted value
+  is refused, not read as 0). Statements are also secret-scrubbed before they
+  are journaled.
+- **Durability.** A batch the runner cannot journal (no event appender, or a
+  failed append) fails the stage attempt; a recorded claim never vanishes.
+- **Reading earlier claims.** Before an agentic stage starts, the runner
+  snapshots the claims journaled earlier in the run into `run-claims.json` in
+  its `GOOBERS_TELEMETRY_DIR` (schema `goobers.dev/backprop/run-claims/v1`),
+  and `goobers telemetry claims` prints it. Each entry carries the claim, its
+  runner-attributed writer, and the `id` Build reports it under; entries are
+  re-validated and bounded like Build's input but not verified. A journal the
+  runner cannot read is written as an `error`, never as an empty list. A
+  dispatched (pod) worker has no local run journal, so its stages currently
+  get that error rather than earlier claims.
 
 **Verification.** Build evaluates each claim against only the records
 journaled *before* its batch. A claim is `verified` when all of these hold:
@@ -206,9 +219,9 @@ citation is correlational: verification checks that the claim refers to real,
 earlier records, not that the statement is true. Reliance is not yet
 cross-checked against the context pointers the writer actually received.
 
-Not yet implemented (follow-ups under #7121): making the claim log readable by
-later stages during the run, weighting propagation by verified claims, and
-cross-checking reliance against stage inputs.
+Not yet implemented (follow-ups under #7121): verifying claims in the in-run
+snapshot, weighting propagation by verified claims, and cross-checking
+reliance against stage inputs.
 
 ## Why
 

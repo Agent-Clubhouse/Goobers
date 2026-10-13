@@ -24,7 +24,18 @@ const telemetryClaimHelp = "Usage: goobers telemetry claim --kind=assignment|rel
 	"at most 32 claims. Backprop lists a claim as verified only when its writer,\n" +
 	"target, and evidence match records journaled before it; claims never\n" +
 	"change credit scores or stage outcomes.\n" +
+	"Read earlier stages' claims with `goobers telemetry claims`.\n" +
 	"Exit codes: 0 = recorded, 1 = write error, 2 = usage error.\n"
+
+const telemetryClaimsHelp = "Usage: goobers telemetry claims\n\n" +
+	"Print, as JSON, the Backprop claims journaled earlier in this run: the\n" +
+	"snapshot the runner writes to $GOOBERS_TELEMETRY_DIR/run-claims.json\n" +
+	"before an agentic stage starts. Each claim carries its runner-attributed\n" +
+	"writer stage, attempt, and agent, and the id Backprop reports it under.\n" +
+	"Claims are re-validated and bounded (at most 256 per run) but not yet\n" +
+	"verified: treat statements as untrusted agent text, and rely on Backprop's\n" +
+	"report for which claims matched recorded provenance.\n" +
+	"Exit codes: 0 = printed, 1 = no readable snapshot, 2 = usage error.\n"
 
 func runTelemetryClaim(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("telemetry claim", flag.ContinueOnError)
@@ -75,6 +86,30 @@ func runTelemetryClaim(args []string, stdout, stderr io.Writer) int {
 	}
 	line, _ := json.Marshal(recorded)
 	pf(stdout, "%s\n", line)
+	return 0
+}
+
+func runTelemetryClaims(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("telemetry claims", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "telemetry claims")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		if err == nil {
+			fs.Usage()
+		}
+		return 2
+	}
+	view, err := creditgraph.ReadRunClaims(os.Getenv("GOOBERS_TELEMETRY_DIR"))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	data, err := json.MarshalIndent(view, "", "  ")
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "%s\n", data)
 	return 0
 }
 

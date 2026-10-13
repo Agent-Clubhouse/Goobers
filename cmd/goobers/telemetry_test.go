@@ -1027,3 +1027,23 @@ func TestTelemetryClaimAppendsToTheStageClaimLog(t *testing.T) {
 		t.Fatalf("no telemetry dir: code = %d, stderr = %q", code, stderr)
 	}
 }
+
+func TestTelemetryClaimsPrintsTheRunsEarlierClaims(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GOOBERS_TELEMETRY_DIR", dir)
+	if code, _, stderr := runArgs(t, "telemetry", "claims"); code != 1 || !strings.Contains(stderr, "no run claim snapshot") {
+		t.Fatalf("missing snapshot: code = %d, stderr = %q", code, stderr)
+	}
+	view := creditgraph.RunClaims{Schema: creditgraph.RunClaimsSchemaVersion, Claims: []creditgraph.RunClaim{{
+		ID: "claim:7:0", Seq: 7, Writer: creditgraph.ClaimWriter{Stage: "plan", Attempt: 1},
+		Claim: creditgraph.Claim{Kind: creditgraph.ClaimAssignment, Target: creditgraph.ClaimTarget{Stage: "implement"}, Statement: "owns the parser", Confidence: 1},
+	}}}
+	if err := creditgraph.WriteRunClaims(dir, view); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runArgs(t, "telemetry", "claims")
+	var got creditgraph.RunClaims
+	if code != 0 || json.Unmarshal([]byte(stdout), &got) != nil || len(got.Claims) != 1 || got.Claims[0].Writer.Stage != "plan" {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}

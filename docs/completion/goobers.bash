@@ -469,7 +469,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="configure test merges stats errors export mark-fix label claim prune prune-orphans compact"
+                candidates="configure test merges stats errors export mark-fix label claim claims prune prune-orphans compact"
             fi
             ;;
         journal)
