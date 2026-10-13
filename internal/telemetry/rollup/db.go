@@ -13,8 +13,10 @@ import (
 	"sync"
 	"time"
 
-	sqlite "modernc.org/sqlite" // pure-Go driver: no cgo, matches the local-runner's
+	_ "modernc.org/sqlite" // pure-Go driver: no cgo, matches the local-runner's
 	// single-binary/no-service-dependency posture (ARCHITECTURE.md §3.1).
+
+	"github.com/goobers/goobers/internal/sqlitebusy"
 )
 
 // DB is an open handle to the local telemetry rollup (telemetry.db, TEL-032).
@@ -396,8 +398,8 @@ func checkpointWAL(ctx context.Context, sqlDB *sql.DB) {
 // rarely, if ever, be reached now that the write lock is acquired at BEGIN.
 func (db *DB) migrate() error {
 	var err error
-	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
-		if err = db.migrateOnce(context.Background()); err == nil || !isSQLiteBusy(err) {
+	for attempt := 1; attempt <= sqlitebusy.MaxAttempts; attempt++ {
+		if err = db.migrateOnce(context.Background()); err == nil || !sqlitebusy.Is(err) {
 			return err
 		}
 		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
@@ -405,21 +407,14 @@ func (db *DB) migrate() error {
 	return err
 }
 
-// busyRetryMaxAttempts bounds migrate's SQLITE_BUSY_SNAPSHOT backstop and
-// checkpointWAL's best-effort retry — the only schema-shaped/maintenance work
-// this package does that multiple processes can race on simultaneously
-// (ordinary queries elsewhere rely on busy_timeout alone). Sized with real
-// headroom rather than the tightest value that happened to pass a few runs.
-const busyRetryMaxAttempts = 12
-
 // execWithBusyRetry runs a single autocommit statement, retrying on
 // SBUSY/LOCKED with a short linear backoff. Used by checkpointWAL, whose
 // PRAGMA wal_checkpoint can lose the write lock to a concurrent process's
 // reader/writer and must not fail the caller over it.
 func execWithBusyRetry(ctx context.Context, sqlDB *sql.DB, query string, args ...any) error {
 	var err error
-	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
-		if _, err = sqlDB.ExecContext(ctx, query, args...); err == nil || !isSQLiteBusy(err) {
+	for attempt := 1; attempt <= sqlitebusy.MaxAttempts; attempt++ {
+		if _, err = sqlDB.ExecContext(ctx, query, args...); err == nil || !sqlitebusy.Is(err) {
 			return err
 		}
 		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
@@ -494,21 +489,6 @@ func (db *DB) migrateOnce(ctx context.Context) error {
 		}
 	}
 	return tx.Commit()
-}
-
-// isSQLiteBusy reports whether err (or a wrapped cause) is SQLITE_BUSY (5) or
-// SQLITE_LOCKED (6) — the two primary codes a bounded retry can resolve.
-// modernc.org/sqlite's Error.Code() returns the EXTENDED result code (e.g.
-// 517 = SQLITE_BUSY_SNAPSHOT = 5 | (2<<8)), not the primary one, so the
-// primary code must be masked out with &0xFF before comparing — comparing
-// the raw extended code against 5/6 misses every extended-busy variant.
-func isSQLiteBusy(err error) bool {
-	var sqliteErr *sqlite.Error
-	if !errors.As(err, &sqliteErr) {
-		return false
-	}
-	code := sqliteErr.Code() & 0xFF
-	return code == 5 || code == 6 // SQLITE_BUSY, SQLITE_LOCKED
 }
 
 // schemaVersionTx reads the recorded schema version within the migration

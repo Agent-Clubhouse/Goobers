@@ -632,7 +632,7 @@ func TestReattachEngineRunEchoesARealTerminalPhaseForAFailedWorkflow(t *testing.
 	if echoed == nil {
 		t.Fatalf("instance log has no run.finished echo for the failed engine run: %+v", events)
 	}
-	if !isTerminalPhase(journal.RunPhase(echoed.Status)) {
+	if !journal.RunPhase(echoed.Status).IsTerminal() {
 		t.Fatalf("echo status = %q, which is not a journal.RunPhase — readmodel's projection drops it and the run never leaves running",
 			echoed.Status)
 	}

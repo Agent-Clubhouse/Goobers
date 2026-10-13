@@ -169,7 +169,7 @@ var inputSchemas = map[string][]Input{
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-pr": schema(
-		stringsIn("baseSha", "commitMessage", "headSha", "mergeMethod", "verdict", "verdictAuthor"),
+		stringsIn("baseSha", "commitMessage", "headSha", "mergeMethod", "preMergeCheck", "verdict", "verdictAuthor"),
 		integersIn("pullNumber"), booleansIn("advisoryMode"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-queue-poll": schema(

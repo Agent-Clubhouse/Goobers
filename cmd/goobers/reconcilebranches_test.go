@@ -65,7 +65,7 @@ func (c runsDirCrossRun) BranchOwnership(_ context.Context, req journalclient.Br
 	if err != nil {
 		return journalclient.BranchOwnershipResponse{Reason: "run-journal-unreadable", Detail: err.Error()}, nil
 	}
-	if terminalBranchRunPhase(phase) && terminalAt.IsZero() {
+	if phase.IsTerminal() && terminalAt.IsZero() {
 		return journalclient.BranchOwnershipResponse{Reason: "run-journal-unreadable", Detail: "no timestamped terminal event"}, nil
 	}
 	return journalclient.BranchOwnershipResponse{Owner: &journalclient.BranchOwnership{

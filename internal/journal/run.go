@@ -470,7 +470,7 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 	if err != nil {
 		return nil, fmt.Errorf("journal: read continuation source phase: %w", err)
 	}
-	if phase != PhaseCompleted && phase != PhaseFailed && phase != PhaseAborted && phase != PhaseEscalated {
+	if !phase.IsTerminal() {
 		return nil, fmt.Errorf("journal: continuation source %q is not terminal (phase=%s)", req.SourceRunID, phase)
 	}
 	events, err := reader.Events()
@@ -1199,10 +1199,8 @@ func (r *Run) checkpoint() error {
 
 // phaseFromStatus maps a run.finished status string to a RunPhase.
 func phaseFromStatus(status string) RunPhase {
-	switch RunPhase(status) {
-	case PhaseCompleted, PhaseFailed, PhaseAborted, PhaseEscalated:
-		return RunPhase(status)
-	default:
-		return PhaseCompleted
+	if p := RunPhase(status); p.IsTerminal() {
+		return p
 	}
+	return PhaseCompleted
 }

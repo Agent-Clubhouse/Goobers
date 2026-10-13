@@ -313,6 +313,7 @@ func (v *Validator) compileProposal(wf apiv1.Workflow, goobers map[string]apiv1.
 		{"contracts", workflow.CheckStageContracts},
 		{"paths", workflow.CheckPathSimulation},
 		{"required_inputs", workflow.CheckStageRequiredInputs},
+		{"durations", workflow.CheckStageDurationInputs},
 		{"timeouts", workflow.CheckStageTimeoutCoherence},
 	} {
 		if problems := check.check(def); len(problems) != 0 {
