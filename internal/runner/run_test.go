@@ -5842,6 +5842,20 @@ func TestInfrastructureRepassSeedsStaySeparateFromPolicyBudget(t *testing.T) {
 	}
 }
 
+func TestInfrastructureTargetRepassSeedIgnoresTimeout(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeInfra, Target: "local-ci",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "local-ci"}},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeTimeout, Target: "local-ci"},
+	}
+	if got := infrastructureTargetRepassSeed(events)["local-ci"]; got != 1 {
+		t.Fatalf("infrastructure target seed = %d, want 1 after timeout", got)
+	}
+	if got := gateInfrastructureSeed(events)["local-gate"]; got != 1 {
+		t.Fatalf("infrastructure gate seed = %d, want 1 after timeout", got)
+	}
+}
+
 func TestTimeoutSeedsPreserveGateRecoveryCounters(t *testing.T) {
 	events := []journal.Event{
 		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeFail, Target: "remediate-ci",

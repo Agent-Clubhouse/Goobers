@@ -70,7 +70,7 @@ func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		stream := &recoveryResponseWriter{destination: w}
+		stream := &recoveryResponseWriter{destination: w, header: w.Header()}
 		if err := service.StreamRecovery(request.Context(), run, key, issue, stream); err != nil {
 			if stream.started {
 				errorLog.Printf("recovery delivery failed for run %s", run)
@@ -78,6 +78,8 @@ func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.
 				// normally completed response after partial delivery.
 				panic(http.ErrAbortHandler)
 			}
+			// Evidence reported before a refusal describes no delivered archive.
+			recovery.ClearSourceRunHeaders(w.Header())
 			if errors.Is(err, recovery.ErrNoMatchingSnapshot) {
 				writeError(w, http.StatusNotFound, "recovery_not_found", "no recoverable implementation matches this claim")
 				return
@@ -96,7 +98,17 @@ func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.
 
 type recoveryResponseWriter struct {
 	destination io.Writer
+	header      http.Header
 	started     bool
+}
+
+// ReportSourceRun publishes the source run's terminal evidence as response
+// headers. It is ignored once archive bytes have started, because headers
+// written after that point would never reach the receiver.
+func (w *recoveryResponseWriter) ReportSourceRun(source recovery.SourceRun) {
+	if !w.started {
+		source.SetHeaders(w.header)
+	}
 }
 
 func (w *recoveryResponseWriter) Write(data []byte) (int, error) {

@@ -750,3 +750,25 @@ func ExampleResultArtifact() {
 	fmt.Println(ResultSchemaVersion)
 	// Output: goobers.dev/external-telemetry-query-result/v1alpha1
 }
+
+func TestContextSleepWaitsForDuration(t *testing.T) {
+	if err := contextSleep(context.Background(), time.Millisecond); err != nil {
+		t.Fatalf("contextSleep() = %v, want nil", err)
+	}
+}
+
+func TestContextSleepNonPositiveDurationReturnsImmediately(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		if err := contextSleep(context.Background(), d); err != nil {
+			t.Fatalf("contextSleep(%v) = %v, want nil", d, err)
+		}
+	}
+}
+
+func TestContextSleepReturnsContextErrorOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := contextSleep(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("contextSleep() = %v, want context.Canceled", err)
+	}
+}

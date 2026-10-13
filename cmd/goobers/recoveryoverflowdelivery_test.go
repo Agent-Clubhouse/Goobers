@@ -127,7 +127,7 @@ func TestRecoveryOverflowClaimsRestoreReportsPromotionState(t *testing.T) {
 			if mode == "foreign" {
 				key = "github|||other|repo|"
 			}
-			_, err = restoreDownloadedRecovery(t.Context(), key, "7", func(recovery.Record, string) (string, error) {
+			_, err = restoreDownloadedRecovery(t.Context(), key, "7", func(recovery.Record, recovery.SourceRun, string) (string, error) {
 				t.Fatal("pending overflow reached archive consumer")
 				return "", nil
 			})

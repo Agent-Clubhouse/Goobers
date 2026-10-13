@@ -126,7 +126,7 @@ func (p *ADOProvider) FindPullRequestByBranch(ctx context.Context, repo Reposito
 	if head == "" {
 		return PullRequestResult{}, false, fmt.Errorf("head branch is required")
 	}
-	summaries, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: head})
+	summaries, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: head, SkipCheckState: true})
 	if err != nil {
 		return PullRequestResult{}, false, err
 	}
@@ -462,8 +462,17 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		values.Set("searchCriteria.targetRefName", "refs/heads/"+strings.TrimPrefix(req.Base, "refs/heads/"))
 	}
 
+	startSkip := 0
+	if req.Limit > 0 && req.Page > 1 {
+		startSkip = (req.Page - 1) * req.Limit
+	}
 	var prs []adoPullRequest
-	for skip := 0; ; skip += adoPullRequestPageSize {
+	for skip := startSkip; ; skip += adoPullRequestPageSize {
+		top := adoPullRequestPageSize
+		if req.Limit > 0 {
+			top = min(top, req.Limit-(skip-startSkip))
+		}
+		values.Set("$top", strconv.Itoa(top))
 		values.Set("$skip", strconv.Itoa(skip))
 		pageEndpoint, err := addQuery(endpoint, values)
 		if err != nil {
@@ -474,7 +483,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			return nil, err
 		}
 		prs = append(prs, page.Value...)
-		if len(page.Value) < adoPullRequestPageSize {
+		if len(page.Value) < top || (req.Limit > 0 && len(prs) >= req.Limit) {
 			break
 		}
 	}
@@ -499,6 +508,17 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			continue
 		}
 		labels := adoLabelNames(pr.Labels)
+		var checkState CheckState
+		if !req.SkipCheckState {
+			projectName := pr.Repository.Project.Name
+			if projectName == "" {
+				projectName = p.project(req.Repository)
+			}
+			checkState, _, err = p.pollPullRequestPolicies(ctx, projectName, pr.Repository.Project.ID, strconv.Itoa(pr.PullRequestID), nil)
+			if err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, PullRequestSummary{
 			ID:                 strconv.Itoa(pr.PullRequestID),
 			Number:             pr.PullRequestID,
@@ -512,7 +532,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			BaseSHA:            pr.LastMergeTargetCommit.CommitID,
 			Draft:              pr.IsDraft,
 			Labels:             labels,
-			CheckState:         CheckStatePending,
+			CheckState:         checkState,
 			UpdatedAt:          pr.CreationDate,
 			Integrity:          apiintegrity.Unapproved,
 		})
@@ -526,7 +546,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 // GitHubProvider.ListOpenPullRequests: the scheduler buckets the heads by
 // run-branch namespace and drops human-parked PRs by label.
 func (p *ADOProvider) ListOpenPullRequests(ctx context.Context, repo RepositoryRef) ([]OpenPRSummary, error) {
-	prs, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo})
+	prs, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo, SkipCheckState: true})
 	if err != nil {
 		return nil, err
 	}

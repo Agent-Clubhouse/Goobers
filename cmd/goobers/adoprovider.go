@@ -166,7 +166,20 @@ func backlogRepoRefForStage(root string, routed providers.RepositoryRef) provide
 		warnStageGaggleConfigUnavailable("the backlog project override", gaggle, err)
 		return routed
 	}
-	return providerconfig.ApplyBacklogProject(set, gaggle, routed)
+	ref, err := providerconfig.ApplyBacklogProject(set, gaggle, routed)
+	if err != nil {
+		warnBacklogProjectInvalid(gaggle, err)
+	}
+	return ref
+}
+
+// warnBacklogProjectInvalid reports, once per process, that a gaggle's
+// backlog project is malformed and the routed repo is used instead.
+func warnBacklogProjectInvalid(gaggle string, err error) {
+	if _, warned := stageGaggleConfigWarned.LoadOrStore("backlog project invalid "+gaggle, struct{}{}); warned {
+		return
+	}
+	pf(stageGaggleConfigWarnings, "warning: gaggle %q backlog project is invalid (%v); the routed repository is used\n", gaggle, err)
 }
 
 // stageBacklogProjectEnvVar names the ADO backlog project for a stage that
@@ -221,7 +234,11 @@ func backlogRepoRefForGaggle(l instance.Layout, routed providers.RepositoryRef) 
 	if err != nil || report == nil || set == nil {
 		return routed
 	}
-	return providerconfig.ApplyBacklogProject(set, gaggle, routed)
+	ref, err := providerconfig.ApplyBacklogProject(set, gaggle, routed)
+	if err != nil {
+		warnBacklogProjectInvalid(gaggle, err)
+	}
+	return ref
 }
 
 // applyGaggleDoneStates sets the ADO provider's predecessor done states from
