@@ -272,6 +272,9 @@ type remediationState struct {
 	// infrastructure escalates infrastructure-failure after
 	// remediationInfrastructureAllowance of them rather than looping forever.
 	InfrastructureFailures int `json:"infrastructureFailures,omitempty"`
+	// OperatorRetry records the last audited `goobers pr retry` that reset
+	// this state.
+	OperatorRetry *operatorRetryRecord `json:"operatorRetry,omitempty"`
 }
 
 // remediationInfrastructureAllowance is how many consecutive

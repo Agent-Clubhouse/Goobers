@@ -1,18 +1,21 @@
 package instance
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -426,6 +429,9 @@ func (s *GitSource) extractRevision(ctx context.Context, repoArgs []string, revi
 	}
 	var warnings []string
 
+	blobs := newBlobReader(ctx, s, repoArgs)
+	defer blobs.close()
+
 	for len(output) > 0 {
 		end := bytes.IndexByte(output, 0)
 		if end < 0 {
@@ -454,19 +460,17 @@ func (s *GitSource) extractRevision(ctx context.Context, repoArgs []string, revi
 
 		switch entry.mode {
 		case "100644":
-			if err := s.writeBlob(ctx, repoArgs, entry.objectID, target, 0o644); err != nil {
+			if err := s.writeBlob(blobs, entry.objectID, target, 0o644); err != nil {
 				return nil, fmt.Errorf("git config source: materialize %q: %w", entry.name, err)
 			}
 		case "100755":
-			if err := s.writeBlob(ctx, repoArgs, entry.objectID, target, 0o755); err != nil {
+			if err := s.writeBlob(blobs, entry.objectID, target, 0o755); err != nil {
 				return nil, fmt.Errorf("git config source: materialize %q: %w", entry.name, err)
 			}
 		case "120000":
-			linkTarget, err := s.gitOutput(
-				ctx,
-				"read symlink blob",
-				append(repoArgs, "cat-file", "blob", entry.objectID)...,
-			)
+			var linkBuf bytes.Buffer
+			err := blobs.read(entry.objectID, &linkBuf)
+			linkTarget := linkBuf.Bytes()
 			if err != nil {
 				return nil, fmt.Errorf("git config source: read symlink %q: %w", entry.name, err)
 			}
@@ -509,9 +513,99 @@ func parseGitTreeEntry(record []byte) (gitTreeEntry, error) {
 	}, nil
 }
 
+// blobReader serves blob contents from one long-lived `git cat-file --batch`
+// process, started lazily on first read.
+type blobReader struct {
+	ctx      context.Context
+	source   *GitSource
+	repoArgs []string
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	stderr   bytes.Buffer
+	err      error
+}
+
+func newBlobReader(ctx context.Context, source *GitSource, repoArgs []string) *blobReader {
+	return &blobReader{ctx: ctx, source: source, repoArgs: repoArgs}
+}
+
+func (r *blobReader) start() error {
+	if r.err != nil {
+		return r.err
+	}
+	if r.cmd != nil {
+		return nil
+	}
+	args := append(append([]string{}, r.repoArgs...), "cat-file", "--batch")
+	cmd := exec.CommandContext(r.ctx, "git", args...)
+	cmd.Env = gitSourceEnv()
+	cmd.Stderr = &r.stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		r.err = err
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		r.err = err
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		r.err = r.source.commandError("read committed blob", err, "")
+		return r.err
+	}
+	r.cmd, r.stdin, r.stdout = cmd, stdin, bufio.NewReader(stdout)
+	return nil
+}
+
+// read copies the blob's content to w. Any protocol or process error poisons
+// the reader, since the stream can no longer be trusted to be in sync.
+func (r *blobReader) read(objectID string, w io.Writer) error {
+	if err := r.start(); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(r.stdin, objectID+"\n"); err != nil {
+		return r.fail(err)
+	}
+	header, err := r.stdout.ReadString('\n')
+	if err != nil {
+		return r.fail(err)
+	}
+	fields := strings.Fields(header)
+	if len(fields) != 3 || fields[1] != "blob" {
+		r.err = fmt.Errorf("read committed blob: unexpected object %q", strings.TrimSpace(header))
+		return r.err
+	}
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || size < 0 {
+		r.err = fmt.Errorf("read committed blob: malformed header %q", strings.TrimSpace(header))
+		return r.err
+	}
+	if _, err := io.CopyN(w, r.stdout, size); err != nil {
+		return r.fail(err)
+	}
+	if _, err := r.stdout.Discard(1); err != nil {
+		return r.fail(err)
+	}
+	return nil
+}
+
+func (r *blobReader) fail(cause error) error {
+	r.err = r.source.commandError("read committed blob", cause, r.stderr.String())
+	return r.err
+}
+
+func (r *blobReader) close() {
+	if r.cmd == nil {
+		return
+	}
+	_ = r.stdin.Close()
+	_ = r.cmd.Wait()
+}
+
 func (s *GitSource) writeBlob(
-	ctx context.Context,
-	repoArgs []string,
+	blobs *blobReader,
 	objectID string,
 	target string,
 	mode os.FileMode,
@@ -520,29 +614,15 @@ func (s *GitSource) writeBlob(
 	if err != nil {
 		return err
 	}
-
-	args := append(append([]string{}, repoArgs...), "cat-file", "blob", objectID)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = gitSourceEnv()
-	cmd.Stdout = file
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
+	readErr := blobs.read(objectID, file)
 	closeErr := file.Close()
-	if runErr != nil {
-		return errors.Join(
-			s.commandError("read committed blob", runErr, stderr.String()),
-			closeErr,
-			os.Remove(target),
-		)
+	if readErr != nil {
+		return errors.Join(readErr, closeErr, os.Remove(target))
 	}
 	if closeErr != nil {
 		return closeErr
 	}
-	if err := os.Chmod(target, mode); err != nil {
-		return err
-	}
-	return nil
+	return os.Chmod(target, mode)
 }
 
 func treeTarget(root, name string) (string, string, error) {

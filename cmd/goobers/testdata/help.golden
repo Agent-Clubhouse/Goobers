@@ -154,6 +154,7 @@ Advanced operator commands:
   onboarding        run non-interactive onboarding actions
   override          override a nondeterministic gate with a rationale
   portal-extension  install, inspect, or update the user-scoped Goobers Portal canvas extension bundled with this binary
+  pr retry          route an escalated or parked PR to merge-review, remediation, or human hold (audited)
   preflight         check WSL full-isolation readiness and optionally hand off a command
   queue-explain     explain historical PR queue eligibility and claim observations
   recovery-abandon  explicitly abandon one retained recovery snapshot
@@ -1959,7 +1960,10 @@ the default commit message; supplied by
 apply-verdict), advisoryMode (default false — report only, no merge
 attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
-issues), resultFile (default merge-result.json). Successful merges
+issues), preMergeCheck (optional; one command per line, run without a
+shell on the PR head merged onto the CURRENT base branch tip — a
+failure refuses the merge as pre-merge-check-failed), resultFile
+(default merge-result.json). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked, or
 failed). Exit codes: 0 = evaluated (merged or not — see the result
 file's "merged" field), 1 = business error (missing capability/config,
@@ -2227,6 +2231,41 @@ just-merged PR).
 Exit codes: 0 = done (even if the PR body references no issue, or
 there are no other open PRs — both are normal outcomes, not
 errors), 1 = business error, 2 = usage/IO error.
+
+### pr
+Usage: goobers pr <retry> [flags]
+
+retry: route an escalated or parked pull request to merge-review,
+       remediation, or human hold with an audited operator reason.
+
+### pr retry
+Usage: goobers pr retry --pr <number> --route merge-review|remediation|hold --reason <text>
+                        [--gaggle <name>] [--actor <identity>] [--dry-run] [--json] [path]
+
+Move a parked or escalated pull request to an explicit lifecycle route
+without hand-editing provider labels or durable remediation state:
+  merge-review  clear escalation and remediation labels and reset the
+                durable retry state so merge-review can elect a lander
+  remediation   clear escalation labels, reset the durable retry state
+                and apply goobers:needs-remediation
+  hold          park the PR for a human (goobers:merge-escalated and
+                goobers:needs-human); remediation labels are cleared
+
+--dry-run reports the PR's current labels, claim lease, remediation
+checkpoint and escalation generation, head/base SHA, and the proposed
+transition without mutating anything. Otherwise the transition is applied,
+an audit comment naming the operator and reason is recorded on the PR, and
+the provider state is re-read to verify the result. Re-running a completed
+retry changes nothing. The command refuses a closed, merged, or healthy
+PR, a PR whose claim lease is still live, and a merge-review route for a PR
+with failing CI or both goobers:needs-remediation and
+goobers:blocked-on-sibling.
+--reason is required; --actor defaults to the invoking user. The provider
+credential is read like any stage's (github:pr:write).
+The resulting eligibility is printed and is immediately visible in
+goobers status, which reads the same provider labels.
+Exit codes: 0 = applied, already applied, or dry-run reported; 1 = refused or
+provider error; 2 = usage/IO error.
 
 ### pr-claim
 Usage: goobers pr-claim [--release] [--verify-feedback] [--classify-feedback-repass] [path]
@@ -2518,7 +2557,8 @@ diverged or whose patch conflicts is skipped, and the claim starts fresh.
 Verified retries resume the prepared result; completed adoption removes its
 preparation branch. Writes recovery-resume.json with resume status and
 source-run provenance (recovery ref, base and snapshot commits, patch
-digest) for the run journal.
+digest, workflow, terminal phase and run.finished sequence) for the run
+journal.
 Does not push, open a PR, release the claim, or remove retained state.
 
 ### remediation-checkpoint

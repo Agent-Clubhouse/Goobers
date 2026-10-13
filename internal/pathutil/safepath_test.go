@@ -133,3 +133,16 @@ func assertError(t *testing.T, err error, want string) {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
 }
+
+func TestIsLexicallyContainedCases(t *testing.T) {
+	for _, rel := range []string{"..", filepath.Join("..", "x"), "a/../..", "/abs", `\rooted`, "C:evil", ""} {
+		if _, err := pathutil.IsLexicallyContained("", rel); err == nil {
+			t.Errorf("IsLexicallyContained(%q) accepted escape", rel)
+		}
+	}
+	for _, rel := range []string{"a", "a/b", "a/../b", "..foo"} {
+		if _, err := pathutil.IsLexicallyContained("", rel); err != nil {
+			t.Errorf("IsLexicallyContained(%q) = %v", rel, err)
+		}
+	}
+}

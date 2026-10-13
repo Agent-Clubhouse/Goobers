@@ -182,13 +182,25 @@ func failureBoilerplate(line string) bool {
 	}
 	for _, prefix := range []string{
 		"=== RUN", "=== PAUSE", "=== CONT", "--- FAIL:", "--- PASS:",
-		"FAIL", "PASS", "exit status ",
+		"exit status ",
 	} {
 		if strings.HasPrefix(line, prefix) {
 			return true
 		}
 	}
+	if goTestVerdict(line) {
+		return true
+	}
 	return strings.HasPrefix(line, "goroutine ") && strings.HasSuffix(line, "[running]:")
+}
+
+func goTestVerdict(line string) bool {
+	for _, marker := range []string{"FAIL", "PASS"} {
+		if rest, ok := strings.CutPrefix(line, marker); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeLine(line string) string {

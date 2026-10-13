@@ -121,8 +121,8 @@ const (
 	// time.ParseDuration strings (e.g. "15s", "5m") despite the "Sec"
 	// suffix — matching shell.go's InputTimeout convention, not a bare
 	// integer count of seconds.
-	InputPollIntervalSec    = "pollIntervalSeconds"
-	InputPollMaxIntervalSec = "pollMaxIntervalSeconds"
+	InputPollIntervalSec    = boundedwait.InputPollInterval
+	InputPollMaxIntervalSec = boundedwait.InputPollMaxInterval
 	InputPollTimeoutSec     = boundedwait.InputPollTimeout
 	// InputHumanPolicyIDs declares the branch/required-check policy identities
 	// the agent loop cannot fix (human/merge-time policies: merge strategy,
@@ -143,7 +143,7 @@ const (
 	// InputPollIntervalSec's doc comment on the "Sec" naming) for how long to
 	// wait, after triggering a rerun, before re-polling. Unset defaults to
 	// this call's effective poll interval.
-	InputRetryFailedChecksBackoffSeconds = "retryFailedChecksBackoffSeconds"
+	InputRetryFailedChecksBackoffSeconds = boundedwait.InputRetryFailedChecksBackoff
 	// InputCarryOutputs names invocation inputs that ci-poll must copy to its
 	// outputs. This keeps explicit workflow data flow intact when a poll is
 	// inserted between two stages that already exchange typed scalar outputs.
