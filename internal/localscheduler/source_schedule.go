@@ -17,7 +17,7 @@ func (s *Scheduler) queuePlainSchedule(ctx context.Context, entry WorkflowEntry,
 	previous := state.LastEval
 	pending := s.pendingScheduleDemand[identity]
 	s.mu.Unlock()
-	before, adoptLegacy, err := s.sourceQueue.ScheduleCursor(ctx, entry, state.LastEval, pending.remaining > 0 || pending.repoll)
+	before, adoptLegacy, err := s.sourceQueue.ScheduleCursor(ctx, entry, state.LastEval, pending.remaining > 0 || pending.repoll, now)
 	if err != nil {
 		s.sourceQueueError(entry, err)
 		return true, false

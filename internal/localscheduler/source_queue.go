@@ -25,7 +25,7 @@ type SourceTrigger struct {
 
 // SourceQueue commits starts under tickMu without reentering scheduler/catalog locks.
 type SourceQueue interface {
-	ScheduleCursor(context.Context, WorkflowEntry, time.Time, bool) (time.Time, bool, error)
+	ScheduleCursor(context.Context, WorkflowEntry, time.Time, bool, time.Time) (time.Time, bool, error)
 	AcceptSchedule(context.Context, WorkflowEntry, time.Time, time.Time, bool) error
 	AcceptSignal(context.Context, []WorkflowEntry, string, string, string, *webhookhttp.Delivery, time.Time) ([]string, error)
 }
