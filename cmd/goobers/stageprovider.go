@@ -475,6 +475,7 @@ func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provid
 	if err != nil {
 		return nil, err
 	}
+	configureStageADOReadCache(cfg.root, provider)
 	return provider, nil
 }
 

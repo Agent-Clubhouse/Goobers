@@ -173,6 +173,10 @@ type ShellExecutor struct {
 	AppliedConfigDigest string
 	// ConfigDirectory is the immutable config-as-code tree selected for CLI stages.
 	ConfigDirectory string
+	// AutomationReadCache explicitly enables shared provider reads for ordinary
+	// automation CLI stages. Human/unknown executors leave this false; a gaggle
+	// or archived generation alone never grants an automation cache partition.
+	AutomationReadCache bool
 	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
 	// command token before exec. Deterministic stages declare their command as
 	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
@@ -840,7 +844,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
-	stageEnv = append(stageEnv, commandEnv...)
+	stageEnv = e.providerReadEnvironment(append(stageEnv, commandEnv...), env, injectRunContext)
 	if injectRunContext {
 		stageEnv = append(stageEnv, e.runContextEnv(ctx, env)...)
 	}

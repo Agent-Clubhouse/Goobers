@@ -66,6 +66,7 @@ var apiReadCacheLocks = newAPIReadCacheLockManager(apiReadCacheMaxLockAcquisitio
 
 // apiReadCacheEntry is one (token-scope, URL)'s cached conditional-GET result.
 type apiReadCacheEntry struct {
+	Continuation string `json:"continuation,omitempty"`
 	ETag         string `json:"etag,omitempty"`
 	LastModified string `json:"lastModified,omitempty"`
 	Link         string `json:"link,omitempty"`        // replayed so pagination survives a 304
@@ -92,6 +93,9 @@ func (e apiReadCacheEntry) fresh(now time.Time) bool {
 func (e apiReadCacheEntry) response(req *http.Request) *http.Response {
 	h := http.Header{}
 	h.Set(providers.QuotaCacheHitHeader, "true")
+	if e.Continuation != "" {
+		h.Set("X-MS-ContinuationToken", e.Continuation)
+	}
 	if e.Link != "" {
 		h.Set("Link", e.Link)
 	}
@@ -115,6 +119,8 @@ func (e apiReadCacheEntry) response(req *http.Request) *http.Response {
 
 // apiReadCache is a fail-open conditional-GET (ETag) HTTPClient decorator.
 type apiReadCache struct {
+	partition    string
+	provider     providers.ProviderKind
 	inner        providers.HTTPClient
 	schedulerDir string
 	snapshotID   string
@@ -132,7 +138,7 @@ type apiReadCache struct {
 // persist into).
 func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient) *apiReadCache {
 	CleanStaleLocks(schedulerDir)
-	return &apiReadCache{inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID, lockBudget: apiReadCacheLockAcquireTimeout}
+	return &apiReadCache{provider: providers.ProviderGitHub, inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID, lockBudget: apiReadCacheLockAcquireTimeout}
 }
 
 // apiReadCacheStaleLockAge is how old an api-read-cache per-list-key lock
@@ -201,17 +207,6 @@ func (c *apiReadCache) SetQuotaRequestGate(gate providers.QuotaRequestGate) {
 	c.quotaGate = gate
 }
 
-// Option returns a provider option that routes GETs through the shared
-// conditional-GET (ETag) cache under schedulerDir (#1053), wrapping a default
-// HTTP client with providers' own timeout budget. Provider list consumers apply
-// it so strongly validated unchanged GETs become zero-quota 304s and all stages
-// share one response store. snapshotID coalesces provider list reads started by
-// the same scheduler evaluation; empty disables snapshot coalescing.
-func Option(schedulerDir, snapshotID string) func(*providers.GitHubProvider) {
-	inner := &http.Client{Timeout: apiReadHTTPTimeout}
-	return providers.WithHTTPClient(newAPIReadCache(schedulerDir, snapshotID, inner))
-}
-
 // InvalidateSnapshot drops every cached list response recorded under
 // snapshotID in schedulerDir's store. An empty snapshotID is a no-op.
 func InvalidateSnapshot(schedulerDir, snapshotID string) error {
@@ -229,10 +224,18 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 		return c.do(req)
 	}
 
+	if c.partition != "" && !scopedCacheable(req) {
+		return c.do(req)
+	}
 	key := apiReadCacheKey(req)
-	if c.snapshotID != "" && isProviderListRequest(req) {
+	if c.partition != "" {
+		key = scopedRequestKey(c.partition+"\x00"+string(c.provider), req)
+	}
+	if c.snapshotID != "" && c.listRequest(req) {
 		snapshotKey := apiReadSnapshotKey(c.snapshotID, key)
-		if entry, hit := c.lookup(snapshotKey); hit {
+		// Snapshot invalidation is shared across wrappers/processes; memory alone
+		// cannot prove that an evaluation response remains current.
+		if entry, hit := c.lookupDisk(snapshotKey); hit {
 			return entry.response(req), nil
 		}
 		var (
@@ -300,33 +303,11 @@ func (c *apiReadCache) fetch(req *http.Request, entry apiReadCacheEntry, hit, sn
 		if snapshot || validatorChanged {
 			save(entry)
 		}
-		return entry.response(req), nil
+		return c.validatedResponse(req, entry, resp), nil
 	}
 
-	// A fresh 200 carrying a validator (or belonging to a scheduler snapshot):
-	// buffer the body so we can cache it and hand an intact response to the caller.
 	if resp.StatusCode == http.StatusOK {
-		etag := resp.Header.Get("ETag")
-		modified := resp.Header.Get("Last-Modified")
-		if etag == "" && modified == "" && !snapshot {
-			return resp, nil
-		}
-		body, rerr := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if rerr != nil {
-			// The body is already partly consumed and unusable; surface the read
-			// error the caller would have hit anyway.
-			return nil, rerr
-		}
-		save(apiReadCacheEntry{
-			ETag:         etag,
-			LastModified: modified,
-			Link:         resp.Header.Get("Link"),
-			Type:         resp.Header.Get("Content-Type"),
-			Body:         body,
-			Stored:       time.Now().Unix(),
-		})
-		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return cacheReadResponse(resp, snapshot, save)
 	}
 	return resp, nil
 }
@@ -338,7 +319,7 @@ func isStrongETag(etag string) bool {
 
 func (c *apiReadCache) do(req *http.Request) (*http.Response, error) {
 	if c.quotaGate != nil {
-		if err := c.quotaGate.AcquireQuotaRequest(req.Context(), providers.ProviderGitHub); err != nil {
+		if err := c.quotaGate.AcquireQuotaRequest(req.Context(), c.provider); err != nil {
 			return nil, err
 		}
 	}
@@ -367,7 +348,7 @@ func isProviderListRequest(req *http.Request) bool {
 // bodies.
 func apiReadCacheKey(req *http.Request) string {
 	sum := sha256.Sum256([]byte(req.Header.Get("Authorization")))
-	return hex.EncodeToString(sum[:8]) + "\x00" + req.URL.String()
+	return hex.EncodeToString(sum[:]) + "\x00" + req.URL.String()
 }
 
 func apiReadSnapshotKey(snapshotID, key string) string {
