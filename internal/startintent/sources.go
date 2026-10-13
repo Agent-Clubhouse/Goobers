@@ -21,6 +21,7 @@ import (
 type Sources struct {
 	Queue   *triggerqueue.Store
 	Acquire func(context.Context, Target) (func(), error)
+	Build   func(context.Context, Target) (Prepared, error)
 }
 
 // AcceptSignal commits a closed recipient set, including an empty match. Exact
