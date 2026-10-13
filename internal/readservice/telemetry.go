@@ -178,30 +178,33 @@ func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributi
 	if s == nil || s.telemetry == nil {
 		return TelemetryAttributionResult{}, ErrTelemetryUnavailable
 	}
-	if len(req.Observations) == 0 && s.sources.ReadModel != nil {
-		records, err := storedAttributionObservations(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
+	if err := ctx.Err(); err != nil {
+		return TelemetryAttributionResult{}, err
+	}
+	records := req.Observations
+	if len(records) == 0 && s.sources.ReadModel != nil {
+		stored, err := storedAttributionObservations(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
 			Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
 		})
 		if err != nil {
 			return TelemetryAttributionResult{}, err
 		}
-		summary, err := ReadAttributionEval(s.sources.Layout.Root)
-		if err != nil {
+		records = stored
+	}
+	var summary *creditgraph.AttributionEvalSummary
+	if s.sources.Layout.Root != "" {
+		var err error
+		if summary, err = ReadAttributionEval(s.sources.Layout.Root); err != nil {
 			return TelemetryAttributionResult{}, err
 		}
-		return TelemetryAttributionResult{
-			Records: records,
-			Cohorts: AggregateAttributionObservations(records),
-			Audit: creditgraph.AuditFaultDomains(records, creditgraph.FaultAuditConfig{
-				Since: req.Since, Until: req.Until, Filing: creditgraph.DeriveFilingThreshold(summary),
-			}),
-		}, nil
 	}
-	result, err := s.telemetry.TelemetryAttribution(ctx, req)
-	if err == nil {
-		result.Records = req.Observations
-	}
-	return result, err
+	return TelemetryAttributionResult{
+		Records: records,
+		Cohorts: AggregateAttributionObservations(records),
+		Audit: creditgraph.AuditFaultDomains(records, creditgraph.FaultAuditConfig{
+			Since: req.Since, Until: req.Until, Filing: creditgraph.DeriveFilingThreshold(summary),
+		}),
+	}, nil
 }
 
 // PromotionSignal is the bounded evidence interface for automated promotion.

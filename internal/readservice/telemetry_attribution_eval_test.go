@@ -122,4 +122,13 @@ func TestLocalTelemetryStatsPublishesAttributionEval(t *testing.T) {
 	if got := published.FaultAudit.FilingThreshold; got == nil || *got != creditgraph.DeriveFilingThreshold(&summary) {
 		t.Fatalf("stats filing threshold = %+v, want one derived from the published eval", got)
 	}
+	supplied, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{
+		Observations: []creditgraph.AttributionObservation{{RunID: "supplied"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := supplied.Audit.FilingThreshold; got == nil || *got != creditgraph.DeriveFilingThreshold(&summary) {
+		t.Fatalf("supplied-observation filing threshold = %+v, want one derived from the published eval", got)
+	}
 }
