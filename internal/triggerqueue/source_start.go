@@ -35,6 +35,8 @@ type SourceBatch struct {
 	Key, Actor, Fingerprint string
 	Starts                  []SourceStart
 	Advance                 *SourceAdvance
+	PendingLimit            *WorkflowPendingLimit
+	Demand                  *DemandTransfer
 }
 
 // SourceReceipt also records no-match deliveries, preventing later rematching.
@@ -89,6 +91,9 @@ func (s *Store) AcceptSource(ctx context.Context, b SourceBatch, now time.Time) 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return SourceReceipt{}, false, err
 	}
+	if err = checkWorkerOccupancy(ctx, tx, b); err != nil {
+		return SourceReceipt{}, false, err
+	}
 	if err = prepareSourceBatch(ctx, tx, b, now); err != nil {
 		return SourceReceipt{}, false, err
 	}
@@ -106,6 +111,9 @@ func (s *Store) AcceptSource(ctx context.Context, b SourceBatch, now time.Time) 
 		return SourceReceipt{}, false, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO source_start_receipts(source_key,actor,fingerprint,acceptance_ids,accepted_ns) VALUES(?,?,?,?,?)`, b.Key, b.Actor, b.Fingerprint, raw, now.UnixNano()); err != nil {
+		return SourceReceipt{}, false, err
+	}
+	if err = transferScheduleDemand(ctx, tx, b); err != nil {
 		return SourceReceipt{}, false, err
 	}
 	if err = advanceSourceCursor(ctx, tx, b.Advance); err != nil {
@@ -153,7 +161,7 @@ func sourceRecipientKey(key string, ordinal int) string {
 // Shared receipt pressure includes cursors and empty deliveries as well as starts.
 func triggerSlotCapacity(ctx context.Context, tx *sql.Tx, additional int) error {
 	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT (SELECT COUNT(*) FROM triggers)+(SELECT COUNT(*) FROM source_start_receipts)+(SELECT COUNT(*) FROM source_start_cursors)").Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT (SELECT COUNT(*) FROM triggers)+(SELECT COUNT(*) FROM source_start_receipts)+(SELECT COUNT(*) FROM source_start_cursors)+(SELECT COUNT(*) FROM schedule_demands)").Scan(&count); err != nil {
 		return err
 	}
 	if additional < 0 || count > MaxRecords-additional {

@@ -17,6 +17,7 @@ import {
 } from "../insightScope";
 import { manualRunCommand, statusCommand } from "../manualRunCommand";
 import { distinctTriggerRef, runWorkTitle, useOperationalSnapshot } from "../operationalData";
+import { RunWorkTitle, workItemHref } from "../components/RunWorkTitle";
 import { routeHash, type Navigate, type RunRouteFilters } from "../routing";
 import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
@@ -678,17 +679,13 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
     <DataRow
       focusRestoreKey={`run-${run.id}`}
       href={routeHash({ page: "run", id: run.id })}
+      interactiveChildren={Boolean(workItemHref(run))}
       label={`Open run ${run.id}`}
     >
       <span className="row-primary">
         <span className="row-title" title={identity}>
-          {displayTitle ? (
-            <span>{displayTitle}</span>
-          ) : workItem ? (
-            <>
-              <span>#{workItem.number}</span>
-              {workItem.title ? ` · ${workItem.title}` : ""}
-            </>
+          {titled ? (
+            <RunWorkTitle run={run} separator=" · " />
           ) : (
             <span className="mono">{run.id}</span>
           )}

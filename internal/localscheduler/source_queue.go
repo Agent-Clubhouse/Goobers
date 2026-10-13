@@ -8,13 +8,19 @@ import (
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
-// SourceTrigger retains the host's accepted signal or schedule provenance.
+// SourceTrigger retains the host's accepted signal, schedule or counted-worker provenance.
 type SourceTrigger struct {
-	Signal        string    `json:"signal,omitempty"`
-	Ref           string    `json:"ref,omitempty"`
-	Webhook       bool      `json:"webhook,omitempty"`
-	ScheduledFrom time.Time `json:"scheduledFrom,omitempty"`
-	ScheduledAt   time.Time `json:"scheduledAt,omitempty"`
+	ScheduleCount   int       `json:"scheduleCount,omitempty"`
+	ScheduleOrdinal int       `json:"scheduleOrdinal,omitempty"`
+	WorkerKind      string    `json:"workerKind,omitempty"`
+	ObservedAt      time.Time `json:"observedAt,omitempty"`
+	ObservedCount   int       `json:"observedCount,omitempty"`
+	WorkerOrdinal   int       `json:"workerOrdinal,omitempty"`
+	Signal          string    `json:"signal,omitempty"`
+	Ref             string    `json:"ref,omitempty"`
+	Webhook         bool      `json:"webhook,omitempty"`
+	ScheduledFrom   time.Time `json:"scheduledFrom,omitempty"`
+	ScheduledAt     time.Time `json:"scheduledAt,omitempty"`
 }
 
 // SourceQueue commits starts under tickMu without reentering scheduler/catalog locks.
