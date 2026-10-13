@@ -165,6 +165,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 			binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		)
+		if def.Spec.Backprop.Granularity != "" {
+			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
 	}
 	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	return features, nil
@@ -249,6 +252,7 @@ func binaryLayerFeatures() []Feature {
 		binaryLayerFeature("workflow.spec.enabled"),
 		binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}
 }
