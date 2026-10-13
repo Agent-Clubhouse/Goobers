@@ -155,3 +155,35 @@ func TestMutationCacheFailurePreservesWriteAndBypassesReuse(t *testing.T) {
 		t.Fatal("failed invalidation reused stale snapshot", reads)
 	}
 }
+
+func TestProviderMutationDropsBaseConditionalValidators(t *testing.T) {
+	reads := 0
+	inner := scopedTransport(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return mutationResponse(201, `{"id":81,"body":"prepared"}`), nil
+		}
+		reads++
+		validator := req.Header.Get("If-None-Match")
+		if reads == 2 {
+			if validator != `"before"` {
+				t.Errorf("ordinary conditional read lost its validator: %q", validator)
+			}
+			return mutationResponse(http.StatusNotModified, ""), nil
+		}
+		if validator != "" {
+			t.Errorf("pre-write validator survived invalidation: %q", validator)
+		}
+		response := mutationResponse(200, `[]`)
+		response.Header.Set("ETag", `"before"`)
+		return response, nil
+	})
+	client := ScopedClient(t.TempDir(), "", Scope{Gaggle: "team", Binding: "automation", Generation: "v1"}, providers.ProviderGitHub, inner)
+	read := func() { _ = apiReadBody(t, scopedRead(t, client, providers.ProviderGitHub, "token", "json")) }
+	read()
+	read()
+	writeMutationComment(t, client)
+	read()
+	if reads != 3 {
+		t.Fatal("base conditional reads were unexpectedly skipped", reads)
+	}
+}
