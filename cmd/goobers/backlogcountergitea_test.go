@@ -97,7 +97,7 @@ func TestBuildOpenPRRefresherValidatesTheSelectedRepoProvider(t *testing.T) {
 		projects := map[string]apiv1.RepoRef{
 			"selected": {Provider: apiv1.ProviderGitea, Owner: "acme", Name: "widgets"},
 		}
-		_, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		_, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil, "generation-test")
 		if err == nil || !strings.Contains(err.Error(), "gitea") {
 			t.Fatalf("error = %v, want selected gitea binding refused", err)
 		}
@@ -111,7 +111,7 @@ func TestBuildOpenPRRefresherValidatesTheSelectedRepoProvider(t *testing.T) {
 		projects := map[string]apiv1.RepoRef{
 			"selected": {Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 		}
-		set, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		set, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil, "generation-test")
 		if err != nil || set == nil {
 			t.Fatalf("set = %v, error = %v; want selected github binding accepted", set, err)
 		}
@@ -155,7 +155,7 @@ func TestBacklogCounterCountsAgainstGitea(t *testing.T) {
 	}}
 	c, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf,
 		apiv1.RepoRef{Owner: "acme", Name: "widgets"},
-		resolver, &backlogTestRegistrar{}, filepath.Join(root, "scheduler"), nil, root)
+		resolver, &backlogTestRegistrar{}, filepath.Join(root, "scheduler"), nil, root, "generation-test")
 	if err != nil {
 		t.Fatalf("buildBacklogCounter: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestBacklogCounterGiteaCachesStaticBaseURL(t *testing.T) {
 	}}}}
 	counter, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf,
 		apiv1.RepoRef{Owner: "acme", Name: "widgets"}, resolver,
-		&backlogTestRegistrar{}, filepath.Join(root, "scheduler"), nil, root)
+		&backlogTestRegistrar{}, filepath.Join(root, "scheduler"), nil, root, "generation-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestBuildOpenPRRefresherRefusesNonGitHubRepo(t *testing.T) {
 		cfg := &instance.Config{Repos: []instance.RepoRef{{
 			Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "https://gitea.example.test",
 		}}}
-		_, err := buildOpenPRRefresher(cfg, cappedWorkflows, nil, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		_, err := buildOpenPRRefresher(cfg, cappedWorkflows, nil, &backlogTestRegistrar{}, nil, t.TempDir(), nil, "generation-test")
 		if err == nil {
 			t.Fatal("expected maxOpenPRs on a gitea repo to be refused, not silently pointed at github")
 		}
@@ -251,7 +251,7 @@ func TestBuildOpenPRRefresherRefusesNonGitHubRepo(t *testing.T) {
 			Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "https://gitea.example.test",
 		}}}
 		uncapped := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{}}}
-		refresher, err := buildOpenPRRefresher(cfg, uncapped, nil, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		refresher, err := buildOpenPRRefresher(cfg, uncapped, nil, &backlogTestRegistrar{}, nil, t.TempDir(), nil, "generation-test")
 		if err != nil {
 			t.Fatalf("an uncapped gitea instance must wire cleanly: %v", err)
 		}
