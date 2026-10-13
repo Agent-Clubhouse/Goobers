@@ -106,7 +106,7 @@ func TestChildExecutionObserverUsesParentLeaseAndStopsOnCancellation(t *testing.
 				if strings.HasPrefix(scenario, "shared") || scenario == "foreign-owner" {
 					mode = "shared"
 					if expires.IsZero() {
-						expires = time.Now().Add(3 * time.Second)
+						expires = time.Now().Add(6 * time.Second)
 					}
 					runID := req.RunID
 					if scenario == "foreign-owner" {
