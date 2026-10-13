@@ -20,6 +20,29 @@ beforeEach(() => {
 });
 
 describe("runs history page", () => {
+  it("opens the source item independently of the run-details row link", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const run = fixtures.runs.runs.find((candidate) => candidate.id === "01JZ441DAEMONAPI");
+    if (!run?.operator?.issue) throw new Error("Missing fixture issue");
+    run.operator.issue.url = "https://example.test/incidents/3088";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const itemLink = await screen.findByRole("link", { name: "#3088" });
+    const rowLink = screen.getByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(itemLink.closest(".data-row")).toBe(rowLink.closest(".data-row"));
+    expect(rowLink).not.toContainElement(itemLink);
+    expect(itemLink.closest(".data-row")).toHaveClass("data-row-stretched");
+    expect(itemLink).toHaveAttribute("href", "https://example.test/incidents/3088");
+    await user.click(itemLink);
+    expect(window.location.hash).toBe("#/runs");
+    itemLink.focus();
+    await user.keyboard("{Enter}");
+    expect(window.location.hash).toBe("#/runs");
+    await user.click(rowLink);
+    expect(window.location.hash).toBe("#/run/01JZ441DAEMONAPI");
+  });
+
   it("reads live daemon runs and paginates with server-side cursors", async () => {
     window.location.hash = "#/runs?status=all";
     const client = new FixtureDaemonClient(

@@ -30,6 +30,7 @@ import { StatusBadge } from "../ui/StatusBadge";
 import { useWorkflowDetail } from "../workflowDetailData";
 import { useInsightStats } from "../insightData";
 import { distinctTriggerRef, runWorkTitle } from "../operationalData";
+import { RunWorkTitle, workItemHref } from "../components/RunWorkTitle";
 import { formatTriggers } from "./WorkflowsPage";
 
 export function WorkflowPage({
@@ -372,11 +373,15 @@ function WorkflowRunRow({ run }: { run: RunSummary }) {
   const workTitle = runWorkTitle(run, " · ");
   const triggerRef = distinctTriggerRef(run);
   return (
-    <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
+    <DataRow
+      href={routeHash({ page: "run", id: run.id })}
+      interactiveChildren={Boolean(workItemHref(run))}
+      label={`Open run ${run.id}`}
+    >
       <span className="row-primary">
         {workTitle ? (
           <span className="row-title" title={workTitle}>
-            {workTitle}
+            <RunWorkTitle run={run} separator=" · " />
           </span>
         ) : (
           <span className="row-title mono">{run.id}</span>
