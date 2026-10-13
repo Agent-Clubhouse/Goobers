@@ -29,12 +29,12 @@ func TestWorkflowParentTokenCannotBorrowOrdinaryOrChildCustody(t *testing.T) {
 	if err != nil || p.WorkflowParent == nil || p.WorkflowParent.ContractDigest != "sha256:"+strings.Repeat("a", 64) || p.Subject != "run:child-run" || httpapi.IsPodPrincipal(*p) || p.Issuer != httpapi.WorkflowParentPrincipalIssuer {
 		t.Fatal("signed child identity lost", p, err)
 	}
-	request.Header.Set("Authorization", "Bearer "+strings.Replace(token, workflowParentPodPrefix, tokenPrefix, 1))
+	request.Header.Set("Authorization", "Bearer "+strings.Replace(token, WorkflowParentPodPrefix, tokenPrefix, 1))
 	if _, err := auth.Authenticate(request); err == nil {
 		t.Fatal("child marker removed without invalidating signature")
 	}
 	for _, prefix := range []string{childPodTokenPrefix, ChildWorkflowGrantPrefix} {
-		request.Header.Set("Authorization", "Bearer "+strings.Replace(token, workflowParentPodPrefix, prefix, 1))
+		request.Header.Set("Authorization", "Bearer "+strings.Replace(token, WorkflowParentPodPrefix, prefix, 1))
 		if _, err := auth.Authenticate(request); err == nil {
 			t.Fatal("parent bearer crossed signing domain", prefix)
 		}
@@ -43,7 +43,7 @@ func TestWorkflowParentTokenCannotBorrowOrdinaryOrChildCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+strings.Replace(ordinary, tokenPrefix, workflowParentPodPrefix, 1))
+	request.Header.Set("Authorization", "Bearer "+strings.Replace(ordinary, tokenPrefix, WorkflowParentPodPrefix, 1))
 	if _, err := auth.Authenticate(request); err == nil {
 		t.Fatal("ordinary bearer relabeled as child")
 	}

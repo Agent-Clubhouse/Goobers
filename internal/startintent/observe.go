@@ -29,6 +29,9 @@ func VerifyIdentity(id journal.RunIdentity, record triggerqueue.Record) error {
 		want = journal.Trigger{Kind: journal.TriggerSignal, Ref: webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: e.Request.PullRequest})}
 	}
 
+	if e.Source != nil {
+		want = e.Source.Trigger(t.Workflow)
+	}
 	if id.Trigger != want {
 		return errors.New("startintent: published trigger differs from acceptance")
 	}

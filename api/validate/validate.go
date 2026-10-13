@@ -2698,7 +2698,11 @@ func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file 
 		checkLifecycleLabelContracts(r, w, file, gaggle)
 	}
 	// Bounded waits must finish before the executor can terminate their stage;
-	// command-specific clamps are modeled by the workflow check itself.
+	// command-specific clamps are modeled by the workflow check itself. A
+	// duration the runtime cannot parse fails every run, so it is an error too.
+	for _, msg := range wf.CheckStageDurationInputs(def) {
+		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
+	}
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
 		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
 	}

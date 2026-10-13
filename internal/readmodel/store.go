@@ -38,7 +38,9 @@ import (
 	"sync"
 	"time"
 
-	sqlite "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
+	_ "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
+
+	"github.com/goobers/goobers/internal/sqlitebusy"
 )
 
 // FileName is read.db's name within an instance root.
@@ -164,8 +166,8 @@ func Open(path string) (*Store, error) {
 // lock — is a straight acquisition busy_timeout already waits on cleanly.
 func (s *Store) migrateWithBusyRetry(ctx context.Context) error {
 	var err error
-	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
-		if err = s.migrateOnce(ctx); err == nil || !isSQLiteBusy(err) {
+	for attempt := 1; attempt <= sqlitebusy.MaxAttempts; attempt++ {
+		if err = s.migrateOnce(ctx); err == nil || !sqlitebusy.Is(err) {
 			return err
 		}
 		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
@@ -177,25 +179,6 @@ func (s *Store) migrateWithBusyRetry(ctx context.Context) error {
 		}
 	}
 	return err
-}
-
-// busyRetryMaxAttempts mirrors internal/telemetry/rollup's constant of the
-// same name and rationale — sized with real headroom, not the tightest value
-// that happened to pass a few runs.
-const busyRetryMaxAttempts = 12
-
-// isSQLiteBusy reports whether err (or a wrapped cause) is SQLITE_BUSY (5) or
-// SQLITE_LOCKED (6). Mirrors internal/telemetry/rollup's helper of the same
-// name: modernc.org/sqlite's Error.Code() returns the EXTENDED result code
-// (e.g. 517 = SQLITE_BUSY_SNAPSHOT = 5 | (2<<8)), which must be masked with
-// &0xFF before comparing against the primary code.
-func isSQLiteBusy(err error) bool {
-	var sqliteErr *sqlite.Error
-	if !errors.As(err, &sqliteErr) {
-		return false
-	}
-	code := sqliteErr.Code() & 0xFF
-	return code == 5 || code == 6 // SQLITE_BUSY, SQLITE_LOCKED
 }
 
 // Close waits for leased operations, then releases both handles.

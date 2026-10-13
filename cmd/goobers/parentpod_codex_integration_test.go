@@ -46,7 +46,7 @@ func qualificationParentHarness(t *testing.T) string {
 func installQualificationParentProbe(t *testing.T, bin string) {
 	t.Helper()
 	command := "claude"
-	key := "qualification-model-only"
+	key := "sk-ant-qualification-model-only"
 	if qualificationParentHarness(t) == "codex" {
 		command, key = "codex", "sk-qualification-model-only"
 	}

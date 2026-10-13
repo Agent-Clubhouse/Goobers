@@ -154,6 +154,9 @@ _goobers_completion()
         rerun-stage)
             flags+=" --addendum --actor --api"
             ;;
+        signal)
+            flags+=" --request-id"
+            ;;
         workflow)
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
@@ -242,6 +245,11 @@ _goobers_completion()
         journal)
             case "${COMP_WORDS[2]:-}" in
                 redact) flags+=" --run --path --reason --secret-file" ;;
+            esac
+            ;;
+        pr)
+            case "${COMP_WORDS[2]:-}" in
+                retry) flags+=" --pr --route --reason --gaggle --actor --dry-run --json" ;;
             esac
             ;;
         backlog-health)
@@ -466,6 +474,11 @@ _goobers_completion()
         journal)
             if (( COMP_CWORD == 2 )); then
                 candidates="redact"
+            fi
+            ;;
+        pr)
+            if (( COMP_CWORD == 2 )); then
+                candidates="retry"
             fi
             ;;
         help)

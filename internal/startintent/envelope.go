@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -43,10 +44,11 @@ type Target struct {
 // Envelope is stored once. Repeated requests reuse its original target.
 type Envelope struct {
 	// Deadline bounds admission, not the lifetime of a run already launched.
-	Deadline time.Time `json:"deadline,omitzero"`
-	Kind     string    `json:"kind"`
-	Request  Request   `json:"request"`
-	Target   Target    `json:"target"`
+	Deadline time.Time                     `json:"deadline,omitzero"`
+	Source   *localscheduler.SourceTrigger `json:"source,omitempty"`
+	Kind     string                        `json:"kind"`
+	Request  Request                       `json:"request"`
+	Target   Target                        `json:"target"`
 }
 
 // Validate rejects unbounded and contradictory selectors before acceptance.
@@ -79,6 +81,14 @@ func (e Envelope) Marshal() ([]byte, error) {
 		return nil, err
 	}
 
+	if e.Source != nil {
+		if e.Request.Force || e.Request.SourceRun != "" || e.Request.PodScoped || e.Request.PullRequest != 0 {
+			return nil, errors.New("startintent: incompatible signal authority")
+		}
+		if err := e.Source.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	return json.Marshal(e)
 }
 

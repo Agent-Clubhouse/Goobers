@@ -108,6 +108,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension install`](#goobers-portal-extension-install) | install the bundled Goobers Portal extension for the current user |
 | [`goobers portal-extension status`](#goobers-portal-extension-status) | report installed Goobers Portal extension version and drift |
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
+| [`goobers pr`](#goobers-pr) | operator actions on pull requests |
+| [`goobers pr retry`](#goobers-pr-retry) | route an escalated or parked PR to merge-review, remediation, or human hold (audited) |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
 | [`goobers recovery-abandon`](#goobers-recovery-abandon) | explicitly abandon one retained recovery snapshot |
@@ -2887,7 +2889,10 @@ the default commit message; supplied by
 apply-verdict), advisoryMode (default false — report only, no merge
 attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
-issues), resultFile (default merge-result.json). Successful merges
+issues), preMergeCheck (optional; one command per line, run without a
+shell on the PR head merged onto the CURRENT base branch tip — a
+failure refuses the merge as pre-merge-check-failed), resultFile
+(default merge-result.json). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked, or
 failed). Exit codes: 0 = evaluated (merged or not — see the result
 file's "merged" field), 1 = business error (missing capability/config,
@@ -3299,6 +3304,57 @@ errors), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers post-merge
+~~~
+
+## `goobers pr`
+
+operator actions on pull requests
+
+~~~text
+Usage: goobers pr <retry> [flags]
+
+retry: route an escalated or parked pull request to merge-review,
+       remediation, or human hold with an audited operator reason.
+~~~
+
+## `goobers pr retry`
+
+route an escalated or parked PR to merge-review, remediation, or human hold (audited)
+
+~~~text
+Usage: goobers pr retry --pr <number> --route merge-review|remediation|hold --reason <text>
+                        [--gaggle <name>] [--actor <identity>] [--dry-run] [--json] [path]
+
+Move a parked or escalated pull request to an explicit lifecycle route
+without hand-editing provider labels or durable remediation state:
+  merge-review  clear escalation and remediation labels and reset the
+                durable retry state so merge-review can elect a lander
+  remediation   clear escalation labels, reset the durable retry state
+                and apply goobers:needs-remediation
+  hold          park the PR for a human (goobers:merge-escalated and
+                goobers:needs-human); remediation labels are cleared
+
+--dry-run reports the PR's current labels, claim lease, remediation
+checkpoint and escalation generation, head/base SHA, and the proposed
+transition without mutating anything. Otherwise the transition is applied,
+an audit comment naming the operator and reason is recorded on the PR, and
+the provider state is re-read to verify the result. Re-running a completed
+retry changes nothing. The command refuses a closed, merged, or healthy
+PR, a PR whose claim lease is still live, and a merge-review route for a PR
+with failing CI or both goobers:needs-remediation and
+goobers:blocked-on-sibling.
+--reason is required; --actor defaults to the invoking user. The provider
+credential is read like any stage's (github:pr:write).
+The resulting eligibility is printed and is immediately visible in
+goobers status, which reads the same provider labels.
+Exit codes: 0 = applied, already applied, or dry-run reported; 1 = refused or
+provider error; 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers pr retry --pr 533 --route remediation --reason 'review contract corrected' --dry-run
 ~~~
 
 ## `goobers pr-claim`
@@ -3764,7 +3820,8 @@ diverged or whose patch conflicts is skipped, and the claim starts fresh.
 Verified retries resume the prepared result; completed adoption removes its
 preparation branch. Writes recovery-resume.json with resume status and
 source-run provenance (recovery ref, base and snapshot commits, patch
-digest) for the run journal.
+digest, workflow, terminal phase and run.finished sequence) for the run
+journal.
 Does not push, open a PR, release the claim, or remove retained state.
 ~~~
 
@@ -4690,19 +4747,21 @@ $ goobers set-milestone --item 1227 --milestone 22
 fire an external signal to subscribed workflows
 
 ~~~text
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id <key>] <name> [path]
 
-Fire an external signal by name, dispatching every workflow with a
-type=signal trigger subscribed to it, through the same scheduler (run
-conditions, instance journal, single-instance lock) a live `goobers up`
-daemon uses (default path "."). A signal may match zero, one, or many
-workflows; waits for every dispatched run to reach a terminal state or
-pause before returning (same blocking UX as `goobers run`).
-Exit codes after waiting: 0 = every admitted run completed (also used when
-none were admitted), 1 = any run failed/aborted or a business error, 2 =
-usage/IO error, 3 = any run escalated. Escalation takes precedence for
-mixed outcomes; successful submission-only modes exit 0 because they do
-not observe a terminal phase.
+Durably accept a named signal and its matching type=signal workflows
+through the instance scheduler (default path "."). Reuse --request-id
+to recover the original recipient set after a lost reply; without it, a
+new key is printed before acceptance. A signal may match zero, one, or
+many workflows. Waits for each dispatched run to finish or pause.
+Capacity-held starts remain queued for goobers up or a same-key retry.
+A submission-only receipt still requires dispatch and completion.
+The command requires the instance lock; stop its daemon first.
+
+Exit codes: 0 = all admitted runs completed or no workflows matched,
+1 = a run failed/aborted, a start remains queued, or a business error,
+2 = usage/IO error, 3 = a run escalated. Escalation takes precedence
+when completed runs have mixed outcomes.
 ~~~
 
 **Examples**

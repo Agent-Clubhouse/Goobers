@@ -2613,7 +2613,7 @@ func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
 	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID string) (bool, error) {
 		phase, found, err := retainedWorktreePhase(owners, worktreeID, "")
-		return found && terminalRunPhase(phase), err
+		return found && phase.IsTerminal(), err
 	}
 }
 

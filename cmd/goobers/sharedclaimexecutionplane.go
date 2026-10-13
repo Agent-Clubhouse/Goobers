@@ -76,7 +76,7 @@ func (s *daemonClaimService) executionClaimVisibility(ctx context.Context, runID
 	if err != nil {
 		return "", err
 	}
-	if terminalRunPhase(phase) {
+	if phase.IsTerminal() {
 		return "", claimsclient.ErrSharedExecutionExpired
 	}
 	return mode, nil

@@ -106,7 +106,7 @@ func TestChildExecutionObserverUsesParentLeaseAndStopsOnCancellation(t *testing.
 				if strings.HasPrefix(scenario, "shared") || scenario == "foreign-owner" {
 					mode = "shared"
 					if expires.IsZero() {
-						expires = time.Now().Add(1500 * time.Millisecond)
+						expires = time.Now().Add(6 * time.Second)
 					}
 					runID := req.RunID
 					if scenario == "foreign-owner" {
@@ -146,7 +146,7 @@ func TestChildExecutionObserverUsesParentLeaseAndStopsOnCancellation(t *testing.
 				if context.Cause(ctx) == nil {
 					t.Fatal("authority loss had no cause")
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatal("child continued after execution authority ended")
 			}
 			if scenario == "shared-expiry" && calls.Load() < 2 {

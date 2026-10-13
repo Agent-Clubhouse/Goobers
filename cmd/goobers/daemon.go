@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/readmodel/projector"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/telemetry"
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -42,6 +43,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
+	SourceStarts        *startintent.Sources
 	ExecutionGeneration string
 	OrdinaryRuntime     ordinaryRuntimeBuilder
 	OrdinaryCatalog     *ordinaryStartCatalog
@@ -1484,6 +1486,9 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	if s.SourceStarts != nil {
+		opts = append(opts, localscheduler.WithSourceQueue(s.SourceStarts))
+	}
 	if s.Root != "" {
 		opts = append(opts, localscheduler.WithTargetedPRValidator(func(ctx context.Context, entry localscheduler.WorkflowEntry, number int) error {
 			return validateTargetedPullRequest(ctx, s.Root, s.Config, s.SecretStores, s.SharedRegistry, entry, number)

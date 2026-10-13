@@ -644,7 +644,7 @@ func continuationWorkItemRepository(root, gaggle string, routed providers.Reposi
 	if set == nil || report == nil {
 		return routed, nil
 	}
-	return providerconfig.ApplyBacklogProject(set, gaggle, routed), nil
+	return providerconfig.ApplyBacklogProject(set, gaggle, routed)
 }
 
 func deleteContinuationRun(dir string) error {

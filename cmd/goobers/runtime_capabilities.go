@@ -742,6 +742,14 @@ func init() {
 				withHelp("remove a leaked secret from a stored blob (SEC-041)", journalRedactHelp).
 				withExamples("printf %s \"$LEAKED\" | goobers journal redact --run <id> --path inputs/creds.env --reason 'leak'"),
 		).withHelp("the one sanctioned edit to the append-only journal", journalHelp),
+		groupCommand(
+			"pr",
+			runPR,
+			subcommand("pr retry", "retry", apicontract.ActionMaintenance, runPRRetry).
+				withSynopsis(synopsisByID["pr retry"]).
+				withHelp("route an escalated or parked PR to merge-review, remediation, or human hold (audited)", prRetryHelp).
+				withExamples("goobers pr retry --pr 533 --route remediation --reason 'review contract corrected' --dry-run"),
+		).withHelp("operator actions on pull requests", prHelp),
 		stageCommand("backlog-dedupe", apicontract.ActionWorkflowExecution, runBacklogDedupe).
 			withSynopsis(synopsisByID["backlog-dedupe"]).
 			withHelp("surface ranked duplicate candidates for curator judgment (a workflow stage)", backlogDedupeHelp).

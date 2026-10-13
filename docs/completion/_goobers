@@ -183,6 +183,9 @@ _goobers_completion()
         rerun-stage)
             flags+=(--addendum --actor --api)
             ;;
+        signal)
+            flags+=(--request-id)
+            ;;
         workflow)
             case "${words[3]:-}" in
                 show) flags+=(--dot) ;;
@@ -271,6 +274,11 @@ _goobers_completion()
         journal)
             case "${words[3]:-}" in
                 redact) flags+=(--run --path --reason --secret-file) ;;
+            esac
+            ;;
+        pr)
+            case "${words[3]:-}" in
+                retry) flags+=(--pr --route --reason --gaggle --actor --dry-run --json) ;;
             esac
             ;;
         backlog-health)
@@ -560,6 +568,13 @@ _goobers_completion()
         journal)
             if (( CURRENT == 3 )); then
                 candidates=(redact)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        pr)
+            if (( CURRENT == 3 )); then
+                candidates=(retry)
                 _describe -V 'command' candidates
                 return
             fi

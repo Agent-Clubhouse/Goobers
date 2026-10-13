@@ -375,6 +375,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
+	"signal": {
+		{name: "request-id", takesArg: true, desc: "Idempotency key for the accepted signal recipient set"},
+	},
 	"run": {
 		{name: "no-api", desc: "Explicitly use local execution or file delegation"},
 		{name: "api-timeout", takesArg: true, desc: "Bound API validation and acceptance"},
@@ -633,6 +636,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "path", takesArg: true, desc: "Journal-relative blob path"},
 		{name: "reason", takesArg: true, desc: "Redaction reason"},
 		{name: "secret-file", takesArg: true, desc: "Read the leaked secret bytes from this file"},
+	},
+	"pr retry": {
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+		{name: "route", takesArg: true, values: []string{prRetryRouteMergeReview, prRetryRouteRemediation, prRetryRouteHold}, desc: "Target route"},
+		{name: "reason", takesArg: true, desc: "Audit reason"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle that owns the PR"},
+		{name: "actor", takesArg: true, desc: "Audit identity"},
+		{name: "dry-run", desc: "Report the proposed transition without mutating anything"},
+		{name: "json", desc: "Print the report as JSON"},
 	},
 	"backlog-health": {
 		{name: "feedback", desc: "Include backlog feedback"},

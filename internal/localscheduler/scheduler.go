@@ -34,13 +34,14 @@ import (
 // Tick/signal delivery evaluates whichever are set, since nothing prevents
 // a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
-	Workflow        string
-	WorkflowVersion int
-	WorkflowDigest  string
-	GooberDigest    string
-	Gaggle          string
-	Readiness       apiv1.ReadinessConditions
-	Schedules       []Schedule
+	ConfigGeneration string
+	Workflow         string
+	WorkflowVersion  int
+	WorkflowDigest   string
+	GooberDigest     string
+	Gaggle           string
+	Readiness        apiv1.ReadinessConditions
+	Schedules        []Schedule
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
 	ScheduleBackoffs []IdleBackoffConfig
@@ -244,6 +245,7 @@ type runAdmission struct {
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
+	sourceQueue       SourceQueue
 	workflows         map[WorkflowIdentity]WorkflowEntry
 	conditions        *Conditions
 	log               *journal.InstanceLog
