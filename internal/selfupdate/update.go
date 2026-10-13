@@ -534,17 +534,23 @@ func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versio
 	return info, nil
 }
 
+var errVersionOutputIncomplete = errors.New("version output is missing version or commit")
+
 func readVersion(ctx context.Context, runner commandRunner, dir, binary string) (versionInfo, error) {
 	raw, err := runner.Run(ctx, dir, nil, binary, "version", "--json")
 	if err != nil {
 		return versionInfo{}, err
 	}
+	return parseVersionOutput(raw)
+}
+
+func parseVersionOutput(raw []byte) (versionInfo, error) {
 	var info versionInfo
 	if err := json.Unmarshal(raw, &info); err != nil {
 		return info, fmt.Errorf("decode version output: %w", err)
 	}
 	if info.Version == "" || info.Commit == "" {
-		return info, errors.New("version output is missing version or commit")
+		return info, errVersionOutputIncomplete
 	}
 	return info, nil
 }
