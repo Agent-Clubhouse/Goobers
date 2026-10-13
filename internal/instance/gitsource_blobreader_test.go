@@ -3,9 +3,10 @@ package instance
 import (
 	"bytes"
 	"context"
-	"github.com/goobers/goobers/internal/testgit"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestBlobReaderBatchesBlobsAndRejectsMissing(t *testing.T) {
