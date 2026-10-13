@@ -154,9 +154,10 @@ func TestPublishBeforeCleanupFailsClosed(t *testing.T) {
 			if runID == "" {
 				runID = "source-run"
 			}
-			if worktreeID == "" {
+			switch worktreeID {
+			case "":
 				worktreeID = "source-land"
-			} else if worktreeID == "-" {
+			case "-":
 				worktreeID = ""
 			}
 			if scrubber == nil {
