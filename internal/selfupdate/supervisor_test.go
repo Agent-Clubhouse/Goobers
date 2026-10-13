@@ -429,10 +429,14 @@ type flakyVersionRunner struct {
 	calls    int
 	info     versionInfo
 	badJSON  bool
+	rawJSON  string
 }
 
 func (r *flakyVersionRunner) Run(context.Context, string, []string, string, ...string) ([]byte, error) {
 	r.calls++
+	if r.rawJSON != "" {
+		return []byte(r.rawJSON), nil
+	}
 	if r.badJSON {
 		return []byte("not json"), nil
 	}
@@ -489,6 +493,14 @@ func TestEnsureCurrentBinaryReportsPersistentProbeFailureWithoutSkew(t *testing.
 
 func TestEnsureCurrentBinaryDoesNotRetryMalformedVersionOutput(t *testing.T) {
 	runner := &flakyVersionRunner{badJSON: true}
+	got := runProbeScenario(t, runner)
+	if runner.calls != 1 || !strings.Contains(got, "json-validation failure") {
+		t.Fatalf("calls = %d, stderr = %q", runner.calls, got)
+	}
+}
+
+func TestEnsureCurrentBinaryDoesNotRetryMissingCommit(t *testing.T) {
+	runner := &flakyVersionRunner{rawJSON: `{"version":"v1.2.3"}`}
 	got := runProbeScenario(t, runner)
 	if runner.calls != 1 || !strings.Contains(got, "json-validation failure") {
 		t.Fatalf("calls = %d, stderr = %q", runner.calls, got)

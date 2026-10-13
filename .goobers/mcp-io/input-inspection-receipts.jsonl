@@ -1,4 +1,4 @@
 {"tool":"list_inputs","success":true}
-{"tool":"read_input","input":"query-backlog.artifact[0]","inputDigest":"sha256:4a1b89ab667c65abf93a54e34f2915821b1c608cbad416806c23fba70c5e5d80","success":true,"startLine":1,"endLine":1,"totalLines":1}
-{"tool":"read_input","input":"query-backlog.artifact[1]","inputDigest":"sha256:72cf74edb4803c68970a5f48d3213e4e077cf71721afaa39ddf42c15fa544f1c","success":true,"startLine":1,"endLine":1,"totalLines":1}
-{"tool":"read_input","input":"query-backlog.artifact[2]","inputDigest":"sha256:6dfb4c95612c2cbac59240e41503badcd597430e4503ddbc4453e0cec24af4bf","success":true,"startLine":1,"endLine":1,"totalLines":1}
+{"tool":"read_input","input":"ci-poll.artifact[0]","inputDigest":"sha256:471f688375a4c26fac66079b5a46851a55a0841c78a27af150b420ed02a7e8b7","success":true,"startLine":1,"endLine":1,"totalLines":1}
+{"tool":"read_input","input":"review.verdict","inputDigest":"sha256:c593f796195d96fab5735dfed3081682b83f2974bb3180e56c9f8549d333291c","success":true,"startLine":1,"endLine":1,"totalLines":1}
+{"tool":"grep_input","input":"local-ci.artifact[0]","inputDigest":"sha256:8e47bda8d7fa8bed2476f8d80b1eebb2b40daba1ae0892bb4d642e4b4e068287","success":true,"pattern":"FAIL|Error|error"}
