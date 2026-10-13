@@ -90,6 +90,7 @@ func (p *ADOProvider) SetMutationRecorder(recorder MutationRecorder) {
 // here alone would leave ADO receipts in two shapes for no gain, since the URL
 // already carries the org/project scope that identity resolution needs.
 func (p *ADOProvider) recordMutation(ctx context.Context, kind, id, operation string, repo RepositoryRef) {
+	observeProviderMutation(ctx, p.Client, ProviderADO)
 	if p.mutationRecorder == nil {
 		return
 	}
@@ -341,6 +342,9 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 	if len(out.Value) == 0 {
 		return BranchResult{}, fmt.Errorf("ado branch creation returned no refs")
 	}
+	if update := out.Value[0]; update.Success == nil || *update.Success {
+		observeProviderMutation(ctx, p.Client, ProviderADO)
+	}
 	return BranchResult{Name: strings.TrimPrefix(out.Value[0].Name, "refs/heads/"), SHA: out.Value[0].ObjectID, URL: out.Value[0].URL}, nil
 }
 
@@ -405,6 +409,7 @@ func (p *ADOProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest)
 		}
 		return DeleteBranchResult{}, fmt.Errorf("ado delete branch %q rejected: %s", req.Name, update.UpdateStatus)
 	}
+	observeProviderMutation(ctx, p.Client, ProviderADO)
 	return DeleteBranchResult{Deleted: true}, nil
 }
 
@@ -461,6 +466,9 @@ func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResu
 	commitID := ""
 	if len(out.Commits) > 0 {
 		commitID = out.Commits[0].CommitID
+	}
+	if commitID != "" {
+		observeProviderMutation(ctx, p.Client, ProviderADO)
 	}
 	return CommitResult{SHA: commitID, URL: out.URL}, nil
 }

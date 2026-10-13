@@ -304,7 +304,11 @@ func (p *GitHubProvider) AttachWorkItemChild(ctx context.Context, req AttachWork
 	if err != nil {
 		return err
 	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]int64{"sub_issue_id": childDatabaseID}, nil)
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]int64{"sub_issue_id": childDatabaseID}, nil); err != nil {
+		return err
+	}
+	observeProviderMutation(ctx, p.Client, ProviderGitHub)
+	return nil
 }
 
 // ListWorkItemBlockers returns the GitHub issues and pull requests registered as
@@ -399,7 +403,11 @@ func (p *GitHubProvider) AttachWorkItemBlocker(ctx context.Context, req AttachWo
 	if err != nil {
 		return err
 	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]int64{"issue_id": blockerDatabaseID}, nil)
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]int64{"issue_id": blockerDatabaseID}, nil); err != nil {
+		return err
+	}
+	observeProviderMutation(ctx, p.Client, ProviderGitHub)
+	return nil
 }
 
 // CreateWorkItem creates a GitHub issue from a unified work item request.
@@ -514,6 +522,7 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 		}, &created); err != nil {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("create label %q: %w", label.Name, err)
 		}
+		observeProviderMutation(ctx, p.Client, ProviderGitHub)
 		result.Created = append(result.Created, label.Name)
 	}
 	return result, nil

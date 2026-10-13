@@ -1,0 +1,40 @@
+package apireadcache
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/goobers/goobers/internal/apireadstore"
+	"github.com/goobers/goobers/providers"
+)
+
+// ObserveProviderMutation rotates a gaggle/provider read generation after a
+// confirmed effect. Old responses, including late fills and ADO read plans,
+// cannot refill the new generation. No credentials or mutation body are stored.
+// Cache failure never changes the external write result; this wrapper switches
+// permanently to live reads if it cannot persist the invalidation.
+func (c *apiReadCache) ObserveProviderMutation(_ context.Context, provider providers.ProviderKind) {
+	if c == nil || c.schedulerDir == "" || c.mutationScope == "" || c.provider != provider {
+		return
+	}
+	if err := c.withDisk(func(store *apireadstore.Store) error { return store.InvalidateSnapshot(c.mutationScope) }); err != nil {
+		c.mutationUnavailable.Store(true)
+	}
+}
+
+func (c *apiReadCache) scopedReadKey(req *http.Request) (string, error) {
+	scope := c.partition + "\x00" + string(c.provider)
+	if c.mutationScope != "" {
+		var generation string
+		err := c.withDisk(func(store *apireadstore.Store) error {
+			var err error
+			generation, err = store.SnapshotGeneration(c.mutationScope)
+			return err
+		})
+		if err != nil {
+			return "", err
+		}
+		scope += "\x00" + generation
+	}
+	return scopedRequestKey(scope, req), nil
+}
