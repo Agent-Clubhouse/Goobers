@@ -161,6 +161,7 @@ One key is interpreted only by the **read model** and never changes execution:
 | Output | Effect |
 |---|---|
 | `displayTitle` | The run's canonical human-readable title, published by a stage once it has claimed work (for example `Investigate #123: Example incident title`). A `success` `stage.finished` carrying it is projected into `operator.displayTitle` on every run list and detail response, and clients render it verbatim instead of reconstructing one. The latest well-formed value wins, so a retried claim stage may refine it. Values that are not strings, are blank after trimming, contain control characters (including newlines), or exceed 300 characters are ignored — never truncated — and do not replace an earlier valid title. Absent, clients fall back to `operator.issue` (`#number · title`) or the run ID. |
+| `url` | Optional source-system URL emitted alongside the first claimed `id` + `title`. A successful stage's absolute HTTP(S) URL without credentials or control characters (maximum 2048 bytes) is projected into `operator.issue.url`. Missing, malformed, or failed-stage URLs are omitted. The portal links the exact `#number` in run titles without changing their text or the row's run-detail navigation. The URL must identify that claimed item, not another item created by a later stage. |
 
 ## How a stage gets its input
 
