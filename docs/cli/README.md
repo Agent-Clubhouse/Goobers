@@ -142,7 +142,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
 | [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, label runs, prune, or compact telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, label runs, record claims, prune, or compact telemetry |
+| [`goobers telemetry claim`](#goobers-telemetry-claim) | append a Backprop claim from inside an agentic stage |
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
@@ -4906,10 +4907,10 @@ $ goobers status --agents --json
 
 ## `goobers telemetry`
 
-configure, test, query, export, mark fixes, label runs, prune, or compact telemetry
+configure, test, query, export, mark fixes, label runs, record claims, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4919,6 +4920,7 @@ errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
 label:   record a ground-truth verdict for a Backprop-enrolled run
+claim:   append a Backprop claim from inside an agentic stage
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -4931,6 +4933,35 @@ $ goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNEC
 $ goobers telemetry test ./instance
 $ goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123
 $ goobers telemetry prune --dry-run
+~~~
+
+## `goobers telemetry claim`
+
+append a Backprop claim from inside an agentic stage
+
+~~~text
+Usage: goobers telemetry claim --kind=assignment|reliance|credit|blame (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+
+Append one Backprop claim to the current stage attempt's claim log
+($GOOBERS_TELEMETRY_DIR/backprop-claims.jsonl). Run it from inside an
+agentic stage: the runner journals the attempt's claims when the stage
+exits and attributes them to the writing stage attempt, never to text in
+the claim. assignment says the target owns the work the statement
+describes; reliance says this stage consumed the target's output; credit
+and blame say the target helped or hurt the outcome and need --evidence.
+Evidence names a recorded artifact digest or an earlier journal seq.
+Statements are sanitized and capped at 1024 bytes; an attempt may record
+at most 32 claims. Backprop lists a claim as verified only when its writer,
+target, and evidence match records journaled before it; claims never
+change credit scores or stage outcomes.
+Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry claim --kind=reliance --stage=plan --statement="used the plan's file list"
+$ goobers telemetry claim --kind=blame --stage=implement --evidence=seq:42 --confidence=0.6 --statement="tests failed on its change"
 ~~~
 
 ## `goobers telemetry compact`

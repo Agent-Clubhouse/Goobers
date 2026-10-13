@@ -777,7 +777,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			))
 		}
 	}
-	runErr = errors.Join(runErr, e.journalMCPServerFailures(env.TaskID, out.MCPServerFailures))
+	runErr = errors.Join(runErr, e.journalStageAnnotations(mode, env, req.TelemetryDir, agentEvents, out.MCPServerFailures))
 	if out.TranscriptSchema == "" {
 		prompt := out.RenderedPrompt
 		if len(prompt) == 0 {
@@ -883,6 +883,52 @@ func (e *Executor) journalMCPServerFailures(stage string, failures []MCPServerFa
 		return fmt.Errorf("harness: journal MCP server availability for %q: %w", stage, err)
 	}
 	return nil
+}
+
+// journalStageAnnotations appends the post-invocation, annotation-only journal
+// records: MCP servers that were unavailable and the attempt's Backprop claims.
+func (e *Executor) journalStageAnnotations(mode Mode, env apiv1.InvocationEnvelope, telemetryDir string, agentEvents []journal.Event, failures []MCPServerFailure) error {
+	if mode == ModeInvoke {
+		e.journalBackpropClaims(env, telemetryDir, agentEvents)
+	}
+	return e.journalMCPServerFailures(env.TaskID, failures)
+}
+
+// journalBackpropClaims journals the bounded, sanitized claims the agent
+// appended to its stage telemetry directory (#7119) as one runner annotation.
+// The writer is attributed by the runner — the stage attempt and, when
+// unambiguous, its root nested agent — never by the claim text. Claims are
+// report-only Backprop evidence, so a refused or failed append never changes
+// the stage's outcome.
+func (e *Executor) journalBackpropClaims(env apiv1.InvocationEnvelope, telemetryDir string, agentEvents []journal.Event) {
+	claims, dropped := creditgraph.ReadClaimFile(telemetryDir)
+	if len(claims) == 0 && dropped == 0 {
+		return
+	}
+	appender, ok := e.recorder.(EventAppender)
+	if !ok {
+		return
+	}
+	for i := range claims {
+		claims[i].Statement = e.scrubClaimStatement(claims[i].Statement)
+	}
+	_ = appender.Append(journal.Event{
+		Type:    journal.EventRunnerAnnotation,
+		Stage:   env.TaskID,
+		Attempt: int(env.Attempt),
+		Runner:  creditgraph.ClaimsAnnotationPayload(claims, dropped, transcriptRootAgentID(agentEvents, env.TaskID)),
+	})
+}
+
+// scrubClaimStatement redacts secrets from agent-written claim text before it
+// reaches the journal, then re-applies the statement bound because a
+// redaction marker may be longer than the secret it replaced.
+func (e *Executor) scrubClaimStatement(statement string) string {
+	scrubbed := creditgraph.SanitizeClaimText(string(e.scrubber.Scrub([]byte(statement))))
+	if len(scrubbed) <= creditgraph.MaxClaimStatementBytes {
+		return scrubbed
+	}
+	return strings.ToValidUTF8(scrubbed[:creditgraph.MaxClaimStatementBytes], "")
 }
 
 func (e *Executor) finalizeAdapterFailure(stage string, out Outcome, runErr error) (Outcome, *apiv1.ArtifactPointer, error) {

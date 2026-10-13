@@ -237,6 +237,7 @@ _goobers_completion()
                 export) flags+=" --since --until" ;;
                 mark-fix) flags+=" --finding --applied-at" ;;
                 label) flags+=" --run --outcome --reason --by --labeled-at" ;;
+                claim) flags+=" --kind --stage --attempt --agent --artifact --statement --evidence --confidence" ;;
                 prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
                 compact) flags+=" --dry-run" ;;
@@ -468,7 +469,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="configure test merges stats errors export mark-fix label prune prune-orphans compact"
+                candidates="configure test merges stats errors export mark-fix label claim prune prune-orphans compact"
             fi
             ;;
         journal)

@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
@@ -171,6 +172,48 @@ func (f *mcpFailureFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcom
 	out, err := f.FakeAdapter.Run(ctx, req)
 	out.MCPServerFailures = append([]MCPServerFailure(nil), f.failures...)
 	return out, err
+}
+
+// TestExecutorJournalsBackpropClaims pins #7119's ingestion: claims the agent
+// appended to its stage telemetry directory are journaled once, as a
+// runner-attributed annotation with registered secrets redacted from the
+// agent-written statement, without changing the stage outcome.
+func TestExecutorJournalsBackpropClaims(t *testing.T) {
+	rec := &fakeRecorder{}
+	scrubber := journal.NewRegistryScrubber()
+	scrubber.Register([]byte("test-secret-material"))
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		if _, err := creditgraph.AppendClaim(req.TelemetryDir, creditgraph.Claim{
+			Kind: creditgraph.ClaimReliance, Target: creditgraph.ClaimTarget{Stage: "plan"}, Confidence: 1,
+			Statement: "used the plan with test-secret-material",
+		}); err != nil {
+			return err
+		}
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	}}
+	exec, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec, scrubber, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := testEnvelope(t.TempDir())
+	env.Attempt = 2
+	result, err := exec.Invoke(context.Background(), env)
+	if err != nil || result.Status != apiv1.ResultSuccess {
+		t.Fatalf("Invoke = %+v, %v", result, err)
+	}
+	var annotations []journal.Event
+	for _, event := range rec.events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == creditgraph.ClaimsAnnotation {
+			annotations = append(annotations, event)
+		}
+	}
+	if len(annotations) != 1 || annotations[0].Stage != "implement" || annotations[0].Attempt != 2 {
+		t.Fatalf("claim annotations = %+v", annotations)
+	}
+	claims, ok := annotations[0].Runner[creditgraph.ClaimsKeyClaims].([]creditgraph.Claim)
+	if !ok || len(claims) != 1 || claims[0].Target.Stage != "plan" || strings.Contains(claims[0].Statement, "test-secret-material") {
+		t.Fatalf("journaled claims = %#v", annotations[0].Runner[creditgraph.ClaimsKeyClaims])
+	}
 }
 
 // TestExecutorJournalsMCPServerUnavailable pins #3356's detection contract:
