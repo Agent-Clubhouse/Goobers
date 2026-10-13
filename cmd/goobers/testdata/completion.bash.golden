@@ -154,6 +154,9 @@ _goobers_completion()
         rerun-stage)
             flags+=" --addendum --actor --api"
             ;;
+        signal)
+            flags+=" --request-id"
+            ;;
         workflow)
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;

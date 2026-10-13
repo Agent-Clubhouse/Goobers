@@ -15,6 +15,7 @@ import (
 // PreparedTriggerOptions retains ordinary trigger semantics without letting a
 // queued request choose execution pins or alter the current capacity policy.
 type PreparedTriggerOptions struct {
+	Source      *SourceTrigger
 	Force       bool
 	SourceRun   string
 	PullRequest int
@@ -30,7 +31,7 @@ func (s *Scheduler) TriggerPreparedOrdinary(admission, execution context.Context
 	if !apiv1.ValidRunID(runID) || prepared.Starter == nil || now.IsZero() || s.log == nil {
 		return "", errors.New("localscheduler: invalid prepared ordinary execution")
 	}
-	if options.PullRequest < 0 || (options.Force && (options.SourceRun != "" || options.PullRequest != 0)) || (options.SourceRun != "" && options.PullRequest != 0) {
+	if (options.Source != nil && (options.Force || options.SourceRun != "" || options.PullRequest != 0)) || options.PullRequest < 0 || (options.Force && (options.SourceRun != "" || options.PullRequest != 0)) || (options.SourceRun != "" && options.PullRequest != 0) {
 		return "", errors.New("localscheduler: incompatible prepared trigger options")
 	}
 	// Keep current eligibility stable until admission, including bounded PR reads.
@@ -52,6 +53,9 @@ func (s *Scheduler) TriggerPreparedOrdinary(admission, execution context.Context
 		return "", errors.New("localscheduler: prepared run already owned")
 	}
 
+	if options.Source != nil {
+		return s.dispatchPreparedSource(execution, prepared, runID, *options.Source, now)
+	}
 	trigger, reason, err := s.prepareOrdinaryTrigger(admission, prepared, options)
 	if err != nil {
 		return "", err
