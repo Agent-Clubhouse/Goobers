@@ -52,12 +52,25 @@ func TestNamedAzureReplayRootsRemainIndependentAcrossReorderAndRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeNamedClient(t, c)
 	emitNamedRun(t, c)
+	// Establish both deliveries while the replay workers are running. Shutdown
+	// is bounded and may retain a batch without attempting its first upload.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	_ = c.Shutdown(ctx)
+	err = c.Flush(ctx)
 	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
 	failedBody := receiveNamed(t, failed)
 	receiveNamed(t, healthy)
+	waitNamedReplayAcknowledged(t, goodRoot)
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	err = c.Shutdown(ctx)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if stats := InspectAzureReplayRoot(badRoot); stats.PendingRecords != 1 {
 		t.Fatalf("failed destination lost spool: %+v", stats)
 	}
@@ -69,7 +82,9 @@ func TestNamedAzureReplayRootsRemainIndependentAcrossReorderAndRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer closeNamedClient(t, c)
 	replayedBody := receiveNamed(t, replayed)
+	waitNamedReplayAcknowledged(t, badRoot)
 	closeNamedClient(t, c)
 	if a, b := azureRecordID(failedBody), azureRecordID(replayedBody); a == "" || a != b {
 		t.Fatalf("replay changed stable identity: %q %q", a, b)
@@ -81,6 +96,28 @@ func TestNamedAzureReplayRootsRemainIndependentAcrossReorderAndRestart(t *testin
 	}
 	if stats := InspectAzureReplayRoot(badRoot); stats.PendingRecords != 0 || stats.LastSuccess.IsZero() || stats.ActiveFailure {
 		t.Fatalf("recovery not retained: %+v", stats)
+	}
+}
+
+// A server receiving a request does not establish that the exporter has read
+// its acknowledgement. Wait for durable retirement before canceling workers;
+// cancellation while the response is in flight legitimately permits replay.
+func waitNamedReplayAcknowledged(t *testing.T, root string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		stats := InspectAzureReplayRoot(root)
+		if stats.AccountingReady && stats.PendingRecords == 0 && !stats.LastSuccess.IsZero() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("destination acknowledgement was not retained: %+v", stats)
+		case <-tick.C:
+		}
 	}
 }
 
