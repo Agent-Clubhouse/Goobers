@@ -77,6 +77,7 @@ func TestSourceScheduleDemandReopenRunsRemainingCapturedWorkers(t *testing.T) {
 	if replacement == workflow {
 		t.Fatal("marker replacement unchanged")
 	}
+	replacement = strings.Replace(replacement, "@every 1m", "@every 5m", 1)
 	writeFileContent(t, path, replacement)
 	restarted := openSourceDaemonFixture(t, layout)
 	configure(&restarted)
