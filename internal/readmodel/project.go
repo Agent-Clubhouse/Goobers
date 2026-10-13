@@ -115,6 +115,7 @@ type OperatorFacts struct {
 	EngineFallback        *EngineFallback
 	IssueNumber           string
 	IssueTitle            string
+	IssueURL              string
 	DisplayTitle          string
 	LastHeartbeatAt       *time.Time
 	PullRequest           *journal.ExternalRef
@@ -696,6 +697,7 @@ func projectOperatorStageOutputs(operator *OperatorFacts, event journal.Event) {
 		if idOK && titleOK && id != "" && title != "" {
 			operator.IssueNumber = id
 			operator.IssueTitle = title
+			operator.IssueURL = StageIssueURL(event)
 		}
 	}
 	if title, ok := StageDisplayTitle(event); ok {

@@ -1041,7 +1041,7 @@ export interface LineageRun {
 }
 
 export interface OperatorRunSummary {
-  issue?: { number: string; title?: string; labels?: string[] };
+  issue?: { number: string; title?: string; url?: string; labels?: string[] };
   /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
   displayTitle?: string;
   currentStage?: string;
