@@ -55,7 +55,7 @@ func TestWorktreeRunAbandonedSettledPhasesOnly(t *testing.T) {
 	}
 }
 
-// settledRunPhase is deliberately narrower than terminalRunPhase. Pin the
+// settledRunPhase is deliberately narrower than RunPhase.IsTerminal. Pin the
 // difference so a later edit to either cannot silently merge them.
 func TestSettledRunPhaseIsTerminalMinusEscalated(t *testing.T) {
 	for _, phase := range []journal.RunPhase{

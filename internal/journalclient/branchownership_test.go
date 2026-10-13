@@ -127,14 +127,3 @@ func TestFileCrossRunBranchOwnershipCancelledContext(t *testing.T) {
 		t.Fatal("want context error")
 	}
 }
-
-func TestTerminalBranchOwnershipPhase(t *testing.T) {
-	for phase, want := range map[journal.RunPhase]bool{
-		journal.PhaseCompleted: true, journal.PhaseFailed: true, journal.PhaseAborted: true,
-		journal.PhaseEscalated: true, journal.PhaseRunning: false,
-	} {
-		if got := terminalBranchOwnershipPhase(phase); got != want {
-			t.Errorf("%s = %v, want %v", phase, got, want)
-		}
-	}
-}

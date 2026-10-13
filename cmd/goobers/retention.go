@@ -512,7 +512,7 @@ func readRunPhase(runsDir, runID string) (journal.RunPhase, bool, error) {
 	return phase, err == nil, err
 }
 
-// settledRunPhase is terminalRunPhase minus PhaseEscalated: the phases after
+// settledRunPhase is RunPhase.IsTerminal minus PhaseEscalated: the phases after
 // which nothing legitimately still holds the run's worktree.
 //
 // Escalation is excluded on purpose. An escalated run is parked awaiting a
