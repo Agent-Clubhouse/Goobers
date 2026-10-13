@@ -564,24 +564,12 @@ func (f *FileCrossRun) BranchOwnership(ctx context.Context, req BranchOwnershipR
 	if err != nil {
 		return unreadable(fmt.Sprintf("read owning run %s phase: %v", req.TargetRunID, err))
 	}
-	if terminalBranchOwnershipPhase(phase) && terminalAt.IsZero() {
+	if phase.IsTerminal() && terminalAt.IsZero() {
 		return unreadable(fmt.Sprintf("owning run %s has no timestamped terminal event", req.TargetRunID))
 	}
 	return BranchOwnershipResponse{Owner: &BranchOwnership{
 		Workflow: req.Workflow, RunID: req.TargetRunID, StartedAt: id.StartedAt, TerminalAt: terminalAt, Phase: string(phase),
 	}}, nil
-}
-
-// terminalBranchOwnershipPhase mirrors reconcile-branches's own
-// terminalBranchRunPhase — duplicated rather than imported to avoid a
-// cmd/goobers dependency from this package.
-func terminalBranchOwnershipPhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-		return true
-	default:
-		return false
-	}
 }
 
 // UnpushedDiffMetaArtifactSuffix / UnpushedDiffSchemaPrefix mirror

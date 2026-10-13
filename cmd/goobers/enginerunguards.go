@@ -686,7 +686,7 @@ func engineRunSettledOnDisk(reader *journal.Reader) bool {
 	if err != nil {
 		return false
 	}
-	return isTerminalPhase(phase)
+	return phase.IsTerminal()
 }
 
 // engineDrivenRefusal is the named error the HITL intervention path returns

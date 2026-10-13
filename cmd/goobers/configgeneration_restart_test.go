@@ -126,7 +126,7 @@ func TestUpPinsExecutionGenerationAcrossReloadAndRestart(t *testing.T) {
 					return "", false
 				}
 				phase, err := reader.Phase()
-				if err == nil && isTerminalPhase(phase) && phase != journal.PhaseCompleted {
+				if err == nil && phase.IsTerminal() && phase != journal.PhaseCompleted {
 					events, _ := reader.Events()
 					t.Fatalf("run ended %s: %+v", phase, events)
 				}

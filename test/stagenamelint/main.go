@@ -42,6 +42,7 @@ var exceptions = []exception{
 	{Path: "internal/builtincmd/builtincmd.go", Value: "self-update", Reason: "built-in subcommand inventory entry (#2861); names the CLI subcommand, not a workflow"},
 	{Path: "internal/providerstage/inputs.go", Value: "self-update", Reason: "provider-stage input registry key; names the CLI subcommand, not a workflow"},
 	{Path: "cmd/goobers/tutorprpolicy.go", Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
+	{Path: "cmd/goobers/prretry.go", Value: "merge-review", Reason: "pr retry --route value naming the merge-review lane, not a workflow lookup"},
 
 	// Existing telemetry projections still infer roles from shipped names.
 	// #2494 tracks replacing these with a config-sourced workflow role marker.

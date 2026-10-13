@@ -84,3 +84,14 @@ type BranchCursor struct {
 	// the branch is still running.
 	Status BranchStatus `json:"status,omitempty"`
 }
+
+// IsTerminal reports whether p is a terminal run phase. PhaseRunning and
+// unrecognised phases are not terminal.
+func (p RunPhase) IsTerminal() bool {
+	switch p {
+	case PhaseCompleted, PhaseFailed, PhaseAborted, PhaseEscalated:
+		return true
+	default:
+		return false
+	}
+}

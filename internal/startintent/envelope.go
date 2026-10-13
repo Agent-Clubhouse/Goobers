@@ -20,13 +20,15 @@ const Kind = "goobers.workflow-start/v1"
 var ErrInvalid = errors.New("startintent: invalid ordinary selection")
 
 // Request retains the caller's selection, independently of host-derived pins.
+// PullRequest is currently supplied only by the standalone/detached CLI.
 type Request struct {
-	Workflow  string `json:"workflow"`
-	Gaggle    string `json:"gaggle,omitempty"`
-	SourceRun string `json:"sourceRun,omitempty"`
-	Force     bool   `json:"force,omitempty"`
-	PodScoped bool   `json:"podScoped,omitempty"`
-	PodRunID  string `json:"podRunId,omitempty"`
+	Workflow    string `json:"workflow"`
+	Gaggle      string `json:"gaggle,omitempty"`
+	SourceRun   string `json:"sourceRun,omitempty"`
+	Force       bool   `json:"force,omitempty"`
+	PullRequest int    `json:"pullRequest,omitempty"`
+	PodScoped   bool   `json:"podScoped,omitempty"`
+	PodRunID    string `json:"podRunId,omitempty"`
 }
 
 // Target identifies the exact applied generation captured at acceptance.
@@ -48,10 +50,10 @@ type Envelope struct {
 
 // Validate rejects unbounded and contradictory selectors before acceptance.
 func (r Request) Validate() error {
-	if !text(r.Workflow, 256, true) || !text(r.Gaggle, 256, false) || !text(r.SourceRun, 256, false) || !text(r.PodRunID, 256, false) {
+	if !text(r.Workflow, 256, true) || !text(r.Gaggle, 256, false) || !text(r.SourceRun, 256, false) || !text(r.PodRunID, 256, false) || r.PullRequest < 0 {
 		return errors.Join(ErrInvalid, errors.New("startintent: invalid request"))
 	}
-	if (r.SourceRun != "" && (r.Gaggle == "" || r.Force)) || (r.PodScoped && (r.Gaggle == "" || r.PodRunID == "" || r.Force)) || (!r.PodScoped && r.PodRunID != "") {
+	if (r.SourceRun != "" && (r.Gaggle == "" || r.PullRequest != 0 || r.Force)) || (r.PullRequest != 0 && r.Force) || (r.PodScoped && (r.Gaggle == "" || r.PodRunID == "" || r.Force || r.PullRequest != 0)) || (!r.PodScoped && r.PodRunID != "") {
 		return errors.Join(ErrInvalid, errors.New("startintent: incompatible request authority or options"))
 	}
 	return nil
@@ -77,7 +79,7 @@ func (e Envelope) Marshal() ([]byte, error) {
 	}
 
 	if e.Source != nil {
-		if e.Request.Force || e.Request.SourceRun != "" || e.Request.PodScoped {
+		if e.Request.Force || e.Request.SourceRun != "" || e.Request.PodScoped || e.Request.PullRequest != 0 {
 			return nil, errors.New("startintent: incompatible signal authority")
 		}
 		if err := e.Source.Validate(); err != nil {

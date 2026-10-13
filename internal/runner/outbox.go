@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/pathutil"
 	"github.com/goobers/goobers/internal/platform/durability"
 )
 
@@ -252,7 +253,7 @@ func expandOutboxMirrorRoot(configured string) (string, error) {
 // checks every resulting path after symlink resolution.
 func makeContainedDir(root, rel string) (string, error) {
 	clean := filepath.Clean(rel)
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if _, err := pathutil.IsLexicallyContained("", clean); err != nil {
 		return "", apiv1.ErrPathEscape
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
@@ -299,7 +300,14 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 	var candidates []outboxCandidate
 	var totalBytes int64
 
+	seen := map[string]struct{}{}
+
 	addFile := func(relPath, absPath string, size int64) error {
+		relPath = filepath.ToSlash(filepath.Clean(relPath))
+		if _, dup := seen[relPath]; dup {
+			return nil
+		}
+		seen[relPath] = struct{}{}
 		candidates = append(candidates, outboxCandidate{relPath: relPath, absPath: absPath, size: size})
 		totalBytes += size
 		if len(candidates) > journal.MaxOutboxFilesPerAttempt {

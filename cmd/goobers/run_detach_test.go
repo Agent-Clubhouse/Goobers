@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	detachedRunWorkerTestRoot = "GOOBERS_TEST_DETACHED_RUN_WORKER_ROOT"
-	detachedRunHelperMode     = "GOOBERS_TEST_DETACHED_RUN_HELPER_MODE"
-	detachedRunHelperMarker   = "GOOBERS_TEST_DETACHED_RUN_HELPER_MARKER"
-	detachedRunHelperExitCode = "GOOBERS_TEST_DETACHED_RUN_HELPER_EXIT_CODE"
+	detachedRunWorkerTestRoot     = "GOOBERS_TEST_DETACHED_RUN_WORKER_ROOT"
+	detachedRunWorkerTestSelector = "GOOBERS_TEST_DETACHED_RUN_WORKER_SELECTOR"
+	detachedRunHelperMode         = "GOOBERS_TEST_DETACHED_RUN_HELPER_MODE"
+	detachedRunHelperMarker       = "GOOBERS_TEST_DETACHED_RUN_HELPER_MARKER"
+	detachedRunHelperExitCode     = "GOOBERS_TEST_DETACHED_RUN_HELPER_EXIT_CODE"
 )
 
 func TestDetachedRunWorkerProcess(t *testing.T) {
@@ -27,7 +28,11 @@ func TestDetachedRunWorkerProcess(t *testing.T) {
 	if root == "" {
 		return
 	}
-	os.Exit(run([]string{detachedRunWorkerCommand, "default-implement", root}, os.Stdout, os.Stderr))
+	selector := os.Getenv(detachedRunWorkerTestSelector)
+	if selector == "" {
+		selector = "default-implement"
+	}
+	os.Exit(run([]string{detachedRunWorkerCommand, selector, root}, os.Stdout, os.Stderr))
 }
 
 func TestRunDetachedTriggerHelperProcess(t *testing.T) {
