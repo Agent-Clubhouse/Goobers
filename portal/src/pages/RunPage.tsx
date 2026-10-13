@@ -60,6 +60,7 @@ import {
 } from "../runDetailData";
 import { routeHash, type Navigate, type RunDetailTab } from "../routing";
 import { runWorkTitle } from "../operationalData";
+import { RunWorkTitle } from "../components/RunWorkTitle";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -463,7 +464,7 @@ function RunDetailWorkspace({
         }
         title={
           workTitle ? (
-            <span className="run-work-title">{workTitle}</span>
+            <span className="run-work-title"><RunWorkTitle run={run} separator=" · " /></span>
           ) : (
             <>
               Run <span aria-hidden="true">{displayedRunId}</span>
@@ -512,7 +513,7 @@ function RunDetailWorkspace({
                 <dd
                   title={`#${claimedIssue.number}${claimedIssue.title ? ` · ${claimedIssue.title}` : ""}`}
                 >
-                  #{claimedIssue.number}
+                  <RunWorkTitle run={run} numberOnly />
                 </dd>
               </div>
             )}

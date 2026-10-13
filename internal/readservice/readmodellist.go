@@ -181,7 +181,7 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 		PotentialBlockers: []string{},
 	}
 	if facts.IssueNumber != "" || facts.IssueTitle != "" {
-		operator.Issue = &OperatorIssue{Number: facts.IssueNumber, Title: facts.IssueTitle}
+		operator.Issue = &OperatorIssue{Number: facts.IssueNumber, Title: facts.IssueTitle, URL: facts.IssueURL}
 	}
 	if facts.LastHeartbeatAt != nil {
 		heartbeat := *facts.LastHeartbeatAt

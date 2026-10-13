@@ -23,7 +23,7 @@ func TestDisplayTitleConsistentAcrossListAndDetail(t *testing.T) {
 	for runID, title := range runs {
 		run, clock := createFixtureRun(t, layout, machine, runID, machine.Def.Name, machine.Def.Spec.Gaggle,
 			fixedTime, journal.Trigger{Kind: journal.TriggerManual}, false)
-		outputs := map[string]any{"id": "123456789", "title": "Example incident title"}
+		outputs := map[string]any{"id": "123456789", "title": "Example incident title", "url": "https://example.test/incidents/123456789"}
 		if title != "" {
 			if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "claim", Status: "failure",
 				Outputs: map[string]any{readmodel.OutputDisplayTitle: "Failed attempt title"}}); err != nil {
@@ -59,6 +59,10 @@ func TestDisplayTitleConsistentAcrossListAndDetail(t *testing.T) {
 		}
 		if operator.Issue == nil || operator.Issue.Number != "123456789" || operator.Issue.Title != "Example incident title" {
 			t.Errorf("%s %s issue fallback = %+v", source, runID, operator.Issue)
+		}
+		wantURL := "https://example.test/incidents/123456789"
+		if operator.Issue != nil && operator.Issue.URL != wantURL {
+			t.Errorf("%s %s issue URL = %q, want %q", source, runID, operator.Issue.URL, wantURL)
 		}
 	}
 	for _, readModel := range []bool{true, false} {
