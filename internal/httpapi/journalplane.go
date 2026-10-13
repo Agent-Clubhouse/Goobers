@@ -145,8 +145,7 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 		// which authorizes journal emission for run X and no other — the same
 		// body-level binding the claims plane applies.
 		if authenticated && (IsPodPrincipal(principal) || generated || parent) {
-			if principal.Subject != podPrincipalSubject(run) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only emit into its own run's journal")
+			if !requirePodRun(w, principal, run, "pod principal may only emit into its own run's journal") {
 				return
 			}
 		}

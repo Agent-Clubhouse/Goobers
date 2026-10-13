@@ -409,11 +409,8 @@ func registerClaimRoute(
 		// which authorizes ledger operations for run X and no other. The
 		// authorizer already confined pods to this plane; the body-level run
 		// binding has to happen here, where the body is visible.
-		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
-			if principal.Subject != podPrincipalSubject(input.RunID) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only operate on its own run's claims")
-				return
-			}
+		if _, ok := applyPodClaimScope(w, request, input.RunID, "operate on its own run's claims"); !ok {
+			return
 		}
 		response, err := call(request.Context(), claims, input)
 		if err != nil {
@@ -432,11 +429,20 @@ func applyPodClaimScope(w http.ResponseWriter, request *http.Request, runID, act
 	if !exists || !IsPodPrincipal(principal) {
 		return false, true
 	}
-	if principal.Subject != podPrincipalSubject(runID) {
-		writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only "+action)
+	if !requirePodRun(w, principal, runID, "pod principal may only "+action) {
 		return false, false
 	}
 	return true, true
+}
+
+// requirePodRun writes the 403 run_mismatch response and returns false when
+// principal is not the pod principal of runID.
+func requirePodRun(w http.ResponseWriter, principal Principal, runID, message string) bool {
+	if principal.Subject != podPrincipalSubject(runID) {
+		writeError(w, http.StatusForbidden, "run_mismatch", message)
+		return false
+	}
+	return true
 }
 
 // registerClaimListRoute serves the claims plane's read. The same containment
