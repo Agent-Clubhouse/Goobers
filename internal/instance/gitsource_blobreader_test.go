@@ -3,7 +3,7 @@ package instance
 import (
 	"bytes"
 	"context"
-	"os/exec"
+	"github.com/goobers/goobers/internal/testgit"
 	"strings"
 	"testing"
 )
@@ -12,7 +12,7 @@ func TestBlobReaderBatchesBlobsAndRejectsMissing(t *testing.T) {
 	dir := t.TempDir()
 	run := func(stdin string, args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd := testgit.Command(append([]string{"-C", dir}, args...)...)
 		cmd.Stdin = strings.NewReader(stdin)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
