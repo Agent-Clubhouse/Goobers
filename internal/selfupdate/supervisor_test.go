@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -504,5 +505,26 @@ func TestEnsureCurrentBinaryDoesNotRetryMissingCommit(t *testing.T) {
 	got := runProbeScenario(t, runner)
 	if runner.calls != 1 || !strings.Contains(got, "json-validation failure") {
 		t.Fatalf("calls = %d, stderr = %q", runner.calls, got)
+	}
+}
+
+func TestEnsureCurrentBinaryScrubsSecretsEmbeddedInRunnerError(t *testing.T) {
+	embedded := fmt.Errorf("goobers: %w: token=hunter2 %s", errors.New("exit status 1"), strings.Repeat("x", 2000))
+	runner := &flakyVersionRunner{failures: 99, err: embedded}
+	got := runProbeScenario(t, runner)
+	if strings.Contains(got, "hunter2") || len(got) > 4*versionProbeMaxBytes {
+		t.Fatalf("stderr = %q, want scrubbed and bounded", got)
+	}
+}
+
+func TestEnsureCurrentBinaryClassifiesRealExitErrorAsNonZeroExit(t *testing.T) {
+	exitErr := exec.Command(os.Args[0], "-test.run=^$", "-test.bogus-flag").Run()
+	var target *exec.ExitError
+	if !errors.As(exitErr, &target) {
+		t.Skipf("could not produce an ExitError: %v", exitErr)
+	}
+	runner := &flakyVersionRunner{failures: 99, err: exitErr}
+	if got := runProbeScenario(t, runner); !strings.Contains(got, "non-zero-exit failure") {
+		t.Fatalf("stderr = %q", got)
 	}
 }

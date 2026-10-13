@@ -458,7 +458,7 @@ type versionProbeError struct {
 }
 
 func (e *versionProbeError) Error() string {
-	message := fmt.Sprintf("%s failure: %v", e.class, e.err)
+	message := fmt.Sprintf("%s failure: %s", e.class, boundedScrubbed([]byte(e.err.Error())))
 	if e.output != "" {
 		message += fmt.Sprintf("; output: %q", e.output)
 	}
