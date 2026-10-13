@@ -34,13 +34,29 @@ second launch. On daemon restart, the existing recovery owner may retry an
 unfinished prior-process dispatch after proving journal absence, using the same
 reserved run ID. Corrupt or mismatched evidence keeps custody unresolved.
 
+## File delegation and deadlines
+
+Requests submitted through the shared instance directory transfer to the same
+queue before execution. The file ID supplies a stable idempotency key; a replay
+keeps the first accepted generation, deadline, receipt and reserved run ID.
+After transfer, files deliver acknowledgements and results. Lost replies and
+restart recovery cannot create a second launch or extend the accepted deadline.
+
+The transfer marker is persisted before queue acceptance. Once marked, the
+caller cannot claim that deleting or timing out on a response cancelled the
+work. An unreadable request likewise cannot prove successful withdrawal.
+A reserved ID is not reported as a created run until a matching journal confirms
+it. Requests retain their normal queue lifetime, explicit shorter deadlines and
+the longer internal priority deadline. Expiry prevents admission of unstarted
+work; it does not cancel a launched run or override matching journal evidence.
+
 ## Incremental scope and source mapping
 
 These are the first LAND-E01 adapters in the
 [incremental landing plan](../hitl-advanced-workflows-landing-plan.md).
 They cover live-daemon HTTP manual/priority requests and standalone/detached CLI
-starts, including standalone targeted PR requests. Same-root file delegation,
-schedules/demand, signals, direct-engine starts and future interactive restarts
+starts, including standalone targeted PR requests, and same-root file delegation.
+Schedules/demand, signals, direct-engine starts and future interactive restarts
 still require their own adapters. These slices add neither event ingress nor
 event publication.
 
@@ -60,8 +76,8 @@ an unrecorded launch.
 
 The implementation adapts the ordinary catalog/runtime/start-intent portions of
 reference snapshot `fa34a754148ea3076bfd04fe4976a5a461b063f2`. It excludes that
-snapshot's event metadata, deadlines, same-root file delegation and interactive
-control dependencies. It uses main's existing configuration compiler, queue
+snapshot's event metadata and interactive control dependencies. File delegation
+adds an immutable host-selected admission deadline to the existing envelope. It uses main's existing configuration compiler, queue
 schema and recovery owner; no queue schema migration or baseline reset occurs.
 
 Behavioral validation covers actual HTTP acceptance and execution across a

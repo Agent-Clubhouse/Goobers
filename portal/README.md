@@ -10,6 +10,12 @@ read the live daemon API, as do configuration warnings on the overview and
 workflow routes; the remaining prototype routes use static fixtures until their
 vertical slices land.
 
+Run titles link the claimed work-item number to its published URL, opening the
+source system in a new tab. The rest of a run row still opens run details.
+Work items without a valid HTTP(S) URL remain plain text; the portal never
+guesses a provider from an ID. Workflow authors can publish `url` alongside
+`id` and `title` as described in [the stage contract](../docs/stage-contract.md).
+
 ## Run it
 
 From an instance root, the production portal is one command:

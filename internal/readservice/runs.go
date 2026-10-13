@@ -271,6 +271,7 @@ type OperatorRunSummary struct {
 type OperatorIssue struct {
 	Number string   `json:"number"`
 	Title  string   `json:"title,omitempty"`
+	URL    string   `json:"url,omitempty"`
 	Labels []string `json:"labels,omitempty"`
 }
 
@@ -1996,6 +1997,7 @@ func projectOperatorStageOutputs(operator *OperatorRunSummary, event journal.Eve
 	}
 	operator.Issue.Number = id
 	operator.Issue.Title = title
+	operator.Issue.URL = readmodel.StageIssueURL(event)
 	return true
 }
 

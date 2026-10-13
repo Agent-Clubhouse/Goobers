@@ -65,17 +65,10 @@ func (s *Scheduler) sourceQueueError(entry WorkflowEntry, err error) {
 }
 
 func (s *Scheduler) prepareTickSchedule(ctx context.Context, entry WorkflowEntry, now time.Time, evaluated *[]WorkflowEntry) *tickCandidate {
-	handled, advanced := s.queuePlainSchedule(ctx, entry, now)
-	if advanced {
-		*evaluated = append(*evaluated, entry)
-	}
 	identity := entryIdentity(entry)
 	s.mu.Lock()
 	pending := s.pendingScheduleDemand[identity]
 	s.mu.Unlock()
-	if handled {
-		pending = scheduledDemand{}
-	}
 	candidate := &tickCandidate{
 		entry:              entry,
 		schedule:           pending.schedule,
@@ -87,7 +80,11 @@ func (s *Scheduler) prepareTickSchedule(ctx context.Context, entry WorkflowEntry
 	if pending.remaining == 0 {
 		candidate.schedule = TickResult{LastEval: now}
 	}
-	if len(entry.Schedules) > 0 && !handled {
+	if handled, advanced := s.queueConfiguredSchedule(ctx, candidate, now); handled {
+		if advanced {
+			*evaluated = append(*evaluated, entry)
+		}
+	} else if len(entry.Schedules) > 0 {
 		// Read, evaluate, and write the trigger state under a single lock
 		// acquisition. Tick is exported so a manual trigger and concurrent
 		// Tick calls (e.g. overlapping Run-loop iterations) can race here;

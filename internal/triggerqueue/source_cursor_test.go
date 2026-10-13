@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -115,10 +116,11 @@ func TestSourceCursorMigrationPreservesSignalCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if migrations[len(migrations)-1] != sourceCursorSchema {
+	index := slices.Index(migrations, sourceCursorSchema)
+	if index < 1 {
 		t.Fatal("cursor migration is not additive")
 	}
-	if err := sqliteschema.Migrate(t.Context(), db, "triggerqueue", migrations[:len(migrations)-1]); err != nil {
+	if err := sqliteschema.Migrate(t.Context(), db, "triggerqueue", migrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO triggers(id,key,actor,payload,state,accepted_ns) VALUES('trigger-old','old','webhook','original','accepted',1)`); err != nil {

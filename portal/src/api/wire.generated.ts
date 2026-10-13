@@ -971,6 +971,7 @@ export const goWireFixtures = {
           "issue": {
             "number": "673",
             "title": "Improve operator status",
+            "url": "https://example.test/issues/673",
             "labels": [
               "goobers:needs-human"
             ]
@@ -1127,6 +1128,7 @@ export const goWireFixtures = {
       "issue": {
         "number": "673",
         "title": "Improve operator status",
+        "url": "https://example.test/issues/673",
         "labels": [
           "goobers:needs-human"
         ]
