@@ -35,6 +35,27 @@ func runJournal(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+const prHelp = "Usage: goobers pr <retry> [flags]\n\n" +
+	"retry: route an escalated or parked pull request to merge-review,\n" +
+	"       remediation, or human hold with an audited operator reason.\n"
+
+func runPR(args []string, stdout, stderr io.Writer) int {
+	usage := func(w io.Writer) { pf(w, "%s", prHelp) }
+	if len(args) == 0 {
+		usage(stderr)
+		return 2
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		usage(stdout)
+		return 0
+	default:
+		pf(stderr, "goobers pr: unknown subcommand %q\n\n", args[0])
+		usage(stderr)
+		return 2
+	}
+}
+
 const journalRedactHelp = "Usage: goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [instance-path]\n\n" +
 	"Registers the leaked secret with the run's scrubber, rewrites the target blob\n" +
 	"with the secret redacted, removes the leaked bytes from rest, and appends a\n" +

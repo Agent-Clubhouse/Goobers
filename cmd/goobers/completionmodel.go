@@ -637,6 +637,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "reason", takesArg: true, desc: "Redaction reason"},
 		{name: "secret-file", takesArg: true, desc: "Read the leaked secret bytes from this file"},
 	},
+	"pr retry": {
+		{name: "pr", takesArg: true, desc: "Pull request number"},
+		{name: "route", takesArg: true, values: []string{prRetryRouteMergeReview, prRetryRouteRemediation, prRetryRouteHold}, desc: "Target route"},
+		{name: "reason", takesArg: true, desc: "Audit reason"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle that owns the PR"},
+		{name: "actor", takesArg: true, desc: "Audit identity"},
+		{name: "dry-run", desc: "Report the proposed transition without mutating anything"},
+		{name: "json", desc: "Print the report as JSON"},
+	},
 	"backlog-health": {
 		{name: "feedback", desc: "Include backlog feedback"},
 	},

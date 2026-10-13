@@ -133,8 +133,7 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 			// which authorizes surrendering a result for run X and no other —
 			// the same body-level binding the journal plane applies.
 			if authenticated && (IsPodPrincipal(principal) || generated || isParent) {
-				if principal.Subject != podPrincipalSubject(run) {
-					writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only surrender its own run's results")
+				if !requirePodRun(w, principal, run, "pod principal may only surrender its own run's results") {
 					return
 				}
 			}

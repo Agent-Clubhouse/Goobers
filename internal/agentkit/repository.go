@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -621,7 +622,7 @@ func (r *Repository) planInterruptedUpdate(
 		return UpdatePlan{}, fmt.Errorf("validate interrupted agent toolkit update: %w", err)
 	}
 	sort.Strings(plan.ModifiedOwned)
-	plan.ModifiedOwned = compactStrings(plan.ModifiedOwned)
+	plan.ModifiedOwned = slices.Compact(plan.ModifiedOwned)
 	return plan, nil
 }
 
@@ -1091,19 +1092,6 @@ func requiredModeMatches(actual, required fs.FileMode) bool {
 		return true
 	}
 	return actual.Perm()&0o111 == required.Perm()&0o111
-}
-
-func compactStrings(values []string) []string {
-	if len(values) < 2 {
-		return values
-	}
-	compacted := values[:1]
-	for _, value := range values[1:] {
-		if value != compacted[len(compacted)-1] {
-			compacted = append(compacted, value)
-		}
-	}
-	return compacted
 }
 
 func digest(data []byte) string {

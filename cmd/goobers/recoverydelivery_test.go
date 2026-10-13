@@ -66,21 +66,50 @@ func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
 				}
 				defer func() { _ = run.Close() }()
 			}
-			var out bytes.Buffer
-			err = (recoveryDeliveryService{layout: layout}).StreamRecovery(context.Background(), "receiving-run", repo.CanonicalKey(), "7", &out)
+			out := &sourceReportingBuffer{}
+			err = (recoveryDeliveryService{layout: layout}).StreamRecovery(context.Background(), "receiving-run", repo.CanonicalKey(), "7", out)
 			if mode == "valid" {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got, err := recovery.ReceiveArchiveEnvelope(context.Background(), &out, t.TempDir(), 4096, nil)
+				want := recovery.SourceRun{Workflow: "implementation", Phase: string(journal.PhaseEscalated), TerminalSeq: lastRecoverySourceSeq(t, layout, "source-run")}
+				if out.source != want || out.reportedAfterBytes {
+					t.Fatalf("source run evidence = %+v (after bytes %t), want %+v before archive bytes", out.source, out.reportedAfterBytes, want)
+				}
+				got, err := recovery.ReceiveArchiveEnvelope(context.Background(), &out.Buffer, t.TempDir(), 4096, nil)
 				if err != nil || got != record {
 					t.Fatalf("received wrong recovery: %+v %v", got, err)
 				}
-			} else if err == nil || out.Len() != 0 {
+			} else if err == nil || out.Len() != 0 || out.source.Known() {
 				t.Fatalf("unsafe delivery: bytes=%d err=%v", out.Len(), err)
 			}
 		})
 	}
+}
+
+// sourceReportingBuffer records the source-run evidence a delivery reports and
+// whether it arrived only after archive bytes, when headers could not carry it.
+type sourceReportingBuffer struct {
+	bytes.Buffer
+	source             recovery.SourceRun
+	reportedAfterBytes bool
+}
+
+func (b *sourceReportingBuffer) ReportSourceRun(source recovery.SourceRun) {
+	b.source, b.reportedAfterBytes = source, b.Len() != 0
+}
+
+func lastRecoverySourceSeq(t *testing.T, layout instance.Layout, runID string) uint64 {
+	t.Helper()
+	reader, err := journal.OpenReadOnly(filepath.Join(layout.RunsDir(), runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != journal.EventRunFinished {
+		t.Fatalf("source journal has no terminal event: %v", err)
+	}
+	return events[len(events)-1].Seq
 }
 
 func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {

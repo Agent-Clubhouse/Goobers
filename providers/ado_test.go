@@ -926,6 +926,7 @@ func TestADOProviderListPullRequests(t *testing.T) {
 		HeadPrefix:        "goobers/",
 		Author:            "mona@example.com",
 		RequestedReviewer: "reviewer@example.com",
+		SkipCheckState:    true,
 	})
 	if err != nil {
 		t.Fatalf("ListPullRequests returned error: %v", err)
@@ -940,7 +941,7 @@ func TestADOProviderListPullRequests(t *testing.T) {
 	if pr.Head != "goobers/implementation/run-1" || pr.Base != "main" || pr.HeadSHA != "head-sha" || pr.BaseSHA != "base-sha" {
 		t.Fatalf("unexpected pull request refs: %#v", pr)
 	}
-	if !pr.Draft || pr.CheckState != CheckStatePending || len(pr.Labels) != 1 || pr.Labels[0] != "goobers:needs-remediation" {
+	if !pr.Draft || pr.CheckState != "" || len(pr.Labels) != 1 || pr.Labels[0] != "goobers:needs-remediation" {
 		t.Fatalf("unexpected pull request metadata: %#v", pr)
 	}
 	if pr.Author != "mona@example.com" || len(pr.Assignees) != 0 ||

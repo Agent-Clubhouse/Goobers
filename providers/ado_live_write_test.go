@@ -38,6 +38,7 @@ package providers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -288,20 +289,24 @@ func (e adoLiveWriteEnv) checkLabels(ctx context.Context, t *testing.T, pullID s
 // absence check vacuously.
 func (e adoLiveWriteEnv) requireLabels(ctx context.Context, t *testing.T, pullID string, present, absent []string) {
 	t.Helper()
-	names, err := e.provider.PullRequestLabelNames(ctx, e.repo, pullID)
-	if err != nil {
-		t.Fatalf("PullRequestLabelNames: %v", err)
-	}
-	for _, name := range present {
-		if !adoHasLabel(names, name) {
-			t.Errorf("labels %v lack %q", names, name)
+	adoLivePoll(ctx, t, "pull request labels", func() (bool, string, error) {
+		names, err := e.provider.PullRequestLabelNames(ctx, e.repo, pullID)
+		if err != nil {
+			return false, "", err
 		}
-	}
-	for _, name := range absent {
-		if adoHasLabel(names, name) {
-			t.Errorf("labels %v still carry %q", names, name)
+		state := fmt.Sprintf("labels %v, want present %v, absent %v", names, present, absent)
+		for _, name := range present {
+			if !adoHasLabel(names, name) {
+				return false, state, nil
+			}
 		}
-	}
+		for _, name := range absent {
+			if adoHasLabel(names, name) {
+				return false, state, nil
+			}
+		}
+		return true, state, nil
+	})
 }
 
 func (e adoLiveWriteEnv) checkThreads(ctx context.Context, t *testing.T, pullID string) {
@@ -320,19 +325,18 @@ func (e adoLiveWriteEnv) checkThreads(ctx context.Context, t *testing.T, pullID 
 
 func (e adoLiveWriteEnv) requireComment(ctx context.Context, t *testing.T, pullID, commentID, body string) {
 	t.Helper()
-	comments, err := e.provider.ListPullRequestThreadComments(ctx, e.repo, pullID)
-	if err != nil {
-		t.Fatalf("ListPullRequestThreadComments: %v", err)
-	}
-	for _, comment := range comments {
-		if comment.ID == commentID {
-			if !strings.Contains(comment.Body, body) {
-				t.Fatalf("comment %s body = %q, want it to contain %q", commentID, comment.Body, body)
-			}
-			return
+	adoLivePoll(ctx, t, "thread comment "+commentID, func() (bool, string, error) {
+		comments, err := e.provider.ListPullRequestThreadComments(ctx, e.repo, pullID)
+		if err != nil {
+			return false, "", err
 		}
-	}
-	t.Fatalf("comment %s not listed among %d thread comments", commentID, len(comments))
+		for _, comment := range comments {
+			if comment.ID == commentID {
+				return strings.Contains(comment.Body, body), fmt.Sprintf("comment %s body = %q, want it to contain %q", commentID, comment.Body, body), nil
+			}
+		}
+		return false, fmt.Sprintf("comment %s not listed among %d thread comments", commentID, len(comments)), nil
+	})
 }
 
 func (e adoLiveWriteEnv) checkStatus(ctx context.Context, t *testing.T, pullID string) {

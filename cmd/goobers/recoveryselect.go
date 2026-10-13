@@ -140,7 +140,7 @@ func recoveryCandidateTerminal(ctx context.Context, layout instance.Layout, reco
 	if err != nil {
 		return false, err
 	}
-	return terminalRunPhase(phase), nil
+	return phase.IsTerminal(), nil
 }
 
 // Stage snapshots share the run's immutable start timestamp. Explicit capture

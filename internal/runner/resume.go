@@ -2074,6 +2074,9 @@ func infrastructureTargetRepassSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateEvaluated {
 			continue
 		}
+		if e.Verdict == gate.OutcomeTimeout {
+			continue
+		}
 		if e.Verdict != gate.OutcomeInfra {
 			if target := gateTargets[e.Gate]; target != "" && seed != nil {
 				seed[target] = 0

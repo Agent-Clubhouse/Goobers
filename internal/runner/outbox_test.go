@@ -577,3 +577,37 @@ func TestOversizedOutboxPreservesCommandOutcomeAndFailsWorkflow(t *testing.T) {
 		t.Fatalf("oversized outbox was partially published: %v", err)
 	}
 }
+
+func TestMakeContainedDirRejectsLexicalEscapes(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"..", filepath.Join("..", "x"), "/abs", `\rooted`, "C:evil"} {
+		if _, err := makeContainedDir(root, rel); err == nil || err.Error() != apiv1.ErrPathEscape.Error() {
+			t.Errorf("makeContainedDir(%q) err = %v, want ErrPathEscape", rel, err)
+		}
+	}
+	got, err := makeContainedDir(root, filepath.Join("a", "b"))
+	if err != nil {
+		t.Fatalf("contained path rejected: %v", err)
+	}
+	if info, err := os.Stat(got); err != nil || !info.IsDir() {
+		t.Fatalf("contained dir not created: %v", err)
+	}
+}
+
+func TestCollectOutboxFilesDedupesOverlappingEntries(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "a.txt", "a")
+	writeWorkspaceFile(t, root, "reports/b.txt", "b")
+
+	files, err := collectOutboxFiles(root, []string{"a.txt", "./a.txt", "reports", "reports/b.txt", "."})
+	if err != nil {
+		t.Fatalf("collectOutboxFiles: %v", err)
+	}
+	seen := map[string]int{}
+	for _, f := range files {
+		seen[f.RelPath]++
+	}
+	if len(files) != 2 || seen["a.txt"] != 1 || seen["reports/b.txt"] != 1 {
+		t.Fatalf("files = %+v, want a.txt and reports/b.txt once each", files)
+	}
+}

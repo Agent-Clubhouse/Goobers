@@ -206,8 +206,7 @@ func registerCredentialRoute(router *Router, ordinary, child, parent CredentialS
 		}
 		// Per-run containment: the pod principal established above may only
 		// resolve credentials for its OWN run's stages.
-		if principal.Subject != podPrincipalSubject(input.RunID) {
-			writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only resolve credentials for its own run")
+		if !requirePodRun(w, principal, input.RunID, "pod principal may only resolve credentials for its own run") {
 			return
 		}
 		response, err := credentials.Resolve(request.Context(), input)
