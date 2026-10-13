@@ -2856,6 +2856,12 @@ summary:focus-visible {
   position: relative;
 }
 
+.work-item-link {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
 .data-row-stretch-link {
   inset: 0;
   position: absolute;

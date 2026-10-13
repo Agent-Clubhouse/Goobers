@@ -31,6 +31,12 @@ type Service struct {
 // Accept captures one ordinary selection under an archive lease. Retries retain
 // the original pins even if the applied configuration has changed.
 func (s *Service) Accept(ctx context.Context, key, actor string, request Request) (triggerqueue.Record, bool, error) {
+	return s.AcceptBefore(ctx, key, actor, request, time.Time{})
+}
+
+// AcceptBefore records a host-selected admission deadline. Exact retries keep
+// the first accepted deadline, alongside its generation and execution identity.
+func (s *Service) AcceptBefore(ctx context.Context, key, actor string, request Request, deadline time.Time) (triggerqueue.Record, bool, error) {
 	if err := request.Validate(); err != nil {
 		return triggerqueue.Record{}, false, err
 	}
@@ -50,7 +56,7 @@ func (s *Service) Accept(ctx context.Context, key, actor string, request Request
 		return triggerqueue.Record{}, false, errors.New("startintent: archive lease unavailable")
 	}
 	defer release()
-	raw, err := (Envelope{Kind: Kind, Request: request, Target: target}).Marshal()
+	raw, err := (Envelope{Kind: Kind, Request: request, Target: target, Deadline: deadline.UTC()}).Marshal()
 	if err != nil {
 		return triggerqueue.Record{}, false, err
 	}
@@ -77,6 +83,14 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 	e, err := Parse(record.Payload)
 	if err != nil {
 		return err
+	}
+	if !e.Deadline.IsZero() && !s.Now().Before(e.Deadline) {
+		return s.finishExpired(admission, record)
+	}
+	if !e.Deadline.IsZero() {
+		var cancel context.CancelFunc
+		admission, cancel = context.WithDeadline(admission, e.Deadline)
+		defer cancel()
 	}
 	if s.Build == nil || s.Scheduler == nil {
 		return nil
@@ -121,6 +135,29 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 		return errors.New("startintent: scheduler changed reserved run identity")
 	}
 	return s.Queue.RecordDispatch(admission, record.ID, runID)
+}
+
+// A deadline can reject only an unlaunched request. A matching journal wins
+// over the clock; unreadable or mismatched evidence retains custody.
+func (s *Service) finishExpired(ctx context.Context, record triggerqueue.Record) error {
+	observed, err := s.Observe(ctx, record)
+	if err != nil {
+		return err
+	}
+	if !observed && record.State != triggerqueue.Accepted {
+		// A live launch may not have published its journal yet. Only the
+		// startup reconciler can prove an old process will never publish it.
+		return nil
+	}
+	if record.State == triggerqueue.Accepted {
+		if err := s.Queue.BeginDispatch(ctx, record.ID); err != nil {
+			return err
+		}
+	}
+	if observed {
+		return s.Queue.Finish(ctx, record.ID, triggerqueue.Dispatched, strings.TrimPrefix(record.ID, "trigger-"), "", s.Now())
+	}
+	return s.Queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", "accepted trigger expired before execution admission", s.Now())
 }
 
 func (s *Service) refuseDispatch(ctx context.Context, id string, err error) error {

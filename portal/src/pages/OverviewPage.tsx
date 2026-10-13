@@ -4,6 +4,7 @@ import { Action } from "../ui/Action";
 import { Timestamp } from "../ui/Timestamp";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RunTiming } from "../components/RunTiming";
+import { RunWorkTitle } from "../components/RunWorkTitle";
 import type {
   DaemonClient,
   MaintenanceStatus,
@@ -1145,7 +1146,7 @@ function RunSection({
             >
               <span className="row-primary">
                 <span className="row-title" title={runLabel(run)}>
-                  {runLabel(run)}
+                  <RunWorkTitle run={run} />
                 </span>
                 <span className="row-subtitle" title={runContextSubtitle(run, active)}>
                   {active && run.operator ? operatorSubtitle(run) : runContextSubtitle(run, active)}
