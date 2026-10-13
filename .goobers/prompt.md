@@ -205,28 +205,13 @@ described above.
 
 ## Task
 
-Remediate the failed CI checks using the attached provider evidence, run fast targeted tests for the change, and commit the fix to the run's branch. Do not run the full `make ci` / `go test -race ./...` suite; local-ci runs it authoritatively after review.
+Implement the claimed issue end to end: read the issue and its acceptance criteria, plan, implement, verify with fast, targeted tests for what you changed, and commit to the run's branch (push is a separate deterministic stage — see push-branch below). Do NOT run the full `make ci` / `go test -race ./...` suite in-session — the deterministic local-ci stage below owns that authoritatively; running it here only burns the session's wall-clock budget on test execution that is about to run again anyway (#724). On a repass, first read the reviewer rationale or local-CI failure evidence attached as context and address it before making further changes. Treat a provider-side acceptance step such as an issue comment or report as satisfied only when attached context proves it was already completed. Otherwise fail explicitly with PROVIDER_ACTION_REQUIRED rather than attempting the mutation or reporting MISSING_CAPABILITY.
 
 ## Context
 
 - query-backlog.artifact[0]: available at `.goobers/context/00-query-backlog.artifact_0_`
 - query-backlog.artifact[1]: available at `.goobers/context/01-query-backlog.artifact_1_`
 - query-backlog.artifact[2]: available at `.goobers/context/02-query-backlog.artifact_2_`
-- review.verdict: available at `.goobers/context/14-review.verdict`
-- local-ci.artifact[0]: available at `.goobers/context/15-local-ci.artifact_0_`
-- ci-poll.artifact[0]: available at `.goobers/context/16-ci-poll.artifact_0_`
-- review.verdict: available at `.goobers/context/14-review.verdict`
-- local-ci.artifact[0]: available at `.goobers/context/15-local-ci.artifact_0_`
-- ci-poll.artifact[0]: available at `.goobers/context/16-ci-poll.artifact_0_`
-- learning.episode[97]: available at `.goobers/context/09-learning.episode_97_`
-- review.verdict: available at `.goobers/context/14-review.verdict`
-- local-ci.artifact[0]: available at `.goobers/context/15-local-ci.artifact_0_`
-- ci-poll.artifact[0]: available at `.goobers/context/16-ci-poll.artifact_0_`
-- learning.episode[141]: available at `.goobers/context/13-learning.episode_141_`
-- review.verdict: available at `.goobers/context/14-review.verdict`
-- local-ci.artifact[0]: available at `.goobers/context/15-local-ci.artifact_0_`
-- ci-poll.artifact[0]: available at `.goobers/context/16-ci-poll.artifact_0_`
-- learning.episode[185]: available at `.goobers/context/17-learning.episode_185_`
 
 ## Scratch files
 
