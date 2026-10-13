@@ -1060,61 +1060,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if skipPermanentRefusedEntry(entry) {
 			continue
 		}
+		candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
 		identity := entryIdentity(entry)
-		s.mu.Lock()
-		pending := s.pendingScheduleDemand[identity]
-		s.mu.Unlock()
-		candidate := &tickCandidate{
-			entry:              entry,
-			schedule:           pending.schedule,
-			scheduleRemaining:  pending.remaining,
-			scheduleDemand:     pending.remaining > 0,
-			schedulePollDue:    pending.repoll,
-			scheduleEnqueuedAt: pending.enqueuedAt,
-		}
-		if pending.remaining == 0 {
-			candidate.schedule = TickResult{LastEval: now}
-		}
-		if len(entry.Schedules) > 0 {
-			// Read, evaluate, and write the trigger state under a single lock
-			// acquisition. Tick is exported so a manual trigger and concurrent
-			// Tick calls (e.g. overlapping Run-loop iterations) can race here;
-			// dropping the lock between the read and the write let two callers
-			// both read the same pre-fire TriggerState, both compute Fire=true,
-			// and both dispatch the same due firing.
-			// Persisting the snapshot is batched to once per tick (#6010).
-			s.mu.Lock()
-			ts := s.triggers[identity]
-			lastEval := ts.LastEval
-			dueIndexes := dueScheduleIndexes(entry.Schedules, ts.LastEval, now)
-			res := Tick(ts, now)
-			if res.LastEval != ts.LastEval {
-				evaluated = append(evaluated, entry)
-			}
-			s.triggers[identity] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
-			s.mu.Unlock()
-			if res.Fire {
-				candidate.schedule = res
-				candidate.scheduleEnqueuedAt = oldestDueScheduleAt(entry.Schedules, lastEval, now)
-				candidate.scheduleIndexes = dueIndexes
-				if blocked, reason := s.scheduleBackedOff(identity, entry, dueIndexes, now); blocked {
-					s.journalEvent(journal.Event{
-						Type:     journal.EventTickSkipped,
-						Workflow: entry.Workflow,
-						Gaggle:   entry.Gaggle,
-						Reason:   reason,
-					})
-					candidate.scheduleIndexes = nil
-				} else if entry.ScheduleDemandCounter == nil {
-					// Coalesces with a retained fire; scheduleDemand stays set
-					// so admission consumes its marker (#6207).
-					candidate.scheduleRemaining = 1
-				} else {
-					candidate.schedulePollDue = true
-				}
-			}
-		}
-
 		if entry.BacklogCounter != nil {
 			candidate.backlogPollDue = s.backlogPollDue(entry, now)
 		}
