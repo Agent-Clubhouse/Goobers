@@ -67,14 +67,14 @@ func TestSourceScheduleRecoversQueueCursorAndUsesPinnedStarter(t *testing.T) {
 func TestSourceScheduleArchiveFailureLeavesDueCursor(t *testing.T) {
 	source, entry := sourceFixture(t)
 	base := time.Now().UTC()
-	if _, _, err := source.ScheduleCursor(t.Context(), entry, base, false); err != nil {
+	if _, _, err := source.ScheduleCursor(t.Context(), entry, base, false, base); err != nil {
 		t.Fatal(err)
 	}
 	source.Acquire = func(context.Context, Target) (func(), error) { return nil, errors.New("archive unavailable") }
 	if err := source.AcceptSchedule(t.Context(), entry, base, base.Add(time.Minute), true); err == nil {
 		t.Fatal("missing pins accepted")
 	}
-	if cursor, _, err := source.ScheduleCursor(t.Context(), entry, base.Add(time.Hour), false); err != nil || !cursor.Equal(base) {
+	if cursor, _, err := source.ScheduleCursor(t.Context(), entry, base.Add(time.Hour), false, base.Add(time.Hour)); err != nil || !cursor.Equal(base) {
 		t.Fatal(cursor, err)
 	}
 }

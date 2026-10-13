@@ -24,7 +24,9 @@ a worker directly. Capacity release wakes remaining demand.
 Unobserved and partially transferred obligations retain their configuration
 archives. Accepted workers then retain their own pins and use the ordinary
 queued dispatcher, current eligibility checks and matching journal evidence.
-Removing or disabling a workflow does not silently delete an outstanding
+Changing its schedule revision resets only the future evaluation cursor; an
+older partially transferred obligation remains discoverable and completes using
+its original count and pins. Removing or disabling a workflow does not silently delete an outstanding
 obligation. Generic queue intervention and retirement controls remain separate
 work; such obligations retain their archives until explicitly resolved.
 
