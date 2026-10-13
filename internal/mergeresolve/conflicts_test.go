@@ -136,3 +136,45 @@ func TestResolveAdjacentLineConflictsWithoutConflictIsAbsent(t *testing.T) {
 		t.Fatalf("status = %v, want StatusAbsent", status)
 	}
 }
+
+func TestResolveAdjacentLineConflictsStageFailureRollsBack(t *testing.T) {
+	dir := newConflictedRepo(t,
+		strings.Replace(manifest, `    "lint",`+"\n", `    "lint",`+"\n"+`    "build",`+"\n", 1))
+	path := filepath.Join(dir, "package.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := testGit(t, dir)
+	failing := func(args ...string) ([]byte, error) {
+		for _, arg := range args {
+			if arg == "add" {
+				return nil, os.ErrPermission
+			}
+		}
+		return real(args...)
+	}
+
+	status, err := ResolveAdjacentLineConflicts(dir, failing)
+	if err == nil || status != StatusUnsafe {
+		t.Fatalf("status, err = %v, %v; want StatusUnsafe and error", status, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("file modified after failed staging: %q, want %q", after, before)
+	}
+	files, err := UnmergedFiles(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Path != "package.json" {
+		t.Fatalf("unmerged files = %v, want the manifest still conflicted", files)
+	}
+	entries, _ := filepath.Glob(filepath.Join(dir, ".goobers-resolve-*"))
+	if len(entries) != 0 {
+		t.Fatalf("leftover temp files: %v", entries)
+	}
+}
