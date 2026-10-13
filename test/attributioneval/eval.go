@@ -53,6 +53,11 @@ const (
 // granularities are the scored levels, coarsest first.
 var granularities = []granularity{granularityDomain, granularityWorkflow, granularityStage, granularityStep, granularityClass}
 
+// calibrationTarget is the granularity confidence is calibrated against. It is
+// the fault domain because that is what the fault auditor files on: the
+// published calibration sets its filing confidence threshold.
+const calibrationTarget = granularityDomain
+
 // evalSet is a versioned, labeled set of failed runs. Cases carry their
 // journal inline so a run over the set is deterministic and needs no run
 // directory.
@@ -126,6 +131,7 @@ type calibrationBin struct {
 	Lower          float64 `json:"lower"`
 	Upper          float64 `json:"upper"`
 	Count          int     `json:"count"`
+	Correct        int     `json:"correct"`
 	MeanConfidence float64 `json:"meanConfidence"`
 	Accuracy       float64 `json:"accuracy"`
 }
@@ -282,7 +288,7 @@ func runEval(set evalSet) (evalReport, error) {
 		Unattributed:   unattributed(results),
 		Taxonomy:       fullTaxonomy(),
 		Accuracy:       accuracyOf(results),
-		Calibration:    calibrate(results, granularityStep),
+		Calibration:    calibrate(results, calibrationTarget),
 		Results:        results,
 	}, nil
 }
@@ -438,6 +444,7 @@ func calibrate(results []caseResult, target granularity) calibration {
 		}
 		mean := confidenceSums[index] / float64(bin.Count)
 		accuracy := float64(hitCounts[index]) / float64(bin.Count)
+		bin.Correct = hitCounts[index]
 		bin.MeanConfidence = round4(mean)
 		bin.Accuracy = round4(accuracy)
 		ece += float64(bin.Count) / float64(len(results)) * math.Abs(accuracy-mean)
@@ -488,4 +495,33 @@ func (report evalReport) regressions(baseline evalBaseline) []string {
 		}
 	}
 	return regressions
+}
+
+// summary is the report without per-case detail, in the published form
+// telemetry read surfaces carry and the fault auditor derives its filing
+// threshold from.
+func (report evalReport) summary() creditgraph.AttributionEvalSummary {
+	summary := creditgraph.AttributionEvalSummary{
+		Schema:         creditgraph.AttributionEvalSummarySchemaVersion,
+		EvalSetVersion: report.EvalSetVersion,
+		EvalSetDigest:  report.EvalSetDigest,
+		CaseCount:      report.CaseCount,
+		Unattributed:   report.Unattributed,
+		Accuracy:       make([]creditgraph.AttributionEvalAccuracy, 0, len(report.Accuracy)),
+		Calibration: creditgraph.AttributionEvalCalibration{
+			Target:                   string(report.Calibration.Target),
+			BrierScore:               report.Calibration.BrierScore,
+			ExpectedCalibrationError: report.Calibration.ExpectedCalibrationError,
+			Bins:                     make([]creditgraph.AttributionEvalBin, 0, len(report.Calibration.Bins)),
+		},
+	}
+	for _, entry := range report.Accuracy {
+		summary.Accuracy = append(summary.Accuracy, creditgraph.AttributionEvalAccuracy{
+			Granularity: string(entry.Granularity), Correct: entry.Correct, Total: entry.Total, Accuracy: entry.Accuracy,
+		})
+	}
+	for _, bin := range report.Calibration.Bins {
+		summary.Calibration.Bins = append(summary.Calibration.Bins, creditgraph.AttributionEvalBin(bin))
+	}
+	return summary
 }

@@ -1642,6 +1642,35 @@ export interface TelemetryStatsResult {
   readyPool: TelemetryReadyPool;
   trend?: TelemetryTrendBucket[];
   trendPrevious?: TelemetryTrendBucket;
+  /** The instance's published Backprop attribution accuracy eval, when one exists. */
+  attributionEval?: AttributionEvalSummary;
+}
+
+export interface AttributionEvalSummary {
+  schema: string;
+  evalSetVersion: string;
+  evalSetDigest: string;
+  caseCount: number;
+  unattributed: number;
+  accuracy: {
+    granularity: string;
+    correct: number;
+    total: number;
+    accuracy: number;
+  }[];
+  calibration: {
+    target: string;
+    brierScore: number;
+    expectedCalibrationError: number;
+    bins: {
+      lower: number;
+      upper: number;
+      count: number;
+      correct: number;
+      meanConfidence: number;
+      accuracy: number;
+    }[];
+  };
 }
 
 export interface GraphAnalytics {

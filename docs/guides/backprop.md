@@ -328,6 +328,15 @@ and artifact `evidence` links, `counterEvidence`, `alternativeDomains`,
 `recommendedOwner`, `recommendedAction`, and `verification`. The same failure
 signature always produces the same finding ID across runs and passes.
 
+Each finding also carries `fileable`: whether its `confidence` meets the
+report's `filingThreshold`. The threshold is 0.5 unless an attribution accuracy
+eval has been published to the instance (`go run ./test/attributioneval
+-publish=./instance` from a source checkout); then it is derived from the eval's
+measured calibration (`source: attribution-eval`) and the stats API also
+returns the eval summary as `attributionEval`. Only fileable findings start the
+`telemetry-query` report cooldown. See
+[Attribution accuracy eval](../design/credit-graph.md#attribution-accuracy-eval).
+
 ## Record a fix and verify it
 
 When you deploy a fix for a finding, record it:

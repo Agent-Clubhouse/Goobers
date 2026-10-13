@@ -56,6 +56,9 @@ type FaultAuditConfig struct {
 	PreviousReports      map[string]time.Time
 	FixesAppliedAt       map[string]time.Time
 	BaselineObservations map[string][]AttributionObservation
+	// Filing is the confidence a finding needs to be fileable; an unset value
+	// means DeriveFilingThreshold(nil).
+	Filing FilingThreshold
 }
 
 // FaultFinding describes one evidence-backed failure signature and its likely owner.
@@ -76,6 +79,8 @@ type FaultFinding struct {
 	RecommendedOwner   string                    `json:"recommendedOwner"`
 	RecommendedAction  string                    `json:"recommendedAction"`
 	Verification       VerificationState         `json:"verification"`
+	// Fileable is true when Confidence meets the report's filing threshold.
+	Fileable bool `json:"fileable"`
 }
 
 // FaultAuditReport groups findings by ownership boundary.
@@ -91,6 +96,7 @@ type FaultAuditReport struct {
 	UnknownFindings      []FaultFinding                      `json:"mixedOrUnknownFindings,omitempty"`
 	Suppressed           int                                 `json:"suppressed"`
 	Truncated            bool                                `json:"truncated,omitempty"`
+	FilingThreshold      *FilingThreshold                    `json:"filingThreshold,omitempty"`
 	BaselineObservations map[string][]AttributionObservation `json:"-"`
 }
 
@@ -107,9 +113,10 @@ var unstableSignaturePart = regexp.MustCompile(`(?i)(?:[a-f0-9]{16,}|[0-9]+|[a-z
 // AuditFaultDomains classifies stored attribution observations into actionable fault domains.
 func AuditFaultDomains(observations []AttributionObservation, config FaultAuditConfig) FaultAuditReport {
 	config = normalizeAuditConfig(config)
+	filing := config.Filing
 	report := FaultAuditReport{
 		Schema: FaultAuditSchemaVersion, Mode: "report-only",
-		Since: config.Since, Until: config.Until,
+		Since: config.Since, Until: config.Until, FilingThreshold: &filing,
 	}
 	selected := selectAuditObservations(observations, config)
 	report.ObservationsScanned = len(selected)
@@ -203,6 +210,7 @@ func normalizeAuditConfig(config FaultAuditConfig) FaultAuditConfig {
 	if config.Cooldown <= 0 {
 		config.Cooldown = 24 * time.Hour
 	}
+	config.Filing = normalizeFilingThreshold(config.Filing)
 	return config
 }
 
@@ -315,6 +323,7 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 	}
 	finding.Rationale, finding.AlternativeDomains, finding.RecommendedOwner, finding.RecommendedAction = explainFaultFinding(finding, len(classificationSignals))
 	finding.Verification = verificationState(finding, signals, all, config)
+	finding.Fileable = finding.Confidence >= config.Filing.Confidence
 	return finding
 }
 

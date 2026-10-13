@@ -359,7 +359,7 @@ run-level from stage-level blame. A case for which attribution produces no
 cause earns no credit at any granularity and is counted as `unattributed`. The
 report also gives the Brier score and
 expected calibration error (five equal-width bins) of cause confidence against
-step-level correctness. Results are ordered by case ID and the set digest is
+fault-domain correctness, the granularity the auditor files on. Results are ordered by case ID and the set digest is
 order-independent, so a fixed set always yields the same report.
 
 It prints per-granularity accuracy and writes the full JSON report with
@@ -384,11 +384,22 @@ and an explicit unknown. A label's MAST category must match its class:
 The default domain applies when the cause's text names no shared runtime or
 external component; the auditor's keyword rules can override it either way.
 
+`-publish=<instance-root>` records the checked report's summary (schema
+`goobers.dev/backprop/attribution-eval-summary/v1`: set version and digest,
+accuracy, calibration bins) in `scheduler/backprop-audit/attribution-eval.json`;
+it is refused with `-update` and after a regression. The telemetry stats API,
+which the portal reads, returns it as `attributionEval`. The fault auditor
+derives its filing threshold from it: the upper bound of the highest populated
+calibration bin whose accuracy is below 0.8, else the lower bound of the lowest
+populated bin, never below the default 0.5 (used when nothing is published).
+v1 yields 0.6. Every audit report carries `filingThreshold` (confidence,
+source, eval set) and each finding `fileable`; only fileable findings start
+the filing pass's report cooldown. A malformed published summary is an error,
+not a silent fallback to the default.
+
 Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
 command, building cases from real journals with human and fix-marker labels,
-publishing the report to telemetry and the portal, deriving auditor filing
-confidence thresholds from the calibration, and counterfactual
-fault-injection generators.
+a portal view of the eval, and counterfactual fault-injection generators.
 
 ## Why
 

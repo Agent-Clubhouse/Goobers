@@ -9,6 +9,12 @@
 //	go run ./test/attributioneval            # check against the baseline
 //	go run ./test/attributioneval -report=r.json
 //	go run ./test/attributioneval -update    # record a new baseline
+//	go run ./test/attributioneval -publish=<instance-root>
+//
+// -publish records the report's summary on a Goobers instance after the
+// baseline check passes: telemetry read surfaces (and so the portal) report it,
+// and the fault auditor derives its filing confidence threshold from its
+// calibration.
 //
 // The same guard runs in CI as TestAttributionEvalRegressionGuard.
 package main
@@ -20,6 +26,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 var (
@@ -38,7 +46,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	baselinePath := flags.String("baseline", defaultBaselinePath, "recorded accuracy baseline")
 	reportPath := flags.String("report", "", "write the full JSON report to this path")
 	update := flags.Bool("update", false, "record this run's accuracy as the new baseline")
+	publishRoot := flags.String("publish", "", "publish the report summary to this Goobers instance root")
 	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *update && *publishRoot != "" {
+		_, _ = fmt.Fprintln(stderr, "attributioneval: -publish requires a baseline check and cannot be combined with -update")
 		return 2
 	}
 	report, err := evaluate(*setPath)
@@ -70,6 +83,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "attributioneval: regression: %s\n", regression)
 		}
 		return 1
+	}
+	if *publishRoot != "" {
+		if err := readservice.PublishAttributionEval(*publishRoot, report.summary()); err != nil {
+			_, _ = fmt.Fprintf(stderr, "attributioneval: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }

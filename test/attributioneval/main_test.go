@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 var (
@@ -229,5 +230,61 @@ func TestValidateRejectsMalformedSets(t *testing.T) {
 		if err := candidate.validate(); err == nil {
 			t.Errorf("%s: validate accepted a malformed set", name)
 		}
+	}
+}
+
+func TestRunPublishesSummaryForTheAuditor(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-set", fixtureSetPath, "-baseline", fixtureBaselinePath, "-publish", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, want 0:\n%s", code, stderr.String())
+	}
+	report, err := evaluate(fixtureSetPath)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	published, err := readservice.ReadAttributionEval(root)
+	if err != nil {
+		t.Fatalf("ReadAttributionEval: %v", err)
+	}
+	if want := report.summary(); published == nil || !reflect.DeepEqual(*published, want) {
+		t.Fatalf("published = %+v, want %+v", published, want)
+	}
+	threshold := creditgraph.DeriveFilingThreshold(published)
+	if threshold.Source != creditgraph.FilingThresholdAttributionEval || threshold.EvalSetDigest != report.EvalSetDigest ||
+		threshold.CalibrationTarget != string(granularityDomain) {
+		t.Fatalf("threshold = %+v, want one derived from the published domain calibration", threshold)
+	}
+}
+
+func TestRunDoesNotPublishARegressedOrUncheckedReport(t *testing.T) {
+	report, err := evaluate(fixtureSetPath)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	raised := report.baseline()
+	raised.Accuracy[0].Accuracy = 1.01
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+	if err := writeJSON(baselinePath, raised); err != nil {
+		t.Fatalf("writeJSON: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		args []string
+		code int
+	}{
+		"regression": {args: []string{"-baseline", baselinePath}, code: 1},
+		"update":     {args: []string{"-baseline", baselinePath, "-update"}, code: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"-set", fixtureSetPath, "-publish", root}, tc.args...)
+			if code := run(args, &stdout, &stderr); code != tc.code {
+				t.Fatalf("exit = %d, want %d:\n%s", code, tc.code, stderr.String())
+			}
+			if published, err := readservice.ReadAttributionEval(root); err != nil || published != nil {
+				t.Fatalf("published = %+v, %v; want nothing published", published, err)
+			}
+		})
 	}
 }
