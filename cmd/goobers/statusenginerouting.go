@@ -72,7 +72,9 @@ func (l *statusRunLoader) collectionAndEngineText(ctx context.Context) string {
 	return text
 }
 
-func (l *statusRunLoader) withEngineRouting(output statusJSONOutput) statusJSONOutput {
-	output.EngineRouting = l.engineRouting().Load(context.Background())
+// withEngineRouting probes under the caller's context, which bounds the probe
+// together with the probe's own timeout.
+func (l *statusRunLoader) withEngineRouting(ctx context.Context, output statusJSONOutput) statusJSONOutput {
+	output.EngineRouting = l.engineRouting().Load(ctx)
 	return output
 }

@@ -80,7 +80,7 @@ func TestTemporalWorkerRouting(t *testing.T) {
 	}{
 		{name: "healthy", dialed: healthyRoutingTemporal(""), status: StatusPass, detail: "healthy: worker deployment"},
 		{
-			name: "stalled", dialed: stalled, status: StatusFail, detail: "stalled: no live worker",
+			name: "stalled", dialed: stalled, status: StatusFail, detail: "stalled: worker deployment",
 			hint: "run: temporal worker deployment set-current-version --deployment-name goobers --build-id v2",
 		},
 		{

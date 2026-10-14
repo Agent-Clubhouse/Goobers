@@ -68,6 +68,14 @@ func (s sdkClient) DescribeRouting(ctx context.Context) (client.WorkerDeployment
 	return DescribeRouting(ctx, s.c)
 }
 
+// WorkflowPollers uses the legacy DescribeTaskQueue, which lists versioned
+// pollers with their deployment options beside unversioned ones (verified
+// against a dev server; see the integration test). The server may answer
+// from the root partition alone, so on a multi-partition queue a live worker
+// whose pollers all sit on other partitions can be missed. That errs toward
+// alarm (a version reported without a live worker), never toward a false
+// healthy; the enhanced per-version poller reports belong to the deprecated
+// build-ID versioning API and do not describe worker deployments.
 func (s sdkClient) WorkflowPollers(ctx context.Context, taskQueue string) ([]*taskqueuepb.PollerInfo, error) {
 	resp, err := s.c.DescribeTaskQueue(ctx, taskQueue, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
 	if err != nil {
@@ -91,17 +99,20 @@ type Assessment struct {
 	// they serve.
 	Workers []WorkerRouting `json:"workers,omitempty"`
 	Detail  string          `json:"detail"`
-	// Remediation lists set-current-version commands, each of which routes
-	// tasks to one unrouted build. Goobers never runs them itself (#4084).
+	// Remediation lists Temporal CLI commands (set-current-version, or
+	// set-ramping-version --delete) that move new workflow tasks onto live
+	// workers; each line is one alternative. Goobers never runs them (#4084).
 	Remediation []string  `json:"remediation,omitempty"`
 	CheckedAt   time.Time `json:"checkedAt"`
 }
 
-// WorkerRouting is one served version among the live pollers.
+// WorkerRouting is one served version among the live pollers, with the
+// percentage of new workflow tasks the deployment routes to it.
 type WorkerRouting struct {
-	Version string `json:"version"`
-	Pollers int    `json:"pollers"`
-	Routing string `json:"routing"`
+	Version        string  `json:"version"`
+	Pollers        int     `json:"pollers"`
+	Routing        string  `json:"routing"`
+	TrafficPercent float32 `json:"trafficPercent"`
 }
 
 // Target names the Temporal frontend and engine task queue to assess.
@@ -144,89 +155,6 @@ func Assess(ctx context.Context, c Client, taskQueue string, now time.Time) Asse
 	return evaluate(taskQueue, routing, describeErr, pollers, now)
 }
 
-type pollerGroup struct {
-	versioned bool
-	build     string
-	count     int
-}
-
-func (g pollerGroup) label() string {
-	if !g.versioned {
-		return UnversionedLabel
-	}
-	return DeploymentName + "." + g.build
-}
-
-func evaluate(taskQueue string, routing client.WorkerDeploymentRoutingConfig, describeErr error, pollers []*taskqueuepb.PollerInfo, now time.Time) Assessment {
-	groups := livePollerGroups(pollers, now)
-	if len(groups) == 0 {
-		return Unknown(taskQueue, fmt.Sprintf("no goobers worker has polled task queue %q for workflow tasks in the last %s, "+
-			"so there is no live build to check the routing against", taskQueue, PollerMaxAge), now)
-	}
-	if describeErr != nil && !deploymentAbsent(describeErr) {
-		return Unknown(taskQueue, fmt.Sprintf("cannot read worker deployment %q routing: %v", DeploymentName, describeErr), now)
-	}
-	a := Assessment{Deployment: DeploymentName, TaskQueue: taskQueue, CheckedAt: now.UTC()}
-	if describeErr == nil {
-		a.CurrentVersion = VersionLabel(routing.CurrentVersion)
-		if routing.RampingVersion != nil {
-			a.RampingVersion = VersionLabel(routing.RampingVersion)
-			a.RampingPercentage = routing.RampingVersionPercentage
-		}
-	}
-	var routed, unrouted, unverified []string
-	for _, group := range groups {
-		finding := Check(group.versioned, group.build, routing, describeErr)
-		worker := WorkerRouting{Version: group.label(), Pollers: group.count, Routing: WorkerRouted}
-		switch {
-		case finding.Routed():
-			routed = append(routed, worker.Version)
-		case finding.Unverified:
-			worker.Routing = WorkerUnknown
-			unverified = append(unverified, worker.Version)
-		default:
-			worker.Routing = WorkerUnrouted
-			unrouted = append(unrouted, worker.Version)
-			a.Remediation = append(a.Remediation, finding.Command)
-		}
-		a.Workers = append(a.Workers, worker)
-	}
-	a.State, a.Detail = verdict(a, describeErr, routed, unrouted, unverified)
-	return a
-}
-
-func verdict(a Assessment, describeErr error, routed, unrouted, unverified []string) (State, string) {
-	switch {
-	case len(unrouted) > 0 && len(routed) == 0:
-		return StateStalled, fmt.Sprintf("no live worker on task queue %q is routed workflow tasks: worker deployment %q current version is %s, "+
-			"but the live workers serve %s, so the engine accepts no new work%s",
-			a.TaskQueue, a.Deployment, a.CurrentVersion, strings.Join(unrouted, ", "), unversionedNote(unrouted))
-	case len(unrouted) > 0:
-		return StateDegraded, fmt.Sprintf("live workers serving %s on task queue %q receive no workflow tasks: worker deployment %q current version is %s; "+
-			"%s still served%s",
-			strings.Join(unrouted, ", "), a.TaskQueue, a.Deployment, a.CurrentVersion, strings.Join(routed, ", "), unversionedNote(unrouted))
-	case len(unverified) > 0:
-		return StateUnknown, fmt.Sprintf("live workers serve %s, but worker deployment %q cannot be described: %v",
-			strings.Join(unverified, ", "), a.Deployment, describeErr)
-	default:
-		current := a.CurrentVersion
-		if current == "" {
-			current = UnversionedLabel + " (no versioned worker has registered the deployment)"
-		}
-		return StateHealthy, fmt.Sprintf("worker deployment %q routes workflow tasks to the live workers on task queue %q (%s); current version %s",
-			a.Deployment, a.TaskQueue, strings.Join(routed, ", "), current)
-	}
-}
-
-func unversionedNote(unrouted []string) string {
-	for _, version := range unrouted {
-		if version == UnversionedLabel {
-			return " (unversioned workers: engine.workerVersioning is off; either route the deployment to unversioned workers or set engine.workerVersioning: true)"
-		}
-	}
-	return ""
-}
-
 // livePollerGroups groups recent pollers by served version: unversioned
 // first, then builds in order. Pollers versioned under another deployment
 // are not goobers workers and are left out.
@@ -241,7 +169,7 @@ func livePollerGroups(pollers []*taskqueuepb.PollerInfo, now time.Time) []poller
 			if opts.GetDeploymentName() != DeploymentName {
 				continue
 			}
-			key = pollerGroup{versioned: true, build: opts.GetBuildId()}
+			key = pollerGroup{version: version{versioned: true, build: opts.GetBuildId()}}
 		}
 		counts[key]++
 	}

@@ -1650,7 +1650,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if !runsOnlyMode {
 			output.Runs = statusRecoverySummaries(l, runs, now)
 		}
-		return writeStatusJSON(stdout, stderr, runLoader.withEngineRouting(output))
+		return writeStatusJSON(stdout, stderr, runLoader.withEngineRouting(context.Background(), output))
 	}
 
 	// Skipped in --json mode since the structured summary has no plain-text

@@ -792,27 +792,52 @@ minutes after that. It logs `goobers worker: error: worker deployment "goobers" 
 while the current version does not route to it, in either mode. It never exits
 over it.
 
-The same check is visible from the operator's tools (#6020). Both compare the
-deployment's routing with the builds that polled the engine task queue
-(`engine.taskQueue`) in the last two minutes, and neither changes the routing
-(#4084):
+The same check is visible from the operator's tools (#6020). Both read the
+builds that polled the engine task queue (`engine.taskQueue`) in the last two
+minutes. They compare those builds with the deployment's routing as traffic
+shares: the current version gets 100% minus the ramp, and the ramping version
+gets the ramp percentage. The check works in both directions:
 
-- `goobers status` on an instance with an `engine:` block prints
-  `Warning: engine routing stalled: ...` (no live worker is routed tasks) or
-  `Warning: engine routing degraded: ...` (a new build is unrouted while the
-  old one still serves), followed by the `set-current-version` command. It
-  prints `Engine routing: unknown (...)` when it cannot reach Temporal or sees
-  no live worker; it is silent when healthy. `status --json` carries the same
-  verdict as `engineRouting` (`state`, `currentVersion`, per-version
-  `workers`, `detail`, `remediation`). The probe dials the instance's engine
-  frontend with a 5-second budget, so run status where that frontend is
-  reachable (for example in the daemon pod). Instances without an engine are
-  not probed. `status --api` does not serve it yet (#5985).
-- `goobers doctor --k8s --instance <root>` runs the `temporal-worker-routing`
-  check: fail when no live worker is routed tasks, warn for a partial rollout
-  or an unknown routing, pass when every live build is routed. The hint is
-  the command to run. Use `--checks temporal-worker-routing` to run it alone,
-  and `--record-instance` to make its outcome a `Cluster check` line in status.
+- every version that receives a share needs a live worker;
+- every live build should receive a share.
+
+Neither tool changes the routing (#4084).
+
+- **`goobers status`.** On an instance with an `engine:` block, status prints
+  one of these lines:
+  - `Warning: engine routing stalled: ...` when no live worker serves any of
+    the traffic;
+  - `Warning: engine routing degraded: ...` when some traffic goes to a
+    version with no live worker, or a live build receives none (for example
+    an unpromoted rollout);
+  - `Engine routing: unknown (...)` when it cannot reach Temporal or sees no
+    live worker.
+
+  The warnings end with the commands that move traffic onto live workers:
+  `set-current-version`, or `set-ramping-version ... --delete` for a ramp
+  nobody serves. Status prints nothing when routing is healthy.
+
+  `status --json` carries the same verdict as `engineRouting`:
+  - `state`
+  - `currentVersion`, `rampingVersion` and `rampingPercentage`
+  - per-version `workers` with their `trafficPercent`
+  - `detail` and `remediation`
+
+  The probe dials the instance's engine frontend with a 5-second budget. Run
+  status where that frontend is reachable, for example in the daemon pod.
+  Instances without an engine are not probed. `status --api` does not serve
+  the verdict yet (#5985).
+- **`goobers doctor --k8s --instance <root>`.** This runs the
+  `temporal-worker-routing` check. It fails when no live worker serves any
+  traffic. It warns for a partial mismatch or an unreadable routing. It
+  passes when every share is served and every live build receives one. The
+  hint is the command to run. Use `--checks temporal-worker-routing` to run
+  it alone, and `--record-instance` to make its outcome a `Cluster check`
+  line in status.
+
+The poller listing can come from a single task-queue partition. On a queue
+with several partitions, a live worker may then be missed. That errs toward a
+warning, never toward a false healthy.
 
 **Upgrading an instance that already ran versioned** (anything built from main
 between #4083 and #5950, including v0.5.0 betas): the worker now starts

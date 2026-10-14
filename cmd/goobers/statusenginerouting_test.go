@@ -42,7 +42,7 @@ func enableStatusEngine(t *testing.T, root string) {
 var stalledStatusRouting = workerrouting.Assessment{
 	State: workerrouting.StateStalled, Deployment: "goobers", TaskQueue: "engine-q", CurrentVersion: "__unversioned__",
 	Workers:     []workerrouting.WorkerRouting{{Version: "goobers.v2", Pollers: 1, Routing: workerrouting.WorkerUnrouted}},
-	Detail:      "no live worker on task queue \"engine-q\" is routed workflow tasks",
+	Detail:      "worker deployment \"goobers\" routes new workflow tasks on task queue \"engine-q\" as current __unversioned__ (100%), and no live worker serves any of it",
 	Remediation: []string{"temporal worker deployment set-current-version --deployment-name goobers --build-id v2"},
 }
 
@@ -75,7 +75,7 @@ func TestStatusReportsStalledEngineRouting(t *testing.T) {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
 	for _, line := range []string{
-		"Warning: engine routing stalled: no live worker",
+		"Warning: engine routing stalled: worker deployment \"goobers\" routes new workflow tasks",
 		"Run: temporal worker deployment set-current-version --deployment-name goobers --build-id v2",
 	} {
 		if !strings.Contains(stdout, line) {

@@ -92,11 +92,12 @@ const doctorHelp = "Usage: goobers doctor --k8s [--instance <root>] [--kubeconfi
 	"--k8s alone.\n\n" +
 	"--temporal-codec reports per-instance opt-in and strict mode without probing keys.\n" +
 	"--k8s --instance <root> applies the instance Temporal TLS and payload codec.\n\n" +
-	"temporal-worker-routing compares the \"goobers\" worker deployment's current\n" +
-	"version with the builds polling the engine task queue (engine.taskQueue with\n" +
-	"--instance, else goobers-engine). It fails when no live worker is routed tasks,\n" +
-	"warns when only some are or when routing cannot be read, and hints the\n" +
-	"set-current-version command. It never changes the routing itself.\n\n" +
+	"temporal-worker-routing compares the \"goobers\" worker deployment's current and\n" +
+	"ramping traffic shares with the builds polling the engine task queue\n" +
+	"(engine.taskQueue with --instance, else goobers-engine). It fails when no live\n" +
+	"worker serves any share, warns when a share has no live worker, a live build\n" +
+	"gets none, or routing cannot be read, and hints the Temporal CLI command to\n" +
+	"run. It never changes the routing itself.\n\n" +
 	"--repo diffs each configured repo's declared forge-policy manifest\n" +
 	"(<instance-root>/instance.yaml repos[].policy: required merge method,\n" +
 	"merge-queue requirement, required status checks — issue #916, Tier 4 of\n" +
