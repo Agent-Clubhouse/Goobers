@@ -2955,7 +2955,8 @@ opt-out, or a route to remediation that removed goobers:merge-ready,
 withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the
 armed auto-complete) and reports skipped without remediation. Each poll
 of a still-queued pull request also runs merge-pr's unanswered-human-
-feedback check (#6134; blockUnansweredFeedback, identityMode and
+feedback check (#6134; blockUnansweredFeedback, identityMode,
+verdictAuthor (merge-pr's, bound via inputsFrom) and
 excludeAuthors as on merge-pr, default on): open human review feedback
 that no Goobers response has acknowledged withdraws the pull request,
 removes goobers:merge-ready and routes it to remediation with the

@@ -36,4 +36,21 @@ func TestPRCommentWatchReferenceWorkflowCompiles(t *testing.T) {
 	if _, err := workflow.Compile(workflow.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}); err == nil {
 		t.Fatal("compiled without disarm-landing declared; blockUnansweredFeedback \"true\" must prescribe it")
 	}
+	// Every spelling the stage's strconv.ParseBool accepts as true enables
+	// the cancel, so every one must prescribe the action.
+	for _, truthy := range []string{"1", "t", "True", " TRUE "} {
+		task.Inputs["blockUnansweredFeedback"] = truthy
+		w.Spec.Tasks[0] = task
+		if _, err := workflow.Compile(workflow.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}); err == nil {
+			t.Fatalf("blockUnansweredFeedback %q compiled without disarm-landing declared", truthy)
+		}
+	}
+	// disarm-landing requires the credential the cancel runs under.
+	task.Inputs["blockUnansweredFeedback"] = "true"
+	task.PolicyActions = []string{"label-issue", "disarm-landing"}
+	task.Capabilities = []string{"github:issues:write"}
+	w.Spec.Tasks[0] = task
+	if _, err := workflow.Compile(workflow.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}); err == nil {
+		t.Fatal("disarm-landing compiled without github:pr:write")
+	}
 }

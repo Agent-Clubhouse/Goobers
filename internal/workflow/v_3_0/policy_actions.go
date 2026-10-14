@@ -56,7 +56,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"comment-on-issue":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"create-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"delete-branch":            {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},
-	"disarm-landing":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"disarm-landing":           {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"demote-pr":                {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"edit-issue":               {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"escalate-pr":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
@@ -438,10 +438,27 @@ func prescribedInputPolicyActions(task apiv1.Task, command string) []string {
 			continue
 		}
 		if raw, ok := task.Inputs[name]; ok {
-			actions = append(actions, byInput[name][strings.TrimSpace(raw)]...)
+			actions = append(actions, byInput[name][policyInputValue(byInput[name], raw)]...)
 		}
 	}
 	return actions
+}
+
+// policyInputValue normalises an input value for its prescription table. A
+// boolean table (keyed only by "true"/"false") matches every spelling the
+// stage's strconv.ParseBool accepts ("1", "t", "True"...), so no truthy value
+// can enable a mutation without prescribing its action.
+func policyInputValue(table map[string][]string, raw string) string {
+	value := strings.TrimSpace(raw)
+	for key := range table {
+		if key != "true" && key != "false" {
+			return value
+		}
+	}
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		return strconv.FormatBool(parsed)
+	}
+	return value
 }
 
 func booleanCommandArgument(args []string, name string) bool {

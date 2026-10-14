@@ -73,6 +73,7 @@ type mergeQueuePollServerState struct {
 	// inline review-comment read so the check cannot complete.
 	issueComments      []map[string]interface{}
 	feedbackReadStatus int
+	addedLabels        []string
 }
 
 func TestMergeQueuePollBackoffJittersWithinCappedExponentialRange(t *testing.T) {
@@ -331,6 +332,13 @@ func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePol
 		st.mu.Lock()
 		st.labelCalls++
 		status := st.labelStatus
+		if r.Method == http.MethodPost {
+			var body struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			st.addedLabels = append(st.addedLabels, body.Labels...)
+		}
 		st.mu.Unlock()
 		if status != 0 {
 			http.Error(w, "label failed", status)
@@ -934,8 +942,9 @@ type adoPRDetailState struct {
 	cancels int
 	// threads are the PR's threads the queue-watch feedback check reads, and
 	// labelWrites records pull-request label adds and removals.
-	threads     []map[string]interface{}
-	labelWrites []string
+	threads       []map[string]interface{}
+	labelWrites   []string
+	postedThreads []string
 }
 
 func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *adoPRDetailState) *httptest.Server {
@@ -978,8 +987,28 @@ func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *a
 	if st.refs != nil {
 		st.refs.register(t, mux, owner, project, name)
 	}
-	mux.HandleFunc(prPath+"/threads", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(prPath+"/threads", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
+		if r.Method == http.MethodPost {
+			var body struct {
+				Comments []map[string]interface{} `json:"comments"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			content, _ := body.Comments[0]["content"].(string)
+			thread := map[string]interface{}{
+				"id": 100 + len(st.threads), "status": "closed",
+				"comments": []map[string]interface{}{{
+					"id": 1, "commentType": "text", "content": content,
+					"author":        map[string]string{"id": "self-guid", "displayName": "goobers"},
+					"publishedDate": "2026-10-01T13:00:00Z",
+				}},
+			}
+			st.threads = append(st.threads, thread)
+			st.postedThreads = append(st.postedThreads, content)
+			st.mu.Unlock()
+			writeFakeJSON(w, thread)
+			return
+		}
 		threads := st.threads
 		st.mu.Unlock()
 		if threads == nil {

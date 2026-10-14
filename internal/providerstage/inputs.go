@@ -173,7 +173,7 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), booleansIn("advisoryMode", "blockUnansweredFeedback"), stringListsIn("excludeAuthors"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-queue-poll": schema(
-		stringsIn("identityMode"), booleansIn("blockUnansweredFeedback"), stringListsIn("excludeAuthors"),
+		stringsIn("identityMode", "verdictAuthor"), booleansIn("blockUnansweredFeedback"), stringListsIn("excludeAuthors"),
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(

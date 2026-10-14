@@ -45,7 +45,8 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the\n" +
 	"armed auto-complete) and reports skipped without remediation. Each poll\n" +
 	"of a still-queued pull request also runs merge-pr's unanswered-human-\n" +
-	"feedback check (#6134; blockUnansweredFeedback, identityMode and\n" +
+	"feedback check (#6134; blockUnansweredFeedback, identityMode,\n" +
+	"verdictAuthor (merge-pr's, bound via inputsFrom) and\n" +
 	"excludeAuthors as on merge-pr, default on): open human review feedback\n" +
 	"that no Goobers response has acknowledged withdraws the pull request,\n" +
 	"removes goobers:merge-ready and routes it to remediation with the\n" +
@@ -189,7 +190,15 @@ func (githubMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return true 
 func (githubMergeQueuePollTransport) SupportsOptOutDequeue() bool { return true }
 
 func (t githubMergeQueuePollTransport) Withdrawal() queueWithdrawal {
-	return queueWithdrawal{gate: newMergeFeedbackGate(t.repo, t.provider, "", false), route: githubQueueFeedbackRoute}
+	return queueWithdrawal{
+		gate: newMergeFeedbackGate(t.repo, t.provider, providerInput("verdictAuthor", ""), false),
+		// The refusal routing labels and comments with the stage's
+		// github:issues:write credential, the one eviction routing uses.
+		provider: func() (remediationProvider, error) {
+			return newMergeReviewRemediationProvider(t.root, t.repo,
+				withStageProviderCapability(capability.GitHubIssuesWrite), withStageProviderMutations("pr"))
+		},
+	}
 }
 
 func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePollTransport, stdout, stderr io.Writer) int {
@@ -674,12 +683,22 @@ func (adoMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return false }
 func (adoMergeQueuePollTransport) SupportsOptOutDequeue() bool { return true }
 
 func (t *adoMergeQueuePollTransport) Withdrawal() queueWithdrawal {
-	var provider *providers.ADOProvider
 	var gateProvider providers.Provider
-	if p, ok := t.canceller.(*providers.ADOProvider); ok && p != nil {
-		provider, gateProvider = p, p
+	provider, ok := t.canceller.(*providers.ADOProvider)
+	if ok && provider != nil {
+		gateProvider = provider
 	}
-	return queueWithdrawal{gate: newMergeFeedbackGate(t.repo, gateProvider, "", false), route: adoQueueFeedbackRoute(provider)}
+	return queueWithdrawal{
+		gate: newMergeFeedbackGate(t.repo, gateProvider, providerInput("verdictAuthor", ""), false),
+		// Pull-request labels and threads with the landing credential, never
+		// the work item that shares the PR's number.
+		provider: func() (remediationProvider, error) {
+			if provider == nil {
+				return nil, fmt.Errorf("azure devops provider unavailable")
+			}
+			return mergeReviewADOProvider{ADOProvider: provider}, nil
+		},
+	}
 }
 
 // mergeQueuePollMergedADO reports an ADO-completed pull request as merged. The
