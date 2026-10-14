@@ -54,7 +54,9 @@ func (f *fakeADO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
-	if r.Header.Get("Authorization") != basicAuth(testToken) {
+	// ADO ignores a PAT's Basic user name; this tool sends none and the ADO
+	// provider (the fixture lookup) sends its own, so only the PAT is checked.
+	if _, password, ok := r.BasicAuth(); !ok || password != testToken {
 		f.authOK = false
 	}
 	body, _ := io.ReadAll(r.Body)
@@ -81,6 +83,10 @@ func (f *fakeADO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, created)
 	case r.Method == http.MethodPost && path == "wit/wiql":
 		writeJSON(w, map[string]any{"workItems": f.wiql(body)})
+	case r.Method == http.MethodPost && path == "wit/workitemsbatch":
+		writeJSON(w, f.batch(body))
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "wit/workitemtypes/") && strings.HasSuffix(path, "/states"):
+		writeJSON(w, map[string]any{"value": fakeStates})
 	case r.Method == http.MethodGet && path == "wit/workitemtypecategories/Microsoft.RequirementCategory":
 		writeJSON(w, map[string]any{"defaultWorkItemType": map[string]string{"name": requirementTy}})
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "wit/workitems/$"):
@@ -109,31 +115,62 @@ func (f *fakeADO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// wiqlStateExclusion matches a lookup's `[System.State] NOT IN (...)` clause.
-var wiqlStateExclusion = regexp.MustCompile(`\[System\.State\] NOT IN \(([^)]*)\)`)
+// wiqlTagClause matches a tag-only lookup: the ADO provider's listing, which
+// the fixture lookup runs through, filters by tag and leaves the title and
+// the open state to its own post-filter.
+var wiqlTagClause = regexp.MustCompile(`\[System\.Tags\] CONTAINS '([^']*)'`)
 
-// wiql answers provision's title-and-tag lookups, lowest id first, honouring
-// a state exclusion clause the way ADO does.
+// fakeStates is every fake work item type's states with their categories. A
+// renamed Completed state ("Shipped") stands in for a custom process.
+var fakeStates = []map[string]string{
+	{"name": "New", "category": "Proposed"},
+	{"name": "Active", "category": "InProgress"},
+	{"name": "Closed", "category": "Completed"},
+	{"name": "Done", "category": "Completed"},
+	{"name": "Shipped", "category": "Completed"},
+	{"name": "Removed", "category": "Removed"},
+}
+
+// wiql answers provision's title-and-tag lookups and the provider's tag-only
+// listing, lowest id first, in any state (as ADO does without a state clause).
 func (f *fakeADO) wiql(body []byte) []map[string]int {
 	var request struct {
 		Query string `json:"query"`
 	}
 	_ = json.Unmarshal(body, &request)
 	match := wiqlClause.FindStringSubmatch(request.Query)
-	excluded := map[string]bool{}
-	if states := wiqlStateExclusion.FindStringSubmatch(request.Query); states != nil {
-		for _, state := range strings.Split(states[1], ",") {
-			excluded[strings.Trim(strings.TrimSpace(state), "'")] = true
-		}
-	}
+	tagOnly := wiqlTagClause.FindStringSubmatch(request.Query)
 	out := []map[string]int{}
 	for _, item := range f.items {
-		if match != nil && item.Fields["System.Title"] == match[1] && strings.Contains(fmt.Sprint(item.Fields["System.Tags"]), match[2]) &&
-			!excluded[fmt.Sprint(item.Fields["System.State"])] {
+		tags := fmt.Sprint(item.Fields["System.Tags"])
+		switch {
+		case match != nil && item.Fields["System.Title"] == match[1] && strings.Contains(tags, match[2]),
+			match == nil && tagOnly != nil && strings.Contains(tags, tagOnly[1]):
 			out = append(out, map[string]int{"id": item.ID})
 		}
 	}
 	return out
+}
+
+// batch answers a workitemsbatch hydration. An item with no state is New.
+func (f *fakeADO) batch(body []byte) map[string]any {
+	var request struct {
+		IDs []int `json:"ids"`
+	}
+	_ = json.Unmarshal(body, &request)
+	values := []map[string]any{}
+	for _, id := range request.IDs {
+		item := f.item(id)
+		if item == nil {
+			continue
+		}
+		fields := map[string]any{"System.WorkItemType": item.Type, "System.State": "New"}
+		for name, value := range item.Fields {
+			fields[name] = value
+		}
+		values = append(values, map[string]any{"id": item.ID, "rev": item.Rev, "fields": fields})
+	}
+	return map[string]any{"count": len(values), "value": values}
 }
 
 // create applies a creating JSON Patch.
@@ -204,7 +241,8 @@ func (f *fakeADO) creates() []string {
 	defer f.mu.Unlock()
 	var creates []string
 	for _, request := range f.requests {
-		if strings.HasPrefix(request, http.MethodPost) && !strings.HasSuffix(request, "/wiql") {
+		// wiql and workitemsbatch are read-only POSTs.
+		if strings.HasPrefix(request, http.MethodPost) && !strings.HasSuffix(request, "/wiql") && !strings.HasSuffix(request, "/workitemsbatch") {
 			creates = append(creates, request)
 		}
 	}
@@ -505,13 +543,32 @@ func TestProvisionCIPipelineIsOptInAndIdempotent(t *testing.T) {
 	}
 }
 
+// TestProvisionKeepsAnInProgressFixture: a fixture in an open, non-Proposed
+// state is still the one the drift workflow reads, so it stays present.
+func TestProvisionKeepsAnInProgressFixture(t *testing.T) {
+	t.Parallel()
+	fake := newFakeADO()
+	server := newTLSServer(t, fake)
+	if code, _, stderr := runProvision(t, server, "-apply"); code != 0 {
+		t.Fatalf("first apply exit %d, stderr %q", code, stderr)
+	}
+	fixture := fake.itemTitled(fixtureTitle)
+	fixture.Fields["System.State"] = "Active"
+	code, stdout, stderr := runProvision(t, server)
+	if code != 0 || !strings.Contains(stdout, "Fixture work item (#4602): present #"+strconv.Itoa(fixture.ID)) {
+		t.Fatalf("exit %d (stderr %q), want the Active fixture #%d present:\n%s", code, stderr, fixture.ID, stdout)
+	}
+}
+
 // TestProvisionTreatsAClosedFixtureAsMissing: a fixture work item that was
 // closed or removed is not reported present — the fixture-drift workflow reads
 // only an open one — so provision offers (dry run) or creates (-apply) a fresh
-// one. The spec fixture keeps matching in any state.
+// one. Closed is decided by state category, as the drift workflow decides it,
+// so a custom process's renamed Completed state ("Shipped") counts too. The
+// spec fixture keeps matching in any state.
 func TestProvisionTreatsAClosedFixtureAsMissing(t *testing.T) {
 	t.Parallel()
-	for _, state := range []string{"Closed", "Done", "Removed"} {
+	for _, state := range []string{"Closed", "Done", "Removed", "Shipped"} {
 		t.Run(state, func(t *testing.T) {
 			t.Parallel()
 			fake := newFakeADO()

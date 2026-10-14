@@ -142,9 +142,10 @@ number does not read as drift.
 ### Provision the seeded work item
 
 `go run ./test/adolive provision` can also seed the work item this workflow
-reads (#4602), with the same title, body, and tag the workflow uses. Like the
-workflow, it looks only at open items (any state but `Closed`, `Done` or
-`Removed`): it reports the oldest open fixture as present, and when every
+reads (#4602), with the same title, body, and tag the workflow uses. It finds
+the fixture with the workflow's own lookup, so it looks only at open items,
+judged by state category (a state in the Completed or Removed category is
+closed, whatever the process names it). It reports the oldest open fixture as present, and when every
 fixture with that title and tag has been closed or removed it creates a new
 one, just as the workflow's `-provision-fixture` would. It never reopens or
 edits a closed fixture. It uses the same tool that provisions the live ADO write leg's

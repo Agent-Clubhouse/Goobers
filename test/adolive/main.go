@@ -116,7 +116,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		_, _ = fmt.Fprintf(stderr, "%s is required; the token is never accepted as a flag\n", tokenEnvironment)
 		return 2
 	}
-	c := &client{http: httpClient, organizationURL: strings.TrimRight(cfg.organizationURL, "/"), project: cfg.project, auth: basicAuth(token)}
+	c := &client{http: httpClient, organizationURL: strings.TrimRight(cfg.organizationURL, "/"), project: cfg.project, auth: basicAuth(token), token: token}
 	if err := provision(ctx, c, cfg, stdout); err != nil {
 		_, _ = fmt.Fprintln(stderr, "adolive:", err)
 		return 1
@@ -446,6 +446,9 @@ type client struct {
 	organizationURL string
 	project         string
 	auth            string
+	// token is the PAT itself, for the fixture lookup that runs through the
+	// ADO provider; never printed.
+	token string
 }
 
 func (c *client) endpoint(query url.Values, elems ...string) (string, error) {
@@ -591,35 +594,39 @@ func (c *client) createPolicy(ctx context.Context, typeID string, settings map[s
 	return created, err
 }
 
-// openFixtureClause keeps a fixture lookup to items that are still open: it
-// excludes the closed and removed states of every stock process (Basic and
-// Scrum's Done, Agile and CMMI's Closed, and Removed). The fixture-drift
-// workflow reads the oldest *open* fixture (#4602), so a closed or removed
-// one must read as missing, not present.
-const openFixtureClause = " AND [System.State] NOT IN ('Closed', 'Done', 'Removed')"
-
-// findFixture returns the lowest-numbered open work item carrying the fixture
-// title and tag.
+// findFixture returns the work item the fixture-drift workflow reads: the
+// oldest open item carrying the fixture title and tag (#4602), or found=false
+// when every such item was closed or removed. It is the drift workflow's own
+// lookup (providerfixture.FindOpenADOFixture), so "open" is decided the same
+// way, by each item's state category rather than by state name, and a process
+// that renames its Completed states still agrees with the workflow.
 func (c *client) findFixture(ctx context.Context) (int, bool, error) {
-	return c.findWorkItemWhere(ctx, fixtureTitle, fixtureTag, openFixtureClause)
+	id, found, err := providerfixture.FindOpenADOFixture(ctx, providerfixture.ADOFixtureConfig{
+		OrganizationURL: c.organizationURL,
+		Project:         c.project,
+		Token:           c.token,
+		Client:          c.http,
+	})
+	if err != nil || !found {
+		return 0, false, err
+	}
+	number, err := strconv.Atoi(id)
+	if err != nil {
+		return 0, false, fmt.Errorf("fixture work item id %q is not a number", id)
+	}
+	return number, true, nil
 }
 
 // findWorkItem returns the lowest-numbered work item with title and tag, in
 // any state.
 func (c *client) findWorkItem(ctx context.Context, title, tag string) (int, bool, error) {
-	return c.findWorkItemWhere(ctx, title, tag, "")
-}
-
-// findWorkItemWhere returns the lowest-numbered work item with title and tag
-// that also matches the WIQL condition clause (empty for none).
-func (c *client) findWorkItemWhere(ctx context.Context, title, tag, clause string) (int, bool, error) {
 	endpoint, err := c.endpoint(url.Values{"$top": []string{"1"}}, "wit", "wiql")
 	if err != nil {
 		return 0, false, err
 	}
 	query := fmt.Sprintf(
-		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Title] = '%s' AND [System.Tags] CONTAINS '%s'%s ORDER BY [System.Id] ASC",
-		title, tag, clause)
+		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Title] = '%s' AND [System.Tags] CONTAINS '%s' ORDER BY [System.Id] ASC",
+		title, tag)
 	var out struct {
 		WorkItems []struct {
 			ID int `json:"id"`
