@@ -37,6 +37,8 @@ type failedStage struct {
 	// artifact records stage evidence, so a stage with no tool calls is not
 	// read as weak instructions.
 	artifact bool
+	// failedTool records a transcript whose one tool call failed.
+	failedTool bool
 }
 
 func attributedObservation(t *testing.T, runID, workflow string, failed failedStage, observedAt time.Time) AttributionObservation {
@@ -112,6 +114,15 @@ func appendStageEvents(t *testing.T, run *journal.Run, runID string, failed fail
 			t.Fatal(err)
 		}
 	}
+	if failed.failedTool {
+		// A transcript with no span-provenance annotation: its tool nodes hang
+		// off the stage's unknown subagent, so their IDs embed the stage name.
+		transcript := []byte(`{"role":"assistant","model":"gpt-5","tool_call":{"id":"call-1","name":"bash"}}` + "\n" +
+			`{"role":"tool","tool_call":{"id":"call-1","success":false}}` + "\n")
+		if _, err := run.RecordSpanWithSchema(failed.stage, "transcript", telemetry.GenAIEventSchema, transcript); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if failed.artifact {
 		if _, err := run.RecordStageArtifact(failed.stage, 1, "", "diff", []byte("diff")); err != nil {
 			t.Fatal(err)
@@ -182,12 +193,23 @@ func TestAuditRealAttributorRuntimeFaultFollowsTheRecordedErrorCode(t *testing.T
 	}{
 		{name: "shared worktree provisioning", code: telemetry.ErrCodeInfraWorkspace, domain: FaultDomainProductRuntime},
 		{name: "claims lock contention", code: telemetry.ErrCodeClaimsLock, domain: FaultDomainProductRuntime},
-		{name: "provider failure", code: telemetry.ErrCodeProviderFailed, domain: FaultDomainExternal},
+		{name: "provider rate limit", code: telemetry.ErrCodeProviderRateLimit, domain: FaultDomainExternal},
+		{name: "provider auth", code: telemetry.ErrCodeProviderAuth, domain: FaultDomainExternal},
 		{name: "network failure", code: telemetry.ErrCodeInfraNet, domain: FaultDomainExternal},
 		// No recorded code: the class rules the workflow out but names no
 		// owner, so the finding stays unknown instead of defaulting to
 		// external on the strength of the template's "harness" wording.
 		{name: "no recorded code", domain: FaultDomainUnknown},
+		// Catch-all and either-side codes name no owner either. provider_error
+		// and executor_error are stamped on any failure nothing earlier
+		// classified; infra_git_failed is a git subprocess Goobers ran; the
+		// required MCP server is Goobers' own goobers-io.
+		{name: "provider catch-all", code: telemetry.ErrCodeProviderFailed, domain: FaultDomainUnknown},
+		{name: "poll provider catch-all", code: telemetry.ErrCodePollProvider, domain: FaultDomainUnknown},
+		{name: "executor catch-all", code: telemetry.ErrCodeExecutor, domain: FaultDomainUnknown},
+		{name: "git subprocess", code: telemetry.ErrCodeInfraGit, domain: FaultDomainUnknown},
+		{name: "required mcp server", code: telemetry.ErrCodeHarnessRequiredMCPUnavailable, domain: FaultDomainUnknown},
+		{name: "unlisted provider-prefixed code", code: "github_issue_lookup_failed", domain: FaultDomainUnknown},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -215,6 +237,30 @@ func TestAuditRealAttributorRoutingCauseIsAWorkflowDefect(t *testing.T) {
 	finding := onlyFinding(t, AuditFaultDomains(observations, realAuditConfig()), FaultDomainWorkflow)
 	if len(finding.RunIDs) != 3 || finding.RecommendedOwner != "workflow/config owner" {
 		t.Fatalf("finding = %+v, want a localized workflow-owned routing finding", finding)
+	}
+}
+
+// TestAuditRealAttributorStageNamesAreNotComponentEvidence pins that the
+// keyword fallback never reads node IDs: a failed tool result's evidence is its
+// node ID, which embeds the stage name, and stage names like "release-claim"
+// contain component words.
+func TestAuditRealAttributorStageNamesAreNotComponentEvidence(t *testing.T) {
+	for _, stage := range []string{"publication-clean", "release-claim", "recovery-resume"} {
+		t.Run(stage, func(t *testing.T) {
+			observation := attributedObservation(t, "tool-"+stage, "implementation", failedStage{
+				stage: stage, status: "failure", failedTool: true, artifact: true,
+			}, time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
+			// Such a record is insufficient-evidence (the span names no
+			// subagent), so the cohort rules would hide a misroute; the probe
+			// reads the cause's own domain, before those rules.
+			causes := observation.Attribution.CausesOfClass(ClassBadToolResult)
+			if len(causes) != 1 || len(causes[0].Evidence) == 0 || !strings.Contains(causes[0].Evidence[0], stage) {
+				t.Fatalf("causes = %+v, want one bad-tool-result cause whose node-ID evidence embeds the stage name (the probe's premise)", observation.Attribution.Causes)
+			}
+			if got := CauseFaultDomain(causes[0]); got != FaultDomainUnknown {
+				t.Fatalf("CauseFaultDomain(%+v) = %q, want %q: a stage name is not component evidence", causes[0], got, FaultDomainUnknown)
+			}
+		})
 	}
 }
 

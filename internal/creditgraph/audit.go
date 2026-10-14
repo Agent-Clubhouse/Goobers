@@ -352,7 +352,7 @@ func faultClassificationSignals(findingID string, signals []faultSignal, fixesAp
 
 // unownedEnvironmentEvidence explains why an environment cause stays unknown
 // rather than defaulting to an owner.
-const unownedEnvironmentEvidence = "an environment cause recorded no error code or named component, so Goobers runtime and external ownership cannot be told apart"
+const unownedEnvironmentEvidence = "an environment cause names no owning component: it recorded no owner-identifying error code and its text names none, so Goobers runtime and external ownership cannot be told apart"
 
 type faultSignalSummary struct {
 	runs, workflows, versions, environments, paths map[string]bool
@@ -472,44 +472,78 @@ func ClassFaultDomain(class FailureClass) FaultDomain {
 	}
 }
 
+// errorCodeOwners maps the stage error codes whose EMITTER guarantees the
+// owner. It is an exact allow-list on purpose: catch-all codes
+// (provider_error, poll_provider_error and executor_error are each stamped on
+// any failure no earlier branch classified) and the prefix guesses of
+// telemetry.ClassifyError say nothing about who owns a failure, and a code
+// absent from this map decides nothing. infra_git_failed (a git subprocess
+// Goobers itself ran: a missing ref, a credential helper that would not exec)
+// and HARNESS_REQUIRED_MCP_UNAVAILABLE (Goobers' own goobers-io server) are
+// left out for the same reason: either side can own them.
+var errorCodeOwners = map[string]FaultDomain{
+	telemetry.ErrCodeInfraWorkspace:             FaultDomainProductRuntime,
+	telemetry.ErrCodeInfraJournal:               FaultDomainProductRuntime,
+	telemetry.ErrCodeClaimsLock:                 FaultDomainProductRuntime,
+	telemetry.ErrCodeWorkspaceProvisionFailed:   FaultDomainProductRuntime,
+	telemetry.ErrCodeContextMaterializeFailed:   FaultDomainProductRuntime,
+	telemetry.ErrCodeAgenticExecutorUnavailable: FaultDomainProductRuntime,
+	telemetry.ErrCodeAgenticKitMissing:          FaultDomainProductRuntime,
+	telemetry.ErrCodeAgenticKitUnavailable:      FaultDomainProductRuntime,
+	telemetry.ErrCodeProviderRateLimit:          FaultDomainExternal,
+	"github_rate_limited":                       FaultDomainExternal,
+	"github_secondary_rate_limited":             FaultDomainExternal,
+	telemetry.ErrCodeGitHubAuth:                 FaultDomainExternal,
+	telemetry.ErrCodeProviderAuth:               FaultDomainExternal,
+	telemetry.ErrCodeInfraNet:                   FaultDomainExternal,
+	telemetry.ErrCodeCredentialUnavailable:      FaultDomainExternal,
+	telemetry.ErrCodeHarnessFailure:             FaultDomainExternal,
+}
+
 // errorCodeFaultDomain maps a stage's recorded error code to the component
-// that owns it. Codes whose owner is ambiguous (a timeout, a validation
-// refusal, an operator cancel, a generic infra failure) decide nothing.
+// that owns it, or FaultDomainUnknown when the code does not identify one.
 func errorCodeFaultDomain(code string) FaultDomain {
-	switch code {
-	case "":
-		return FaultDomainUnknown
-	case telemetry.ErrCodeInfraWorkspace, telemetry.ErrCodeInfraJournal,
-		telemetry.ErrCodeWorkspaceProvisionFailed, telemetry.ErrCodeContextMaterializeFailed,
-		telemetry.ErrCodeAgenticExecutorUnavailable, telemetry.ErrCodeAgenticKitMissing,
-		telemetry.ErrCodeAgenticKitUnavailable:
-		return FaultDomainProductRuntime
-	case telemetry.ErrCodeCredentialUnavailable, telemetry.ErrCodeCredentialResolveFailed,
-		telemetry.ErrCodeHarnessRequiredMCPUnavailable:
-		return FaultDomainExternal
+	if domain, ok := errorCodeOwners[code]; ok {
+		return domain
 	}
-	switch telemetry.ClassifyError(code) {
-	case telemetry.ErrorClassExecutor, telemetry.ErrorClassInfraLock:
-		return FaultDomainProductRuntime
-	case telemetry.ErrorClassProvider, telemetry.ErrorClassProviderRateLimit, telemetry.ErrorClassInfraNet,
-		telemetry.ErrorClassInfraGit, telemetry.ErrorClassHarnessFailure:
-		return FaultDomainExternal
-	default:
-		return FaultDomainUnknown
+	return FaultDomainUnknown
+}
+
+// graphNodeIDPrefixes are the credit graph's node-ID namespaces. A cause's
+// evidence entries are mostly node IDs, and those embed stage, agent, tool, and
+// artifact names, so a stage named "release-claim" would otherwise read as a
+// claims fault.
+var graphNodeIDPrefixes = []string{
+	"run:", "stage:", "subagent:", "model:", "toolcall:", "toolresult:", "tool:",
+	"evidence:", "evaluator:", "claim:", string(KindRuntime) + ":", string(KindEnvironment) + ":",
+}
+
+// isGraphNodeID reports whether an evidence entry is a credit-graph node ID
+// rather than descriptive text.
+func isGraphNodeID(entry string) bool {
+	if entry == outcomeNodeID {
+		return true
 	}
+	for _, prefix := range graphNodeIDPrefixes {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // componentKeywordDomain is the fallback for causes whose class and code
-// decide nothing. It reads only text that can name a component: a summary the
-// attributor did not write from its environment template, and evidence
-// entries other than its own intervention notes.
+// decide nothing. It reads only cause text that can name a component: a
+// summary other than the attributor's environment template, and evidence
+// entries that are neither graph node IDs nor the attributor's intervention
+// notes. Names of stages, agents, and tools are never component evidence.
 func componentKeywordDomain(cause CauseFinding) FaultDomain {
 	var parts []string
-	if strings.TrimSpace(cause.Summary) != environmentCauseSummary {
-		parts = append(parts, causeSignature(cause))
+	if summary := strings.TrimSpace(cause.Summary); summary != environmentCauseSummary {
+		parts = append(parts, summary)
 	}
 	for _, entry := range cause.Evidence {
-		if !strings.HasPrefix(entry, "intervention:") {
+		if !strings.HasPrefix(entry, "intervention:") && !isGraphNodeID(entry) {
 			parts = append(parts, entry)
 		}
 	}

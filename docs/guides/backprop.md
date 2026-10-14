@@ -325,9 +325,11 @@ Both surfaces return two Backprop fields:
   A cause's failure class decides its owner first: instruction, interpretation,
   tool-choice, routing, and topology causes belong to the workflow definition,
   and a model that produced no output is external. For other causes, the
-  stage's recorded error code decides. Component words in the cause text count
-  only when neither decides. Workflow findings are scoped per workflow and
-  stage.
+  stage's recorded error code decides, but only a code whose emitter names the
+  owner. Catch-all codes such as `provider_error` decide nothing. Component
+  words in the cause text count only when neither decides; stage, agent, and
+  tool names never count. Workflow findings are scoped per workflow and stage.
+  In `nodePaths`, the run's own node appears as `run`.
 
 Each finding carries a stable `id` (`backprop-` followed by 20 hex characters),
 `confidence`, `runIds`, `workflows`, `effectiveVersions`, `nodePaths`, journal

@@ -183,19 +183,27 @@ workflow-definition causes, and `model` is external. The attributor's summaries
 are fixed text per class, so words in them never override the class. For
 example, a routing cause says "the model that ran…" and is still a routing
 cause. Next comes the failing stage's recorded error code (`errorCode` on the
-cause, copied from `stage.finished`). Workspace, journal, claims-lock, executor,
-and agentic-kit codes are Goobers runtime. Provider, rate-limit, network, git,
-credential, and harness codes are external. Component keywords count only for a
-cause that neither its class nor its code resolves, and only in text the
-attributor did not write from a template. An `environment` cause rules out the
+cause, copied from `stage.finished`). Only codes whose emitter guarantees the
+owner decide. Workspace, journal, claims-lock, workspace and context
+provisioning, and agentic-kit codes are Goobers runtime. Rate-limit, provider
+auth, network, unavailable-credential, and `harness.failure` codes are external.
+Catch-all codes decide nothing: `provider_error`, `poll_provider_error`, and
+`executor_error` are stamped on any failure nothing earlier classified. So do
+codes either side can own, such as `infra_git_failed` and the required
+`goobers-io` MCP server being unavailable, and anything matched only by a
+prefix. Component keywords count only for a cause that neither its class nor
+its code resolves. They are read only from cause text, never from the
+attributor's environment template, its `intervention:` notes, or graph node IDs,
+which embed stage, agent, and tool names. An `environment` cause rules out the
 workflow but names no owner, so with no code or named component it stays
 `mixed-or-unknown` instead of defaulting to external. A workflow-definition
 cause's signature is scoped to its workflow and stage, so one instruction
 template failing in two workflows yields two workflow findings. Shared-component
 signatures stay unscoped, because crossing workflows is their evidence. Node
 paths are compared with each run's own `run:<id>` node replaced by a
-placeholder, so a failure can localize to one path across runs, and a post-fix
-run can exercise the affected path. Shared daemon, worktree, scheduler, journal, claim,
+placeholder (`run`, which is also what findings' `nodePaths` show), so a
+failure can localize to one path across runs, and a post-fix run can exercise
+the affected path. Shared daemon, worktree, scheduler, journal, claim,
 admission, publication, recovery, or shared-CI failures must cross unrelated
 workflow boundaries before they are assigned to Goobers product reliability.
 Harness, model, provider, credential, network, filesystem, operating-system,

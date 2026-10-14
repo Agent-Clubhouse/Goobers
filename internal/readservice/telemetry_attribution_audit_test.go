@@ -275,7 +275,9 @@ func TestStoredFaultAuditScopesCooldownToQuery(t *testing.T) {
 	sharedWorktreeFault := creditgraph.CauseFinding{
 		Class:     creditgraph.ClassEnvironment,
 		ErrorCode: telemetry.ErrCodeInfraWorkspace,
-		Summary:   "the stage recorded an error status, which the harness or environment raises rather than an agent decision",
+		// Copy of creditgraph.environmentCauseSummary (unexported); keep in
+		// step if the attributor's template changes.
+		Summary: "the stage recorded an error status, which the harness or environment raises rather than an agent decision",
 	}
 	writeAuditRecordForWorkflow(t, root, "first", "implementation", "v1", sharedWorktreeFault)
 	writeAuditRecordForWorkflow(t, root, "second", "curation", "v1", sharedWorktreeFault)
