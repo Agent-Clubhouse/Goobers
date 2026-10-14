@@ -112,6 +112,50 @@ var defaultClaudeExtraArgs = []string{
 	"--permission-mode", "bypassPermissions",
 }
 
+// claudeDeniedNameKillRules are Claude Code permission deny rules for
+// name-based process killing, carried on every claude-code invocation
+// (#6302). An unsandboxed stage shares the operator's uid, and BSD/macOS pkill
+// stops parsing options at its first operand: `pkill -f "cat" -U $(id -u) -n`
+// treats -U, the uid and -n as extra patterns and SIGTERMs every process whose
+// full command line contains "cat" — terminals, browsers, the agent host. The
+// isolated CLAUDE_CONFIG_DIR means no deny rule or hook the operator keeps in
+// ~/.claude can intervene, so the adapter supplies its own.
+//
+// Claude Code matches a Bash rule against the command name as written, after
+// splitting compound commands and stripping wrappers such as env and xargs,
+// so the bare names cover `x; pkill ...`, `env pkill ...` and
+// `... | xargs pkill`; an absolute path is a different name and needs its own
+// rule. This is a guard against a known footgun, not a sandbox: a command
+// built at runtime (sh -c "$cmd", a script file) or `kill $(pgrep ...)` is not
+// expressible as a prefix rule. Only a PID-namespaced or signal-scoped sandbox
+// closes those.
+var claudeDeniedNameKillRules = []string{
+	"Bash(pkill:*)",
+	"Bash(killall:*)",
+	"Bash(/usr/bin/pkill:*)",
+	"Bash(/usr/bin/killall:*)",
+	"Bash(/bin/pkill:*)",
+	"Bash(/bin/killall:*)",
+}
+
+// claudeHostSafetyArgs returns the --disallowedTools flag carrying
+// claudeDeniedNameKillRules.
+//
+// The deny travels as --disallowedTools rather than an injected --settings
+// value on purpose. --settings takes a single file-or-JSON value, and an
+// operator's runner.harnessCommand may already carry one, so injecting a
+// second would either clobber the operator's settings or be clobbered by
+// them. --disallowedTools is its own permission-rule source: Claude Code
+// unions it with every settings layer (an operator --settings, the
+// workspace's .claude/settings.json) and with any --disallowedTools the
+// operator adds, and a deny from any source beats an allow from any source,
+// including --allowedTools and bypassPermissions. The result is strictly
+// additive in both directions: the operator's settings are never dropped,
+// and nothing the operator configures can remove this deny.
+func claudeHostSafetyArgs() []string {
+	return append([]string{"--disallowedTools"}, claudeDeniedNameKillRules...)
+}
+
 // claudeToolGroups expands the shared harness-neutral tool-group vocabulary
 // (see copilotToolGroups) into Claude Code's own built-in tool names. There is
 // no Claude equivalent of the "github" group (Copilot resolves it to
@@ -317,6 +361,10 @@ func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID strin
 	argv = append(argv, baseCommand...)
 	argv = append(argv, "-p")
 	argv = append(argv, extra...)
+	// Added here, not in claudeExtraArgs, so no ExtraArgs override and no
+	// tool-allowlist shape can produce an argv without it. The completion
+	// repair resumes from a copy of this argv and keeps it too.
+	argv = append(argv, claudeHostSafetyArgs()...)
 	// "auto" is our harness-neutral default sentinel, not a Claude model ID.
 	// Omit it so Claude selects its own default, just as for an empty model.
 	if model != "" && model != "auto" {
