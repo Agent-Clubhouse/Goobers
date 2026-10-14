@@ -239,6 +239,42 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	}
 }
 
+func TestStoredAttributionCohortsIgnoreLabelsFromUnacceptedSources(t *testing.T) {
+	root, store, runID := seedStoredAttributionRunWithBackprop(t, map[string]any{
+		"mode": "active", "version": "v1", "groundTruth": map[string]any{"sources": []string{}},
+	})
+	labeledAt := time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
+	label := creditgraph.GroundTruthLabel{
+		ID: "label-direct", RunID: runID, Outcome: creditgraph.LabelIncorrect, Source: creditgraph.LabelSourceHuman,
+		LabeledBy: "reviewer", LabeledAt: labeledAt, RecordedAt: labeledAt,
+	}
+	if _, err := RecordGroundTruthLabel(context.Background(), root, label); err == nil {
+		t.Fatal("recorded a label the run's groundTruth contract opts out of")
+	}
+	// A label already on disk (written outside RecordLabel) must not weight
+	// the cohort either.
+	data, err := json.Marshal(creditgraph.LabelStore{
+		Schema: creditgraph.LabelStoreSchemaVersion, RunID: runID, Labels: []creditgraph.GroundTruthLabel{label},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(instance.NewLayout(root).RunsDir(), runID)
+	if err := os.WriteFile(filepath.Join(runDir, creditgraph.LabelStoreFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cohorts, err := StoredAttributionCohorts(context.Background(), root, store, StoredAttributionQuery{
+		Gaggle: "core", Workflow: "implementation", Since: time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cohorts) != 1 || cohorts[0].GroundTruth != nil {
+		t.Fatalf("cohorts = %+v, want one cohort with no accepted ground truth", cohorts)
+	}
+}
+
 func TestStoredAttributionCohortsRescoreWhenLateLabelLands(t *testing.T) {
 	root, store, runID := seedStoredAttributionRun(t)
 	query := StoredAttributionQuery{
@@ -801,6 +837,11 @@ func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T)
 
 func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
 	t.Helper()
+	return seedStoredAttributionRunWithBackprop(t, map[string]any{"enabled": true, "version": "v1"})
+}
+
+func seedStoredAttributionRunWithBackprop(t *testing.T, backprop map[string]any) (string, *readmodel.Store, string) {
+	t.Helper()
 	root := t.TempDir()
 	layout := instance.NewLayout(root)
 	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
@@ -816,7 +857,7 @@ func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
 	runID := "stored-attribution-run"
 	definition, err := json.Marshal(map[string]any{
 		"Name": "implementation", "Version": 1, "dslVersion": "3.0",
-		"Spec": map[string]any{"backprop": map[string]any{"enabled": true, "version": "v1"}},
+		"Spec": map[string]any{"backprop": backprop},
 	})
 	if err != nil {
 		t.Fatal(err)

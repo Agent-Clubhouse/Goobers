@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"reflect"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -19,6 +20,8 @@ func backpropWorkflow(name, dsl string, preview bool, config *apiv1.BackpropConf
 
 func TestApplyGaggleBackpropInheritance(t *testing.T) {
 	active := &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive, Granularity: apiv1.BackpropGranularityStage}
+	humanSources := &apiv1.BackpropGroundTruth{Sources: []apiv1.BackpropLabelSource{apiv1.BackpropLabelSourceHuman}}
+	noSources := &apiv1.BackpropGroundTruth{Sources: []apiv1.BackpropLabelSource{}}
 	tests := []struct {
 		name     string
 		gaggle   *apiv1.GaggleBackprop
@@ -68,6 +71,24 @@ func TestApplyGaggleBackpropInheritance(t *testing.T) {
 			want:     &apiv1.BackpropConfig{Mode: apiv1.BackpropModeActive, Version: "v1", Granularity: apiv1.BackpropGranularityStage},
 		},
 		{
+			name:     "inherits gaggle ground-truth sources",
+			gaggle:   &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive, GroundTruth: humanSources},
+			workflow: backpropWorkflow("impl", "3.0", true, nil),
+			want:     &apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeActive, Version: "v1", GroundTruth: humanSources},
+		},
+		{
+			name:     "workflow ground-truth opt-out overrides gaggle",
+			gaggle:   &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeActive, GroundTruth: humanSources},
+			workflow: backpropWorkflow("impl", "3.0", true, &apiv1.BackpropConfig{Enabled: false, Version: "v1", GroundTruth: noSources}),
+			want:     &apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeActive, Version: "v1", GroundTruth: noSources},
+		},
+		{
+			name:     "workflow active inherits ground truth from gaggle off",
+			gaggle:   &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeOff, GroundTruth: noSources},
+			workflow: backpropWorkflow("impl", "3.0", true, &apiv1.BackpropConfig{Mode: apiv1.BackpropModeActive, Version: "v1"}),
+			want:     &apiv1.BackpropConfig{Mode: apiv1.BackpropModeActive, Version: "v1", GroundTruth: noSources},
+		},
+		{
 			name:     "gaggle shadow stays read-time",
 			gaggle:   &apiv1.GaggleBackprop{Mode: apiv1.BackpropModeShadow},
 			workflow: backpropWorkflow("impl", "3.0", true, nil),
@@ -91,7 +112,7 @@ func TestApplyGaggleBackpropInheritance(t *testing.T) {
 			}
 			ApplyGaggleDefaults(set)
 			got := set.Workflows[0].Spec.Backprop
-			if (got == nil) != (test.want == nil) || (got != nil && *got != *test.want) {
+			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("backprop = %+v, want %+v", got, test.want)
 			}
 		})

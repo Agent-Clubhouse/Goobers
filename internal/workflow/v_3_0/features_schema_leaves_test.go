@@ -63,6 +63,8 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.spec.backprop.granularity":                   "binary-layer terminal analysis cadence (#7118); registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.mode":                          "binary-layer terminal analysis mode; registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"gaggle.spec.backprop.granularity":                     "binary-layer gaggle Backprop default granularity (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"workflow.spec.backprop.groundTruth.sources":           "binary-layer ground-truth label sources (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
+	"gaggle.spec.backprop.groundTruth.sources":             "binary-layer gaggle Backprop default ground-truth label sources (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"gaggle.spec.backprop.mode":                            "binary-layer gaggle Backprop default mode (#7117, #7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"gaggle.spec.backprop.version":                         "binary-layer gaggle Backprop default contract (#7120); registered in internal/workflow/features.go, independent of the DSL interpreter",
 	"workflow.spec.backprop.version":                       "binary-layer terminal analysis contract; registered in internal/workflow/features.go, independent of the DSL interpreter",

@@ -242,6 +242,28 @@ spec:
                     - run
                     - stage
                     type: string
+                  groundTruth:
+                    description: |-
+                      GroundTruth is the default ground-truth label source contract for every
+                      workflow in the gaggle that omits its own, including workflows that
+                      declare their own mode. Preview.
+                    properties:
+                      sources:
+                        description: |-
+                          Sources lists the label sources whose labels feed attribution
+                          aggregates. An empty list is the explicit opt-out: no label is accepted
+                          for the workflow's runs.
+                        items:
+                          description: BackpropLabelSource names a kind of ground-truth
+                            label signal.
+                          enum:
+                          - human
+                          type: string
+                        maxItems: 8
+                        type: array
+                    required:
+                    - sources
+                    type: object
                   mode:
                     description: |-
                       Mode is the default applied to workflows without their own mode. off

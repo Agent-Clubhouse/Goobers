@@ -108,7 +108,16 @@
           "properties": {
             "mode": { "enum": ["off", "shadow", "active"], "description": "Default mode for workflows without their own Backprop mode. off applies no default; shadow observes their terminal runs on demand from the run journal and never files; active enrolls workflows pinned to dslVersion 3.0 or later that acknowledge preview features, and is not applied to other workflows." },
             "version": { "enum": ["v1"], "description": "Attribution contract version inheriting workflows use. Omitted means v1." },
-            "granularity": { "enum": ["run", "stage"], "description": "Default attribution granularity for every workflow in this gaggle that omits its own. stage applies only to active runs." }
+            "granularity": { "enum": ["run", "stage"], "description": "Default attribution granularity for every workflow in this gaggle that omits its own. stage applies only to active runs." },
+            "groundTruth": {
+              "type": "object",
+              "description": "Default ground-truth label source contract for every workflow in this gaggle that omits its own, including workflows that declare their own mode. A workflow's own groundTruth always wins.",
+              "additionalProperties": false,
+              "required": ["sources"],
+              "properties": {
+                "sources": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "enum": ["human"] }, "description": "Label sources whose ground-truth labels feed attribution aggregates. human is an operator verdict recorded with goobers telemetry label. An empty list is the explicit opt-out: no label is accepted." }
+              }
+            }
           }
         },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Default absolute local filesystem root (or ~/ path) where workflows additionally mirror durable journal outbox files." },

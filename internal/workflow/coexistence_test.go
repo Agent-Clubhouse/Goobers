@@ -151,6 +151,7 @@ func TestBackpropFeatureRegistryReportsDSL30And31(t *testing.T) {
 	for _, id := range []FeatureID{
 		"workflow.spec.backprop.enabled",
 		"workflow.spec.backprop.granularity",
+		"workflow.spec.backprop.groundTruth.sources",
 		"workflow.spec.backprop.mode",
 		"workflow.spec.backprop.version",
 	} {
@@ -314,6 +315,9 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 		{config: apiv1.BackpropConfig{Mode: apiv1.BackpropModeOff, Version: "v1"}},
 		{config: apiv1.BackpropConfig{Enabled: true, Mode: apiv1.BackpropModeOff, Version: "v1"}, wantErr: "contradicts backprop.mode"},
 		{config: apiv1.BackpropConfig{Mode: "observe", Version: "v1"}, wantErr: `backprop.mode "observe" must be off, shadow, or active`},
+		{config: apiv1.BackpropConfig{Version: "v1", GroundTruth: &apiv1.BackpropGroundTruth{Sources: []apiv1.BackpropLabelSource{}}}},
+		{config: apiv1.BackpropConfig{Enabled: true, Version: "v1", GroundTruth: &apiv1.BackpropGroundTruth{Sources: []apiv1.BackpropLabelSource{"ci"}}}, wantErr: `backprop.groundTruth.sources entry "ci" must be "human"`},
+		{config: apiv1.BackpropConfig{Enabled: true, Version: "v1", GroundTruth: &apiv1.BackpropGroundTruth{Sources: []apiv1.BackpropLabelSource{apiv1.BackpropLabelSourceHuman, apiv1.BackpropLabelSourceHuman}}}, wantErr: "repeats"},
 	} {
 		config := test.config
 		withMode := spec(func(s *apiv1.WorkflowSpec) { s.Backprop = &config })

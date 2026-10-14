@@ -1075,6 +1075,44 @@ type BackpropConfig struct {
 	// +kubebuilder:validation:Enum=run;stage
 	// +optional
 	Granularity BackpropGranularity `json:"granularity,omitempty" yaml:"granularity,omitempty"`
+	// GroundTruth selects which ground-truth label sources feed this
+	// workflow's attribution aggregates. Omitted inherits the gaggle default,
+	// and with neither every supported source is accepted. Preview.
+	// +optional
+	GroundTruth *BackpropGroundTruth `json:"groundTruth,omitempty" yaml:"groundTruth,omitempty"`
+}
+
+// BackpropLabelSource names a kind of ground-truth label signal.
+// +kubebuilder:validation:Enum=human
+type BackpropLabelSource string
+
+// BackpropLabelSourceHuman is an operator verdict recorded with
+// `goobers telemetry label`.
+const BackpropLabelSourceHuman BackpropLabelSource = "human"
+
+// BackpropGroundTruth is the ground-truth label source contract for Backprop
+// attribution.
+type BackpropGroundTruth struct {
+	// Sources lists the label sources whose labels feed attribution
+	// aggregates. An empty list is the explicit opt-out: no label is accepted
+	// for the workflow's runs.
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:Required
+	Sources []BackpropLabelSource `json:"sources" yaml:"sources"`
+}
+
+// AcceptsLabelSource reports whether labels from source feed attribution. A
+// nil contract accepts every supported source.
+func (g *BackpropGroundTruth) AcceptsLabelSource(source BackpropLabelSource) bool {
+	if g == nil {
+		return true
+	}
+	for _, accepted := range g.Sources {
+		if accepted == source {
+			return true
+		}
+	}
+	return false
 }
 
 // BackpropGranularity is how often an enrolled run records attribution.
@@ -1122,9 +1160,10 @@ const DefaultBackpropVersion = "v1"
 // ResolveBackprop applies Backprop precedence for one workflow and returns
 // the effective config with Mode always set. A workflow that declares its own
 // mode (including off, the explicit opt-out) or legacy enabled=true keeps its
-// own mode and version and inherits only an omitted granularity. Otherwise the
-// gaggle mode applies, and the workflow's own version and granularity win over
-// the gaggle's (version default v1). With neither, the mode is off.
+// own mode and version and inherits only an omitted granularity or ground-truth
+// contract. Otherwise the gaggle mode applies, and the workflow's own version,
+// granularity, and ground-truth contract win over the gaggle's (version default
+// v1). With neither, the mode is off.
 func ResolveBackprop(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropConfig {
 	if workflow != nil && (workflow.Mode != "" || workflow.Enabled) {
 		resolved := *workflow
@@ -1132,8 +1171,14 @@ func ResolveBackprop(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropC
 		if resolved.Version == "" {
 			resolved.Version = gaggle.version()
 		}
-		if resolved.Granularity == "" && gaggle != nil {
-			resolved.Granularity = gaggle.Granularity
+		resolved.GroundTruth = workflow.GroundTruth.DeepCopy()
+		if gaggle != nil {
+			if resolved.Granularity == "" {
+				resolved.Granularity = gaggle.Granularity
+			}
+			if resolved.GroundTruth == nil {
+				resolved.GroundTruth = gaggle.GroundTruth.DeepCopy()
+			}
 		}
 		return resolved
 	}
@@ -1143,12 +1188,16 @@ func ResolveBackprop(workflow *BackpropConfig, gaggle *GaggleBackprop) BackpropC
 	resolved := BackpropConfig{
 		Enabled: gaggle.Mode == BackpropModeActive, Mode: gaggle.Mode,
 		Version: gaggle.version(), Granularity: gaggle.Granularity,
+		GroundTruth: gaggle.GroundTruth.DeepCopy(),
 	}
 	if workflow != nil && workflow.Version != "" {
 		resolved.Version = workflow.Version
 	}
 	if workflow != nil && workflow.Granularity != "" {
 		resolved.Granularity = workflow.Granularity
+	}
+	if workflow != nil && workflow.GroundTruth != nil {
+		resolved.GroundTruth = workflow.GroundTruth.DeepCopy()
 	}
 	return resolved
 }

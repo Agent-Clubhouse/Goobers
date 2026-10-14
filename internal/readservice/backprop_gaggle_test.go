@@ -111,7 +111,7 @@ func TestStoredGaggleBackpropReport(t *testing.T) {
 			stages: map[string]float64{"implement": 1}, causes: []creditgraph.CauseFinding{cause},
 			continuedFrom: "impl-1"},
 		{runID: "review-1", workflow: "review", startedAt: now.Add(-30 * time.Minute), phase: journal.PhaseFailed, sign: -1,
-			stages: map[string]float64{"review": 1}, refs: []journal.ExternalRef{lookalike}},
+			stages: map[string]float64{"review": 1}, refs: []journal.ExternalRef{lookalike}, continuedFrom: "impl-2"},
 		{runID: "impl-old", workflow: "implement", startedAt: now.Add(-8 * 24 * time.Hour), phase: journal.PhaseCompleted, sign: 1,
 			stages: map[string]float64{"implement": 1}},
 	}
@@ -135,7 +135,7 @@ func TestStoredGaggleBackpropReport(t *testing.T) {
 	if got := workflows["plan"]; got.CreditShare != 1 || got.BlameShare != 0 || got.DownstreamFailures != 1 {
 		t.Fatalf("plan credit = %+v, want all credit and one downstream failure", got)
 	}
-	if got := workflows["implement"]; got.Runs != 2 || got.Failed != 2 || got.BlameShare != 0.6667 {
+	if got := workflows["implement"]; got.Runs != 2 || got.Failed != 2 || got.BlameShare != 0.6667 || got.DownstreamFailures != 1 {
 		t.Fatalf("implement credit = %+v", got)
 	}
 	stages := map[string]GaggleStageCredit{}
@@ -153,9 +153,11 @@ func TestStoredGaggleBackpropReport(t *testing.T) {
 		report.RecurringFindings[0].Class != creditgraph.ClassWeakInstructions {
 		t.Fatalf("recurring findings = %+v, want one finding counted once per run", report.RecurringFindings)
 	}
+	// impl-2 continues impl-1 within one workflow (a retry): no edge. review-1
+	// continues impl-2 across workflows: an edge.
 	wantLinks := []GaggleCrossWorkflowLink{
-		{Basis: GaggleLinkContinuedFrom, Identifier: "impl-1", FromRunID: "impl-1", FromWorkflow: "implement",
-			ToRunID: "impl-2", ToWorkflow: "implement", ToPhase: journal.PhaseFailed},
+		{Basis: GaggleLinkContinuedFrom, Identifier: "impl-2", FromRunID: "impl-2", FromWorkflow: "implement",
+			ToRunID: "review-1", ToWorkflow: "review", ToPhase: journal.PhaseFailed},
 		{Basis: GaggleLinkSharedExternalRef, Identifier: "github/issue/42", FromRunID: "plan-1", FromWorkflow: "plan",
 			ToRunID: "impl-1", ToWorkflow: "implement", ToPhase: journal.PhaseFailed},
 	}

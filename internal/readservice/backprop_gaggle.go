@@ -308,7 +308,9 @@ func gaggleRunBefore(left, right gaggleReportRun) bool {
 
 // gaggleCrossWorkflowLinks emits an edge only from an identifier both runs
 // recorded: the same external reference touched by runs of different
-// workflows, or a recorded continuation. runs must be in start order.
+// workflows, or a recorded continuation across workflows. A same-workflow
+// continuation is a retry, not a handoff, so it is never an edge. runs must be
+// in start order.
 func gaggleCrossWorkflowLinks(runs []gaggleReportRun) []GaggleCrossWorkflowLink {
 	links := []GaggleCrossWorkflowLink{}
 	byID := make(map[string]gaggleReportRun, len(runs))
@@ -320,7 +322,7 @@ func gaggleCrossWorkflowLinks(runs []gaggleReportRun) []GaggleCrossWorkflowLink 
 		}
 	}
 	for _, run := range runs {
-		if source, ok := byID[run.continuedFrom]; ok && run.continuedFrom != run.runID {
+		if source, ok := byID[run.continuedFrom]; ok && source.workflow != run.workflow {
 			links = append(links, newGaggleLink(GaggleLinkContinuedFrom, source.runID, source, run))
 		}
 	}

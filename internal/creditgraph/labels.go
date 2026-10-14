@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
@@ -132,6 +133,9 @@ func RecordLabel(ctx context.Context, runDir string, label GroundTruthLabel) (Gr
 	}
 	if record.RunID != label.RunID {
 		return GroundTruthLabel{}, fmt.Errorf("record label: attribution record belongs to run %q, not %q", record.RunID, label.RunID)
+	}
+	if err := requireAcceptedLabelSource(runDir, label); err != nil {
+		return GroundTruthLabel{}, fmt.Errorf("record label: %w", err)
 	}
 	label.ID = labelID(label)
 	stored := label
@@ -273,4 +277,39 @@ func groundTruthConfidence(confidence float64, label *GroundTruthLabel) float64 
 	default:
 		return confidence
 	}
+}
+
+// PinnedGroundTruth returns the ground-truth label source contract of a run's
+// trusted pinned workflow, after gaggle inheritance was applied at compile
+// time. A nil contract accepts every supported source.
+func PinnedGroundTruth(reader *journal.Reader, identity journal.RunIdentity) (*apiv1.BackpropGroundTruth, error) {
+	config, enrolled, err := resolvedBackprop(reader, identity, nil)
+	if err != nil || !enrolled {
+		return nil, err
+	}
+	return config.GroundTruth, nil
+}
+
+// AcceptedLabel reports whether label may feed attribution under contract.
+func AcceptedLabel(contract *apiv1.BackpropGroundTruth, label GroundTruthLabel) bool {
+	return contract.AcceptsLabelSource(apiv1.BackpropLabelSource(label.Source))
+}
+
+func requireAcceptedLabelSource(runDir string, label GroundTruthLabel) error {
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return fmt.Errorf("open run journal: %w", err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return fmt.Errorf("read run identity: %w", err)
+	}
+	contract, err := PinnedGroundTruth(reader, identity)
+	if err != nil {
+		return err
+	}
+	if !AcceptedLabel(contract, label) {
+		return fmt.Errorf("run %q does not accept %q ground-truth labels (backprop.groundTruth.sources)", label.RunID, label.Source)
+	}
+	return nil
 }

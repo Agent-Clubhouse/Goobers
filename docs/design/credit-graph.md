@@ -156,12 +156,14 @@ never backfilled into the active namespace, so promotion does not
 retroactively file findings. Demote by setting `mode: shadow` or `off`.
 
 **Gaggle defaults (#7120).** `gaggle.spec.backprop` sets `mode`
-(`off|shadow|active`), `version` (default `v1`), and `granularity` for every
-workflow in the gaggle; `apiv1.ResolveBackprop` is the single resolver.
+(`off|shadow|active`), `version` (default `v1`), `granularity`, and
+`groundTruth.sources` for every workflow in the gaggle; `apiv1.ResolveBackprop` is the single resolver.
 Precedence: workflow `mode` (so `mode: off` is the explicit opt-out), then
 workflow `enabled: true`, then the gaggle default, then off. `enabled: false`
 without a mode inherits. A workflow that keeps its own mode still inherits an
-omitted `granularity` and `version`.
+omitted `granularity`, `version`, and `groundTruth`. A workflow's own
+`groundTruth` always wins over the gaggle's, and `sources: []` is the explicit
+opt-out from ground-truth labels.
 
 The two inherited modes take different paths, so neither changes what the
 terminal path reads:
@@ -214,7 +216,8 @@ exists only when two runs recorded the same identifier:
   another workflow to the later run, so a handoff chain is a chain rather than
   a clique. URLs, titles, and content digests are never compared.
 - `continued-from-run`: the later run's identity records `continuedFromRunId`
-  naming the earlier run.
+  naming an earlier run of a different workflow. A continuation within one
+  workflow is a retry, not a cross-workflow handoff, and is not linked.
 
 There are no timing, similarity, or name-based edges. A workflow's
 `downstreamFailures` counts distinct failed runs of other workflows that such
@@ -342,8 +345,16 @@ change fault-domain classification, finding IDs, or verification state.
 Labels are read-only inputs. Recording one never touches the run journal, the
 attribution record, the run's phase, or any gate verdict.
 
-Not yet implemented (follow-ups under #7121): declaring ground-truth sources in
-workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
+**Accepted sources (#7120).** `backprop.groundTruth.sources` on a workflow or
+its gaggle (workflow wins; see [Gaggle defaults](#shadow-mode)) lists the label
+sources a run accepts; `[]` accepts none and an omitted list accepts every
+supported source. The resolved list is pinned with the run's definition
+(`creditgraph.PinnedGroundTruth`). `RecordLabel` rejects a label whose source
+the run does not accept, and the read path drops such labels before choosing
+the effective label, so a label written outside the CLI cannot weight an
+aggregate either.
+
+Not yet implemented (follow-ups under #7121): deferred signal sources (reverted PR, R-SZZ traced
 bug, reopened issue, main CI breakage), user-provided checker commands, and
 feeding labels into per-run credit propagation (`attribution.json` itself).
 

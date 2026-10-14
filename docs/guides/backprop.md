@@ -22,15 +22,17 @@ back runs. The contract and its limits are specified in the
 
 Backprop is a **preview** feature (`workflow.spec.backprop.enabled`,
 `workflow.spec.backprop.mode`, `workflow.spec.backprop.version`,
-`workflow.spec.backprop.granularity`, `gaggle.spec.backprop.mode`,
-`gaggle.spec.backprop.version`, and `gaggle.spec.backprop.granularity` in the
+`workflow.spec.backprop.granularity`,
+`workflow.spec.backprop.groundTruth.sources`, `gaggle.spec.backprop.mode`,
+`gaggle.spec.backprop.version`, `gaggle.spec.backprop.granularity`, and
+`gaggle.spec.backprop.groundTruth.sources` in the
 [feature matrix](../feature-matrix.md)).
 Today:
 
-- A gaggle can set Backprop defaults that its workflows inherit, including
-  active enrollment (see
+- A gaggle can set Backprop defaults that its workflows inherit: mode
+  (including active enrollment), version, granularity, and accepted
+  ground-truth label sources (see
   [Set Backprop defaults for a whole gaggle](#set-backprop-defaults-for-a-whole-gaggle)).
-  Ground-truth label sources are still per run; they are not inherited.
 - Attribution is computed **once, at run end** by default. Opting into
   `granularity: stage` also writes read-only per-stage checkpoints (see
   [Per-stage checkpoints](#per-stage-checkpoints)) for active runs only; shadow
@@ -139,6 +141,8 @@ spec:
     mode: active        # off | shadow | active
     version: v1         # optional; defaults to v1
     granularity: stage  # optional; run | stage
+    groundTruth:        # optional; accepted ground-truth label sources
+      sources: [human]  # [] accepts no labels
 ```
 
 Each workflow's effective config is resolved in this order:
@@ -154,6 +158,26 @@ Each workflow's effective config is resolved in this order:
 gaggle default. A workflow that keeps its own mode still inherits the gaggle's
 `granularity` when it does not set one, and the gaggle's `version` when it
 does not pin one.
+
+`groundTruth.sources` lists the label sources whose verdicts Backprop accepts
+for a workflow's runs. `human` (labels recorded with `goobers telemetry label`)
+is the only source today. A workflow inherits the gaggle's list unless it sets
+its own `backprop.groundTruth`; an empty list (`sources: []`) opts the workflow
+out of ground-truth labels. With no list anywhere, every supported source is
+accepted. A workflow can override only this list and keep the gaggle's mode:
+
+```yaml
+spec:
+  backprop:
+    enabled: false      # no mode: inherit the gaggle's mode
+    version: v1
+    groundTruth:
+      sources: []       # this workflow accepts no labels
+```
+
+The list a run was attributed under is pinned with its definition.
+`goobers telemetry label` refuses a source the run does not accept, and
+aggregates ignore any stored label from such a source.
 
 An **active** gaggle default reaches only workflows that can compile Backprop:
 `dslVersion` `"3.0"` or later and the workflow's own
@@ -386,7 +410,8 @@ now and `--since` to seven days earlier. The report includes:
 - **Cross-workflow links.** An edge from an earlier run to a later run, built
   only from an identifier both runs recorded: the same external reference
   (provider, kind, and ID; URLs are never compared) touched by runs of
-  different workflows, or a recorded run continuation. Each workflow's
+  different workflows, or a recorded continuation from a run of a different
+  workflow (a retry within the same workflow is not a link). Each workflow's
   `downstreamFailures` counts failed runs of other workflows linked after its
   runs. Nothing is inferred from timing or similarity.
 

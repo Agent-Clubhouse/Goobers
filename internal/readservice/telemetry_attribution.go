@@ -550,14 +550,8 @@ func attributionObservationFromRecord(
 		observation.ObservedAt = row.StartedAt
 	}
 	labels, err := creditgraph.ReadLabelStore(runDir)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-	case err != nil:
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read ground-truth labels %q: %w", row.RunID, err)
-	default:
-		if label, ok := creditgraph.EffectiveLabel(labels.Labels); ok {
-			observation.GroundTruth = &label
-		}
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
@@ -576,6 +570,9 @@ func attributionObservationFromRecord(
 		return attributionProvenanceError(record.Status, observation, "read attribution identity", row.RunID, err)
 	}
 	observation.GooberDigest = identity.GooberDigest
+	if err := attachAcceptedGroundTruth(&observation, reader, identity, labels.Labels); err != nil {
+		return attributionProvenanceError(record.Status, observation, "read ground-truth contract", row.RunID, err)
+	}
 	spanData := map[string][]byte{}
 	for _, event := range events {
 		if event.Type != journal.EventSpanRecorded || event.Ref == nil ||
@@ -920,4 +917,32 @@ func parsePositiveInt(raw string) int {
 
 func formatAttributionValue(value float64) string {
 	return fmt.Sprintf("%.6f", value)
+}
+
+// attachAcceptedGroundTruth sets the run's effective label from the labels
+// its pinned backprop.groundTruth contract accepts. Labels from other sources
+// stay recorded but never weight an aggregate.
+func attachAcceptedGroundTruth(
+	observation *creditgraph.AttributionObservation,
+	reader *journal.Reader,
+	identity journal.RunIdentity,
+	labels []creditgraph.GroundTruthLabel,
+) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	contract, err := creditgraph.PinnedGroundTruth(reader, identity)
+	if err != nil {
+		return err
+	}
+	accepted := make([]creditgraph.GroundTruthLabel, 0, len(labels))
+	for _, label := range labels {
+		if creditgraph.AcceptedLabel(contract, label) {
+			accepted = append(accepted, label)
+		}
+	}
+	if label, ok := creditgraph.EffectiveLabel(accepted); ok {
+		observation.GroundTruth = &label
+	}
+	return nil
 }

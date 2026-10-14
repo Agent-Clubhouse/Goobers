@@ -179,6 +179,11 @@ type GaggleBackprop struct {
 	// +kubebuilder:validation:Enum=run;stage
 	// +optional
 	Granularity BackpropGranularity `json:"granularity,omitempty" yaml:"granularity,omitempty"`
+	// GroundTruth is the default ground-truth label source contract for every
+	// workflow in the gaggle that omits its own, including workflows that
+	// declare their own mode. Preview.
+	// +optional
+	GroundTruth *BackpropGroundTruth `json:"groundTruth,omitempty" yaml:"groundTruth,omitempty"`
 }
 
 func (g *GaggleBackprop) version() string {
