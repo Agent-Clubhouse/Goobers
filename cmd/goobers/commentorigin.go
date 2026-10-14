@@ -163,13 +163,24 @@ var goobersBookkeepingPayloads = []string{
 // feedback (under shared identity an unmarked one would) nor as an
 // acknowledgement of one (a sticky first posted after a reviewer's comment
 // would otherwise mask it under the legacy unbound rule).
+//
+// Every renderer writes its payload at the start of a line of its own, so only
+// a line that starts with one counts — outside a quote and outside a fenced
+// code block. A person who mentions a payload (in inline code, or a fenced
+// excerpt of a Goobers comment) is still a person.
 func goobersBookkeepingComment(body string) bool {
+	fenced := false
 	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), ">") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			fenced = !fenced
+			continue
+		}
+		if fenced || strings.HasPrefix(trimmed, ">") {
 			continue
 		}
 		for _, payload := range goobersBookkeepingPayloads {
-			if strings.Contains(line, payload) {
+			if strings.HasPrefix(trimmed, payload) {
 				return true
 			}
 		}
