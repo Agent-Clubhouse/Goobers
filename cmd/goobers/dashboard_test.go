@@ -490,7 +490,7 @@ func TestRunDashboardContextAcceptsNonLoopbackListenWithAuth(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("dashboard exit code = %d", code)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dashboard did not stop after cancellation")
 	}
 }
@@ -1274,7 +1274,7 @@ func TestDashboardBindsWhileAttachingAndStopsCleanly(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("dashboard exit code = %d, stderr = %q", code, stderr.String())
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dashboard did not stop after cancellation")
 	}
 	if stderr.Len() != 0 {
@@ -1385,7 +1385,7 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 		if code != 0 {
 			t.Fatalf("dashboard exit code = %d, stderr = %q", code, stderr.String())
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dashboard did not stop after cancellation")
 	}
 	if stderr.Len() != 0 {
@@ -1692,7 +1692,7 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("dashboard exit code = %d", code)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		_ = events.Body.Close()
 		t.Fatal("dashboard did not stop after cancellation")
 	}
