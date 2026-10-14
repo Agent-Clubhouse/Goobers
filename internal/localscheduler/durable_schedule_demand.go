@@ -29,6 +29,11 @@ type DemandSourceQueue interface {
 }
 
 func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tickCandidate, now time.Time) (bool, bool) {
+	if candidate.entry.ScheduleCatchUpAll {
+		if handled, advanced := s.queueAllOccurrences(ctx, candidate, now); handled {
+			return handled, advanced
+		}
+	}
 	if candidate.entry.ScheduleDemandCounter == nil {
 		handled, advanced := s.queuePlainSchedule(ctx, candidate.entry, now)
 		if handled {
@@ -123,7 +128,11 @@ func (s *Scheduler) loadQueuedScheduleDemand(ctx context.Context, queue DemandSo
 		candidate.entry.ScheduleDemandCounter = demand.Pinned.ScheduleDemandCounter
 	}
 	candidate.queuedDemand = demand
-	candidate.schedule = Tick(TriggerState{Workflow: candidate.entry.Workflow, Schedules: candidate.entry.Schedules, LastEval: demand.Source.ScheduledFrom}, demand.Source.ScheduledAt)
+	if demand.Source.ScheduleDeclaration > 0 {
+		candidate.schedule = TickResult{Fire: true, MissedTicks: 1, LastEval: demand.Source.ScheduledAt}
+	} else {
+		candidate.schedule = Tick(TriggerState{Workflow: candidate.entry.Workflow, Schedules: candidate.entry.Schedules, LastEval: demand.Source.ScheduledFrom}, demand.Source.ScheduledAt)
+	}
 	candidate.scheduleEnqueuedAt = demand.Source.ScheduledAt
 	candidate.scheduleRemaining = max(0, demand.Count-demand.Queued)
 	candidate.scheduleDemand = true
@@ -205,7 +214,7 @@ func (s *Scheduler) queueDemandCandidate(ctx context.Context, queue DemandSource
 func (s *Scheduler) updateDemandWake(candidates []*tickCandidate) {
 	pending := false
 	for _, candidate := range candidates {
-		pending = pending || candidate.demandWake
+		pending = pending || candidate.demandWake || candidate.catchUpWake
 	}
 	s.mu.Lock()
 	s.durableScheduleDemand = pending

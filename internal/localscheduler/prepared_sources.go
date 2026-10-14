@@ -14,6 +14,9 @@ import (
 
 // Validate checks the closed source provenance retained by the host.
 func (source SourceTrigger) Validate() error {
+	if err := source.validateScheduleDeclaration(); err != nil {
+		return err
+	}
 	if err := source.validateScheduleWindow(); err != nil {
 		return err
 	}

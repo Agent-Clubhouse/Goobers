@@ -11,6 +11,9 @@ func advanceSourceCursor(ctx context.Context, tx *sql.Tx, a *SourceAdvance) erro
 	if a == nil {
 		return nil
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE source_start_cursors SET cursor_ns=?,legacy_pending=0 WHERE scope=? AND cursor_ns=? AND revision=?`, a.After.UnixNano(), a.Scope, a.Before.UnixNano(), a.Revision)
+	if a.Occurrence > 0 {
+		return advanceSourceOccurrence(ctx, tx, a)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE source_start_cursors SET cursor_ns=?,legacy_pending=0 WHERE scope=? AND cursor_ns=? AND revision=? AND occurrence_cursors IS NULL`, a.After.UnixNano(), a.Scope, a.Before.UnixNano(), a.Revision)
 	return changed(result, err)
 }

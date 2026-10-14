@@ -83,3 +83,23 @@ occurrences is not enabled yet. Its ordered occurrence cursor, bounded
 100-occurrence discovery, schedule revision/config propagation and complete
 scheduler restart integration remain required before that option is exposed.
 The existing one-hour coalesced default remains in effect.
+
+### Independent discovery runtime preparation
+
+The internal prepared-entry path can retain a separate nominal cursor for each
+schedule declaration (maximum 1,000 declarations). One sweep captures at most 100
+occurrences, choosing the earliest nominal time and declaration order for ties.
+Each capture and position advance commit together; a failure leaves the next
+occurrence pending. Interval declarations keep their own phase, including across
+restart at a sweep boundary. This does not promise execution ordering.
+
+Occurrence envelopes carry the one-based declaration index and exact previous and
+next nominal times. Dispatch verifies them against the archived definition.
+Existing coalesced pending custody transfers before independent positions are
+initialized. Schedule revision changes reset future positions without changing
+already accepted starts or sizing obligations. Older binaries refuse the additive
+queue schema. Default capture fingerprints retain their prior representation.
+
+Public workflow authoring does not yet expose this option. The authoring, catalog,
+and daemon path, plus admission backoff behavior, require separate qualification
+before enabling an `all` policy. The default remains one-hour coalescing.

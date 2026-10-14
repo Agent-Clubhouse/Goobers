@@ -42,6 +42,9 @@ type WorkflowEntry struct {
 	Gaggle           string
 	Readiness        apiv1.ReadinessConditions
 	Schedules        []Schedule
+	// ScheduleCatchUpAll enables bounded independent discovery for a prepared entry.
+	// Public authoring remains disabled until the complete path is qualified.
+	ScheduleCatchUpAll bool
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
 	ScheduleBackoffs []IdleBackoffConfig
@@ -961,6 +964,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 type tickCandidate struct {
 	demandWake          bool
+	catchUpWake         bool
 	queuedDemand        *QueuedScheduleDemand
 	scheduleDemandLease func()
 	entry               WorkflowEntry
