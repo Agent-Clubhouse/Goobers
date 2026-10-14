@@ -199,12 +199,53 @@ func TestGatherPRContextReportsTheSkipWhenNothingElseIsClaimable(t *testing.T) {
 }
 
 func TestGatherPRContextExhaustedReason(t *testing.T) {
-	if got := gatherPRContextExhaustedReason(nil); got != "every eligible PR is already claimed by another run" {
+	if got := gatherPRContextExhaustedReason(nil, true); got != "every eligible PR is already claimed by another run" {
 		t.Fatalf("no skips: reason = %q", got)
 	}
-	got := gatherPRContextExhaustedReason([]string{"PR #10 was visibly parked", "PR #11's diff is unchanged"})
+	skips := []string{"PR #10 was visibly parked", "PR #11's diff is unchanged"}
+	if got := gatherPRContextExhaustedReason(skips, false); got != "PR #10 was visibly parked; PR #11's diff is unchanged" {
+		t.Fatalf("skips, nothing left: reason = %q", got)
+	}
+	got := gatherPRContextExhaustedReason(skips, true)
 	if got != "PR #10 was visibly parked; PR #11's diff is unchanged; every other eligible PR is already claimed by another run" {
-		t.Fatalf("skips: reason = %q", got)
+		t.Fatalf("skips, rest held elsewhere: reason = %q", got)
+	}
+}
+
+// TestGatherPRContextFallsBackToBehindBaseWhenEveryStrongCandidateIsSkipped
+// closes the remaining shape of #6482's first half: a strong candidate that
+// cannot progress must not suppress the behind-base fallback for the cycle
+// either. With the only strong candidate skipped, the crowned lander behind
+// its base is remediated exactly as it would have been had the stuck PR not
+// carried a signal at all.
+func TestGatherPRContextFallsBackToBehindBaseWhenEveryStrongCandidateIsSkipped(t *testing.T) {
+	f := newGatherPRContextSkipFixture(t)
+	f.healthy.CheckState = providers.CheckStatePassing
+	f.adapter.features.siblingBlocking = true
+	f.adapter.prepare = func(_ context.Context, prs []providers.PullRequestSummary, _ map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
+		return prs, map[int]int{f.healthy.Number: 1}, nil
+	}
+	var probed []int
+	f.adapter.behindBase = func(pr providers.PullRequestSummary) (bool, error) {
+		probed = append(probed, pr.Number)
+		return pr.Number == f.healthy.Number, nil
+	}
+
+	code, stdout, stderr := f.run(t)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "skipping PR #10") {
+		t.Fatalf("stdout = %q, want the stuck strong candidate skipped", stdout)
+	}
+	if got := f.brief(t).SelectedNumber; got != "20" {
+		t.Fatalf("selected PR = %s, want the crowned behind-base lander #20", got)
+	}
+	if fmt.Sprint(probed) != "[20]" {
+		t.Fatalf("behind-base probes = %v, want only the non-strong PR probed, and only after the skip", probed)
+	}
+	if claimed, ok, err := claimedPullRequestNumber(f.root); err != nil || !ok || claimed != 20 {
+		t.Fatalf("run's claim = #%d (ok=%v, err=%v), want PR #20 only", claimed, ok, err)
 	}
 }
 
