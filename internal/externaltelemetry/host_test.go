@@ -772,3 +772,59 @@ func TestContextSleepReturnsContextErrorOnCancel(t *testing.T) {
 		t.Fatalf("contextSleep() = %v, want context.Canceled", err)
 	}
 }
+
+func boundedArtifactFixture(size int) (string, Descriptor, QueryRequest, QueryProvenance, *QueryError) {
+	start, end := time.Unix(1, 0), time.Unix(2, 0)
+	long := strings.Repeat("x", size)
+	descriptor := Descriptor{Kind: long, Version: long, SourceID: long}
+	request := QueryRequest{Shape: ResultShape(long), Window: Window{Start: &start, End: &end}}
+	provenance := QueryProvenance{Reference: long, ParameterNames: []string{long, long}, ParameterDigest: long, Digest: "sha256:abc"}
+	return long, descriptor, request, provenance, &QueryError{Code: long, Kind: long, Retryable: true}
+}
+
+func TestBoundedFailedArtifactShrinkLadder(t *testing.T) {
+	now := time.Unix(10, 0)
+	for _, size := range []int{0, 10, 50, 200, 2000} {
+		name, descriptor, request, provenance, queryErr := boundedArtifactFixture(size)
+		for _, maxBytes := range []int{0, 1, MinimumMaxBytes - 1, MinimumMaxBytes, MinimumMaxBytes + 1, 1500, 3000, 1 << 20} {
+			limits := QueryLimits{MaxRows: 1, MaxBytes: maxBytes}
+			var artifact ResultArtifact
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("size=%d maxBytes=%d panicked: %v", size, maxBytes, r)
+					}
+				}()
+				artifact = boundedFailedArtifact(name, descriptor, request, provenance, now, now, 1, limits, queryErr)
+			}()
+			data, err := json.Marshal(artifact)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if artifact.State != DataFailed || artifact.Failure == nil {
+				t.Fatalf("size=%d maxBytes=%d artifact not failed: %+v", size, maxBytes, artifact)
+			}
+			if maxBytes >= MinimumMaxBytes && len(data) > maxBytes {
+				t.Fatalf("size=%d maxBytes=%d artifact is %d bytes", size, maxBytes, len(data))
+			}
+			fullData, _ := json.Marshal(failedArtifact(name, descriptor, request, provenance, now, now, 1, limits, queryErr))
+			fits := maxBytes >= MinimumMaxBytes && len(fullData) <= maxBytes
+			if fits == artifact.Metadata.Truncated {
+				t.Fatalf("size=%d maxBytes=%d fits=%v truncated=%v", size, maxBytes, fits, artifact.Metadata.Truncated)
+			}
+		}
+	}
+}
+
+func TestBoundedFailedArtifactLadderSteps(t *testing.T) {
+	now := time.Unix(10, 0)
+	name, descriptor, request, provenance, queryErr := boundedArtifactFixture(5000)
+	artifact := boundedFailedArtifact(name, descriptor, request, provenance, now, now, 1, QueryLimits{MaxBytes: MinimumMaxBytes}, queryErr)
+	if !artifact.Metadata.Truncated || artifact.Query.Reference != "" || artifact.Query.ParameterNames != nil ||
+		!strings.HasPrefix(artifact.Connector.Name, "sha256:") {
+		t.Fatalf("unexpected compacted artifact: %+v", artifact)
+	}
+	if !strings.HasPrefix(compactArtifactString(name), "sha256:") || compactArtifactString("short") != "short" {
+		t.Fatal("compactArtifactString did not hash only long values")
+	}
+}
