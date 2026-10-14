@@ -435,6 +435,84 @@ Not yet implemented (follow-ups under #7121): verifying claims in the in-run
 snapshot, weighting propagation by verified claims, and cross-checking
 reliance against stage inputs.
 
+## Attribution accuracy eval
+
+Ground-truth labels say whether a run's *result* was right; they do not say
+whether Backprop blamed the right thing. The attribution eval measures that.
+`test/attributioneval/testdata/v1.json` (schema
+`goobers.dev/backprop/attribution-eval/v1`) is a versioned set of failed runs,
+each carrying its journal and span content inline plus a label naming the
+responsible fault domain, workflow, stage, decisive step (graph node ID), and
+failure class. Label sources are `synthetic` (a failure injected at a known
+step), `human`, or `fix-marker`. v1 holds 12 synthetic cases and 6 real failed
+runs from a dogfood instance, imported with their journals. A human or
+fix-marker label must carry `provenance`: the source run, `labeledBy`,
+`labeledAt` (a date), and `reason`, the fields the ground-truth label store
+(`goobers telemetry label`) records. A fix-marker label also names the fix
+commit and PR that resolved the failure in `reference`. The label store only
+says whether a run's attribution was correct, so the eval label adds the
+responsible domain, stage, step, and class. `go run ./test/attributioneval
+-import=<run-dir>` prints a case built from a run directory, with its
+provenance seeded from the run's label store, for a labeler to complete.
+
+`go run ./test/attributioneval` builds and attributes each case, takes the most
+confident cause, derives its fault domain with `creditgraph.CauseFaultDomain`
+(the auditor's per-signal rule), and scores it independently at each
+granularity (`domain`, `workflow`, `stage`, `step`, `class`). Workflow is credited when the blamed
+cause sits in a stage of the labeled workflow, so it only discriminates
+run-level from stage-level blame. A case for which attribution produces no
+cause earns no credit at any granularity and is counted as `unattributed`. The
+report also gives the Brier score and
+expected calibration error (five equal-width bins) of cause confidence against
+fault-domain correctness, the granularity the auditor files on. Results are ordered by case ID and the set digest is
+order-independent, so a fixed set always yields the same report.
+
+It prints per-granularity accuracy and writes the full JSON report with
+`-report=PATH`. The same command, and `TestAttributionEvalRegressionGuard` in
+CI, fails when accuracy at any granularity falls below
+`test/attributioneval/testdata/v1.baseline.json`, or when the set's version
+or content digest no longer matches the baseline. After an intended change,
+record a new baseline with `go run ./test/attributioneval -update`.
+
+Labels use [MAST](https://arxiv.org/abs/2503.13657)'s top-level categories as
+the vocabulary, extended with a bucket for failures outside the agent system
+and an explicit unknown. A label's MAST category must match its class:
+
+| Failure class | MAST category | Default fault domain |
+|---|---|---|
+| `weak-instructions`, `routing` | `specification` | `workflow-definition` |
+| `bad-tool-choice`, `topology` | `inter-agent-misalignment` | `workflow-definition` |
+| `bad-interpretation` | `task-verification` | `workflow-definition` |
+| `model`, `environment` | `outside-agent-system` | `harness-model-provider-environment` |
+| `bad-tool-result`, `unknown` | `unknown` | `mixed-or-unknown` |
+
+The default domain applies when the cause's text names no shared runtime or
+external component; the auditor's keyword rules can override it either way.
+
+`-publish=<instance-root>` records the checked report's summary (schema
+`goobers.dev/backprop/attribution-eval-summary/v1`: set version and digest,
+accuracy, domain calibration bins) in
+`scheduler/backprop-audit/attribution-eval.json`. A summary calibrated against
+any other granularity is rejected, and publishing is refused with `-update`
+and after a regression. The telemetry stats API returns it as
+`attributionEval`, and the portal's Insight page shows it at instance scope as
+"Attribution accuracy" (per-granularity accuracy and populated calibration
+bins). The fault auditor
+derives its filing threshold from it: the upper bound of the highest populated
+calibration bin whose accuracy is below 0.8, else the lower bound of the lowest
+populated bin, never below the default 0.5 (used when nothing is published).
+When the bin that includes confidence 1 falls short, no confidence is safe:
+the threshold sets `noneFileable` and no finding is fileable. v1 yields 0.6.
+Every audit report carries `filingThreshold` (confidence, `noneFileable`,
+source, eval set) and each finding `fileable`; only fileable findings start
+the filing pass's report cooldown. A malformed published summary is an error,
+not a silent fallback to the default. Every published score must lie in [0,1],
+each accuracy must be scored over every case, and every accuracy must match its
+correct and total counts.
+
+Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
+command and counterfactual fault-injection generators.
+
 ## Why
 
 Credit assignment needs one shared answer to "what produced this outcome, and

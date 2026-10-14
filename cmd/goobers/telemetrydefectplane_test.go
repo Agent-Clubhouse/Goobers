@@ -71,9 +71,13 @@ func TestDefectAggregateResponsePreservesFaultAudit(t *testing.T) {
 			Evidence:  []creditgraph.AttributionEvidenceLink{{RunID: "run-1", JournalSequence: 12}},
 			Rationale: "repeated runtime failure", AlternativeDomains: []string{string(creditgraph.FaultDomainUnknown)},
 			RecommendedOwner: "product", RecommendedAction: "investigate",
-			Verification: creditgraph.VerificationPending,
+			Verification: creditgraph.VerificationPending, Fileable: true,
 		}},
 		Suppressed: 1, Truncated: true,
+		FilingThreshold: &creditgraph.FilingThreshold{
+			Confidence: 0.6, Source: creditgraph.FilingThresholdAttributionEval, CalibrationTarget: "domain",
+			EvalSetVersion: "v1", EvalSetDigest: "sha256:abc",
+		},
 	}
 
 	wire := defectAggregateResponse(candidateFindingsArtifact{FaultAudit: audit})

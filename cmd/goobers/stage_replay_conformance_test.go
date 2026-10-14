@@ -203,6 +203,7 @@ const (
 	replayGitHubReviewReply   = "POST /repos/your-org/your-repo/pulls/{n}/comments/{n}/replies"
 	replayGitHubGraphQL       = "POST /graphql"
 	replayGitHubReviewCreate  = "POST /repos/your-org/your-repo/pulls/{n}/reviews"
+	replayGitHubStatusCreate  = "POST /repos/your-org/your-repo/statuses/sha10head"
 	replayGiteaCommentCreate  = "POST /api/v1/repos/your-org/your-repo/issues/{n}/comments"
 	replayGiteaCommentEdit    = "PATCH /api/v1/repos/your-org/your-repo/issues/comments/{n}"
 )
@@ -255,11 +256,15 @@ func stageReplayCases() []stageReplayCase {
 			// The merge-review status comment is created once and edited in
 			// place on a retry. The native review is a vote apply-verdict
 			// re-submits on every run; it is never read back, so it is budgeted
-			// rather than counted as an artifact.
+			// rather than counted as an artifact. The goobers/merge-review
+			// commit status (#4199) is posted once: a retry reads the same
+			// state and description standing on the head and posts nothing,
+			// so re-reviews never pile up toward GitHub's per-context cap.
 			stage: "apply-verdict", provider: providers.ProviderGitHub,
 			setup: replayApplyVerdictGitHub,
 			first: map[string]int{
 				replayGitHubCommentCreate: 1, replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1, replayGitHubReviewCreate: 1,
+				replayGitHubStatusCreate: 1,
 			},
 			replay: map[string]int{
 				replayGitHubCommentEdit: 1, replayGitHubLabelAdd: 1, replayGitHubLabelRemove: 1, replayGitHubReviewCreate: 1,

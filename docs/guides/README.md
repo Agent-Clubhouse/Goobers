@@ -67,6 +67,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Managed object sharing and external reference stores](managed-object-sharing.md)
 - [MCP readiness in unattended preflight](mcp-preflight.md)
 - [Merge provenance reports](merge-provenance.md)
+- [Enforce the merge-review verdict as a required check](merge-review-verdict-status.md)
 - [Move a local instance to another machine](move-local-instance.md)
 - [Run multiple Goobers instances against one repo](multiple-instances-one-repo.md)
 - [Tier-2 OIDC authentication](oidc-authentication.md)

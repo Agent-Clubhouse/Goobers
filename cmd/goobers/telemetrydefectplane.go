@@ -261,6 +261,7 @@ func wireFaultAuditReport(report *creditgraph.FaultAuditReport) *telemetryclient
 		UnknownFindings:     wireFaultFindings(report.UnknownFindings),
 		Suppressed:          report.Suppressed,
 		Truncated:           report.Truncated,
+		FilingThreshold:     (*telemetryclient.FilingThreshold)(report.FilingThreshold),
 	}
 }
 
@@ -275,6 +276,7 @@ func wireFaultFindings(findings []creditgraph.FaultFinding) []telemetryclient.Fa
 			CounterEvidence: finding.CounterEvidence, Rationale: finding.Rationale,
 			AlternativeDomains: finding.AlternativeDomains, RecommendedOwner: finding.RecommendedOwner,
 			RecommendedAction: finding.RecommendedAction, Verification: string(finding.Verification),
+			Fileable: finding.Fileable,
 		})
 	}
 	return result

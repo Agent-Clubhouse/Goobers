@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergepolicy"
 	"github.com/goobers/goobers/internal/premergecheck"
+	"github.com/goobers/goobers/internal/prstatus"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -71,6 +72,9 @@ const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
 	"verdict=pass, CI green, not a draft, the SHA-pin still matches the PR's\n" +
 	"live head/base, and — for a sibling-overlap PR — completed single-lander\n" +
 	"election evidence (elected:true, #1071) — never a bare self-approval.\n" +
+	"When the live head carries the goobers/merge-review verdict status\n" +
+	"(GitHub, Gitea), it must be a pass recorded for the pinned base: a\n" +
+	"failure, a pending, or a pass for another base refuses the merge.\n" +
 	"Declared inputs: pullNumber, verdict, headSha, baseSha (the SHA-pin,\n" +
 	"all required; in the shipped merge-review workflow, headSha/baseSha\n" +
 	"come from gather-sibling-context's selectedHeadSha/selectedBaseSha,\n" +
@@ -568,6 +572,13 @@ func liveConjunctReasons(ctx context.Context, dispatcher *providers.Dispatcher, 
 	}
 	if poll.Draft {
 		reasons = append(reasons, "pull request is a draft")
+	}
+	// #4199: the native verdict status on the live head is the authoritative
+	// verdict every merge path observes. A non-pass, a stale pending, or a
+	// pass recorded for a different base refuses, whatever the verdict input
+	// or commitMessage says.
+	if reason := prstatus.VerdictStatusRefusal(poll.VerdictStatus, poll.HeadSHA, expectedBaseSHA); reason != "" {
+		reasons = append(reasons, reason)
 	}
 	if poll.HeadSHA != expectedHeadSHA {
 		reasons = append(reasons, fmt.Sprintf("head moved: verdict pinned to %s, PR is now at %s — verdict is stale", expectedHeadSHA, poll.HeadSHA))
@@ -1201,6 +1212,10 @@ func mergeResultFields(selectedNumber, selectedHeadSha, landOutcome, mergeSHA st
 	// head the refusal happened at (threaded via inputsFrom on the fail branch);
 	// a refusal at a new head is a fresh attempt, not a continuation.
 	out["selectedHeadSha"] = selectedHeadSha
+	// Echo the posting identity so queue-watch, the next task on the enqueue
+	// path, can bind it via inputsFrom and classify comments with the same
+	// "self" this stage's feedback gate used (#6134).
+	out["verdictAuthor"] = strings.TrimSpace(providerInput("verdictAuthor", ""))
 	if landOutcome != "" {
 		out["landOutcome"] = landOutcome
 	}

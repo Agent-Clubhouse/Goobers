@@ -423,8 +423,8 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("queue-watch task not found")
 			}
-			if !reflect.DeepEqual(queueWatch.InputsFrom, map[string]string{"pullNumber": "selectedNumber"}) {
-				t.Errorf("queue-watch inputsFrom = %v, want pullNumber=selectedNumber", queueWatch.InputsFrom)
+			if !reflect.DeepEqual(queueWatch.InputsFrom, map[string]string{"pullNumber": "selectedNumber", "verdictAuthor": "verdictAuthor"}) {
+				t.Errorf("queue-watch inputsFrom = %v, want pullNumber=selectedNumber, verdictAuthor=verdictAuthor (#6134)", queueWatch.InputsFrom)
 			}
 			if queueWatch.Run == nil || !reflect.DeepEqual(queueWatch.Run.Command, []string{"goobers", "merge-queue-poll"}) {
 				t.Errorf("queue-watch command = %+v, want [goobers merge-queue-poll]", queueWatch.Run)

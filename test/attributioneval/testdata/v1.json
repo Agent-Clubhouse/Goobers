@@ -1,0 +1,3211 @@
+{
+  "schema": "goobers.dev/backprop/attribution-eval/v1",
+  "version": "v1",
+  "cases": [
+    {
+      "id": "bad-tool-result",
+      "description": "Injected unsuccessful bash result in the only tool call of the failing implement stage.",
+      "input": {
+        "runId": "eval-bad-tool-result",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":false}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "mixed-or-unknown",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "toolresult:subagent:root@sha256:span-implement#2",
+        "class": "bad-tool-result",
+        "mast": "unknown"
+      }
+    },
+    {
+      "id": "bad-tool-choice",
+      "description": "Injected wrong tool choice: grep fails where a later bash call succeeds; the decisive step is the grep call.",
+      "input": {
+        "runId": "eval-bad-tool-choice",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"grep\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":false}}\n{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-2\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-2\",\"success\":true}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "toolcall:subagent:root@sha256:span-implement#1",
+        "class": "bad-tool-choice",
+        "mast": "inter-agent-misalignment"
+      }
+    },
+    {
+      "id": "bad-interpretation",
+      "description": "Every tool call succeeded but the implement stage failed: the agent misread good results.",
+      "input": {
+        "runId": "eval-bad-interpretation",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":true}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "bad-interpretation",
+        "mast": "task-verification"
+      }
+    },
+    {
+      "id": "weak-instructions",
+      "description": "Implement stage failed with no recorded tool calls or evidence: the instructions produced no work.",
+      "input": {
+        "runId": "eval-weak-instructions",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "weak-instructions",
+        "mast": "specification"
+      }
+    },
+    {
+      "id": "routing",
+      "description": "Workflow routed the subagent to a model other than the one it requested; routing is workflow configuration.",
+      "input": {
+        "runId": "eval-routing",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "requestedModel": "gpt-5",
+              "resolvedModel": "gpt-4.1",
+              "lifecycle": "completed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {
+                "outputTokens": 12
+              }
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "model:root",
+        "class": "routing",
+        "mast": "specification"
+      }
+    },
+    {
+      "id": "model",
+      "description": "Requested model ran but produced no output tokens.",
+      "input": {
+        "runId": "eval-model",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "requestedModel": "gpt-5",
+              "resolvedModel": "gpt-5",
+              "lifecycle": "completed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {
+                "outputTokens": 0
+              }
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "harness-model-provider-environment",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "model:root",
+        "class": "model",
+        "mast": "outside-agent-system"
+      }
+    },
+    {
+      "id": "topology",
+      "description": "Subagent declared a dependency on a subagent that never ran.",
+      "input": {
+        "runId": "eval-topology",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {},
+              "dependsOn": [
+                "never-ran"
+              ]
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "subagent:root",
+        "class": "topology",
+        "mast": "inter-agent-misalignment"
+      }
+    },
+    {
+      "id": "environment",
+      "description": "Harness raised a stage error after the agent recorded work.",
+      "input": {
+        "runId": "eval-environment",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "error"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "harness-model-provider-environment",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "environment",
+        "mast": "outside-agent-system"
+      }
+    },
+    {
+      "id": "unexplained-stage",
+      "description": "Stage failed with an artifact but no signal that distinguishes a cause; the honest label is unknown.",
+      "input": {
+        "runId": "eval-unexplained-stage",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-implement",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "mixed-or-unknown",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "unknown",
+        "mast": "unknown"
+      }
+    },
+    {
+      "id": "run-without-failing-stage",
+      "description": "Run failed although every stage succeeded; no stage is responsible.",
+      "input": {
+        "runId": "eval-run-without-failing-stage",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "success"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "mixed-or-unknown",
+        "step": "outcome",
+        "class": "unknown",
+        "mast": "unknown"
+      }
+    },
+    {
+      "id": "harness-error-masks-empty-prompt",
+      "description": "Harness surfaced a stage error, but the agent never started work because its prompt was empty: the fault is the workflow's instructions.",
+      "input": {
+        "runId": "eval-harness-error-masks-empty-prompt",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "error"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "weak-instructions",
+        "mast": "specification"
+      }
+    },
+    {
+      "id": "upstream-plan-misread",
+      "description": "Implement's bash call failed because the plan stage misread its inputs and produced a wrong plan; the decisive step is upstream in plan.",
+      "input": {
+        "runId": "eval-upstream-plan-misread",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z"
+          },
+          {
+            "schema": "",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "planner",
+              "runId": "run-1",
+              "stage": "plan",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "completed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "attempt": 1,
+            "integrity": "unapproved",
+            "ref": {
+              "path": "",
+              "digest": "sha256:diff-plan",
+              "size": 0
+            },
+            "name": "diff"
+          },
+          {
+            "schema": "",
+            "seq": 4,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "plan",
+            "attempt": 1,
+            "status": "success"
+          },
+          {
+            "schema": "",
+            "seq": 5,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "agent.lifecycle",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "agent": {
+              "schema": "goobers.dev/journal/agent/v1",
+              "id": "root",
+              "runId": "run-1",
+              "stage": "implement",
+              "attempt": 1,
+              "resolvedModel": "gpt-5",
+              "lifecycle": "failed",
+              "startedAt": "2026-08-31T12:00:00Z",
+              "updatedAt": "2026-08-31T12:00:00Z",
+              "budget": {},
+              "usage": {}
+            }
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "span.recorded",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "ref": {
+              "path": "spans/copilot-cli.transcript",
+              "digest": "sha256:span-implement",
+              "size": 0
+            },
+            "name": "copilot-cli.transcript",
+            "dataSchema": "goobers.dev/telemetry/genai-event/v1"
+          },
+          {
+            "schema": "",
+            "seq": 0,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "runner": {
+              "agentId": "root",
+              "digest": "sha256:span-implement",
+              "kind": "credit-span-provenance"
+            }
+          },
+          {
+            "schema": "",
+            "seq": 6,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "stage": "implement",
+            "attempt": 1,
+            "status": "failure"
+          },
+          {
+            "schema": "",
+            "seq": 7,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "0001-01-01T00:00:00Z",
+            "status": "failed"
+          }
+        ],
+        "spanData": {
+          "sha256:span-implement": "{\"role\":\"assistant\",\"model\":\"gpt-5\",\"tool_call\":{\"id\":\"call-1\",\"name\":\"bash\"}}\n{\"role\":\"tool\",\"tool_call\":{\"id\":\"call-1\",\"success\":false}}\n"
+        }
+      },
+      "expected": {
+        "source": "synthetic",
+        "domain": "workflow-definition",
+        "workflow": "implementation",
+        "stage": "plan",
+        "step": "stage:plan#1",
+        "class": "bad-interpretation",
+        "mast": "task-verification"
+      }
+    },
+    {
+      "id": "real-self-update-unsupervised",
+      "description": "2026-08-14 dogfood self-update run on an instance that was not service-installed; the stage refused to update without a supervised daemon.",
+      "input": {
+        "runId": "171b4c473e5fbabaece55c2a93536689",
+        "gaggle": "goobers",
+        "workflow": "self-update",
+        "events": [
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "2026-08-14T15:13:00.4012615-07:00",
+            "status": "running"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-08-14T15:13:00.4170034-07:00",
+            "stage": "stage-update",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-14T15:13:05.0985644-07:00",
+            "stage": "stage-update",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/c4/7858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "digest": "sha256:c47858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "size": 22,
+              "integrity": "derived"
+            },
+            "name": "context/stage-update-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 4,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-14T15:13:05.6944544-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "171b4c473e5fbabaece55c2a93536689:stage-update/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 5,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-14T15:13:05.6990203-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/4c/b83ce1c4de8eb4682d0572d70f5ecd98577c5ddb0d34a824a69ceb4da2cbf9",
+              "digest": "sha256:4cb83ce1c4de8eb4682d0572d70f5ecd98577c5ddb0d34a824a69ceb4da2cbf9",
+              "size": 99,
+              "integrity": "derived"
+            },
+            "name": "171b4c473e5fbabaece55c2a93536689:stage-update/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 6,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-08-14T15:13:06.3783428-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/self-update/171b4c473e5fbabaece55c2a93536689"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 7,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-08-14T15:13:06.3823528-07:00",
+            "stage": "stage-update",
+            "attempt": 1,
+            "status": "failure",
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/4c/b83ce1c4de8eb4682d0572d70f5ecd98577c5ddb0d34a824a69ceb4da2cbf9",
+                "digest": "sha256:4cb83ce1c4de8eb4682d0572d70f5ecd98577c5ddb0d34a824a69ceb4da2cbf9",
+                "size": 99,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              }
+            ],
+            "integrity": "trusted",
+            "error": {
+              "code": "missing_result_file",
+              "message": "declared result file \"self-update-result.json\" was not produced (exit code 1); stderr: error: self-update: self-update requires `goobers service install` and a running supervised daemon"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 8,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-08-14T15:13:06.3852241-07:00",
+            "stage": "stage-update",
+            "error": {
+              "code": "run_failed",
+              "message": "missing_result_file: declared result file \"self-update-result.json\" was not produced (exit code 1); stderr: error: self-update: self-update requires `goobers service install` and a running supervised daemon"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 9,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-08-14T15:13:06.3978723-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/self-update/171b4c473e5fbabaece55c2a93536689"
+            },
+            "runner": {
+              "operation": "delete",
+              "outcome": "unnecessary",
+              "reason": "branch-not-pushed"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 10,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "2026-08-14T15:13:06.4010473-07:00",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "human",
+        "domain": "harness-model-provider-environment",
+        "workflow": "self-update",
+        "stage": "stage-update",
+        "step": "stage:stage-update#1",
+        "class": "environment",
+        "mast": "outside-agent-system",
+        "provenance": {
+          "sourceRun": "171b4c473e5fbabaece55c2a93536689",
+          "labeledBy": "krishnapatel17",
+          "labeledAt": "2026-10-13",
+          "reason": "stderr: self-update requires `goobers service install` and a running supervised daemon; the instance ran unsupervised, so the failure is the host setup, not the workflow or the self-update code."
+        }
+      }
+    },
+    {
+      "id": "real-self-update-dev-version",
+      "description": "2026-09-19 dogfood self-update run whose stage could not order the running build's version \"dev\" against the release.",
+      "input": {
+        "runId": "fe042002bbd6f3a770b5928512d370b9",
+        "gaggle": "goobers",
+        "workflow": "self-update",
+        "events": [
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "2026-09-19T06:13:04.0183416-07:00",
+            "status": "running"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 2,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "2026-09-19T06:13:04.038522-07:00",
+            "runner": {
+              "kind": "engine_starter_selection",
+              "placementDeclared": false,
+              "reason": "this instance has no engine configuration",
+              "reasonClass": "engine_not_configured",
+              "starter": "runner"
+            },
+            "workflow": "self-update",
+            "gaggle": "goobers",
+            "runId": "fe042002bbd6f3a770b5928512d370b9"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 3,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-19T06:13:04.046515-07:00",
+            "stage": "stage-update",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 4,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-19T06:13:16.7630598-07:00",
+            "stage": "stage-update",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/c4/7858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "digest": "sha256:c47858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "size": 22,
+              "integrity": "derived"
+            },
+            "name": "context/stage-update-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 5,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-19T06:13:19.197814-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "fe042002bbd6f3a770b5928512d370b9:stage-update/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 6,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-19T06:13:19.2045088-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/64/1c2a5e313e58c82ed518148e45c205808e88f37491f2f8387053221a99a179",
+              "digest": "sha256:641c2a5e313e58c82ed518148e45c205808e88f37491f2f8387053221a99a179",
+              "size": 220,
+              "integrity": "derived"
+            },
+            "name": "fe042002bbd6f3a770b5928512d370b9:stage-update/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 7,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-19T06:13:19.2139645-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/1e/aed8df865e87410d85be9b19ab8259dd4abc9ba271ba3ce22f6dc271da20dd",
+              "digest": "sha256:1eaed8df865e87410d85be9b19ab8259dd4abc9ba271ba3ce22f6dc271da20dd",
+              "size": 219,
+              "integrity": "derived"
+            },
+            "name": "fe042002bbd6f3a770b5928512d370b9:stage-update/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 8,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-19T06:13:19.3358014-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/self-update/fe042002bbd6f3a770b5928512d370b9",
+              "commitSha": "2d86886ee505d2a343a2928886e8407dbb08d24c"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 9,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-19T06:13:28.0115516-07:00",
+            "stage": "stage-update",
+            "attempt": 1,
+            "error": {
+              "code": "worktree_remove_failed",
+              "message": "worktree cleanup deferred pending durable handoff: recovery handoff for fe042002bbd6f3a770b5928512d370b9-stage-update: recovery inventory is full: 1024 of 1024 slots used in C:\\goobers\\goobers-dogfood\\recovery"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 10,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-19T06:13:28.0157264-07:00",
+            "stage": "stage-update",
+            "attempt": 1,
+            "status": "failure",
+            "outputs": {
+              "integrity": "unapproved"
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/64/1c2a5e313e58c82ed518148e45c205808e88f37491f2f8387053221a99a179",
+                "digest": "sha256:641c2a5e313e58c82ed518148e45c205808e88f37491f2f8387053221a99a179",
+                "size": 220,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/1e/aed8df865e87410d85be9b19ab8259dd4abc9ba271ba3ce22f6dc271da20dd",
+                "digest": "sha256:1eaed8df865e87410d85be9b19ab8259dd4abc9ba271ba3ce22f6dc271da20dd",
+                "size": 219,
+                "mediaType": "application/json",
+                "integrity": "derived"
+              }
+            ],
+            "integrity": "trusted",
+            "error": {
+              "code": "provider_error",
+              "message": "self-update: compare current version \"dev\" with release \"v0.4.0\": parse current version \"dev\": malformed version: dev"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 11,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-19T06:13:28.0195999-07:00",
+            "stage": "stage-update",
+            "error": {
+              "code": "run_failed",
+              "message": "provider_error: self-update: compare current version \"dev\" with release \"v0.4.0\": parse current version \"dev\": malformed version: dev"
+            },
+            "runner": {
+              "errorClass": "provider"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 12,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-19T06:13:28.0473578-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/self-update/fe042002bbd6f3a770b5928512d370b9",
+              "commitSha": "2d86886ee505d2a343a2928886e8407dbb08d24c"
+            },
+            "runner": {
+              "operation": "delete",
+              "outcome": "unnecessary",
+              "reason": "branch-not-pushed"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 13,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "2026-09-19T06:13:28.0627721-07:00",
+            "status": "failed",
+            "disposition": "produced"
+          }
+        ]
+      },
+      "expected": {
+        "source": "fix-marker",
+        "domain": "goobers-product-runtime",
+        "workflow": "self-update",
+        "stage": "stage-update",
+        "step": "stage:stage-update#1",
+        "class": "environment",
+        "mast": "outside-agent-system",
+        "provenance": {
+          "sourceRun": "fe042002bbd6f3a770b5928512d370b9",
+          "labeledBy": "krishnapatel17",
+          "labeledAt": "2026-10-13",
+          "reason": "parse current version \"dev\": malformed version; fixed in self-update, which now recovers from a non-orderable current version.",
+          "reference": "96398a04d (PR #5520, closes #5518 and #5526)"
+        }
+      }
+    },
+    {
+      "id": "real-config-generation-mismatch",
+      "description": "2026-09-26 dogfood self-update run whose deterministic stage refused a config generation the runner had not applied.",
+      "input": {
+        "runId": "157a58394cf5052d7e9fc3d7810b07ad",
+        "gaggle": "goobers",
+        "workflow": "self-update",
+        "events": [
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "2026-09-26T14:13:00.1624542-07:00",
+            "status": "running"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 2,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "2026-09-26T14:13:00.2103209-07:00",
+            "runner": {
+              "kind": "engine_starter_selection",
+              "placementDeclared": false,
+              "reason": "this instance has no engine configuration",
+              "reasonClass": "engine_not_configured",
+              "starter": "runner"
+            },
+            "workflow": "self-update",
+            "gaggle": "goobers",
+            "runId": "157a58394cf5052d7e9fc3d7810b07ad"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 3,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-26T14:13:00.2412543-07:00",
+            "stage": "stage-update",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 4,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-26T14:13:08.2727394-07:00",
+            "stage": "stage-update",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/c4/7858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "digest": "sha256:c47858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "size": 22,
+              "integrity": "derived"
+            },
+            "name": "context/stage-update-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 5,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-26T14:13:31.887468-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "157a58394cf5052d7e9fc3d7810b07ad:stage-update/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 6,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-26T14:13:31.8975436-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/7d/277e5d664ad32b1d08e2e99256c127e21cec08fd1eacd20cb5c2294f892e31",
+              "digest": "sha256:7d277e5d664ad32b1d08e2e99256c127e21cec08fd1eacd20cb5c2294f892e31",
+              "size": 532,
+              "integrity": "derived"
+            },
+            "name": "157a58394cf5052d7e9fc3d7810b07ad:stage-update/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 7,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-26T14:13:32.0259055-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/self-update/157a58394cf5052d7e9fc3d7810b07ad",
+              "commitSha": "bd63a5681c79ded55e0f3b90fe9437c923b06d49"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 8,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-26T14:13:37.3672508-07:00",
+            "stage": "stage-update",
+            "attempt": 1,
+            "status": "failure",
+            "outputs": {
+              "timeoutSeconds": 600,
+              "timeoutSource": "built-in default"
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/7d/277e5d664ad32b1d08e2e99256c127e21cec08fd1eacd20cb5c2294f892e31",
+                "digest": "sha256:7d277e5d664ad32b1d08e2e99256c127e21cec08fd1eacd20cb5c2294f892e31",
+                "size": 532,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              }
+            ],
+            "integrity": "trusted",
+            "error": {
+              "code": "config_generation_mismatch",
+              "message": "on-disk config digest sha256:b6a7bc11e7a29e795e34e205a49637e51ae17619694091149b167e77273bcb6d differs from runner-applied digest sha256:b47aaecea4d310b7a42b08192d555512828d1f5926de33e9780cecc52d1176ac; refusing to read a config generation this runner did not apply"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 9,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-26T14:13:37.3723506-07:00",
+            "stage": "stage-update",
+            "error": {
+              "code": "run_failed",
+              "message": "config_generation_mismatch: on-disk config digest sha256:b6a7bc11e7a29e795e34e205a49637e51ae17619694091149b167e77273bcb6d differs from runner-applied digest sha256:b47aaecea4d310b7a42b08192d555512828d1f5926de33e9780cecc52d1176ac; refusing to read a config generation this runner did not apply"
+            },
+            "runner": {
+              "errorClass": "unknown"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 10,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-26T14:13:37.4028157-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/self-update/157a58394cf5052d7e9fc3d7810b07ad",
+              "commitSha": "bd63a5681c79ded55e0f3b90fe9437c923b06d49"
+            },
+            "runner": {
+              "operation": "delete",
+              "outcome": "unnecessary",
+              "reason": "branch-not-pushed"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 11,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "2026-09-26T14:13:37.4282108-07:00",
+            "status": "failed",
+            "disposition": "produced"
+          }
+        ]
+      },
+      "expected": {
+        "source": "fix-marker",
+        "domain": "goobers-product-runtime",
+        "workflow": "self-update",
+        "stage": "stage-update",
+        "step": "stage:stage-update#1",
+        "class": "environment",
+        "mast": "outside-agent-system",
+        "provenance": {
+          "sourceRun": "157a58394cf5052d7e9fc3d7810b07ad",
+          "labeledBy": "krishnapatel17",
+          "labeledAt": "2026-10-13",
+          "reason": "config_generation_mismatch after a pinned rebuild re-captured the run's config tree; fixed by reusing the run's admitted generation.",
+          "reference": "b796de17c (PR #6998, #5445)"
+        }
+      }
+    },
+    {
+      "id": "real-recovery-handoff-worktree",
+      "description": "2026-09-16 dogfood implementation run whose implement stage could not prepare its worktree because the recovery inventory was full.",
+      "input": {
+        "runId": "356e7dc5896a6ac6fe671cf5edf83030",
+        "gaggle": "goobers",
+        "workflow": "implementation",
+        "events": [
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "2026-09-16T16:30:11.1607859-07:00",
+            "status": "running"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 2,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "2026-09-16T16:30:11.2555843-07:00",
+            "runner": {
+              "kind": "engine_starter_selection",
+              "placementDeclared": false,
+              "reason": "this instance has no engine configuration",
+              "reasonClass": "engine_not_configured",
+              "starter": "runner"
+            },
+            "workflow": "implementation",
+            "gaggle": "goobers",
+            "runId": "356e7dc5896a6ac6fe671cf5edf83030"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 3,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-16T16:30:11.2629804-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/implementation/356e7dc5896a6ac6fe671cf5edf83030"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 4,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-16T16:30:11.2812841-07:00",
+            "stage": "query-backlog",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 5,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:30:21.3004316-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/c4/7858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "digest": "sha256:c47858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "size": 22,
+              "integrity": "derived"
+            },
+            "name": "context/query-backlog-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 6,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:30:45.7649726-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/ba/e97b9ce82582d99fece698119cbb95d43afd8c04723a3a3a7324ee193a3c59",
+              "digest": "sha256:bae97b9ce82582d99fece698119cbb95d43afd8c04723a3a3a7324ee193a3c59",
+              "size": 100,
+              "integrity": "derived"
+            },
+            "name": "356e7dc5896a6ac6fe671cf5edf83030:query-backlog/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 7,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:30:45.7731183-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "356e7dc5896a6ac6fe671cf5edf83030:query-backlog/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 8,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:30:45.788297-07:00",
+            "integrity": "maintainer",
+            "ref": {
+              "path": "artifacts/sha256/4a/d1dc9de8e1637cb90ad6cbb8b445b08f02cd90cd0e9680ac52bfb7ba622941",
+              "digest": "sha256:4ad1dc9de8e1637cb90ad6cbb8b445b08f02cd90cd0e9680ac52bfb7ba622941",
+              "size": 16306,
+              "integrity": "maintainer"
+            },
+            "name": "356e7dc5896a6ac6fe671cf5edf83030:query-backlog/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 9,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-16T16:30:45.7901414-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "externalRef": {
+              "provider": "github",
+              "kind": "issue",
+              "id": "4083",
+              "url": "https://github.com/Agent-Clubhouse/Goobers/issues/4083#issuecomment-5706060599"
+            },
+            "runner": {
+              "mutationReceiptId": "5D37OWPKCDS6IQZXFURNPJHHAR",
+              "operation": "comment"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 10,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-16T16:30:45.7901414-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "externalRef": {
+              "provider": "github",
+              "kind": "issue",
+              "id": "4083",
+              "url": "https://github.com/Agent-Clubhouse/Goobers/issues/4083"
+            },
+            "runner": {
+              "claimRunId": "356e7dc5896a6ac6fe671cf5edf83030",
+              "mutationReceiptId": "5N4LXPAUW7QTZBWVVBGODZAPLL",
+              "operation": "claim",
+              "outcome": "success"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 11,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-16T16:30:53.4262104-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "error": {
+              "code": "worktree_remove_failed",
+              "message": "recovery inventory is full"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 12,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-16T16:30:53.4305896-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "status": "success",
+            "outputs": {
+              "assignee": "krishnapatel17",
+              "body": "Parent tracking issue: #3601 Parent Temporal epic: #39  ## Goal  Adopt Temporal Worker Versioning build-ID routing and pin in-flight executions to compatible implementations.  ## Scope  - Map the existing Goobers worker/build identity (#632, closed) onto Temporal build IDs and versioned task-queue routing. - Pin in-flight executions to a compatible workflow/activity implementation across deploys and resumes. - Surface the worker/build that executed each workflow/activity attempt in the journal, telemetry, and Temporal metadata.  ## Acceptance criteria  - In-flight executions remain deterministic and routable during a rolling upgrade. - An operator can explain which build executed every workflow/activity attempt. - Tests cover mixed worker fleets, long-running workflows, and resume.  ## Notes  Prerequisites #632 and #2911 are closed. Rollout lifecycle (ramp/drain/rollback) and IR-version admission are tracked as sibling children of #3601. Journal/telemetry additions here are additive.    ## Current remediation scope (2026-09-08)  The prior implementation passed review, including mixed-fleet and resume coverage, but was discarded after an environment-only missing-sh CI failure. Recreate the full accepted implementation; Git sh is now on native CI PATH.     ## Escalation correction (2026-09-08)  Recreate the full implementation and address these exact remaining gaps before completion:  - Record build and executing-worker identity for every workflow attempt and every activity attempt, including failed activity attempts; a successful ResultEnvelope-only decorator is insufficient. - Expose the attempt identity consistently in the journal and applicable telemetry/Temporal metadata. - Add behavioral regression tests for mixed worker fleets during rolling upgrade, deterministic long-running workflow pinning, resume, and failed-attempt visibility. Static worker-option assertions are insufficient.     ## Behavioral-routing correction (2026-09-08)  Recreate the accepted build/worker journal and telemetry wiring, then add a behavioral Temporal versioning test that cannot pass when routing is broken. The test must run old/new versioned workers as a mixed fleet, start a long-running workflow on the old build, introduce the new build, and verify subsequent/resumed activity attempts remain deterministically pinned as required, including failed-attempt identity visibility. Passing BuildID as workflow input or directly invoking interceptors is not sufficient.     ## Ready-worker proof correction (2026-09-08)  The production identity and error-metadata wiring is accepted. Complete only the remaining behavioral-test gap: before signaling the pinned old-build workflow during the new-worker-only window, positively prove the incompatible new worker is actively polling and can execute an unpinned probe workflow/activity on that same queue. Then demonstrate the pinned workflow's resumed work remains unroutable to the new build until an old-build worker returns. A fixed startup timeout or an unverified schedule-to-start timeout is insufficient.   ## Deterministic readiness-barrier correction (2026-09-09)  Recreate the latest real mixed-fleet Temporal test and replace timing assumptions with deterministic readiness barriers:  - Do not rely on a fixed timeout immediately after compatibility registration to prove the old-build worker is ready. - After restoring the old-build worker, positively prove versioning propagation and worker availability before awaiting the pinned workflow's resumed result; never use an unbounded final `run.Get`. - The test must reliably prove the new build can execute an unpinned probe while pinned old-build work remains unroutable, then completes once a proven-ready old-build worker returns. - Preserve the accepted production build/worker attempt identity, cancellation handling, and stage-span branch attribution. ## Interrupted-review correction (2026-09-09)  Preserve and recreate the latest implementation from run `ddbef7b41fb3a14946ea1239b81cce47`; its fourth implementation produced a non-empty reviewer diff (`sha256:a6b23eb61fdb0902492b7b4117f9298c697c10b501bb2ac3d3c1707c9087b30c`, 20,305 bytes), but the daemon restart interrupted review attempt 4. Recovery exhausted the repass budget using the prior needs-changes verdict without evaluating that latest diff. The next run must restore the latest work and obtain a real review against the deterministic mixed-fleet/readiness-barrier requirements; do not treat the interrupted review as a substantive rejection or return no-work. ## Serialized Windows CI retry correction (2026-09-10)  Preserve the review-passed implementation from run `26f711e272ada35938fd67537df5a4be`, accepted diff `sha256:fd909068ae32a37ffb531410372ab8c4764ed042946336f76d38191d3a38de58` (79,299 bytes). The final review passed the deterministic mixed-fleet Temporal readiness proof and additive attempt-identity propagation.  The terminal local-CI failure was environmental: formatting, vet, complexity (`188/188`), shipped-workflow contracts, and earlier checks passed, then the repository-wide test fanout failed when `runtime/cgo` reported `cgo.exe: exit status 2`, causing unrelated packages to report build failures. Evidence is stdout digest `sha256:d187ae3b7d1fc60fc7dceb132ae01b9aba7c4b066614fcf370dc242a96abd5ba`; stderr is empty. Restore the unchanged accepted patch and rerun under the corrected `project-ci` Windows wrapper, which serializes native CI and prevents competing local-CI processes. Do not rewrite the accepted behavior or return no-work while the reviewed diff still needs publication.  ## Literal dependency-guard correction (2026-09-16)  Preserve the mandatory-review-passed production implementation and behavioral mixed-fleet test. The remaining deterministic local-CI failure is source-level dependency policy, not behavior: in `internal/workerhost/versioning_integration_test.go`, replace `testdep.RequireEnv(t, temporaltest.CLIEnvVar)` with the literal call `testdep.RequireEnv(t, \"GOOBERS_TEMPORAL_CLI\")`. The guard requires a string literal at the call site. Obtain fresh mandatory review and full CI after this one-line correction; do not restore an older unchanged commit. \n## Portal-test retry correction (2026-09-16)\n\nPreserve mandatory-review-passed commit `2d6144376c5b15d810543853b1ce98b9d0cab95a` and diff `sha256:f0549ecba83207b360144621e4c3c1601dbf46ce7e3e3b782eb3d23defcf6421`; it includes the required literal `testdep.RequireEnv(t, \"GOOBERS_TEMPORAL_CLI\")`. Full local CI advanced past the dependency guard and failed only one unrelated portal test: `src/pages/RunsPagePagination.test.tsx` (`drops a targeted refresh that no longer matches the selected filter`, line 317), while 654 other portal tests passed. Restore the unchanged reviewed commit and rerun full serialized CI; do not rewrite the accepted #4083 implementation.",
+              "createdAt": "2026-08-31T22:38:40Z",
+              "externalId": "5305617176",
+              "id": "4083",
+              "integrity": "maintainer",
+              "provider": "github",
+              "readyAt": "2026-09-16T22:37:03Z",
+              "revision": "2026-09-16T23:11:56Z",
+              "state": "open",
+              "status": "open",
+              "title": "Temporal Worker Versioning: build-ID routing, execution pinning, and build visibility",
+              "type": "issue",
+              "updatedAt": "2026-09-16T23:11:56Z",
+              "url": "https://github.com/Agent-Clubhouse/Goobers/issues/4083"
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/ba/e97b9ce82582d99fece698119cbb95d43afd8c04723a3a3a7324ee193a3c59",
+                "digest": "sha256:bae97b9ce82582d99fece698119cbb95d43afd8c04723a3a3a7324ee193a3c59",
+                "size": 100,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/4a/d1dc9de8e1637cb90ad6cbb8b445b08f02cd90cd0e9680ac52bfb7ba622941",
+                "digest": "sha256:4ad1dc9de8e1637cb90ad6cbb8b445b08f02cd90cd0e9680ac52bfb7ba622941",
+                "size": 16306,
+                "mediaType": "application/json",
+                "integrity": "maintainer"
+              }
+            ],
+            "integrity": "trusted"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 13,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-16T16:30:53.4358388-07:00",
+            "stage": "gather-implement-context",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 14,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:31:04.4952561-07:00",
+            "stage": "gather-implement-context",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/24/99c51dd839dfc18763b27df4fb70878d5576709eaedd0b8dcd15b15251cd55",
+              "digest": "sha256:2499c51dd839dfc18763b27df4fb70878d5576709eaedd0b8dcd15b15251cd55",
+              "size": 939,
+              "integrity": "derived"
+            },
+            "name": "context/gather-implement-context-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 15,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:31:26.024404-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/06/8bab8ce8c395850fd9a5086e8754c6b14cb4648a1a5a1cc3c7e2c692c199b0",
+              "digest": "sha256:068bab8ce8c395850fd9a5086e8754c6b14cb4648a1a5a1cc3c7e2c692c199b0",
+              "size": 79,
+              "integrity": "derived"
+            },
+            "name": "356e7dc5896a6ac6fe671cf5edf83030:gather-implement-context/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 16,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:31:26.0291908-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "356e7dc5896a6ac6fe671cf5edf83030:gather-implement-context/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 17,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-16T16:31:26.0437651-07:00",
+            "integrity": "unapproved",
+            "ref": {
+              "path": "artifacts/sha256/89/07b9627261ea6ec12da273385fec31689ec2d5e00ce14c3fc3ff9721c4be1e",
+              "digest": "sha256:8907b9627261ea6ec12da273385fec31689ec2d5e00ce14c3fc3ff9721c4be1e",
+              "size": 4803,
+              "integrity": "unapproved"
+            },
+            "name": "356e7dc5896a6ac6fe671cf5edf83030:gather-implement-context/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 18,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-16T16:31:36.2408768-07:00",
+            "stage": "gather-implement-context",
+            "attempt": 1,
+            "error": {
+              "code": "worktree_remove_failed",
+              "message": "recovery inventory is full"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 19,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-16T16:31:36.2462015-07:00",
+            "stage": "gather-implement-context",
+            "attempt": 1,
+            "status": "success",
+            "outputs": {
+              "integrity": "unapproved",
+              "schemaVersion": "v1"
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/06/8bab8ce8c395850fd9a5086e8754c6b14cb4648a1a5a1cc3c7e2c692c199b0",
+                "digest": "sha256:068bab8ce8c395850fd9a5086e8754c6b14cb4648a1a5a1cc3c7e2c692c199b0",
+                "size": 79,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/89/07b9627261ea6ec12da273385fec31689ec2d5e00ce14c3fc3ff9721c4be1e",
+                "digest": "sha256:8907b9627261ea6ec12da273385fec31689ec2d5e00ce14c3fc3ff9721c4be1e",
+                "size": 4803,
+                "mediaType": "application/json",
+                "integrity": "unapproved"
+              }
+            ],
+            "integrity": "derived"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 20,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-16T16:31:36.2509254-07:00",
+            "stage": "implement",
+            "attempt": 1,
+            "runner": {
+              "goober": "implementer"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 21,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "2026-09-16T16:44:19.4067384-07:00",
+            "stage": "implement",
+            "runner": {
+              "action": "retried",
+              "attempt": 1,
+              "attemptClass": "infra",
+              "kind": "run.recovery",
+              "reason": "daemon_restart",
+              "stage": "implement"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 22,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-16T16:44:19.4128709-07:00",
+            "stage": "implement",
+            "attempt": 1,
+            "attemptClass": "infra",
+            "status": "failure",
+            "error": {
+              "code": "interrupted",
+              "message": "attempt was in flight when the runner was interrupted"
+            },
+            "runner": {
+              "interruptedAttempt": true
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 23,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-16T16:44:19.4177124-07:00",
+            "stage": "implement",
+            "attempt": 2,
+            "attemptClass": "infra",
+            "runner": {
+              "goober": "implementer"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 24,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-16T16:44:22.9908598-07:00",
+            "stage": "implement",
+            "attempt": 2,
+            "attemptClass": "infra",
+            "error": {
+              "code": "executor_error",
+              "message": "prepare stage \"implement\": create worktree: worktree: clear stale worktree for run 356e7dc5896a6ac6fe671cf5edf83030-implement: worktree cleanup deferred pending durable handoff: recovery handoff for 356e7dc5896a6ac6fe671cf5edf83030-implement: inspect abandoned preparation: exit status 128"
+            },
+            "runner": {
+              "errorClass": "infra",
+              "errorCode": "infra_workspace_failed",
+              "infraFailedAttemptCommittedWork": false,
+              "retryFailureClass": "policy"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 25,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-16T16:44:38.0021274-07:00",
+            "stage": "implement",
+            "attempt": 3,
+            "attemptClass": "policy",
+            "runner": {
+              "goober": "implementer"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 26,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-16T16:44:50.9160429-07:00",
+            "stage": "implement",
+            "attempt": 3,
+            "attemptClass": "policy",
+            "error": {
+              "code": "executor_error",
+              "message": "prepare stage \"implement\": create worktree: worktree: clear stale worktree for run 356e7dc5896a6ac6fe671cf5edf83030-implement: worktree cleanup deferred pending durable handoff: recovery handoff for 356e7dc5896a6ac6fe671cf5edf83030-implement: inspect abandoned preparation: exit status 128"
+            },
+            "runner": {
+              "errorClass": "infra",
+              "errorCode": "infra_workspace_failed",
+              "infraFailedAttemptCommittedWork": false,
+              "retryFailureClass": "policy"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 27,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-16T16:44:50.9212688-07:00",
+            "error": {
+              "code": "run_failed",
+              "message": "runner: execute stage \"implement\": prepare stage \"implement\": create worktree: worktree: clear stale worktree for run 356e7dc5896a6ac6fe671cf5edf83030-implement: worktree cleanup deferred pending durable handoff: recovery handoff for 356e7dc5896a6ac6fe671cf5edf83030-implement: inspect abandoned preparation: exit status 128 (attempt 2/2)"
+            },
+            "runner": {
+              "errorClass": "infra"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 28,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-16T16:44:50.9430862-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/implementation/356e7dc5896a6ac6fe671cf5edf83030"
+            },
+            "runner": {
+              "operation": "delete",
+              "outcome": "unnecessary",
+              "reason": "branch-not-pushed"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 29,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "2026-09-16T16:44:50.9822209-07:00",
+            "status": "failed",
+            "disposition": "produced"
+          }
+        ]
+      },
+      "expected": {
+        "source": "human",
+        "domain": "goobers-product-runtime",
+        "workflow": "implementation",
+        "stage": "implement",
+        "step": "stage:implement#1",
+        "class": "environment",
+        "mast": "outside-agent-system",
+        "provenance": {
+          "sourceRun": "356e7dc5896a6ac6fe671cf5edf83030",
+          "labeledBy": "krishnapatel17",
+          "labeledAt": "2026-10-13",
+          "reason": "recovery inventory is full; clearing the stale worktree deferred to a recovery handoff that failed, on both attempts. Shared runtime recovery state, not the agent or workflow."
+        }
+      }
+    },
+    {
+      "id": "real-retired-resweep-input",
+      "description": "2026-09-09 dogfood backlog-curation run whose query-backlog stage rejected a retired workflow input.",
+      "input": {
+        "runId": "08e3be2be9167365cc9f350db2502677",
+        "gaggle": "goobers",
+        "workflow": "backlog-curation",
+        "events": [
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "2026-09-09T12:22:00.0738463-07:00",
+            "status": "running"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 2,
+            "type": "runner.annotation",
+            "branch": 0,
+            "time": "2026-09-09T12:22:00.0859349-07:00",
+            "runner": {
+              "kind": "engine_starter_selection",
+              "placementDeclared": false,
+              "reason": "this instance has no engine configuration",
+              "reasonClass": "engine_not_configured",
+              "starter": "runner"
+            },
+            "workflow": "backlog-curation",
+            "gaggle": "goobers",
+            "runId": "08e3be2be9167365cc9f350db2502677"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 3,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-09T12:22:00.0900525-07:00",
+            "stage": "reconcile-backlog",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 4,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:22:06.2525107-07:00",
+            "stage": "reconcile-backlog",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/c4/7858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "digest": "sha256:c47858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "size": 22,
+              "integrity": "derived"
+            },
+            "name": "context/reconcile-backlog-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 5,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:27:38.668836-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/0b/603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+              "digest": "sha256:0b603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+              "size": 29,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:reconcile-backlog/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 6,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:27:38.6744322-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:reconcile-backlog/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 7,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:27:38.6819243-07:00",
+            "integrity": "unapproved",
+            "ref": {
+              "path": "artifacts/sha256/35/d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+              "digest": "sha256:35d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+              "size": 41,
+              "integrity": "unapproved"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:reconcile-backlog/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 8,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-09T12:27:38.7880945-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/backlog-curation/08e3be2be9167365cc9f350db2502677",
+              "commitSha": "2f374c9c63cf961670c26399abd48b6a14d8e115"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 9,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-09T12:27:40.1103902-07:00",
+            "stage": "reconcile-backlog",
+            "attempt": 1,
+            "status": "success",
+            "outputs": {
+              "integrity": "unapproved",
+              "reconciled": 0
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/0b/603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+                "digest": "sha256:0b603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+                "size": 29,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/35/d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+                "digest": "sha256:35d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+                "size": 41,
+                "mediaType": "application/json",
+                "integrity": "unapproved"
+              }
+            ],
+            "integrity": "trusted"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 10,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-09T12:27:40.1169721-07:00",
+            "stage": "implementation-feedback",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 11,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:27:45.767441-07:00",
+            "stage": "implementation-feedback",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e0/4e3abc9d66bebfcccc91ef68f2cf65c3b99e630da71ce08998ea891f660aa9",
+              "digest": "sha256:e04e3abc9d66bebfcccc91ef68f2cf65c3b99e630da71ce08998ea891f660aa9",
+              "size": 947,
+              "integrity": "derived"
+            },
+            "name": "context/implementation-feedback-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 12,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:05.388452-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/0e/3d4d7fc5ac67fd5200b143c8c4f977530e6fd82dcdcce39312797b2d5e2017",
+              "digest": "sha256:0e3d4d7fc5ac67fd5200b143c8c4f977530e6fd82dcdcce39312797b2d5e2017",
+              "size": 121,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:implementation-feedback/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 13,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:05.3917295-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:implementation-feedback/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 14,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:05.4003352-07:00",
+            "integrity": "unapproved",
+            "ref": {
+              "path": "artifacts/sha256/65/b5142223aab794a10d629e57401bc8a2653c033b5427a72c0f6033ab663898",
+              "digest": "sha256:65b5142223aab794a10d629e57401bc8a2653c033b5427a72c0f6033ab663898",
+              "size": 243,
+              "integrity": "unapproved"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:implementation-feedback/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 15,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-09T12:28:06.6080781-07:00",
+            "stage": "implementation-feedback",
+            "attempt": 1,
+            "status": "success",
+            "outputs": {
+              "implementationFailureThreshold": 3,
+              "integrity": "unapproved",
+              "recurated": 0
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/0e/3d4d7fc5ac67fd5200b143c8c4f977530e6fd82dcdcce39312797b2d5e2017",
+                "digest": "sha256:0e3d4d7fc5ac67fd5200b143c8c4f977530e6fd82dcdcce39312797b2d5e2017",
+                "size": 121,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/65/b5142223aab794a10d629e57401bc8a2653c033b5427a72c0f6033ab663898",
+                "digest": "sha256:65b5142223aab794a10d629e57401bc8a2653c033b5427a72c0f6033ab663898",
+                "size": 243,
+                "mediaType": "application/json",
+                "integrity": "unapproved"
+              }
+            ],
+            "integrity": "unapproved"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 16,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-09T12:28:06.6102332-07:00",
+            "stage": "sample-ready-pool",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 17,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:11.8186482-07:00",
+            "stage": "sample-ready-pool",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/ec/94b1200ed407bb9f2cb12770ae573937c0fd3911a26595b9e0535bb472f77a",
+              "digest": "sha256:ec94b1200ed407bb9f2cb12770ae573937c0fd3911a26595b9e0535bb472f77a",
+              "size": 1893,
+              "integrity": "derived"
+            },
+            "name": "context/sample-ready-pool-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 18,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:25.7219798-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/7d/8070dc68e4948146f26de7540a4083eaf272adf71db1e9fc4b3df276ea8b17",
+              "digest": "sha256:7d8070dc68e4948146f26de7540a4083eaf272adf71db1e9fc4b3df276ea8b17",
+              "size": 107,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:sample-ready-pool/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 19,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:25.7256593-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:sample-ready-pool/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 20,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:25.7712373-07:00",
+            "integrity": "unapproved",
+            "ref": {
+              "path": "artifacts/sha256/77/48641142d4fba38f4e9cb3318adb2d9964cb116fe22bb8f18af403fa9164f7",
+              "digest": "sha256:7748641142d4fba38f4e9cb3318adb2d9964cb116fe22bb8f18af403fa9164f7",
+              "size": 213533,
+              "integrity": "unapproved"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:sample-ready-pool/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 21,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-09T12:28:26.9709435-07:00",
+            "stage": "sample-ready-pool",
+            "attempt": 1,
+            "status": "success",
+            "outputs": {
+              "averageReadyAgeSeconds": 93222.77460729999,
+              "integrity": "unapproved",
+              "oldestReadyAgeSeconds": 573184.6746073,
+              "readyPoolDepth": 10,
+              "readyPoolObservedAt": "2026-09-09T19:28:25.6746073Z",
+              "readyPoolStarved": false
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/7d/8070dc68e4948146f26de7540a4083eaf272adf71db1e9fc4b3df276ea8b17",
+                "digest": "sha256:7d8070dc68e4948146f26de7540a4083eaf272adf71db1e9fc4b3df276ea8b17",
+                "size": 107,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/77/48641142d4fba38f4e9cb3318adb2d9964cb116fe22bb8f18af403fa9164f7",
+                "digest": "sha256:7748641142d4fba38f4e9cb3318adb2d9964cb116fe22bb8f18af403fa9164f7",
+                "size": 213533,
+                "mediaType": "application/json",
+                "integrity": "unapproved"
+              }
+            ],
+            "integrity": "unapproved"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 22,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-09-09T12:28:26.9750833-07:00",
+            "stage": "query-backlog",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 23,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:32.3172546-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/1a/124be6b2345f0e0db2a38d48fad467d50bbc0ae9d4440aadc02e77709ba478",
+              "digest": "sha256:1a124be6b2345f0e0db2a38d48fad467d50bbc0ae9d4440aadc02e77709ba478",
+              "size": 2824,
+              "integrity": "derived"
+            },
+            "name": "context/query-backlog-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 24,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:32.679262-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:query-backlog/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 25,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:32.6864467-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/f8/d029a367ca2fcda77a26f1e9703270c63eeef302d40b737ec5c08a219208dd",
+              "digest": "sha256:f8d029a367ca2fcda77a26f1e9703270c63eeef302d40b737ec5c08a219208dd",
+              "size": 129,
+              "integrity": "derived"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:query-backlog/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 26,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-09-09T12:28:32.6952288-07:00",
+            "integrity": "unapproved",
+            "ref": {
+              "path": "artifacts/sha256/e5/f47765c9755c64ed89590949d5c81c018c1ef6dff6265c0eb2a1b1eda444a1",
+              "digest": "sha256:e5f47765c9755c64ed89590949d5c81c018c1ef6dff6265c0eb2a1b1eda444a1",
+              "size": 217,
+              "integrity": "unapproved"
+            },
+            "name": "08e3be2be9167365cc9f350db2502677:query-backlog/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 27,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-09-09T12:28:34.285733-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "status": "failure",
+            "outputs": {
+              "integrity": "unapproved"
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/f8/d029a367ca2fcda77a26f1e9703270c63eeef302d40b737ec5c08a219208dd",
+                "digest": "sha256:f8d029a367ca2fcda77a26f1e9703270c63eeef302d40b737ec5c08a219208dd",
+                "size": 129,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e5/f47765c9755c64ed89590949d5c81c018c1ef6dff6265c0eb2a1b1eda444a1",
+                "digest": "sha256:e5f47765c9755c64ed89590949d5c81c018c1ef6dff6265c0eb2a1b1eda444a1",
+                "size": 217,
+                "mediaType": "application/json",
+                "integrity": "unapproved"
+              }
+            ],
+            "integrity": "unapproved",
+            "error": {
+              "code": "provider_error",
+              "message": "resweepInterval is retired; configure schedule and readiness on a separate workflow using backlog-query --claim --resweep"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 28,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-09-09T12:28:34.2914786-07:00",
+            "stage": "query-backlog",
+            "error": {
+              "code": "run_failed",
+              "message": "provider_error: resweepInterval is retired; configure schedule and readiness on a separate workflow using backlog-query --claim --resweep"
+            },
+            "runner": {
+              "errorClass": "provider"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 29,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-09-09T12:28:34.314271-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/backlog-curation/08e3be2be9167365cc9f350db2502677",
+              "commitSha": "2f374c9c63cf961670c26399abd48b6a14d8e115"
+            },
+            "runner": {
+              "operation": "delete",
+              "outcome": "unnecessary",
+              "reason": "branch-not-pushed"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 30,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "2026-09-09T12:28:34.3314514-07:00",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "human",
+        "domain": "workflow-definition",
+        "workflow": "backlog-curation",
+        "stage": "query-backlog",
+        "step": "stage:query-backlog#1",
+        "class": "environment",
+        "mast": "outside-agent-system",
+        "provenance": {
+          "sourceRun": "08e3be2be9167365cc9f350db2502677",
+          "labeledBy": "krishnapatel17",
+          "labeledAt": "2026-10-13",
+          "reason": "resweepInterval is retired; the workflow definition still supplied it, so the definition must move to a scheduled --claim --resweep workflow."
+        }
+      }
+    },
+    {
+      "id": "real-missing-credential-capability",
+      "description": "2026-08-19 dogfood backlog-curation run whose surface-duplicates stage had no GitHub issues read credential.",
+      "input": {
+        "runId": "8ad98891a8d75bd644657d7af2fa5999",
+        "gaggle": "goobers",
+        "workflow": "backlog-curation",
+        "events": [
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 1,
+            "type": "run.started",
+            "branch": 0,
+            "time": "2026-08-19T20:22:00.0257574-07:00",
+            "status": "running"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 2,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-08-19T20:22:00.0404163-07:00",
+            "stage": "reconcile-backlog",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 3,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:22:04.975337-07:00",
+            "stage": "reconcile-backlog",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/c4/7858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "digest": "sha256:c47858cd0b6d3d3a0f2f6cd247a7f962e1f29225e7f4234fd2643ece75fa56c1",
+              "size": 22,
+              "integrity": "derived"
+            },
+            "name": "context/reconcile-backlog-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 4,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:22:38.1838955-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/0b/603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+              "digest": "sha256:0b603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+              "size": 29,
+              "integrity": "derived"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:reconcile-backlog/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 5,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:22:38.1890995-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:reconcile-backlog/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 6,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:22:38.1948614-07:00",
+            "integrity": "unapproved",
+            "ref": {
+              "path": "artifacts/sha256/35/d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+              "digest": "sha256:35d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+              "size": 41,
+              "integrity": "unapproved"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:reconcile-backlog/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 7,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-08-19T20:22:38.9037553-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/backlog-curation/8ad98891a8d75bd644657d7af2fa5999"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 8,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-08-19T20:22:38.9083969-07:00",
+            "stage": "reconcile-backlog",
+            "attempt": 1,
+            "status": "success",
+            "outputs": {
+              "integrity": "unapproved",
+              "reconciled": 0
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/0b/603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+                "digest": "sha256:0b603e1ae65ccf51763c9f9eed1b88760b40b8ba728e66c1264cc02d549a4a58",
+                "size": 29,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/35/d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+                "digest": "sha256:35d6cd35d6be956cc6b746a4354699f11e7d2879f58fa7db35154ba8994d4724",
+                "size": 41,
+                "mediaType": "application/json",
+                "integrity": "unapproved"
+              }
+            ],
+            "integrity": "trusted"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 9,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-08-19T20:22:38.911352-07:00",
+            "stage": "query-backlog",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 10,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:22:43.3030803-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e0/4e3abc9d66bebfcccc91ef68f2cf65c3b99e630da71ce08998ea891f660aa9",
+              "digest": "sha256:e04e3abc9d66bebfcccc91ef68f2cf65c3b99e630da71ce08998ea891f660aa9",
+              "size": 947,
+              "integrity": "derived"
+            },
+            "name": "context/query-backlog-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 11,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:23:24.5976726-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/0a/46b5b456312dac470d6add4ccf9f67cd746ae3e8409d7d2d53c136af2b7db6",
+              "digest": "sha256:0a46b5b456312dac470d6add4ccf9f67cd746ae3e8409d7d2d53c136af2b7db6",
+              "size": 81,
+              "integrity": "derived"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:query-backlog/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 12,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:23:24.6013278-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:query-backlog/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 13,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:23:24.6111775-07:00",
+            "integrity": "maintainer",
+            "ref": {
+              "path": "artifacts/sha256/fa/73b25722b24e2b4b38fd90ff9059ae9f978ced369eb55e3359c35c2bc73139",
+              "digest": "sha256:fa73b25722b24e2b4b38fd90ff9059ae9f978ced369eb55e3359c35c2bc73139",
+              "size": 3282,
+              "integrity": "maintainer"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:query-backlog/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 14,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-08-19T20:23:26.9016445-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "externalRef": {
+              "provider": "github",
+              "kind": "issue",
+              "id": "3252",
+              "url": "https://github.com/Agent-Clubhouse/Goobers/issues/3252"
+            },
+            "runner": {
+              "operation": "claim"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 15,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-08-19T20:23:26.9060656-07:00",
+            "stage": "query-backlog",
+            "attempt": 1,
+            "status": "success",
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/0a/46b5b456312dac470d6add4ccf9f67cd746ae3e8409d7d2d53c136af2b7db6",
+                "digest": "sha256:0a46b5b456312dac470d6add4ccf9f67cd746ae3e8409d7d2d53c136af2b7db6",
+                "size": 81,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/fa/73b25722b24e2b4b38fd90ff9059ae9f978ced369eb55e3359c35c2bc73139",
+                "digest": "sha256:fa73b25722b24e2b4b38fd90ff9059ae9f978ced369eb55e3359c35c2bc73139",
+                "size": 3282,
+                "mediaType": "application/json",
+                "integrity": "maintainer"
+              }
+            ],
+            "integrity": "unapproved"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 16,
+            "type": "stage.started",
+            "branch": 0,
+            "time": "2026-08-19T20:23:26.9095705-07:00",
+            "stage": "surface-duplicates",
+            "attempt": 1
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 17,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:23:31.3918641-07:00",
+            "stage": "surface-duplicates",
+            "attempt": 1,
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/96/8e0cc5f3ab4848ff6bce108f971930cb1805ea20b8a376b40bd8020746c034",
+              "digest": "sha256:968e0cc5f3ab4848ff6bce108f971930cb1805ea20b8a376b40bd8020746c034",
+              "size": 1863,
+              "integrity": "derived"
+            },
+            "name": "context/surface-duplicates-attempt-1.json"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 18,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:23:31.5576307-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "integrity": "derived"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:surface-duplicates/stdout.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 19,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:23:31.5652746-07:00",
+            "integrity": "derived",
+            "ref": {
+              "path": "artifacts/sha256/2b/9f77b97aa638a8b8236c89effce9bceae59317088f32836b08ba066d47d4ec",
+              "digest": "sha256:2b9f77b97aa638a8b8236c89effce9bceae59317088f32836b08ba066d47d4ec",
+              "size": 220,
+              "integrity": "derived"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:surface-duplicates/stderr.log"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 20,
+            "type": "artifact.recorded",
+            "branch": 0,
+            "time": "2026-08-19T20:23:31.5743743-07:00",
+            "integrity": "unapproved",
+            "ref": {
+              "path": "artifacts/sha256/c6/3c979737291ef917e24fd6c05ed7c839ea644f83d39374cbedee7088cd9670",
+              "digest": "sha256:c63c979737291ef917e24fd6c05ed7c839ea644f83d39374cbedee7088cd9670",
+              "size": 310,
+              "integrity": "unapproved"
+            },
+            "name": "8ad98891a8d75bd644657d7af2fa5999:surface-duplicates/result"
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 21,
+            "type": "stage.finished",
+            "branch": 0,
+            "time": "2026-08-19T20:23:32.805734-07:00",
+            "stage": "surface-duplicates",
+            "attempt": 1,
+            "status": "failure",
+            "outputs": {
+              "integrity": "unapproved"
+            },
+            "artifacts": [
+              {
+                "path": "artifacts/sha256/e3/b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/2b/9f77b97aa638a8b8236c89effce9bceae59317088f32836b08ba066d47d4ec",
+                "digest": "sha256:2b9f77b97aa638a8b8236c89effce9bceae59317088f32836b08ba066d47d4ec",
+                "size": 220,
+                "mediaType": "text/plain",
+                "integrity": "derived"
+              },
+              {
+                "path": "artifacts/sha256/c6/3c979737291ef917e24fd6c05ed7c839ea644f83d39374cbedee7088cd9670",
+                "digest": "sha256:c63c979737291ef917e24fd6c05ed7c839ea644f83d39374cbedee7088cd9670",
+                "size": 310,
+                "mediaType": "application/json",
+                "integrity": "unapproved"
+              }
+            ],
+            "integrity": "unapproved",
+            "error": {
+              "code": "provider_error",
+              "message": "no credential in GOOBERS_CRED_GITHUB_ISSUES_READ env var — this subcommand must run as a stage declaring capabilities: [\"github:issues:read\"] (or set GOOBERS_CRED_GITHUB_ISSUES_READ directly for standalone use)"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 22,
+            "type": "error",
+            "branch": 0,
+            "time": "2026-08-19T20:23:32.8100865-07:00",
+            "stage": "surface-duplicates",
+            "error": {
+              "code": "run_failed",
+              "message": "provider_error: no credential in GOOBERS_CRED_GITHUB_ISSUES_READ env var — this subcommand must run as a stage declaring capabilities: [\"github:issues:read\"] (or set GOOBERS_CRED_GITHUB_ISSUES_READ directly for standalone use)"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 23,
+            "type": "ref.touched",
+            "branch": 0,
+            "time": "2026-08-19T20:23:34.4626335-07:00",
+            "externalRef": {
+              "provider": "github",
+              "kind": "branch",
+              "id": "goobers/backlog-curation/8ad98891a8d75bd644657d7af2fa5999"
+            },
+            "runner": {
+              "operation": "delete",
+              "outcome": "unnecessary",
+              "reason": "branch-not-pushed"
+            }
+          },
+          {
+            "schema": "goobers.dev/journal/event/v1",
+            "seq": 24,
+            "type": "run.finished",
+            "branch": 0,
+            "time": "2026-08-19T20:23:34.4664981-07:00",
+            "status": "failed"
+          }
+        ]
+      },
+      "expected": {
+        "source": "human",
+        "domain": "workflow-definition",
+        "workflow": "backlog-curation",
+        "stage": "surface-duplicates",
+        "step": "stage:surface-duplicates#1",
+        "class": "environment",
+        "mast": "outside-agent-system",
+        "provenance": {
+          "sourceRun": "8ad98891a8d75bd644657d7af2fa5999",
+          "labeledBy": "krishnapatel17",
+          "labeledAt": "2026-10-13",
+          "reason": "no credential in GOOBERS_CRED_GITHUB_ISSUES_READ: the stage did not declare the github:issues:read capability its subcommand requires."
+        }
+      }
+    }
+  ]
+}

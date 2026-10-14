@@ -461,6 +461,7 @@
               "create-issue",
               "delete-branch",
               "demote-pr",
+              "disarm-landing",
               "edit-issue",
               "escalate-pr",
               "fan-out-remediation",
