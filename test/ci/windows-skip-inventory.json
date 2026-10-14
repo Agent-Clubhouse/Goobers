@@ -313,6 +313,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/diagnostics/executiondeadline",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Platform-neutral: observes the context deadline a bounded execution runs under. No Windows-specific seam; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/diagnostics/fleetstate",
       "coverage": "none",
       "category": "not-selected",
