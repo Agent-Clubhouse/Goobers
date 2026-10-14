@@ -383,9 +383,18 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
 
 ### Remediation loop
 
-- **PRL-050 (MUST, Shipped):** `pr-remediation` MUST select by descending
-  cause priority — labeled `needs-remediation`, then failing CI, then merely
-  behind-base — in the shared claim namespace (PRL-002). A clean, behind-base,
+- **PRL-050 (MUST, Shipped):** `pr-remediation` MUST select from two tiers in
+  the shared claim namespace (PRL-002): the strong tier — labeled
+  `needs-remediation` or failing CI — and, only when no strong candidate
+  exists, the merely behind-base fallback. Within the strong tier the two
+  signals share ONE oldest-first order (lowest PR number first), so a PR with
+  either signal waits only behind strong candidates older than itself; a
+  steady supply of newer `needs-remediation` PRs cannot starve a failing-CI PR
+  (#6482). A claimed candidate that cannot progress this cycle — its diff
+  unchanged since its last recorded escalation, including the run that visibly
+  parks it — MUST be skipped with its claim released, and selection MUST
+  continue with the next candidate; the cycle is no-work only when every
+  claimable candidate was skipped, and its reason names each skip. A clean, behind-base,
   finding-free candidate SHOULD be completed through the provider's
   update-branch API without provisioning a worktree (#720); everything else
   enters full remediation. A PR carrying `goobers:needs-human` MUST be excluded
