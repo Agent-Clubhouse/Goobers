@@ -9,19 +9,16 @@ import (
 )
 
 // admitExecution is the run-start boundary every start, resume, rerun and
-// recovery path crosses before any execution effect. DSL 3.1 fan-out
-// constructs without a local runtime yet (maps until FAN-4, and selective
-// parallels whose branches can start child workflows) are refused with a
-// typed error; they never run as a plain parallel.
+// recovery path crosses before any execution effect. The one DSL 3.1 fan-out
+// shape without a local runtime yet (a selective parallel whose branches can
+// start child workflows) is refused with a typed error; it never runs as a
+// plain parallel. Maps execute locally since FAN-4 (#7385).
 //
 // Child workflows: standalone and unconfigured runners retain the refusal.
 // Only the daemon's source-bound composition can admit a contained parent,
 // and it must provide durable handoff, capacity, shared journal and workspace
 // recovery owners.
 func (r *Runner) admitExecution(ctx context.Context, machine *workflow.Machine) error {
-	if err := workflow.RefuseUnsupportedLocalFanOut(machine.Def.Spec); err != nil {
-		return err
-	}
 	if err := refuseSelectiveChildParallel(machine); err != nil {
 		return err
 	}

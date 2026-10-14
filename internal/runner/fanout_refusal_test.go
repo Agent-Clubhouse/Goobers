@@ -72,10 +72,10 @@ func childSelectiveParallelMachine(t *testing.T) *workflow.Machine {
 }
 
 // TestFanOutRefusedBeforeLocalEffects pins design §13 for what the local
-// runner still cannot execute: maps until FAN-4, and selective parallels
-// whose branches can start child workflows. Both are refused at every entry
-// point with a typed error, before touching run storage, and never run as a
-// plain parallel.
+// runner still cannot execute: selective parallels whose branches can start
+// child workflows. It is refused at every entry point with a typed error,
+// before touching run storage, and never runs as a plain parallel. Maps
+// execute locally since FAN-4 (#7385); the engine keeps refusing them.
 func TestFanOutRefusedBeforeLocalEffects(t *testing.T) {
 	for _, construct := range []struct {
 		name     string
@@ -83,7 +83,6 @@ func TestFanOutRefusedBeforeLocalEffects(t *testing.T) {
 		sentinel error
 	}{
 		{"child-capable selective parallel", childSelectiveParallelMachine(t), workflow.ErrSelectiveParallelUnsupported},
-		{"map", mapMachine(t), workflow.ErrMapUnsupported},
 	} {
 		m := construct.machine
 		runs := t.TempDir()
