@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -66,6 +67,42 @@ func TestHumanCommentNeedsRemediationFollowsIdentityMode(t *testing.T) {
 				t.Fatalf("latestUnaddressedHumanComment fresh = %v, want %v (pr-comment-watch would disagree)", fresh, test.want)
 			}
 		})
+	}
+}
+
+// Goobers' bookkeeping comments (sticky remediation state, verdicts) are
+// automation in every mode, marked or not: never a person's feedback, never an
+// answer to it. A manual stage run or an incomplete run environment posts them
+// without the attribution footer, and under shared identity they would
+// otherwise read as fresh human comments every cycle.
+func TestCommentClassifierTreatsBookkeepingAsAutomation(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	later := at.Add(time.Hour)
+	state, err := remediationStateComment(remediationState{Cycles: 1, LastSeenCommentAt: at.Format(time.RFC3339)})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	verdict := renderVerdictComment(apiv1.Verdict{Decision: apiv1.VerdictPass})
+	self := loginCommentIdentity("goobers-bot")
+	for _, mode := range []string{commentIdentityShared, commentIdentityDedicated} {
+		classifier := newCommentClassifier(self, commentIdentitySettings{mode: mode})
+		for name, body := range map[string]string{
+			"unmarked state": state, "marked state": stampOwnFixtureBody(state, "comment"),
+			"unmarked verdict": verdict, "marked verdict": stampOwnFixtureBody(verdict, "comment"),
+		} {
+			comment := providers.Comment{Author: "goobers-bot", Body: body, CreatedAt: &at}
+			if got := classifier.origin(comment); got != commentFromAutomation {
+				t.Errorf("%s/%s: origin = %v, want automation", mode, name, got)
+			}
+			if humanCommentNeedsRemediation([]providers.Comment{comment}, classifier) {
+				t.Errorf("%s/%s: a bookkeeping comment alone fired the human-comment cause", mode, name)
+			}
+			human := providers.Comment{Author: "alice", Body: "please add a README note", CreatedAt: &at}
+			comment.CreatedAt = &later
+			if _, fresh, _ := latestUnaddressedHumanComment([]providers.Comment{human, comment}, classifier); !fresh {
+				t.Errorf("%s/%s: a bookkeeping comment posted after a person's comment acknowledged it", mode, name)
+			}
+		}
 	}
 }
 
@@ -272,5 +309,18 @@ func TestRebasePRADODistinctIdentityHumanCommentInEitherMode(t *testing.T) {
 				t.Fatalf("labels = %v, want %s kept", labels, needsRemediationLabel)
 			}
 		})
+	}
+}
+
+// A thread comment whose author cannot be read might be a person's unanswered
+// feedback: rebase-pr fails closed on the comment (the cause fires, the label
+// stays) instead of failing the whole stage.
+func TestRebasePRADOUnreadableCommentFailsClosedOnTheComment(t *testing.T) {
+	result, labels := runADORebasePRWithHumanComment(t, 68, "", "")
+	if !strings.Contains(result, `"remediationCauses":"human-comment"`) {
+		t.Fatalf("rebase-result.json = %s, want cause=human-comment for an unreadable comment", result)
+	}
+	if len(labels) != 1 || labels[0] != needsRemediationLabel {
+		t.Fatalf("labels = %v, want %s kept", labels, needsRemediationLabel)
 	}
 }

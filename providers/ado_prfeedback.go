@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,6 +15,13 @@ import (
 // runaway continuation chain into an explicit error instead of an unbounded
 // read or a silently partial comment set.
 const ADOFeedbackThreadPageLimit = 20
+
+// ErrUnreadableFeedbackComment marks a feedback read that failed because one
+// comment could not be mapped (no author id, an unparseable publish time): the
+// comment's origin and order are unknowable, so the read refuses to return a
+// set that silently omits it. A caller can tell this apart from a transport
+// failure and fail closed on the comment rather than on the whole stage.
+var ErrUnreadableFeedbackComment = errors.New("unreadable pull-request feedback comment")
 
 // adoCodeReviewThreadTypeProperty is the thread property ADO sets on threads it
 // synthesizes for pull-request events: votes, pushes, reviewer and policy
@@ -87,10 +95,10 @@ func adoSystemThread(thread adoPullRequestThread) bool {
 func adoFeedbackCommentEntry(pullID string, threadID int, comment adoPullRequestThreadComment) (adoFeedbackEntry, error) {
 	mapped := mapADOPullRequestThreadComment(pullID, threadID, comment)
 	if mapped.AuthorID == "" {
-		return adoFeedbackEntry{}, fmt.Errorf("ado pull request %s thread %d comment %d has no author id", pullID, threadID, comment.ID)
+		return adoFeedbackEntry{}, fmt.Errorf("%w: ado pull request %s thread %d comment %d has no author id", ErrUnreadableFeedbackComment, pullID, threadID, comment.ID)
 	}
 	if mapped.CreatedAt == nil {
-		return adoFeedbackEntry{}, fmt.Errorf("ado pull request %s thread %d comment %d has an unreadable publishedDate %q", pullID, threadID, comment.ID, comment.PublishedDate)
+		return adoFeedbackEntry{}, fmt.Errorf("%w: ado pull request %s thread %d comment %d has an unreadable publishedDate %q", ErrUnreadableFeedbackComment, pullID, threadID, comment.ID, comment.PublishedDate)
 	}
 	return adoFeedbackEntry{comment: mapped, at: *mapped.CreatedAt, threadID: threadID, commentID: comment.ID}, nil
 }

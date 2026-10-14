@@ -93,13 +93,20 @@ const (
 
 // commentClassifier decides each comment's origin. The rule, in order:
 //
-//  1. A comment carrying a Goobers marker on a line of its own, outside a
-//     quote, is Goobers' own, whoever the author is.
-//  2. In dedicated mode, an unmarked comment whose author is the credential's
+//  1. A comment carrying one of Goobers' machine-state payloads outside a
+//     quote (a sticky verdict, remediation state, a merge-demotion record...)
+//     is bookkeeping: automation, neither a person's feedback nor an answer
+//     to it. This holds with or without the attribution footer, which a
+//     manual stage run or an incomplete run environment omits.
+//  2. A comment carrying a Goobers marker on a line of its own, outside a
+//     quote, is Goobers' own, whoever the author is: Goobers may post
+//     through a second credential with another login. The marker is
+//     unsigned, so a pasted copy also passes (#6178 item 3).
+//  3. In dedicated mode, an unmarked comment whose author is the credential's
 //     own identity is Goobers' own too.
-//  3. A Bot-typed author (GitHub) or one named in excludeAuthors is third-party
+//  4. A Bot-typed author (GitHub) or one named in excludeAuthors is third-party
 //     automation and speaks for neither side.
-//  4. Everything else is human — including, in shared mode, an unmarked
+//  5. Everything else is human — including, in shared mode, an unmarked
 //     comment by the credential's own identity.
 type commentClassifier struct {
 	selfKey        string
@@ -118,20 +125,56 @@ func newCommentClassifier(self commentIdentity, settings commentIdentitySettings
 }
 
 func (c commentClassifier) origin(comment providers.Comment) commentOrigin {
-	if goobersMarkedComment(comment.Body) {
-		return commentFromGoobers
-	}
 	author := comment.Author
 	if c.byID {
 		author = comment.AuthorID
 	}
-	if c.dedicated && author != "" && strings.EqualFold(author, c.selfKey) {
+	switch {
+	case goobersBookkeepingComment(comment.Body):
+		return commentFromAutomation
+	case goobersMarkedComment(comment.Body):
 		return commentFromGoobers
-	}
-	if strings.EqualFold(comment.AuthorType, "bot") || c.excludeAuthors[strings.ToLower(author)] {
+	case c.dedicated && author != "" && strings.EqualFold(author, c.selfKey):
+		return commentFromGoobers
+	case strings.EqualFold(comment.AuthorType, "bot") || c.excludeAuthors[strings.ToLower(author)]:
 		return commentFromAutomation
 	}
 	return commentFromHuman
+}
+
+// goobersBookkeepingPayloads are the machine-state payloads Goobers'
+// bookkeeping comments carry: sticky verdicts and their finding history,
+// remediation and merge-demotion state, sibling and escalation records, the
+// issue-spec pin and the post-merge handoff.
+var goobersBookkeepingPayloads = []string{
+	"<!-- verdict-json: ",
+	"<!-- finding-set-history: ",
+	"<!-- remediation-state: ",
+	"<!-- merge-demotion-state: ",
+	"<!-- blocked-on-sibling: ",
+	"<!-- implementation-escalation: ",
+	"<!-- issue-spec-pin: ",
+	"<!-- post-merge-remediation: ",
+}
+
+// goobersBookkeepingComment reports whether body carries one of Goobers'
+// machine-state payloads outside a quote. Such a comment records state; it
+// neither asks for nor answers anything, so it counts neither as a person's
+// feedback (under shared identity an unmarked one would) nor as an
+// acknowledgement of one (a sticky first posted after a reviewer's comment
+// would otherwise mask it under the legacy unbound rule).
+func goobersBookkeepingComment(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), ">") {
+			continue
+		}
+		for _, payload := range goobersBookkeepingPayloads {
+			if strings.Contains(line, payload) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // goobersMarkedComment reports whether body carries a marker only Goobers

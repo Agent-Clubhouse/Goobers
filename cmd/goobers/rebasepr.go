@@ -305,7 +305,7 @@ func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.Re
 		}
 	}
 	if remediatePolicyAllows(remediate, remediateCauseHumanComment) {
-		hasNewHumanComment, err = detectRebasePRHumanComment(ctx, transport, repo, selectedNumber)
+		hasNewHumanComment, err = detectRebasePRHumanComment(ctx, transport, repo, selectedNumber, stderr)
 		if err != nil {
 			return fail(err)
 		}
@@ -458,12 +458,20 @@ func remediatePolicyAllows(remediate, cause string) bool {
 // and excludeAuthors inputs (#6494): under identityMode=shared a comment is
 // Goobers' own only when it carries a Goobers marker, so a person commenting
 // through the identity Goobers runs as is still a person.
-func detectRebasePRHumanComment(ctx context.Context, transport rebasePRTransport, repo providers.RepositoryRef, selectedNumber string) (bool, error) {
+func detectRebasePRHumanComment(ctx context.Context, transport rebasePRTransport, repo providers.RepositoryRef, selectedNumber string, stderr io.Writer) (bool, error) {
 	settings, err := readCommentIdentitySettings(repo.Provider)
 	if err != nil {
 		return false, err
 	}
 	evidence, err := transport.LoadHumanCommentEvidence(ctx, repo, selectedNumber)
+	if errors.Is(err, providers.ErrUnreadableFeedbackComment) {
+		// A comment whose author or time cannot be read might be a person's
+		// unanswered feedback. Fail closed on the comment, not the stage: the
+		// cause fires (the label is never cleared over it) and the rebase and
+		// every other cause still run.
+		pf(stderr, "warning: PR #%s: %v — treating it as unanswered human feedback\n", selectedNumber, err)
+		return true, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("list comments on PR #%s: %w", selectedNumber, err)
 	}
