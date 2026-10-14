@@ -1195,7 +1195,7 @@ func (r verdictRecord) publish(ctx context.Context, comment string, posted apiv1
 		return err
 	}
 	req, err := prstatus.VerdictStatusRequest(r.repo, strconv.Itoa(r.number), posted.Decision,
-		r.current.HeadSHA, r.current.BaseSHA, verdictStatusSummary(posted), r.targetURL())
+		r.current.HeadSHA, r.current.BaseSHA, prstatus.VerdictSummary(posted), r.targetURL())
 	if err != nil {
 		return err
 	}
@@ -1213,36 +1213,18 @@ func (r verdictRecord) targetURL() string {
 	return r.current.URL
 }
 
-// verdictStatusSummary is the one-line reason a verdict status shows.
-func verdictStatusSummary(v apiv1.Verdict) string {
-	if summary := strings.TrimSpace(v.Summary); summary != "" {
-		return summary
-	}
-	line, _, _ := strings.Cut(strings.TrimSpace(v.Rationale), "\n")
-	return line
-}
-
-// publishVerdictStatus posts a verdict status. A credential refused the
-// status write degrades to a warning rather than failing the verdict: the
-// same identity publishes every verdict status, so one that cannot write
-// statuses never published a pass either, and a required check without any
-// status already blocks natively. Any other failure is returned, so a
-// verdict is never reported published while its status is missing.
+// publishVerdictStatus posts a verdict status through prstatus.PublishVerdict,
+// reporting a degraded publication as a warning.
 func publishVerdictStatus(ctx context.Context, publisher any, req providers.PullRequestStatusRequest, stdout, stderr io.Writer) error {
-	statusContext := req.Genre + "/" + req.Name
-	statusPublisher, ok := publisher.(providers.PullRequestStatusPublisher)
-	if !ok {
-		pf(stderr, "warning: provider cannot publish the %s status, so this verdict is not enforced by the repository's merge policy\n", statusContext)
-		return nil
+	warning, err := prstatus.PublishVerdict(ctx, publisher, req)
+	switch {
+	case err != nil:
+		return err
+	case warning != "":
+		pf(stderr, "warning: %s\n", warning)
+	default:
+		pf(stdout, "published %s/%s = %s on %s\n", req.Genre, req.Name, req.State, req.HeadSHA)
 	}
-	if _, err := statusPublisher.PublishPullRequestStatus(ctx, req); err != nil {
-		if providers.IsStatusPublishDeniedError(err) {
-			pf(stderr, "warning: the review credential may not write commit statuses, so %s was not published and this verdict is not enforced by the repository's merge policy; grant it Commit statuses: Read and write (#4199): %v\n", statusContext, err)
-			return nil
-		}
-		return fmt.Errorf("publish %s status: %w", statusContext, err)
-	}
-	pf(stdout, "published %s = %s on %s\n", statusContext, req.State, req.HeadSHA)
 	return nil
 }
 
@@ -1761,7 +1743,7 @@ func publishADOPassVerdict(
 		State:      providers.CheckStatePassing,
 		// "pass for base <sha>": the same base-pinned description the
 		// GitHub/Gitea verdict status carries (#4199).
-		Description: prstatus.VerdictDescription(apiv1.VerdictPass, current.BaseSHA, verdictStatusSummary(verdict)),
+		Description: prstatus.VerdictDescription(apiv1.VerdictPass, current.BaseSHA, prstatus.VerdictSummary(verdict)),
 		// Pin to the reviewed head: a push after the pin check must not
 		// inherit this pass on ADO's latest iteration. The non-pass path is
 		// pinned the same way.
@@ -1844,7 +1826,7 @@ func publishADONonPassVerdict(
 		Genre:       "goobers",
 		Name:        "validation",
 		State:       providers.CheckStateFailing,
-		Description: prstatus.VerdictDescription(verdict.Decision, current.BaseSHA, verdictStatusSummary(verdict)),
+		Description: prstatus.VerdictDescription(verdict.Decision, current.BaseSHA, prstatus.VerdictSummary(verdict)),
 		HeadSHA:     current.HeadSHA,
 	}); err != nil {
 		var moved providers.PullRequestHeadMovedError

@@ -1,6 +1,7 @@
 package prstatus
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -134,4 +135,36 @@ func VerdictStatusRefusal(status *providers.CheckDetail, headSHA, baseSHA string
 	default:
 		return fmt.Sprintf("%s is pending (%s) — no current pass verdict (#4199)", prefix, status.Summary)
 	}
+}
+
+// VerdictSummary is the one-line reason a verdict status shows: the
+// verdict's summary, else the first line of its rationale.
+func VerdictSummary(v apiv1.Verdict) string {
+	if summary := strings.TrimSpace(v.Summary); summary != "" {
+		return summary
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(v.Rationale), "\n")
+	return line
+}
+
+// PublishVerdict posts a verdict status through publisher. A provider that
+// cannot publish statuses, or a credential refused the status write,
+// degrades to the returned warning rather than failing the verdict: the same
+// identity publishes every verdict status, so one that cannot write statuses
+// never published a pass either, and a required check without any status
+// already blocks natively. Any other failure is returned, so a verdict is
+// never reported published while its status is missing.
+func PublishVerdict(ctx context.Context, publisher any, req providers.PullRequestStatusRequest) (warning string, err error) {
+	statusContext := req.Genre + "/" + req.Name
+	statusPublisher, ok := publisher.(providers.PullRequestStatusPublisher)
+	if !ok {
+		return fmt.Sprintf("provider cannot publish the %s status, so this verdict is not enforced by the repository's merge policy", statusContext), nil
+	}
+	if _, err := statusPublisher.PublishPullRequestStatus(ctx, req); err != nil {
+		if providers.IsStatusPublishDeniedError(err) {
+			return fmt.Sprintf("the review credential may not write commit statuses, so %s was not published and this verdict is not enforced by the repository's merge policy; grant it Commit statuses: Read and write (#4199): %v", statusContext, err), nil
+		}
+		return "", fmt.Errorf("publish %s status: %w", statusContext, err)
+	}
+	return "", nil
 }

@@ -1,6 +1,8 @@
 package prstatus
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -108,5 +110,36 @@ func TestStaleVerdictStatusRequestIsPendingOnTheSameHead(t *testing.T) {
 	decision, base, ok := ParseVerdictDescription(req.Description)
 	if !ok || decision != "stale" || base != "new-base" {
 		t.Fatalf("description %q parsed (%q, %q, %v)", req.Description, decision, base, ok)
+	}
+}
+
+// TestPublishVerdictDegradesOnlyAMissingGrant: a provider without the status
+// surface warns; any failure other than a refused grant is returned, so the
+// verdict is never reported published without its status.
+func TestPublishVerdictDegradesOnlyAMissingGrant(t *testing.T) {
+	req := providers.PullRequestStatusRequest{Genre: "goobers", Name: "merge-review", HeadSHA: "head"}
+	if warning, err := PublishVerdict(context.Background(), struct{}{}, req); err != nil || warning == "" {
+		t.Fatalf("non-publisher: warning %q, err %v; want a warning", warning, err)
+	}
+	ok := testPublisher{publish: func(context.Context, providers.PullRequestStatusRequest) (providers.PullRequestStatusResult, error) {
+		return providers.PullRequestStatusResult{ID: 1}, nil
+	}}
+	if warning, err := PublishVerdict(context.Background(), ok, req); err != nil || warning != "" {
+		t.Fatalf("published: warning %q, err %v; want neither", warning, err)
+	}
+	transient := testPublisher{publish: func(context.Context, providers.PullRequestStatusRequest) (providers.PullRequestStatusResult, error) {
+		return providers.PullRequestStatusResult{}, errors.New("connection reset")
+	}}
+	if _, err := PublishVerdict(context.Background(), transient, req); err == nil || !strings.Contains(err.Error(), "goobers/merge-review") {
+		t.Fatalf("transient failure: err %v, want it returned naming the context", err)
+	}
+}
+
+func TestVerdictSummaryFallsBackToRationale(t *testing.T) {
+	if got := VerdictSummary(apiv1.Verdict{Summary: " ready "}); got != "ready" {
+		t.Errorf("summary = %q", got)
+	}
+	if got := VerdictSummary(apiv1.Verdict{Rationale: "\nFirst line.\nSecond."}); got != "First line." {
+		t.Errorf("rationale fallback = %q", got)
 	}
 }
