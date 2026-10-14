@@ -1003,6 +1003,7 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
   temporal-namespace required* §2/§4  configured Temporal namespace is registered
+  temporal-worker-routing required* §2/§4 worker deployment routes tasks to live engine workers
   registry           optional  §1     registry reachable (host-side sanity)
 
   apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint
@@ -1053,6 +1054,13 @@ by a denied attempt from an in-cluster negative control, never by doctor
 
 --temporal-codec reports per-instance opt-in and strict mode without probing keys.
 --k8s --instance <root> applies the instance Temporal TLS and payload codec.
+
+temporal-worker-routing compares the "goobers" worker deployment's current and
+ramping traffic shares with the builds polling the engine task queue
+(engine.taskQueue with --instance, else goobers-engine). It fails when no live
+worker serves any share, warns when a share has no live worker, a live build
+that is not draining gets none, or routing cannot be read, and hints the
+Temporal CLI command to run. It never changes the routing itself.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -3166,6 +3174,9 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;
 source runs identify each continuation and its independent phase.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+With an engine configured, it checks that the Temporal worker deployment routes tasks to the
+live engine workers and warns with the set-current-version command when it does not, or says
+unknown when Temporal cannot be read (JSON: engineRouting).
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
 Manual-only workflows are summarized by default; use --all or --workflow to show
