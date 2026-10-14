@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // rateLimitedSignIn is the Copilot CLI's sign-in failure while the provider
@@ -40,6 +42,10 @@ func TestClassifyTransientProbeOutput(t *testing.T) {
 		{"signed out", "Error: not signed in. Run copilot login", false, 0},
 		{"unrelated failure", "unknown flag: --available-tools", false, 0},
 		{"500 tokens is not a status", "replied with 500 tokens of output", false, 0},
+		{"revoked wins over a 5xx", "token revoked; upstream 503 Service Unavailable", false, 0},
+		{"authentication failed wins over a network error", "authentication failed: read ECONNRESET", false, 0},
+		{"forbidden wins over a status code", "403 Forbidden (status 502 from proxy)", false, 0},
+		{"forbidden with a rate-limit signal is transient", "403 Forbidden: API rate limit exceeded", true, 0},
 		{"empty", "", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,6 +139,40 @@ func TestCopilotAuthProbeErrorKeepsTimeoutAheadOfTransientOutput(t *testing.T) {
 	err := copilotAuthProbeError(ctx, "sign-in check", ProcessResult{ExitCode: 1, Transcript: []byte(rateLimitedSignIn)}, ErrTimeout, false)
 	if !errors.Is(err, ErrTimeout) || errors.Is(err, credentials.ErrTransientProvider) {
 		t.Fatalf("err = %v, want the probe timeout reported as such", err)
+	}
+}
+
+func TestCodexAmbientPreflightClassifiesTransientLoginStatus(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambient := map[string]apiextensionsv1.JSON{"auth": {Raw: []byte(`"ambient-chatgpt"`)}}
+	for _, tc := range []struct {
+		name      string
+		output    string
+		transient bool
+	}{
+		{"rate limited", "Error: 429 Too Many Requests; retry-after: 30", true},
+		{"logged out", "Not logged in", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &claudeSequenceRunner{results: []ProcessResult{
+				{Transcript: []byte("codex-cli 0.50.0")},
+				{ExitCode: 1, Transcript: []byte(tc.output)},
+			}}
+			adapter := &CodexAdapter{Command: []string{program}, Runner: runner}
+			_, err := adapter.PreflightConfig(context.Background(), "", ambient)
+			if err == nil {
+				t.Fatal("expected the failed login status to fail preflight")
+			}
+			if got := errors.Is(err, credentials.ErrTransientProvider); got != tc.transient {
+				t.Fatalf("err = %v, transient = %t, want %t", err, got, tc.transient)
+			}
+			if !strings.Contains(err.Error(), "login status") {
+				t.Fatalf("err = %v, want it to name the login status probe", err)
+			}
+		})
 	}
 }
 

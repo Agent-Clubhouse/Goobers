@@ -87,10 +87,17 @@ func TestHarnessProbeBackoffSchedule(t *testing.T) {
 		}
 	}
 
-	// A provider Retry-After is honoured as given.
+	// A provider Retry-After is a floor: longer than the backoff, it is the
+	// wait; shorter, the backoff still applies.
+	backoff.clear("copilot")
 	start := clock.Now()
 	if retryAt := backoff.record("copilot", rateLimitedPreflight(90*time.Second)); retryAt.Sub(start) != 90*time.Second {
-		t.Fatalf("retry-after wait = %s, want 90s", retryAt.Sub(start))
+		t.Fatalf("retry-after wait = %s, want the provider's 90s over the 1m backoff", retryAt.Sub(start))
+	}
+	clock.Advance(90 * time.Second)
+	start = clock.Now()
+	if retryAt := backoff.record("copilot", rateLimitedPreflight(10*time.Second)); retryAt.Sub(start) != 2*time.Minute {
+		t.Fatalf("short retry-after wait = %s, want the 2m backoff", retryAt.Sub(start))
 	}
 
 	// Another key is independent, and clear resets the schedule.
@@ -299,7 +306,7 @@ func TestDaemonTransientHarnessRefusalRechecks(t *testing.T) {
 	synchronousRecheck(recheck)
 
 	// Before the backoff elapses: still refused, no probe.
-	if refusal := recheck.HarnessRefusal(clock.Advance(30 * time.Second)); !strings.Contains(refusal, `stage "write"`) || !strings.Contains(refusal, "API rate limit exceeded") {
+	if refusal := recheck.HarnessRefusal(context.Background(), clock.Advance(30*time.Second)); !strings.Contains(refusal, `stage "write"`) || !strings.Contains(refusal, "API rate limit exceeded") {
 		t.Fatalf("refusal = %q, want the stage and the provider cause", refusal)
 	}
 	if got := adapters.count(apiv1.HarnessCopilot); got != 1 {
@@ -307,22 +314,22 @@ func TestDaemonTransientHarnessRefusalRechecks(t *testing.T) {
 	}
 
 	// Due and still rate limited: one re-probe, still refused.
-	recheck.HarnessRefusal(clock.Advance(30 * time.Second))
+	recheck.HarnessRefusal(context.Background(), clock.Advance(30*time.Second))
 	if got := adapters.count(apiv1.HarnessCopilot); got != 2 {
 		t.Fatalf("due recheck probes = %d, want 2", got)
 	}
-	if refusal := recheck.HarnessRefusal(clock.Now()); refusal == "" || adapters.count(apiv1.HarnessCopilot) != 2 {
+	if refusal := recheck.HarnessRefusal(context.Background(), clock.Now()); refusal == "" || adapters.count(apiv1.HarnessCopilot) != 2 {
 		t.Fatalf("still-limited recheck = %q (probes %d), want refused without another probe", refusal, adapters.count(apiv1.HarnessCopilot))
 	}
 
 	// Recovered: the next due probe clears the refusal.
 	adapters.set(nil, nil)
-	recheck.HarnessRefusal(clock.Advance(2 * time.Minute))
-	if refusal := recheck.HarnessRefusal(clock.Now()); refusal != "" {
+	recheck.HarnessRefusal(context.Background(), clock.Advance(2*time.Minute))
+	if refusal := recheck.HarnessRefusal(context.Background(), clock.Now()); refusal != "" {
 		t.Fatalf("recovered harness still refused: %q", refusal)
 	}
 	probes := adapters.count(apiv1.HarnessCopilot)
-	recheck.HarnessRefusal(clock.Advance(time.Hour))
+	recheck.HarnessRefusal(context.Background(), clock.Advance(time.Hour))
 	if adapters.count(apiv1.HarnessCopilot) != probes {
 		t.Fatal("a recovered recheck kept probing")
 	}
@@ -346,13 +353,13 @@ func TestDaemonHarnessRecheckStopsOnPermanentFailure(t *testing.T) {
 	recheck := failures.recheck(copilotOnly).(*harnessWorkflowRecheck)
 	synchronousRecheck(recheck)
 	adapters.set(&harness.AuthRequiredError{Err: errors.New("not signed in")}, nil)
-	recheck.HarnessRefusal(clock.Advance(time.Minute))
-	if refusal := recheck.HarnessRefusal(clock.Now()); !strings.Contains(refusal, "not signed in") {
-		t.Fatalf("refusal = %q, want the sign-in failure", refusal)
+	recheck.HarnessRefusal(context.Background(), clock.Advance(time.Minute))
+	if refusal := recheck.HarnessRefusal(context.Background(), clock.Now()); !strings.Contains(refusal, "not signed in") || !strings.Contains(refusal, "reload the configuration or restart the daemon") {
+		t.Fatalf("refusal = %q, want the sign-in failure and what it now takes to clear it", refusal)
 	}
 	probes := adapters.count(apiv1.HarnessCopilot)
 	for range 3 {
-		recheck.HarnessRefusal(clock.Advance(time.Hour))
+		recheck.HarnessRefusal(context.Background(), clock.Advance(time.Hour))
 	}
 	if adapters.count(apiv1.HarnessCopilot) != probes {
 		t.Fatal("a permanently failed recheck kept probing")
@@ -386,5 +393,61 @@ func TestWorkerTransientHarnessRefusalCarriesRetryTime(t *testing.T) {
 	err = seams.refuseUnavailableHarness(apiv1.InvocationEnvelope{Gaggle: "example", WorkflowID: "both"})
 	if _, ok := invoke.InfrastructureRetryAt(err); !invoke.IsInfrastructureFailure(err) || ok {
 		t.Fatalf("permanent refusal = %v, want a plain infrastructure failure", err)
+	}
+}
+
+// TestHarnessBackoffIsKeyedByCredential: the backoff belongs to the credential
+// that was rate limited, so a reload that changes the agent:model grant or
+// rotates its token probes at once instead of waiting out the old backoff.
+func TestHarnessBackoffIsKeyedByCredential(t *testing.T) {
+	withHarnessProbeThrottle(t)
+	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
+	goobers, workflows := transientPreflightFixture()
+	token := "token-a"
+	credentialFor := func(apiv1.Harness) (func(context.Context) (string, error), error) {
+		current := token
+		return func(context.Context) (string, error) { return current, nil }, nil
+	}
+	for range 2 {
+		if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err == nil {
+			t.Fatal("expected a refusal")
+		}
+	}
+	if got := adapters.count(apiv1.HarnessCopilot); got != 1 {
+		t.Fatalf("same credential probed %d times within its backoff, want 1", got)
+	}
+	token = "token-b"
+	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if got := adapters.count(apiv1.HarnessCopilot); got != 2 {
+		t.Fatalf("a changed credential waited out the old one's backoff: %d probes, want 2", got)
+	}
+}
+
+// TestDaemonHarnessRecheckStopsWithTheScheduler: no re-probe starts once the
+// scheduler's lifetime context is done, and a probe interrupted by shutdown
+// does not overwrite the refusal with its own failure.
+func TestDaemonHarnessRecheckStopsWithTheScheduler(t *testing.T) {
+	clock := withHarnessProbeThrottle(t)
+	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
+	previous := preflightHarnesses
+	preflightHarnesses = preflightAgenticHarnesses
+	t.Cleanup(func() { preflightHarnesses = previous })
+	goobers, workflows := transientPreflightFixture()
+	_, failures, err := preflightDaemonHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recheck := failures.recheck(copilotOnly).(*harnessWorkflowRecheck)
+	synchronousRecheck(recheck)
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	before := recheck.HarnessRefusal(context.Background(), clock.Now())
+	if refusal := recheck.HarnessRefusal(stopped, clock.Advance(time.Hour)); refusal != before {
+		t.Fatalf("refusal changed after shutdown: %q", refusal)
+	}
+	if got := adapters.count(apiv1.HarnessCopilot); got != 1 {
+		t.Fatalf("a re-probe started after the scheduler stopped: %d probes", got)
 	}
 }

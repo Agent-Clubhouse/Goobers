@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -10,9 +11,9 @@ import (
 )
 
 // A harness group whose sign-in probe failed because the provider could not
-// answer (#6017) is not re-probed until its backoff elapses: the provider's
-// Retry-After when the probe reported one, else harnessProbeBackoffInitial
-// doubling per consecutive transient failure up to harnessProbeBackoffMax.
+// answer (#6017) is not re-probed until its backoff elapses:
+// harnessProbeBackoffInitial doubling per consecutive transient failure up to
+// harnessProbeBackoffMax, or the provider's Retry-After when that is longer.
 const (
 	harnessProbeBackoffInitial = time.Minute
 	harnessProbeBackoffMax     = 30 * time.Minute
@@ -74,9 +75,11 @@ func (b *harnessProbeBackoff) record(key string, cause error) time.Time {
 	if previous, ok := b.waiting[key]; ok {
 		delay = min(2*previous.delay, harnessProbeBackoffMax)
 	}
+	// The provider's Retry-After is a floor, never a shortcut: a short one
+	// must not let a host that keeps failing re-probe faster than its backoff.
 	wait := delay
 	if retryAfter, ok := harness.TransientPreflightRetryAfter(cause); ok {
-		wait = retryAfter
+		wait = max(wait, retryAfter)
 	}
 	retryAt := now.Add(wait)
 	b.waiting[key] = harnessProbeWait{cause: cause, retryAt: retryAt, delay: delay}
@@ -99,7 +102,11 @@ func transientHarnessReason(cause error, retryAt time.Time) string {
 // failed transiently, so the daemon can admit its workflows again once the
 // provider recovers instead of refusing them until the next restart or
 // configuration change (#6017). A re-probe runs at most once per backoff
-// window and never on the scheduler's goroutine. A re-probe that fails for
+// window, never on the scheduler's goroutine, and under the scheduler's
+// lifetime context, so daemon shutdown cancels it. Each configuration
+// generation builds its own rechecks and the scheduler consults only the
+// current generation's, so a re-probe still running for a superseded
+// configuration lands in a recheck nothing reads. A re-probe that fails for
 // any other reason makes the refusal permanent for this configuration, as
 // it would have been at startup.
 type harnessGroupRecheck struct {
@@ -109,37 +116,49 @@ type harnessGroupRecheck struct {
 
 	mu        sync.Mutex
 	reason    string
+	key       string
 	permanent bool
 	probing   bool
 }
 
-func newHarnessGroupRecheck(preflight harnessGroupPreflight, reason string) *harnessGroupRecheck {
-	return &harnessGroupRecheck{preflight: preflight, reason: reason, start: func(probe func()) { go probe() }}
+func newHarnessGroupRecheck(preflight harnessGroupPreflight, outcome harnessGroupOutcome) *harnessGroupRecheck {
+	return &harnessGroupRecheck{preflight: preflight, reason: outcome.reason, key: outcome.key, start: func(probe func()) { go probe() }}
 }
 
 // current is the group's refusal at now, starting a background re-probe when
-// one is due.
-func (g *harnessGroupRecheck) current(now time.Time) string {
+// one is due and ctx is still live.
+func (g *harnessGroupRecheck) current(ctx context.Context, now time.Time) string {
 	g.mu.Lock()
 	reason := g.reason
-	launch := reason != "" && !g.permanent && !g.probing && g.preflight.throttle.due(g.preflight.key(), now)
+	launch := reason != "" && !g.permanent && !g.probing && ctx.Err() == nil && g.preflight.throttle.due(g.key, now)
 	if launch {
 		g.probing = true
 	}
 	g.mu.Unlock()
 	if launch {
-		g.start(g.reprobe)
+		g.start(func() { g.reprobe(ctx) })
 	}
 	return reason
 }
 
-func (g *harnessGroupRecheck) reprobe() {
-	outcome := g.preflight.run()
+// permanentAfterRecheck tells the operator that a refusal found by a re-probe
+// is no longer waited out: it needs the same fix a startup refusal does.
+const permanentAfterRecheck = "; a re-probe found a failure that is not transient: fix it (for a sign-in failure, sign in or update the agent:model credential), then reload the configuration or restart the daemon"
+
+func (g *harnessGroupRecheck) reprobe(ctx context.Context) {
+	outcome := g.preflight.run(ctx)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.probing = false
-	g.reason = outcome.reason
+	if ctx.Err() != nil && outcome.reason != "" {
+		// Shutdown interrupted the probe; its failure says nothing.
+		return
+	}
+	g.reason, g.key = outcome.reason, outcome.key
 	g.permanent = outcome.reason != "" && outcome.retryAt.IsZero()
+	if g.permanent {
+		g.reason += permanentAfterRecheck
+	}
 }
 
 // harnessWorkflowRecheck is one workflow's localscheduler.HarnessRecheck: the
@@ -156,10 +175,10 @@ type harnessRecheckUse struct {
 var _ localscheduler.HarnessRecheck = (*harnessWorkflowRecheck)(nil)
 
 // HarnessRefusal implements localscheduler.HarnessRecheck.
-func (r *harnessWorkflowRecheck) HarnessRefusal(now time.Time) string {
+func (r *harnessWorkflowRecheck) HarnessRefusal(ctx context.Context, now time.Time) string {
 	refusal := ""
 	for _, use := range r.uses {
-		if reason := use.group.current(now); reason != "" {
+		if reason := use.group.current(ctx, now); reason != "" {
 			refusal = appendHarnessRefusal(refusal, fmt.Sprintf("stage %q %s", use.stage, reason))
 		}
 	}

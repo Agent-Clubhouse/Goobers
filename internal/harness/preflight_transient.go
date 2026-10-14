@@ -81,7 +81,11 @@ func authProbeFailure(probe string, result ProcessResult, runErr error, hint str
 var (
 	// A credential the provider REJECTED fails closed as a sign-in problem
 	// even when the same output also mentions a transient condition.
-	probeCredentialRejected = regexp.MustCompile(`\b401\b|unauthorized|bad credentials|invalid or revoked|not signed in|not logged in|not authenticated|signed out|\bexpired\b`)
+	probeCredentialRejected = regexp.MustCompile(`\b401\b|unauthorized|bad credentials|revoked|not signed in|not logged in|not authenticated|signed out|authentication failed|\bexpired\b`)
+	// A refusal (403 Forbidden) is a sign-in or permission failure unless it
+	// carries a rate-limit signal: it outranks a status code or transport
+	// error elsewhere in the output, but not the rate-limit signals.
+	probeForbidden          = regexp.MustCompile(`\bforbidden\b`)
 	probeRateLimited        = regexp.MustCompile(`rate[ -]limit(ed)? exceeded|api rate limit|secondary rate limit|rate[ -]limited|too many requests|abuse detection`)
 	probeRateLimitExhausted = regexp.MustCompile(`x-ratelimit-remaining["']?\s*[:=]\s*["']?0\b`)
 	probeRetryAfter         = regexp.MustCompile(`retry-after["']?\s*[:=]\s*["']?(\d+)|retry after (\d+)\s*(?:s|sec|secs|seconds)\b`)
@@ -94,22 +98,24 @@ var (
 // on the probe's own output because the CLI reports the provider response
 // only there; the signals mirror credentials' HTTP classification (429, 5xx,
 // a 403 with the primary or secondary rate-limit signal, a transport error).
-// A plain 403 is not one of them and stays a sign-in failure.
+// A credential rejection always wins, and a plain 403 is not transient.
 func classifyTransientProbeOutput(transcript []byte) (bool, time.Duration) {
 	text := strings.ToLower(string(transcript))
 	if text == "" || probeCredentialRejected.MatchString(text) {
 		return false, 0
 	}
 	retryAfter, hasRetryAfter := probeRetryAfterSeconds(text)
-	transient := hasRetryAfter ||
-		probeRateLimited.MatchString(text) ||
-		probeRateLimitExhausted.MatchString(text) ||
-		probeServerStatus.MatchString(text) ||
-		probeNetworkFailure.MatchString(text)
-	if !transient {
+	rateLimited := hasRetryAfter || probeRateLimited.MatchString(text) || probeRateLimitExhausted.MatchString(text)
+	if rateLimited {
+		return true, retryAfter
+	}
+	if probeForbidden.MatchString(text) {
 		return false, 0
 	}
-	return true, retryAfter
+	if probeServerStatus.MatchString(text) || probeNetworkFailure.MatchString(text) {
+		return true, 0
+	}
+	return false, 0
 }
 
 func probeRetryAfterSeconds(text string) (time.Duration, bool) {

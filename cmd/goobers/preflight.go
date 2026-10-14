@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -285,14 +287,14 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 				harness: h, spec: group[0].spec, environment: environment, harnessCommand: harnessCommand,
 				credentialFor: credentialFor, throttle: harnessProbeThrottle,
 			}
-			outcome := preflight.run()
+			outcome := preflight.run(context.Background())
 			if outcome.reason == "" {
 				info[h] = outcome.info
 				continue
 			}
 			var recheck *harnessGroupRecheck
 			if !outcome.retryAt.IsZero() {
-				recheck = newHarnessGroupRecheck(preflight, outcome.reason)
+				recheck = newHarnessGroupRecheck(preflight, outcome)
 			}
 			failures.addRefusal(group, outcome, recheck)
 		}
@@ -374,17 +376,24 @@ type harnessGroupPreflight struct {
 
 // harnessGroupOutcome is one group's preflight result: info when usable, else
 // the refusal reason, with retryAt set exactly when the failure was transient.
+// key is the backoff key the outcome was recorded under.
 type harnessGroupOutcome struct {
 	info    harness.PreflightInfo
 	reason  string
 	retryAt time.Time
+	key     string
 }
 
-// key identifies the group to the probe backoff: the same harness, options and
-// command make the same sign-in request of the same provider.
-func (p harnessGroupPreflight) key() string {
+// key identifies the group to the probe backoff: the same harness, options,
+// command, environment policy and model credential make the same sign-in
+// request of the same provider. credential is a fingerprint of the resolved
+// agent:model credential, so a reload that changes the grant or rotates the
+// token probes at once instead of waiting out the old credential's backoff.
+func (p harnessGroupPreflight) key(credential string) string {
 	options, _ := json.Marshal(p.spec.HarnessOptions)
-	return strings.Join(append([]string{string(p.harness), string(options)}, p.harnessCommand[string(p.harness)]...), "\x00")
+	parts := []string{string(p.harness), string(options), credential,
+		strings.Join(p.environment.ExtraAllowlist, ","), strings.Join(p.environment.Unset, ",")}
+	return strings.Join(append(parts, p.harnessCommand[string(p.harness)]...), "\x00")
 }
 
 // run preflights the group unless a transient failure is still being waited
@@ -393,39 +402,62 @@ func (p harnessGroupPreflight) key() string {
 // failing or unreachable provider) is backed off; any other outcome clears
 // the backoff, and a non-transient failure stays the permanent refusal it
 // always was.
-func (p harnessGroupPreflight) run() harnessGroupOutcome {
-	key := p.key()
-	if wait, waiting := p.throttle.pending(key); waiting {
-		return harnessGroupOutcome{reason: transientHarnessReason(wait.cause, wait.retryAt), retryAt: wait.retryAt}
+func (p harnessGroupPreflight) run(ctx context.Context) harnessGroupOutcome {
+	modelCredential, fingerprint, err := p.modelCredential(ctx)
+	if err != nil {
+		return p.finish(p.key(""), harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its agent:model credential could not be resolved: %w", p.harness, err))
 	}
-	info, err := p.check()
+	key := p.key(fingerprint)
+	if wait, waiting := p.throttle.pending(key); waiting {
+		return harnessGroupOutcome{reason: transientHarnessReason(wait.cause, wait.retryAt), retryAt: wait.retryAt, key: key}
+	}
+	info, err := p.check(ctx, modelCredential)
+	return p.finish(key, info, err)
+}
+
+// finish records a probe's result in the backoff and shapes the outcome.
+func (p harnessGroupPreflight) finish(key string, info harness.PreflightInfo, err error) harnessGroupOutcome {
 	if err == nil {
 		p.throttle.clear(key)
-		return harnessGroupOutcome{info: info}
+		return harnessGroupOutcome{info: info, key: key}
 	}
 	if errors.Is(err, credentials.ErrTransientProvider) {
 		retryAt := p.throttle.record(key, err)
-		return harnessGroupOutcome{reason: transientHarnessReason(err, retryAt), retryAt: retryAt}
+		return harnessGroupOutcome{reason: transientHarnessReason(err, retryAt), retryAt: retryAt, key: key}
 	}
 	p.throttle.clear(key)
-	return harnessGroupOutcome{reason: err.Error()}
+	return harnessGroupOutcome{reason: err.Error(), key: key}
 }
 
-func (p harnessGroupPreflight) check() (harness.PreflightInfo, error) {
-	h := p.harness
-	var modelCredential func(ctx context.Context) (string, error)
-	if p.credentialFor != nil && (h != apiv1.HarnessCodex || !harness.CodexUsesAmbientChatGPT(p.spec.HarnessOptions)) {
-		resolved, err := p.credentialFor(h)
-		if err != nil {
-			return harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its agent:model credential could not be resolved: %w", h, err)
-		}
-		modelCredential = resolved
+// modelCredential resolves the group's agent:model credential once, returning
+// a resolver over that value for the adapter and its fingerprint for the
+// backoff key. A group with no configured credential (or Codex's ambient
+// ChatGPT session) fingerprints as "ambient".
+func (p harnessGroupPreflight) modelCredential(ctx context.Context) (func(context.Context) (string, error), string, error) {
+	if p.credentialFor == nil || (p.harness == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(p.spec.HarnessOptions)) {
+		return nil, "ambient", nil
 	}
+	resolve, err := p.credentialFor(p.harness)
+	if err != nil || resolve == nil {
+		return nil, "ambient", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, harnessPreflightTimeout)
+	defer cancel()
+	token, err := resolve(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256([]byte(token))
+	return func(context.Context) (string, error) { return token, nil }, hex.EncodeToString(sum[:8]), nil
+}
+
+func (p harnessGroupPreflight) check(ctx context.Context, modelCredential func(context.Context) (string, error)) (harness.PreflightInfo, error) {
+	h := p.harness
 	adapter, err := harnessAdapterFor(h, p.environment, p.harnessCommand, modelCredential)
 	if err != nil {
 		return harness.PreflightInfo{}, fmt.Errorf("requires harness %q, but its adapter could not be configured: %w", h, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+	ctx, cancel := context.WithTimeout(ctx, harnessPreflightTimeout)
 	defer cancel()
 	result, err := preflightAdapterConfig(ctx, adapter, p.spec)
 	if err != nil {
