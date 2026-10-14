@@ -2950,8 +2950,18 @@ internal/executor's ci-poll defaults), resultFile (default
 queue-result.json). An eviction or timeout applies
 goobers:needs-remediation plus an explanatory comment before reporting
 its queueOutcome — a failure to apply that trail is a stage failure,
-not a swallowed warning. A live goobers:no-merge-review opt-out dequeues
-the pull request and reports skipped without remediation. Exit codes:
+not a swallowed warning. A live goobers:no-merge-review or run-aborted
+opt-out, or a route to remediation that removed goobers:merge-ready,
+withdraws the pull request (GitHub: dequeue; Azure DevOps: cancel the
+armed auto-complete) and reports skipped without remediation. Each poll
+of a still-queued pull request also runs merge-pr's unanswered-human-
+feedback check (#6134; blockUnansweredFeedback, identityMode,
+verdictAuthor (merge-pr's, bound via inputsFrom) and
+excludeAuthors as on merge-pr, default on): open human review feedback
+that no Goobers response has acknowledged withdraws the pull request,
+removes goobers:merge-ready and routes it to remediation with the
+unanswered-human-feedback reason. A feedback read that fails keeps it
+queued and is retried on the next poll. Exit codes:
 0 = evaluated (merged, evicted, skipped, or still-pending-timeout —
 see the result file's queueOutcome field),
 1 = business error (missing capability/config,
@@ -3438,7 +3448,14 @@ newest comment with goobers:needs-remediation, so pr-remediation updates
 that PR in place. A PR parked for a human (needs-human / merge-escalated)
 is un-parked when a fresh human comment lands: the park label is cleared
 and needs-remediation added, since the human the PR was parked for has
-now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
+now weighed in. With blockUnansweredFeedback "true" (declare policy
+action disarm-landing) a PR that is landing (goobers:merge-ready) is
+scanned too, by its open feedback: fresh human feedback first disarms
+its armed landing — on Azure DevOps it cancels the auto-complete; on
+GitHub queue-watch withdraws the queued PR once it is routed — then
+removes merge-ready and routes it. Default false: landing PRs are
+skipped, as before; set it false to merge over comments.
+Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
 general comments and review-thread replies both count; deleted comments
 and system threads (votes, pushes, policy status) never do.
 

@@ -173,6 +173,7 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), booleansIn("advisoryMode", "blockUnansweredFeedback"), stringListsIn("excludeAuthors"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-queue-poll": schema(
+		stringsIn("identityMode", "verdictAuthor"), booleansIn("blockUnansweredFeedback"), stringListsIn("excludeAuthors"),
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
@@ -183,7 +184,7 @@ var inputSchemas = map[string][]Input{
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
 	"pr-comment-watch": schema(
-		stringsIn("base", "identityMode"), integersIn("maxPullRequests"),
+		stringsIn("base", "identityMode"), integersIn("maxPullRequests"), booleansIn("blockUnansweredFeedback"),
 		stringListsIn("excludeAuthors", "excludeLabels", "headPrefixes", "unparkLabels"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),

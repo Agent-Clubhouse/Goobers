@@ -42,11 +42,11 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"commentorigin.go": {
 		command: "pr-comment-watch",
 		shared: map[string][]string{
-			"identityMode":   {"rebase-pr", "update-behind-pr", "merge-pr"},
-			"excludeAuthors": {"rebase-pr", "update-behind-pr", "merge-pr"},
+			"identityMode":   {"rebase-pr", "update-behind-pr", "merge-pr", "merge-queue-poll"},
+			"excludeAuthors": {"rebase-pr", "update-behind-pr", "merge-pr", "merge-queue-poll"},
 		},
 	},
-	"mergefeedbackgate.go":           {command: "merge-pr"},
+	"mergefeedbackgate.go":           {command: "merge-pr", shared: map[string][]string{"blockUnansweredFeedback": {"merge-queue-poll"}}},
 	"backlogassignment.go":           {command: "backlog-assignment"},
 	"backlogdedupe.go":               {command: "backlog-dedupe"},
 	"backloghealth.go":               {command: "backlog-health"},

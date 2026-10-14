@@ -1201,6 +1201,10 @@ func mergeResultFields(selectedNumber, selectedHeadSha, landOutcome, mergeSHA st
 	// head the refusal happened at (threaded via inputsFrom on the fail branch);
 	// a refusal at a new head is a fresh attempt, not a continuation.
 	out["selectedHeadSha"] = selectedHeadSha
+	// Echo the posting identity so queue-watch, the next task on the enqueue
+	// path, can bind it via inputsFrom and classify comments with the same
+	// "self" this stage's feedback gate used (#6134).
+	out["verdictAuthor"] = strings.TrimSpace(providerInput("verdictAuthor", ""))
 	if landOutcome != "" {
 		out["landOutcome"] = landOutcome
 	}

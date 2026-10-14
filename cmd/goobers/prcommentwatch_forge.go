@@ -16,8 +16,12 @@ import (
 type prCommentWatchForge interface {
 	identity(context.Context) (commentIdentity, error)
 	listPullRequests(ctx context.Context, base string) ([]providers.PullRequestSummary, error)
-	listComments(context.Context, providers.PullRequestSummary) ([]providers.Comment, error)
+	listComments(context.Context, providers.PullRequestSummary, commentClassifier) ([]providers.Comment, error)
 	route(ctx context.Context, pr providers.PullRequestSummary, clear []string) error
+	// disarm cancels a landing armed on pr (goobers:merge-ready) before the
+	// PR is routed for fresh human feedback (#6134). disarmed is true only
+	// when this stage actually cancelled something.
+	disarm(ctx context.Context, pr providers.PullRequestSummary) (disarmed bool, err error)
 }
 
 // newPRCommentWatchForge builds the provider arm through the shared
@@ -91,7 +95,7 @@ func (w issueLabelCommentWatch) listPullRequests(ctx context.Context, base strin
 	})
 }
 
-func (w issueLabelCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary) ([]providers.Comment, error) {
+func (w issueLabelCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary, _ commentClassifier) ([]providers.Comment, error) {
 	return w.provider.ListComments(ctx, w.repo, strconv.Itoa(pr.Number))
 }
 
@@ -108,6 +112,14 @@ func (w issueLabelCommentWatch) route(ctx context.Context, pr providers.PullRequ
 	return err
 }
 
+// disarm is a no-op here: GitHub's merge queue is the only landing Goobers
+// arms, and dequeuing takes the merge authority this stage does not hold.
+// queue-watch, which holds it while the PR is queued, dequeues a PR that
+// gains goobers:needs-remediation (the route below).
+func (issueLabelCommentWatch) disarm(context.Context, providers.PullRequestSummary) (bool, error) {
+	return false, nil
+}
+
 // adoPRCommentWatchProvider is the Azure DevOps surface: the PR list (labels
 // via includeLabels), every live comment across general and file threads, the
 // credential's identity by immutable id, and the native PR-label endpoints —
@@ -119,6 +131,8 @@ type adoPRCommentWatchProvider interface {
 	AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error)
 	AddPullRequestLabels(ctx context.Context, repo providers.RepositoryRef, pullID string, names []string) error
 	RemovePullRequestLabel(ctx context.Context, repo providers.RepositoryRef, pullID, name string) error
+	CancelAutoComplete(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.AutoCompleteCancel, error)
+	ListPullRequestFeedbackThreads(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.PullRequestFeedbackThread, error)
 }
 
 type adoCommentWatch struct {
@@ -138,8 +152,27 @@ func (w adoCommentWatch) listPullRequests(ctx context.Context, base string) ([]p
 	return w.provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: w.repo, Base: base, SkipCheckState: true})
 }
 
-func (w adoCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary) ([]providers.Comment, error) {
-	return w.provider.ListPullRequestFeedbackComments(ctx, w.repo, strconv.Itoa(pr.Number))
+// listComments reads every live thread comment. For a PR that is landing
+// (goobers:merge-ready) it reads the OPEN feedback only, as merge-pr's gate
+// does: a reviewer who resolved their own thread must not cancel an armed
+// auto-complete over feedback the gate would not refuse on.
+func (w adoCommentWatch) listComments(ctx context.Context, pr providers.PullRequestSummary, classifier commentClassifier) ([]providers.Comment, error) {
+	pullID := strconv.Itoa(pr.Number)
+	if !hasAnyLabel(pr.Labels, []string{mergeReadyLabel}) {
+		return w.provider.ListPullRequestFeedbackComments(ctx, w.repo, pullID)
+	}
+	threads, err := w.provider.ListPullRequestFeedbackThreads(ctx, w.repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	return openFeedbackComments(nil, adoFeedbackThreads(threads), classifier), nil
+}
+
+// disarm cancels the pull request's armed auto-complete: ADO would otherwise
+// complete it the moment its pending policies settle, over the feedback.
+func (w adoCommentWatch) disarm(ctx context.Context, pr providers.PullRequestSummary) (bool, error) {
+	outcome, err := w.provider.CancelAutoComplete(ctx, w.repo, strconv.Itoa(pr.Number))
+	return outcome == providers.AutoCompleteCancelled, err
 }
 
 // route clears the carried park labels, then adds needs-remediation. ADO has
