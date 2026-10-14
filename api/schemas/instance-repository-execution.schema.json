@@ -64,7 +64,7 @@
         "maxRepasses": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome."
+          "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, counted across every gate that targets that stage. Only non-pass outcomes are charged: a pass branch into a completed stage is a forward step, and infra and timeout outcomes spend their own retry and polling budgets."
         },
         "stalledRunTimeout": {
           "type": "string",

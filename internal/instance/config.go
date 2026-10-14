@@ -1601,8 +1601,10 @@ type RunConditions struct {
 	// WorkflowDailyBudgets overrides a named workflow's runs-per-day budget
 	// (#340), mirroring WorkflowBudgets' per-hour override.
 	WorkflowDailyBudgets map[string]int `json:"workflowDailyBudgets,omitempty" yaml:"workflowDailyBudgets,omitempty"`
-	// MaxRepasses is the instance default for consecutive non-pass gate
-	// evaluations before escalation. Zero uses the built-in default.
+	// MaxRepasses is the instance default for how many times gates may
+	// cumulatively route a run back to the same already-completed stage before
+	// escalation. Only non-pass outcomes are charged (see
+	// apiv1.RunControls.MaxRepasses). Zero uses the built-in default.
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
 	// StalledRunTimeout is the maximum period a running journal may remain
 	// silent before the daemon escalates it. Empty defaults to 45 minutes.

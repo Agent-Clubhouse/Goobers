@@ -604,8 +604,11 @@ spec:
                 properties:
                   maxRepasses:
                     description: |-
-                      MaxRepasses bounds how many times gates may route a run back to the same
-                      already-completed stage before escalation, regardless of gate or outcome.
+                      MaxRepasses bounds how many times gates may cumulatively route a run back
+                      to the same already-completed stage before escalation, counted across
+                      every gate that targets that stage. Only non-pass outcomes are charged: a
+                      pass branch into a completed stage is a forward step, and infra and
+                      timeout outcomes spend their own retry and polling budgets.
                     format: int32
                     minimum: 1
                     type: integer
