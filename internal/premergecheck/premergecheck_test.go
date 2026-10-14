@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/testgit"
 )
@@ -192,5 +193,16 @@ func TestParseCommandsSkipsBlankAndCommentLines(t *testing.T) {
 	got := ParseCommands("\n# compile\ngo build ./...\r\n  go vet -tags integration ./...  \n")
 	if len(got) != 2 || strings.Join(got[0], " ") != "go build ./..." || strings.Join(got[1], " ") != "go vet -tags integration ./..." {
 		t.Fatalf("ParseCommands = %q", got)
+	}
+}
+
+func TestTailKeepsValidUTF8AtBoundary(t *testing.T) {
+	output := "€" + strings.Repeat("a", maxOutputTail-1)
+	got := tail(output)
+	if !utf8.ValidString(got) {
+		t.Fatalf("tail produced invalid UTF-8: %q", got[:8])
+	}
+	if want := "…" + strings.Repeat("a", maxOutputTail-1); got != want {
+		t.Fatalf("tail = %d bytes, want continuation bytes dropped", len(got))
 	}
 }
