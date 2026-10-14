@@ -1,7 +1,15 @@
 package creditgraph
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
+	"github.com/goobers/goobers/api/schemas"
 )
 
 func calibrationSummary(bins ...AttributionEvalBin) *AttributionEvalSummary {
@@ -114,6 +122,64 @@ func TestAuditFaultDomainsMarksFindingsFileableAgainstThreshold(t *testing.T) {
 			}
 			if finding := report.WorkflowFindings[0]; finding.Confidence != 0.55 || finding.Fileable != tc.fileable {
 				t.Fatalf("finding confidence %v fileable %v, want 0.55 fileable %v", finding.Confidence, finding.Fileable, tc.fileable)
+			}
+		})
+	}
+}
+
+// TestFaultAuditSchemaRequiresFilingDecision checks that the candidate-findings
+// contract rejects a fault audit without its filing threshold or a finding
+// without its fileable decision, so no valid payload drops them.
+func TestFaultAuditSchemaRequiresFilingDecision(t *testing.T) {
+	compiler := jsonschema.NewCompiler()
+	for _, file := range schemas.Files() {
+		raw, err := schemas.FS.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compiler.AddResource(schemas.BaseURI+file, bytes.NewReader(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	schema, err := compiler.Compile(schemas.BaseURI + schemas.CandidateFindings + "#/$defs/faultAudit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observations []AttributionObservation
+	for _, run := range []string{"run-1", "run-2", "run-3"} {
+		observations = append(observations, auditObservation(run, "implementation", "version-a", "implement",
+			"workflow selected an unsuitable tool", ClassBadToolChoice, 0.55, "stage:implement/tool:one"))
+	}
+	until := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	encoded, err := json.Marshal(AuditFaultDomains(observations, FaultAuditConfig{Since: until.Add(-time.Hour), Until: until}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		valid  bool
+	}{
+		{name: "complete", mutate: func(map[string]any) {}, valid: true},
+		{name: "no filing threshold", mutate: func(report map[string]any) { delete(report, "filingThreshold") }},
+		{name: "finding without fileable", mutate: func(report map[string]any) {
+			delete(report["workflowFindings"].([]any)[0].(map[string]any), "fileable")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var report map[string]any
+			if err := json.Unmarshal(encoded, &report); err != nil {
+				t.Fatal(err)
+			}
+			// auditObservation's placeholder artifact digests are not sha256 digests.
+			for _, finding := range report["workflowFindings"].([]any) {
+				for _, evidence := range finding.(map[string]any)["evidence"].([]any) {
+					evidence.(map[string]any)["artifactDigest"] = "sha256:" + strings.Repeat("0", 64)
+				}
+			}
+			tc.mutate(report)
+			if err := schema.Validate(report); (err == nil) != tc.valid {
+				t.Fatalf("validation = %v, want valid=%v", err, tc.valid)
 			}
 		})
 	}

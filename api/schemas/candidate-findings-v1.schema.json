@@ -352,7 +352,7 @@
     "faultAudit": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "mode", "since", "until", "observationsScanned", "suppressed"],
+      "required": ["schema", "mode", "since", "until", "observationsScanned", "suppressed", "filingThreshold"],
       "description": "The deterministic cross-workflow Backprop fault-domain report.",
       "properties": {
         "schema": {
@@ -463,7 +463,8 @@
         "alternativeDomains",
         "recommendedOwner",
         "recommendedAction",
-        "verification"
+        "verification",
+        "fileable"
       ],
       "description": "One deduplicated stable failure signature and its smallest defensible fault domain.",
       "properties": {
