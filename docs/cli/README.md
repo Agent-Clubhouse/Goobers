@@ -3427,6 +3427,9 @@ own. With identityMode=dedicated, an unmarked comment by the credential's
 own identity (its login; its identity id on Azure DevOps) is Goobers' own
 too. With identityMode=shared, for Goobers running as a person's own
 identity, such a comment is that person's and counts as human.
+rebase-pr and update-behind-pr classify comments by this same rule
+before they clear needs-remediation; give them the same identityMode and
+excludeAuthors.
 
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such
@@ -3689,8 +3692,15 @@ detected causes are allowed to trigger remediation; the shipped default is
 fully liberal. behind-base is accepted vocabulary but cannot fire yet (no
 detection reaches this stage's decision today). human-comment fires when a
 genuinely new human comment postdates the watermark recorded in the sticky
-remediation-state comment; detection runs only when the declared policy
-names human-comment, so an old pinned policy is unaffected.
+remediation-state comment, or when no Goobers response has acknowledged the
+newest human comment (the rule pr-comment-watch routes on), so a clean
+rebase never clears goobers:needs-remediation over unanswered feedback;
+detection runs only when the declared policy names human-comment, so an
+old pinned policy is unaffected. Comments are classified as
+pr-comment-watch classifies them, under the same identityMode (dedicated or
+shared; default shared on Azure DevOps, dedicated elsewhere) and
+excludeAuthors inputs; set them to pr-comment-watch's values. On Azure
+DevOps every live general and file-thread comment counts.
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -5459,7 +5469,12 @@ is mergeable, CI-clean, and carries no substantive findings. A behind
 PR whose failing checks all failed on its base branch too, at its
 merge-base or at a base commit since, is red because its base was, so
 it is updated the same way. Other candidates are routed to full
-remediation. A run dispatched for one
+remediation, including a PR carrying goobers:needs-remediation that has
+human feedback no Goobers response has answered: this lane clears that
+label, and the feedback needs the agentic path. Comments are classified
+as pr-comment-watch classifies them, under the same identityMode
+(dedicated or shared; default dedicated) and excludeAuthors inputs; set
+them to pr-comment-watch's values. A run dispatched for one
 pull request (goobers run --pr, or a pull_request webhook delivery)
 selects that PR and no other; when the target is not selectable the
 stage reports no-work naming the reason instead of falling back to

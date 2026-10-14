@@ -231,7 +231,7 @@ func TestPRCommentWatchADOSameIdentityUnmarkedCommentIsHuman(t *testing.T) {
 		t.Fatalf("PR 7 labels = %v, want [%s]", got, needsRemediationLabel)
 	}
 	result := readCommentWatchResult(t, dir)
-	if result.Labeled != 1 || result.IdentityMode != prCommentWatchIdentityShared || result.BotID != adoWatchSelfID {
+	if result.Labeled != 1 || result.IdentityMode != commentIdentityShared || result.BotID != adoWatchSelfID {
 		t.Fatalf("result = %+v, want labeled 1 in shared mode as %s", result, adoWatchSelfID)
 	}
 	if entry := result.PRs[0]; entry.CommentAuthorID != adoWatchSelfID || entry.CommentCreatedAt != "2026-09-01T10:05:00Z" {
@@ -417,7 +417,7 @@ func TestPRCommentWatchADOIdentityIsTheIDNotTheName(t *testing.T) {
 					adoWatchThread(2, adoWatchComment(1, tc.author, "unmarked", 5)),
 				}
 			})
-			t.Setenv(executor.InputEnvVar("identityMode"), prCommentWatchIdentityDedicated)
+			t.Setenv(executor.InputEnvVar("identityMode"), commentIdentityDedicated)
 			runADOCommentWatch(t, root)
 			if routed := len(fake.takeWrites()) > 0; routed != tc.routed {
 				t.Fatalf("routed = %v, want %v", routed, tc.routed)

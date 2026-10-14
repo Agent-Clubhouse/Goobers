@@ -40,12 +40,27 @@ type adoRemediationServerState struct {
 	// order; the sticky remediation-state comment is seeded here so
 	// ListPullRequestThreadComments surfaces it exactly as a GitHub PR comment.
 	threadComments []string
+	// humanComments are comments a person wrote, served as a second, active
+	// thread after the bot's. In shared identity mode a person commenting
+	// through Goobers' own identity carries Goobers' author id but no marker.
+	humanComments []adoFixtureHumanComment
 	// deletedLabels records every label name cleared via the native PR-label
 	// DELETE, proving the reroute of the GitHub UpdateWorkItem(ID: PR#) path.
 	deletedLabels []string
 	// workItemHit is set if any wit/workitems endpoint was touched — it must stay
 	// false (the wrong-object hazard, remediation-wiring-plan §0.5).
 	workItemHit bool
+}
+
+// adoRemediationSelfID is the identity id the fake's connectionData reports
+// for the credential, and the author id of the bot's own thread comments.
+const adoRemediationSelfID = "goobers-bot-guid"
+
+// adoFixtureHumanComment is one person-written thread comment.
+type adoFixtureHumanComment struct {
+	body          string
+	authorID      string
+	publishedDate string
 }
 
 func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
@@ -91,14 +106,28 @@ func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
 				"id":            i + 1,
 				"content":       stampOwnFixtureBody(body, "comment"),
 				"commentType":   "text",
-				"author":        map[string]string{"displayName": "goobers-bot", "uniqueName": "bot@example.com"},
+				"author":        map[string]string{"id": adoRemediationSelfID, "displayName": "goobers-bot", "uniqueName": "bot@example.com"},
 				"publishedDate": "2026-07-15T00:00:00Z",
 			}
 		}
+		threads := []map[string]interface{}{{"id": 10, "status": "closed", "comments": comments}}
+		if len(s.humanComments) > 0 {
+			human := make([]map[string]interface{}, len(s.humanComments))
+			for i, c := range s.humanComments {
+				human[i] = map[string]interface{}{
+					"id": i + 1, "content": c.body, "commentType": "text",
+					"author":        map[string]string{"id": c.authorID, "displayName": "a person"},
+					"publishedDate": c.publishedDate,
+				}
+			}
+			threads = append(threads, map[string]interface{}{"id": 11, "status": "active", "comments": human})
+		}
+		writeJSONResp(t, w, map[string]interface{}{"value": threads})
+	})
+
+	mux.HandleFunc("/"+s.owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
-			"value": []map[string]interface{}{{
-				"id": 10, "status": "active", "comments": comments,
-			}},
+			"authenticatedUser": map[string]string{"id": adoRemediationSelfID, "providerDisplayName": "goobers-bot"},
 		})
 	})
 
