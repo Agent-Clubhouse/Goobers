@@ -153,7 +153,10 @@ func (v *MapVisit) observeFinished(index int, e journal.Event) error {
 	if e.Parallel != v.name {
 		return v.refuse(KindConflicting, e, fmt.Sprintf("branch.finished names fan-out %q inside map %q", e.Parallel, v.name))
 	}
-	if !v.started[index] {
+	// fail_fast and a run terminal settle every queued item as cancelled
+	// without ever starting it (§14 case 17): the only finish an unstarted
+	// item may record.
+	if !v.started[index] && e.BranchStatus != journal.BranchCancelled {
 		return v.refuse(KindMissing, e, "item branch finished without a branch.started")
 	}
 	if v.finished[index] {

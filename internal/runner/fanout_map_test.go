@@ -11,7 +11,6 @@ import (
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 // This file is the FAN-3 (#7384) corpus for map durability: roster freezing
@@ -376,15 +375,6 @@ func TestConformanceMapCorruptResumeEventsFailClosed(t *testing.T) {
 	}
 }
 
-// The map refusal stays in place: a pinned definition with a map is refused
-// before any of the reconstruction above can run (FAN-4 lifts it).
-func TestMapExecutionStillRefusedAtRunStart(t *testing.T) {
-	err := workflow.RefuseUnsupportedFanOut(mapMachine(t).Def.Spec)
-	if !errors.Is(err, workflow.ErrMapUnsupported) {
-		t.Fatalf("map refusal = %v, want %v", err, workflow.ErrMapUnsupported)
-	}
-}
-
 // Two occurrences of one task name keep distinct outputs in the
 // per-occurrence store, where the stage-name store collapses them (§6.3).
 func TestFanOutResultsKeepRepeatedTaskOccurrencesDistinct(t *testing.T) {
@@ -394,9 +384,10 @@ func TestFanOutResultsKeepRepeatedTaskOccurrencesDistinct(t *testing.T) {
 	machine := mapMachine(t)
 	const runID = "map-results"
 
-	byName := reconstructStageOutputs(events, machine)
-	if got := byName["item"].outputs["result"]; got != "b-out" {
-		t.Fatalf("stage-name store = %v; the premise is that it keeps only the last item", got)
+	// The stage-name store would keep only the last item, so it never holds
+	// a mapped result at all.
+	if byName := reconstructStageOutputs(events, machine); byName["item"].outputs != nil {
+		t.Fatalf("stage-name store kept a mapped result: %v", byName["item"].outputs)
 	}
 
 	store := reconstructFanOutResults(runID, events, machine)
@@ -410,7 +401,7 @@ func TestFanOutResultsKeepRepeatedTaskOccurrencesDistinct(t *testing.T) {
 		t.Fatalf("item b integrity = %s, want the producing content's grade", b.Integrity)
 	}
 	occurrenceA := journal.StageAttemptID(runID, 1, "item", events[5].Seq)
-	if exact, ok := store.result(fanOutResultKey{FanOut: "items", Branch: 1, Stage: "item", Occurrence: occurrenceA}); !ok || exact.Outputs["result"] != "a-out" {
+	if exact, ok := store.results[fanOutResultKey{FanOut: "items", Branch: 1, Stage: "item", Occurrence: occurrenceA}]; !ok || exact.Outputs["result"] != "a-out" {
 		t.Fatalf("exact occurrence lookup = %+v, %v", exact, ok)
 	}
 	if _, ok := store.branchResult("items", visit+100, 1, "item"); ok {
@@ -439,7 +430,7 @@ func TestFanOutResultsKeepRepeatedTaskOccurrencesDistinct(t *testing.T) {
 	key := fanOutResultKey{FanOut: "items", Branch: 1, Stage: "item", Occurrence: occurrenceA}
 	tolerant.record(key, visit, apiv1.Task{Name: "item"}, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"x": 1}}, nil)
 	tolerant.record(key, visit, apiv1.Task{Name: "item", ContinueOnError: true}, apiv1.ResultEnvelope{Status: apiv1.ResultFailure}, nil)
-	if _, ok := tolerant.result(key); ok {
+	if _, ok := tolerant.results[key]; ok {
 		t.Fatal("a tolerated failure kept its occurrence's earlier result")
 	}
 }

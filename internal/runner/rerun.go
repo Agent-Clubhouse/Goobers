@@ -191,10 +191,11 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws.visitedStages = stageVisitSeed(seedEvents)
 		ws.parallel = activeParallel
 		ws.fanIn = rerunFanIn(seedEvents, in.Machine, in.Stage)
+		ws.fanOutResults = assembleMapJoin(in.RunID, seedEvents, in.Machine, ws.fanIn)
 		if activeParallel != nil {
 			ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		}
-		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(seedEvents)
+		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(mapJoinSubjectEvents(seedEvents, ws.fanIn))
 		ws.lastResult = discardToleratedFailureOutputs(in.Machine, ws.lastStage, ws.lastResult)
 		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
 		ws.branchRecorded = hasRunBranchRef(events)
