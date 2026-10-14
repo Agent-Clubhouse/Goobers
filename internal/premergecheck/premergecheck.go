@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // Outcome classifies what a check concluded about the merge result.
@@ -233,5 +234,9 @@ func tail(output string) string {
 	if len(output) <= maxOutputTail {
 		return output
 	}
-	return "…" + output[len(output)-maxOutputTail:]
+	cut := len(output) - maxOutputTail
+	for cut < len(output) && !utf8.RuneStart(output[cut]) {
+		cut++
+	}
+	return "…" + output[cut:]
 }
