@@ -311,7 +311,9 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
 	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
 	"stage needs a harness that fails its startup check is still refused, while\n" +
-	"other workflows keep running.\n\n" +
+	"other workflows keep running. A check that failed only because the model\n" +
+	"provider was rate limiting or unreachable is re-run with backoff, and the\n" +
+	"workflow is admitted again once it passes.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +

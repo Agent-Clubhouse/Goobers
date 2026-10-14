@@ -748,7 +748,10 @@ func (c *CopilotAdapter) copilotAuthProbeError(ctx context.Context, probe string
 	err := copilotAuthProbeError(ctx, probe, result, runErr, launcherProbe)
 	// A timeout or cancellation says nothing about flag compatibility, so
 	// only a probe the CLI actually rejected names the configured args.
-	if len(c.AuthProbeExtraArgs) == 0 || errors.Is(err, ErrTimeout) || errors.Is(err, ErrCanceled) {
+	// A provider that could not answer says nothing about flag compatibility
+	// either.
+	if len(c.AuthProbeExtraArgs) == 0 || errors.Is(err, ErrTimeout) || errors.Is(err, ErrCanceled) ||
+		errors.Is(err, credentials.ErrTransientProvider) {
 		return err
 	}
 	return fmt.Errorf(
@@ -764,6 +767,15 @@ func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResu
 		return preflightProbeError(probe, result, errors.Join(ErrTimeout, context.DeadlineExceeded), "")
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return preflightProbeError(probe, result, errors.Join(ErrCanceled, context.Canceled), "")
+	}
+	// Checked before the credential markers below: the CLI reports a
+	// rate-limited provider as "Failed to fetch PAT user login (403): ... API
+	// rate limit exceeded", which carries "login" and "403" and was reported
+	// as a missing sign-in (#6017).
+	if err := transientProbeFailure(probe, result, runErr); err != nil {
+		return err
+	}
+	switch {
 	case launcherProbe && copilotLauncherAuthProbeLooksTransient(ctx, result, runErr):
 		return preflightProbeError(probe, result, runErr, "a forwarding launcher failed before completing its lightweight authentication check; inspect the launcher/session bootstrap diagnostics")
 	default:

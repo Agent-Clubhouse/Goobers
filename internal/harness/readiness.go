@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 )
 
 // ReadinessCheck is a value-free observation, separate from workload execution.
@@ -162,6 +163,11 @@ func readinessFailure(phase string, err error) ReadinessCheck {
 	}
 	if errors.Is(err, ErrCanceled) || errors.Is(err, context.Canceled) {
 		return readinessCheck("unobservable", "harness_probe_unobservable", "unobservable", "probe canceled before readiness could be established")
+	}
+	if errors.Is(err, credentials.ErrTransientProvider) {
+		// A rate-limited or unreachable provider says nothing about the
+		// credential either way (#6017).
+		return readinessCheck("unobservable", "harness_probe_unobservable", "unobservable", "provider rate limited or unreachable before readiness could be established")
 	}
 	if phase == "authentication" {
 		return readinessCheck("authentication", "harness_authentication_failed", "failed", "read-only authentication status rejected; transcript and error omitted")

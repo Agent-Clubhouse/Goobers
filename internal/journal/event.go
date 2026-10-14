@@ -202,6 +202,13 @@ const (
 	// diagnostic. Instance-journal only; written when the scheduler learns
 	// the configuration (start and each accepted reload).
 	EventWorkflowRefused EventType = "workflow.refused"
+	// EventWorkflowReadmitted records a workflow whose workflow.refused
+	// refusal was transient (#6017) becoming eligible again: a harness whose
+	// sign-in probe failed because the provider was rate limiting or
+	// unreachable passed a later re-probe. Instance-journal only. A transient
+	// refusal whose reason changes (a new next-probe time, or a re-probe that
+	// found a real sign-in failure) is journaled as a fresh workflow.refused.
+	EventWorkflowReadmitted EventType = "workflow.readmitted"
 	// EventProviderQuotaReset records a provider budget window expiring and
 	// polling admission reopening.
 	EventProviderQuotaReset EventType = "provider.quota.reset"

@@ -157,6 +157,12 @@ func copilotLauncherAuthProbeLooksTransient(ctx context.Context, result ProcessR
 	if copilotAuthProbeLooksLikeCredentialFailure(result.Transcript) {
 		return false
 	}
+	// A provider that is rate limiting or down is not a launcher bootstrap
+	// failure, and an immediate re-probe would only spend more of the quota
+	// (#6017).
+	if provider, _ := classifyTransientProbeOutput(result.Transcript); provider {
+		return false
+	}
 	if errors.Is(runErr, ErrTimeout) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return true
 	}
