@@ -109,16 +109,27 @@ func (f *fakeADO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// wiql answers provision's title-and-tag lookups, lowest id first.
+// wiqlStateExclusion matches a lookup's `[System.State] NOT IN (...)` clause.
+var wiqlStateExclusion = regexp.MustCompile(`\[System\.State\] NOT IN \(([^)]*)\)`)
+
+// wiql answers provision's title-and-tag lookups, lowest id first, honouring
+// a state exclusion clause the way ADO does.
 func (f *fakeADO) wiql(body []byte) []map[string]int {
 	var request struct {
 		Query string `json:"query"`
 	}
 	_ = json.Unmarshal(body, &request)
 	match := wiqlClause.FindStringSubmatch(request.Query)
+	excluded := map[string]bool{}
+	if states := wiqlStateExclusion.FindStringSubmatch(request.Query); states != nil {
+		for _, state := range strings.Split(states[1], ",") {
+			excluded[strings.Trim(strings.TrimSpace(state), "'")] = true
+		}
+	}
 	out := []map[string]int{}
 	for _, item := range f.items {
-		if match != nil && item.Fields["System.Title"] == match[1] && strings.Contains(fmt.Sprint(item.Fields["System.Tags"]), match[2]) {
+		if match != nil && item.Fields["System.Title"] == match[1] && strings.Contains(fmt.Sprint(item.Fields["System.Tags"]), match[2]) &&
+			!excluded[fmt.Sprint(item.Fields["System.State"])] {
 			out = append(out, map[string]int{"id": item.ID})
 		}
 	}
@@ -491,5 +502,49 @@ func TestProvisionCIPipelineIsOptInAndIdempotent(t *testing.T) {
 	if definition["name"] != ciPipelineName || process["yamlFilename"] != ciPipelineYAML || process["type"] != float64(2) ||
 		repository["id"] != testRepoID || repository["type"] != "TfsGit" || queue["id"] != float64(testQueueID) {
 		t.Errorf("definition = %v", definition)
+	}
+}
+
+// TestProvisionTreatsAClosedFixtureAsMissing: a fixture work item that was
+// closed or removed is not reported present — the fixture-drift workflow reads
+// only an open one — so provision offers (dry run) or creates (-apply) a fresh
+// one. The spec fixture keeps matching in any state.
+func TestProvisionTreatsAClosedFixtureAsMissing(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"Closed", "Done", "Removed"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakeADO()
+			server := newTLSServer(t, fake)
+			if code, _, stderr := runProvision(t, server, "-apply"); code != 0 {
+				t.Fatalf("first apply exit %d, stderr %q", code, stderr)
+			}
+			closed := fake.itemTitled(fixtureTitle)
+			closed.Fields["System.State"] = state
+			fake.itemTitled(specTitle).Fields["System.State"] = state
+			created := len(fake.creates())
+
+			code, stdout, stderr := runProvision(t, server)
+			if code != 0 {
+				t.Fatalf("dry run exit %d, stderr %q", code, stderr)
+			}
+			if !strings.Contains(stdout, "Fixture work item (#4602): would create") {
+				t.Fatalf("dry run over a %s fixture #%d does not offer a new one:\n%s", state, closed.ID, stdout)
+			}
+			if !strings.Contains(stdout, "Spec fixture work item (#6125, #6191): present") {
+				t.Errorf("dry run stopped finding the %s spec fixture:\n%s", state, stdout)
+			}
+
+			code, stdout, stderr = runProvision(t, server, "-apply")
+			if code != 0 {
+				t.Fatalf("second apply exit %d, stderr %q", code, stderr)
+			}
+			if got := len(fake.creates()); got != created+1 {
+				t.Fatalf("second apply sent %d creates, want exactly one new fixture: %v", got-created, fake.creates()[created:])
+			}
+			if !strings.Contains(stdout, "Fixture work item (#4602): created #") {
+				t.Fatalf("second apply did not replace the %s fixture #%d:\n%s", state, closed.ID, stdout)
+			}
+		})
 	}
 }

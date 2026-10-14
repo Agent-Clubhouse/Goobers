@@ -649,9 +649,22 @@ A merge-tier test that loads every shipped workflow and every `init --template=s
 scaffold. For each, it synthesises a gaggle per provider, `github` and `ado`, and runs
 full validation, including CONF-6. Gitea runs too but only reports.
 
+The shipped trees it covers are `reference-workflows/`, `config-examples/`,
+`examples/ios-simulator/`, and the templates `goobers init` embeds (`starter`,
+`quickstart-v1` and `demo`, read from `internal/instance/`). The standalone
+`examples/hello-world.yaml` is compiled inside the `starter` tree, whose gaggle it
+names. The rewrite moves the manifest's repo and backlog connections along with the
+gaggles. The scaffold columns seed from `instance.StandardInitDefaults`, the helper
+`init` itself uses, so they cannot drift from what `init` writes. A tree that ships no
+workflow, such as `examples/ado-onboarding/` (a commented gaggle snippet), has nothing
+to compile and is not a subject.
+
 - The gate starts with an **explicit expected-failure list**: `pr-remediation` on ADO,
   citing ADO-N14, N15, N20 and N22. Each fixing PR deletes its own entry.
-- An entry that unexpectedly passes fails the gate, so the list cannot rot.
+- An entry that unexpectedly passes fails the gate, so the list cannot rot. When the
+  entry is a CONF-6 (capability) entry and its subject failed to load, CONF-6 never
+  ran, so the failure says "CONF-6 not evaluated: load failed" instead of advising
+  that the entry be deleted.
 - After ADO-N31 the gate adds a topology (b) gaggle.
 
 This single gate would have caught every §1 validation finding.

@@ -23,7 +23,9 @@
 //     minimum reviewers, the goobers-live/live-write status, and "Require a
 //     merge strategy" (the policy classification the write leg reads, #6106).
 //   - The #4602 fixture work item, tagged goobers-fixture. The drift leg
-//     resolves it by title and tag, and recreates it if it is closed.
+//     resolves the oldest open one by title and tag, and recreates it if it
+//     is closed; this tool likewise looks only at open items, so a closed or
+//     removed fixture reads as missing rather than present.
 //   - The spec fixture pair the read-only leg reads (#6125, #6191, #6194): an
 //     ancestry parent (-parent-type, default Feature) with a description, and
 //     its child of the project's requirement type (or -spec-type) with an
@@ -205,7 +207,8 @@ func printf(out io.Writer, format string, args ...any) {
 
 // printFixtureNote reports the drift leg's fixture. It needs no variable: the
 // workflow resolves the oldest open fixture by title and tag and recreates it
-// when none is open. This tool's lookup ignores state, so #id may be closed.
+// when none is open. This tool's lookup is limited to open items the same way
+// (findFixture), so #id is the item the workflow will read.
 func printFixtureNote(out io.Writer, id int) {
 	if id == 0 {
 		printf(out, "  (provider fixture: no variable; the drift workflow creates it on its next run)\n")
@@ -588,21 +591,35 @@ func (c *client) createPolicy(ctx context.Context, typeID string, settings map[s
 	return created, err
 }
 
-// findFixture returns the lowest-numbered work item carrying the fixture title
-// and tag.
+// openFixtureClause keeps a fixture lookup to items that are still open: it
+// excludes the closed and removed states of every stock process (Basic and
+// Scrum's Done, Agile and CMMI's Closed, and Removed). The fixture-drift
+// workflow reads the oldest *open* fixture (#4602), so a closed or removed
+// one must read as missing, not present.
+const openFixtureClause = " AND [System.State] NOT IN ('Closed', 'Done', 'Removed')"
+
+// findFixture returns the lowest-numbered open work item carrying the fixture
+// title and tag.
 func (c *client) findFixture(ctx context.Context) (int, bool, error) {
-	return c.findWorkItem(ctx, fixtureTitle, fixtureTag)
+	return c.findWorkItemWhere(ctx, fixtureTitle, fixtureTag, openFixtureClause)
 }
 
-// findWorkItem returns the lowest-numbered work item with title and tag.
+// findWorkItem returns the lowest-numbered work item with title and tag, in
+// any state.
 func (c *client) findWorkItem(ctx context.Context, title, tag string) (int, bool, error) {
+	return c.findWorkItemWhere(ctx, title, tag, "")
+}
+
+// findWorkItemWhere returns the lowest-numbered work item with title and tag
+// that also matches the WIQL condition clause (empty for none).
+func (c *client) findWorkItemWhere(ctx context.Context, title, tag, clause string) (int, bool, error) {
 	endpoint, err := c.endpoint(url.Values{"$top": []string{"1"}}, "wit", "wiql")
 	if err != nil {
 		return 0, false, err
 	}
 	query := fmt.Sprintf(
-		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Title] = '%s' AND [System.Tags] CONTAINS '%s' ORDER BY [System.Id] ASC",
-		title, tag)
+		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Title] = '%s' AND [System.Tags] CONTAINS '%s'%s ORDER BY [System.Id] ASC",
+		title, tag, clause)
 	var out struct {
 		WorkItems []struct {
 			ID int `json:"id"`
