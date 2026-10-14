@@ -409,6 +409,7 @@ const (
 	featureWorkflowDisplayName               FeatureID = "workflow.spec.displayName"
 	featureWorkflowTriggers                  FeatureID = "workflow.spec.triggers"
 	featureWorkflowReadiness                 FeatureID = "workflow.spec.readiness"
+	featureWorkflowScheduleCatchUp           FeatureID = "workflow.spec.scheduleCatchUp"
 	featureWorkflowClaimVisibility           FeatureID = "workflow.spec.readiness.claimVisibility"
 	featureWorkflowRunControls               FeatureID = "workflow.spec.runControls"
 	featureWorkflowDesiredConcurrentRuns     FeatureID = "workflow.spec.readiness.desiredConcurrentRuns"
@@ -665,12 +666,11 @@ func mustFeatureRegistry(features []Feature) FeatureRegistry {
 
 var gaggleIsolationFeatureIDs = []FeatureID{featureGaggleIsolationNamespace, featureGaggleIsolationIdentityRef, featureGaggleIsolationServiceAccount}
 
-func currentFeatures(sinceVersion string) []Feature {
-	ids := []FeatureID{
-		featureWorkflowGaggle,
-		featureWorkflowDisplayName,
+func workflowSchedulingFeatureIDs() []FeatureID {
+	return []FeatureID{
 		featureWorkflowTriggers,
 		featureWorkflowReadiness,
+		featureWorkflowScheduleCatchUp,
 		featureWorkflowRunControls,
 		featureWorkflowClaimVisibility,
 		featureWorkflowDesiredConcurrentRuns,
@@ -679,6 +679,13 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowMaxRunsPerDay,
 		featureWorkflowMaxChainDepth,
 		featureWorkflowMaxOpenPRs,
+	}
+}
+
+func currentFeatures(sinceVersion string) []Feature {
+	ids := []FeatureID{
+		featureWorkflowGaggle,
+		featureWorkflowDisplayName,
 		featureWorkflowStart,
 		featureWorkflowTasks,
 		featureWorkflowGates,
@@ -868,6 +875,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGateRunsOnWindowsAdmin,
 		featureGaggleRunsOnWindowsAdmin,
 	}
+	ids = append(ids, workflowSchedulingFeatureIDs()...)
 	ids = append(ids, gaggleIsolationFeatureIDs...)
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
@@ -1151,6 +1159,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 		featureWorkflowMaxRunsPerHour,
 		featureWorkflowStart,
 	)
+	if def.Spec.ScheduleCatchUp != "" {
+		used.add(featureWorkflowScheduleCatchUp)
+	}
 	if def.Spec.DisplayName != "" {
 		used.add(featureWorkflowDisplayName)
 	}

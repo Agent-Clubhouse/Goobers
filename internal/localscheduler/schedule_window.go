@@ -105,6 +105,9 @@ func (source SourceTrigger) validateScheduleWindow() error {
 // scheduleEvaluation checks retained provenance against its archived schedules.
 // Legacy receipts retain their original unbounded evaluation semantics.
 func (source SourceTrigger) scheduleEvaluation(schedules []Schedule) (ScheduleWindowEvaluation, error) {
+	if source.ScheduleDeclaration > 0 {
+		return source.occurrenceEvaluation(schedules)
+	}
 	if source.ScheduleWindowFrom.IsZero() {
 		return ScheduleWindowEvaluation{
 			Tick:    Tick(TriggerState{Schedules: schedules, LastEval: source.ScheduledFrom}, source.ScheduledAt),

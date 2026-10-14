@@ -22,7 +22,7 @@ func (s *Sources) CaptureDemand(ctx context.Context, entry localscheduler.Workfl
 		return err
 	}
 	defer release()
-	revision, err := localscheduler.ScheduleRevision(entry.Schedules)
+	revision, err := entryScheduleRevision(entry)
 	if err != nil {
 		return err
 	}

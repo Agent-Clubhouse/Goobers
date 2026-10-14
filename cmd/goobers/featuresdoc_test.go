@@ -71,6 +71,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 			"workflow.spec.backprop.mode",
 			"workflow.spec.backprop.version",
 		},
+		"WorkflowSpec.ScheduleCatchUp":  {"workflow.spec.scheduleCatchUp"},
 		"WorkflowSpec.OutboxMirrorPath": {"workflow.spec.outboxMirrorPath"},
 		"WorkflowSpec.Start":            {"workflow.spec.start"},
 		"WorkflowSpec.DocsRoots":        {"workflow.spec.docsRoots"},
