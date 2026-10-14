@@ -286,21 +286,20 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
 func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
-	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
-	// declared command or script (dispatchexec), and invoking a goober through
-	// its harness has no pod-side path at all — the local arm reaches it via
-	// ActInvokeGoober, which the dispatch activity does not have.
+	// Topology (b) (a GitHub or Gitea backlog for Azure DevOps code,
+	// docs/design/ado-parity-dsl-2-0.md §7.2): every task of such a run, of
+	// either type, is refused a stage pod. A stage routes backlog work and
+	// backlog-family credentials by role, and it resolves the backlog
+	// repository from the instance config by its gaggle. A stage pod carries
+	// neither, so a backlog stage there would address the Azure DevOps
+	// repository with the backlog repository's credential.
 	//
-	// Refused HERE for the same reason as every other cut in this function:
-	// without it, an agentic task sails past the guards below (they are all
-	// inside the deterministic branch), a pod IS created, and the entrypoint
-	// finds no command and returns "stage_declaration_invalid" — an error that
-	// blames the workflow author's YAML for a substrate limitation, after
-	// spending a pod to say it.
-	//
-	// The runner inventory can already pin an agentic stage here: a
-	// harnesses:[copilot] runner class resolves and places, so this is
-	// reachable today rather than hypothetical.
+	// Cluster-substrate support for topology (b) is not planned for the 0.5.x
+	// or 0.6 lines. Supporting it would mean the dispatcher stamping the
+	// backlog repository and its bot login into the pod environment. Until
+	// then, this is a journaled stage outcome (dispatchRefusal) taken before a
+	// pod is created, and `goobers validate` warns about it at author time
+	// (RNR007) for any stage whose eligible runners exclude the daemon's host.
 	if in.RoleRoutedBacklogProvider != "" {
 		return dispatchRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, CrossProviderBacklogPodCode,
 			"stage of a topology (b) gaggle; refused before a pod was created",
@@ -448,7 +447,8 @@ func dispatchRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJo
 // no instance config, so a backlog stage there would address the Azure
 // DevOps repository with the backlog repository's credential. Every stage of
 // such a run is therefore refused before a pod is created; placing the
-// gaggle's stages on a self runner runs them.
+// gaggle's stages on a self runner runs them. `goobers validate` warns about
+// such a placement in advance (RNR007).
 const CrossProviderBacklogPodCode = "cross_provider_backlog_pod_unsupported"
 
 func crossProviderBacklogPodReason(taskName string, project, backlog apiv1.Provider) string {

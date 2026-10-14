@@ -222,7 +222,9 @@ func formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdat
 		fmt.Fprintf(&b, "**local-ci:** `%s`\n", html.EscapeString(ci.status))
 		if ci.output != "" {
 			b.WriteString("\n<details>\n<summary>local-ci cases</summary>\n\n<pre>")
-			b.WriteString(html.EscapeString(ci.output))
+			// In topology (b) a bare "#<n>" here would name ADO work item n;
+			// it is rewritten like the issue text (crossProviderIssueText).
+			b.WriteString(html.EscapeString(crossProviderIssueText(ci.output, issueID, issueRef)))
 			b.WriteString("</pre>\n\n</details>\n")
 		}
 	}
