@@ -352,6 +352,7 @@ repository the stage routes to:
 | `repo:push` | `push-branch` and the remediation fetches and force-pushes |
 | `github:pr:merge` | pull-request completion in `merge-pr` and `merge-queue-poll` |
 | `ado:pr:complete` | the same completion, instead of `github:pr:merge`, when the stage declares it (optional) |
+| `github:branch:delete` | source-branch deletion: requested on completion in `merge-pr`, then confirmed after the merge by `merge-pr` or `merge-queue-poll`, which delete a branch Azure DevOps left behind. The daemon also uses it to delete a terminal run's pushed branch that never became a pull request. Every delete is conditional: after a merge on the merged head, and at terminal cleanup on the tip read just before the delete. A branch an open pull request uses is kept: as its base after a merge, as its base or source at terminal cleanup. |
 | `ado:work-items:write` | linking the pull request `open-pr` opened to its work item natively (optional; the repository credential backs it when the stage declares it) |
 | `ado:packaging:read` | custom stage commands that read Azure Artifacts package feeds (optional; delivered as `GOOBERS_CRED_ADO_PACKAGING_READ` with `GOOBERS_CREDENTIAL_EXPIRES_ADO_PACKAGING_READ` when the source states an expiry) |
 

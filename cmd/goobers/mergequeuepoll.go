@@ -534,11 +534,15 @@ func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
 //     AddLabels…). On ADO that numeric PR id addresses wit/workitems/{id},
 //     mutating an unrelated work item — the PR-as-work-item hazard — so the
 //     outcome is recorded to the result file WITHOUT any work-item write.
-//   - branch cleanup (§1d:66): ADO PollPullRequest never reports
-//     HeadRepository, so cleanupMergedBranch cannot run; skipped.
 //
-// Wiring the ADO remediation-routing and branch-cleanup follow-ups is deferred
-// to the ADO merge epic (CONF-3 #2076).
+// Branch cleanup does not use cleanupMergedBranch: ADO PollPullRequest never
+// reports HeadRepository. A merged pull request instead gets the ADO
+// source-branch backstop (stageADOSourceBranchBackstop, #5957) when the stage
+// holds github:branch:delete: Azure DevOps was asked to delete the branch at
+// completion, and the backstop removes it when ADO did not.
+//
+// Wiring the ADO remediation-routing follow-up is deferred to the ADO merge
+// epic (CONF-3 #2076).
 func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
 	// Completion authority is distinct from PR-write authority. The provider
 	// is built from the credential delivered for the landing capability
@@ -555,7 +559,7 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		return 1
 	}
 	dispatcher := providers.NewDispatcher(adoProvider)
-	return runMergeQueuePollCore(repo, &adoMergeQueuePollTransport{provider: dispatcher, stdout: stdout}, stdout, stderr)
+	return runMergeQueuePollCore(repo, &adoMergeQueuePollTransport{provider: dispatcher, root: root, stdout: stdout}, stdout, stderr)
 }
 
 // adoMergeQueuePollTransport remembers whether the latest pending read was
@@ -564,8 +568,12 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 // bare timeout. The core loop stays provider-neutral.
 type adoMergeQueuePollTransport struct {
 	provider      providers.MergeQueuePoller
+	root          string
 	stdout        io.Writer
 	awaitingHuman bool
+	// merged is the read that reported the pull request merged: its source
+	// branch and merged head feed the source-branch backstop.
+	merged providers.PollMergeQueueEntryResult
 }
 
 func (t *adoMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
@@ -578,11 +586,15 @@ func (t *adoMergeQueuePollTransport) Poll(ctx context.Context, repo providers.Re
 		pf(t.stdout, "pr #%s: auto-complete armed, awaiting human approval\n", pullNumber)
 	}
 	t.awaitingHuman = awaiting
+	if result.State == providers.MergeQueueEntryMerged {
+		t.merged = result
+	}
 	return result, nil
 }
 
-func (adoMergeQueuePollTransport) Merge(_ context.Context, _ providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
-	return mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile, stdout, stderr)
+func (t *adoMergeQueuePollTransport) Merge(ctx context.Context, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+	cleanup := stageADOSourceBranchBackstop(ctx, t.root, repo, t.merged.HeadBranch, t.merged.HeadSHA)
+	return mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile, cleanup, stdout, stderr)
 }
 
 func (adoMergeQueuePollTransport) Evict(_ context.Context, _ providers.RepositoryRef, pullNumber, resultFile string, stdout, stderr io.Writer) int {
@@ -608,17 +620,17 @@ func (adoMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return false }
 func (adoMergeQueuePollTransport) SupportsOptOutDequeue() bool { return false }
 
 // mergeQueuePollMergedADO reports an ADO-completed pull request as merged. The
-// merged determination itself is the CORE land action and is written unchanged;
-// branch cleanup (cleanupMergedBranch, the GitHub concrete-*GitHubProvider
-// helper) is a documented no-op on ADO because ADO PollPullRequest never
-// reports HeadRepository (merge-wiring-plan §1d/§8), so it is skipped rather
-// than run against a nil head repository.
-func mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
-	if err := writeQueueResult(resultFile, pullNumber, "merged", mergeSHA, nil, ""); err != nil {
+// merged determination itself is the CORE land action and is written unchanged.
+// cleanup is the source-branch backstop's outcome (stageADOSourceBranchBackstop),
+// nil when the stage holds no github:branch:delete grant; it never changes the
+// merged outcome or the exit code (PRL-072: a cleanup failure is a warning).
+func mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile string, cleanup *mergeBranchCleanup, stdout, stderr io.Writer) int {
+	printMergedBranchCleanup(stdout, stderr, "merge queue merged pr #"+pullNumber, cleanup)
+	if err := writeQueueResult(resultFile, pullNumber, "merged", mergeSHA, cleanup, ""); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "merge queue merged pr #%s (%s); branch cleanup deferred on ado\n", pullNumber, mergeSHA)
+	pf(stdout, "merge queue merged pr #%s (%s)\n", pullNumber, mergeSHA)
 	return 0
 }
 

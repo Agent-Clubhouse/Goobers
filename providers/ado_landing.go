@@ -209,7 +209,11 @@ func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueu
 	labels := adoLabelNames(detail.Labels)
 	switch {
 	case strings.EqualFold(detail.Status, "completed"):
-		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: detail.LastMergeCommit.CommitID, Labels: labels}, nil
+		return PollMergeQueueEntryResult{
+			State: MergeQueueEntryMerged, MergeSHA: detail.LastMergeCommit.CommitID, Labels: labels,
+			HeadBranch: strings.TrimPrefix(detail.SourceRefName, adoHeadsRefPrefix),
+			HeadSHA:    detail.LastMergeSourceCommit.CommitID,
+		}, nil
 	case strings.EqualFold(detail.Status, "abandoned"):
 		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted, Labels: labels}, nil
 	case detail.AutoCompleteSetBy != nil:

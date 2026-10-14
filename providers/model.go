@@ -1187,6 +1187,12 @@ type PollMergeQueueEntryResult struct {
 	// is armed and only reviewer policies are unmet). The entry is still
 	// pending; this only lets a watcher say why.
 	AwaitingHuman bool `json:"awaitingHuman,omitempty"`
+	// HeadBranch and HeadSHA, on a merged outcome, are the pull request's
+	// source branch and the head it merged at, when the provider reports
+	// them in the same read (Azure DevOps does). A watcher uses them to
+	// confirm the source branch was cleaned up without a second read.
+	HeadBranch string `json:"headBranch,omitempty"`
+	HeadSHA    string `json:"headSha,omitempty"`
 }
 
 // ListPullRequestsRequest filters open pull requests for merge-review's

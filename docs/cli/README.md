@@ -2896,10 +2896,11 @@ issues), preMergeCheck (optional; one command per line, run without a
 shell on the PR head merged onto the CURRENT base branch tip — a
 failure refuses the merge as pre-merge-check-failed), resultFile
 (default merge-result.json). Successful merges
-also report headBranch and branchCleanup (deleted, skipped-stacked, or
-failed). Exit codes: 0 = evaluated (merged or not — see the result
-file's "merged" field), 1 = business error (missing capability/config,
-malformed inputs, provider failure), 2 = usage/IO error.
+also report headBranch and branchCleanup (deleted, skipped-stacked,
+skipped-moved on Azure DevOps, or failed). Exit codes: 0 = evaluated
+(merged or not — see the result file's "merged" field), 1 = business
+error (missing capability/config, malformed inputs, provider failure),
+2 = usage/IO error.
 ~~~
 
 **Examples**

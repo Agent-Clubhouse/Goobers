@@ -41,13 +41,42 @@ var newGiteaTerminalBranchDeleter = func(baseURL string, source providers.TokenS
 	return providers.NewGiteaProvider(baseURL, "", providers.WithGiteaTokenSource(source))
 }
 
-func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource) (providers.BranchDeleter, error) {
+// newADOTerminalBranchDeleter is the Azure DevOps arm of the branch-delete
+// seam (#5957). The provider authenticates with the token materialized for
+// github:branch:delete — the capability every ADO stage deletes a branch with
+// since ADO-N18 — sent as kind. Its delete is ADOProvider.DeleteUnusedBranch:
+// a branch an open pull request uses (as base or source) is kept, and the ref
+// update is conditional on the tip it reads. registrar receives every form of
+// the credential a request sends (the encoded Basic value as well as the raw
+// token), so the journal's scrubber redacts each of them.
+var newADOTerminalBranchDeleter = func(repo providers.RepositoryRef, kind string, source providers.TokenSource, registrar providers.SecretRegistrar) (providers.BranchDeleter, error) {
+	credential, err := providers.NewADOTokenSourceCredentialSource(kind, source)
+	if err != nil {
+		return nil, err
+	}
+	provider := providers.NewADOProvider(repo.Owner, repo.Project, "",
+		providers.WithADOCredentialSource(credential), providers.WithADOSecretRegistrar(registrar))
+	return adoUnusedBranchDeleter{provider}, nil
+}
+
+// adoUnusedBranchDeleter is the terminal BranchDeleter over
+// ADOProvider.DeleteUnusedBranch.
+type adoUnusedBranchDeleter struct{ *providers.ADOProvider }
+
+func (d adoUnusedBranchDeleter) DeleteBranch(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+	return d.DeleteUnusedBranch(ctx, req)
+}
+
+func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource, registrar providers.SecretRegistrar) (providers.BranchDeleter, error) {
 	return terminalProviderForProject(
 		cfg,
 		project,
 		source,
 		newTerminalBranchDeleter,
 		newGiteaTerminalBranchDeleter,
+		func(repo providers.RepositoryRef, kind string, source providers.TokenSource) (providers.BranchDeleter, error) {
+			return newADOTerminalBranchDeleter(repo, kind, source, registrar)
+		},
 		terminalBranchDeleteSupported,
 	)
 }
@@ -58,7 +87,7 @@ func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project api
 // minting a token it could never use.
 func terminalBranchDeleteSupported(kind providers.ProviderKind) error {
 	switch kind {
-	case providers.ProviderGitea, providers.ProviderGitHub:
+	case providers.ProviderGitea, providers.ProviderGitHub, providers.ProviderADO:
 		return nil
 	default:
 		return fmt.Errorf("terminal branch cleanup does not support repository provider %q", kind)
@@ -205,11 +234,17 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 		if err != nil {
 			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
 		}
-		deleter, err := newTerminalBranchDeleteProviderForProject(cfg, project, set.For(string(capability.GitHubBranchDelete)))
+		deleter, err := newTerminalBranchDeleteProviderForProject(cfg, project, set.For(string(capability.GitHubBranchDelete)), registrar)
 		if err != nil {
 			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
 		}
 		result, err := deleter.DeleteBranch(ctx, req)
+		var inUse *providers.BranchInUseError
+		if errors.As(err, &inUse) {
+			// A decision, not a provider failure: it carries no provider
+			// text to scrub, and finalizeTerminalBranch must still see it.
+			return result, err
+		}
 		return result, scrubTerminalError(registrar, err)
 	}
 	return deleteBranch, repo, nil
@@ -305,7 +340,18 @@ func finalizeTerminalBranch(runsDir, runID string, annotate terminalAnnotator, r
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result, deleteErr := deleteBranch(ctx, providers.DeleteBranchRequest{Repository: repo, Name: branch.ID})
+	return recordTerminalBranchDelete(annotate, branch, result, deleteErr)
+}
+
+// recordTerminalBranchDelete journals one terminal delete's outcome. A branch
+// an open pull request uses (providers.BranchInUseError) is kept, not failed.
+func recordTerminalBranchDelete(annotate terminalAnnotator, branch *journal.ExternalRef, result providers.DeleteBranchResult, deleteErr error) error {
+	var inUse *providers.BranchInUseError
 	switch {
+	case errors.As(deleteErr, &inUse) && inUse.AsBase:
+		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "stacked-pull-request-open", nil)
+	case errors.As(deleteErr, &inUse):
+		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "pull-request-open", nil)
 	case deleteErr != nil:
 		return appendBranchCleanup(annotate, branch, branchCleanupFailed, "", deleteErr)
 	case !result.Deleted:
