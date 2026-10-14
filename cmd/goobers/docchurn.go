@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -126,12 +127,12 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 		multiplier = m
 	}
 
-	workflow := firstNonEmpty(*workflowFlag, os.Getenv(executor.WorkflowEnvVar))
+	workflow := cmp.Or(*workflowFlag, os.Getenv(executor.WorkflowEnvVar))
 	if workflow == "" {
 		pf(stderr, "error: --workflow or $GOOBERS_WORKFLOW is required (the docs watermark is per-workflow)\n")
 		return 2
 	}
-	gaggle := firstNonEmpty(*gaggleFlag, providerGaggle())
+	gaggle := cmp.Or(*gaggleFlag, providerGaggle())
 	docsRoots := parseDocsRoots(providerInput("docsRoots", ""))
 	advance := providerInput("advanceWatermark", "true") == "true"
 
@@ -176,15 +177,6 @@ func parseDocsRoots(raw string) []string {
 		}
 	}
 	return roots
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // --- git plumbing ----------------------------------------------------------

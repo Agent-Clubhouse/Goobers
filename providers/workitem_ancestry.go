@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -264,7 +265,7 @@ func (w *ancestryWalk) pendingChains(frontier []ancestryChain, depth int) []ance
 func (w *ancestryWalk) accept(chain ancestryChain, read WorkItemParentRead, depth int) (ancestryChain, bool) {
 	child := chain.node
 	if read.Omission != "" {
-		w.omit(child, firstNonEmpty(read.ParentID, child.ParentID), depth, read.Omission, read.Detail)
+		w.omit(child, cmp.Or(read.ParentID, child.ParentID), depth, read.Omission, read.Detail)
 		return ancestryChain{}, false
 	}
 	if read.Parent == nil {
@@ -427,13 +428,4 @@ func withKey(lineage map[string]bool, key string) map[string]bool {
 	}
 	out[key] = true
 	return out
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
