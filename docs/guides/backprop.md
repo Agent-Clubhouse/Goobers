@@ -372,7 +372,8 @@ The window covers runs started in `[--since, --until)`. `--until` defaults to
 now and `--since` to seven days earlier. The report includes:
 
 - **Per-workflow credit and blame share.** Each complete record counts as one
-  unit: credit when its outcome was positive, blame otherwise. Each share is
+  unit: credit when its outcome was positive, blame when it was negative, and
+  neither when it was neutral (an escalated run; counted as `neutral`). Each share is
   the workflow's units divided by the gaggle's total. Insufficient-evidence and
   failed records are counted but carry no share.
 - **Per-stage credit and blame share.** Each record's stage contributions are
@@ -380,7 +381,7 @@ now and `--since` to seven days earlier. The report includes:
   ones.
 - **Top recurring findings.** Up to ten cause classes that recurred at the
   same workflow stage in at least two runs.
-- **Trend.** For each workflow, runs, failure rate, and blame share compared
+- **Trend.** For each workflow, runs, failure rate (failed or aborted runs), and blame share compared
   with the previous window of the same length.
 - **Cross-workflow links.** An edge from an earlier run to a later run, built
   only from an identifier both runs recorded: the same external reference
@@ -390,8 +391,10 @@ now and `--since` to seven days earlier. The report includes:
   runs. Nothing is inferred from timing or similarity.
 
 The report is read-only, never reads shadow records, and caps each window at
-500 records. When the cap or scan budget is reached, `truncated` is set and the
-text output prints a note.
+500 records. When the cap or scan budget is reached, `truncated` (current
+window) or `previousTruncated` (previous window) is set and the text output
+prints a note. Runs whose journal cannot be read still count toward credit but
+are listed in `linkEvidenceUnavailable`, because their links are unknown.
 
 ## Record a fix and verify it
 

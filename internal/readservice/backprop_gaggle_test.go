@@ -176,6 +176,51 @@ func TestStoredGaggleBackpropReport(t *testing.T) {
 	}
 }
 
+func TestStoredGaggleBackpropFlagsPartialData(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	fixtures := []gaggleFixtureRun{
+		{runID: "impl-1", workflow: "implement", startedAt: now.Add(-2 * time.Hour), phase: journal.PhaseAborted, sign: -1,
+			stages: map[string]float64{"implement": 1}},
+		{runID: "impl-esc", workflow: "implement", startedAt: now.Add(-time.Hour), phase: journal.PhaseEscalated, sign: 0,
+			stages: map[string]float64{"implement": 1}},
+		{runID: "old-1", workflow: "implement", startedAt: now.Add(-8 * 24 * time.Hour), phase: journal.PhaseCompleted, sign: 1},
+		{runID: "old-2", workflow: "implement", startedAt: now.Add(-9 * 24 * time.Hour), phase: journal.PhaseCompleted, sign: 1},
+		{runID: "old-3", workflow: "implement", startedAt: now.Add(-10 * 24 * time.Hour), phase: journal.PhaseCompleted, sign: 1},
+	}
+	reader := windowedAttributionReader{}
+	for _, fixture := range fixtures {
+		reader.rows = append(reader.rows, writeGaggleFixtureRun(t, root, fixture))
+	}
+	runDir, err := instance.NewLayout(root).FindRunDir("impl-esc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "events.jsonl"), []byte("not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := StoredGaggleBackprop(context.Background(), root, reader, GaggleBackpropQuery{Gaggle: "web", Limit: 3}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Truncated || !report.PreviousTruncated {
+		t.Fatalf("truncation = current %v previous %v, want only the previous window truncated", report.Truncated, report.PreviousTruncated)
+	}
+	if len(report.LinkEvidenceUnavailable) != 1 || report.LinkEvidenceUnavailable[0] != "impl-esc" {
+		t.Fatalf("link evidence unavailable = %v, want [impl-esc]", report.LinkEvidenceUnavailable)
+	}
+	if len(report.Workflows) != 1 {
+		t.Fatalf("workflows = %+v", report.Workflows)
+	}
+	if got := report.Workflows[0]; got.Failed != 1 || got.Neutral != 1 || got.BlameShare != 1 || got.CreditShare != 0 {
+		t.Fatalf("implement credit = %+v, want aborted as the only failure and escalation neutral", got)
+	}
+	if len(report.Stages) != 1 || report.Stages[0].Runs != 1 || report.Stages[0].BlameShare != 1 {
+		t.Fatalf("stages = %+v, want the neutral run excluded", report.Stages)
+	}
+}
+
 func TestStoredGaggleBackpropRequiresGaggle(t *testing.T) {
 	if _, err := StoredGaggleBackprop(context.Background(), t.TempDir(), windowedAttributionReader{}, GaggleBackpropQuery{}, time.Now()); err == nil {
 		t.Fatal("report without a gaggle succeeded")

@@ -93,8 +93,12 @@ func openOptionalReadModel(l instance.Layout) (readmodel.Reader, func(), error) 
 func renderGaggleBackpropReport(stdout io.Writer, report readservice.GaggleBackpropReport) {
 	pf(stdout, "gaggle %s: %d active Backprop run(s) %s .. %s\n", report.Gaggle, report.Runs,
 		report.Window.Since.Format(time.RFC3339), report.Window.Until.Format(time.RFC3339))
-	if report.Truncated {
-		pln(stdout, "note: the run limit or scan budget was reached; narrow --since/--until for a complete window")
+	if report.Truncated || report.PreviousTruncated {
+		pln(stdout, "note: the run limit or scan budget was reached; narrow --since/--until for a complete window and trend")
+	}
+	if len(report.LinkEvidenceUnavailable) > 0 {
+		pf(stdout, "note: %d run(s) have unreadable journals, so their links are missing: %s\n",
+			len(report.LinkEvidenceUnavailable), strings.Join(report.LinkEvidenceUnavailable, ", "))
 	}
 	if report.Runs == 0 {
 		return

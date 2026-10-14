@@ -198,8 +198,11 @@ previous window of the same length. It reports per-workflow and per-stage
 credit and blame shares, the top recurring `(workflow, stage, class)` causes
 seen in at least two runs, and per-workflow trends (runs, failure rate, and
 blame share against the previous window). Each window reads at most 500 records
-under the fault audit's scan budget and reports `truncated` when either bound
-is reached.
+under the fault audit's scan budget and reports `truncated` (current window)
+or `previousTruncated` (previous window) when either bound is reached. A
+neutral outcome (an escalated run) carries neither credit nor blame, and a
+run whose journal cannot be read is listed in `linkEvidenceUnavailable`
+instead of silently contributing no links.
 
 Cross-workflow links follow the credit graph's no-guessed-edges rule (see
 [Why](#why)). An edge

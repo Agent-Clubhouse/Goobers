@@ -49,17 +49,22 @@ type GaggleBackpropQuery struct {
 // previous window, and the cross-workflow links its runs recorded. Shadow
 // records never appear here.
 type GaggleBackpropReport struct {
-	Schema            string                    `json:"schema"`
-	Gaggle            string                    `json:"gaggle"`
-	Window            GaggleReportWindow        `json:"window"`
-	PreviousWindow    GaggleReportWindow        `json:"previousWindow"`
-	Runs              int                       `json:"runs"`
-	Truncated         bool                      `json:"truncated,omitempty"`
-	Workflows         []GaggleWorkflowCredit    `json:"workflows"`
-	Stages            []GaggleStageCredit       `json:"stages"`
-	RecurringFindings []GaggleRecurringFinding  `json:"recurringFindings"`
-	Trends            []GaggleWorkflowTrend     `json:"trends"`
-	Links             []GaggleCrossWorkflowLink `json:"links"`
+	Schema            string             `json:"schema"`
+	Gaggle            string             `json:"gaggle"`
+	Window            GaggleReportWindow `json:"window"`
+	PreviousWindow    GaggleReportWindow `json:"previousWindow"`
+	Runs              int                `json:"runs"`
+	Truncated         bool               `json:"truncated,omitempty"`
+	PreviousTruncated bool               `json:"previousTruncated,omitempty"`
+	// LinkEvidenceUnavailable lists runs in the window whose journal could
+	// not be read, so their recorded identifiers (and any links through
+	// them) are missing from Links.
+	LinkEvidenceUnavailable []string                  `json:"linkEvidenceUnavailable,omitempty"`
+	Workflows               []GaggleWorkflowCredit    `json:"workflows"`
+	Stages                  []GaggleStageCredit       `json:"stages"`
+	RecurringFindings       []GaggleRecurringFinding  `json:"recurringFindings"`
+	Trends                  []GaggleWorkflowTrend     `json:"trends"`
+	Links                   []GaggleCrossWorkflowLink `json:"links"`
 }
 
 // GaggleReportWindow is a half-open [Since, Until) run-start window.
@@ -70,13 +75,16 @@ type GaggleReportWindow struct {
 
 // GaggleWorkflowCredit is one workflow's share of the gaggle's attributed
 // outcomes. A complete record with a positive outcome contributes one unit of
-// credit and any other complete record one unit of blame; shares are each
-// workflow's units over the gaggle's total.
+// credit, one with a negative outcome one unit of blame, and one with a
+// neutral outcome (for example an escalated run) neither; shares are each
+// workflow's units over the gaggle's total. Failed counts failed and aborted
+// runs, the phases that carry a negative outcome.
 type GaggleWorkflowCredit struct {
 	Workflow             string  `json:"workflow"`
 	Runs                 int     `json:"runs"`
 	Failed               int     `json:"failed"`
 	Complete             int     `json:"complete"`
+	Neutral              int     `json:"neutral"`
 	InsufficientEvidence int     `json:"insufficientEvidence"`
 	RecordFailures       int     `json:"recordFailures"`
 	CreditShare          float64 `json:"creditShare"`
@@ -140,6 +148,8 @@ type gaggleReportRun struct {
 	record        creditgraph.RunRecord
 	refs          []string
 	continuedFrom string
+	// linkEvidenceMissing reports that the run's journal could not be read.
+	linkEvidenceMissing bool
 }
 
 // StoredGaggleBackprop builds the gaggle-level Backprop report from the
@@ -164,7 +174,7 @@ func StoredGaggleBackprop(
 	if err != nil {
 		return GaggleBackpropReport{}, err
 	}
-	prior, _, err := scanGaggleReportRuns(ctx, root, reads, query.Gaggle, previous, limit)
+	prior, priorTruncated, err := scanGaggleReportRuns(ctx, root, reads, query.Gaggle, previous, limit)
 	if err != nil {
 		return GaggleBackpropReport{}, err
 	}
@@ -173,12 +183,13 @@ func StoredGaggleBackprop(
 	return GaggleBackpropReport{
 		Schema: GaggleBackpropReportSchema, Gaggle: query.Gaggle,
 		Window: window, PreviousWindow: previous,
-		Runs: len(current), Truncated: truncated,
-		Workflows:         workflows,
-		Stages:            gaggleStageCredit(current),
-		RecurringFindings: gaggleRecurringFindings(current),
-		Trends:            gaggleWorkflowTrends(workflows, gaggleWorkflowCredit(prior, nil)),
-		Links:             links,
+		Runs: len(current), Truncated: truncated, PreviousTruncated: priorTruncated,
+		LinkEvidenceUnavailable: gaggleLinkEvidenceUnavailable(current),
+		Workflows:               workflows,
+		Stages:                  gaggleStageCredit(current),
+		RecurringFindings:       gaggleRecurringFindings(current),
+		Trends:                  gaggleWorkflowTrends(workflows, gaggleWorkflowCredit(prior, nil)),
+		Links:                   links,
 	}, nil
 }
 
@@ -246,17 +257,22 @@ func readGaggleReportRun(layout instance.Layout, row readmodel.RunRow) (gaggleRe
 		runID: row.RunID, workflow: firstNonEmpty(record.Workflow, row.Workflow),
 		startedAt: row.StartedAt, phase: row.Phase, record: record,
 	}
-	reader, err := journal.OpenRead(runDir)
+	// Without a readable journal the run still counts toward credit, but the
+	// report flags it: its recorded identifiers, and so its links, are unknown.
+	reader, err := journal.OpenReadOnly(runDir)
 	if err != nil {
-		// Without the journal the run still counts toward credit; it just
-		// contributes no links, because none were recorded that can be read.
+		run.linkEvidenceMissing = true
 		return run, true, nil
 	}
-	if identity, err := reader.Identity(); err == nil {
-		run.continuedFrom = identity.ContinuedFromRunID
+	identity, err := reader.Identity()
+	if err != nil {
+		run.linkEvidenceMissing = true
+		return run, true, nil
 	}
+	run.continuedFrom = identity.ContinuedFromRunID
 	events, err := reader.Events()
 	if err != nil {
+		run.linkEvidenceMissing = true
 		return run, true, nil
 	}
 	seen := map[string]bool{}
@@ -329,6 +345,20 @@ func gaggleCrossWorkflowLinks(runs []gaggleReportRun) []GaggleCrossWorkflowLink 
 	return links
 }
 
+func gaggleLinkEvidenceUnavailable(runs []gaggleReportRun) []string {
+	var missing []string
+	for _, run := range runs {
+		if run.linkEvidenceMissing {
+			missing = append(missing, run.runID)
+		}
+	}
+	return missing
+}
+
+func gaggleRunFailed(phase journal.RunPhase) bool {
+	return phase == journal.PhaseFailed || phase == journal.PhaseAborted
+}
+
 func newGaggleLink(basis, identifier string, from, to gaggleReportRun) GaggleCrossWorkflowLink {
 	return GaggleCrossWorkflowLink{
 		Basis: basis, Identifier: identifier,
@@ -347,18 +377,21 @@ func gaggleWorkflowCredit(runs []gaggleReportRun, links []GaggleCrossWorkflowLin
 			index[run.workflow] = entry
 		}
 		entry.Runs++
-		if run.phase == journal.PhaseFailed {
+		if gaggleRunFailed(run.phase) {
 			entry.Failed++
 		}
 		switch run.record.Status {
 		case creditgraph.RecordComplete:
 			entry.Complete++
-			if run.record.Attribution.OutcomeSign > 0 {
+			switch sign := run.record.Attribution.OutcomeSign; {
+			case sign > 0:
 				entry.CreditShare++
 				credit++
-			} else {
+			case sign < 0:
 				entry.BlameShare++
 				blame++
+			default:
+				entry.Neutral++
 			}
 		case creditgraph.RecordInsufficientEvidence:
 			entry.InsufficientEvidence++
@@ -368,7 +401,7 @@ func gaggleWorkflowCredit(runs []gaggleReportRun, links []GaggleCrossWorkflowLin
 	}
 	downstream := map[string]map[string]bool{}
 	for _, link := range links {
-		if link.FromWorkflow == link.ToWorkflow || link.ToPhase != journal.PhaseFailed {
+		if link.FromWorkflow == link.ToWorkflow || !gaggleRunFailed(link.ToPhase) {
 			continue
 		}
 		if downstream[link.FromWorkflow] == nil {
@@ -392,7 +425,8 @@ func gaggleStageCredit(runs []gaggleReportRun) []GaggleStageCredit {
 	index := map[stageKey]*GaggleStageCredit{}
 	credit, blame := 0.0, 0.0
 	for _, run := range runs {
-		if run.record.Status != creditgraph.RecordComplete {
+		sign := run.record.Attribution.OutcomeSign
+		if run.record.Status != creditgraph.RecordComplete || sign == 0 {
 			continue
 		}
 		shares, total := map[string]float64{}, 0.0
@@ -402,7 +436,7 @@ func gaggleStageCredit(runs []gaggleReportRun) []GaggleStageCredit {
 				total += contribution.Share
 			}
 		}
-		positive := run.record.Attribution.OutcomeSign > 0
+		positive := sign > 0
 		for stage, share := range shares {
 			key := stageKey{run.workflow, stage}
 			entry := index[key]
