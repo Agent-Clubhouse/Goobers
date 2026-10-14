@@ -222,6 +222,11 @@ type fakeGitHubServer struct {
 	reviewThreadsFailure  map[int]int
 	pullGetMutations      map[int][]func(*fakeGitHubServer, *fakePR)
 	labelRemovalMutations map[int][]func(*fakeGitHubServer, *fakePR)
+	// commitStatuses records POST /statuses/{sha} in order, and
+	// GET /commits/{sha}/status serves them after the fixture CI status;
+	// statusWriteFailure makes the POST answer that status instead (#4199).
+	commitStatuses     map[string][]fakeCommitStatus
+	statusWriteFailure int
 }
 
 // setIssueCommentsFailure makes GET /issues/{number}/comments respond with
@@ -358,6 +363,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/issues/", s.handleIssueItem)
 	mux.HandleFunc(prefix+"/pulls/", s.handlePullItem)
 	mux.HandleFunc(prefix+"/commits/", s.handleCommitItem)
+	mux.HandleFunc(prefix+"/statuses/", s.handleCommitStatusWrite)
 	mux.HandleFunc(prefix+"/compare/", s.handleCompare)
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
@@ -1557,9 +1563,10 @@ func (s *fakeGitHubServer) handleCommitItem(w http.ResponseWriter, r *http.Reque
 	s.mu.Unlock()
 	switch kind {
 	case "status":
-		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": []map[string]interface{}{
+		statuses := []map[string]interface{}{
 			{"context": "ci", "state": state, "target_url": "", "description": ""},
-		}})
+		}
+		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": append(statuses, s.commitStatusesFor(sha)...)})
 	case "check-runs":
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
 	default:

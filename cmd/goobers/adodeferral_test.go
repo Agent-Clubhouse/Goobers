@@ -24,7 +24,7 @@ func TestADODeferralWithoutSiblingPublishesRemediationAndPreservesEvidence(t *te
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/pullrequests/359/iterations"):
-					_, _ = w.Write([]byte(`{"value":[{"id":1},{"id":2}]}`))
+					_, _ = w.Write([]byte(`{"value":[{"id":1},{"id":2,"sourceRefCommit":{"commitId":"head"}}]}`))
 				case strings.HasSuffix(r.URL.Path, "/pullrequests/359/iterations/2/statuses"):
 					var body struct{ State string }
 					_ = json.NewDecoder(r.Body).Decode(&body)

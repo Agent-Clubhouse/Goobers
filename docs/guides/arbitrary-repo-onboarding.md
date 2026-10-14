@@ -134,7 +134,7 @@ workflows:
 | Issues | Read and write | Query, claim, label, and comment |
 | Pull requests | Read and write | Open the implementation PR and poll it |
 | Checks | Read-only | Observe PR CI check runs |
-| Commit statuses | Read-only | Observe PR CI commit statuses |
+| Commit statuses | Read-only (Read and write with `merge-review`) | Observe PR CI commit statuses; with `merge-review`, publish the `goobers/merge-review` verdict status ([details](merge-review-verdict-status.md)) |
 
 Agentic stages need a separate personal fine-grained token with **Copilot
 Requests: Read-only**. It needs no repository access. For the full rationale,
