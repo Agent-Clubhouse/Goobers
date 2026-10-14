@@ -78,8 +78,9 @@ type TelemetryCollectionProfileContract struct {
 	ConsentGatedIdentity      []string                   `json:"consentGatedIdentity"`
 	// ConsentGatedPathRoots lists the home-directory roots that profiles
 	// without host/account identity replace with ConsentGatedPathPlaceholder
-	// in every exported string (journal bodies, error text, span status and
-	// attributes). The rest of each path is retained.
+	// in every exported string and object key (journal bodies, error text,
+	// span status and attributes) where the root begins an absolute path. The
+	// rest of each path is retained.
 	ConsentGatedPathRoots       []string                               `json:"consentGatedPathRoots"`
 	ConsentGatedPathPlaceholder string                                 `json:"consentGatedPathPlaceholder"`
 	Profiles                    []TelemetryCollectionProfileDescriptor `json:"profiles"`
@@ -119,8 +120,8 @@ func TelemetryCollectionContract() TelemetryCollectionProfileContract {
 		},
 		ConsentGatedIdentity: []string{"machineName", "accountName", "instanceRoot", "ai.device.id", "ai.cloud.roleInstance"},
 		ConsentGatedPathRoots: []string{
-			"/Users/<account>", "/home/<account>", `<drive>:\Users\<account>`, `\Users\<account>`,
-			"daemon account home directory",
+			"/Users/<account>", "/home/<account>", "/var/home/<account>", "/mnt/<drive>/Users/<account>",
+			`<drive>:\Users\<account>`, `\\<host>\<share>\Users\<account>`, "daemon account home directory",
 		},
 		ConsentGatedPathPlaceholder: "<home>",
 		Profiles:                    TelemetryCollectionProfiles(),

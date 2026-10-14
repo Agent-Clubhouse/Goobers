@@ -163,21 +163,32 @@ Azure Monitor export withholds them:
   `daemon.dirty_restart` carry it in `runner`; their other fields (`pid`,
   `startedAt`, `version`, `lockReadError`) are still exported. Use
   `goobers.instance.id` to correlate them.
-- In every exported string (journal bodies, including nested error text such
-  as an agent harness command line, diagnostic messages and properties, and
-  trace span names, attributes, and `otel.status_description`), a home-directory
-  root is replaced with `<home>` and the rest of the path is kept:
+- In every exported string and object key (journal bodies, including nested
+  error text such as an agent harness command line, diagnostic messages and
+  properties, and trace span names, attributes, and `otel.status_description`),
+  a home-directory root that begins an absolute path is replaced with `<home>`
+  and the rest of the path is kept:
   `--mcp-config /Users/<account>/.goobers/mcp.json` is exported as
   `--mcp-config <home>/.goobers/mcp.json`.
 
 The replaced roots are `/Users/<account>`, `/home/<account>`,
-`<drive>:\Users\<account>` (either separator, any case, including `\\?\` paths),
-a driveless or UNC `\Users\<account>`, and the daemon account's own home
-directory wherever it lives (for example `/srv/<account>`). Other paths, such as
-`/var/lib/...`, `/tmp/...`, or a workspace outside a home directory, are exported
-unchanged; an account name that appears outside one of these roots is not
-recognized. The generated contract lists the roots as `consentGatedPathRoots`
-and the placeholder as `consentGatedPathPlaceholder`.
+`/var/home/<account>`, WSL `/mnt/<drive>/Users/<account>`,
+`<drive>:\Users\<account>` (either separator, any case, also behind `\\?\`),
+UNC `\\<host>\<share>\Users\<account>`, and the daemon account's own home
+directory wherever it lives (for example `/srv/<account>`, `/root`, or a service
+home such as `/var/lib/goobers`), matched as a whole name (`/srv/<account>2` is
+a different directory). A root counts only where an absolute path begins: at
+the start of the text, or after whitespace, a quote, `=`, `:`, `,`, `;`, `(`,
+`[`, `{`, `|`, `<`, `>`, optionally followed by `file://`. A `home` or `Users`
+segment inside a relative path or URL, such as `web/src/pages/home/index.tsx`,
+`src\Features\Users\UserService.cs`, or `https://graph.microsoft.com/v1.0/Users/<id>`,
+is exported unchanged, as are other paths such as `/var/lib/...` (unless it is
+the daemon's home) or `/tmp/...`. A profile folder name with spaces
+(`C:\Users\Jane Doe\AppData`) is recognized when a backslash directly follows
+it; otherwise only its first word is replaced. An account name that appears
+outside one of these roots is not recognized. The generated contract lists the
+roots as `consentGatedPathRoots` and the placeholder as
+`consentGatedPathPlaceholder`.
 
 Like the service-health projection, this runs at the HTTP boundary on the
 already-scrubbed batch, so previously queued spool files from an older release

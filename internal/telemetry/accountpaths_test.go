@@ -24,21 +24,37 @@ func TestAccountPathScrubberText(t *testing.T) {
 		},
 		{`remove /home/alice/worktrees/run-1: permission denied`, `remove <home>/worktrees/run-1: permission denied`},
 		{`/Users/alice`, `<home>`},
-		{`root=/var/home/alice/x`, `root=/var<home>/x`},
+		{`root=/var/home/alice/x`, `root=<home>/x`},
+		{`PATH=/usr/bin:/home/alice/bin`, `PATH=/usr/bin:<home>/bin`},
+		{`open file:///Users/alice/x.json`, `open file://<home>/x.json`},
+		{`cd /mnt/c/Users/alice/src`, `cd <home>/src`},
+		{`["/home/alice/a","/home/bob/b"]`, `["<home>/a","<home>/b"]`},
 		{`C:\Users\alice\AppData\Local\goobers.exe --mcp-config C:\Users\alice\.goobers\mcp.json`, `<home>\AppData\Local\goobers.exe --mcp-config <home>\.goobers\mcp.json`},
 		{`c:/users/Alice/src/x`, `<home>/src/x`},
+		{`--config=C:\Users\alice\x`, `--config=<home>\x`},
 		{`C:\Users\Jane Doe\AppData\x failed`, `<home>\AppData\x failed`},
 		{`open C:\Users\alice: access denied`, `open <home>: access denied`},
-		{`\\?\C:\Users\alice\x`, `\\?\<home>\x`},
-		{`\\fileserver\c$\Users\alice\x`, `\\fileserver\c$<home>\x`},
+		{`C:\Users\alice has no access to \\server\share`, `<home> has no access to \\server\share`},
+		{`\\?\C:\Users\alice\x`, `<home>\x`},
+		{`\\fileserver\c$\Users\alice\x`, `<home>\x`},
 		// JSON-escaped text (for example a message truncated mid-document).
 		{`{"error":"C:\\Users\\alice\\x","path":"/home/alice/y"`, `{"error":"<home>\\x","path":"<home>/y"`},
+		{`{"error":"C:\\Users\\Jane Doe\\x"`, `{"error":"<home>\\x"`},
 		// The daemon account's own home outside the conventional roots.
 		{`/srv/svc-alice/instance/up.lock`, `<home>/instance/up.lock`},
 		{`/srv/svc-alice`, `<home>`},
+		{`stale lock in /srv/svc-alice.`, `stale lock in <home>.`},
 		{`/srv/svc-alice2/instance`, `/srv/svc-alice2/instance`},
-		// Not account paths: left byte-for-byte unchanged.
+		{`/srv/svc-alice.bak/instance`, `/srv/svc-alice.bak/instance`},
+		{`/data/srv/svc-alice/x`, `/data/srv/svc-alice/x`},
+		// Not account paths (relative or URL segments): byte-for-byte unchanged.
 		{`GET https://api.github.com/users/octocat: 404 Not Found`, `GET https://api.github.com/users/octocat: 404 Not Found`},
+		{`GET https://graph.microsoft.com/v1.0/Users/abc: 404`, `GET https://graph.microsoft.com/v1.0/Users/abc: 404`},
+		{`GET https://scim.example.com/scim/v2/Users/2819c223: 404`, `GET https://scim.example.com/scim/v2/Users/2819c223: 404`},
+		{`see https://example.com/home/docs`, `see https://example.com/home/docs`},
+		{`lint failed: web/src/pages/home/index.tsx:12`, `lint failed: web/src/pages/home/index.tsx:12`},
+		{`src/Features/Users/UserService.cs(12,5): error CS0103`, `src/Features/Users/UserService.cs(12,5): error CS0103`},
+		{`src\Features\Users\UserService.cs(12,5): error`, `src\Features\Users\UserService.cs(12,5): error`},
 		{`/var/lib/goobers/runs/x and /tmp/goobers-1`, `/var/lib/goobers/runs/x and /tmp/goobers-1`},
 		{`stage failed: exit status 1`, `stage failed: exit status 1`},
 	} {
@@ -48,22 +64,46 @@ func TestAccountPathScrubberText(t *testing.T) {
 	}
 }
 
-func TestAccountPathScrubberWindowsHome(t *testing.T) {
-	scrub := newAccountPathScrubber(`D:\Profiles\svc-alice\`)
-	for in, want := range map[string]string{
-		`D:\Profiles\svc-alice\instance\up.lock`: `<home>\instance\up.lock`,
-		`d:/profiles/SVC-ALICE/instance`:         `<home>/instance`,
-		`"D:\\Profiles\\svc-alice\\x"`:           `"<home>\\x"`,
-		`D:\Profiles\svc-alice2\x`:               `D:\Profiles\svc-alice2\x`,
+func TestAccountPathScrubberDaemonHome(t *testing.T) {
+	for _, test := range []struct{ home, in, want string }{
+		{`D:\Profiles\svc-alice\`, `D:\Profiles\svc-alice\instance\up.lock`, `<home>\instance\up.lock`},
+		{`D:\Profiles\svc-alice`, `d:/profiles/SVC-ALICE/instance`, `<home>/instance`},
+		{`D:\Profiles\svc-alice`, `"D:\\Profiles\\svc-alice\\x"`, `"<home>\\x"`},
+		{`D:\Profiles\svc-alice`, `D:\Profiles\svc-alice2\x`, `D:\Profiles\svc-alice2\x`},
+		// A rune, not byte, boundary: é is two bytes and Go's \b is ASCII-only.
+		{"/srv/josé", "/srv/josé/x and /srv/joséphine/x", "<home>/x and /srv/joséphine/x"},
+		// POSIX homes are case-sensitive and anchored at a path start.
+		{"/root", "/root/x, /var/lib/root/x and /Root/y", "<home>/x, /var/lib/root/x and /Root/y"},
+		{"/var/lib/goobers", "/var/lib/goobers/runs and /var/lib/goobers-old and x/var/lib/goobers/y", "<home>/runs and /var/lib/goobers-old and x/var/lib/goobers/y"},
+		// An empty or root home names no account.
+		{"", "/srv/x", "/srv/x"},
+		{"/", "/srv/x", "/srv/x"},
+		{`\`, "/srv/x", "/srv/x"},
 	} {
-		if got := scrub.text(in); got != want {
-			t.Errorf("text(%q) = %q, want %q", in, got, want)
+		if got := newAccountPathScrubber(test.home).text(test.in); got != test.want {
+			t.Errorf("home %q: text(%q)\n got %q\nwant %q", test.home, test.in, got, test.want)
 		}
 	}
-	for _, home := range []string{"", "/", `\`} {
-		if got := newAccountPathScrubber(home).text("/srv/x"); got != "/srv/x" {
-			t.Errorf("home %q matched an unrelated path: %q", home, got)
+}
+
+func TestAccountPathScrubberCandidateCatchesEscapedForms(t *testing.T) {
+	scrub := newAccountPathScrubber("/srv/svc-alice")
+	for _, line := range []string{
+		`{"message":"{\"p\":\"\\/Users\\/alice\\/x\"}"}`,
+		`{"message":"{\"p\":\"\\u002fUsers\\u002falice\"}"}`,
+		`{"message":"/srv/svc-alice/x"}`,
+		`{"message":"{\"instanceRoot\":\"/opt/x\"}"}`,
+	} {
+		if !scrub.candidate([]byte(line)) {
+			t.Errorf("prefilter missed %s", line)
 		}
+		got, err := azureAccountPathPayload([]byte(line), scrub)
+		if err != nil || strings.Contains(string(got), "alice") || strings.Contains(string(got), "instanceRoot") {
+			t.Errorf("escaped form survived: %s, %v", got, err)
+		}
+	}
+	if scrub.candidate([]byte(`{"message":"stage failed: exit status 1"}`)) {
+		t.Error("prefilter matched a line with no candidate")
 	}
 }
 
@@ -116,6 +156,17 @@ func TestAzureAccountPathPayloadEdges(t *testing.T) {
 	}
 	if !strings.Contains(message, `9007199254740993`) || !strings.Contains(message, `"error":"<home>\\x"`) || azureRecordID(string(got)) != "stable" {
 		t.Fatalf("projection lost data, precision or correlation: %s", message)
+	}
+
+	// Object keys are scrubbed too, in nested documents and in the envelope;
+	// a document whose values need no change still has its keys checked.
+	keyed := `{"data":{"baseData":{"message":"{\"type\":\"x\",\"paths\":{\"/Users/alice/wt\":1}}","properties":{"C:\\Users\\alice\\k":"v"}}}}`
+	got, err = azureAccountPathPayload([]byte(keyed), scrub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "alice") || !strings.Contains(azureEnvelopeMessages(t, string(got))[0], `"<home>/wt":1`) {
+		t.Fatalf("account path in a key survived: %s", got)
 	}
 }
 
