@@ -152,7 +152,12 @@ func (p *childStagePod) publicationCredential(ctx context.Context, stage, key st
 	response := resolved.response(request)
 	for _, credential := range response.Credentials {
 		if credential.Capability == key && credential.Value != "" {
-			return credential, response.RepoAuthScheme, nil
+			scheme := response.RepoAuthScheme
+			if credential.Scheme != "" {
+				// The value's own source decides its header (#5957).
+				scheme = credential.Scheme
+			}
+			return credential, scheme, nil
 		}
 	}
 	return httpapi.MintedCredential{}, "", errors.New("child host publication credential unavailable")

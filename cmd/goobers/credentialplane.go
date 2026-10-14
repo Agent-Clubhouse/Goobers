@@ -428,7 +428,7 @@ func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinn
 			http.StatusConflict, "gaggle_unavailable",
 			fmt.Sprintf("gaggle %q for run %q is no longer configured", pinned.identity.Gaggle, pinned.identity.RunID))
 	}
-	injector, err := s.stageInjector(scope, pinned.profile)
+	injector, schemes, err := s.stageInjector(scope, pinned.profile)
 	if err != nil {
 		return stageResolution{}, credentialPlaneError(
 			http.StatusInternalServerError, "credential_wiring_failed", "stage credential sources could not be constructed")
@@ -440,6 +440,9 @@ func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinn
 			"a granted credential for the stage could not be resolved")
 	}
 	resolved := collectMintedCredentials(ctx, set, requested, pinned.profile.implicitKeys)
+	// Only the injector's credentials carry an Azure DevOps scheme; the
+	// external-telemetry connector secret appended below is not one.
+	stateMintedCredentialSchemes(resolved.minted, schemes)
 	if connectorCredential != nil {
 		resolved.minted = append(resolved.minted, *connectorCredential)
 		resolved.materialized = append(resolved.materialized, connectorCredential.Capability)
@@ -493,6 +496,17 @@ func collectMintedCredentials(ctx context.Context, set *credentials.Set, request
 		resolved.materialized = append(resolved.materialized, key)
 	}
 	return resolved
+}
+
+// stateMintedCredentialSchemes stamps each minted Azure DevOps credential with
+// the scheme its own source is sent in (adoCredentialSchemes, #5957). A key
+// with no stated scheme is left empty, so the response's RepoAuthScheme
+// applies to it. schemes is nil for a gaggle not on Azure DevOps, which
+// stamps nothing.
+func stateMintedCredentialSchemes(minted []httpapi.MintedCredential, schemes map[string]string) {
+	for i := range minted {
+		minted[i].Scheme = schemes[minted[i].Capability]
+	}
 }
 
 // journalResolution is the audit trail (§11): WHICH capabilities were
@@ -761,7 +775,9 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 // (BYO MCP sources excluded), goober-scoped grants for agentic work — a
 // capability granted only to another goober stays unreachable even if this
 // stage declares the same capability name.
-func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, profile stageProfile) (*credentials.Injector, error) {
+// The returned map is each grant's Azure DevOps scheme (adoCredentialSchemes),
+// nil for a gaggle not on Azure DevOps.
+func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, profile stageProfile) (*credentials.Injector, map[string]string, error) {
 	build := s.buildSources
 	if build == nil {
 		build = func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
@@ -770,10 +786,12 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	}
 	resolver, grants, err := build(scope)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	schemes := adoCredentialSchemes(s.config, scope.Project, grants)
 	if profile.goober == "" {
-		return credentials.NewInjector(resolver, deterministicCredentialGrants(grants), s.shared)
+		injector, err := credentials.NewInjector(resolver, deterministicCredentialGrants(grants), s.shared)
+		return injector, schemes, err
 	}
 	credentialKeys := append([]string(nil), profile.capabilities...)
 	credentialKeys = append(credentialKeys, profile.implicitKeys...)
@@ -782,5 +800,8 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 		harnessName = string(apiv1.HarnessCopilot)
 	}
 	gooberGrants := buildGooberCredentialGrants(profile.goober, harnessName, credentialKeys, grants)
-	return credentials.NewGooberInjectorWithCredentialKeys(resolver, profile.goober, gooberGrants, profile.implicitKeys, s.shared)
+	injector, err := credentials.NewGooberInjectorWithCredentialKeys(resolver, profile.goober, gooberGrants, profile.implicitKeys, s.shared)
+	// A goober's grants are keyed by the plain capability but may resolve to
+	// a harness-scoped source, so its schemes follow its own grants.
+	return injector, adoCredentialSchemes(s.config, scope.Project, gooberGrants), err
 }

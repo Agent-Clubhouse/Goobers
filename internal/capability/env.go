@@ -28,6 +28,19 @@ func CredentialExpiryEnvVar(value string) string {
 	return "GOOBERS_CREDENTIAL_EXPIRES_" + strings.ToUpper(sanitized)
 }
 
+// CredentialSchemeEnvVar returns the environment variable that carries the
+// authorization scheme ("basic" or "bearer") of the Azure DevOps credential
+// delivered as CredentialEnvVar(value) (#5957). The daemon states it per
+// capability because capabilities of one stage can be backed by different
+// sources: a credentials: entry's personal access token is sent as Basic even
+// when the repository's own Microsoft Entra credential is sent as Bearer. Like
+// CredentialExpiryEnvVar the value is not a secret, so the name is outside the
+// "GOOBERS_CRED_" prefix whose every variable is treated as one.
+func CredentialSchemeEnvVar(value string) string {
+	sanitized := nonAlnum.ReplaceAllString(value, "_")
+	return "GOOBERS_CREDENTIAL_SCHEME_" + strings.ToUpper(sanitized)
+}
+
 // FormatCredentialExpiry renders a stated credential expiry the way
 // CredentialExpiryEnvVar carries it.
 func FormatCredentialExpiry(expiresAt time.Time) string {
