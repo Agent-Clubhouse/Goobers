@@ -10,6 +10,8 @@ payload/.goobers/agent-toolkit/api/schemas/candidate-findings-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/config-source-action.schema.json
 payload/.goobers/agent-toolkit/api/schemas/diagnostics.schema.json
 payload/.goobers/agent-toolkit/api/schemas/explain.schema.json
+payload/.goobers/agent-toolkit/api/schemas/fanout-roster.schema.json
+payload/.goobers/agent-toolkit/api/schemas/fanout-selection.schema.json
 payload/.goobers/agent-toolkit/api/schemas/features.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle-bundle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle-health-v1alpha1.schema.json

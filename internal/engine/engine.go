@@ -248,6 +248,9 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil {
 		return RunResult{}, err
 	}
+	if err := wf.RefuseUnsupportedFanOut(in.Spec); err != nil {
+		return RunResult{}, err
+	}
 	in.Item = normalizeItemIntegrity(in.Item)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},

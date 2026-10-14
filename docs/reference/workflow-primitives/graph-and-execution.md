@@ -245,6 +245,75 @@ Successful branch paths end at `@join`; a branch may instead terminate the run
 through `@abort` or `@escalate`. Human gates and writable repository workspaces
 are not permitted inside parallel branches.
 
+## Selective parallels and maps (DSL 3.1 preview)
+
+`dslVersion: "3.1"` adds two preview fan-out constructs, specified in
+[the conditional and plan-driven fan-out design](../../design/plan-driven-dynamic-fan-out.md).
+Both require the `goobers.dev/allow-preview-features: "true"` workflow
+annotation and are rejected under DSL 2.0 and 3.0.
+
+**They validate, but no runtime executes them yet.** The local runner and the
+engine walk both refuse them at run start with a typed unsupported-feature
+error. A selective parallel never runs as a plain parallel.
+
+Both read a source document the same way:
+
+```yaml
+source:
+  task: plan          # a task that runs before the fan-out on every path
+  slot: assignments   # an application/json artifactSlots entry on that task
+```
+
+The source slot's `maxSize`, when declared, must be at most 1 MiB. When the
+slot declares no `schemaPath`, its effective schema is the shipped envelope
+(`api/schemas/fanout-selection.schema.json` or
+`api/schemas/fanout-roster.schema.json`), so a malformed document is rejected
+when the producer calls `publish_output`.
+
+A **selective parallel** adds `selection` to a static parallel and marks the
+branches it may skip `optional: true`. Non-optional branches always run.
+`selection` without an optional branch, and an optional branch without
+`selection`, are both rejected.
+
+```yaml
+parallels:
+  - name: review
+    failurePolicy: continue_on_error
+    join: collate
+    selection:
+      source: { task: triage, slot: lenses }
+    branches:
+      - { name: baseline, start: review-baseline }
+      - { name: security, start: review-security, optional: true }
+```
+
+A **map** runs one declared task once per roster item:
+
+```yaml
+maps:
+  - name: run-shards
+    source: { task: plan, slot: shards }
+    task: run-shard
+    bindings: { shard: item, shardIdentity: identity }
+    failurePolicy: continue_on_error
+    itemTimeoutSeconds: 1800
+    maxConcurrent: 4
+    join: collate
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | yes | State name addressable by workflow transitions. It must not collide with any task, gate, parallel or map. |
+| `source` | yes | The roster source (see above). |
+| `task` | yes | The mapped task. Only this map may enter it. It must end at `@join`, `@abort` or `@escalate`, use a `scratch` or `repo-readonly` workspace, and must not declare `childWorkflows`. |
+| `bindings` | no | Invocation input names bound to `item`, `identity` or `digest`. A name must not collide with the task's `inputs` or `inputsFrom`. |
+| `failurePolicy`, `join`, `onFailure` | as for parallels | Static parallel rules apply. |
+| `itemTimeoutSeconds` | no | Per-item budget. The mapped task's `timeoutSeconds` must not exceed it. |
+| `maxConcurrent` | no | 1 to 32; defaults to 1. |
+
+A map may not be nested in a parallel branch, and a map's task may not be a
+parallel or map.
+
 ## Run-control primitives
 
 Run controls may be declared at instance, gaggle, or workflow scope, with the

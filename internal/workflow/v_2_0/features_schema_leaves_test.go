@@ -30,6 +30,22 @@ var authorSchemaFiles = map[string]string{
 // TestEmbeddedSchemaLeavesMapToFeatureRegistry; entries that become
 // registered (or leave the schemas) fail it too.
 var schemaLeafExceptions = map[string]string{
+	// DSL 3.1-only fan-out preview (#7382); registered in internal/workflow and
+	// rejected for older pins by the version router.
+	"workflow.spec.maps.bindings":                   "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.failurePolicy":              "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.itemTimeoutSeconds":         "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.join":                       "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.maxConcurrent":              "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.name":                       "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.onFailure":                  "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.source.slot":                "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.source.task":                "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.maps.task":                       "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.parallels.branches.optional":     "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.parallels.selection.source.slot": "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+	"workflow.spec.parallels.selection.source.task": "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
+
 	// DSL 3.1-only policy; the version router rejects it for this interpreter.
 	"workflow.spec.tasks.childWorkflows.allowedGoobers":      "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
 	"workflow.spec.tasks.childWorkflows.allowedCapabilities": "DSL 3.1-only child policy; registered and rejected for older pins by the version router",

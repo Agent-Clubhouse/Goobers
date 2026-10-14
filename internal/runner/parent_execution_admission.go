@@ -8,10 +8,20 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-// Standalone and unconfigured runners retain the refusal. Only the daemon's
-// source-bound composition can admit a contained parent, and it must provide
-// durable handoff, capacity, shared journal and workspace recovery owners.
-func (r *Runner) admitParentExecution(ctx context.Context, machine *workflow.Machine) error {
+// admitExecution is the run-start boundary every start, resume, rerun and
+// recovery path crosses before any execution effect. DSL 3.1 fan-out
+// constructs without a local runtime yet (selective parallels until FAN-2,
+// maps until FAN-4) are refused with a typed error; they never run as a plain
+// parallel.
+//
+// Child workflows: standalone and unconfigured runners retain the refusal.
+// Only the daemon's source-bound composition can admit a contained parent,
+// and it must provide durable handoff, capacity, shared journal and workspace
+// recovery owners.
+func (r *Runner) admitExecution(ctx context.Context, machine *workflow.Machine) error {
+	if err := workflow.RefuseUnsupportedFanOut(machine.Def.Spec); err != nil {
+		return err
+	}
 	refusal := workflow.RefuseChildWorkflowExecution(machine.Def.Spec)
 	if refusal == nil {
 		return nil
