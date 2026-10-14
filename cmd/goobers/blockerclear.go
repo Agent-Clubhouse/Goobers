@@ -50,8 +50,14 @@ type recoveryObservationRecorder struct {
 	mu          sync.Mutex
 	written     bool
 	lastWritten time.Time
-	failedSince bool
-	failedRuns  map[string]struct{}
+	// inventoryFailedAt and failedRuns hold when each still-uncleared failure
+	// was reported. A success clears one only if the success STARTED after
+	// it: with parallel branches, a success that read the inventory (or the
+	// run's records) before a sibling's failure is too early to retract that
+	// failure, and consuming the pending entry on it would leave no clear for
+	// the run's next, genuinely later, success to write.
+	inventoryFailedAt time.Time
+	failedRuns        map[string]time.Time
 }
 
 func newRecoveryObservationRecorder(schedulerDir string, now func() time.Time) *recoveryObservationRecorder {
@@ -62,7 +68,7 @@ func newRecoveryObservationRecorder(schedulerDir string, now func() time.Time) *
 		schedulerDir: schedulerDir,
 		now:          now,
 		refresh:      recoveryObservationRefresh,
-		failedRuns:   make(map[string]struct{}),
+		failedRuns:   make(map[string]time.Time),
 	}
 }
 
@@ -80,58 +86,79 @@ func recoveryObservationReporter(l instance.Layout) func(string, time.Time, erro
 }
 
 func (r *recoveryObservationRecorder) observe(runID string, observedAt time.Time, err error) {
-	instanceClear, runClear := r.claimWrites(runID, err)
-	if !instanceClear && !runClear {
+	claim := r.claimWrites(runID, observedAt, err)
+	if !claim.instance && !claim.run {
 		return
 	}
 	var events []journal.Event
-	if instanceClear {
+	if claim.instance {
 		events = append(events, blockerClearedEvent(runID, journal.ErrorCodeRecoveryObservationFailed, "instance", observedAt))
 	}
-	if runClear {
+	if claim.run {
 		events = append(events, blockerClearedEvent(runID, journal.ErrorCodeRecoveryObservationRunFailed, "run", observedAt))
 	}
 	writeErr := appendInstanceEvents(r.schedulerDir, r.now, events)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if writeErr != nil {
-		// Restore what the write was meant to clear so the next success of
-		// the same kind tries again.
-		r.failedSince = r.failedSince || instanceClear
-		if runClear {
-			r.failedRuns[runID] = struct{}{}
+		// Restore the failures the write was meant to clear so the next
+		// success after them tries again.
+		r.inventoryFailedAt = latest(r.inventoryFailedAt, claim.inventoryFailedAt)
+		if !claim.runFailedAt.IsZero() {
+			r.failedRuns[runID] = latest(r.failedRuns[runID], claim.runFailedAt)
 		}
 		return
 	}
-	if instanceClear {
+	if claim.instance {
 		r.written = true
 		r.lastWritten = r.now()
 	}
 }
 
+// clearClaim is what one outcome must journal, and the pending failures it
+// consumed (zero when none), so a failed write can restore them.
+type clearClaim struct {
+	instance, run                  bool
+	inventoryFailedAt, runFailedAt time.Time
+}
+
 // claimWrites decides under the lock which clears this outcome must journal,
 // so the journal write itself happens without holding it: the instance-log
 // lock can take a while, and the hook runs on a stage's cleanup path.
-func (r *recoveryObservationRecorder) claimWrites(runID string, err error) (instanceClear, runClear bool) {
+func (r *recoveryObservationRecorder) claimWrites(runID string, observedAt time.Time, err error) clearClaim {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {
+		// The failure is journaled after this report, so the report time is
+		// a lower bound on the time readers compare a clear against.
+		now := r.now()
 		if runner.IsRecoveryInventoryError(err) {
-			r.failedSince = true
+			r.inventoryFailedAt = latest(r.inventoryFailedAt, now)
 		} else {
-			r.failedRuns[runID] = struct{}{}
+			r.failedRuns[runID] = latest(r.failedRuns[runID], now)
 		}
-		return false, false
+		return clearClaim{}
 	}
-	if _, failed := r.failedRuns[runID]; failed {
+	var claim clearClaim
+	if failedAt, failed := r.failedRuns[runID]; failed && observedAt.After(failedAt) {
 		delete(r.failedRuns, runID)
-		runClear = true
+		claim.run, claim.runFailedAt = true, failedAt
 	}
-	if !r.written || r.failedSince || r.now().Sub(r.lastWritten) >= r.refresh {
-		r.failedSince = false
-		instanceClear = true
+	if !r.inventoryFailedAt.IsZero() && observedAt.After(r.inventoryFailedAt) {
+		claim.instance, claim.inventoryFailedAt = true, r.inventoryFailedAt
+		r.inventoryFailedAt = time.Time{}
 	}
-	return instanceClear, runClear
+	if !r.written || r.now().Sub(r.lastWritten) >= r.refresh {
+		claim.instance = true
+	}
+	return claim
+}
+
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func blockerClearedEvent(runID, code, scope string, observedAt time.Time) journal.Event {

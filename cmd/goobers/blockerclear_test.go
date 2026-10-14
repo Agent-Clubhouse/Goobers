@@ -72,7 +72,7 @@ func TestRecoveryObservationRecorderWritesSparingly(t *testing.T) {
 		{recoveryObservationRefresh, "a", nil, 3, 1},      // periodic refresh
 		{recoveryObservationRefresh / 2, "a", nil, 3, 1},  // within the refresh window
 		{recoveryObservationRefresh / 2, "a", full, 3, 1}, // inventory failure, then
-		{0, "a", nil, 4, 1},                               // immediately cleared by the next success
+		{time.Minute, "a", nil, 4, 1},                     // cleared by the next success after it
 	}
 	for i, step := range steps {
 		clock.now = clock.now.Add(step.advance)
@@ -99,6 +99,50 @@ func TestRecoveryObservationRecorderWritesSparingly(t *testing.T) {
 	if last.RunID != "a" || last.Runner["code"] != journal.ErrorCodeRecoveryObservationFailed ||
 		last.Runner["observedAt"] != clock.now.Add(-time.Second).Format(time.RFC3339Nano) || !last.Time.Equal(clock.now) {
 		t.Fatalf("instance clear = %+v", last)
+	}
+}
+
+// TestRecoveryObservationRecorderKeepsFailureForALaterSuccess is the review
+// repro for parallel branches. Branch Y's observation of run "par" starts
+// before branch X of the same run reports a run-specific failure, and finishes
+// after it. That success is too early to retract X's failure — readers would
+// (correctly) ignore a clear stamped before the failure — so it must not
+// consume the pending failure either; otherwise the run's next, genuinely
+// later success writes no clear and the blocker sticks. The same holds for an
+// inventory failure and the instance clear.
+func TestRecoveryObservationRecorderKeepsFailureForALaterSuccess(t *testing.T) {
+	dir := instance.NewLayout(t.TempDir()).SchedulerDir()
+	clock := &steppedClock{now: time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC)}
+	recorder := newRecoveryObservationRecorder(dir, clock.Now)
+	recorder.observe("warm-up", clock.now, nil) // the first-of-process clear is out of the way
+
+	for _, tc := range []struct {
+		scope string
+		err   error
+	}{
+		{"run", errors.New("append own recovery observations")},
+		{"instance", &runner.RecoveryInventoryError{Err: errors.New("recovery inventory is full")}},
+	} {
+		before := countClears(blockerClearedRecords(t, dir), tc.scope)
+		branchYStarted := clock.now.Add(time.Second)
+		clock.now = clock.now.Add(2 * time.Second)
+		recorder.observe("par", clock.now.Add(-time.Second), tc.err) // branch X fails
+		clock.now = clock.now.Add(time.Second)
+		recorder.observe("par", branchYStarted, nil) // branch Y, started before X's failure
+		if got := countClears(blockerClearedRecords(t, dir), tc.scope); got != before {
+			t.Fatalf("%s: a success that started before the failure wrote %d clear(s)", tc.scope, got-before)
+		}
+		clock.now = clock.now.Add(time.Minute)
+		laterStart := clock.now.Add(-time.Second)
+		recorder.observe("par", laterStart, nil) // a later stage of the same run
+		records := blockerClearedRecords(t, dir)
+		if got := countClears(records, tc.scope); got != before+1 {
+			t.Fatalf("%s: the later success wrote %d clear(s), want 1", tc.scope, got-before)
+		}
+		last := records[len(records)-1]
+		if last.Runner["scope"] != tc.scope || last.Runner["observedAt"] != laterStart.Format(time.RFC3339Nano) {
+			t.Fatalf("%s: clear = %+v", tc.scope, last)
+		}
 	}
 }
 
