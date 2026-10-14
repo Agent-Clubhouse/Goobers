@@ -160,7 +160,7 @@ func Save(root string, source Source, revision string, base Tree) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := durability.WriteFileAtomic(path, data, 0o644, durability.WithTempPattern(".template-write-")); err != nil {
 		return err
 	}
 	return writeJSON(filepath.Join(filepath.Dir(path), "lock.json"), Lock{

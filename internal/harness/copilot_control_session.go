@@ -113,7 +113,7 @@ func (r *copilotControlledRunner) run(ctx context.Context, req ProcessRequest) (
 		}
 		r.ready = true
 	}
-	prompt, err := copilotControlledPrompt(req.Command, r.promptIndex)
+	prompt, err := copilotControlledPrompt(req.Stdin)
 	if err != nil {
 		return ProcessResult{ExitCode: -1}, err
 	}
@@ -158,16 +158,14 @@ func (r *copilotControlledRunner) close() {
 	}
 }
 
-func copilotControlledPrompt(argv []string, index int) (string, error) {
-	if index < 0 || index >= len(argv) {
+// copilotControlledPrompt takes the turn's prompt from the stdin payload the
+// adapter prepared for a direct CLI process; the controlled session sends it
+// over session RPC instead (#6871).
+func copilotControlledPrompt(stdin []byte) (string, error) {
+	if len(stdin) == 0 {
 		return "", fmt.Errorf("missing controlled Copilot prompt")
 	}
-	for i, b := range []byte(argv[index]) {
-		if b == '=' {
-			return argv[index][i+1:], nil
-		}
-	}
-	return "", fmt.Errorf("controlled Copilot prompt must be bound to its flag")
+	return string(stdin), nil
 }
 
 func runControlledCopilotPrompt(ctx context.Context, session *copilot.Session, prompt string, req ProcessRequest) (ProcessResult, error) {

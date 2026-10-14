@@ -33,6 +33,11 @@ than allocating a new one.
 a human invokes them and there is no ambient reconciliation to skip, so the
 daemon ignores the field on manual entries.
 
+Disabling triggers does not stop `spec.readiness.desiredConcurrentRuns` refill,
+and does not refuse explicit runs. To stop all new work for a workflow or
+gaggle, set its `spec.enabled: false`; see
+[Desired concurrency, refill, and pausing work](guides/desired-concurrency-and-pause.md).
+
 ## HTTP contract
 
 `PUT /api/v1/gaggles/{gaggle}/workflows/{workflow}/enabled` accepts a single

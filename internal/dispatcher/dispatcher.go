@@ -328,6 +328,8 @@ func (c Config) linuxScheduleToStart() time.Duration {
 // Attempt is one stage attempt to dispatch: the identity, requirement, and
 // budget facts the pod spec is a pure function of.
 type Attempt struct {
+	// WorkflowParent selects a separately authenticated contained-parent contract.
+	WorkflowParent bool
 	// ChildExecutionDigest binds an isolated generated-child execution contract.
 	// Only the trusted child adapter sets it; ordinary dispatch is unchanged.
 	ChildExecutionDigest string

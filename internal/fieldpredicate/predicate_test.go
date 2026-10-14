@@ -1,6 +1,7 @@
 package fieldpredicate
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -188,5 +189,26 @@ func TestOrderUnavailableAndInvalidFieldsFailExplicitly(t *testing.T) {
 	}
 	if _, err := ParseOrder("priority:sideways"); err == nil {
 		t.Fatal("ParseOrder accepted unsupported direction")
+	}
+}
+
+func TestRequiredStringEqualitiesAreTopLevelConjuncts(t *testing.T) {
+	predicate, err := CompileConjunction(
+		`fields["System.AreaPath"] == "Proj\\Team" && ("Task" == fields["System.WorkItemType"] && fields["priority"] < 3)`,
+		`fields["state"] == "open" || fields["state"] == "active"`,
+		`!(fields["kind"] == "Bug") && fields["flag"] == true && fields["title"].contains("x")`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []FieldEquality{
+		{Field: "System.AreaPath", Value: `Proj\Team`},
+		{Field: "System.WorkItemType", Value: "Task"},
+	}
+	if got := predicate.RequiredStringEqualities(); !slices.Equal(got, want) {
+		t.Fatalf("RequiredStringEqualities = %+v, want %+v", got, want)
+	}
+	if got := (*Predicate)(nil).RequiredStringEqualities(); got != nil {
+		t.Fatalf("nil predicate equalities = %+v, want none", got)
 	}
 }

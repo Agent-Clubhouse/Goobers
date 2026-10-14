@@ -231,3 +231,46 @@ func TestNoopApplier(t *testing.T) {
 		t.Fatalf("noop apply: %v", err)
 	}
 }
+
+type failDeleteClient struct {
+	client.Client
+	fail bool
+}
+
+func (f *failDeleteClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if f.fail {
+		return apierrors.NewInternalError(context.DeadlineExceeded)
+	}
+	return f.Client.Delete(ctx, obj, opts...)
+}
+
+func TestClientApplier_RecoversFromPendingPruneOnNewGeneration(t *testing.T) {
+	a, c := newApplier(t)
+	ctx := context.Background()
+	if err := a.Apply(ctx, gaggleSet("one")); err != nil {
+		t.Fatalf("seed apply: %v", err)
+	}
+	failing := &failDeleteClient{Client: c, fail: true}
+	a.Client = failing
+	if err := a.Apply(ctx, gaggleSet("two")); err == nil {
+		t.Fatal("apply with failing prune should error")
+	}
+	if err := a.Apply(ctx, gaggleSet("three")); err == nil {
+		t.Fatal("apply must still fail while prune keeps failing")
+	}
+	failing.fail = false
+	if err := a.Apply(ctx, gaggleSet("three")); err != nil {
+		t.Fatalf("apply after pending prune: %v", err)
+	}
+	generation := authoritative(t, c)
+	if got, want := selectedGaggleNames(t, c, generation), []string{"three"}; !equalStrings(got, want) {
+		t.Fatalf("selected gaggles = %v, want %v", got, want)
+	}
+	var all v1alpha1.GaggleList
+	if err := c.List(ctx, &all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Items) != 1 {
+		t.Fatalf("expected only current generation objects, got %d", len(all.Items))
+	}
+}

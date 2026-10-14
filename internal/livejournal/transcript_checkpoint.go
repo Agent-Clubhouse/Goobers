@@ -39,6 +39,7 @@ type TranscriptCheckpointOp struct {
 
 type remoteTranscriptCapture struct {
 	stage   string
+	branch  int
 	name    string
 	capture *journal.TranscriptCapture
 	next    int
@@ -50,7 +51,7 @@ func (w *Writer) applyTranscriptCheckpoint(ctx context.Context, run *liveRun, op
 		return false, errors.New("livejournal: invalid transcript checkpoint identity")
 	}
 	if request.Action == "open" {
-		return run.openTranscriptCheckpoint(op, request)
+		return run.openTranscriptCheckpoint(requestBranch(ctx), op, request)
 	}
 	if request.Action != "append" && request.Action != "final" {
 		return false, errors.New("livejournal: unsupported transcript checkpoint action")
@@ -59,7 +60,7 @@ func (w *Writer) applyTranscriptCheckpoint(ctx context.Context, run *liveRun, op
 	if session == nil {
 		return false, ErrTranscriptSessionLost
 	}
-	if session.stage != request.Stage || session.name != request.Name {
+	if session.branch != requestBranch(ctx) || session.stage != request.Stage || session.name != request.Name {
 		return false, errors.New("livejournal: transcript checkpoint session identity mismatch")
 	}
 	if request.Action == "final" {
@@ -105,7 +106,7 @@ func (w *Writer) finalizeTranscriptCheckpoint(ctx context.Context, run *liveRun,
 	return true, nil
 }
 
-func (run *liveRun) openTranscriptCheckpoint(op Op, request *TranscriptCheckpointOp) (bool, error) {
+func (run *liveRun) openTranscriptCheckpoint(branch int, op Op, request *TranscriptCheckpointOp) (bool, error) {
 	if op.Key != request.Capture+"/open" || len(request.Data) != 0 {
 		return false, errors.New("livejournal: invalid transcript checkpoint open")
 	}
@@ -115,18 +116,18 @@ func (run *liveRun) openTranscriptCheckpoint(op Op, request *TranscriptCheckpoin
 	if run.transcriptCaptures[request.Capture] != nil {
 		return false, errors.New("livejournal: transcript checkpoint session already exists")
 	}
-	capture, err := run.jr.BeginTranscriptCapture(request.Stage, request.Name)
+	capture, err := run.jr.BeginBranchTranscriptCapture(branch, request.Stage, request.Name)
 	if err != nil {
 		return false, err
 	}
-	if err := run.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: request.Stage,
+	if err := run.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Branch: branch, Stage: request.Stage,
 		Runner: map[string]any{EmitKeyRunnerField: op.Key, "transcriptCaptureOpened": request.Capture}}); err != nil {
 		return false, fmt.Errorf("livejournal: persist transcript capture open: %w", err)
 	}
 	if run.transcriptCaptures == nil {
 		run.transcriptCaptures = make(map[string]*remoteTranscriptCapture)
 	}
-	run.transcriptCaptures[request.Capture] = &remoteTranscriptCapture{stage: request.Stage, name: request.Name, capture: capture}
+	run.transcriptCaptures[request.Capture] = &remoteTranscriptCapture{branch: branch, stage: request.Stage, name: request.Name, capture: capture}
 	run.keys[op.Key] = run.jr.Seq()
 	return true, nil
 }

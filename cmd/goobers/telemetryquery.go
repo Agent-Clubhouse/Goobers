@@ -1018,6 +1018,7 @@ func candidateFindingsFromPlane(
 			RunCount:             cohort.RunCount,
 			TopContributingPaths: planeContributingPaths(cohort.TopContributingPaths),
 			CounterEvidence:      planeEvidenceLinks(cohort.CounterEvidence),
+			GroundTruth:          (*creditgraph.GroundTruthSummary)(cohort.GroundTruth),
 		})
 	}
 	artifact.FaultAudit = faultAuditReportFromPlane(response.FaultAudit)

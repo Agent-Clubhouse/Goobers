@@ -145,6 +145,17 @@ func WithInstanceLog(log *journal.InstanceLog) LedgerOption {
 // OpenClaimLedger loads the ledger at path (a JSON file under the instance's
 // scheduler dir), creating an empty one if absent.
 func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("localscheduler: read claim ledger: %w", err)
+	}
+	return ParseClaimLedger(path, data, opts...)
+}
+
+// ParseClaimLedger decodes ledger bytes already read from path (empty bytes
+// are a fresh ledger) without touching the file, for read-only callers that
+// bound their own IO.
+func ParseClaimLedger(path string, data []byte, opts ...LedgerOption) (*ClaimLedger, error) {
 	l := &ClaimLedger{
 		path: path, entries: map[string]ClaimEntry{},
 		history: map[string]map[string]ClaimEntry{}, now: time.Now,
@@ -152,29 +163,30 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 	for _, opt := range opts {
 		opt(l)
 	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return l, nil // fresh ledger
-		}
-		return nil, fmt.Errorf("localscheduler: read claim ledger: %w", err)
+	if err := l.load(data); err != nil {
+		return nil, err
 	}
+	return l, nil
+}
+
+// load decodes data, a fresh ledger when empty, into l.
+func (l *ClaimLedger) load(data []byte) error {
+	path := l.path
 	if len(data) == 0 {
-		return l, nil
+		return nil
 	}
 
 	var state claimLedgerState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("localscheduler: parse claim ledger %q: %w", path, err)
+		return fmt.Errorf("localscheduler: parse claim ledger %q: %w", path, err)
 	}
 	if state.Schema == "" {
 		if err := json.Unmarshal(data, &l.entries); err != nil {
-			return nil, fmt.Errorf("localscheduler: parse legacy claim ledger %q: %w", path, err)
+			return fmt.Errorf("localscheduler: parse legacy claim ledger %q: %w", path, err)
 		}
 	} else {
 		if state.Schema != claimLedgerSchema {
-			return nil, fmt.Errorf("localscheduler: unknown claim ledger schema %q", state.Schema)
+			return fmt.Errorf("localscheduler: unknown claim ledger schema %q", state.Schema)
 		}
 		if state.Entries != nil {
 			l.entries = state.Entries
@@ -193,10 +205,10 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 		l.entries[storageKey] = entry
 	}
 	if err := l.validateSharedClaims(); err != nil {
-		return nil, fmt.Errorf("localscheduler: invalid shared claim ledger: %w", err)
+		return fmt.Errorf("localscheduler: invalid shared claim ledger: %w", err)
 	}
 	l.history = l.retainedHistory(l.now())
-	return l, nil
+	return nil
 }
 
 // MigrateLegacyNamespace upgrades pre-GAG-011 item-only keys into the sole

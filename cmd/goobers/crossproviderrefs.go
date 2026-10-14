@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -25,7 +26,7 @@ import (
 // full URL when it does not.
 func prIssueReference(root string, repo providers.RepositoryRef, issueID string) string {
 	backlog := backlogRepoRefForStage(root, repo)
-	if !backlogOnOtherProvider(repo, backlog) {
+	if !providerconfig.BacklogOnOtherProvider(repo, backlog) {
 		return "#" + issueID
 	}
 	return backlogIssueURL(backlog, issueID)
@@ -59,7 +60,7 @@ func closingIssueURLs(body string, backlog providers.RepositoryRef) []string {
 // "#<id>" there names an item of the pull request's own provider, and closing
 // the backlog item with that id would close the wrong object.
 func postMergeClosingIDs(body string, repo, backlog providers.RepositoryRef) []string {
-	if !backlogOnOtherProvider(repo, backlog) {
+	if !providerconfig.BacklogOnOtherProvider(repo, backlog) {
 		return closingIssueNumbers(body)
 	}
 	return closingIssueURLs(body, backlog)
@@ -75,7 +76,7 @@ func mergeCommitClosingRefs(body string, repo, backlog providers.RepositoryRef) 
 	refs := make([]string, 0, len(ids))
 	for _, id := range ids {
 		ref := "#" + id
-		if backlogOnOtherProvider(repo, backlog) {
+		if providerconfig.BacklogOnOtherProvider(repo, backlog) {
 			ref = backlogIssueURL(backlog, id)
 		}
 		refs = append(refs, "Closes "+ref)
@@ -148,7 +149,7 @@ func crossProviderReviews(reviews []prBodyReview, issueID, issueRef string) []pr
 // backlog repository, so the Azure DevOps pull request is named by its URL,
 // or, when the poll carried none, in words without a "#".
 func postMergePullRequestRef(pullNumber, pullURL string, repo, backlog providers.RepositoryRef) string {
-	if !backlogOnOtherProvider(repo, backlog) {
+	if !providerconfig.BacklogOnOtherProvider(repo, backlog) {
 		return "#" + pullNumber
 	}
 	if url := strings.TrimSpace(pullURL); url != "" {
@@ -169,7 +170,7 @@ type workItemGetter interface {
 // issue credential; a stage that declares none gets an error, which the
 // caller's fail-open re-check reports and proceeds past.
 func openPRWorkItem(ctx context.Context, root string, repo, backlog providers.RepositoryRef, routed workItemGetter, id string) (providers.WorkItem, error) {
-	if !backlogOnOtherProvider(repo, backlog) {
+	if !providerconfig.BacklogOnOtherProvider(repo, backlog) {
 		return routed.GetWorkItem(ctx, backlog, id)
 	}
 	issueCapability, ok := declaredBacklogReadCapability()

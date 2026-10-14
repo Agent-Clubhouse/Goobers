@@ -13,14 +13,19 @@ import (
 // parent whose original provider-acknowledged deadlines constrain execution.
 func remoteChildExecutionFence(ctx context.Context, baseURL, token string, contract childpod.Contract) (context.Context, context.CancelFunc, error) {
 	noop := func() {}
-	if contract.Identity.Child == nil || contract.Identity.ValidateChildLineage() != nil || token == "" {
+	parent := contract.Identity.RunID
+	valid := contract.ParentOrigin != nil && contract.Validate() == nil
+	if contract.ParentOrigin == nil && contract.Identity.Child != nil {
+		parent = contract.Identity.Child.ParentRunID
+		valid = contract.Identity.ValidateChildLineage() == nil
+	}
+	if !valid || token == "" {
 		return ctx, noop, fmt.Errorf("child execution requires signed parent lineage")
 	}
 	observer, err := claimsclient.NewExecutionObserver(claimsclient.HTTPConfig{BaseURL: baseURL, Token: token, RunID: contract.Identity.RunID})
 	if err != nil {
 		return ctx, noop, err
 	}
-	parent := contract.Identity.Child.ParentRunID
 	mode := ""
 	return claimsclient.StartExecutionFence(ctx, parent, func(ctx context.Context) (claimsclient.Listing, error) {
 		current, listing, err := observer.ExecutionSnapshot(ctx)

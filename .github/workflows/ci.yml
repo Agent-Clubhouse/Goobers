@@ -1456,7 +1456,7 @@ jobs:
           CGO_ENABLED=0 go test -c -tags=integration -o "$RUNNER_TEMP/cancellation-regression/recovery.test" ./internal/recovery
           docker run --rm -v "$RUNNER_TEMP/cancellation-regression:/regression:ro" \
             -e TESTDEP_STRICT=1 -e GOOBERS_TEMPORAL_CLI=/regression/temporal \
-            debian:bookworm bash -euc '
+            mirror.gcr.io/library/debian:bookworm bash -euc '
               apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
               apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends git ca-certificates
               git --version
@@ -2033,10 +2033,10 @@ jobs:
         run: go test ./internal/credentials ./internal/fleet
 
       - name: Windows child proposal validation
-        run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication -count=1
+        run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook -count=1
 
       - name: Windows child admission authority
-        run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild' -count=1
+        run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild|TestOrdinaryRecovery|TestDirectEngine|TestSource' -count=1
 
       - name: Windows child custody and waits
         run: go test ./internal/localscheduler ./internal/runner ./cmd/goobers -run 'TestChild|TestTriggerChild|TestDaemonChild|TestQueuedChild|TestRunExecutionElapsed|TestExpireRunUsesChild' -count=1

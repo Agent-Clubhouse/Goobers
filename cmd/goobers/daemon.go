@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/readmodel/projector"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/telemetry"
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -42,15 +43,19 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
-	ChildRuntime childRuntimeBuilder
-	observation  *schedulerObservation
-	runtime      *schedulerRuntime
-	Generations  *configgeneration.Retainer
-	Root         string
-	Runner       *runner.Runner
-	Runners      map[string]*runner.Runner
-	LegacyRunner *runner.Runner
-	Telemetry    *telemetry.Client
+	SourceStarts        *startintent.Sources
+	ExecutionGeneration string
+	OrdinaryRuntime     ordinaryRuntimeBuilder
+	OrdinaryCatalog     *ordinaryStartCatalog
+	ChildRuntime        childRuntimeBuilder
+	observation         *schedulerObservation
+	runtime             *schedulerRuntime
+	Generations         *configgeneration.Retainer
+	Root                string
+	Runner              *runner.Runner
+	Runners             map[string]*runner.Runner
+	LegacyRunner        *runner.Runner
+	Telemetry           *telemetry.Client
 	// Shared only by this setup's trace, journal, and diagnostic exporters.
 	TelemetryReplayStart <-chan struct{}
 	RollupDB             *rollup.DB
@@ -180,6 +185,8 @@ func logTelemetryOTLPUnavailable(log *journal.InstanceLog, cause error) {
 }
 
 type schedulerDefinitions struct {
+	ExecutionGeneration string
+	OrdinaryRuntime     ordinaryRuntimeBuilder
 	ChildRuntime        childRuntimeBuilder
 	GenerationResolver  executionGenerationResolver
 	Set                 *instance.ConfigSet
@@ -360,6 +367,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		observation:              observation,
 		runtime:                  runtime,
 		ChildRuntime:             definitions.ChildRuntime,
+		ExecutionGeneration:      definitions.ExecutionGeneration,
+		OrdinaryRuntime:          definitions.OrdinaryRuntime,
 		Generations:              runtime.generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
@@ -646,7 +655,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		reportStartupProgress(input.StartupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(input.Config, workflowsWithoutInstructionRefusals(input.Definitions.Workflows, instructionRefusals), gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores)
+	openPRRefresher, err := buildOpenPRRefresher(input.Config, workflowsWithoutInstructionRefusals(input.Definitions.Workflows, instructionRefusals), gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores, generation)
 	if err != nil {
 		return nil, err
 	}
@@ -659,7 +668,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		return nil, err
 	}
 
-	gagglesByName := indexedGaggles(input.Definitions)
+	gagglesByName, authGates := indexedGaggles(input.Definitions), newProviderAuthGates(credResolver, input.SharedRegistry, generation)
 
 	// Select each lane's substrate before solving placement: engine lanes do
 	// not execute on the daemon host. Selection only reads config and machines.
@@ -770,7 +779,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q run controls: %w", wf.Name, err)
 		}
-		backlogCounter, err := buildBacklogCounter(input.Config, gagglesByName[wf.Spec.Gaggle], wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(), input.ProviderQuota, l.Root)
+		backlogCounter, err := buildBacklogCounter(input.Config, gagglesByName[wf.Spec.Gaggle], wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(), input.ProviderQuota, l.Root, generation)
 		if err != nil {
 			return nil, err
 		}
@@ -781,9 +790,9 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			repoRefs[identity],
 			credResolver,
 			input.SharedRegistry,
-			l.SchedulerDir(),
-			selfIdentities[wf.Spec.Gaggle],
+			l.SchedulerDir(), selfIdentities[wf.Spec.Gaggle],
 			input.ProviderQuota,
+			generation,
 		)
 		if err != nil {
 			return nil, err
@@ -803,14 +812,14 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			RefillDemandCounter: refillDemandCounter,
 			ScheduleDemandCounter: buildScheduleDemandCounter(
 				input.Config, wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(),
-				branchNamespaces[wf.Spec.Gaggle], input.ProviderQuota,
+				branchNamespaces[wf.Spec.Gaggle], input.ProviderQuota, generation,
 			),
 			// The current provider-backed demand counters use GitHub; charge the
 			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
 			Starter: selectEntryStarter(entryStarterInput{
-				runnerStarter: &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: input.WaitGroup, l: l.ForGaggle(wf.Spec.Gaggle), tel: input.Telemetry, rollupDB: input.RollupDB, watermarks: input.Watermarks, log: input.InstanceLog, runners: input.RunnerRegistry},
+				runnerStarter: &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: selections[identity].parentCoordinatorHostCapabilities(requiredCaps), wg: input.WaitGroup, l: l.ForGaggle(wf.Spec.Gaggle), tel: input.Telemetry, rollupDB: input.RollupDB, watermarks: input.Watermarks, log: input.InstanceLog, runners: input.RunnerRegistry},
 				selection:     selections[identity],
 				runtime:       engineRuntimeHolder,
 				hooks:         engineHooks[wf.Spec.Gaggle],
@@ -845,15 +854,11 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			// placement is proven against the full inventory instead (#3987).
 			PlacementRefusal: placement.Refusals[identity],
 		})
-		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
+		entries[len(entries)-1].GooberDigest, entries[len(entries)-1].ProviderAuth = gooberDigests[identity], authGates.forWorkflow(input.Config, wf, repoRefs[identity])
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
-	buildGeneration := schedulerGenerationBuilder(input)
-	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), buildGeneration)
-	return &schedulerDefinitions{
-		ChildRuntime:        childRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), input.Config, buildGeneration),
-		GenerationResolver:  resolveGeneration,
+	return bindGenerationRuntimes(&schedulerDefinitions{
 		Set:                 input.Definitions,
 		Validation:          input.Validation,
 		HarnessPreflight:    harnessInfo,
@@ -870,7 +875,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		EngineRuntime:       engineRuntimeHolder,
 		Worktrees:           firstWorktrees,
 		WorktreesByGaggle:   input.WorktreeManagers,
-	}, nil
+	}, input, l, generation), nil
 }
 
 func schedulerGenerationBuilder(input schedulerDefinitionsInput) generationDefinitionBuilder {
@@ -1401,6 +1406,8 @@ func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Man
 	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, input.TerminalNotifier)
 	childHandoff := &daemonChildHandoff{layout: input.Layout, worktrees: manager, repoCloneURL: runnerCfg.RepoCloneURL, project: input.GaggleProject}
 	runnerCfg.ChildHandoff, runnerCfg.ChildParentCapacity = childHandoff, childHandoff
+	runnerCfg.BorrowParentJournal = containedParentJournalOwner(input.Layout.Root, input.Layout.Gaggle())
+	runnerCfg.AdmitParentExecution = containedParentAdmission(input.Layout, generation)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1479,6 +1486,9 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	if s.SourceStarts != nil {
+		opts = append(opts, localscheduler.WithSourceQueue(s.SourceStarts))
+	}
 	if s.Root != "" {
 		opts = append(opts, localscheduler.WithTargetedPRValidator(func(ctx context.Context, entry localscheduler.WorkflowEntry, number int) error {
 			return validateTargetedPullRequest(ctx, s.Root, s.Config, s.SecretStores, s.SharedRegistry, entry, number)
@@ -1873,6 +1883,9 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			outcome.Warned = append(outcome.Warned, id.RunID)
 			outcome.updateBlockingCandidate("skipped", "journal unresolvable workflow")
 			outcome.report(progress)
+			continue
+		}
+		if outcome.deferGeneratedChildToQueue(id, progress) {
 			continue
 		}
 		rn, machine, gooberDigest, repoRef := runtime.runner, runtime.machine, runtime.gooberDigest, runtime.repoRef

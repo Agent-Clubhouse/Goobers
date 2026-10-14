@@ -127,8 +127,13 @@ type StorageHealthStatus struct {
 	CriticalFloorPercent float64 `json:"criticalFloorPercent,omitempty"`
 	// WarningFloorSource and CriticalFloorSource identify the byte, percent,
 	// or recovery-derived threshold currently binding each tier.
-	WarningFloorSource  string    `json:"warningFloorSource,omitempty"`
-	CriticalFloorSource string    `json:"criticalFloorSource,omitempty"`
+	WarningFloorSource  string `json:"warningFloorSource,omitempty"`
+	CriticalFloorSource string `json:"criticalFloorSource,omitempty"`
+	// CriticalResumeBytes is the free space at which a latched
+	// admission-stopped tier resumes admission: the effective critical floor
+	// plus a fixed hysteresis margin, so free space between the floor and
+	// this value still refuses new runs.
+	CriticalResumeBytes uint64    `json:"criticalResumeBytes,omitempty"`
 	MeasuredAt          time.Time `json:"measuredAt,omitempty"`
 	Error               string    `json:"error,omitempty"`
 }
@@ -208,6 +213,7 @@ func storageHealthStatus(stats localscheduler.StorageHealthStats) *StorageHealth
 		CriticalFloorPercent: stats.CriticalFloorPercent,
 		WarningFloorSource:   stats.WarningFloorSource,
 		CriticalFloorSource:  stats.CriticalFloorSource,
+		CriticalResumeBytes:  stats.CriticalResumeBytes,
 		MeasuredAt:           stats.MeasuredAt,
 		Error:                stats.Error,
 	}

@@ -212,6 +212,17 @@
       "recoverySafe": false
     },
     {
+      "id": "runChildren",
+      "method": "GET",
+      "path": "/api/v1/runs/{run}/children",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "single-run",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "runDetail",
       "method": "GET",
       "path": "/api/v1/runs/{run}",
@@ -800,6 +811,28 @@
       "id": "childWorkflowResolve",
       "method": "POST",
       "path": "/api/v1/runs/{run}/child-workflows/resolve",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowAccessAcquire",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-workflow-access",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "childWorkflowAccessRevoke",
+      "method": "DELETE",
+      "path": "/api/v1/runs/{run}/child-workflow-access",
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",

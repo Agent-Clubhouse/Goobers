@@ -9,7 +9,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-func activeJournalStage(ctx context.Context, rd *journal.Reader, runID string, origin apiv1.ChildWorkflowOrigin) (journal.RunIdentity, journal.Event, error) {
+// VerifyActiveStage verifies the committed origin against current branch and run state.
+func VerifyActiveStage(ctx context.Context, rd *journal.Reader, runID string, origin apiv1.ChildWorkflowOrigin) (journal.RunIdentity, journal.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return journal.RunIdentity{}, journal.Event{}, err
 	}

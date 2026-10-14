@@ -12,10 +12,11 @@ import (
 // branch workers never mutate the queue, outcomes, or cancellation policy.
 type parallelDispatch struct {
 	queue                                 []int
-	next, running, limit                  int
+	next, running                         int
 	outcomes                              []*parallelBranchResult
 	results                               <-chan parallelBranchResult
-	launch                                func(int) error
+	released                              <-chan struct{}
+	launch                                func(int) (bool, error)
 	settle                                func(parallelBranchResult) error
 	cancelQueued                          func() error
 	cancel                                context.CancelCauseFunc
@@ -32,16 +33,24 @@ func (p *parallelDispatch) run() error {
 	}
 	p.launchAvailable()
 	for p.running > 0 {
-		p.accept(<-p.results)
+		select {
+		case result := <-p.results:
+			p.accept(result)
+		case <-p.released:
+		}
 		p.launchAvailable()
 	}
 	return p.firstErr
 }
 
 func (p *parallelDispatch) launchAvailable() {
-	for p.firstErr == nil && !p.terminalTriggered && !p.failFast && !p.draining && p.next < len(p.queue) && p.running < p.limit {
-		if err := p.launch(p.queue[p.next]); err != nil {
+	for p.firstErr == nil && !p.terminalTriggered && !p.failFast && !p.draining && p.next < len(p.queue) {
+		started, err := p.launch(p.queue[p.next])
+		if err != nil {
 			p.rememberFailure(err)
+			return
+		}
+		if !started {
 			return
 		}
 		p.running++
@@ -57,6 +66,7 @@ func (p *parallelDispatch) rememberFailure(err error) {
 }
 
 func (p *parallelDispatch) accept(result parallelBranchResult) {
+	defer result.slot.release()
 	p.running--
 	p.outcomes[result.index] = &result
 	if result.paused {
@@ -73,7 +83,7 @@ func (p *parallelDispatch) accept(result parallelBranchResult) {
 		p.failFast = true
 		p.cancel(errParallelFailFast)
 	}
-	if (p.firstErr != nil || p.terminalTriggered || p.failFast) && p.next < len(p.queue) {
+	if !p.draining && (p.firstErr != nil || p.terminalTriggered || p.failFast) && p.next < len(p.queue) {
 		if err := p.cancelQueued(); err != nil && p.firstErr == nil {
 			p.firstErr = err
 		}

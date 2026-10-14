@@ -26,6 +26,7 @@ func prepareGoobersIOMCPRuntime(req RunRequest, selfBin string) (goobersIOMCPRun
 		ChildWorkflows:       req.ChildWorkflows,
 		ArtifactFile:         artifactFile,
 		ArtifactManifestFile: artifactManifestFile,
+		PublicationSchemas:   req.PublicationSchemas,
 		ReceiptFile:          goobersIOReceiptFile(),
 		Inputs:               req.ContextPaths,
 		RunID:                req.Envelope.RunID,

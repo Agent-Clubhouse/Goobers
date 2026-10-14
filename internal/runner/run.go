@@ -77,7 +77,7 @@ const localCIStageName = "local-ci"
 
 // DefaultMaxInfrastructureAttempts bounds transient infrastructure failures
 // independently of a task's policy retry allowance.
-const DefaultMaxInfrastructureAttempts int32 = 2
+const DefaultMaxInfrastructureAttempts int32 = runcontrol.DefaultMaxInfrastructureAttempts
 
 // StageHeartbeatInterval coalesces observable executor progress into at most
 // one compact liveness event per minute.
@@ -443,6 +443,11 @@ type Config struct {
 	childTerminalCustody func(*journal.Run) error
 	ChildHandoff         ChildHandoff
 	ChildParentCapacity  ChildParentCapacity
+	// BorrowParentJournal lends the owned writer to contained parent observations.
+	// Release must join all remote appends before the runner closes its writer.
+	BorrowParentJournal func(string, string, *journal.Run) (func(), error)
+	// AdmitParentExecution verifies the pinned source and contained daemon plane.
+	AdmitParentExecution func(context.Context, *workflow.Machine) error
 	SelfExecutionDenied  bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
@@ -612,6 +617,16 @@ type Config struct {
 	// PrepareTerminal records external cleanup immediately before run.finished.
 	// Optional; errors are surfaced before the terminal transition.
 	PrepareTerminal TerminalPreparer
+	// RestoreParentArchive restores retired contained-parent checkouts before
+	// any resumed task or parallel branch can create an executor or write files.
+	RestoreParentArchive ParentArchiveRestorer
+	// PrepareParentForkSource captures or imports host-owned fork sources.
+	PrepareParentForkSource ParentForkSourceFunc
+	PrepareParentForkResult ParentForkResultFunc
+	JoinParentFork          ParentForkJoinFunc
+	// RetireParentWorkspaces archives acknowledged parent checkouts after the
+	// durable terminal event, before cleanup. Failures must preserve their holds.
+	RetireParentWorkspaces func(*journal.Run) error
 	// FinalizeTerminal performs instance-level cleanup for every terminal run,
 	// after run.finished is durable. Optional; errors are surfaced to the caller.
 	FinalizeTerminal TerminalFinalizer
@@ -901,6 +916,8 @@ func New(cfg Config) (*Runner, error) {
 
 // StartInput is what triggers one run.
 type StartInput struct {
+	parallelSlot     *parallelBranchSlot
+	parallelChild    *parallelChildCapacity
 	configGeneration string
 	// instanceID is assigned by Start or recovered from the durable journal
 	// on resume. A worker/config reload cannot replace a run's provenance.
@@ -962,6 +979,7 @@ type StartInput struct {
 	pinnedStage          *sync.Mutex
 	childWorkspace       *childRunWorkspace
 	heldChildWorkspace   *stageWorkspace
+	parallelWorkspace    *worktree.StageCustody
 	workspaceRevision    *apiv1.WorkspaceRevision
 	configuredRepoRef    *apiv1.RepoRef
 }
@@ -1043,7 +1061,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+	if err := r.admitParentExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
 	effectiveControls, err := r.resolveRunControls(&in.RunControls)
@@ -1129,9 +1147,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 
 	defer func() { _ = jr.Close() }()
-	releaseJournal, err := r.borrowChildJournal(jr)
+	releaseJournal, err := r.borrowExecutionJournal(jr)
 	if err != nil {
-		return Result{}, fmt.Errorf("runner: lend child journal: %w", err)
+		return Result{}, fmt.Errorf("runner: lend execution journal: %w", err)
 	}
 	defer releaseJournal()
 	if in.OnJournalPublished != nil {
@@ -1504,7 +1522,7 @@ func (r *Runner) newWalkGateEvaluator(ws *walkState) *gate.Evaluator {
 // gateDiffDigests likewise seeded so non-convergence detection continues
 // (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
-	if err := workflow.RefuseChildWorkflowExecution(ws.in.Machine.Def.Spec); err != nil {
+	if err := r.prepareWalkExecution(ctx, ws); err != nil {
 		return Result{}, err
 	}
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
@@ -1580,7 +1598,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		ws.state = outcome.target
 		return Result{}, false, nil
 	}
-	if ws.parallel != nil && ws.parallel.spec.MaxConcurrentBranches > 1 {
+	if ws.parallel != nil && parallelUsesDispatcher(ws.in.Machine, ws.parallel.spec) {
 		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel)
 		if done || err != nil {
 			return result, err
@@ -1705,7 +1723,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
 					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
 			}
-			if p.MaxConcurrentBranches > 1 {
+			if parallelUsesDispatcher(ws.in.Machine, p) {
 				result, done, err := runConcurrent(p, nil)
 				if done || err != nil {
 					return result, err
@@ -3019,6 +3037,7 @@ func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, ph
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
+	prepareErr = errors.Join(prepareErr, r.retireParentWorkspaces(jr))
 	notifyErr := r.notifyTerminal(jr, runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
 		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
@@ -3341,6 +3360,7 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 // value rather than as two parallel argument lists that drift apart field by
 // field (#4235) — the same reason walk takes a *walkState.
 type taskFrame struct {
+	containedRecovery   *containedParentRecovery
 	artifactVisit       uint64
 	heldChildWorkspace  *stageWorkspace
 	childWaitResume     *childWaitRecord
@@ -3369,19 +3389,19 @@ type taskFrame struct {
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
-	if r.cfg.SelfExecutionDenied {
+	if r.cfg.SelfExecutionDenied && tf.t.ChildWorkflows == nil {
 		return r.refuseSelfTask(tf)
 	}
-	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
+	if err := r.prepareRecoveredTaskContext(ctx, &tf, branch, &startAttempt, &firstClass, &resumeAccounting); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err
+	}
 	if tf.workspaceRevision != nil {
 		tf.in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
 	}
 	jr, in, t := tf.jr, tf.in, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
-	if err := admitTaskIntegrity(tf); err != nil {
-		return apiv1.ResultEnvelope{}, nil, err
-	}
+
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -3431,12 +3451,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 
 	var lastErr error
 	cumulativeUsage := newStageUsageTotals()
-	if tf.childWaitResume != nil {
-		instructionAddendum = tf.childWaitResume.InstructionAddendum
-		if err := r.restoreChildWait(ctx, &tf, cumulativeUsage); err != nil {
-			return apiv1.ResultEnvelope{}, nil, err
-		}
+	if err := r.restoreParentProgress(ctx, &tf, cumulativeUsage, &instructionAddendum); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err
 	}
+
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
@@ -3455,7 +3473,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
-		if err := tf.recordTaskStarted(int(attempt), class); err != nil {
+		if err := tf.recordTaskStartedWithRecovery(int(attempt), class, policyBeforeAttempt, infrastructureFailures, cumulativeUsage); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
@@ -3473,13 +3491,9 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// this feature existed, and an unconditional per-attempt event would
 		// change every one of them. A journal that cannot be written is fatal
 		// (§2.6), same as stage.started above.
-		r.observeSelfExecution(false)
-		if r.recordsPlacement() {
-			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
-				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, err
-			}
+		if err := r.recordHostTaskPlacement(tf, int(attempt), class); err != nil {
+			span.Fail(err)
+			return apiv1.ResultEnvelope{}, nil, err
 		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)

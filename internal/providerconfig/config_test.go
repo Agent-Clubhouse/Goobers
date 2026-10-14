@@ -2,6 +2,7 @@ package providerconfig
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -62,14 +63,12 @@ func TestApplyBacklogProjectRoutesTopologyB(t *testing.T) {
 			backlog: apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "example-backlog-project"},
 			want:    providers.RepositoryRef{Provider: providers.ProviderADO, Owner: topologyBOrg, Project: "example-backlog-project", Name: topologyBCodeRepo},
 		},
-		{
-			name:    "malformed github backlog keeps routed",
-			backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "example-backlog"},
-			want:    routed,
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ApplyBacklogProject(topologyBGaggleSet(tc.backlog), "example", routed)
+			got, err := ApplyBacklogProject(topologyBGaggleSet(tc.backlog), "example", routed)
+			if err != nil {
+				t.Fatalf("ApplyBacklogProject: %v", err)
+			}
 			if got != tc.want {
 				t.Fatalf("ApplyBacklogProject = %+v, want %+v", got, tc.want)
 			}
@@ -83,8 +82,20 @@ func TestApplyBacklogProjectRoutesTopologyB(t *testing.T) {
 		apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-org", Name: "service"},
 		apiv1.BacklogRef{Provider: apiv1.ProviderGitea, Project: topologyBBacklog, BaseURL: "https://gitea.example.com"},
 	)
-	if got := ApplyBacklogProject(set, "example", github); got != github {
+	if got, err := ApplyBacklogProject(set, "example", github); err != nil || got != github {
 		t.Fatalf("GitHub project with a Gitea backlog routed to %+v, want the unchanged routed repo", got)
+	}
+}
+
+func TestApplyBacklogProjectMalformedCrossProviderErrors(t *testing.T) {
+	routed := topologyBRouted()
+	set := topologyBGaggleSet(apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "example-backlog"})
+	got, err := ApplyBacklogProject(set, "example", routed)
+	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+		t.Fatalf("err = %v, want an owner/name error", err)
+	}
+	if got != routed {
+		t.Fatalf("ref = %+v, want routed %+v", got, routed)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -78,7 +79,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	// PR-scoped credential and vice versa — on Azure DevOps too, where the
 	// issue is a backlog work item (docs/design/ado-parity-dsl-2-0.md §3.1).
 	issuesEnv := env
-	issuesEnv.repo = backlogProviderRepo(repo, issuesRepo)
+	issuesEnv.repo = providerconfig.BacklogProviderRepo(repo, issuesRepo)
 	issuesProvider, err := providerForEnvAs[providers.Provider](issuesEnv, false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderCache(),

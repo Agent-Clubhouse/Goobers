@@ -53,6 +53,12 @@ func TestOperationalBundleOfflineProjectionAndRedaction(t *testing.T) {
 	if !strings.Contains(Summary(bundle), "claim availability unknown") {
 		t.Fatal("pending work summary overstates eligibility")
 	}
+	claimable := int64(2)
+	observation.Backlog.ClaimableCount = &claimable
+	if got := backlogClaimabilityText(observation.Backlog); !strings.Contains(got, "at least 2 verified claimable") || !strings.Contains(got, "not a reservation") {
+		t.Fatal("claimable evidence summary", got)
+	}
+	observation.Backlog.ClaimableCount = nil
 	data, err := json.Marshal(bundle)
 	if err != nil {
 		t.Fatal(err)

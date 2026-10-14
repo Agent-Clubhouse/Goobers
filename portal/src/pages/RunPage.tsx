@@ -15,6 +15,7 @@ import type {
   WorkflowGraph,
 } from "../api/types";
 import { newestFirst } from "../chronology";
+import { ChildHistoryPanel } from "../components/ChildHistoryPanel";
 import { ChildActivityPanel } from "../components/ChildActivityPanel";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
@@ -59,6 +60,7 @@ import {
 } from "../runDetailData";
 import { routeHash, type Navigate, type RunDetailTab } from "../routing";
 import { runWorkTitle } from "../operationalData";
+import { RunWorkTitle } from "../components/RunWorkTitle";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -462,7 +464,7 @@ function RunDetailWorkspace({
         }
         title={
           workTitle ? (
-            <span className="run-work-title">{workTitle}</span>
+            <span className="run-work-title"><RunWorkTitle run={run} separator=" · " /></span>
           ) : (
             <>
               Run <span aria-hidden="true">{displayedRunId}</span>
@@ -511,7 +513,7 @@ function RunDetailWorkspace({
                 <dd
                   title={`#${claimedIssue.number}${claimedIssue.title ? ` · ${claimedIssue.title}` : ""}`}
                 >
-                  #{claimedIssue.number}
+                  <RunWorkTitle run={run} numberOnly />
                 </dd>
               </div>
             )}
@@ -566,6 +568,7 @@ function RunDetailWorkspace({
       </PageHeading>
 
       <ChildActivityPanel activity={run.childActivity} navigate={navigate} />
+      <ChildHistoryPanel key={run.id} client={client} runId={run.id} gaggle={run.gaggle} navigate={navigate} />
       {run.lineage && (
         <section aria-labelledby="run-lineage-heading" className="run-lineage">
           <h2 id="run-lineage-heading">Continuation lineage</h2>

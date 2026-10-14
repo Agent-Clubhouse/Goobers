@@ -10,6 +10,7 @@ type runOperationalObservations struct {
 	activity       readmodel.StageActivity
 	engineFallback *readmodel.EngineFallback
 	requiredMCP    *readmodel.RequiredMCPState
+	reliability    readmodel.ReliabilityFacts
 }
 
 func (o *runOperationalObservations) after(event journal.Event) {
@@ -17,4 +18,5 @@ func (o *runOperationalObservations) after(event journal.Event) {
 	o.retryBackoff = o.retryBackoff.After(event)
 	o.engineFallback = o.engineFallback.After(event)
 	o.requiredMCP = o.requiredMCP.After(event)
+	o.reliability = o.reliability.After(event)
 }

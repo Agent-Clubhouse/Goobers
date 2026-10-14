@@ -29,7 +29,9 @@ type HTTPArchiveSource struct {
 // and invokes consume only for an unexpired record in the requested repository.
 // consume must import/restore the Git objects before returning: its archive path
 // is removed on every exit. No unverified bytes are written into a worktree.
-func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issueID string, consume func(Record, string) error) error {
+// consume also receives the source run's terminal journal evidence; it is the
+// zero SourceRun when the serving daemon does not report it.
+func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issueID string, consume func(Record, SourceRun, string) error) error {
 	endpoint, err := s.endpoint(repositoryKey, issueID)
 	if err != nil {
 		return err
@@ -76,6 +78,10 @@ func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issue
 		}
 		return fmt.Errorf("recovery download refused (HTTP %d)", response.StatusCode)
 	}
+	sourceRun, err := SourceRunFromHeaders(response.Header)
+	if err != nil {
+		return err
+	}
 	directory, err := os.MkdirTemp("", "goobers-recovery-download-*")
 	if err != nil {
 		return err
@@ -96,7 +102,7 @@ func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issue
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return consume(record, filepath.Join(directory, BundleFileName))
+	return consume(record, sourceRun, filepath.Join(directory, BundleFileName))
 }
 
 func (s HTTPArchiveSource) endpoint(repositoryKey, issueID string) (string, error) {

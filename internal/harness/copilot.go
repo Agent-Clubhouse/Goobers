@@ -30,25 +30,25 @@ import (
 // own --help, confirmed by a live invocation while building this adapter.
 const defaultPromptFlag = "-p"
 
-// copilotPromptArg binds the prompt to its flag in ONE argv element
-// (`-p=<text>`) rather than passing them as two.
+// copilotPromptArg binds the prompt flag's value to the flag in ONE argv
+// element (`-p=<value>`) rather than passing them as two. Adapter invocations
+// always bind an EMPTY value (`-p=`): the flag selects non-interactive mode and
+// the CLI then reads the prompt from stdin (#6871), so no prompt content ever
+// reaches argv. MEASURED against Copilot CLI 1.0.95: `-p=` with the prompt on
+// stdin runs that prompt and exits 0.
 //
-// Every goober body starts with YAML frontmatter, so the rendered prompt
-// begins with "---". Passed as a separate argument the CLI reads that as
-// options, not as the flag's value, and refuses the whole invocation:
+// The bound form matters for any non-empty value. Every goober body starts with
+// YAML frontmatter, so a rendered prompt begins with "---". Passed as a
+// separate argument the CLI reads that as options, not as the flag's value,
+// and refuses the whole invocation:
 //
 //	error: Invalid command format.
 //	It looks like your prompt was not quoted, so the extra words were
 //	treated as separate arguments.
 //
 // exit 1, before the model is ever reached. MEASURED against Copilot CLI
-// 1.0.85: a prompt beginning with "---" fails as two arguments and succeeds
-// as `-p=<text>`; an otherwise identical prompt without the leading "---"
-// succeeds either way. On the goobernetes cluster this failed EVERY
-// implementation run's implement stage (#5197).
-//
-// The = form is not a workaround for one leading token: it is the only shape
-// in which no prompt content can be reinterpreted as flags.
+// 1.0.85 (#5197). The = form is the only shape in which no value can be
+// reinterpreted as flags.
 func copilotPromptArg(flag, prompt string) string {
 	return flag + "=" + prompt
 }
@@ -1123,22 +1123,20 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if extra == nil {
 		extra = defaultExtraArgs
 	}
-	baseCommand := resolveHarnessCommand(c.Command)
+	// #6871: the prompt travels on stdin, never in argv, so its size is not
+	// bounded by CreateProcess (32,767), cmd.exe (8,191) or ARG_MAX. The
+	// command resolves as a stdio client because npm's PowerShell shim
+	// buffers and re-encodes stdin through $input.
+	baseCommand := resolveStdioHarnessCommand(c.Command)
 	if completionInResponse {
 		configuredArgs := append(append([]string(nil), baseCommand[1:]...), extra...)
 		if conflict := copilotConstraintConflict(configuredArgs); conflict != "" {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: tool-constrained run conflicts with configured argument %q", conflict)
 		}
 	}
-	var promptStdin []byte
+	promptStdin := []byte(prompt)
 	promptArg := len(baseCommand)
-	argv := append(baseCommand, copilotPromptArg(flag, prompt))
-	if shouldUseCopilotPromptStdin(c.Command, prompt) {
-		baseCommand = resolveStdioHarnessCommand(c.Command)
-		argv = append(append([]string(nil), baseCommand...), copilotPromptArg(flag, ""))
-		promptArg = -1
-		promptStdin = []byte(prompt)
-	}
+	argv := append(baseCommand, copilotPromptArg(flag, ""))
 	if resolution.Model != "" {
 		argv = append(argv, "--model", resolution.Model)
 	}
@@ -1213,15 +1211,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
 		// invocation runs inside the sandbox. promptArg shifts by the wrapper
-		// prefix so the contract-recovery turn below still swaps the prompt.
+		// prefix so a controlled session still drops the prompt-mode flag.
 		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
 		}
 		argv = wrapped
-		if promptArg >= 0 {
-			promptArg += shift
-		}
+		promptArg += shift
 	}
 
 	// #2962: record the CLI version and the effective tool/permission
@@ -1250,7 +1246,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
-	runner, closeControlledSession := c.prepareCopilotProcessRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
+	runner, closeControlledSession := c.prepareRequiredMCPRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
 	defer closeControlledSession()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -1292,8 +1288,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			invalidCompletionPayload = append([]byte(nil), payload...)
 		}
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
-			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv, promptArg, flag,
-			promptStdin, completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
 		)
 	}
 	out = Outcome{
@@ -1338,9 +1334,6 @@ func runCopilotCompletionRepair(
 	payload []byte,
 	argv, env []string,
 	refreshEnv func(context.Context, []string, RunRequest) ([]string, error),
-	promptArg int,
-	flag string,
-	promptStdin []byte,
 	completionInResponse bool,
 	nativeTranscriptPath string,
 	started time.Time,
@@ -1381,15 +1374,9 @@ func runCopilotCompletionRepair(
 		recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 		recoveryStdout = recoveryCapture
 	}
-	recoveryStdin := promptStdin
-	if promptArg >= 0 {
-		recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
-	} else {
-		recoveryStdin = []byte(recoveryPrompt)
-	}
 	recoveryReq := ProcessRequest{
 		Command:                      recoveryArgv,
-		Stdin:                        recoveryStdin,
+		Stdin:                        []byte(recoveryPrompt),
 		Dir:                          req.Workspace,
 		Env:                          env,
 		Timeout:                      remaining,

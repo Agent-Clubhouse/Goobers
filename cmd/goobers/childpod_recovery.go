@@ -51,13 +51,17 @@ func (s *daemonCredentialService) recoverChildPod(ctx context.Context, reader *j
 	if err != nil {
 		return err
 	}
-	executor := childpod.Executor{Blobs: blobs, Surrenders: surrenders, Recorder: writer, RecoveryReader: reader}
+	recorder, err := runner.OwnedBranchRecorder(writer, scope.Contract.ChildBranch)
+	if err != nil {
+		return err
+	}
+	executor := childpod.Executor{Blobs: blobs, Surrenders: surrenders, Recorder: recorder, RecoveryReader: reader}
 	out, err := executor.Reconcile(owned, request, scope.Retained, report)
 	if err != nil {
 		return err
 	}
 	attemptBlobs := childpod.ChildAttemptBlobs{Store: blobs, ContractDigest: digest}
-	if err = adoptContainedPodOutputs(owned, writer, attemptBlobs, &out); err != nil {
+	if err = adoptContainedPodOutputs(owned, recorder, attemptBlobs, &out); err != nil {
 		return err
 	}
 	if request.Workspace != nil {
@@ -79,7 +83,7 @@ func (s *daemonCredentialService) recoverChildPod(ctx context.Context, reader *j
 	if err != nil {
 		return err
 	}
-	recovered, err := writer.RecordArtifactBoundedWithIntegrity("contained-recovery/"+digest[7:], data, apiv1.IntegrityDerived, childpod.MaxRetainedAttemptBytes)
+	recovered, err := recorder.RecordArtifactBoundedWithIntegrity("contained-recovery/"+digest[7:], data, apiv1.IntegrityDerived, childpod.MaxRetainedAttemptBytes)
 	if err != nil {
 		return err
 	}
@@ -89,7 +93,7 @@ func (s *daemonCredentialService) recoverChildPod(ctx context.Context, reader *j
 
 func (s *daemonCredentialService) childRecoveryRequest(ctx context.Context, reader *journal.Reader, scope childPodScope) (childpod.Request, childpod.ScopedBlobs, error) {
 	c := scope.Contract
-	request := childpod.Request{Identity: c.Identity, Attempt: scope.Retained.Input.Attempt, Eligible: scope.Retained.Input.Eligible, Ceiling: c.Ceiling, StartedAt: c.StartedAt}
+	request := childpod.Request{ChildBranch: c.ChildBranch, Identity: c.Identity, Attempt: scope.Retained.Input.Attempt, Eligible: scope.Retained.Input.Eligible, Ceiling: c.Ceiling, StartedAt: c.StartedAt}
 	child, err := s.childQueue.ChildForExecutionRun(ctx, c.Identity.RunID)
 	if err != nil {
 		return request, childpod.ScopedBlobs{}, err

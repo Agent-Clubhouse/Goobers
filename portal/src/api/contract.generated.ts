@@ -20,6 +20,7 @@ export const apiRoutes = {
   "workflowDetail": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}", actionClass: "read-only-navigation" },
   "workflowQueueEligibility": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}/queue-eligibility", actionClass: "read-only-navigation" },
   "runs": { method: "GET", path: "/api/v1/runs", actionClass: "read-only-navigation" },
+  "runChildren": { method: "GET", path: "/api/v1/runs/{run}/children", actionClass: "read-only-navigation" },
   "runDetail": { method: "GET", path: "/api/v1/runs/{run}", actionClass: "read-only-navigation" },
   "runReveal": { method: "POST", path: "/api/v1/runs/{run}/reveal", actionClass: "maintenance" },
   "runEvents": { method: "GET", path: "/api/v1/runs/{run}/events", actionClass: "read-only-navigation" },
@@ -74,6 +75,8 @@ export const apiRoutes = {
   "childWorkflowStart": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/start", actionClass: "workflow-execution" },
   "childWorkflowStatus": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/status", actionClass: "workflow-execution" },
   "childWorkflowResolve": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/resolve", actionClass: "workflow-execution" },
+  "childWorkflowAccessAcquire": { method: "POST", path: "/api/v1/runs/{run}/child-workflow-access", actionClass: "workflow-execution" },
+  "childWorkflowAccessRevoke": { method: "DELETE", path: "/api/v1/runs/{run}/child-workflow-access", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];

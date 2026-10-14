@@ -1095,6 +1095,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.readiness.requireProviderAuthorization",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.requires.capabilities",
       "stability": "ga",
       "sinceVersion": "dev"

@@ -121,8 +121,8 @@ const (
 	// time.ParseDuration strings (e.g. "15s", "5m") despite the "Sec"
 	// suffix — matching shell.go's InputTimeout convention, not a bare
 	// integer count of seconds.
-	InputPollIntervalSec    = "pollIntervalSeconds"
-	InputPollMaxIntervalSec = "pollMaxIntervalSeconds"
+	InputPollIntervalSec    = boundedwait.InputPollInterval
+	InputPollMaxIntervalSec = boundedwait.InputPollMaxInterval
 	InputPollTimeoutSec     = boundedwait.InputPollTimeout
 	// InputHumanPolicyIDs declares the branch/required-check policy identities
 	// the agent loop cannot fix (human/merge-time policies: merge strategy,
@@ -143,7 +143,7 @@ const (
 	// InputPollIntervalSec's doc comment on the "Sec" naming) for how long to
 	// wait, after triggering a rerun, before re-polling. Unset defaults to
 	// this call's effective poll interval.
-	InputRetryFailedChecksBackoffSeconds = "retryFailedChecksBackoffSeconds"
+	InputRetryFailedChecksBackoffSeconds = boundedwait.InputRetryFailedChecksBackoff
 	// InputCarryOutputs names invocation inputs that ci-poll must copy to its
 	// outputs. This keeps explicit workflow data flow intact when a poll is
 	// inserted between two stages that already exchange typed scalar outputs.
@@ -466,6 +466,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	consecutiveUnauthorized := 0
 	refresher, canRefreshCredential := e.Poller.(ciPollCredentialRefresher)
 	retriesUsed := 0
+	var cancelled cancelledFailureGuard
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
 		invoke.ReportProgress(ctx)
@@ -517,7 +518,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		if outcome, stop := ciPollLifecycleOutcome(result, cfg.PullID); stop {
 			return addCIPollCarry(outcome, cfg), nil
 		}
-		switch result.CheckState {
+		switch cancelled.state(result) {
 		case providers.CheckStatePassing:
 			return addCIPollCarry(ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing", cfg.PullID), cfg), nil
 		case providers.CheckStateFailing:
@@ -568,6 +569,52 @@ func addCIPollCarry(outcome apiv1.ResultEnvelope, cfg CIPollConfig) apiv1.Result
 		outcome.Outputs[key] = value
 	}
 	return outcome
+}
+
+// cancelledFailureGuard keeps a failing poll whose only failures are
+// cancelled checks from being terminal until a later poll sees the same set on
+// the same head (#7042). A push that supersedes the head cancels the old
+// head's CI through workflow concurrency, so the poll that read the old head
+// sees a failure that is an artifact of the supersession, not a verdict on the
+// code; a run that supersedes it on the same head may also not have
+// registered its checks yet. Holding for one poll interval lets the next poll
+// re-read the PR head: a moved head or a newer run reports its own state, and
+// a cancellation that persists on an unchanged head still fails.
+type cancelledFailureGuard struct {
+	held bool
+	head string
+}
+
+// state returns the check state this poll should be treated as: a held
+// cancelled-only failure reads as pending. Any poll that is not a
+// cancelled-only failure resets the guard, so a hold is confirmed only by
+// consecutive polls of the same head.
+func (g *cancelledFailureGuard) state(result providers.PullRequestPollResult) providers.CheckState {
+	if result.CheckState != providers.CheckStateFailing || !onlyCancelledFailures(result.Checks) {
+		*g = cancelledFailureGuard{}
+		return result.CheckState
+	}
+	if g.held && g.head == result.HeadSHA {
+		return result.CheckState
+	}
+	*g = cancelledFailureGuard{held: true, head: result.HeadSHA}
+	return providers.CheckStatePending
+}
+
+// onlyCancelledFailures reports whether checks hold at least one failing
+// check and every failing check concluded cancelled.
+func onlyCancelledFailures(checks []providers.CheckDetail) bool {
+	found := false
+	for _, check := range checks {
+		if check.State != providers.CheckStateFailing {
+			continue
+		}
+		if !strings.EqualFold(check.Conclusion, "cancelled") && !strings.EqualFold(check.Conclusion, "canceled") {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // ciPollFailureOutcome reports the normal terminal "failing" outcome.

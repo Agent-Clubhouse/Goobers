@@ -108,6 +108,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension install`](#goobers-portal-extension-install) | install the bundled Goobers Portal extension for the current user |
 | [`goobers portal-extension status`](#goobers-portal-extension-status) | report installed Goobers Portal extension version and drift |
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
+| [`goobers pr`](#goobers-pr) | operator actions on pull requests |
+| [`goobers pr retry`](#goobers-pr-retry) | route an escalated or parked PR to merge-review, remediation, or human hold (audited) |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
 | [`goobers recovery-abandon`](#goobers-recovery-abandon) | explicitly abandon one retained recovery snapshot |
@@ -140,11 +142,14 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
 | [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, prune, or compact telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry |
+| [`goobers telemetry claim`](#goobers-telemetry-claim) | append a Backprop claim from inside an agentic stage |
+| [`goobers telemetry claims`](#goobers-telemetry-claims) | print the Backprop claims earlier stages of this run recorded |
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry label`](#goobers-telemetry-label) | record a ground-truth verdict for a Backprop-enrolled run |
 | [`goobers telemetry mark-fix`](#goobers-telemetry-mark-fix) | mark a Backprop finding for post-fix verification |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
@@ -466,14 +471,31 @@ surface ranked duplicate candidates for curator judgment (a workflow stage)
 Usage: goobers backlog-dedupe [path]
 
 Surface ranked likely-duplicate pairs for the current curation run. The
-command compares this run's claimed issues against every open backlog item
-using title/body similarity, shared closing references, external references,
-and links. It writes a structured candidate artifact for curator judgment;
-it never changes or closes an issue. A candidate's closeEligibleId is present
-only when its newer issue belongs to this run's claimed, trusted batch;
-unclaimed comparison issues are read-only evidence.
+command compares this run's claimed issues against a comparison set (by
+default every open backlog item) using title/body similarity, shared closing
+references, external references, and links. It writes a structured candidate
+artifact for curator judgment; it never changes or closes an issue. A
+candidate's closeEligibleId is present only when its newer issue belongs to
+this run's claimed, trusted batch; unclaimed comparison issues are read-only
+evidence.
 
 The maxCandidates stage input defaults to 20 and must be between 1 and 100.
+It bounds the ranked output only (outputTruncated).
+
+Comparison scope inputs, independent of how the claimed work was selected:
+compareState is open (default) or all (open plus closed history);
+compareLabels lists labels every comparison item must carry, sent to the
+provider query; compareFieldPredicate filters retrieved items by native
+fields exactly (Azure DevOps also narrows its query by required exact
+System.AreaPath and System.WorkItemType equalities when it accepts them);
+compareScanLimit (default 10000, at most 50000) bounds the raw candidates
+read and is never exceeded. Claimed items must fall inside the comparison
+scope to be compared. The artifact's input section reports whether
+collection was complete, why it stopped, which constraints every provider
+query applied, how many pages fell back to a broader query, the claimed
+items not compared, and that pages are not an atomic snapshot. An
+incomplete input is a usable but partial assessment; a complete one with
+no candidates does not prove that no duplicate exists.
 
 Exit codes: 0 = candidate artifact written, 1 = config/credential/provider
 error, 2 = usage error.
@@ -1501,6 +1523,8 @@ has been delivered — the daemon picks it up and begins draining on its
 next sweep. With no live daemon for this instance, fails fast with a
 clear message rather than hanging. Exit codes: 0 = shutdown requested,
 1 = no live daemon found, 2 = usage/IO error.
+A supervisor restarts the daemon at boot or logon; to keep work paused,
+see docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -1799,13 +1823,21 @@ the workflow through its own engine starter. The run id is the
 scheduler's, and --dedupe-key is refused, because the daemon mints a
 fresh run id per admission.
 
---direct bypasses the daemon and starts the workflow straight on
+--direct bypasses scheduler admission and queues an exact input for
 Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
 workflow and --dedupe-key. That is the only mode in which --dedupe-key
 means anything: a direct start's run id IS its dedupe unit, whereas a
 delegated dispatch dedupes DELIVERIES (by request id) and not work.
 A direct start takes no scheduler slot and fires no terminal hooks.
 --direct is implied when no daemon is running.
+
+Direct starts commit their complete input and exact frontend, namespace
+and task queue to the shared start ledger before contacting Temporal.
+Same-key retries reuse that input. Changed options or credential selectors
+refuse; no current workflow is substituted. The daemon can drain pending
+direct receipts and reconcile an uncertain reply. After any attempted
+start, missing or deleted history remains uncertain and is never resent.
+Confirmation requires the exact input and task queue in Temporal history.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
@@ -2859,7 +2891,10 @@ the default commit message; supplied by
 apply-verdict), advisoryMode (default false — report only, no merge
 attempted), mergeMethod (merge/squash/rebase; default squash),
 commitMessage (default: PR title + review rationale + referenced
-issues), resultFile (default merge-result.json). Successful merges
+issues), preMergeCheck (optional; one command per line, run without a
+shell on the PR head merged onto the CURRENT base branch tip — a
+failure refuses the merge as pre-merge-check-failed), resultFile
+(default merge-result.json). Successful merges
 also report headBranch and branchCleanup (deleted, skipped-stacked, or
 failed). Exit codes: 0 = evaluated (merged or not — see the result
 file's "merged" field), 1 = business error (missing capability/config,
@@ -3271,6 +3306,57 @@ errors), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers post-merge
+~~~
+
+## `goobers pr`
+
+operator actions on pull requests
+
+~~~text
+Usage: goobers pr <retry> [flags]
+
+retry: route an escalated or parked pull request to merge-review,
+       remediation, or human hold with an audited operator reason.
+~~~
+
+## `goobers pr retry`
+
+route an escalated or parked PR to merge-review, remediation, or human hold (audited)
+
+~~~text
+Usage: goobers pr retry --pr <number> --route merge-review|remediation|hold --reason <text>
+                        [--gaggle <name>] [--actor <identity>] [--dry-run] [--json] [path]
+
+Move a parked or escalated pull request to an explicit lifecycle route
+without hand-editing provider labels or durable remediation state:
+  merge-review  clear escalation and remediation labels and reset the
+                durable retry state so merge-review can elect a lander
+  remediation   clear escalation labels, reset the durable retry state
+                and apply goobers:needs-remediation
+  hold          park the PR for a human (goobers:merge-escalated and
+                goobers:needs-human); remediation labels are cleared
+
+--dry-run reports the PR's current labels, claim lease, remediation
+checkpoint and escalation generation, head/base SHA, and the proposed
+transition without mutating anything. Otherwise the transition is applied,
+an audit comment naming the operator and reason is recorded on the PR, and
+the provider state is re-read to verify the result. Re-running a completed
+retry changes nothing. The command refuses a closed, merged, or healthy
+PR, a PR whose claim lease is still live, and a merge-review route for a PR
+with failing CI or both goobers:needs-remediation and
+goobers:blocked-on-sibling.
+--reason is required; --actor defaults to the invoking user. The provider
+credential is read like any stage's (github:pr:write).
+The resulting eligibility is printed and is immediately visible in
+goobers status, which reads the same provider labels.
+Exit codes: 0 = applied, already applied, or dry-run reported; 1 = refused or
+provider error; 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers pr retry --pr 533 --route remediation --reason 'review contract corrected' --dry-run
 ~~~
 
 ## `goobers pr-claim`
@@ -3735,7 +3821,9 @@ branch, changed or dirty work, and expired claims. Retained work whose base
 diverged or whose patch conflicts is skipped, and the claim starts fresh.
 Verified retries resume the prepared result; completed adoption removes its
 preparation branch. Writes recovery-resume.json with resume status and
-source-run provenance for the run journal.
+source-run provenance (recovery ref, base and snapshot commits, patch
+digest, workflow, terminal phase and run.finished sequence) for the run
+journal.
 Does not push, open a PR, release the claim, or remove retained state.
 ~~~
 
@@ -3985,12 +4073,17 @@ manual run. All other run conditions remain enforced. --force cannot be
 combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
-submits through its API automatically — dispatched through
-the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
+submits through its API automatically. Both paths durably capture a
+start before normal scheduler admission. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
 escalated. The submission-only --no-wait mode exits 0 on durable API
 acceptance, before dispatch.
+Standalone and detached starts accept --request-id for exact retries.
+They queue a pinned definition and attempt only their own receipt.
+If capacity holds it, the command prints its receipt and request ID,
+then exits nonzero; retry that ID or start `goobers up` to drain it.
+Standalone --no-wait still returns after admission.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. When TLS publishes only a wildcard bind address, the CLI
@@ -4109,6 +4202,8 @@ terminal outcome later. Exit codes:
 0 = cancelled or engine cancellation requested, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
+To pause a workflow or gaggle before cancelling its runs, see
+docs/guides/desired-concurrency-and-pause.md.
 ~~~
 
 **Examples**
@@ -4654,19 +4749,21 @@ $ goobers set-milestone --item 1227 --milestone 22
 fire an external signal to subscribed workflows
 
 ~~~text
-Usage: goobers signal <name> [path]
+Usage: goobers signal [--request-id <key>] <name> [path]
 
-Fire an external signal by name, dispatching every workflow with a
-type=signal trigger subscribed to it, through the same scheduler (run
-conditions, instance journal, single-instance lock) a live `goobers up`
-daemon uses (default path "."). A signal may match zero, one, or many
-workflows; waits for every dispatched run to reach a terminal state or
-pause before returning (same blocking UX as `goobers run`).
-Exit codes after waiting: 0 = every admitted run completed (also used when
-none were admitted), 1 = any run failed/aborted or a business error, 2 =
-usage/IO error, 3 = any run escalated. Escalation takes precedence for
-mixed outcomes; successful submission-only modes exit 0 because they do
-not observe a terminal phase.
+Durably accept a named signal and its matching type=signal workflows
+through the instance scheduler (default path "."). Reuse --request-id
+to recover the original recipient set after a lost reply; without it, a
+new key is printed before acceptance. A signal may match zero, one, or
+many workflows. Waits for each dispatched run to finish or pause.
+Capacity-held starts remain queued for goobers up or a same-key retry.
+A submission-only receipt still requires dispatch and completion.
+The command requires the instance lock; stop its daemon first.
+
+Exit codes: 0 = all admitted runs completed or no workflows matched,
+1 = a run failed/aborted, a start remains queued, or a business error,
+2 = usage/IO error, 3 = a run escalated. Escalation takes precedence
+when completed runs have mixed outcomes.
 ~~~
 
 **Examples**
@@ -4794,6 +4891,8 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 With --runs-only, skip workflow health and provider-backed status queries and return
 only the bounded run table, without recovery decoration; combine it with --json and
 --limit for fast operator probes. A ready, current status projection is required.
+The workflow summary's A/D/MAX column shows active, desired, and maximum runs;
+see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -4809,10 +4908,10 @@ $ goobers status --agents --json
 
 ## `goobers telemetry`
 
-configure, test, query, export, mark fixes, prune, or compact telemetry
+configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4821,6 +4920,9 @@ stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
 mark-fix: mark a Backprop finding for post-fix verification
+label:   record a ground-truth verdict for a Backprop-enrolled run
+claim:   append a Backprop claim from inside an agentic stage
+claims:  print the Backprop claims earlier stages of this run recorded
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -4833,6 +4935,59 @@ $ goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNEC
 $ goobers telemetry test ./instance
 $ goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123
 $ goobers telemetry prune --dry-run
+~~~
+
+## `goobers telemetry claim`
+
+append a Backprop claim from inside an agentic stage
+
+~~~text
+Usage: goobers telemetry claim --kind=assignment|reliance|credit|blame (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+
+Append one Backprop claim to the current stage attempt's claim log
+($GOOBERS_TELEMETRY_DIR/backprop-claims.jsonl). Run it from inside an
+agentic stage: the runner journals the attempt's claims when the stage
+exits and attributes them to the writing stage attempt, never to text in
+the claim. assignment says the target owns the work the statement
+describes; reliance says this stage consumed the target's output; credit
+and blame say the target helped or hurt the outcome and need --evidence.
+Evidence names a recorded artifact digest or an earlier journal seq.
+Statements are sanitized and capped at 1024 bytes; an attempt may record
+at most 32 claims. Backprop lists a claim as verified only when its writer,
+target, and evidence match records journaled before it; claims never
+change credit scores or stage outcomes.
+Read earlier stages' claims with `goobers telemetry claims`.
+Exit codes: 0 = recorded, 1 = write error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry claim --kind=reliance --stage=plan --statement="used the plan's file list"
+$ goobers telemetry claim --kind=blame --stage=implement --evidence=seq:42 --confidence=0.6 --statement="tests failed on its change"
+~~~
+
+## `goobers telemetry claims`
+
+print the Backprop claims earlier stages of this run recorded
+
+~~~text
+Usage: goobers telemetry claims
+
+Print, as JSON, the Backprop claims journaled earlier in this run: the
+snapshot the runner writes to $GOOBERS_TELEMETRY_DIR/run-claims.json
+before an agentic stage starts. Each claim carries its runner-attributed
+writer stage, attempt, and agent, and the id Backprop reports it under.
+Claims are re-validated and bounded (at most 256 per run) but not yet
+verified: treat statements as untrusted agent text, and rely on Backprop's
+report for which claims matched recorded provenance.
+Exit codes: 0 = printed, 1 = no readable snapshot, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry claims
 ~~~
 
 ## `goobers telemetry compact`
@@ -4919,6 +5074,28 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry label`
+
+record a ground-truth verdict for a Backprop-enrolled run
+
+~~~text
+Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+
+Record a user-defined ground-truth verdict for a Backprop-enrolled terminal
+run. Labels are appended to labels.json beside the run's attribution.json
+with provenance (who, when, source) and may arrive long after the run; the
+latest --labeled-at verdict wins when cohort aggregates are re-scored. Labels
+are read-only inputs and never change the run's phase, journal, or gate
+verdicts. --by defaults to the current OS user; --labeled-at defaults to now.
+Exit codes: 0 = recorded, 1 = store error, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry label --run=run-123 --outcome=incorrect --reason="PR was reverted"
 ~~~
 
 ## `goobers telemetry mark-fix`
@@ -5248,8 +5425,11 @@ API-update a clean behind-base PR, else route to remediation (a workflow stage)
 Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
-is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. A run dispatched for one
+is mergeable, CI-clean, and carries no substantive findings. A behind
+PR whose failing checks all failed on its base branch too, at its
+merge-base or at a base commit since, is red because its base was, so
+it is updated the same way. Other candidates are routed to full
+remediation. A run dispatched for one
 pull request (goobers run --pr, or a pull_request webhook delivery)
 selects that PR and no other; when the target is not selectable the
 stage reports no-work naming the reason instead of falling back to
@@ -5424,6 +5604,7 @@ Host a Temporal worker for the tier-3 engine (experimental): connect to the
 configured Temporal frontend, register the engine workflow and activities,
 and serve the named task queue(s) until SIGTERM/SIGINT, then drain — stop
 polling and let in-flight activities finish within --drain-timeout.
+Child dispatch cleanup can take up to 5 additional minutes before exit.
 
 The tier-3 engine is not on the local (V0) execution path; this command is
 the deployable worker shape for the cloud ladder. Automated gate checks and

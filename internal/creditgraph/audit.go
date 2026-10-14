@@ -293,7 +293,7 @@ func classifyFaultGroup(signature string, signals []faultSignal, all []Attributi
 		finding.Domain = FaultDomainUnknown
 		finding.CounterEvidence = append(finding.CounterEvidence, "the signature has not crossed unrelated workflow boundaries")
 	}
-	finding.Confidence = round(summary.confidence / float64(len(classificationSignals)))
+	finding.Confidence = round(summary.confidence / summary.weight)
 	if sparse {
 		finding.Confidence = min(finding.Confidence, 0.35)
 		finding.CounterEvidence = append(finding.CounterEvidence, fmt.Sprintf("sample floor not met: %d runs observed, %d required", len(summary.runs), config.SampleFloor))
@@ -333,7 +333,7 @@ func faultClassificationSignals(findingID string, signals []faultSignal, fixesAp
 type faultSignalSummary struct {
 	runs, workflows, versions, environments, paths map[string]bool
 	domainCounts                                   map[FaultDomain]int
-	confidence                                     float64
+	confidence, weight                             float64
 	missingProvenance, contradictory               bool
 	evidence                                       []AttributionEvidenceLink
 	counterEvidence                                []string
@@ -367,7 +367,9 @@ func summarizeFaultSignals(signals []faultSignal) faultSignalSummary {
 			}
 		}
 		summary.domainCounts[signalDomain(signal)]++
-		summary.confidence += signal.cause.Confidence
+		weight := groundTruthWeight(signal.observation.GroundTruth)
+		summary.weight += weight
+		summary.confidence += weight * groundTruthConfidence(signal.cause.Confidence, signal.observation.GroundTruth)
 	}
 	return summary
 }

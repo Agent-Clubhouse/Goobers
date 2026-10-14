@@ -3,6 +3,7 @@ package artifactset
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/goobers/goobers/internal/handoffcheck"
@@ -14,8 +15,11 @@ const maxReportedIssues = 5
 // handoff. It carries only issue codes, paths, and offsets, never payload
 // values, so it is safe to show to the producing agent for a targeted retry.
 type HandoffError struct {
-	Entry  string
-	Issues []handoffcheck.Issue
+	Entry string
+	// SchemaID names the declared schema the entry violated, when the failure
+	// is a schema check rather than a structural JSON problem.
+	SchemaID string
+	Issues   []handoffcheck.Issue
 }
 
 func (e *HandoffError) Error() string {
@@ -33,6 +37,9 @@ func (e *HandoffError) Error() string {
 			part += fmt.Sprintf(" (byte %d)", issue.Offset)
 		}
 		parts = append(parts, part)
+	}
+	if e.SchemaID != "" {
+		return fmt.Sprintf("%v: entry %q does not satisfy schema %q: %s", ErrInvalid, e.Entry, e.SchemaID, strings.Join(parts, "; "))
 	}
 	return fmt.Sprintf("%v: entry %q is not a valid JSON handoff: %s", ErrInvalid, e.Entry, strings.Join(parts, "; "))
 }
@@ -58,4 +65,37 @@ func checkJSONHandoff(name, mediaType string, data []byte) error {
 func AsHandoffError(err error) (*HandoffError, bool) {
 	var he *HandoffError
 	return he, errors.As(err, &he)
+}
+
+// CheckSchemas validates each prepared payload named in schemas against its
+// declared schema at the completion boundary (#6868). It runs on the exact
+// sanitized bytes that Publish will record, so a payload that was rewritten or
+// written directly after an accepted publish_output still cannot bypass the
+// contract. A declared slot with no prepared entry is reported as missing.
+func (p *Prepared) CheckSchemas(schemas map[string]*handoffcheck.Schema) error {
+	if len(schemas) == 0 {
+		return nil
+	}
+	slots := make([]string, 0, len(schemas))
+	for slot := range schemas {
+		slots = append(slots, slot)
+	}
+	sort.Strings(slots)
+	for _, slot := range slots {
+		var entry *preparedEntry
+		for i := range p.entries {
+			if p.entries[i].name == slot {
+				entry = &p.entries[i]
+				break
+			}
+		}
+		if entry == nil {
+			return &PublicationError{Code: MissingSlotCode, Slot: slot}
+		}
+		verdict := schemas[slot].Check(entry.data)
+		if !verdict.Valid {
+			return &HandoffError{Entry: slot, SchemaID: verdict.SchemaID, Issues: verdict.Issues}
+		}
+	}
+	return nil
 }

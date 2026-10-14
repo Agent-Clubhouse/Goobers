@@ -69,7 +69,7 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 		},
 	}
 	adapter := &ClaudeAdapter{
-		Command: []string{"claude"},
+		Command: []string{"claude-headless-test"},
 		Runner:  runner,
 		EnvCapabilities: map[string]string{
 			"agent:model":         "ANTHROPIC_API_KEY",
@@ -94,7 +94,7 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 	}
 	command := runner.lastReq.Command
 	for _, want := range []string{
-		"claude", "-p", "--output-format", "stream-json", "--verbose",
+		"claude-headless-test", "-p", "--output-format", "stream-json", "--verbose",
 		"--permission-mode", "bypassPermissions", "--model", "claude-sonnet-4-6",
 		"--effort", "high",
 	} {
@@ -102,15 +102,12 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 			t.Errorf("command missing %q: %v", want, command)
 		}
 	}
-	if len(command) < 2 || command[len(command)-2] != "--" {
-		t.Fatalf("prompt is not the last argv element behind \"--\": %v", command)
+	prompt := string(runner.lastReq.Stdin)
+	if !strings.Contains(prompt, "write your result as JSON") {
+		t.Fatalf("stdin does not carry the completion-file prompt: %q", prompt)
 	}
-	prompt := commandPromptValue(command)
-	if prompt == "" || !strings.Contains(prompt, "write your result as JSON") {
-		t.Fatalf("command does not carry the completion-file prompt: %v", command)
-	}
-	if command[len(command)-1] != prompt {
-		t.Fatalf("prompt is not the final argv element: %v", command)
+	if command[len(command)-2] != "--session-id" {
+		t.Fatalf("argv carries a trailing positional prompt: %v", command)
 	}
 	for _, token := range []string{"sk-ant-test-key", "github-token"} {
 		for _, arg := range command {
@@ -297,63 +294,6 @@ func TestSeedClaudeCredentialsSkipsWhenOAuthTokenInjected(t *testing.T) {
 	}
 }
 
-// TestBuildClaudeArgvPromptsLeadingWithDashesStayPositional pins the fix for
-// #2090: every shipped instructions.md opens with YAML frontmatter ("---"),
-// and claude's CLI parser scans all argv positions for option-shaped tokens,
-// so a naive "-p <prompt> <flags...>" layout misparses the prompt as an
-// unknown flag. The prompt must be the final argv element, behind "--".
-func TestBuildClaudeArgvPromptsLeadingWithDashesStayPositional(t *testing.T) {
-	for _, prompt := range []string{
-		"---\nrole: curator\n---\n\ndo the thing",
-		"-x single dash prefix",
-		"--",
-	} {
-		t.Run(prompt, func(t *testing.T) {
-			argv, promptArg, sessionSelectorArg := buildClaudeArgv(
-				[]string{"claude"},
-				[]string{"--output-format", "stream-json"},
-				"claude-sonnet-4-6",
-				"high",
-				"session-1",
-				prompt,
-			)
-			if got := argv[len(argv)-1]; got != prompt {
-				t.Fatalf("prompt is not the final argv element: %v", argv)
-			}
-			if len(argv) < 2 || argv[len(argv)-2] != "--" {
-				t.Fatalf("prompt is not preceded by \"--\": %v", argv)
-			}
-			if promptArg != len(argv)-1 {
-				t.Fatalf("promptArg = %d, want %d (last index): %v", promptArg, len(argv)-1, argv)
-			}
-			if argv[promptArg] != prompt {
-				t.Fatalf("argv[promptArg] = %q, want %q", argv[promptArg], prompt)
-			}
-			if argv[sessionSelectorArg] != "--session-id" {
-				t.Fatalf("argv[sessionSelectorArg] = %q, want %q", argv[sessionSelectorArg], "--session-id")
-			}
-			for _, want := range []string{"--model", "claude-sonnet-4-6", "--effort", "high", "--session-id", "session-1"} {
-				if !slices.Contains(argv, want) {
-					t.Errorf("argv missing %q: %v", want, argv)
-				}
-			}
-			// Simulate the completion-recovery path, which overwrites both
-			// indices in place: promptArg with a fresh prompt, and the
-			// "--session-id" token itself with "--resume" so the value
-			// that follows it is reinterpreted as the resumed session id.
-			recoveryArgv := append([]string(nil), argv...)
-			recoveryArgv[promptArg] = "recovery prompt"
-			recoveryArgv[sessionSelectorArg] = "--resume"
-			if recoveryArgv[len(recoveryArgv)-1] != "recovery prompt" {
-				t.Fatalf("recovery prompt did not land at the final argv element: %v", recoveryArgv)
-			}
-			if commandOptionValue(recoveryArgv, "--resume") != "session-1" {
-				t.Fatalf("--resume did not carry the original session id: %v", recoveryArgv)
-			}
-		})
-	}
-}
-
 // Claude 2.1.263 treats --model auto as an unrecognized literal model. The
 // adapter admits auto as "let the harness pick", so its command must match
 // the empty-model invocation while preserving explicit model selections.
@@ -364,41 +304,33 @@ func TestBuildClaudeArgvResolvesAutomaticModel(t *testing.T) {
 			if err := adapter.ValidateConfig(model, nil); err != nil {
 				t.Fatal(err)
 			}
-			argv, promptArg, sessionArg := buildClaudeArgv([]string{"claude"}, defaultClaudeExtraArgs, model, "high", "session-1", "--- prompt")
+			argv, sessionArg := buildClaudeArgv([]string{"claude"}, defaultClaudeExtraArgs, model, "high", "session-1")
 			want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"}
 			if model == "claude-sonnet-5" {
 				want = append(want, "--model", model)
 			}
-			want = append(want, "--effort", "high", "--session-id", "session-1", "--", "--- prompt")
+			want = append(want, "--effort", "high", "--session-id", "session-1")
 			if !slices.Equal(argv, want) {
 				t.Fatalf("command = %v, want %v", argv, want)
 			}
-			if argv[promptArg] != "--- prompt" || argv[sessionArg] != "--session-id" || argv[sessionArg+1] != "session-1" {
+			if argv[sessionArg] != "--session-id" || argv[sessionArg+1] != "session-1" {
 				t.Fatalf("model selection broke recovery argument indices: %v", argv)
 			}
 		})
 	}
 }
 
-// TestBuildClaudeArgvShiftUnderSandboxWrapping asserts promptArg and
-// sessionSelectorArg remain correct once confineArgv prepends sandbox
-// wrapper arguments ahead of the whole command, in both the sandboxed and
-// non-sandboxed branches of Run.
+// TestBuildClaudeArgvShiftUnderSandboxWrapping asserts sessionSelectorArg
+// remains correct once confineArgv prepends sandbox wrapper arguments ahead
+// of the whole command.
 func TestBuildClaudeArgvShiftUnderSandboxWrapping(t *testing.T) {
-	prompt := "---\nrole: curator\n---\n\ndo the thing"
-	argv, promptArg, sessionSelectorArg := buildClaudeArgv(
-		[]string{"claude"}, nil, "", "", "session-1", prompt,
-	)
+	argv, sessionSelectorArg := buildClaudeArgv([]string{"claude"}, nil, "", "", "session-1")
 	sandbox := &stubSandbox{}
 	wrapped, shift, err := confineArgv(sandbox, argv, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("confineArgv: %v", err)
 	}
-	promptArg += shift
 	sessionSelectorArg += shift
-	if wrapped[promptArg] != prompt {
-		t.Fatalf("shifted promptArg = %d does not carry the prompt: %v", promptArg, wrapped)
-	}
 	if wrapped[sessionSelectorArg] != "--session-id" {
 		t.Fatalf("shifted sessionSelectorArg = %d does not carry --session-id: %v", sessionSelectorArg, wrapped)
 	}
@@ -581,8 +513,8 @@ func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *te
 	if !bytes.Contains(out.Transcript, []byte("recovered terminal output")) {
 		t.Fatalf("transcript lost recovery terminal output:\n%s", out.Transcript)
 	}
-	initialPrompt := commandPromptValue(runner.reqs[0].Command)
-	recoveryPrompt := commandPromptValue(runner.reqs[1].Command)
+	initialPrompt := string(runner.reqs[0].Stdin)
+	recoveryPrompt := string(runner.reqs[1].Stdin)
 	var orderedContent []string
 	for _, line := range bytes.Split(bytes.TrimSpace(out.Transcript), []byte("\n")) {
 		var event transcriptEvent
@@ -657,7 +589,7 @@ func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 			if slices.Contains(runner.reqs[1].Command, "--session-id") {
 				t.Fatalf("recovery started a new session: %v", runner.reqs[1].Command)
 			}
-			recoveryPrompt := commandPromptValue(runner.reqs[1].Command)
+			recoveryPrompt := string(runner.reqs[1].Stdin)
 			if !strings.Contains(recoveryPrompt, tc.completionPath) ||
 				!strings.Contains(recoveryPrompt, "previous turn ended without writing") {
 				t.Fatalf("recovery prompt = %q", recoveryPrompt)
@@ -728,7 +660,7 @@ func TestClaudeAdapterRepairsSchemaInvalidCompletionInSameSession(t *testing.T) 
 			if len(runner.reqs) != 2 {
 				t.Fatalf("process calls = %d, want one bounded repair turn", len(runner.reqs))
 			}
-			recoveryPrompt := commandPromptValue(runner.reqs[1].Command)
+			recoveryPrompt := string(runner.reqs[1].Stdin)
 			if !strings.Contains(recoveryPrompt, "/outputs/findingResponses") ||
 				!strings.Contains(recoveryPrompt, "expected string") {
 				t.Fatalf("repair prompt omitted validation detail: %q", recoveryPrompt)
@@ -783,17 +715,6 @@ func TestClaudeAdapterFailsClearlyAfterInvalidCompletionRepairIsExhausted(t *tes
 
 func commandOptionValue(command []string, option string) string {
 	index := slices.Index(command, option)
-	if index < 0 || index+1 >= len(command) {
-		return ""
-	}
-	return command[index+1]
-}
-
-// commandPromptValue returns the positional prompt argv carries behind its
-// "--" terminator, so a prompt beginning with "-" is never mistaken for one
-// of the option tokens above.
-func commandPromptValue(command []string) string {
-	index := slices.Index(command, "--")
 	if index < 0 || index+1 >= len(command) {
 		return ""
 	}
@@ -920,7 +841,7 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	adapter := &ClaudeAdapter{Command: []string{"claude-sandbox-test"}, Runner: runner}
 	if _, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
@@ -930,7 +851,7 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(runner.lastReq.Command) < 3 || runner.lastReq.Command[0] != "sandbox-stub" ||
-		runner.lastReq.Command[2] != "claude" {
+		runner.lastReq.Command[2] != "claude-sandbox-test" {
 		t.Fatalf("command is not sandbox-wrapped: %v", runner.lastReq.Command)
 	}
 	for _, name := range []string{"CLAUDE_CONFIG_DIR=", "TMPDIR="} {

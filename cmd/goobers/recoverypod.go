@@ -54,6 +54,13 @@ func publishPodRecovery(ctx context.Context, repository string, trace podRecover
 		claims[0].ItemID == "" || claims[0].ReleasedAt != nil || !claims[0].ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("pod recovery requires exactly one current issue claim")
 	}
+	// A stage that failed before its checkout created .git (credential or
+	// declaration failure, a clone that never started) left no repository to
+	// take into custody. Probing one would fail with "not a git repository"
+	// and stop the pod from surrendering the stage's real failure (#6920).
+	if materialized, err := podRepositoryMaterialized(repository); err != nil || !materialized {
+		return err
+	}
 	ctx, cancel := context.WithDeadline(ctx, claims[0].ExpiresAt)
 	defer cancel()
 	repo := providers.RepositoryRef{
@@ -138,6 +145,19 @@ func publishPodRecovery(ctx context.Context, repository string, trace podRecover
 		_, _, err := recovery.Retain(ctx, request, publication)
 		return err
 	})
+}
+
+// podRepositoryMaterialized reports whether the checkout created a git
+// directory (or gitfile) at repository. Only absence means "nothing to
+// recover"; any other stat failure is returned so custody fails closed.
+func podRepositoryMaterialized(repository string) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(repository, ".git")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect workspace repository for recovery custody: %w", err)
+	}
+	return true, nil
 }
 
 func podRecoveryPhase(ctx context.Context, trace podRecoveryTrace, phase string, run func(context.Context) error) error {

@@ -34,7 +34,7 @@ func (r *Runner) yieldChildCustody(ctx context.Context, tf *taskFrame, attempt i
 		}
 		// Repeated suspension retains the same owner and budget. No harness may
 		// resume against a possibly partial application; retry only its exact plan.
-		if _, err := r.cfg.ChildParentCapacity.SuspendChildParent(ctx, tf.in.RunID); err != nil {
+		if _, err := r.suspendChildBranch(ctx, tf, request); err != nil {
 			return "", err
 		}
 		timer := time.NewTimer(30 * time.Second)

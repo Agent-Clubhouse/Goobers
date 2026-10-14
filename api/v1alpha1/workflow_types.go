@@ -180,6 +180,16 @@ type ReadinessConditions struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	DesiredConcurrentRuns int32 `json:"desiredConcurrentRuns,omitempty" yaml:"desiredConcurrentRuns,omitempty"`
+	// RequireProviderAuthorization makes provider authorization health a
+	// pre-claim readiness predicate (#5317). When true, autonomous dispatch
+	// first verifies, without mutating anything, that the instance's resolved
+	// credential for the gaggle's provider repository is valid and can read the
+	// repository and its issues. An invalid, revoked, insufficient, unsupported,
+	// or unverifiable credential fails closed: no run starts, no work is
+	// claimed, and the scheduler reports a stable provider-auth-unhealthy
+	// reason. Manual `goobers run` stays available for diagnosis.
+	// +optional
+	RequireProviderAuthorization bool `json:"requireProviderAuthorization,omitempty" yaml:"requireProviderAuthorization,omitempty"`
 }
 
 // TaskType is the execution kind of a task: code-driven or goober-executed.
@@ -360,14 +370,15 @@ type Task struct {
 	// +kubebuilder:validation:Enum=fail;salvage
 	// +optional
 	OnTimeout string `json:"onTimeout,omitempty" yaml:"onTimeout,omitempty"`
-	// ExpectedOutputs declares intended task postconditions. The V0 local runner
-	// accepts but does not enforce this field; validation emits VER003 when set.
+	// ExpectedOutputs declares intended task postconditions. Through DSL 3.0 it
+	// is advisory and validation emits VER003 when set. From DSL 3.1 a stage
+	// fails when it succeeds without emitting every declared key.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
 	// ArtifactSlots declares named artifact positions this producer may publish
 	// in DSL 3.1 and later. The names are producer-local stable handles; runtime
 	// resolution still uses the existing positional/context-pointer artifact
-	// transport. ExpectedOutputs remains advisory and unchanged.
+	// transport. ExpectedOutputs does not name artifact slots.
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
 	ArtifactSlots []ArtifactSlot `json:"artifactSlots,omitempty" yaml:"artifactSlots,omitempty"`

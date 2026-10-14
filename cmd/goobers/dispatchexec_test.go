@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -363,6 +364,58 @@ func TestRunDispatchExecContextSurrendersFailureEnvelopeWithExitZero(t *testing.
 
 	if code := runDispatchExecContext(context.Background(), io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (the failure is IN the surrendered envelope, not the process exit)", code)
+	}
+}
+
+// #6920: a writable-repo stage that fails before its checkout must still
+// surrender its own failure. Recovery custody used to probe the empty working
+// directory as a repository, fail with "not a git repository", and exit 1
+// without surrendering, so the engine only saw an infrastructure failure.
+func TestRunDispatchExecContextSurrendersPreCheckoutFailureOfWritableRepoStage(t *testing.T) {
+	var surrenderBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == apicontract.ClaimListPath {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"entries":[{"runId":"run-1","gaggle":"web","itemId":"42","expiresAt":"2030-01-01T00:00:00Z"}],"claimVisibility":"local"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/surrender") {
+			surrenderBody, _ = io.ReadAll(r.Body)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Chdir(t.TempDir())
+
+	t.Setenv(dispatcher.EnvRunID, "run-1")
+	t.Setenv(dispatcher.EnvGaggle, "web")
+	t.Setenv(dispatcher.EnvStage, "probe-builtin")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvStageWorkspace, "repo")
+	t.Setenv(executor.RepoProviderEnvVar, "github")
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
+	t.Setenv(dispatcher.EnvStageCommand, `not-json`)
+	t.Setenv(dispatcher.EnvStageScript, "")
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+
+	var stderr bytes.Buffer
+	if code := runDispatchExecContext(t.Context(), io.Discard, &stderr); code != 0 {
+		t.Fatalf("exit code = %d, want 0 once the original failure is surrendered; stderr:\n%s", code, stderr.String())
+	}
+	var surrendered dispatcher.SurrenderedResult
+	if err := json.Unmarshal(surrenderBody, &surrendered); err != nil {
+		t.Fatalf("decode surrendered body %q: %v", surrenderBody, err)
+	}
+	if surrendered.Result.Status != apiv1.ResultFailure || surrendered.Result.Error == nil || surrendered.Result.Error.Code != "stage_declaration_invalid" {
+		t.Fatalf("surrendered result = %+v, want the stage's own stage_declaration_invalid failure", surrendered.Result)
+	}
+	if !strings.Contains(stderr.String(), `code="stage_declaration_invalid"`) {
+		t.Fatalf("pod stderr does not name the stage failure before recovery:\n%s", stderr.String())
 	}
 }
 

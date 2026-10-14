@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
@@ -91,5 +92,78 @@ func TestChildJournalNamespacesTranscriptCaptureWithoutChangingSequence(t *testi
 	op := out.Ops[0]
 	if op.Checkpoint.Capture == capture || op.Key != op.Checkpoint.Capture+"/checkpoint/4" || op.Checkpoint.Stage != "work" {
 		t.Fatal("capture scope changed sequence", op)
+	}
+}
+
+func TestChildJournalAcceptsExactHarnessPayloadScope(t *testing.T) {
+	c := childpod.Contract{Identity: journal.RunIdentity{RunID: strings.Repeat("a", 32), Gaggle: "g"}, Stage: "work", Attempt: 2}
+	for _, progress := range []bool{false, true} {
+		event := journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{RunID: c.Identity.RunID, Stage: c.Identity.RunID + ":work", Attempt: 2}}
+		if progress {
+			event = journal.Event{Type: journal.EventAgentProgress, Progress: &journal.AgentProgress{RunID: c.Identity.RunID, Stage: c.Identity.RunID + ":work", Attempt: 2}}
+		}
+		project := func(e journal.Event) (livejournal.EmitRequest, error) {
+			return childJournalRequest(c, journal.Digest(nil), livejournal.EmitRequest{RunID: c.Identity.RunID, Gaggle: "g", Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "agent", Event: &e}}})
+		}
+		out, err := project(event)
+		if err != nil || out.Ops[0].Event.Stage != "work" || out.Ops[0].Event.Attempt != 2 {
+			t.Fatal("scoped harness telemetry refused", out, err)
+		}
+		if event.Stage != "" || event.Attempt != 0 {
+			t.Fatal("mutated harness event")
+		}
+		for _, change := range []func(*journal.Event){
+			func(e *journal.Event) { e.Stage = "other" },
+			func(e *journal.Event) { e.Attempt = 1 },
+			func(e *journal.Event) {
+				if e.Agent != nil {
+					e.Agent.RunID = "foreign"
+				} else {
+					e.Progress.RunID = "foreign"
+				}
+			},
+			func(e *journal.Event) {
+				if e.Agent != nil {
+					e.Agent.Stage = "other"
+				} else {
+					e.Progress.Stage = "other"
+				}
+			},
+			func(e *journal.Event) {
+				if e.Agent != nil {
+					e.Agent.Attempt = 1
+				} else {
+					e.Progress.Attempt = 1
+				}
+			},
+		} {
+			forged := event
+			if event.Agent != nil {
+				a := *event.Agent
+				forged.Agent = &a
+			}
+			if event.Progress != nil {
+				p := *event.Progress
+				forged.Progress = &p
+			}
+			change(&forged)
+			if _, err := project(forged); err == nil {
+				t.Fatal("foreign scope accepted", forged)
+			}
+		}
+	}
+}
+
+func TestChildJournalAcceptsTheAttemptsBackpropClaims(t *testing.T) {
+	c := childpod.Contract{Identity: journal.RunIdentity{RunID: strings.Repeat("a", 32), Gaggle: "g"}, Stage: "work", Attempt: 2}
+	request := livejournal.EmitRequest{RunID: c.Identity.RunID, Gaggle: "g", Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "key", Event: &journal.Event{
+		Type: journal.EventRunnerAnnotation, Stage: "work", Attempt: 2, Runner: map[string]any{"kind": creditgraph.ClaimsAnnotation},
+	}}}}
+	if _, err := childJournalRequest(c, journal.Digest(nil), request); err != nil {
+		t.Fatalf("worker could not journal its attempt's claims: %v", err)
+	}
+	request.Ops[0].Event.Attempt = 1
+	if _, err := childJournalRequest(c, journal.Digest(nil), request); err == nil {
+		t.Fatal("worker journaled claims for another attempt")
 	}
 }

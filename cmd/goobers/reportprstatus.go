@@ -73,7 +73,7 @@ func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	state, err := parseStatusState(providerInput("state", "succeeded"))
+	state, err := prstatus.ParseState(providerInput("state", "succeeded"))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -105,12 +105,4 @@ func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "published pr #%s status %s/%s = %s (id %d)\n", prNumber, req.Genre, req.Name, state, result.ID)
 	return 0
-}
-
-// parseStatusState maps a workflow-declared status verb to the provider-neutral
-// CheckState the status-publish primitive posts. Accepts both the ADO-native
-// verbs (succeeded/failed/pending) and the internal CheckState names so a
-// workflow author can use either.
-func parseStatusState(v string) (providers.CheckState, error) {
-	return prstatus.ParseState(v)
 }

@@ -176,3 +176,28 @@ delegated PR publication and Portal lineage in the remaining
 LAND-C04–C07 slices. Internal custody/wait tests do not qualify a live provider,
 pod, Temporal, or Fleet execution journey. Human restart is the common
 HITL path. No browser, human, or Fleet identity is inferred from a stage grant.
+
+
+## Portal child acceptance history
+
+Run detail has a separate accepted-child history view alongside recorded parent
+links and current stage waits. The live daemon reads this history from its existing
+trigger queue. Offline readers explicitly report it unavailable; an unavailable
+source or failed read is never presented as an empty history.
+
+`GET /api/v1/runs/{run}/children?cursor=...` follows the existing run-detail read
+authorization. The read service derives the gaggle from the parent's recorded
+identity, binds continuation cursors to that parent and gaggle, and returns at
+most 50 entries plus an opaque continuation cursor. It performs no reconciliation,
+queue creation, artifact reads, provider calls or mutations. Pages use stable child
+IDs, not chronological order. Refresh from the first page to include new entries
+that may sort before a previous cursor; retention can remove older entries.
+
+Queued, started, needs-human and terminal outcomes are observations of durable
+custody. Started does not establish current worker health. A cancellation request
+is displayed independently until a terminal result is recorded. Parent
+acknowledgement and expired result custody remain visible; expired results have
+no recovery link. Child run details may independently have been retained or pruned.
+The view refreshes on gaggle run invalidations and offers explicit refresh; it
+shows the observation time and uses the Portal's existing stale-data indication.
+This read surface does not enable public child execution or new interventions.

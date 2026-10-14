@@ -107,13 +107,16 @@ func TestChildWaitProjectionRefusesInvalidDeclaredOwners(t *testing.T) {
 	}
 }
 
-func TestChildWaitReadProjectionDoesNotEnableParallelRuntimeAdmission(t *testing.T) {
+// This private preparation already supports bound branch execution internally;
+// public workflow starts and parallel child queue admission remain gated.
+func TestChildWaitProjectionAgreesWithPreparedParallelRuntime(t *testing.T) {
 	events, wait, _ := parallelWaitFixture()
 	projected, err := ProjectChildWaits(events[:3])
 	if err != nil || len(projected.Waits) != 1 {
 		t.Fatal(projected, err)
 	}
-	if _, err := DecodeChildWaitHeader(wait, events[1]); err == nil {
-		t.Fatal("read projection widened serial runtime admission")
+	header, err := DecodeChildWaitHeader(wait, events[1])
+	if err != nil || header.Request != projected.Waits[wait.Branch].Header.Request {
+		t.Fatal("projection and prepared branch custody differ", err)
 	}
 }

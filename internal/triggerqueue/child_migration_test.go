@@ -25,7 +25,7 @@ func TestChildCustodyUpgradePreservesAdmittedReceiptAndReservation(t *testing.T)
 	}
 	before := &Store{db: db}
 	request := reservedChildRequest("existing-parent")
-	child := acceptChildTest(t, before, request, childTestTime)
+	child := seedLegacyChild(t, before, request, childTestTime)
 	// Reproduce the bytes reserved by the historical admission binary. Using
 	// today's admission helper alone would pre-reserve the new history credit.
 	if _, err := db.Exec(`UPDATE child_lineages SET reserved_bytes=34050048 WHERE child_id=?`, child.ChildID); err != nil {
@@ -80,7 +80,7 @@ func TestChildDispositionUpgradePreservesReturnedWorkspaceAndCredits(t *testing.
 		t.Fatal(err)
 	}
 	before := &Store{db: db}
-	child := acceptChildTest(t, before, reservedChildRequest("returned-parent"), childTestTime)
+	child := seedLegacyChild(t, before, reservedChildRequest("returned-parent"), childTestTime)
 	if _, err := db.Exec(`UPDATE child_lineages SET reserved_bytes=34050048 WHERE child_id=?`, child.ChildID); err != nil {
 		t.Fatal(err)
 	}

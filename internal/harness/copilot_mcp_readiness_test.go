@@ -192,7 +192,7 @@ func TestRequiredMCPReadinessTransientRetryDoesNotSpendModelTurn(t *testing.T) {
 		runner := &copilotControlledRunner{request: request, promptIndex: 1, readiness: MCPReadiness{Server: goobersIOServerName, Source: "adapter-session"}, factory: func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
 			return session, nil
 		}}
-		_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p=work"}, Dir: t.TempDir()})
+		_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p="}, Stdin: []byte("work"), Dir: t.TempDir()})
 		if session == unavailable && !errors.Is(err, errRequiredMCPUnavailable) {
 			t.Fatalf("first attempt=%v", err)
 		}
@@ -234,7 +234,7 @@ func TestRequiredMCPReadinessHonorsInvocationDeadline(t *testing.T) {
 		return session, nil
 	}}
 	defer runner.close()
-	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p=work"}, Timeout: 10 * time.Millisecond})
+	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p="}, Stdin: []byte("work"), Timeout: 10 * time.Millisecond})
 	if !errors.Is(err, ErrTimeout) || session.modelCalls != 0 {
 		t.Fatalf("calls=%d error=%v", session.modelCalls, err)
 	}
@@ -247,7 +247,7 @@ func TestRequiredMCPReadinessReportFailurePreventsModel(t *testing.T) {
 		return session, nil
 	}}
 	defer runner.close()
-	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p=work"}})
+	_, err := runner.Run(context.Background(), ProcessRequest{Command: []string{"copilot", "-p="}, Stdin: []byte("work")})
 	if !errors.Is(err, failure) || session.modelCalls != 0 {
 		t.Fatalf("calls=%d error=%v", session.modelCalls, err)
 	}
@@ -330,10 +330,15 @@ func TestCopilotControlExitBeforeReadinessReportsStatusAndStderr(t *testing.T) {
 		"error: option '--usage-output-file <file>' cannot be used with option '--headless'\n"
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 1, Stderr: []byte(stderr)}, err: errors.New("exit status 1")}
 	_, _, err := startCopilotControlProcess(context.Background(), runner, ProcessRequest{
-		Command: []string{"copilot", "-p=private prompt", "--session-id", "owned-session"},
+		Command: []string{"copilot", "-p=", "--session-id", "owned-session"},
+		Stdin:   []byte("private prompt"),
 	}, 1)
 	if !errors.Is(err, errRequiredMCPUnavailable) {
 		t.Fatalf("error=%v", err)
+	}
+	// The headless server takes the prompt over session RPC, never on stdin.
+	if len(runner.lastReq.Stdin) != 0 {
+		t.Fatalf("control process stdin = %q, want none", runner.lastReq.Stdin)
 	}
 	message := err.Error()
 	if !strings.Contains(message, "exited before readiness (exit 1)") ||

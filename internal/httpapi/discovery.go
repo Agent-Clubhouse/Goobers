@@ -291,6 +291,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.credentials != nil
 	case apicontract.RouteChildWorkflowValidate, apicontract.RouteChildWorkflowStart, apicontract.RouteChildWorkflowStatus:
 		available = config.childWorkflows != nil
+	case apicontract.RouteChildWorkflowAccessAcquire, apicontract.RouteChildWorkflowAccessRevoke:
+		available = config.workflowParentAccess != nil
 	case apicontract.RouteChildWorkflowResolve:
 		_, available = config.childWorkflows.(ChildWorkflowResolutionService)
 	case apicontract.RouteCredentialRefresh:

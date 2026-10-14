@@ -129,6 +129,9 @@ func InitializePortableWorkspace(ctx context.Context, repository, archive string
 	if err := ImportPortableSnapshot(ctx, repository, archive, snapshot, maxBytes); err != nil {
 		return err
 	}
+	if err := portableWorkspaceAttributes(ctx, repository); err != nil {
+		return err
+	}
 	if err := recoveryGit(ctx, repository, io.Discard, "-c", "core.hooksPath="+os.DevNull, "checkout", "-B", "goobers-child-transport", snapshot.Record.SnapshotSHA); err != nil {
 		return err
 	}

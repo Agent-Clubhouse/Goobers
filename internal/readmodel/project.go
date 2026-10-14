@@ -115,6 +115,7 @@ type OperatorFacts struct {
 	EngineFallback        *EngineFallback
 	IssueNumber           string
 	IssueTitle            string
+	IssueURL              string
 	DisplayTitle          string
 	LastHeartbeatAt       *time.Time
 	PullRequest           *journal.ExternalRef
@@ -133,6 +134,13 @@ type OperatorFacts struct {
 	WorkspaceBranch       string
 	WorkspaceBranchSHA    string
 	InjectedInputs        []journal.InputRef
+	Reliability           ReliabilityFacts
+}
+
+func (o *OperatorFacts) foldObservations(event journal.Event) {
+	o.Activity = o.Activity.After(event)
+	o.RetryBackoff = o.RetryBackoff.After(event)
+	o.Reliability = o.Reliability.After(event)
 }
 
 // StageRow is one projected (run, stage) pair.
@@ -359,8 +367,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		if !event.KnownSchema() {
 			continue
 		}
-		row.Operator.Activity = row.Operator.Activity.After(event)
-		row.Operator.RetryBackoff = row.Operator.RetryBackoff.After(event)
+		row.Operator.foldObservations(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}
@@ -536,7 +543,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			// no query predicate expects, and the run would quietly vanish from
 			// every phase-filtered list. Leave the run as it was; repair and the
 			// differential oracle surface the discrepancy.
-			if !terminalPhase(phase) {
+			if !phase.IsTerminal() {
 				continue
 			}
 			row.Phase = phase
@@ -621,6 +628,7 @@ func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []jou
 func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
 	projection.Run.Operator.QueueEligibility = projectQueueEligibility(reader, identity, events)
+	projection.Run.Operator.Reliability.Allowances = PinnedReliabilityAllowances(reader, identity)
 	projection.Remediation = projectRemediationExamples(identity, projection.Run, events)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
@@ -689,6 +697,7 @@ func projectOperatorStageOutputs(operator *OperatorFacts, event journal.Event) {
 		if idOK && titleOK && id != "" && title != "" {
 			operator.IssueNumber = id
 			operator.IssueTitle = title
+			operator.IssueURL = StageIssueURL(event)
 		}
 	}
 	if title, ok := StageDisplayTitle(event); ok {
@@ -1153,20 +1162,6 @@ func sortedStages(set map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// terminalPhase reports whether phase is a recognised terminal run phase.
-//
-// PhaseRunning is excluded deliberately: a run.finished carrying "running" is
-// contradictory, and accepting it would leave a row marked terminal while its
-// phase says otherwise.
-func terminalPhase(phase journal.RunPhase) bool {
-	switch phase {
-	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseEscalated, journal.PhaseAborted:
-		return true
-	default:
-		return false
-	}
 }
 
 func terminalGatePhase(target string) (journal.RunPhase, bool) {

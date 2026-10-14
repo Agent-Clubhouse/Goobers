@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
+	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -47,7 +48,7 @@ type pullRequestBranchFinder interface {
 // credential, and the pull-request lookup to the routed provider under a
 // pull-request credential (crossProviderPRFinder).
 func openIssueCloseOutProvider(root string, repo, backlogRepo providers.RepositoryRef, stderr io.Writer) (issueCloseOutProvider, error) {
-	stageProvider, err := newProviderForStage(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
+	stageProvider, err := newProviderForStage(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func openIssueCloseOutProvider(root string, repo, backlogRepo providers.Reposito
 	if !ok {
 		return nil, fmt.Errorf("issue-close-out does not support repository provider %q", repo.Provider)
 	}
-	if !backlogOnOtherProvider(repo, backlogRepo) {
+	if !providerconfig.BacklogOnOtherProvider(repo, backlogRepo) {
 		return provider, nil
 	}
 	finder, err := crossProviderPRFinder(root, repo, stderr)

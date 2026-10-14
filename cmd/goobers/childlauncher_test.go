@@ -64,10 +64,14 @@ type actualChildFixture struct {
 	releases  atomic.Int32
 }
 
-func actualChildLaunchFixture(t *testing.T) *actualChildFixture {
+func actualChildLaunchFixture(t *testing.T, capture ...bool) *actualChildFixture {
 	t.Helper()
 	f := &actualChildFixture{childDrainFixture: newChildDrainFixture(t, strings.Replace(dispatchChildSource, "      type: deterministic", "      type: deterministic\n      workspace: scratch", 1))}
 	a := f.childDrainFixture.launcher.authority
+	if len(capture) == 0 || capture[0] {
+		child, _ := f.state(t)
+		keepChildLaunchSnapshotFixture(t, f.service.queue, child)
+	}
 	f.authority = &launchAuthority{authority: a}
 	layout := f.childDrainFixture.launcher.layout
 	parent, err := journal.Create(layout.ForGaggle(a.Origin.Gaggle).RunsDir(), journal.RunIdentity{RunID: a.Origin.RunID, Gaggle: a.Origin.Gaggle, Workflow: a.ParentWorkflow, WorkflowDigest: a.ParentWorkflowDigest, GooberDigest: a.ParentGooberDigest, ConfigGeneration: a.ConfigGeneration}, nil)
@@ -259,5 +263,42 @@ func TestChildJournalBarrierFailureKeepsIdentityWithoutStageEffects(t *testing.T
 	})
 	if !errors.Is(err, refused) || f.executor.calls.Load() != 0 {
 		t.Fatalf("barrier executed stage: %d %v", f.executor.calls.Load(), err)
+	}
+}
+
+// The launcher unit fixture substitutes the upstream capture owner. Real parent
+// qualification records these bytes through WorkspaceCoordinator.Capture.
+func keepChildLaunchSnapshotFixture(t *testing.T, queue *triggerqueue.Store, child triggerqueue.ChildRecord) {
+	t.Helper()
+	if _, err := queue.ChildSnapshot(t.Context(), child.Identity); err == nil {
+		return
+	} else if !errors.Is(err, triggerqueue.ErrChildSnapshotPending) {
+		t.Fatal(err)
+	}
+	receipt, bundle := []byte("unit fixture parent capture"), []byte("unit fixture carrier")
+	if err := queue.KeepChildSnapshot(t.Context(), child, triggerqueue.ChildSnapshot{Receipt: receipt, ReceiptDigest: journal.Digest(receipt), Bundle: bundle, BundleDigest: journal.Digest(bundle)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChildLauncherScratchWaitsForParentSnapshot(t *testing.T) {
+	f := actualChildLaunchFixture(t, false)
+	if err := f.service.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	child, receipt := f.state(t)
+	if receipt.State != triggerqueue.Accepted || child.State != triggerqueue.ChildQueued || f.executor.calls.Load() != 0 {
+		t.Fatal("scratch child bypassed parent capture", child.State, receipt.State)
+	}
+	if dir, err := acceptedTriggerJournalDir(t.Context(), f.launcher.layout, child.RunID); err != nil || dir != "" {
+		t.Fatal("uncaptured child published an execution journal", dir, err)
+	}
+	keepChildLaunchSnapshotFixture(t, f.service.queue, child)
+	if err := f.service.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f.wg.Wait()
+	if f.executor.calls.Load() != 1 {
+		t.Fatal("captured scratch child did not execute exactly once")
 	}
 }

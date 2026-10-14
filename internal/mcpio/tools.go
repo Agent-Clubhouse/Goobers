@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/pathutil"
 )
@@ -34,6 +35,8 @@ const maxGrepMatches = 200
 type Toolset struct {
 	cfg            Config
 	childTransport http.RoundTripper
+	schemas        map[string]*handoffcheck.Schema
+	schemaErr      error
 }
 
 // NewToolset builds a Toolset from an already-loaded, already-validated
@@ -43,7 +46,8 @@ func NewToolset(cfg Config) *Toolset {
 		access := *cfg.ChildWorkflows
 		cfg.ChildWorkflows = &access
 	}
-	return &Toolset{cfg: cfg}
+	schemas, err := compilePublicationSchemas(cfg.PublicationSchemas)
+	return &Toolset{cfg: cfg, schemas: schemas, schemaErr: err}
 }
 
 // RunInfo is get_run_info's return shape.
@@ -75,6 +79,9 @@ func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string
 // for legacy output, or artifactManifestFile for a multi-file staging manifest.
 // Manifest payloads are separately prepared by the stage; the runner validates
 // and lifts the complete set only after completion, never from this tool call.
+// When the stage declares schema-bound slots (Config.PublicationSchemas), a
+// manifest whose payloads are absent, malformed, or schema-invalid is refused
+// with a PublicationRejection before anything is written (#6868).
 //
 // The write is atomic (#2422). os.WriteFile truncates the existing artifact
 // before writing its replacement, so a second publish that died mid-write —
@@ -99,6 +106,9 @@ func (t *Toolset) PublishOutput(content string) (bytesWritten int, digest string
 			return 0, "", fmt.Errorf("artifactFile and artifactManifestFile are mutually exclusive")
 		}
 		target = t.cfg.ArtifactManifestFile
+		if err := t.checkPublication(content); err != nil {
+			return 0, "", err
+		}
 	}
 	if target == "" {
 		return 0, "", fmt.Errorf("this stage declares no artifactFile input — publish_output has nothing to write to")
@@ -200,6 +210,9 @@ type ReadResult struct {
 // defaultReadLineCap, in which case the result is explicitly truncated
 // (Truncated: true, TotalLines still reported) rather than silently cut off.
 func (t *Toolset) ReadInput(name string, startLine, endLine int) (ReadResult, error) {
+	if startLine > 0 && endLine > 0 && endLine < startLine {
+		return ReadResult{}, fmt.Errorf("invalid line range: endLine %d is before startLine %d", endLine, startLine)
+	}
 	data, err := t.readInputFile(name)
 	if err != nil {
 		return ReadResult{}, err
@@ -226,9 +239,6 @@ func (t *Toolset) ReadInput(name string, startLine, endLine int) (ReadResult, er
 	}
 	if start > total {
 		return ReadResult{StartLine: start, EndLine: start - 1, TotalLines: total}, nil
-	}
-	if end < start {
-		end = start
 	}
 	return ReadResult{
 		Content:    strings.Join(lines[start-1:end], "\n"),

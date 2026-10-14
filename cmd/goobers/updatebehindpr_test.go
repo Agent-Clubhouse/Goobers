@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -43,6 +44,19 @@ type updateBehindServer struct {
 	exactCalls              int
 	unselectedCount         int
 	graphQLCalls            int
+	// baseCheckStates is the required-ci status on base commits (#7071):
+	// the merge-base opening-base-sha, baseHistory's commits, and
+	// mergedBranchCommit. A commit it omits passes. extraHeadFailure names
+	// one more check failing on the PR head only. baseHistory is the base's
+	// first-parent chain from the live tip back to (excluding) the
+	// merge-base, newest first, as the commit listing reports it;
+	// mergedBranchCommit, when set, is a merged branch's commit listed as
+	// the tip's second parent.
+	baseCheckStates    map[string]string
+	baseHistory        []string
+	mergedBranchCommit string
+	extraHeadFailure   string
+	baseStatusReads    map[string]int
 }
 
 func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
@@ -153,20 +167,67 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		if s.checkState == "failure" {
 			state = "FAILURE"
 		}
-		serveBulkCheckStates(t, w, r, &s.graphQLCalls, map[string]string{headSHA: state})
+		states := map[string]string{headSHA: state}
+		for sha, baseState := range s.baseCheckStates {
+			if baseState == "failure" || baseState == "pending" {
+				states[sha] = strings.ToUpper(baseState)
+			}
+		}
+		serveBulkCheckStates(t, w, r, &s.graphQLCalls, states)
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, _ *http.Request) {
 		state := s.checkState
 		if state == "" {
 			state = "success"
 		}
-		writeFakeJSON(w, map[string]interface{}{
-			"state": state,
-			"statuses": []map[string]string{{
-				"context": "required-ci",
-				"state":   state,
-			}},
+		statuses := []map[string]string{{
+			"context": "required-ci",
+			"state":   state,
+		}}
+		if s.extraHeadFailure != "" {
+			statuses = append(statuses, map[string]string{"context": s.extraHeadFailure, "state": "failure"})
+		}
+		writeFakeJSON(w, map[string]interface{}{"state": state, "statuses": statuses})
+	})
+	s.baseStatusReads = map[string]int{}
+	for _, sha := range []string{"opening-base-sha", "base-mid-sha", "merged-branch-sha", baseSHA} {
+		mux.HandleFunc(prefix+"/commits/"+sha+"/status", func(w http.ResponseWriter, _ *http.Request) {
+			s.baseStatusReads[sha]++
+			state := s.baseCheckStates[sha]
+			if state == "" {
+				state = "success"
+			}
+			writeFakeJSON(w, map[string]interface{}{
+				"state":    state,
+				"statuses": []map[string]string{{"context": "required-ci", "state": state}},
+			})
 		})
+		mux.HandleFunc(prefix+"/commits/"+sha+"/check-runs", func(w http.ResponseWriter, _ *http.Request) {
+			writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
+		})
+	}
+	mux.HandleFunc(prefix+"/commits", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("sha"); got != baseSHA {
+			t.Errorf("history listed from %q, want the live base tip", got)
+		}
+		commits := []map[string]interface{}{}
+		for i, sha := range s.baseHistory {
+			parent := "opening-base-sha"
+			if i+1 < len(s.baseHistory) {
+				parent = s.baseHistory[i+1]
+			}
+			parents := []map[string]string{{"sha": parent}}
+			if i == 0 && s.mergedBranchCommit != "" {
+				parents = append(parents, map[string]string{"sha": s.mergedBranchCommit})
+			}
+			commits = append(commits, map[string]interface{}{"sha": sha, "parents": parents})
+		}
+		if s.mergedBranchCommit != "" {
+			commits = append(commits, map[string]interface{}{
+				"sha": s.mergedBranchCommit, "parents": []map[string]string{{"sha": "opening-base-sha"}},
+			})
+		}
+		writeFakeJSON(w, commits)
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/check-runs", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
@@ -453,6 +514,81 @@ func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testi
 	}
 	if !strings.Contains(stdout, "requires full remediation") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+// TestUpdateBehindPRFailingOnlyOnBaseRedChecks covers #7071: a behind PR red
+// only on checks its base also failed, at the merge-base or at a base commit
+// since, is updated through the API instead of routed to an agentic
+// remediation that has nothing in the PR's diff to change. A failure the base
+// never shared in that range is the PR's own and still routes to full
+// remediation, as does base history the provider does not report.
+func TestUpdateBehindPRFailingOnlyOnBaseRedChecks(t *testing.T) {
+	mergeable := true
+	history := []string{"live-base-sha", "base-mid-sha"}
+	cases := []struct {
+		name             string
+		baseStates       map[string]string
+		history          []string
+		mergedBranch     bool
+		extraHeadFailure string
+		current          bool
+		labels           []string
+		wantUpdate       bool
+		wantReads        string
+		wantGraphQL      int
+	}{
+		{name: "failure inherited from merge-base", baseStates: map[string]string{"opening-base-sha": "failure"}, wantUpdate: true, wantReads: "opening-base-sha", wantGraphQL: 2},
+		{name: "inherited failure clears needs-remediation", baseStates: map[string]string{"opening-base-sha": "failure"}, labels: []string{needsRemediationLabel}, wantUpdate: true, wantReads: "opening-base-sha", wantGraphQL: 2},
+		{name: "base went red after merge-base and is fixed now", baseStates: map[string]string{"base-mid-sha": "failure"}, history: history, wantUpdate: true, wantReads: "base-mid-sha", wantGraphQL: 2},
+		{name: "base tip still fails the check", baseStates: map[string]string{"live-base-sha": "failure"}, history: history, wantUpdate: true, wantReads: "live-base-sha", wantGraphQL: 2},
+		{name: "base never failed the check", history: history, wantGraphQL: 2},
+		{name: "base history not reported", baseStates: map[string]string{"base-mid-sha": "failure"}, wantGraphQL: 2},
+		{name: "only a merged branch commit failed the check", baseStates: map[string]string{"merged-branch-sha": "failure"}, history: history, mergedBranch: true, wantGraphQL: 2},
+		{name: "merge-base check still pending", baseStates: map[string]string{"opening-base-sha": "pending"}, wantGraphQL: 2},
+		{name: "one failing check is the PR's own", baseStates: map[string]string{"opening-base-sha": "failure"}, extraHeadFailure: "lint", wantReads: "opening-base-sha", wantGraphQL: 2},
+		{name: "current PR is never updated", baseStates: map[string]string{"opening-base-sha": "failure"}, current: true, wantGraphQL: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &updateBehindServer{
+				mergeable:        &mergeable,
+				checkState:       "failure",
+				baseCheckStates:  tc.baseStates,
+				baseHistory:      tc.history,
+				extraHeadFailure: tc.extraHeadFailure,
+				current:          tc.current,
+				labels:           append([]string(nil), tc.labels...),
+			}
+			if tc.mergedBranch {
+				state.mergedBranchCommit = "merged-branch-sha"
+			}
+			stdout, _, result := runUpdateBehindPRTest(t, state)
+
+			var reads []string
+			for sha := range state.baseStatusReads {
+				reads = append(reads, sha)
+			}
+			sort.Strings(reads)
+			if got := strings.Join(reads, ","); got != tc.wantReads || state.graphQLCalls != tc.wantGraphQL {
+				t.Fatalf("base failure reads = %q, bulk check-state calls = %d; want %q, %d", got, state.graphQLCalls, tc.wantReads, tc.wantGraphQL)
+			}
+			if !tc.wantUpdate {
+				if state.updateCalls != 0 || result["needsFullRemediation"] != "true" {
+					t.Fatalf("update calls = %d, result = %v, want routed to full remediation", state.updateCalls, result)
+				}
+				return
+			}
+			if state.updateCalls != 1 || result["needsFullRemediation"] != "false" || result["selectedNumber"] != "55" {
+				t.Fatalf("update calls = %d, result = %v, want one API branch update", state.updateCalls, result)
+			}
+			if len(state.labels) != 0 {
+				t.Fatalf("labels = %v, want needs-remediation cleared", state.labels)
+			}
+			if !strings.Contains(stdout, "updated behind branch through GitHub API") {
+				t.Fatalf("stdout = %q", stdout)
+			}
+		})
 	}
 }
 

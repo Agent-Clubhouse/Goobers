@@ -36,6 +36,9 @@ type InstanceLog struct {
 	file   *os.File
 	seq    uint64
 	closed bool
+	// tickSkipRetry fences CompactTickSkips on a generation whose remaining
+	// records alone exceed the budget; see tickSkipCompactionDue.
+	tickSkipRetry tickSkipRetry
 
 	droppedAppends atomic.Uint64
 	dropObserver   InstanceAppendDropObserver

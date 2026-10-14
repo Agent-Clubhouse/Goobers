@@ -71,8 +71,25 @@ func invokeChildAgent(ctx context.Context, tf taskFrame, invocation *gooberInvoc
 // or run.finished closes an earlier unacknowledged scope. A crashed writer
 // requires independently verified owner cleanup before recovery can continue.
 func VerifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdentity, events []journal.Event) error {
-	if err := verifyChildWriterPolicy(reader, id); err != nil {
+	return verifyChildWorkspaceQuiescence(reader, id, events, nil)
+}
+
+func verifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdentity, events []journal.Event, branch *int) error {
+	pending, err := pendingChildWorkspaceWriters(reader, id, events)
+	if err != nil {
 		return err
+	}
+	for _, scope := range pending {
+		if childWriterBlocksBranch(scope.Branch, branch) {
+			return invoke.ErrWorkspaceNotQuiescent
+		}
+	}
+	return nil
+}
+
+func pendingChildWorkspaceWriters(reader *journal.Reader, id journal.RunIdentity, events []journal.Event) (map[string]journal.Event, error) {
+	if err := verifyChildWriterPolicy(reader, id); err != nil {
+		return nil, err
 	}
 	pending := map[string]journal.Event{}
 	seen := map[string]bool{}
@@ -83,25 +100,22 @@ func VerifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdenti
 		}
 		scope, ok := event.Runner["writerScope"].(string)
 		if !ok || len(scope) != 32 || !apiv1.ValidRunID(scope) || event.Stage == "" || event.Attempt < 1 {
-			return invoke.ErrWorkspaceNotQuiescent
+			return nil, invoke.ErrWorkspaceNotQuiescent
 		}
 		if kind == childWriterStarted {
 			if seen[scope] {
-				return invoke.ErrWorkspaceNotQuiescent
+				return nil, invoke.ErrWorkspaceNotQuiescent
 			}
 			seen[scope], pending[scope] = true, event
 			continue
 		}
 		started, ok := pending[scope]
 		if !ok || started.Stage != event.Stage || started.Attempt != event.Attempt || started.Branch != event.Branch {
-			return invoke.ErrWorkspaceNotQuiescent
+			return nil, invoke.ErrWorkspaceNotQuiescent
 		}
 		delete(pending, scope)
 	}
-	if len(pending) != 0 {
-		return invoke.ErrWorkspaceNotQuiescent
-	}
-	return nil
+	return pending, nil
 }
 
 func verifyChildWriterPolicy(reader *journal.Reader, id journal.RunIdentity) error {
@@ -149,5 +163,17 @@ func childWriterCustodyReady(jr journalAppender) error {
 	if err != nil {
 		return err
 	}
-	return VerifyChildWorkspaceQuiescence(reader, id, events)
+	recorder, ok := jr.(ArtifactRecorder)
+	if !ok {
+		return invoke.ErrWorkspaceNotQuiescent
+	}
+	_, branch, err := OwnedJournalScope(recorder)
+	if err != nil {
+		return err
+	}
+	return verifyChildWorkspaceQuiescence(reader, id, events, &branch)
+}
+
+func childWriterBlocksBranch(owner int, branch *int) bool {
+	return branch == nil || *branch == 0 || owner == 0 || owner == *branch
 }

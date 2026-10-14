@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
@@ -517,6 +518,13 @@ func branchStateProblems(m *Machine, p apiv1.Parallel, branch apiv1.Branch, stat
 		problems = append(problems, fmt.Sprintf(
 			"parallel %q branch %q: gate %q is a human gate; human gates are not supported inside a branch (put it before the parallel or at the join)",
 			p.Name, branch.Name, state))
+	}
+
+	// DSL 3.1 child-capable blocks reserve independent branch forks before
+	// dispatch. Legacy blocks retain their shared-branch restrictions. Human
+	// gates remain unsupported regardless of repository isolation.
+	if m.Def.DSLVersion == supportmatrix.V31DSLVersion && m.ParallelHasChildStage(p) {
+		return problems
 	}
 
 	// Rule 9 — no writable repo workspace inside a branch. Every stage worktree

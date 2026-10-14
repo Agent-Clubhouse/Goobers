@@ -401,6 +401,21 @@ func faultAuditKeyFindingID(key string) string {
 	return key
 }
 
+// RecordGroundTruthLabel persists a user-defined ground-truth label beside the
+// run's attribution record. It is metadata for attribution aggregates only and
+// never mutates the run journal, phase, or gate verdicts.
+func RecordGroundTruthLabel(
+	ctx context.Context,
+	root string,
+	label creditgraph.GroundTruthLabel,
+) (creditgraph.GroundTruthLabel, error) {
+	runDir, err := instance.NewLayout(root).FindRunDir(strings.TrimSpace(label.RunID))
+	if err != nil {
+		return creditgraph.GroundTruthLabel{}, fmt.Errorf("record label: find run %q: %w", label.RunID, err)
+	}
+	return creditgraph.RecordLabel(ctx, runDir, label)
+}
+
 // RecordFaultAuditFix marks a finding for held-out verification by subsequent
 // report-only audit passes.
 func RecordFaultAuditFix(ctx context.Context, root, findingID string, appliedAt time.Time) error {
@@ -507,6 +522,16 @@ func storedAttributionObservation(
 		observation.ObservedAt = *row.FinishedAt
 	} else {
 		observation.ObservedAt = row.StartedAt
+	}
+	labels, err := creditgraph.ReadLabelStore(runDir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read ground-truth labels %q: %w", row.RunID, err)
+	default:
+		if label, ok := creditgraph.EffectiveLabel(labels.Labels); ok {
+			observation.GroundTruth = &label
+		}
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {

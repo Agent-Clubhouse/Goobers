@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -100,7 +101,7 @@ func (s *GrantIssuer) previousGrant(ctx context.Context, origin Origin) (string,
 
 func samePreparedAuthority(a, b Authority) bool {
 	return a.Origin == b.Origin && a.Actor == b.Actor && a.ConfigGeneration == b.ConfigGeneration && a.ParentWorkflow == b.ParentWorkflow &&
-		a.ParentWorkflowDigest == b.ParentWorkflowDigest && a.ParentGooberDigest == b.ParentGooberDigest
+		a.ParentWorkflowDigest == b.ParentWorkflowDigest && a.ParentGooberDigest == b.ParentGooberDigest && slices.Equal(a.ParentExecutionCapabilities, b.ParentExecutionCapabilities)
 }
 
 func (s *GrantIssuer) revoker(binding triggerqueue.ChildAuthority) func() error {

@@ -539,6 +539,7 @@ export interface StorageHealthStatus {
   warningFloorPercent?: number;
   criticalFloorBytes?: number;
   criticalFloorPercent?: number;
+  criticalResumeBytes?: number;
   measuredAt?: string;
   error?: string;
 }
@@ -1040,7 +1041,7 @@ export interface LineageRun {
 }
 
 export interface OperatorRunSummary {
-  issue?: { number: string; title?: string; labels?: string[] };
+  issue?: { number: string; title?: string; url?: string; labels?: string[] };
   /** Canonical run title a stage published after claiming work (#5429). Render verbatim; absent means fall back to issue or run ID. */
   displayTitle?: string;
   currentStage?: string;
@@ -1062,6 +1063,78 @@ export interface OperatorRunSummary {
   potentialBlockers: string[];
   /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
   diagnosticsLimitations?: string[];
+  /** Implementation reliability projection (#5313); absent on older daemons. */
+  reliability?: RunReliability;
+}
+
+/** A retry target's consumed/remaining count; null counts are unknown, never zero. */
+export interface ReliabilityBudget {
+  kind: string;
+  consumed: number | null;
+  remaining: number | null;
+  evidence: "journal" | "pinnedDefinition" | "terminalCause" | "unknown";
+}
+
+/** Implementation reliability state; missing evidence is reported as "unknown". */
+export interface RunReliability {
+  state: string;
+  currentStage?: string;
+  currentAttempt?: number;
+  failure: { classification: string; evidenceRule: string; code?: string };
+  budgets: ReliabilityBudget[];
+  latestVerdict: string;
+  acceptance: { state: string; digest?: string };
+  retained: {
+    branch?: string;
+    branchSha?: string;
+    pullRequest?: { provider: string; kind: string; id: string; url?: string };
+    /** "draft" or "ready" when reported by the opening stage, otherwise "unknown". */
+    pullRequestDraft?: string;
+    recoveryRunId?: string;
+  };
+  nextAction: string;
+  humanInterventionReason?: string;
+}
+
+export interface ChildPublicationItem {
+  action: "branch" | "pr";
+  state: "prepared" | "effect_pending" | "confirmed";
+  head: string;
+  base: string;
+  commit: string;
+  pullRequestUrl: string;
+  pullRequestNumber: number;
+  needsHuman: boolean;
+}
+
+export interface ChildPublicationHistory {
+  status: "recorded" | "unavailable" | "expired";
+  items: ChildPublicationItem[];
+}
+
+export interface ChildHistoryItem {
+  childId: string;
+  runId: string;
+  stageOccurrence: string;
+  invocationKey: string;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  acceptedAt: string;
+  updatedAt: string;
+  terminalAt?: string;
+  acknowledgedAt?: string;
+  expiredAt?: string;
+  cancellationRequested: boolean;
+  publication?: ChildPublicationHistory;
+}
+
+export interface ChildHistoryPage {
+  runId: string;
+  gaggle: string;
+  status: "recorded" | "unavailable";
+  observedAt: string;
+  items: ChildHistoryItem[];
+  nextCursor: string;
+  readState?: ReadState;
 }
 
 export interface ChildActivity {
@@ -1972,6 +2045,7 @@ export interface DaemonClient {
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
   listStageAttempts(runId: string, stage: string, options?: RequestOptions): Promise<AttemptList>;

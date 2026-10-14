@@ -99,7 +99,7 @@ func TestWorkerBlobCredentialRequiresSameKeyAndBoundedIdentityAndLifetime(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.verifyWorkerBlob(token); err == nil {
+	if _, err := other.verifyWorkerToken(workerBlobKind, token); err == nil {
 		t.Fatal("wrong shared key accepted")
 	}
 	for _, id := range []string{"", " worker", "worker\nline", strings.Repeat("w", 257), string([]byte{255})} {

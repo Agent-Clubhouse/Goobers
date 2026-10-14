@@ -42,6 +42,7 @@ type wireFixtures struct {
 	WorkflowDetail           readservice.WorkflowDetail                 `json:"workflowDetail"`
 	Runs                     readservice.RunList                        `json:"runs"`
 	RunDetail                readservice.RunDetail                      `json:"runDetail"`
+	RunChildren              readservice.ChildHistoryPage               `json:"runChildren"`
 	RunEvents                readservice.EventList                      `json:"runEvents"`
 	StageAttempts            readservice.AttemptList                    `json:"stageAttempts"`
 	TelemetryCosts           readservice.TelemetryCostResult            `json:"telemetryCosts"`
@@ -88,6 +89,7 @@ var wireFixtureTypes = []struct {
 	{name: "workflowDetail", scriptType: "WorkflowDetail"},
 	{name: "runs", scriptType: "RunList"},
 	{name: "runDetail", scriptType: "RunDetail"},
+	{name: "runChildren", scriptType: "ChildHistoryPage"},
 	{name: "runEvents", scriptType: "EventList"},
 	{name: "stageAttempts", scriptType: "AttemptList"},
 	{name: "telemetryCosts", scriptType: "TelemetryCostResult"},
@@ -182,7 +184,7 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 		JournalHealth: &readservice.JournalHealthStatus{AppendsDropped: 2},
 		StorageHealth: &readservice.StorageHealthStatus{
 			Tier: "admission-stopped", Path: "/instances/fixture", FreeBytes: 1 << 30, TotalBytes: 100 << 30,
-			WarningFloorBytes: 10 << 30, CriticalFloorBytes: 5 << 30, MeasuredAt: startedAt,
+			WarningFloorBytes: 10 << 30, CriticalFloorBytes: 5 << 30, CriticalResumeBytes: 5<<30 + 512<<20, MeasuredAt: startedAt,
 		},
 		TelemetryRetention:      telemetryRetentionWireFixture(startedAt, finishedAt),
 		TelemetryExporterHealth: telemetryExporterHealthWireFixture(startedAt, finishedAt),
@@ -398,16 +400,7 @@ func newWireFixtures() wireFixtures {
 			WorkspaceBranchSHA:    "abc123",
 			HistoricalRepassCount: 2,
 		},
-		Operator: readservice.OperatorRunSummary{
-			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", Labels: []string{providers.LabelNeedsHuman}},
-			DisplayTitle:      "Implement #673: Improve operator status",
-			CurrentStage:      "review",
-			Liveness:          "terminal",
-			Trajectory:        "terminal",
-			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
-			NextTransition:    "",
-			PotentialBlockers: []string{},
-		},
+		Operator: wireOperatorRunSummary(),
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -586,7 +579,8 @@ func newWireFixtures() wireFixtures {
 			}},
 			NextCursor: "next-run",
 		},
-		RunDetail: wireRunDetail(runSummary, graph, timestamp),
+		RunDetail:   wireRunDetail(runSummary, graph, timestamp),
+		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}}},
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
 			Events: []readservice.RunEvent{{
@@ -1037,6 +1031,39 @@ func int64Pointer(value int64) *int64 {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+// wireOperatorRunSummary is the run-summary fixture's operator projection,
+// including the #5313 reliability projection.
+func wireOperatorRunSummary() readservice.OperatorRunSummary {
+	return readservice.OperatorRunSummary{
+		Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status", URL: "https://example.test/issues/673", Labels: []string{providers.LabelNeedsHuman}},
+		DisplayTitle:      "Implement #673: Improve operator status",
+		CurrentStage:      "review",
+		Liveness:          "terminal",
+		Trajectory:        "terminal",
+		Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+		NextTransition:    "",
+		PotentialBlockers: []string{},
+		Reliability: &readservice.RunReliability{
+			State:        string(journal.PhaseEscalated),
+			CurrentStage: "review",
+			Failure:      readservice.ReliabilityFailure{Classification: "escalation", EvidenceRule: "terminalCause.classification", Code: "review-escalated"},
+			Budgets: []readservice.ReliabilityBudget{
+				{Kind: "implementation-review", Consumed: intPointer(2), Remaining: intPointer(1), Evidence: "terminalCause"},
+				{Kind: "ci-poll", Evidence: "unknown"},
+			},
+			LatestVerdict:           "escalate",
+			Acceptance:              readservice.ReliabilityAcceptance{State: "complete", Digest: "sha256:acc"},
+			Retained:                readservice.ReliabilityRetainedRefs{Branch: "goobers/implementation/run-122", BranchSHA: "abc123", PullRequest: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"}, PullRequestDraft: "draft", RecoveryRunID: "run-122"},
+			NextAction:              "human intervention required",
+			HumanInterventionReason: "reviewer requested a human decision",
+		},
+	}
 }
 
 func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequest, OperatorMessageSubmitResponse) {

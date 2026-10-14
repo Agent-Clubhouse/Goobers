@@ -8,6 +8,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/providerconfig"
 )
 
 // appendCrossProviderCredentialOverrideWarnings warns (CFG012) about an
@@ -51,11 +52,11 @@ func appendCrossProviderCredentialOverrideWarnings(
 }
 
 // crossProviderBacklogGaggles names, sorted, the gaggles whose backlog lives
-// on GitHub or Gitea for Azure DevOps code (crossProviderBacklog).
+// on GitHub or Gitea for Azure DevOps code (providerconfig.CrossProviderBacklog).
 func crossProviderBacklogGaggles(set *instance.ConfigSet) []string {
 	var names []string
 	for _, gaggle := range set.Gaggles {
-		if crossProviderBacklog(gaggle.Spec.Project.Provider, gaggle.Spec.Backlog.Provider) {
+		if providerconfig.CrossProviderBacklog(gaggle.Spec.Project.Provider, gaggle.Spec.Backlog.Provider) {
 			names = append(names, gaggle.Name)
 		}
 	}

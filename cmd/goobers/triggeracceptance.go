@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/enginestartintent"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -26,17 +28,20 @@ const defaultChildPruneBudget = 250 * time.Millisecond
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
-	childFamilies   *childFamilyLifecycle
-	queue           *triggerqueue.Store
-	dispatch        *daemonTriggerService
-	sweepMu         sync.Mutex
-	reconcileCursor string
-	bootUncertain   map[string]bool
-	auditLog        *journal.InstanceLog
-	observe         func(context.Context, triggerqueue.Record) (bool, error)
-	children        childExecutionLauncher
-	observeChild    childStartObserver
-	childCursor     string
+	directEngine       *enginestartintent.Service
+	directEngineCursor string
+	ordinary           *startintent.Service
+	childFamilies      *childFamilyLifecycle
+	queue              *triggerqueue.Store
+	dispatch           *daemonTriggerService
+	sweepMu            sync.Mutex
+	reconcileCursor    string
+	bootUncertain      map[string]bool
+	auditLog           *journal.InstanceLog
+	observe            func(context.Context, triggerqueue.Record) (bool, error)
+	children           childExecutionLauncher
+	observeChild       childStartObserver
+	childCursor        string
 	// pruneBudget bounds each sweep's child-retention pass so it cannot stall dispatch;
 	// zero means defaultChildPruneBudget.
 	pruneBudget time.Duration
@@ -102,6 +107,9 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 	if strings.TrimSpace(request.Workflow) == "" || (request.SourceRun != "" && request.Gaggle == "") {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "trigger must name its workflow and priority gaggle", nil)
 	}
+	if response, handled, err := s.acceptOrdinary(ctx, request); handled {
+		return response, err
+	}
 	payload, err := json.Marshal(acceptedTriggerPayload{Request: request, PodScoped: request.PodScoped, PodRunID: request.PodRunID})
 	if err != nil {
 		return httpapi.TriggerResponse{}, err
@@ -138,6 +146,19 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return httpapi.TriggerStatusResponse{}, err
 	}
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return httpapi.TriggerStatusResponse{}, err
+	}
+	if header.Kind == startintent.Kind {
+		envelope, err := startintent.Parse(record.Payload)
+		if err != nil {
+			return httpapi.TriggerStatusResponse{}, err
+		}
+		payload.PodScoped, payload.PodRunID = envelope.Request.PodScoped, envelope.Request.PodRunID
+	}
 	if payload.PodScoped != request.PodScoped || (request.PodScoped && payload.PodRunID != request.PodRunID) {
 		return httpapi.TriggerStatusResponse{}, missing
 	}
@@ -163,6 +184,7 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	if s.childFamilies != nil {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}
+	pruneErr = errors.Join(pruneErr, s.sweepDirectEngine(ctx))
 	if s.dispatch.triggerer() == nil && s.children == nil {
 		return pruneErr
 	}
@@ -194,6 +216,12 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// an envelope also contains an ordinary request. Retain durable custody.
 	if header.Kind == childworkflow.ChildStartKind {
 		return s.drainChild(ctx, record)
+	}
+	if header.Kind == enginestartintent.Kind {
+		return nil // The independently bounded direct-engine sweep owns these.
+	}
+	if header.Kind == startintent.Kind {
+		return s.drainOrdinary(ctx, record)
 	}
 	if header.Kind != "" {
 		return fmt.Errorf("accepted trigger %s has an unsupported envelope kind", record.ID)
@@ -228,7 +256,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 		var rejected *localscheduler.TriggerRejectedError
 		if errors.As(err, &rejected) {
 			reason = rejected.Reason
-			if rejected.Transient() {
+			if rejected.WaitableForQueue() {
 				return s.queue.Requeue(ctx, record.ID, reason)
 			}
 		}

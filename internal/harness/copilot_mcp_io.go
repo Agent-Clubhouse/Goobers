@@ -148,12 +148,27 @@ func goobersIOPromptSection(req RunRequest) string {
 	}
 	if artifactManifestFile != "" {
 		b.WriteString("Write the declared payload files inside your workspace, then call `publish_output` with the complete artifact-set staging JSON manifest (schemaVersion: goobers.dev/stage-artifact-set/v1alpha1; entries: unique name, workspace-relative path, mediaType). This publishes only the staging manifest. Leave completion artifacts/evidence empty: the runner validates, sanitizes, and records the payloads and authors the slot-0 index. Do not invent artifact paths or digests.\n\n")
+		writePublicationContractPrompt(&b, req.PublicationSchemas)
 	}
 	if len(req.ContextPaths) > 0 {
 		b.WriteString("Use `list_inputs`, `grep_input`, and `read_input` to examine the upstream content listed under Context above, instead of opening those files directly. Prefer `grep_input` to search a large input, or `read_input` with a line range around a match, rather than reading a large input in one call.\n\n")
 	}
 	writeChildWorkflowPrompt(&b, req)
 	return b.String()
+}
+
+// writePublicationContractPrompt names the schema-bound outputs and tells the
+// agent that a rejected publish_output is a repair request, not a terminal
+// failure (#6868).
+func writePublicationContractPrompt(b *strings.Builder, schemas []mcpio.PublicationSchema) {
+	if len(schemas) == 0 {
+		return
+	}
+	names := make([]string, 0, len(schemas))
+	for _, schema := range schemas {
+		names = append(names, fmt.Sprintf("`%s` (schema %s)", schema.Slot, schema.SchemaID))
+	}
+	fmt.Fprintf(b, "These entries must be application/json and satisfy their declared JSON Schema: %s. `publish_output` validates them immediately. If it returns a rejection, nothing was published: fix the payload at each reported location and call `publish_output` again in this session. Do not repeat completed external actions, and do not report completion until publication is accepted.\n\n", strings.Join(names, ", "))
 }
 
 // appendMissing returns existing plus every entry of add not already present

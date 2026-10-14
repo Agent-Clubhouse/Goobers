@@ -306,7 +306,7 @@ func TestClaudeAdapterRepairsUncommittedSuccessInSameSession(t *testing.T) {
 	if len(runner.reqs) != 2 {
 		t.Fatalf("process calls = %d, want one repair turn", len(runner.reqs))
 	}
-	if prompt := commandPromptValue(runner.reqs[1].Command); !strings.Contains(prompt, "git commit") {
+	if prompt := string(runner.reqs[1].Stdin); !strings.Contains(prompt, "git commit") {
 		t.Fatalf("repair prompt = %q, want a commit instruction", prompt)
 	}
 	if len(out.InvalidCompletionPayload) != 0 {

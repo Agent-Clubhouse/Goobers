@@ -88,18 +88,28 @@ func ApplyGaggleOutboxMirror(set *ConfigSet) {
 // (callers pair a workflow with its own gaggle).
 func WorkflowRequiredCapabilities(gaggle apiv1.Gaggle, wf apiv1.Workflow) []string {
 	seen := make(map[string]struct{})
-	add := func(caps []string) {
+	addGaggleCapabilities(seen, gaggle)
+	addWorkflowCapabilities(seen, &wf)
+	return sortedKeys(seen)
+}
+
+func addGaggleCapabilities(seen map[string]struct{}, gaggle apiv1.Gaggle) {
+	for _, caps := range [][]string{gaggle.Spec.RequiredCapabilities, gaggleRunsOnCapabilities(gaggle)} {
 		for _, c := range caps {
 			seen[c] = struct{}{}
 		}
 	}
-	add(gaggle.Spec.RequiredCapabilities)
-	add(gaggleRunsOnCapabilities(gaggle))
+}
+
+func addWorkflowCapabilities(seen map[string]struct{}, wf *apiv1.Workflow) {
 	for j := range wf.Spec.Tasks {
-		add(wf.Spec.Tasks[j].RequiredCapabilities)
-		add(taskRunsOnCapabilities(&wf.Spec.Tasks[j]))
+		task := &wf.Spec.Tasks[j]
+		for _, caps := range [][]string{task.RequiredCapabilities, taskRunsOnCapabilities(task)} {
+			for _, c := range caps {
+				seen[c] = struct{}{}
+			}
+		}
 	}
-	return sortedKeys(seen)
 }
 
 // gaggleRunsOnCapabilities reads the DSL 3.0 gaggle-level placement floor's
@@ -135,21 +145,10 @@ func taskRunsOnCapabilities(task *apiv1.Task) []string {
 // workflow is never refused for a sibling workflow's requirement.
 func RequiredCapabilities(gaggle apiv1.Gaggle, workflows []apiv1.Workflow) []string {
 	seen := make(map[string]struct{})
-	add := func(caps []string) {
-		for _, c := range caps {
-			seen[c] = struct{}{}
-		}
-	}
-	add(gaggle.Spec.RequiredCapabilities)
-	add(gaggleRunsOnCapabilities(gaggle))
+	addGaggleCapabilities(seen, gaggle)
 	for i := range workflows {
-		wf := &workflows[i]
-		if wf.Spec.Gaggle != gaggle.Name {
-			continue
-		}
-		for j := range wf.Spec.Tasks {
-			add(wf.Spec.Tasks[j].RequiredCapabilities)
-			add(taskRunsOnCapabilities(&wf.Spec.Tasks[j]))
+		if workflows[i].Spec.Gaggle == gaggle.Name {
+			addWorkflowCapabilities(seen, &workflows[i])
 		}
 	}
 	return sortedKeys(seen)

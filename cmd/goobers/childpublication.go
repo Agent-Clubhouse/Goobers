@@ -113,6 +113,9 @@ func (p *childStagePod) publish(ctx context.Context, env apiv1.InvocationEnvelop
 		receipt, publishErr := publisher.OpenPR(ctx, target, title, body, draft)
 		err = publishErr
 		outputs = map[string]any{"opened": err == nil, "prNumber": receipt.Number, "pull-request-url": receipt.URL}
+		if receipt.Draft != nil {
+			outputs["draft"] = *receipt.Draft
+		}
 	}
 	auditErr := p.recordPublication(ctx, action, request.Attempt.Stage, request.Attempt.Number)
 	if err != nil || auditErr != nil {

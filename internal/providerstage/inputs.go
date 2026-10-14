@@ -81,7 +81,10 @@ var inputSchemas = map[string][]Input{
 		integersIn("maxItems"), stringListsIn("excludeLabels", "requireLabels", "roster"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
-	"backlog-dedupe": schema(integersIn("maxCandidates"), pathsIn("resultFile"), durationsIn("timeout")),
+	"backlog-dedupe": schema(
+		stringsIn("compareFieldPredicate", "compareState"), integersIn("compareScanLimit", "maxCandidates"),
+		stringListsIn("compareLabels"), pathsIn("resultFile"), durationsIn("timeout"),
+	),
 	"backlog-health": schema(
 		stringsIn("readyLabel", "trustLabel"),
 		integersIn("implementationFailureThreshold", "transitionScanMaxPages", "transitionScanQuotaFloor"),
@@ -166,7 +169,7 @@ var inputSchemas = map[string][]Input{
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-pr": schema(
-		stringsIn("baseSha", "commitMessage", "headSha", "mergeMethod", "verdict", "verdictAuthor"),
+		stringsIn("baseSha", "commitMessage", "headSha", "mergeMethod", "preMergeCheck", "verdict", "verdictAuthor"),
 		integersIn("pullNumber"), booleansIn("advisoryMode"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"merge-queue-poll": schema(

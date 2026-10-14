@@ -662,7 +662,7 @@ func (p *ADOProvider) doPatch(ctx context.Context, method, endpoint string, body
 }
 
 func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body interface{}, contentType string) (*http.Response, error) {
-	return sendJSONWithPolicy(ctx, restSendPolicy{
+	return sendJSONWithPolicy(declaredADOReadContext(ctx, method, endpoint, body), restSendPolicy{
 		client:              p.Client,
 		providerHTTPName:    "ado",
 		maxTransientRetries: p.maxRetries,
@@ -812,7 +812,7 @@ func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
 	if p.quotaObserver == nil {
 		return
 	}
-	observation := QuotaObservation{Provider: ProviderADO}
+	observation := QuotaObservation{Provider: ProviderADO, Cached: resp.Header.Get(QuotaCacheHitHeader) == "true"}
 	remaining, remainingKnown := adoRemainingHeader(resp)
 	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
 	if remainingKnown && resetErr == nil && resetSeconds > 0 {

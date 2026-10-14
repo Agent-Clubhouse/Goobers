@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/engine"
@@ -130,37 +131,68 @@ func engineCancelUnhonoured(
 
 // engineCancelHistory dates the stall sweep's own cancellation requests from
 // their engine_cancel_requested annotations in the instance log, which a
-// daemon restart keeps. The log is read at most once per sweep.
+// daemon restart keeps. One sweep's view refreshes the shared per-journal
+// index at most once.
 type engineCancelHistory struct {
-	log      *journal.InstanceLog
+	log       *journal.InstanceLog
+	index     *engineCancelIndex
+	refreshed bool
+}
+
+// engineCancelIndex is the cancellation index the stall sweeps of one
+// instance journal share. It is folded incrementally, so a sweep parses only
+// what was appended since the previous one rather than the whole journal
+// (#7031).
+type engineCancelIndex struct {
+	mu       sync.Mutex
+	cursor   *journal.InstanceLogCursor
 	requests map[string][]time.Time
 }
+
+var engineCancelIndexes sync.Map // scheduler directory -> *engineCancelIndex
 
 func (h *engineCancelHistory) firstRequestAfter(runID string, after time.Time) (time.Time, bool, error) {
 	if h == nil || h.log == nil {
 		return time.Time{}, false, nil
 	}
-	if h.requests == nil {
-		events, err := journal.ReadInstanceLog(h.log.Dir())
-		if err != nil {
+	if h.index == nil {
+		dir := h.log.Dir()
+		value, _ := engineCancelIndexes.LoadOrStore(dir, &engineCancelIndex{cursor: journal.NewInstanceLogCursor(dir)})
+		h.index = value.(*engineCancelIndex)
+	}
+	h.index.mu.Lock()
+	defer h.index.mu.Unlock()
+	if !h.refreshed {
+		if err := h.index.refresh(); err != nil {
 			return time.Time{}, false, err
 		}
-		h.requests = make(map[string][]time.Time)
-		for _, ev := range events {
-			if ev.Type != journal.EventRunnerAnnotation || ev.RunID == "" {
-				continue
-			}
-			if action, _ := ev.Runner["action"].(string); action == journal.RecoveryActionEngineCancelRequested {
-				h.requests[ev.RunID] = append(h.requests[ev.RunID], ev.Time)
-			}
-		}
+		h.refreshed = true
 	}
-	for _, at := range h.requests[runID] {
+	for _, at := range h.index.requests[runID] {
 		if at.After(after) {
 			return at, true, nil
 		}
 	}
 	return time.Time{}, false, nil
+}
+
+func (x *engineCancelIndex) refresh() error {
+	events, reset, err := x.cursor.Next()
+	if err != nil {
+		return err
+	}
+	if reset || x.requests == nil {
+		x.requests = make(map[string][]time.Time)
+	}
+	for _, ev := range events {
+		if ev.Type != journal.EventRunnerAnnotation || ev.RunID == "" {
+			continue
+		}
+		if action, _ := ev.Runner["action"].(string); action == journal.RecoveryActionEngineCancelRequested {
+			x.requests[ev.RunID] = append(x.requests[ev.RunID], ev.Time)
+		}
+	}
+	return nil
 }
 
 func appendEngineRecovery(log *journal.InstanceLog, identity journal.RunIdentity, reason, action string) error {

@@ -31,7 +31,7 @@ type ChildWorkspaceAdmission struct {
 
 type childRunWorkspace struct {
 	worktree *worktree.Worktree
-	stage    sync.Mutex
+	stage    sync.RWMutex
 }
 
 var childForkSHA = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
@@ -73,18 +73,14 @@ func (r *Runner) prepareChildWorkspaceStart(ctx context.Context, in *StartInput,
 	return nil
 }
 
-// Parallel branch forks and fan-in require distinct workspace derivation, not
-// a mutex around a shared directory. Their execution remains explicitly
-// unsupported in this interim slice; the accepted child DSL is not narrowed.
+// Child execution requires the admitted managed fork for every repo-backed
+// stage. The compiler validates static branch workspace modes and dependencies.
 func (r *Runner) validateChildWorkspacePlan(in StartInput) error {
 	if in.Child == nil {
 		if in.ChildWorkspace != nil {
 			return fmt.Errorf("runner: child workspace requires pinned child lineage")
 		}
 		return nil
-	}
-	if len(in.Machine.Def.Spec.Parallels) != 0 {
-		return fmt.Errorf("runner: child parallel workspace derivation and fan-in are not implemented")
 	}
 	if in.ChildWorkspace == nil {
 		if childMachineUsesRepo(in.Machine) {

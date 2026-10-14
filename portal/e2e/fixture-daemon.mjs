@@ -567,6 +567,7 @@ const responses = new Map([
   ["/api/v1/telemetry/error-signatures", { items: [] }],
   [`/api/v1/runs/${run.id}`, runDetail],
   [`/api/v1/runs/${run.id}/events`, runEvents],
+  [`/api/v1/runs/${run.id}/children`, { runId: run.id, gaggle: run.gaggle, status: "unavailable", observedAt: "2026-10-09T15:00:00Z", items: [], nextCursor: "" }],
   [`/api/v1/runs/${run.id}/stages/query/attempts`, stageAttempts("query", "success")],
   [`/api/v1/runs/${run.id}/stages/implement/attempts`, stageAttempts("implement", "running")],
   [`/api/v1/runs/${run.id}/stages/review/attempts`, { runId: run.id, stage: "review", attempts: [] }],

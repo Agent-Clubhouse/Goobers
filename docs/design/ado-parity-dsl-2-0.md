@@ -593,8 +593,8 @@ Topology (c) needs two *project* providers in one gaggle, which is DSL 3.0.
 **Status (ADO-N31, implemented).** A GitHub or Gitea backlog for ADO code
 validates and is routed by role. Steps 1–6 landed as follows:
 
-- **Steps 1 and 4.** `applyBacklogProject` returns the backlog provider's
-  ref (`backlogProviderRef`, shared with `statusWorkItemLookup`). Each
+- **Steps 1 and 4.** `providerconfig.ApplyBacklogProject` returns the backlog provider's
+  ref (`providerconfig.BacklogProviderRef`, shared with `statusWorkItemLookup`). Each
   backlog stage opens that provider, and claims are keyed by it.
 - **Step 2.** `credentials.RunnerGrants` takes a backlog role. If no
   `repos[]` entry with a credential matches the backlog `owner/name`, the
@@ -602,7 +602,10 @@ validates and is routed by role. Steps 1–6 landed as follows:
 - **Step 3.** `open-pr` and the ADO merge commit write the issue's full URL.
   `post-merge` closes only URL references into the backlog. A bare `#N` is
   ignored.
-- **Step 5.** The PR-coupled extras are skipped.
+- **Step 5.** The open-PR backstop reads the project provider's active PRs under
+  the run-branch namespace (#6919). In (b) only full-URL references into the
+  backlog count. With an ADO backlog, `#N` body references and native work-item
+  links count. The other PR-coupled extras are skipped.
 - **Step 6.** The N1 gate has a (b) column (`test/providermatrix`). The live
   (b) scenario belongs to the ADO-N16 leg.
 

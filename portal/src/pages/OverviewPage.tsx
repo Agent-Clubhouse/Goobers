@@ -4,6 +4,7 @@ import { Action } from "../ui/Action";
 import { Timestamp } from "../ui/Timestamp";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RunTiming } from "../components/RunTiming";
+import { RunWorkTitle } from "../components/RunWorkTitle";
 import type {
   DaemonClient,
   MaintenanceStatus,
@@ -33,6 +34,7 @@ import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 import type { FailureReasons } from "../overviewFailures";
 import { configurationWarningKey } from "../configurationWarnings";
+import { reliabilitySummary } from "../reliability";
 
 const attentionSelectionStorageKey = "goobers-overview-attention-selection";
 const emptyFailureReasons: FailureReasons = new Map();
@@ -1144,7 +1146,7 @@ function RunSection({
             >
               <span className="row-primary">
                 <span className="row-title" title={runLabel(run)}>
-                  {runLabel(run)}
+                  <RunWorkTitle run={run} />
                 </span>
                 <span className="row-subtitle" title={runContextSubtitle(run, active)}>
                   {active && run.operator ? operatorSubtitle(run) : runContextSubtitle(run, active)}
@@ -1435,6 +1437,9 @@ function operatorContext(run: RunSummary): string {
   }
   if (operator.potentialBlockers.length > 0) {
     details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
+  }
+  if (operator.reliability) {
+    details.push(reliabilitySummary(operator.reliability));
   }
   // Kept out of "Blockers" and labelled as a reader limitation: this is what the
   // read invocation could not verify, not something impeding the run (#3346).

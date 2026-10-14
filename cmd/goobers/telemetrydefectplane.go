@@ -233,6 +233,7 @@ func defectAggregateResponse(artifact candidateFindingsArtifact) telemetryclient
 			RunCount:             cohort.RunCount,
 			TopContributingPaths: wireContributingPaths(cohort.TopContributingPaths),
 			CounterEvidence:      wireAttributionEvidence(cohort.CounterEvidence),
+			GroundTruth:          (*telemetryclient.GroundTruthSummary)(cohort.GroundTruth),
 		})
 	}
 	for _, signal := range artifact.PromotionSignals {

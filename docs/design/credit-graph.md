@@ -20,6 +20,10 @@
 
 ## Workflow enrollment
 
+For an operator walkthrough of enabling Backprop, reading attribution and
+fault-audit findings, and verifying fixes, see the
+[Backprop user guide](../guides/backprop.md).
+
 Backprop is opt-in per workflow on DSL 3.0:
 
 ```yaml
@@ -78,14 +82,146 @@ cohort never counts as recovery. Stored audit passes durably record report
 cooldowns and operator fix markers in `scheduler/backprop-audit/state.json`;
 cooldowns are scoped by gaggle and workflow so a narrow read cannot suppress a
 broader cross-workflow classification. Only the candidate-findings pass that
-feeds filing applies and records the cooldown; `goobers telemetry stats` and
-the other status/read surfaces show every current finding and record only
+feeds filing applies and records the cooldown; the daemon's telemetry stats
+read API (`GET /api/v1/telemetry/stats`) and the other status/read surfaces
+show every current finding and record only
 verification baselines, so viewing a finding never hides it from the filing
-pass. Unfixed cooldowns and baselines older than 30 days are pruned; fix
+pass. (The `goobers telemetry stats` CLI reads only the local rollup and does
+not include attribution cohorts or fault-audit findings.) Unfixed cooldowns and baselines older than 30 days are pruned; fix
 markers and the baselines they verify against are kept. Operators record a deployed fix with
 `goobers telemetry mark-fix --finding=<backprop-id>` (optionally pinning its
 RFC3339 deployment time with `--applied-at`). This is auditor metadata only
 and does not mutate workflows, issues, or run journals.
+
+## Ground-truth labels
+
+Terminal phase is not the same as correctness: a run can succeed and still be
+wrong, or fail for reasons the user does not care about. Operators record their
+own verdict for an enrolled run with
+
+```sh
+goobers telemetry label --run=<run-id> --outcome=correct|incorrect \
+  [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
+```
+
+Each label is appended to `labels.json` (schema
+`goobers.dev/backprop/labels/v1`) beside the run's `attribution.json`, with
+provenance: who recorded it (`--by`, defaulting to the OS user), its source
+(`human` today), when the verdict was reached (`labeledAt`), and when it was
+stored (`recordedAt`). Only runs that already carry an attribution record can
+be labeled. The history is append-only and keyed by a content-derived ID, so
+re-recording an identical verdict is a no-op and an earlier label is never
+rewritten.
+
+Labels may land long after the run. Aggregates are recomputed from the stored
+records on every read, and each run contributes its *effective* label: the one
+with the latest `labeledAt`, ties broken by ID. That rule is independent of the
+order labels were recorded in, so a late label re-scores its cohort
+deterministically. Cohort aggregates expose a `groundTruth` summary
+(`labeledRunCount`, `correctRunCount`, `incorrectRunCount`) beside `runCount`,
+omitted when no run in the cohort is labeled, so partial label coverage stays
+visible rather than being presented as the whole cohort.
+
+The effective label also weights scores. A correct verdict confirms a run's
+journal-derived attribution and an incorrect verdict contradicts it:
+
+| Effective label | Run weight | Run confidence `c` becomes |
+|---|---|---|
+| none | 1 | `c` |
+| `correct` | 2 | `c + (1 - c) / 2` |
+| `incorrect` | 0.5 | `c / 2` |
+
+A cohort's `topContributingPaths[].share` and `.confidence` are weighted means
+over the cohort's runs using the run weight and calibrated confidence, and a
+fault-audit finding's `confidence` is the weighted mean of its signals'
+calibrated cause confidences (before the existing sparse, provenance, and
+mixed-domain caps). Unlabeled cohorts score exactly as before. Labels do not
+change fault-domain classification, finding IDs, or verification state.
+
+Labels are read-only inputs. Recording one never touches the run journal, the
+attribution record, the run's phase, or any gate verdict.
+
+Not yet implemented (follow-ups under #7121): declaring ground-truth sources in
+workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
+bug, reopened issue, main CI breakage), user-provided checker commands, and
+feeding labels into per-run credit propagation (`attribution.json` itself).
+
+## Agent claims
+
+Agents inside an enrolled run can state what the journal cannot infer: who
+owned a piece of work, what they relied on, and whom they credit or blame.
+From inside an agentic stage an agent runs
+
+```sh
+goobers telemetry claim --kind=assignment|reliance|credit|blame \
+  (--stage=NAME [--attempt=N] | --agent=ID | --artifact=sha256:HEX) \
+  [--statement=TEXT] [--evidence=sha256:HEX|seq:N]... [--confidence=0..1]
+```
+
+which appends one line (schema `goobers.dev/backprop/claim/v1`,
+`api/schemas/backprop-claim-v1.schema.json`) to `backprop-claims.jsonl` in the
+stage attempt's `GOOBERS_TELEMETRY_DIR`. When the agent exits, the harness
+journals the attempt's claims as one `runner.annotation` of kind
+`backprop-claims`. **The journal is the claim log**: it is run-scoped,
+append-only, and replayed in order. Gates (reviewer invocations) do not
+ingest claims.
+
+- **Writer attribution.** The runner, not the claim, names the writer: the
+  annotation's stage and attempt, and the stage's root nested agent when the
+  transcript names exactly one. A claim cannot assert who wrote it.
+- **Bounds.** An attempt records at most 32 claims, each line at most 8 KiB,
+  each statement at most 1024 bytes after sanitizing, and at most 8 evidence
+  links. Graph construction evaluates the first 256 claims of a run in journal
+  order. Lines refused at ingestion and claims past the run bound are counted
+  in `droppedClaims`, never silently discarded. The run bound is enforced at
+  read time because harness appenders cannot see other attempts' batches.
+- **Untrusted text.** Statements have invalid UTF-8, control characters, and
+  Unicode format characters (bidirectional overrides, zero-width characters)
+  removed and whitespace collapsed, both when written and again when the
+  graph reads the journal; stage and agent references must be short,
+  printable, and space-free; artifact references must be `sha256:` digests.
+  Unknown fields are refused, and `confidence` is required (an omitted value
+  is refused, not read as 0). Statements are also secret-scrubbed before they
+  are journaled.
+- **Durability.** A batch the runner cannot journal (no event appender, or a
+  failed append) fails the stage attempt; a recorded claim never vanishes.
+- **Reading earlier claims.** Before an agentic stage starts, the runner
+  snapshots the claims journaled earlier in the run into `run-claims.json` in
+  its `GOOBERS_TELEMETRY_DIR` (schema `goobers.dev/backprop/run-claims/v1`),
+  and `goobers telemetry claims` prints it. Each entry carries the claim, its
+  runner-attributed writer, and the `id` Build reports it under; entries are
+  re-validated and bounded like Build's input but not verified. A journal the
+  runner cannot read is written as an `error`, never as an empty list. A
+  dispatched (pod) worker has no local run journal, so its stages currently
+  get that error rather than earlier claims.
+
+**Verification.** Build evaluates each claim against only the records
+journaled *before* its batch. A claim is `verified` when all of these hold:
+
+1. The writing stage attempt recorded `stage.started`, and the writer agent,
+   if any, recorded a lifecycle.
+2. The target resolves to a recorded graph node (`stage:<stage>#<attempt>`,
+   `subagent:<id>`, or `evidence:<digest>`). An omitted target attempt means
+   the latest attempt started before the claim.
+3. A reliance, credit, or blame claim does not target the writer's own stage
+   attempt, agent, or artifact.
+4. A credit or blame claim has at least one evidence link, and every link
+   names an artifact recorded earlier or the `seq` of an earlier event.
+
+Verified claims are listed in the graph's `claims` with `writerNodeId` and
+`targetNodeId`. Every other claim is listed in `unverifiedClaims` with its
+`reasons` and no node IDs. **Claims never become nodes or edges**: traversal,
+shares, scores, uncertainties, confidences, and cause classes are identical
+with or without them. `attribution.json` carries the same three fields, and
+each verified `blame` claim is cited (as `agent claim <id> ...`) in the
+evidence of the cause findings for the stage attempt or node it targets. That
+citation is correlational: verification checks that the claim refers to real,
+earlier records, not that the statement is true. Reliance is not yet
+cross-checked against the context pointers the writer actually received.
+
+Not yet implemented (follow-ups under #7121): verifying claims in the in-run
+snapshot, weighting propagation by verified claims, and cross-checking
+reliance against stage inputs.
 
 ## Why
 

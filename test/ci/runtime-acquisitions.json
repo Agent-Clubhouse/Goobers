@@ -343,7 +343,7 @@
     "what": "Declared integration executables and native bubblewrap packages, including transitive OS dependencies",
     "from": [
       "Runner-configured Ubuntu apt mirrors",
-      "Debian bookworm image apt sources (deb.debian.org); hosted regression pulls debian:bookworm from Docker Hub"
+      "Debian bookworm image apt sources (deb.debian.org); hosted regression pulls debian:bookworm through the mirror.gcr.io Docker Hub mirror"
     ],
     "offline": "no-offline-path for the full set: integration has a restored .deb archive fast path, but a miss and the separate sandbox installation still reach apt mirrors. The Debian regression also needs its Docker image and distro Git/CA packages preprovisioned for offline execution.",
     "sites": [

@@ -34,13 +34,14 @@ import (
 // Tick/signal delivery evaluates whichever are set, since nothing prevents
 // a workflow from declaring more than one trigger type.
 type WorkflowEntry struct {
-	Workflow        string
-	WorkflowVersion int
-	WorkflowDigest  string
-	GooberDigest    string
-	Gaggle          string
-	Readiness       apiv1.ReadinessConditions
-	Schedules       []Schedule
+	ConfigGeneration string
+	Workflow         string
+	WorkflowVersion  int
+	WorkflowDigest   string
+	GooberDigest     string
+	Gaggle           string
+	Readiness        apiv1.ReadinessConditions
+	Schedules        []Schedule
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
 	ScheduleBackoffs []IdleBackoffConfig
@@ -104,6 +105,10 @@ type WorkflowEntry struct {
 	// disabled by spec.enabled=false (#5200): refused before admission with
 	// this named diagnostic, while in-flight runs finish normally.
 	DisabledReason string
+	// ProviderAuth evaluates provider authorization health before autonomous
+	// dispatch when Readiness.RequireProviderAuthorization is set (#5317).
+	// Nil with the readiness flag set fails closed.
+	ProviderAuth ProviderAuthGate
 }
 
 func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
@@ -240,17 +245,19 @@ type runAdmission struct {
 // evaluation, run conditions, and the Starter seam together into one
 // idle-between-ticks loop, journaling every decision to the instance journal.
 type Scheduler struct {
-	workflows         map[WorkflowIdentity]WorkflowEntry
-	conditions        *Conditions
-	log               *journal.InstanceLog
-	now               func() time.Time
-	after             func(d time.Duration) <-chan time.Time
-	telemetry         SpanStarter
-	providerQuota     ProviderQuotaGate
-	demandPollTimeout time.Duration
-	afterTick         func(context.Context)
-	heartbeatInterval time.Duration
-	refreshHeartbeat  func(time.Time) error
+	durableScheduleDemand bool
+	sourceQueue           SourceQueue
+	workflows             map[WorkflowIdentity]WorkflowEntry
+	conditions            *Conditions
+	log                   *journal.InstanceLog
+	now                   func() time.Time
+	after                 func(d time.Duration) <-chan time.Time
+	telemetry             SpanStarter
+	providerQuota         ProviderQuotaGate
+	demandPollTimeout     time.Duration
+	afterTick             func(context.Context)
+	heartbeatInterval     time.Duration
+	refreshHeartbeat      func(time.Time) error
 	// onPollProgress, if set, is called after every individual
 	// provider-backed demand poll Tick issues while holding tickMu (#3806) —
 	// not just once when Tick itself returns. A tick with several due
@@ -898,7 +905,7 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 
 func (s *Scheduler) wakeForDemand(identity WorkflowIdentity) {
 	s.mu.Lock()
-	pending := len(s.pendingScheduleDemand) > 0
+	pending := len(s.pendingScheduleDemand) > 0 || s.durableScheduleDemand
 	refill := false
 	if entry, ok := s.workflows[identity]; ok &&
 		entry.Readiness.DesiredConcurrentRuns > 0 &&
@@ -953,28 +960,31 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 type tickCandidate struct {
-	entry              WorkflowEntry
-	schedule           TickResult
-	scheduleRemaining  int
-	scheduleDemand     bool
-	schedulePollDue    bool
-	scheduleEnqueuedAt time.Time
-	scheduleMetricHeld int
-	backlogPollDue     bool
-	backlogRemaining   int
-	backlogEnqueuedAt  time.Time
-	backlogObserved    bool
-	backlogMetricHeld  int
-	refillRemaining    int
-	refillPollDue      bool
-	refillEligible     int
-	refillEnqueuedAt   time.Time
-	refillObserved     bool
-	refillMetricHeld   int
-	poolSkips          int
-	dispatchedThisTick bool
-	stopped            bool
-	scheduleIndexes    []int
+	demandWake          bool
+	queuedDemand        *QueuedScheduleDemand
+	scheduleDemandLease func()
+	entry               WorkflowEntry
+	schedule            TickResult
+	scheduleRemaining   int
+	scheduleDemand      bool
+	schedulePollDue     bool
+	scheduleEnqueuedAt  time.Time
+	scheduleMetricHeld  int
+	backlogPollDue      bool
+	backlogRemaining    int
+	backlogEnqueuedAt   time.Time
+	backlogObserved     bool
+	backlogMetricHeld   int
+	refillRemaining     int
+	refillPollDue       bool
+	refillEligible      int
+	refillEnqueuedAt    time.Time
+	refillObserved      bool
+	refillMetricHeld    int
+	poolSkips           int
+	dispatchedThisTick  bool
+	stopped             bool
+	scheduleIndexes     []int
 }
 
 type triggerSource uint8
@@ -1047,6 +1057,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	var evaluated []WorkflowEntry
+	defer func() { releaseScheduleDemands(allCandidates) }()
 	for _, entry := range entries {
 		if s.authCircuitOpen(entryIdentity(entry), now) {
 			continue
@@ -1054,61 +1065,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if skipPermanentRefusedEntry(entry) {
 			continue
 		}
+		candidate := s.prepareTickSchedule(ctx, entry, now, &evaluated)
 		identity := entryIdentity(entry)
-		s.mu.Lock()
-		pending := s.pendingScheduleDemand[identity]
-		s.mu.Unlock()
-		candidate := &tickCandidate{
-			entry:              entry,
-			schedule:           pending.schedule,
-			scheduleRemaining:  pending.remaining,
-			scheduleDemand:     pending.remaining > 0,
-			schedulePollDue:    pending.repoll,
-			scheduleEnqueuedAt: pending.enqueuedAt,
-		}
-		if pending.remaining == 0 {
-			candidate.schedule = TickResult{LastEval: now}
-		}
-		if len(entry.Schedules) > 0 {
-			// Read, evaluate, and write the trigger state under a single lock
-			// acquisition. Tick is exported so a manual trigger and concurrent
-			// Tick calls (e.g. overlapping Run-loop iterations) can race here;
-			// dropping the lock between the read and the write let two callers
-			// both read the same pre-fire TriggerState, both compute Fire=true,
-			// and both dispatch the same due firing.
-			// Persisting the snapshot is batched to once per tick (#6010).
-			s.mu.Lock()
-			ts := s.triggers[identity]
-			lastEval := ts.LastEval
-			dueIndexes := dueScheduleIndexes(entry.Schedules, ts.LastEval, now)
-			res := Tick(ts, now)
-			if res.LastEval != ts.LastEval {
-				evaluated = append(evaluated, entry)
-			}
-			s.triggers[identity] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
-			s.mu.Unlock()
-			if res.Fire {
-				candidate.schedule = res
-				candidate.scheduleEnqueuedAt = oldestDueScheduleAt(entry.Schedules, lastEval, now)
-				candidate.scheduleIndexes = dueIndexes
-				if blocked, reason := s.scheduleBackedOff(identity, entry, dueIndexes, now); blocked {
-					s.journalEvent(journal.Event{
-						Type:     journal.EventTickSkipped,
-						Workflow: entry.Workflow,
-						Gaggle:   entry.Gaggle,
-						Reason:   reason,
-					})
-					candidate.scheduleIndexes = nil
-				} else if entry.ScheduleDemandCounter == nil {
-					// Coalesces with a retained fire; scheduleDemand stays set
-					// so admission consumes its marker (#6207).
-					candidate.scheduleRemaining = 1
-				} else {
-					candidate.schedulePollDue = true
-				}
-			}
-		}
-
 		if entry.BacklogCounter != nil {
 			candidate.backlogPollDue = s.backlogPollDue(entry, now)
 		}
@@ -1132,6 +1090,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.evaluateRefillOpportunities(allCandidates, now)
 	s.paceQuotaResumedCandidates(allCandidates)
 	s.recordQueueSaturation(ctx, allCandidates, now)
+	s.queueDemandWorkers(ctx, allCandidates, now)
+	s.queueCountWorkers(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 || candidate.refillRemaining > 0 {
@@ -2048,6 +2008,9 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	if s.applyQueuedDemand(poll, snapshot) {
+		return
+	}
 	ready := snapshot.ready
 	if poll.schedule {
 		identity := entryIdentity(poll.candidate.entry)
@@ -2763,6 +2726,10 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		span.Complete(telemetry.OutcomeBlocked, false)
 		return "", false, reason
 	}
+	if reason, refused := s.providerAuthDispatchRefusal(ctx, entry, identity, trigger, now, triggerReason); refused {
+		span.Complete(telemetry.OutcomeBlocked, false)
+		return "", false, reason
+	}
 	provider := quotaProvider(entry.RepoRef.Provider)
 	s.journalProviderQuotaReset(provider, now)
 	ok, reason := s.conditions.admitProviderWorkflow(
@@ -3078,6 +3045,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		return minPoll
 	}
 	var earliest time.Time
+	if s.durableScheduleDemand {
+		earliest = now.Add(backlogPollInterval)
+	}
 	consider := func(next time.Time) {
 		if earliest.IsZero() || next.Before(earliest) {
 			earliest = next

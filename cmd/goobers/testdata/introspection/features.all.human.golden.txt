@@ -178,6 +178,7 @@ workflow.spec.readiness.maxConcurrentRuns                2.0          ga        
 workflow.spec.readiness.maxOpenPRs                       2.0          ga               supported        dev
 workflow.spec.readiness.maxRunsPerDay                    2.0          ga               supported        dev
 workflow.spec.readiness.maxRunsPerHour                   2.0          ga               supported        dev
+workflow.spec.readiness.requireProviderAuthorization     2.0          ga               supported        dev
 workflow.spec.requires.capabilities                      2.0          ga               supported        dev
 workflow.spec.runControls                                2.0          ga               supported        dev
 workflow.spec.runControls.maxRepasses                    2.0          ga               supported        dev
@@ -391,6 +392,7 @@ workflow.spec.readiness.maxConcurrentRuns                3.0          ga        
 workflow.spec.readiness.maxOpenPRs                       3.0          ga               preview          dev
 workflow.spec.readiness.maxRunsPerDay                    3.0          ga               preview          dev
 workflow.spec.readiness.maxRunsPerHour                   3.0          ga               preview          dev
+workflow.spec.readiness.requireProviderAuthorization     3.0          ga               preview          dev
 workflow.spec.requires.capabilities                      3.0          ga               preview          dev
 workflow.spec.runControls                                3.0          ga               preview          dev
 workflow.spec.runControls.maxRepasses                    3.0          ga               preview          dev
@@ -618,6 +620,7 @@ workflow.spec.readiness.maxConcurrentRuns                3.1          ga        
 workflow.spec.readiness.maxOpenPRs                       3.1          ga               preview          dev
 workflow.spec.readiness.maxRunsPerDay                    3.1          ga               preview          dev
 workflow.spec.readiness.maxRunsPerHour                   3.1          ga               preview          dev
+workflow.spec.readiness.requireProviderAuthorization     3.1          ga               preview          dev
 workflow.spec.requires.capabilities                      3.1          ga               preview          dev
 workflow.spec.runControls                                3.1          ga               preview          dev
 workflow.spec.runControls.maxRepasses                    3.1          ga               preview          dev
@@ -633,4 +636,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-633 feature/version row(s)
+636 feature/version row(s)

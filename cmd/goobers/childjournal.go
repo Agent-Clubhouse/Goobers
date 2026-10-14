@@ -35,7 +35,8 @@ func (p childJournalPlane) Emit(ctx context.Context, req livejournal.EmitRequest
 			return livejournal.EmitResponse{}, childJournalRefusal()
 		}
 	}
-	return p.writer.Emit(livejournal.WithRequestBlobStore(ctx, a.blobs), req)
+	ctx = livejournal.WithRequestBlobStore(ctx, a.blobs)
+	return p.writer.Emit(livejournal.WithRequestBranch(ctx, a.contract.ChildBranch), req)
 }
 
 func childJournalRefusal() error {
@@ -94,7 +95,10 @@ func childObservationOp(c childpod.Contract, op livejournal.Op) (livejournal.Op,
 		if op.Event == nil {
 			return op, childJournalRefusal()
 		}
-		e := *op.Event
+		e, err := childObservationScope(c, *op.Event)
+		if err != nil {
+			return op, err
+		}
 		if err := childObservationEvent(e); err != nil {
 			return op, err
 		}
@@ -164,7 +168,7 @@ func childObservationEvent(e journal.Event) error {
 	case journal.EventRunnerAnnotation:
 		kind, _ := e.Runner["kind"].(string)
 		switch kind {
-		case "agent-telemetry-fidelity", "goobers-io-input-inspection-receipts", "credit-span-provenance", "required-mcp-readiness", "mcp-server-unavailable":
+		case "agent-telemetry-fidelity", "goobers-io-input-inspection-receipts", "credit-span-provenance", "required-mcp-readiness", "mcp-server-unavailable", "backprop-claims":
 			return nil
 		}
 	}
