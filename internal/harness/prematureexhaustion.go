@@ -93,7 +93,7 @@ func reclassifyPrematureExhaustionClaim(result *apiv1.ResultEnvelope, pointers [
 	inspection := summarizeInputInspection(pointers, out.InputInspectionReceipts, out.InputInspectionReceiptsCollected)
 	readiness := goobersIOReadinessDiagnostic(out.execution.readiness)
 	agentCode := result.Error.Code
-	cause := authoredCause(*result)
+	agentNarrative := authoredCause(*result)
 
 	if result.Outputs == nil {
 		result.Outputs = map[string]interface{}{}
@@ -119,9 +119,9 @@ func reclassifyPrematureExhaustionClaim(result *apiv1.ResultEnvelope, pointers [
 		Message: fmt.Sprintf(
 			"the agent reported %s after %s of its %s execution window, but the runtime deadline %s had not been reached (%s remained), so this is not an execution timeout. %s %s Agent-reported cause: %s",
 			agentCode, roundDuration(elapsed), roundDuration(window), deadline.UTC().Format(time.RFC3339),
-			roundDuration(window-elapsed), inspection.text, readiness.text, cause),
+			roundDuration(window-elapsed), inspection.text, readiness.text, agentNarrative),
 	}
-	result.Summary = "agent reported its execution window exhausted well before the runtime deadline: " + cause
+	result.Summary = "agent reported its execution window exhausted well before the runtime deadline: " + agentNarrative
 }
 
 func roundDuration(d time.Duration) time.Duration {
