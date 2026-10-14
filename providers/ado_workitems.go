@@ -1739,6 +1739,7 @@ func (p *ADOProvider) patchADOWorkItem(ctx context.Context, repo RepositoryRef, 
 	if err := p.doPatch(ctx, http.MethodPatch, endpoint, ops, &out); err != nil {
 		return WorkItem{}, err
 	}
+	observeProviderMutation(ctx, p.Client, ProviderADO)
 	return p.mapADOWorkItem(ctx, repo, out)
 }
 
@@ -1801,6 +1802,9 @@ func (p *ADOProvider) postAttributedWorkItemComment(ctx context.Context, repo Re
 	}
 	var comment adoComment
 	err = p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": text}, &comment)
+	if err == nil {
+		observeProviderMutation(ctx, p.Client, ProviderADO)
+	}
 	return err
 }
 
