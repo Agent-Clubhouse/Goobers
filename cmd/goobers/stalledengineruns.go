@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // settleStalledEngineRun is the stall sweep's arm for an engine-driven run
@@ -45,8 +46,13 @@ func settleStalledEngineRun(
 	durationExceeded bool,
 ) error {
 	message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
+	// The interruption's code travels with the sweep's own record: the
+	// engine can journal a cancellation only as run_canceled, and the failure
+	// streak needs to tell this watchdog stop from an operator's (#5638).
+	interrupt := runner.RunStalledErrorCode
 	if durationExceeded {
 		message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
+		interrupt = runner.RunDurationExceededErrorCode
 	}
 	unhonoured, err := engineCancelUnhonoured(deps, cancels, identity.RunID, events, now, suspended, runTimeout)
 	if err != nil {
@@ -60,7 +66,7 @@ func settleStalledEngineRun(
 		if err := guards.cancel(ctx, identity.RunID); err != nil {
 			return fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err)
 		}
-		if err := appendEngineRecovery(log, identity, message, journal.RecoveryActionEngineCancelRequested); err != nil {
+		if err := appendEngineRecovery(log, identity, message, journal.RecoveryActionEngineCancelRequested, interrupt); err != nil {
 			return fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, err)
 		}
 		return nil
@@ -90,7 +96,7 @@ func settleStalledEngineRun(
 	if release != nil {
 		release(identity.RunID, identity.Workflow)
 	}
-	if err := appendEngineRecovery(log, identity, cause, journal.RecoveryActionEngineTerminated); err != nil {
+	if err := appendEngineRecovery(log, identity, cause, journal.RecoveryActionEngineTerminated, interrupt); err != nil {
 		return fmt.Errorf("journal engine terminate for run %q: %w", identity.RunID, err)
 	}
 	return nil
@@ -147,6 +153,11 @@ type engineCancelIndex struct {
 	mu       sync.Mutex
 	cursor   *journal.InstanceLogCursor
 	requests map[string][]time.Time
+	// interrupts is the latest watchdog interruption the sweep recorded for
+	// each run it cancelled; operatorCancels marks runs an operator also
+	// asked to cancel (#5638).
+	interrupts      map[string]string
+	operatorCancels map[string]bool
 }
 
 var engineCancelIndexes sync.Map // scheduler directory -> *engineCancelIndex
@@ -183,6 +194,8 @@ func (x *engineCancelIndex) refresh() error {
 	}
 	if reset || x.requests == nil {
 		x.requests = make(map[string][]time.Time)
+		x.interrupts = make(map[string]string)
+		x.operatorCancels = make(map[string]bool)
 	}
 	for _, ev := range events {
 		if ev.Type != journal.EventRunnerAnnotation || ev.RunID == "" {
@@ -190,24 +203,55 @@ func (x *engineCancelIndex) refresh() error {
 		}
 		if action, _ := ev.Runner["action"].(string); action == journal.RecoveryActionEngineCancelRequested {
 			x.requests[ev.RunID] = append(x.requests[ev.RunID], ev.Time)
+			if interrupt, _ := ev.Runner[engineRecoveryInterruptKey].(string); interrupt != "" {
+				x.interrupts[ev.RunID] = interrupt
+			} else {
+				x.operatorCancels[ev.RunID] = true
+			}
 		}
 	}
 	return nil
 }
 
-func appendEngineRecovery(log *journal.InstanceLog, identity journal.RunIdentity, reason, action string) error {
+// engineRecoveryInterruptKey names, on the stall sweep's own recovery
+// annotations, the watchdog interruption that made it stop the run
+// (runner.RunStalledErrorCode or RunDurationExceededErrorCode). An operator's
+// cancellation annotation never carries it.
+const engineRecoveryInterruptKey = "interrupt"
+
+func appendEngineRecovery(log *journal.InstanceLog, identity journal.RunIdentity, reason, action, interrupt string) error {
 	if log == nil {
 		return nil
 	}
 	return log.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
 		Runner: map[string]any{
-			"kind":   journal.RunnerAnnotationRunRecovery,
-			"reason": reason,
-			"action": action,
-			"driver": string(identity.Driver),
+			"kind":                     journal.RunnerAnnotationRunRecovery,
+			"reason":                   reason,
+			"action":                   action,
+			"driver":                   string(identity.Driver),
+			engineRecoveryInterruptKey: interrupt,
 		},
 	})
+}
+
+// engineWatchdogInterruption is escalationnotify.Policy.EngineInterruption:
+// the watchdog interruption the stall sweep recorded when it asked the engine
+// to cancel runID, or "" when it never did — or when an operator also asked,
+// because the engine journals both the same way and an operator's cancel must
+// never be read as infrastructure (#5638).
+func engineWatchdogInterruption(schedulerDir, runID string) (string, error) {
+	value, _ := engineCancelIndexes.LoadOrStore(schedulerDir, &engineCancelIndex{cursor: journal.NewInstanceLogCursor(schedulerDir)})
+	index := value.(*engineCancelIndex)
+	index.mu.Lock()
+	defer index.mu.Unlock()
+	if err := index.refresh(); err != nil {
+		return "", err
+	}
+	if index.operatorCancels[runID] {
+		return "", nil
+	}
+	return index.interrupts[runID], nil
 }
 
 // closeTerminatedEngineRun returns the stall sweep's CloseEngineRun over the

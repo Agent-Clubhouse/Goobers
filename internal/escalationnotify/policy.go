@@ -61,6 +61,12 @@ type State interface {
 	LoadFailureStreak(ctx context.Context, poster gate.Commenter, repo providers.RepositoryRef, itemID string) (int, error)
 	// WriteFailureStreak persists an item's failure-streak count.
 	WriteFailureStreak(repo providers.RepositoryRef, itemID string, count int, runID, stage string) error
+	// LoadInfraFailureStreak returns an item's persisted infrastructure
+	// failure-streak count (#5638), kept apart from the genuine/work streak.
+	LoadInfraFailureStreak(ctx context.Context, repo providers.RepositoryRef, itemID string) (int, error)
+	// WriteInfraFailureStreak persists an item's infrastructure
+	// failure-streak count.
+	WriteInfraFailureStreak(repo providers.RepositoryRef, itemID string, count int, runID, stage string) error
 	// ReconcileParkOutbox retries circuit-breaker parks that previously
 	// failed to reach the provider (#3646).
 	ReconcileParkOutbox(ctx context.Context, poster gate.Commenter) error
@@ -92,10 +98,18 @@ type State interface {
 // Policy applies the notification policy through Poster against State.
 // RunsDir is the instance's runs directory, read for a run's durable identity
 // when a provider write has to be attributed to it.
+//
+// EngineInterruption, when set, reports the watchdog interruption
+// (runner.RunStalledErrorCode or runner.RunDurationExceededErrorCode) that
+// cancelled an engine-driven run, or "" when none did or an operator also
+// asked to cancel it. The Temporal driver can only journal a cancellation as
+// run_canceled — CancelWorkflow carries no reason — so the stall sweep's own
+// record of why it cancelled is the evidence (#5638).
 type Policy struct {
-	Poster  gate.Commenter
-	RunsDir string
-	State   State
+	Poster             gate.Commenter
+	RunsDir            string
+	State              State
+	EngineInterruption func(runID string) (string, error)
 }
 
 // Blocked is runner.Config.Blocked (#544/#545/#552): the instance-level
@@ -239,7 +253,8 @@ func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
 // on the same item, applies goobers:needs-human and removes goobers:ready so
 // the retry loop stops. The threshold is counted via a single editable
 // failure-streak comment on the issue (one comment, updated in place, instead
-// of one per run).
+// of one per run). Infrastructure-classified terminals count on a separate
+// streak with its own comment and InfraFailureStreakThreshold (#5638).
 //
 // Like Blocked, the handler runs before FinalizeTerminal releases the run's
 // claims, so it resolves the driving item(s) from the claim ledger by run id.
@@ -249,31 +264,23 @@ func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
 func (p *Policy) Failed(ctx context.Context, o runner.FailedOutcome) error {
 	ctx = p.terminalHandlerAttributionContext(ctx, o.RunID, o.Stage)
 	// #3361/#3364: an infra-fault terminal (credential materialization, git,
-	// network, lock contention) is weather, not evidence about the item —
-	// it must not accumulate failure-streak strikes that eventually park
-	// the item goobers:needs-human. The item returns to the pool untouched
-	// and the scheduler's auth circuit / quota gates own the retry cadence.
-	// Item-judgment terminals (a verified ISSUE_NOT_APPLICABLE refusal,
-	// #3363) are likewise not work failures. Timeout deliberately still
-	// counts: a recurring harness session timeout is this circuit
-	// breaker's motivating case (#1054).
+	// network, lock contention) is weather, not evidence about the item — it
+	// never accumulates genuine/work strikes. It counts on the separate,
+	// higher-threshold infrastructure streak instead (#5638), so weather alone
+	// cannot park an item at the work rate while an environment that fails
+	// the same way every time still cannot retry forever. Item-judgment
+	// terminals (a verified ISSUE_NOT_APPLICABLE refusal, #3363) are not
+	// charged at all. Timeout still counts as work: a recurring harness
+	// session timeout is this circuit breaker's motivating case (#1054), and
+	// only the runner's explicit infrastructure classification (FaultClass,
+	// #5638) moves a terminal off the work streak.
 	//
-	// The runner's own classification wins (#5638): a dispatch that exhausted
-	// its infrastructure retry budget is infra whatever code it surfaced
-	// under. Only an explicit class exempts that way; an unclassified terminal
-	// is judged by its code, so a bare session timeout still counts (#1054).
-	// An exempt infra terminal refunds a pr-remediation cycle this run
-	// charged but never had evaluated (#5588/#5598).
-	if exempt, err := p.exemptFromStreak(ctx, o.RunID, failedOutcomeClass(o)); exempt {
-		return err
-	}
 	// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
 	// necessarily the repo the item this run actually claimed belongs
-	// to — applyCircuitBreaker resolves each claimed item's own
-	// recorded identity instead of trusting a single repo for all of
-	// them.
+	// to — the breaker resolves each claimed item's own recorded identity
+	// instead of trusting a single repo for all of them.
 	runURL, _ := p.State.RunURL(o.RunID)
-	return p.applyCircuitBreaker(ctx, o.RunID, o.Stage, runURL)
+	return p.chargeClassified(ctx, o.RunID, o.Stage, runURL, failedOutcomeClass(o))
 }
 
 // ExistingFix is runner.Config.ExistingFix (#3236): strips goobers:ready and
@@ -367,20 +374,18 @@ func (p *Policy) settleCompleted(ctx context.Context, runID, finalState, runURL 
 // honors the classification the run already carries (#5638): an escalated or
 // aborted terminal the journal attributes to infrastructure — a gate that
 // exhausted its infrastructure repass budget, or a watchdog expiry or stall
-// that interrupted an infrastructure retry — is weather, not a strike against
-// the item. Before this, these terminals were charged with no classification
-// at all, so a local-ci timeout the gate had judged infra still posted a
-// genuine/work-failure comment when the run then expired.
+// that interrupted an infrastructure retry — is charged to the infrastructure
+// streak, never to the genuine/work streak. Before this, these terminals were
+// charged as work with no classification at all, so a local-ci timeout the
+// gate had judged infra still posted a genuine/work-failure comment when the
+// run then expired.
 //
-// A journal that cannot be read leaves the terminal unclassified and charged,
-// as before; a read failure other than absence is reported with the breaker's
-// errors.
+// A journal that cannot be read leaves the terminal unclassified and charged
+// as work, as before; a read failure other than absence is reported with the
+// breaker's errors.
 func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL string) error {
 	class, readErr := p.journaledTerminalClass(runID)
-	if exempt, err := p.exemptFromStreak(ctx, runID, class); exempt {
-		return errors.Join(readErr, err)
-	}
-	return errors.Join(readErr, p.applyCircuitBreaker(ctx, runID, finalState, runURL))
+	return errors.Join(readErr, p.chargeClassified(ctx, runID, finalState, runURL, class))
 }
 
 func (p *Policy) journaledTerminalClass(runID string) (telemetry.ErrorClass, error) {
@@ -391,28 +396,50 @@ func (p *Policy) journaledTerminalClass(runID string) (telemetry.ErrorClass, err
 	}
 	switch {
 	case err == nil:
-		return runner.JournaledTerminalFaultClass(events), nil
 	case errors.Is(err, os.ErrNotExist):
 		return "", nil
 	default:
 		return "", fmt.Errorf("read terminal classification for run %q: %w", runID, err)
 	}
+	var interruption string
+	if p.EngineInterruption != nil {
+		var ierr error
+		if interruption, ierr = p.EngineInterruption(runID); ierr != nil {
+			// Without the sweep's record a cancelled engine run stays an
+			// operator cancel: charged as work, never guessed to be infra.
+			err = fmt.Errorf("read engine interruption for run %q: %w", runID, ierr)
+		}
+	}
+	return runner.JournaledTerminalFaultClass(events, interruption), err
 }
 
-// exemptFromStreak reports whether a terminal of class must stay out of the
-// failure streak, and settles what an exempt terminal still owes: an
-// infrastructure fault refunds a pr-remediation cycle this run charged but
-// never had evaluated (#5588/#5598). Shared by every terminal phase the
-// breaker counts, so failed, escalated and aborted terminals cannot disagree
-// about the same class.
-func (p *Policy) exemptFromStreak(ctx context.Context, runID string, class telemetry.ErrorClass) (bool, error) {
-	if !class.InfraFault() && class != telemetry.ErrorClassItemJudgment {
-		return false, nil
+// chargeClassified charges one terminal by its class. It is the single
+// decision every terminal phase the breaker counts goes through, so failed,
+// escalated and aborted terminals cannot disagree about the same class:
+//
+//   - item judgment (#3363) is a correct conclusion about the item and is not
+//     charged at all;
+//   - an infrastructure fault (#3361) is not evidence about the item, so it is
+//     kept off the genuine/work streak and charged to the separate
+//     infrastructure streak, which parks only at InfraFailureStreakThreshold
+//     and says so accurately (#5638). It also refunds a pr-remediation cycle
+//     this run charged but never had evaluated (#5588/#5598);
+//   - everything else is a genuine/work terminal. A bare session timeout is
+//     one: only an explicit infrastructure classification moves a timeout
+//     off the work streak, so a recurring harness timeout still parks at the
+//     work threshold (#1054).
+func (p *Policy) chargeClassified(ctx context.Context, runID, stage, runURL string, class telemetry.ErrorClass) error {
+	switch {
+	case class == telemetry.ErrorClassItemJudgment:
+		return nil
+	case class.InfraFault():
+		return errors.Join(
+			p.State.VoidRemediationCharge(ctx, p.Poster, runID),
+			p.applyInfraCircuitBreaker(ctx, runID, stage, runURL),
+		)
+	default:
+		return p.applyCircuitBreaker(ctx, runID, stage, runURL)
 	}
-	if class.InfraFault() {
-		return true, p.State.VoidRemediationCharge(ctx, p.Poster, runID)
-	}
-	return true, nil
 }
 
 // failedOutcomeClass is the terminal's class: the runner's explicit

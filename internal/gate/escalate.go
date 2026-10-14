@@ -236,26 +236,8 @@ func ParseFailureStreakCount(body string) (int, bool) {
 // current labels do not show yet.
 func UpsertFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count int, stage, runID, runURL string, applying []string) error {
 	body := failureStreakBody(count, stage, runID, runURL, resolveFailurePark(ctx, poster, repository, itemID, applying))
-	comments, err := poster.ListComments(ctx, repository, itemID)
-	if err != nil {
-		return fmt.Errorf("list comments for failure upsert: %w", err)
-	}
-	for _, c := range comments {
-		if strings.Contains(c.Body, failureStreakMarker) {
-			if err := poster.UpdateComment(ctx, repository, c.ID, body); err == nil {
-				return nil
-			}
-			// ADO cannot edit work-item comments. Posting a new marker keeps
-			// the latest count durable; CountFailureStreak uses that marker.
-			break
-		}
-	}
-	if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository: repository,
-		ID:         itemID,
-		Comment:    body,
-	}); err != nil {
-		return fmt.Errorf("post failure streak comment: %w", err)
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, failureStreakMarker, body, true); err != nil {
+		return fmt.Errorf("failure streak comment: %w", err)
 	}
 	return nil
 }
@@ -263,26 +245,85 @@ func UpsertFailureComment(ctx context.Context, poster Commenter, repository prov
 // ResetFailureComment records a successful terminal run without creating a
 // marker comment for items that have never failed.
 func ResetFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, runID, runURL string) error {
-	comments, err := poster.ListComments(ctx, repository, itemID)
-	if err != nil {
-		return fmt.Errorf("list comments for failure reset: %w", err)
-	}
 	body := fmt.Sprintf(
 		"Goobers: failure streak reset after successful terminal run [`%s`](%s).\n\n"+
 			"<!-- goobers:failure-streak data-count=\"0\" -->",
 		runID, runURL,
 	)
-	foundMarker := false
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, failureStreakMarker, body, false); err != nil {
+		return fmt.Errorf("failure streak reset: %w", err)
+	}
+	return nil
+}
+
+// infraFailureStreakMarker marks the separate infrastructure failure-streak
+// comment (#5638). Distinct from failureStreakMarker, and not a superstring of
+// it, so the two rolling comments never overwrite each other and the legacy
+// work-streak migration never reads an infrastructure count.
+const infraFailureStreakMarker = "<!-- goobers:infra-failure-streak"
+
+func infraFailureStreakBody(count, threshold int, stage, latestRunID, latestRunURL string, park failurePark) string {
+	stageInfo := ""
+	if stage != "" {
+		stageInfo = fmt.Sprintf(" at stage `%s`", stage)
+	}
+	return fmt.Sprintf(
+		"Goobers: **%d consecutive infrastructure-classified terminal(s)**%s. Latest run: [`%s`](%s). "+
+			"Classification: **infrastructure failure** — the run's own record attributes it to infrastructure, "+
+			"so it is excluded from the genuine/work streak; this separate streak parks the item after %d so an "+
+			"environment that fails the same way every time cannot retry it forever. "+
+			"%s\n\n"+
+			"<!-- goobers:infra-failure-streak data-count=\"%d\" -->",
+		count, stageInfo, latestRunID, latestRunURL, threshold, park.retryInstruction(), count,
+	)
+}
+
+// UpsertInfraFailureComment creates or updates the single infrastructure
+// failure-streak comment on an item (#5638): the human-visible projection of
+// the infrastructure streak, which counts separately from the genuine/work
+// streak and parks at its own, higher threshold.
+func UpsertInfraFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count, threshold int, stage, runID, runURL string, applying []string) error {
+	body := infraFailureStreakBody(count, threshold, stage, runID, runURL, resolveFailurePark(ctx, poster, repository, itemID, applying))
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, infraFailureStreakMarker, body, true); err != nil {
+		return fmt.Errorf("infrastructure failure streak comment: %w", err)
+	}
+	return nil
+}
+
+// ResetInfraFailureComment records a successful terminal run on an item that
+// has an infrastructure failure-streak comment, and posts nothing otherwise.
+func ResetInfraFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, runID, runURL string) error {
+	body := fmt.Sprintf(
+		"Goobers: infrastructure failure streak reset after successful terminal run [`%s`](%s).\n\n"+
+			"<!-- goobers:infra-failure-streak data-count=\"0\" -->",
+		runID, runURL,
+	)
+	if err := upsertMarkerComment(ctx, poster, repository, itemID, infraFailureStreakMarker, body, false); err != nil {
+		return fmt.Errorf("infrastructure failure streak reset: %w", err)
+	}
+	return nil
+}
+
+// upsertMarkerComment edits the item's comment carrying marker to body. When
+// it cannot be edited (ADO cannot edit work-item comments) a new marker
+// comment keeps the latest state durable. Without an existing marker, a new
+// comment is posted only when create is set: a reset never creates one.
+func upsertMarkerComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, marker, body string, create bool) error {
+	comments, err := poster.ListComments(ctx, repository, itemID)
+	if err != nil {
+		return fmt.Errorf("list comments: %w", err)
+	}
+	found := false
 	for _, c := range comments {
-		if strings.Contains(c.Body, failureStreakMarker) {
-			foundMarker = true
+		if strings.Contains(c.Body, marker) {
+			found = true
 			if err := poster.UpdateComment(ctx, repository, c.ID, body); err == nil {
 				return nil
 			}
 			break
 		}
 	}
-	if !foundMarker {
+	if !found && !create {
 		return nil
 	}
 	if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
@@ -290,7 +331,7 @@ func ResetFailureComment(ctx context.Context, poster Commenter, repository provi
 		ID:         itemID,
 		Comment:    body,
 	}); err != nil {
-		return fmt.Errorf("post failure streak reset: %w", err)
+		return fmt.Errorf("post comment: %w", err)
 	}
 	return nil
 }

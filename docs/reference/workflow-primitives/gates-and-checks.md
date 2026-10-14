@@ -158,7 +158,9 @@ find every non-passing check finished without a verdict:
      code `ci_no_verdict`. The runner retries the stage within its
      infrastructure budget. A run that ends on `ci_no_verdict` is an
      infrastructure fault, not a work failure, so it does not count toward
-     the failure-streak park.
+     the genuine/work failure streak. It counts on the separate
+     infrastructure streak, which parks only at its own higher threshold
+     (see "Two failure streaks" in `docs/stage-contract.md`).
    - `continue`: the stage reports `ciStatus: pending` as a determined
      result. The run goes on, and the no-verdict checks are recorded in
      `ci-checks.json`.

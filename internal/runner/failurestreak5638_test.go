@@ -156,7 +156,7 @@ func TestGateInfraTimeoutThenExpiryIsAnInfraTerminal(t *testing.T) {
 	if failedCalls != 0 || len(notified) != 1 || notified[0] != journal.PhaseAborted {
 		t.Fatalf("Failed calls = %d, NotifyTerminal phases = %v; want the aborted terminal notifier only", failedCalls, notified)
 	}
-	if class := JournaledTerminalFaultClass(events); class != telemetry.ErrorClassInfra {
+	if class := JournaledTerminalFaultClass(events, ""); class != telemetry.ErrorClassInfra {
 		t.Fatalf("terminal class = %q, want %q: the gate already judged this retry infrastructure", class, telemetry.ErrorClassInfra)
 	}
 }
@@ -168,7 +168,7 @@ func TestExpiryDuringOrdinaryWorkIsUnclassified(t *testing.T) {
 	if len(notified) != 1 || notified[0] != journal.PhaseAborted {
 		t.Fatalf("NotifyTerminal phases = %v, want aborted", notified)
 	}
-	if class := JournaledTerminalFaultClass(events); class != "" {
+	if class := JournaledTerminalFaultClass(events, ""); class != "" {
 		t.Fatalf("terminal class = %q, want unclassified", class)
 	}
 }
@@ -211,7 +211,7 @@ func TestJournaledTerminalFaultClass(t *testing.T) {
 		"only latest cause": {[]journal.Event{finished(journal.PhaseEscalated, journal.TerminalInfrastructureFailure, gate.ReasonInfrastructureBudgetExhausted), finished(journal.PhaseEscalated, journal.TerminalEscalation, "escalated")}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := JournaledTerminalFaultClass(tc.events); got != tc.want {
+			if got := JournaledTerminalFaultClass(tc.events, ""); got != tc.want {
 				t.Fatalf("class = %q, want %q", got, tc.want)
 			}
 		})
@@ -247,7 +247,7 @@ func TestGateInfraBudgetEscalationIsAnInfraTerminal(t *testing.T) {
 	if failedCalls != 0 || len(notified) != 1 || notified[0] != journal.PhaseEscalated {
 		t.Fatalf("Failed calls = %d, NotifyTerminal phases = %v; want the escalated terminal notifier only", failedCalls, notified)
 	}
-	if class := JournaledTerminalFaultClass(readRunEvents(t, runsDir, runID)); class != telemetry.ErrorClassInfra {
+	if class := JournaledTerminalFaultClass(readRunEvents(t, runsDir, runID), ""); class != telemetry.ErrorClassInfra {
 		t.Fatalf("terminal class = %q, want %q", class, telemetry.ErrorClassInfra)
 	}
 }
