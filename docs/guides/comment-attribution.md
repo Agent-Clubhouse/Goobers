@@ -55,7 +55,7 @@ goobers-claim-release-reason: v=1 disposition=<disposition> [stage=<stage>] [cod
 ```
 
 - **Fields.** The fields are space-separated `key=value` pairs. Values use a
-  restricted alphabet (ASCII letters, digits and `._-:@+`, at most 64 bytes),
+  restricted alphabet (ASCII letters, digits and `._-:+`, at most 64 bytes),
   so a reader splits on whitespace and on the first `=` without unescaping.
 - **Dispositions.** `disposition` is one of `completed`, `failed`,
   `escalated`, `cancelled`, `abandoned`, `no-work`, `stall-swept`,

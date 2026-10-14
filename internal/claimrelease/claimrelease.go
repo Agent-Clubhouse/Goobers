@@ -144,6 +144,8 @@ func (r Reason) Normalize() Reason {
 
 // token keeps identifiers in an alphabet that can never break the marker
 // line's key=value grammar, Markdown code spans, or a single-line comment.
+// '@' is excluded too: the marker line is plain text, where "@name" would
+// notify someone.
 func token(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -154,7 +156,7 @@ func token(value string) string {
 		switch {
 		case r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)):
 			b.WriteRune(r)
-		case strings.ContainsRune("._-:@+", r):
+		case strings.ContainsRune("._-:+", r):
 			b.WriteRune(r)
 		default:
 			b.WriteByte('_')

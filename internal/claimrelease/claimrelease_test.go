@@ -32,9 +32,9 @@ func TestNormalizeIsIdempotent(t *testing.T) {
 }
 
 func TestTokensKeepMarkerGrammarSafe(t *testing.T) {
-	r := Reason{Disposition: Failed, Stage: "impl ement=`x`\nnext", Code: strings.Repeat("C", 200), Actor: "a b"}.Normalize()
+	r := Reason{Disposition: Failed, Stage: "impl ement=`x`\nnext", Code: "@octocat" + strings.Repeat("C", 200), Actor: "a b@team"}.Normalize()
 	for name, value := range map[string]string{"stage": r.Stage, "code": r.Code, "actor": r.Actor} {
-		if strings.ContainsAny(value, " =`\n\t") {
+		if strings.ContainsAny(value, " =`\n\t@") {
 			t.Fatalf("%s %q contains a grammar-breaking character", name, value)
 		}
 		if len(value) > TokenLimit {
