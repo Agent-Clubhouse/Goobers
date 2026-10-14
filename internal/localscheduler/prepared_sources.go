@@ -94,6 +94,14 @@ func (s *Scheduler) dispatchPreparedSource(executionCtx context.Context, entry W
 			return "", err
 		}
 		indexes = window.Indexes
+		if source.ScheduleDeclaration > 0 {
+			indexes, err = s.occurrenceAdmissionIndexes(entry, current, source.ScheduleDeclaration, now)
+			if err != nil {
+				return "", err
+			}
+			// Backoff follows current declarations; execution pins remain archived.
+			entry.ScheduleBackoffs = current.ScheduleBackoffs
+		}
 		tick := window.Tick
 		reason = fireReason(tick, journal.TriggerSchedule)
 		if entry.PollFallbackCause != "" {

@@ -1,8 +1,10 @@
 package startintent
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,5 +179,85 @@ func TestOccurrenceDemandCaptureRetainsEveryFireBeforeSizing(t *testing.T) {
 		if err != nil || got.Source.ScheduleDeclaration != 1 || !got.Source.ScheduledAt.Equal(envelope.Source.ScheduledAt) {
 			t.Fatal(got, err)
 		}
+	}
+}
+
+func TestOccurrenceAdmissionRetainsBackedOffFireAndReservedIdentity(t *testing.T) {
+	source, entry := sourceFixture(t)
+	base := time.Now().UTC().Truncate(time.Minute)
+	now := base
+	schedule, err := localscheduler.ParseSchedule("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Schedules = []localscheduler.Schedule{schedule}
+	entry.ScheduleCatchUpAll = true
+	entry.ScheduleBackoffs = []localscheduler.IdleBackoffConfig{{Enabled: true, Floor: time.Minute, Ceiling: 4 * time.Minute}}
+	started := make(chan string, 4)
+	entry.Starter = scheduleStarterFunc(func(_ context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
+		started <- req.RunID
+		return localscheduler.StartResult{Phase: journal.PhaseCompleted, NoWork: true}, nil
+	})
+	log, _, err := journal.OpenInstanceLog(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithSourceQueue(source), localscheduler.WithClock(func() time.Time { return now }, time.After))
+	defer scheduler.Wait()
+	if err = scheduler.ReconcileAll(nil, base); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Queue: source.Queue, Now: func() time.Time { return now }, Scheduler: func() *localscheduler.Scheduler { return scheduler }, RunDirectory: func(context.Context, string) (string, error) { return "", nil }, Build: func(context.Context, Target) (Prepared, error) {
+		return Prepared{Entry: entry, Release: func() {}}, nil
+	}}
+	for minute := 1; minute <= 2; minute++ {
+		now = base.Add(time.Duration(minute) * time.Minute)
+		scheduler.Tick(t.Context(), now)
+		pending, err := source.Queue.Pending(t.Context(), 10)
+		if err != nil || len(pending) != 1 {
+			t.Fatal(pending, err)
+		}
+		if err = service.Dispatch(t.Context(), t.Context(), pending[0]); err != nil {
+			t.Fatal(err)
+		}
+		scheduler.Wait()
+		<-started
+	}
+	now = base.Add(3 * time.Minute)
+	scheduler.Tick(t.Context(), now)
+	pending, err := source.Queue.Pending(t.Context(), 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatal("backoff lost occurrence during discovery", pending, err)
+	}
+	original := pending[0]
+	if err = service.Dispatch(t.Context(), t.Context(), original); err != nil {
+		t.Fatal(err)
+	}
+	held, err := source.Queue.Get(t.Context(), original.ID, "scheduler")
+	if err != nil || held.State != triggerqueue.Accepted || !strings.HasPrefix(held.Reason, localscheduler.ReasonScheduleBackoff) || string(held.Payload) != string(original.Payload) {
+		t.Fatal(held, err)
+	}
+	select {
+	case id := <-started:
+		t.Fatal("started through backoff", id)
+	default:
+	}
+	now = base.Add(4 * time.Minute)
+	if err = service.Dispatch(t.Context(), t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Wait()
+	select {
+	case id := <-started:
+		if id != strings.TrimPrefix(original.ID, "trigger-") {
+			t.Fatal("identity changed", id, original.ID)
+		}
+	default:
+		t.Fatal("did not resume")
+	}
+	resumed, err := source.Queue.Get(t.Context(), original.ID, "scheduler")
+	if err != nil || resumed.State != triggerqueue.Dispatching || resumed.RunID != strings.TrimPrefix(original.ID, "trigger-") || resumed.Reason != "" {
+		t.Fatal(resumed, err)
 	}
 }

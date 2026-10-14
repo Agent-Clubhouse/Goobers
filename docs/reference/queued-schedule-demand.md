@@ -101,5 +101,10 @@ already accepted starts or sizing obligations. Older binaries refuse the additiv
 queue schema. Default capture fingerprints retain their prior representation.
 
 Public workflow authoring does not yet expose this option. The authoring, catalog,
-and daemon path, plus admission backoff behavior, require separate qualification
+and daemon path require separate qualification
 before enabling an `all` policy. The default remains one-hour coalescing.
+
+Independent occurrences acquire custody even during idle backoff. Their later
+admission matches the archived declaration to the current declaration identity,
+so reordering cannot apply a different schedule's backoff. A held occurrence keeps
+its original pins and reserved run ID and retries normal admission after backoff.

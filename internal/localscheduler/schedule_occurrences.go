@@ -130,3 +130,27 @@ func (source SourceTrigger) occurrenceEvaluation(schedules []Schedule) (Schedule
 	}
 	return ScheduleWindowEvaluation{Tick: TickResult{Fire: true, MissedTicks: 1, LastEval: source.ScheduledAt}, From: source.ScheduledFrom, Indexes: []int{index}}, nil
 }
+
+// ReasonScheduleBackoff holds retained nominal occurrences until idle backoff clears.
+const ReasonScheduleBackoff = "schedule backoff"
+
+func (s *Scheduler) occurrenceAdmissionIndexes(archived, current WorkflowEntry, declaration int, now time.Time) ([]int, error) {
+	identity, err := scheduleIdentity(archived.Schedules[declaration-1])
+	if err != nil {
+		return nil, err
+	}
+	var indexes []int
+	for i, schedule := range current.Schedules {
+		candidate, err := scheduleIdentity(schedule)
+		if err != nil {
+			return nil, err
+		}
+		if candidate == identity {
+			indexes = append(indexes, i)
+		}
+	}
+	if blocked, reason := s.scheduleBackedOff(entryIdentity(current), current, indexes, now); blocked {
+		return nil, &TriggerRejectedError{Workflow: current.Workflow, Reason: ReasonScheduleBackoff + ": " + reason}
+	}
+	return indexes, nil
+}

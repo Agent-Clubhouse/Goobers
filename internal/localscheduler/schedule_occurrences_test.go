@@ -1,6 +1,7 @@
 package localscheduler
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -61,5 +62,34 @@ func TestOccurrenceDiscoveryFollowsTimezoneAcrossDST(t *testing.T) {
 	index, at, err := nextScheduleOccurrence([]Schedule{schedule}, []time.Time{before}, time.Date(2026, 3, 10, 0, 0, 0, 0, loc))
 	if err != nil || index != 0 || !at.Equal(time.Date(2026, 3, 9, 2, 0, 0, 0, loc)) {
 		t.Fatal(index, at, err)
+	}
+}
+
+func TestOccurrenceBackoffUsesMatchingCurrentDeclarationAfterReorder(t *testing.T) {
+	now := time.Now().UTC()
+	first, err := ParseSchedule("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ParseSchedule("@every 2m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived := WorkflowEntry{Workflow: "work", Schedules: []Schedule{first, second}}
+	current := WorkflowEntry{Workflow: "work", Schedules: []Schedule{second, first}}
+	s, _ := newTestScheduler(t, []WorkflowEntry{current})
+	s.idleBackoffs[entryIdentity(current)] = []idleBackoffState{{}, {nextPoll: now.Add(time.Minute)}}
+	_, err = s.occurrenceAdmissionIndexes(archived, current, 1, now)
+	var refusal *TriggerRejectedError
+	if !errors.As(err, &refusal) || !refusal.WaitableForQueue() {
+		t.Fatal("reordered declaration bypassed backoff", err)
+	}
+	indexes, err := s.occurrenceAdmissionIndexes(archived, current, 1, now.Add(time.Minute))
+	if err != nil || len(indexes) != 1 || indexes[0] != 1 {
+		t.Fatal(indexes, err)
+	}
+	current.Schedules = []Schedule{second}
+	if indexes, err = s.occurrenceAdmissionIndexes(archived, current, 1, now); err != nil || len(indexes) != 0 {
+		t.Fatal("removed declaration inherited unrelated backoff", indexes, err)
 	}
 }

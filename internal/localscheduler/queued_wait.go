@@ -17,7 +17,7 @@ func (e *TriggerRejectedError) WaitableForQueue() bool {
 	case ReasonBudget, ReasonDailyBudget, ReasonOpenPRCap:
 		return true
 	}
-	for _, prefix := range []string{ReasonProviderQuota, ReasonDisabled} {
+	for _, prefix := range []string{ReasonProviderQuota, ReasonDisabled, ReasonScheduleBackoff} {
 		if e.Reason == prefix || strings.HasPrefix(e.Reason, prefix+": ") {
 			return true
 		}
