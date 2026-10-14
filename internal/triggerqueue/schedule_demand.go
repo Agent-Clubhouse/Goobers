@@ -2,7 +2,10 @@ package triggerqueue
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -13,13 +16,26 @@ const scheduleDemandSchema = `CREATE TABLE schedule_demands (
  accepted_ns INTEGER NOT NULL
 );`
 
-// ScheduleDemand retains one coalesced pinned fire before and after sizing.
+// ScheduleDemandCapture pins a nominal fire before provider sizing. Independent
+// captures retain every occurrence; the zero value preserves coalesced custody.
+// This is a host-owned storage contract, not a public workflow policy.
+type ScheduleDemandCapture struct {
+	ID          string
+	Advance     SourceAdvance
+	Payload     []byte
+	Independent bool
+	AcceptedAt  time.Time
+}
+
+// ScheduleDemand retains one pinned fire before and after sizing.
 // Count -1 requires a provider observation. Queued ordinals never repeat.
 type ScheduleDemand struct {
 	ID, Scope     string
 	Payload       []byte
 	Count, Queued int
 	AcceptedAt    time.Time
+	Independent   bool
+	fingerprint   string
 }
 
 // DemandTransfer moves a consecutive interval from an obligation into starts.
@@ -29,13 +45,18 @@ type DemandTransfer struct {
 }
 
 // CaptureScheduleDemand captures pins before sizing and advances the cursor in
-// the same transaction. Later fires coalesce into existing custody without
-// replacing its definition or its already observed count.
-func (s *Store) CaptureScheduleDemand(ctx context.Context, id string, advance SourceAdvance, payload []byte, now time.Time) error {
+// the same transaction. By default, later fires coalesce without replacing pins
+// or observed counts. Independent captures retain one obligation per occurrence.
+func (s *Store) CaptureScheduleDemand(ctx context.Context, capture ScheduleDemandCapture) error {
+	id, advance, payload, now := capture.ID, capture.Advance, capture.Payload, capture.AcceptedAt
 	if !validChildText(id, 256, true) || len(payload) == 0 || len(payload) > MaxPayloadBytes || now.IsZero() {
 		return errors.New("triggerqueue: invalid schedule demand")
 	}
 	if err := validateSourceBatch(SourceBatch{Key: id, Actor: "scheduler", Fingerprint: id, Advance: &advance}, now); err != nil {
+		return err
+	}
+	fingerprint, err := scheduleDemandFingerprint(capture)
+	if err != nil {
 		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -43,18 +64,30 @@ func (s *Store) CaptureScheduleDemand(ctx context.Context, id string, advance So
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var found int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedule_demands WHERE scope=?`, advance.Scope).Scan(&found); err != nil {
+	prior, err := readScheduleDemand(ctx, tx, "SELECT "+scheduleDemandColumns+" FROM schedule_demands WHERE id=?", id)
+	if err == nil {
+		if prior.fingerprint != fingerprint {
+			return ErrConflict
+		}
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	var found int
+	if !capture.Independent {
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedule_demands WHERE scope=? AND independent=0`, advance.Scope).Scan(&found); err != nil {
+			return err
+		}
 	}
 	if found == 0 {
 		if err = triggerSlotCapacity(ctx, tx, 1); err != nil {
 			return err
 		}
-		if err = childByteCapacity(ctx, tx, len(payload)+len(id)+len(advance.Scope)+4096); err != nil {
+		if err = childByteCapacity(ctx, tx, len(payload)+len(id)+len(advance.Scope)+len(fingerprint)+4096); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO schedule_demands(scope,id,payload,accepted_ns) VALUES(?,?,?,?)`, advance.Scope, id, payload, now.UnixNano()); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO schedule_demands(scope,id,payload,accepted_ns,independent,fingerprint) VALUES(?,?,?,?,?,?)`, advance.Scope, id, payload, now.UnixNano(), capture.Independent, fingerprint); err != nil {
 			return err
 		}
 	}
@@ -64,14 +97,36 @@ func (s *Store) CaptureScheduleDemand(ctx context.Context, id string, advance So
 	return tx.Commit()
 }
 
-// ScheduleDemand reads the outstanding obligation for a configured scope.
-func (s *Store) ScheduleDemand(ctx context.Context, scope string) (ScheduleDemand, error) {
-	return readScheduleDemand(ctx, s.db, `SELECT id,scope,payload,observed_count,queued,accepted_ns FROM schedule_demands WHERE scope=?`, scope)
+func scheduleDemandFingerprint(capture ScheduleDemandCapture) (string, error) {
+	// Retry time is not identity. Normalize cursor times so location and monotonic
+	// clock metadata cannot make a retry differ from its original capture.
+	capture.AcceptedAt = time.Time{}
+	capture.Advance.Before = capture.Advance.Before.UTC()
+	capture.Advance.After = capture.Advance.After.UTC()
+	raw, err := json.Marshal(capture)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
+
+const scheduleDemandColumns = "id,scope,payload,observed_count,queued,accepted_ns,independent,fingerprint"
+
+// ScheduleDemand reads the oldest outstanding obligation for a configured scope.
+func (s *Store) ScheduleDemand(ctx context.Context, scope string) (ScheduleDemand, error) {
+	return readScheduleDemand(ctx, s.db, "SELECT "+scheduleDemandColumns+" FROM schedule_demands WHERE scope=? ORDER BY accepted_ns,id LIMIT 1", scope)
+}
+
+// ScheduleDemandByID reads the exact retained occurrence during worker transfer.
+func (s *Store) ScheduleDemandByID(ctx context.Context, id string) (ScheduleDemand, error) {
+	return readScheduleDemand(ctx, s.db, "SELECT "+scheduleDemandColumns+" FROM schedule_demands WHERE id=?", id)
+}
+
 func readScheduleDemand(ctx context.Context, q sourceQuerier, query string, arg any) (ScheduleDemand, error) {
 	var result ScheduleDemand
 	var ns int64
-	err := q.QueryRowContext(ctx, query, arg).Scan(&result.ID, &result.Scope, &result.Payload, &result.Count, &result.Queued, &ns)
+	err := q.QueryRowContext(ctx, query, arg).Scan(&result.ID, &result.Scope, &result.Payload, &result.Count, &result.Queued, &ns, &result.Independent, &result.fingerprint)
 	if err == nil && (result.Count < -1 || result.Count > MaxRecords || result.Queued < 0 || (result.Count < 0 && result.Queued != 0) || (result.Count >= 0 && result.Queued > result.Count)) {
 		return result, errors.New("triggerqueue: corrupt schedule demand progress")
 	}
@@ -90,7 +145,7 @@ func (s *Store) ObserveScheduleDemand(ctx context.Context, id string, count int)
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	prior, err := readScheduleDemand(ctx, tx, `SELECT id,scope,payload,observed_count,queued,accepted_ns FROM schedule_demands WHERE id=?`, id)
+	prior, err := readScheduleDemand(ctx, tx, "SELECT "+scheduleDemandColumns+" FROM schedule_demands WHERE id=?", id)
 	if err != nil {
 		return err
 	}
@@ -132,7 +187,7 @@ func (s *Store) ScheduleDemandPage(ctx context.Context, after string, limit int)
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: invalid schedule demand page")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,scope,payload,observed_count,queued,accepted_ns FROM schedule_demands WHERE id>? ORDER BY id LIMIT ?`, after, limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+scheduleDemandColumns+" FROM schedule_demands WHERE id>? ORDER BY id LIMIT ?", after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +196,7 @@ func (s *Store) ScheduleDemandPage(ctx context.Context, after string, limit int)
 	for rows.Next() {
 		var d ScheduleDemand
 		var ns int64
-		if err = rows.Scan(&d.ID, &d.Scope, &d.Payload, &d.Count, &d.Queued, &ns); err != nil {
+		if err = rows.Scan(&d.ID, &d.Scope, &d.Payload, &d.Count, &d.Queued, &ns, &d.Independent, &d.fingerprint); err != nil {
 			return nil, err
 		}
 		d.AcceptedAt = time.Unix(0, ns).UTC()
