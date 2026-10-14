@@ -123,12 +123,20 @@ func TestMapVisitObserveRefusesCorruptItemRecords(t *testing.T) {
 	renamed.BranchName = "b"
 	wrongTask := stage(journal.EventStageStarted, 1)
 	wrongTask.Stage = "collate"
+	// fail_fast settles a queued item as cancelled without starting it.
+	cancelledUnstarted := branchEvent(journal.EventBranchFinished, 1, items[0])
+	cancelledUnstarted.BranchStatus = journal.BranchCancelled
+	if visit, err := NewMapVisit(mapStarted(items), testMap()); err != nil || visit.Observe(cancelledUnstarted) != nil {
+		t.Fatalf("an unstarted item cancelled by fail_fast was refused: %v", err)
+	}
 	for _, tc := range []struct {
 		name    string
 		records []journal.Event
 		kind    string
 	}{
 		{"finish without start", []journal.Event{branchEvent(journal.EventBranchFinished, 1, items[0])}, KindMissing},
+		{"stage after an unstarted cancel", []journal.Event{cancelledUnstarted, stage(journal.EventStageStarted, 1)}, KindMissing},
+		{"unstarted cancel twice", []journal.Event{cancelledUnstarted, cancelledUnstarted}, KindDuplicate},
 		{"stage before start", []journal.Event{stage(journal.EventStageStarted, 1)}, KindMissing},
 		{"branch outside roster", []journal.Event{branchEvent(journal.EventBranchStarted, 3, items[0])}, KindExtra},
 		{"stage outside roster", []journal.Event{stage(journal.EventStageFinished, 9)}, KindExtra},

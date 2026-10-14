@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -45,9 +46,15 @@ type ClaimRequest struct {
 	// lease defeats lease-based liveness).
 	LeaseSeconds int `json:"leaseSeconds,omitempty"`
 	// Outcome is settle-only: how the run concluded its work on the item
-	// (e.g. "completed", "abandoned"), recorded with the settle's journal
-	// event. Refused on the other operations.
+	// (e.g. "completed", "abandoned"), recorded as the release reason's
+	// disposition. Refused on the other operations.
 	Outcome string `json:"outcome,omitempty"`
+	// Reason is why ownership ends, on release and settle (#4421): recorded
+	// on the ledger's released history entry and on the claim.released
+	// event. Optional — an absent reason (an older client) is recorded as
+	// claimrelease.Unknown — and normalized (bounded, scrubbed) by the
+	// service. Refused on acquire and renew.
+	Reason claimrelease.Reason `json:"reason,omitzero"`
 }
 
 // MaxClaimLeaseSeconds is the ceiling on ClaimRequest.LeaseSeconds: four
@@ -99,6 +106,9 @@ type ClaimEntry struct {
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
 	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
 	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
+	// ReleaseReason is why a released history entry ended; zero on live
+	// entries and on history recorded before it existed.
+	ReleaseReason claimrelease.Reason `json:"releaseReason,omitzero"`
 }
 
 // ClaimVerification mirrors the ledger's bounded, lease-specific provider
@@ -403,6 +413,10 @@ func registerClaimRoute(
 		}
 		if input.Outcome != "" && !settle {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "outcome is only valid for settle")
+			return
+		}
+		if !input.Reason.IsZero() && !settle && !release {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "reason is only valid for release and settle")
 			return
 		}
 		// Per-run containment: a pod token proves "I am run X's stage pod",

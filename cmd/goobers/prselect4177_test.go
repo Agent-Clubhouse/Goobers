@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -153,7 +154,7 @@ func releasePullRequestClaimForTest(t *testing.T, root string, number int, runID
 		Provider:   string(providers.ProviderGitHub),
 		ExternalID: pullRequestClaimKey(number),
 	}
-	if err := ledger.ReleaseScoped(key, runID); err != nil {
+	if err := ledger.ReleaseScoped(key, runID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 }

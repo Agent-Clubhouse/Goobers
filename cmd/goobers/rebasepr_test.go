@@ -34,8 +34,13 @@ type rebasePRServerState struct {
 	// default timestamp, so existing tests that only set comments are
 	// unaffected. They let the human-comment detection tests vary a comment's
 	// author and created-at independently.
-	commentAuthors      []string
-	commentCreatedAt    []string
+	commentAuthors   []string
+	commentCreatedAt []string
+	// commentUnmarked, index-aligned with comments, serves a goobers-bot
+	// comment without the attribution footer the fake otherwise stamps on
+	// every bot comment: a person writing through Goobers' own login under
+	// identityMode=shared.
+	commentUnmarked     []bool
 	rejectCommentUpdate bool
 }
 
@@ -74,7 +79,7 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 				"id": i + 1, "user": map[string]string{"login": login},
 				"body": comment, "created_at": createdAt,
 			}
-			if login == "goobers-bot" {
+			if login == "goobers-bot" && (i >= len(s.commentUnmarked) || !s.commentUnmarked[i]) {
 				out[i]["body"] = stampOwnFixtureBody(comment, "comment")
 			}
 		}
@@ -853,7 +858,7 @@ func TestHasNewHumanCommentSince(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := hasNewHumanCommentSince(test.comments, bot); got != test.want {
+			if got := hasNewHumanCommentSince(test.comments, dedicatedLoginClassifier(bot)); got != test.want {
 				t.Fatalf("hasNewHumanCommentSince = %v, want %v", got, test.want)
 			}
 		})

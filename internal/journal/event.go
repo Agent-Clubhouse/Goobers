@@ -5,6 +5,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // RunnerEventNamespace is the dotted prefix of the runner.* namespace — the
@@ -232,9 +233,10 @@ const (
 	// EventClaimAcquired records the claim ledger granting a lease.
 	EventClaimAcquired EventType = "claim.acquired"
 	// EventClaimReleased records a lease release (run finished, expired, or
-	// crash-recovered).
+	// crash-recovered). ClaimRelease carries why ownership ended (#4421).
 	EventClaimReleased EventType = "claim.released"
 	// EventClaimForceReleased records an operator overriding a claim lease.
+	// ClaimRelease carries the force-release disposition and actor.
 	EventClaimForceReleased EventType = "claim.force_released"
 	// EventClaimRefused records the claims plane refusing a lease because a
 	// live lease is held by a different run — the losing side of a
@@ -606,8 +608,13 @@ type Event struct {
 	SourceRunID       string `json:"sourceRunId,omitempty"`
 	SourceTerminalSeq uint64 `json:"sourceTerminalSeq,omitempty"`
 	// Reason is a short, stable explanation for an instance-level scheduler or
-	// daemon lifecycle event.
+	// daemon lifecycle event. On a claim release it is the release
+	// disposition code.
 	Reason string `json:"reason,omitempty"`
+	// ClaimRelease is the structured, bounded reason a claim ended, on
+	// claim.released and claim.force_released (#4421). Absent on events
+	// written before the field existed.
+	ClaimRelease *claimrelease.Reason `json:"claimRelease,omitempty"`
 	// SkipCount is the consecutive shared-pool refusal count for a
 	// workflow.starved event.
 	SkipCount int `json:"skipCount,omitempty"`

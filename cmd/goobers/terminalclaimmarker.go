@@ -251,11 +251,13 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 	}
 	ctx, cancel := context.WithTimeout(withTerminalReleaseScope(context.Background()), terminalClaimMarkerTimeout)
 	defer cancel()
+	reason := claimHolderReleaseReason(l, runID)
 	for _, entry := range entries {
 		if _, err := release(ctx, providers.ClaimWorkItemRequest{
 			Repository: repo,
 			ID:         claimEntryExternalID(entry),
 			RunID:      runID,
+			Reason:     reason,
 		}); err != nil {
 			recordClaimMarkerReleaseError(log, entry, err)
 		}

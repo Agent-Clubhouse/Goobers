@@ -198,7 +198,7 @@ var inputSchemas = map[string][]Input{
 	"publish-batch":        schema(stringsIn("planFile", "validationFile"), pathsIn("resultFile"), durationsIn("timeout")),
 	"push-remediated":      schema(pathsIn("resultFile"), durationsIn("timeout")),
 	"rebase-pr": schema(
-		stringsIn("base", "head", "remediate", "selectedNumber"),
+		stringsIn("base", "head", "identityMode", "remediate", "selectedNumber"), stringListsIn("excludeAuthors"),
 		booleansIn("hasFailingCI", "hasSiblingOverlap", "hasSubstantiveFindings"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -236,10 +236,13 @@ var inputSchemas = map[string][]Input{
 	"self-update": schema(
 		stringsIn("branch", "owner", "policy", "repository", "target"), pathsIn("resultFile"),
 	),
-	"set-milestone":    schema(stringsIn("itemID", "milestone"), pathsIn("resultFile"), durationsIn("timeout")),
-	"telemetry-query":  schema(pathsIn("resultFile")),
-	"update-behind-pr": schema(stringsIn("base", "headPrefix", "minSeverity"), pathsIn("resultFile"), durationsIn("timeout")),
-	"validate-plan":    schema(stringsIn("planFile", "selectionFile"), pathsIn("resultFile"), durationsIn("timeout")),
+	"set-milestone":   schema(stringsIn("itemID", "milestone"), pathsIn("resultFile"), durationsIn("timeout")),
+	"telemetry-query": schema(pathsIn("resultFile")),
+	"update-behind-pr": schema(
+		stringsIn("base", "headPrefix", "identityMode", "minSeverity"), stringListsIn("excludeAuthors"),
+		pathsIn("resultFile"), durationsIn("timeout"),
+	),
+	"validate-plan": schema(stringsIn("planFile", "selectionFile"), pathsIn("resultFile"), durationsIn("timeout")),
 
 	// These provider commands read no workflow-supplied inputs today. Keeping
 	// an explicit empty schema distinguishes them from external/unknown

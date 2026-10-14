@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
@@ -227,13 +228,13 @@ func TestFileBackendMatchesTheLedger(t *testing.T) {
 	// Release: legacy routes to Release, scoped to ReleaseScoped; a release
 	// by a non-holder is the ledger's no-op; ReleaseAllForRun mirrors
 	// ForRunAll + ReleaseEntry and reports what it surrendered.
-	if err := backend.ReleaseScoped(ctx, scoped, "run-2"); err != nil {
+	if err := backend.ReleaseScoped(ctx, scoped, "run-2", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 	if _, stillHeld := openTestLedger(t, viaBackend).LookupScoped(scoped); !stillHeld {
 		t.Fatal("a non-holder's release surrendered the claim")
 	}
-	released, err := backend.ReleaseAllForRun(ctx, "run-1")
+	released, err := backend.ReleaseAllForRun(ctx, "run-1", claimrelease.Completed.Reason())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +242,7 @@ func TestFileBackendMatchesTheLedger(t *testing.T) {
 		t.Fatalf("ReleaseAllForRun released %+v, want both of run-1's claims", released)
 	}
 	for _, entry := range direct.ForRunAll("run-1") {
-		if err := direct.ReleaseEntry(entry, "run-1"); err != nil {
+		if err := direct.ReleaseEntry(entry, "run-1", claimrelease.Completed.Reason()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -318,7 +319,7 @@ func TestFileLockedIsOneCriticalSection(t *testing.T) {
 			if lock.held != 1 {
 				t.Fatalf("nested Locked re-acquired the lock (held %d)", lock.held)
 			}
-			return inner.ReleaseScoped(ctx, key, "run-1")
+			return inner.ReleaseScoped(ctx, key, "run-1", claimrelease.Completed.Reason())
 		})
 	})
 	if err != nil {
@@ -338,7 +339,7 @@ func TestFileLockedIsOneCriticalSection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("nil-Lock backend: %v", err)
 	}
-	if err := held.ReleaseScoped(ctx, key, "run-2"); err != nil {
+	if err := held.ReleaseScoped(ctx, key, "run-2", claimrelease.Completed.Reason()); err != nil {
 		t.Fatalf("nil-Lock bare primitive: %v", err)
 	}
 }

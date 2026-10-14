@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -199,7 +200,7 @@ func (s *daemonClaimService) Release(ctx context.Context, request httpapi.ClaimR
 	if request.ItemID == "" {
 		return s.releaseAllForRun(ctx, request)
 	}
-	return s.release(ctx, claimLockOperationAPIRelease, request, nil)
+	return s.release(ctx, claimLockOperationAPIRelease, request, request.Reason)
 }
 
 func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
@@ -217,7 +218,7 @@ func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpa
 			if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
 				continue
 			}
-			if err := client.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), request.RunID); err != nil {
+			if err := client.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), request.RunID, request.Reason); err != nil {
 				return err
 			}
 			released = append(released, claimEntryWire(entry))
@@ -343,6 +344,7 @@ func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 		SharedRevoked:  entry.SharedRevoked,
 		SharedOwner:    entry.SharedOwner,
 		ReleasedAt:     entry.ReleasedAt,
+		ReleaseReason:  entry.ReleaseReason,
 	}
 }
 
@@ -403,40 +405,28 @@ func (s *daemonClaimService) Settle(ctx context.Context, request httpapi.ClaimRe
 	if !claimSettleOutcomes[outcome] {
 		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_outcome", "settle outcome must be completed or abandoned", nil)
 	}
-	return s.release(ctx, claimLockOperationAPISettle, request, map[string]any{
-		"settled":       true,
-		"settleOutcome": outcome,
-	})
+	// The outcome IS the release disposition, recorded on the ledger's own
+	// claim.released event — one boundary, so a retried settle (a no-op
+	// release) can never journal a second, contradictory one.
+	reason := request.Reason
+	reason.Disposition = claimrelease.Disposition(outcome)
+	if reason.Code == "" {
+		reason.Code = "settled"
+	}
+	return s.release(ctx, claimLockOperationAPISettle, request, reason)
 }
 
-func (s *daemonClaimService) release(ctx context.Context, operation string, request httpapi.ClaimRequest, settleRunner map[string]any) (httpapi.ClaimResponse, error) {
+func (s *daemonClaimService) release(ctx context.Context, operation string, request httpapi.ClaimRequest, reason claimrelease.Reason) (httpapi.ClaimResponse, error) {
 	var response httpapi.ClaimResponse
 	err := s.withLedger(operation, request, func(ledger *localscheduler.ClaimLedger) error {
-		entry, held := ledger.LookupScoped(claimKey(request))
-		releases := held && entry.RunID == request.RunID
 		client, err := s.coordinatedLedger(ledger)
 		if err != nil {
 			return err
 		}
-		if err := client.ReleaseScoped(ctx, claimKey(request), request.RunID); err != nil {
+		if err := client.ReleaseScoped(ctx, claimKey(request), request.RunID, reason); err != nil {
 			return err
 		}
 		response = httpapi.ClaimResponse{Ok: true}
-		if settleRunner != nil && releases && s.log != nil {
-			// The ledger journals claim.released; the settle disposition is
-			// the plane's own annotation on the same instance journal, and
-			// only the settle that actually surrendered the lease records it
-			// — a retried settle is a silent no-op, which is the exactly-once
-			// contract.
-			s.log.AppendBestEffort(journal.Event{
-				Type:     journal.EventClaimReleased,
-				Name:     request.ItemID,
-				Gaggle:   request.Gaggle,
-				RunID:    request.RunID,
-				Workflow: request.Workflow,
-				Runner:   settleRunner,
-			})
-		}
 		return nil
 	})
 	return response, err

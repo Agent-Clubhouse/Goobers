@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/claimrelease"
 )
 
 // fakeLiveness maps runID -> answer for RunLive; missing runIDs answer
@@ -171,7 +173,7 @@ func TestRenewRunsRenewsOnlyLiveHoldersFromCurrentEntries(t *testing.T) {
 	if ok, _, err := ledger.Claim("issue-3", "released-run", "implementation", 30*time.Minute); err != nil || !ok {
 		t.Fatalf("seed issue-3: ok=%v err=%v", ok, err)
 	}
-	if err := ledger.Release("issue-3", "released-run"); err != nil {
+	if err := ledger.Release("issue-3", "released-run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 

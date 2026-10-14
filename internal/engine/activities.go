@@ -144,6 +144,11 @@ type DispatchStageResult struct {
 	// from "could not publish" (an error) and from "not a repo stage" (no
 	// flag), and journaled explicitly so the record's silence is a fact.
 	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
+	// WorkspaceHeadMoved carries the pod runtime's provenance for a
+	// workspace_head_moved failure (#6019,
+	// dispatcher.SurrenderedResult.WorkspaceHeadMoved). Without it the code is
+	// a stage's own claim and admitWorkspaceHeadMoved rewrites it.
+	WorkspaceHeadMoved bool `json:"workspaceHeadMoved,omitempty"`
 	// Placement is where this attempt actually ran, when it ran in a pod and
 	// the attempt SETTLED. Nil for every in-process arm (InvokeGoober,
 	// RunDeterministic, ReviewGoober): those execute on the host that is
@@ -947,6 +952,7 @@ func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.Workspa
 }
 
 func (a *Activities) scrubStageActivityResult(ctx context.Context, result stageActivityResult) (stageActivityResult, error) {
+	admitWorkspaceHeadMoved(&result.ResultEnvelope, result.WorkspaceHeadMoved)
 	if identity, ok := attemptidentity.FromContext(ctx); ok {
 		result.AttemptIdentity = &identity
 	}

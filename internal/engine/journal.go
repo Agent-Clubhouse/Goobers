@@ -585,6 +585,18 @@ func (r *runJournal) lastFinishedAttempt(stage string) (int, journal.AttemptClas
 	return 0, ""
 }
 
+// workspaceHeadMoved journals why a run ended superseded (#6019): the error
+// event naming runner.WorkspaceHeadMovedErrorCode at the stage or gate the run
+// ended on. The terminal handlers read exactly this marker back to keep the
+// moved pull request's failure streak, no-work streak and remediation budget
+// untouched, so it is journaled on both the task and the gate arm.
+func (r *runJournal) workspaceHeadMoved(ctx workflow.Context, stage, message string) {
+	r.append(ctx, journal.Event{
+		Type: journal.EventError, Stage: stage,
+		Error: &journal.ErrorDetail{Code: runner.WorkspaceHeadMovedErrorCode, Message: message},
+	})
+}
+
 // blocked mirrors taskOutcome's #544 arm: the blocked cause journaled before
 // the escalated terminal.
 func (r *runJournal) blocked(ctx workflow.Context, stage string, result apiv1.ResultEnvelope) {

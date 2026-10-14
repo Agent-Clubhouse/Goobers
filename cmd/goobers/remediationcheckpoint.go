@@ -272,10 +272,30 @@ type remediationState struct {
 	// infrastructure escalates infrastructure-failure after
 	// remediationInfrastructureAllowance of them rather than looping forever.
 	InfrastructureFailures int `json:"infrastructureFailures,omitempty"`
+	// Superseded is set by the daemon's completed-terminal handler
+	// (settleSupersededRun, #6019) when RunID ended because the pull request
+	// moved under it — someone pushed to it while the run was working — before
+	// the run published anything. The cycle's fix was built for a revision
+	// the PR no longer has, so like an infrastructure void its ChargedCauses
+	// are refunded and its digest is dropped from the same-diff comparison.
+	// Unlike one, it is not a strike toward the infrastructure allowance: a
+	// person's push says nothing about the substrate.
+	Superseded bool `json:"superseded,omitempty"`
+	// SupersededCycles counts consecutive cycles refunded that way before this
+	// one. It bounds the refund the way InfrastructureFailures bounds an
+	// infrastructure void: a PR whose head keeps moving under every cycle (an
+	// active author, another bot, an auto-update) escalates after
+	// remediationSupersededAllowance of them instead of spending an agent
+	// session per cycle forever, invisible to every other counter.
+	SupersededCycles int `json:"supersededCycles,omitempty"`
 	// OperatorRetry records the last audited `goobers pr retry` that reset
 	// this state.
 	OperatorRetry *operatorRetryRecord `json:"operatorRetry,omitempty"`
 }
+
+// remediationSupersededAllowance is how many consecutive superseded cycles
+// (#6019) a PR may refund before the checkpoint parks it for a human.
+const remediationSupersededAllowance = 3
 
 // remediationInfrastructureAllowance is how many consecutive
 // infrastructure-voided cycles a PR may refund before the checkpoint parks it
@@ -401,6 +421,9 @@ func renderRemediationComment(state remediationState) string {
 		)
 		if state.InfrastructureVoided {
 			prose += " This cycle's run ended on an infrastructure failure before its fix was evaluated, so its attempt will be refunded."
+		}
+		if state.Superseded {
+			prose += " This cycle's run was superseded: the pull request's head moved under it before its fix was published, so its attempt will be refunded."
 		}
 	}
 	payload, err := remediationStateComment(state)
@@ -619,6 +642,7 @@ type remediationCheckpointDecision struct {
 
 func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediationCheckpointDecision {
 	retry, retryInfraFailures := rewindOwnCheckpointWrite(&in)
+	supersededCycles := countSupersededCycle(&in)
 	infraFailures := settleInfrastructureVoidedCycle(&in)
 	if retry {
 		infraFailures = retryInfraFailures
@@ -740,8 +764,33 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 			HeadSHA: in.HeadSHA, BaseSHA: in.BaseSHA, LastSeenCommentAt: in.Watermark,
 			RunID: in.RunID, ChargedCauses: slices.Clone(in.Causes),
 			InfrastructureFailures: infraFailures,
+			SupersededCycles:       supersededCycles,
 		},
 	}
+}
+
+// countSupersededCycle counts a superseded prior cycle (#6019) toward the
+// consecutive bound and returns the count to carry forward — 0 once a cycle
+// is not superseded. At remediationSupersededAllowance it forces a
+// did-not-converge park: each of those cycles may have spent a full agent
+// session before the move was noticed, and the refund (settled by
+// settleInfrastructureVoidedCycle) hides every one of them from the cause
+// budget and the same-diff stall.
+func countSupersededCycle(in *remediationCheckpointDecisionInput) int {
+	prior := in.Prior
+	if prior.Escalated || !prior.Superseded {
+		return 0
+	}
+	count := prior.SupersededCycles + 1
+	if count >= remediationSupersededAllowance && !in.Forced {
+		in.Forced = true
+		in.ForcedOutcome = remediationOutcomeDidNotConverge
+		in.ForcedReason = fmt.Sprintf(
+			"the pull request's head moved under each of the last %d remediation cycles before their fix could be published; remediation cannot keep up with concurrent pushes to it",
+			count,
+		)
+	}
+	return count
 }
 
 func remediationAttempted(attempts remediationAttempts) bool {
@@ -772,7 +821,7 @@ func remediationAttempted(attempts remediationAttempts) bool {
 // preserves it.
 func rewindOwnCheckpointWrite(in *remediationCheckpointDecisionInput) (bool, int) {
 	prior := in.Prior
-	if in.Forced || in.RunID == "" || prior.RunID != in.RunID || prior.Escalated || prior.InfrastructureVoided ||
+	if in.Forced || in.RunID == "" || prior.RunID != in.RunID || prior.Escalated || prior.InfrastructureVoided || prior.Superseded ||
 		prior.HeadSHA != in.HeadSHA || prior.BaseSHA != in.BaseSHA {
 		return false, 0
 	}
@@ -797,9 +846,14 @@ func rewindOwnCheckpointWrite(in *remediationCheckpointDecisionInput) (bool, int
 // park so a PR whose runs always die before evaluation cannot loop forever.
 // Returns the consecutive voided-cycle count to carry forward (0 once a cycle
 // settles normally). A prior that was not voided is left untouched.
+//
+// A prior cycle marked Superseded (#6019) — its run ended because the PR
+// moved under it — is refunded the same way, but carries the consecutive
+// infrastructure count forward unchanged: it is neither another
+// infrastructure failure nor evidence the substrate recovered.
 func settleInfrastructureVoidedCycle(in *remediationCheckpointDecisionInput) int {
 	prior := in.Prior
-	if !prior.InfrastructureVoided || prior.Escalated {
+	if prior.Escalated || (!prior.InfrastructureVoided && !prior.Superseded) {
 		return 0
 	}
 	for _, cause := range prior.ChargedCauses {
@@ -807,6 +861,9 @@ func settleInfrastructureVoidedCycle(in *remediationCheckpointDecisionInput) int
 	}
 	prior.LastDiffDigest = ""
 	in.Prior = prior
+	if !prior.InfrastructureVoided {
+		return prior.InfrastructureFailures
+	}
 	infraFailures := prior.InfrastructureFailures + 1
 	if infraFailures >= remediationInfrastructureAllowance && !in.Forced {
 		in.Forced = true

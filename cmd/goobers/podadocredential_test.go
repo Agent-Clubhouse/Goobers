@@ -186,7 +186,7 @@ func TestPodFailureEnvelopeMessageIsScrubbed(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
-	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "stage_failed" {
 		t.Fatalf("result = %+v, want a stage_failed failure", result)
 	}
@@ -267,7 +267,7 @@ func TestPodStageCheckoutSendsTheStatedADOSchemeOnTheWire(t *testing.T) {
 			t.Setenv(dispatcher.EnvStageTimeout, "30s")
 			t.Chdir(t.TempDir())
 
-			result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+			result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
 			if result.Status == apiv1.ResultSuccess {
 				t.Fatalf("result = %+v, want the refused checkout to fail the stage", result)
 			}

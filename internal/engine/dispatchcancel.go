@@ -133,5 +133,9 @@ func (a *Activities) readDispatchSurrender(ctx context.Context, attempt dispatch
 		defer cancel()
 		ctx = readCtx
 	}
-	return dispatcher.ReadSurrenderedResult(ctx, a.Surrenders, attempt.RunID, attempt.Stage, attempt.IdentityAttempt())
+	surrendered, err := dispatcher.ReadSurrenderedResult(ctx, a.Surrenders, attempt.RunID, attempt.Stage, attempt.IdentityAttempt())
+	// #6019: only the pod runtime's attested provisioning refusal may carry
+	// workspace_head_moved past this point (admitWorkspaceHeadMoved).
+	admitWorkspaceHeadMoved(&surrendered.Result, surrendered.WorkspaceHeadMoved)
+	return surrendered, err
 }

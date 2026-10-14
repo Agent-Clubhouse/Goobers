@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -47,7 +48,7 @@ func TestDeprioritizeRepeatedFailuresPreservesEventualClaimability(t *testing.T)
 		if ok, _, err := ledger.Claim("1", runID, "implementation", time.Hour); err != nil || !ok {
 			t.Fatalf("claim failed: ok=%t err=%v", ok, err)
 		}
-		if err := ledger.Release("1", runID); err != nil {
+		if err := ledger.Release("1", runID, claimrelease.Completed.Reason()); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(time.Minute)
@@ -153,7 +154,7 @@ func TestTerminalFailureStreakResetsAtSuccessAndWindow(t *testing.T) {
 		if ok, _, err := ledger.Claim("1", runID, "implementation", time.Hour); err != nil || !ok {
 			t.Fatalf("claim failed: ok=%t err=%v", ok, err)
 		}
-		if err := ledger.Release("1", runID); err != nil {
+		if err := ledger.Release("1", runID, claimrelease.Completed.Reason()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -202,7 +203,7 @@ func TestTerminalFailureStreakDegradesLoudlyOnUnreadablePhase(t *testing.T) {
 	if ok, _, err := ledger.Claim("1", missingRunID, "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("claim failed: ok=%t err=%v", ok, err)
 	}
-	if err := ledger.Release("1", missingRunID); err != nil {
+	if err := ledger.Release("1", missingRunID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -260,7 +261,7 @@ func seedTerminalFailures(t *testing.T, root, itemID string, count int) {
 		if ok, _, err := ledger.Claim(itemID, runID, "implementation", time.Hour); err != nil || !ok {
 			t.Fatalf("claim failed: ok=%t err=%v", ok, err)
 		}
-		if err := ledger.Release(itemID, runID); err != nil {
+		if err := ledger.Release(itemID, runID, claimrelease.Completed.Reason()); err != nil {
 			t.Fatal(err)
 		}
 	}

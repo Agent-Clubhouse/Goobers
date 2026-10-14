@@ -84,7 +84,9 @@ convenient.
 An opt-in live test runs a signed-in Claude Code through the adapter on both
 permission shapes. It confirms that the CLI reports the `pkill` as a
 permission denial. The test signals nothing: `pkill` and `killall` are stubs
-on `PATH` that only write marker files.
+on `PATH` that only write marker files. Like production, it copies your real
+Claude Code login into the run, from `~/.claude/.credentials.json` or the
+macOS login Keychain. The always-on unit tests never read it.
 
 ```sh
 GOOBERS_CLAUDE_LIVE_SMOKE=1 go test -tags integration ./internal/harness \

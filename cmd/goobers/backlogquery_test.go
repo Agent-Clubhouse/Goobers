@@ -16,6 +16,7 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
@@ -393,7 +394,7 @@ func TestBacklogQueryRepeatedContentionSkipsOnlyThatItem(t *testing.T) {
 	}); err != nil || !ok {
 		t.Fatalf("seed contention: ok=%v err=%v", ok, err)
 	}
-	if err := seed.ReleaseScoped(key, "earlier-run"); err != nil {
+	if err := seed.ReleaseScoped(key, "earlier-run", claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -489,13 +490,29 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 	if ok, holder, err := seed.Claim("7", "dead-run", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v holder=%q err=%v", ok, holder, err)
 	}
-	if err := seed.Release("7", "dead-run"); err != nil {
-		t.Fatalf("seed release: %v", err)
+	// An operator force-released the stuck lease; the provider marker was
+	// never touched, so the later retirement is the only provider-visible
+	// release and must say why ownership really ended (#4421).
+	if err := seed.ForceRelease("7"); err != nil {
+		t.Fatalf("seed force-release: %v", err)
 	}
 
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Stranded item", "goobers:approved")
 	server.addComment(7, "goobers-claim: run=dead-run\n\nClaimed by Goobers run `dead-run`.")
+	t.Cleanup(func() {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		for _, body := range server.issues[7].comments {
+			if strings.HasPrefix(body, "goobers-claim-release: run=dead-run\n") {
+				if !strings.Contains(body, "disposition=force-released") || !strings.Contains(body, "by operator `cli`") {
+					t.Errorf("retirement comment hides the force-release:\n%s", body)
+				}
+				return
+			}
+		}
+		t.Errorf("no release comment retired dead-run's epoch")
+	})
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recovering-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")

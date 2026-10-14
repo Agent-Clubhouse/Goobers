@@ -1020,6 +1020,40 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > (#3364) — at attempt budgets of 1, the prior classification converted
 > transient infrastructure weather into permanent-looking work failures.
 >
+> **A pull request head that moved under the run is superseded, not failed
+> (#6019):** when a run has rebound its workspace to a pull request's own head
+> (`workspaceBranch`, #392) and someone pushes to that PR while the run works,
+> the next pod that checks the branch out refuses to land the run's workspace
+> delta — landing it would discard their push (#5948). The pod types that
+> refusal only when it can prove the branch moved: every delta produced on a
+> rebound branch carries the commit its producer's checkout started from
+> (`refs/goobers/workspace-delta-origin` in the bundle), and the refusal is
+> `workspace_head_moved` only when the receiving checkout is at a different
+> commit. A divergence on an unmoved head — the run rewriting the PR's own
+> history, as a conflict-resolved rebase or an amend does — and a delta with
+> no recorded origin keep `workspace_provision_failed`, so the failure and
+> budget accounting still bound them. The pod runtime attests the code in its
+> surrender (`workspaceHeadMoved`); the engine renames an unattested
+> `workspace_head_moved` from any stage's own result, so no stage can claim
+> this exit. Whether the attested refusal comes from a task stage or from an
+> agentic gate's reviewer pod, the engine ends the run **completed** at that
+> stage or gate (not a first-stage no-work tick: `NoWork` drives scheduler
+> idle backoff, and this run did work), before any `Next` gate, `continueOnError` or branch
+> routing applies, and journals an `error` event carrying the code there. The
+> terminal handlers read that marker (and pr-claim's `stale_selection`
+> no-work, the same situation detected at a stage boundary) and leave the
+> claimed pull request's failure streak and no-work streak exactly as they
+> were — a run they cannot classify (an unreadable journal) leaves them alone
+> too. The remediation attempt the run's checkpoint charged is refunded unless
+> the run had already published its own work, and consecutive superseded
+> cycles are bounded: the third parks the PR did-not-converge for a human. Terminal finalization
+> releases the claim like any other run's, so the next cycle selects the PR at
+> its new head. The code classifies as `item-judgment`. Only pod placement
+> emits it: the local runner carries no workspace delta between stages, and
+> the worker's mirror fetches a rebound branch once per run, so neither
+> observes the push at a stage boundary (pr-claim's revision guards cover
+> them).
+>
 > **Reviewer sibling (#415):** at an agentic review gate whose subject is an
 > **agentic** stage, a run branch with **no committed change (an empty diff)**
 > fast-`fail`s on the first review — resolving the gate's own `fail` branch —
@@ -1104,6 +1138,36 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > tool/permission arguments for every Copilot session are recorded at
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
+
+> **A deadline you did not reach is not a timeout (#5871).** Only the runtime
+> observes a stage's execution deadline; it records it as an
+> `execution-deadline.v1` annotation, and a session that really runs out of
+> time ends as a harness timeout, not as a completion. A `failure` or
+> `blocked` result whose `error.code` claims the stage's own execution window
+> ran out — `EXECUTION_WINDOW_EXHAUSTED`, or the runner's own
+> `run_duration_exceeded` verdict — returned while less than half of the
+> stage's window had elapsed (measured from the first turn's start to its
+> deadline, so a completion-repair turn's shorter leftover budget never makes
+> a late claim look early) is rewritten to a retryable
+> `failure` with `error.code: PREMATURE_EXHAUSTION_CLAIM`. Its `error.message`
+> states the elapsed time, the window, the deadline and the time that
+> remained; for every artifact-backed context input, whether the goobers-io
+> receipts show it fully read, partially read (lines covered of total),
+> searched but never read, or not inspected, plus the inspection call count
+> and whether `list_inputs` was called; and the goobers-io readiness state.
+> Your original code, message and summary are kept in the message, and
+> `outputs.agentErrorCode`, `outputs.executionDeadline`,
+> `outputs.executionWindowSeconds`, `outputs.executionElapsedSeconds`,
+> `outputs.goobersIOInspectionCalls`, `outputs.goobersIOReadiness` and
+> `outputs.inputsNotFullyInspected` carry the same evidence. Nothing the claim
+> reported is accepted and the stage still fails; the code classifies as
+> `validation`, never `timeout`, and like a missing declared artifact it
+> spends the stage's `retry.maxAttempts` budget. An inner timeout you observed
+> while doing the work (a test suite, a provider call) is a finding about the
+> work: report it under its own code (a bare `timeout` included) and it is
+> left alone. If the input you
+> need is large, page through it with `read_input` line ranges until you have
+> read all of it; do not stop early on the assumption that time has run out.
 
 > **A missing capability is a system defect, not a block (#2197).** `blocked`
 > means a per-item business/content decision or an unmet per-item dependency,
