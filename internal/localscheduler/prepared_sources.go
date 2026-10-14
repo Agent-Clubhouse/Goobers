@@ -86,8 +86,11 @@ func (s *Scheduler) dispatchPreparedSource(executionCtx context.Context, entry W
 			reason = "webhook delivery: " + strings.TrimPrefix(source.Signal, "github-webhook:")
 		}
 	} else {
-		if len(entry.Schedules) == 0 || len(current.Schedules) == 0 {
-			return "", errors.New("localscheduler: queued schedule no longer configured")
+		// The accepted source is validated against its archived declaration.
+		// Current workflow eligibility still applies; removing future triggers
+		// does not revoke a fire that already has durable custody.
+		if len(entry.Schedules) == 0 {
+			return "", errors.New("localscheduler: queued schedule has no archived declaration")
 		}
 		window, err := source.scheduleEvaluation(entry.Schedules)
 		if err != nil {

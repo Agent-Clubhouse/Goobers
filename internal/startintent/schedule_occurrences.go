@@ -54,3 +54,16 @@ func (s *Sources) AcceptOccurrence(ctx context.Context, entry localscheduler.Wor
 	_, _, err = s.Queue.AcceptSource(ctx, triggerqueue.SourceBatch{Key: key, Actor: "scheduler", Fingerprint: key, Starts: []triggerqueue.SourceStart{{Payload: raw}}, Advance: &advance}, observed)
 	return err
 }
+
+// ObserveScheduleAbsence fences future discovery when all current declarations
+// disappear. Already accepted starts and demand keep their independent custody.
+func (s *Sources) ObserveScheduleAbsence(ctx context.Context, entry localscheduler.WorkflowEntry, observed time.Time) error {
+	if len(entry.Schedules) != 0 {
+		return errors.New("startintent: schedule absence has active declarations")
+	}
+	revision, err := entryScheduleRevision(entry)
+	if err != nil {
+		return err
+	}
+	return s.Queue.ResetExistingSourceRevision(ctx, scheduleScope(entry), revision, observed)
+}

@@ -115,3 +115,9 @@ While a configured workflow is paused, `all` still captures due occurrences but
 does not start them or poll sizing providers. Resumption uses current enablement
 and readiness with the original execution pins. Removing the workflow retains
 its outstanding custody for explicit intervention rather than deleting it.
+
+Accepted demand remains discoverable when current authoring removes its sizing
+policy or every enabled schedule. Unsized demand uses its archived counter;
+a sealed count is not polled again. Current admission still applies, and removing
+the workflow itself does not create a replacement target. Schedule removal changes
+only future discovery; accepted demand and worker payloads keep their original pins.

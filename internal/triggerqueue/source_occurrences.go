@@ -100,3 +100,14 @@ func advanceSourceOccurrence(ctx context.Context, tx *sql.Tx, a *SourceAdvance) 
 	result, err := tx.ExecContext(ctx, `UPDATE source_start_cursors SET occurrence_cursors=?,cursor_ns=? WHERE scope=? AND revision=? AND occurrence_cursors=?`, updated, slices.Min(positions), a.Scope, a.Revision, raw)
 	return changed(result, err)
 }
+
+// ResetExistingSourceRevision observes a schedule removal without allocating a
+// cursor for an unscheduled workflow. It fences stale captures and clears only
+// future discovery positions; accepted starts and demands remain untouched.
+func (s *Store) ResetExistingSourceRevision(ctx context.Context, scope, revision string, observed time.Time) error {
+	if !validChildText(scope, 256, true) || !validChildText(revision, 128, true) || observed.IsZero() {
+		return errors.New("triggerqueue: invalid source revision reset")
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE source_start_cursors SET revision=?,cursor_ns=?,legacy_pending=0,occurrence_cursors=NULL WHERE scope=? AND revision<>?`, revision, observed.UnixNano(), scope, revision)
+	return err
+}

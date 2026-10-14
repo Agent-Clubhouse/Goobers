@@ -300,60 +300,79 @@ func TestOccurrencePolicyChangeKeepsOldCoalescedCustodyAndResetsOnlyFutureDiscov
 }
 
 func TestOccurrenceDemandSurvivesRemovalOfCurrentSizingPolicy(t *testing.T) {
-	for _, sealed := range []bool{false, true} {
-		t.Run(fmt.Sprint(sealed), func(t *testing.T) {
-			source, entry, counter, base := demandFixture(t)
-			entry.ScheduleCatchUpAll = true
-			captured := entry
-			source.Build = func(_ context.Context, target Target) (Prepared, error) {
-				if target.ConfigGeneration != captured.ConfigGeneration {
-					t.Fatal(target)
+	for _, policy := range []struct {
+		name                            string
+		all, removeSchedules, coalesced bool
+	}{
+		{name: "coalesced"},
+		{name: "coalesced-to-manual", removeSchedules: true, coalesced: true},
+		{name: "manual-only", removeSchedules: true},
+		{name: "all-declarations-disabled", all: true, removeSchedules: true},
+	} {
+		for _, sealed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/sealed=%t", policy.name, sealed), func(t *testing.T) {
+				source, entry, counter, base := demandFixture(t)
+				entry.ScheduleCatchUpAll = !policy.coalesced
+				starter := &workerStarter{}
+				entry.Starter = starter
+				captured := entry
+				source.Build = func(_ context.Context, target Target) (Prepared, error) {
+					if target.ConfigGeneration != captured.ConfigGeneration {
+						t.Fatal(target)
+					}
+					return Prepared{Entry: captured, Release: func() {}}, nil
 				}
-				return Prepared{Entry: captured, Release: func() {}}, nil
-			}
-			positions, _, err := source.ScheduleOccurrences(t.Context(), entry, base, false, base)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = source.AcceptOccurrence(t.Context(), entry, 0, positions[0], base.Add(time.Hour), base.Add(time.Hour)); err != nil {
-				t.Fatal(err)
-			}
-			records, err := source.Queue.ScheduleDemandPage(t.Context(), "", 100)
-			if err != nil || len(records) != 1 {
-				t.Fatal(records, err)
-			}
-			if sealed {
-				if err = source.ObserveDemand(t.Context(), records[0].ID, 2); err != nil {
+				declaration := captureScheduleForPolicyEdit(t, source, entry, base)
+				records, err := source.Queue.ScheduleDemandPage(t.Context(), "", 100)
+				if err != nil || len(records) != 1 {
+					t.Fatal(records, err)
+				}
+				if sealed {
+					if err = source.ObserveDemand(t.Context(), records[0].ID, 2); err != nil {
+						t.Fatal(err)
+					}
+				}
+				entry.ScheduleCatchUpAll = policy.all
+				if policy.removeSchedules {
+					entry.Schedules = nil
+				}
+				entry.ScheduleDemandCounter = nil
+				entry.ConfigGeneration = "edited"
+				currentStarter := &workerStarter{}
+				entry.Starter = currentStarter
+				log, _, err := journal.OpenInstanceLog(t.TempDir())
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			entry.ScheduleCatchUpAll = false
-			entry.ScheduleDemandCounter = nil
-			entry.ConfigGeneration = "edited"
-			log, _, err := journal.OpenInstanceLog(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = log.Close() }()
-			scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithSourceQueue(source))
-			if err = scheduler.ReconcileAll(nil, base.Add(time.Hour)); err != nil {
-				t.Fatal(err)
-			}
-			scheduler.Tick(t.Context(), base.Add(time.Hour))
-			pending, err := source.Queue.Pending(t.Context(), 10)
-			if err != nil || len(pending) != 2 {
-				t.Fatal("accepted demand stranded after policy edit", len(pending), err)
-			}
-			if (counter.calls == 0) != sealed {
-				t.Fatal("sealed count recounted or unsealed count not sized", counter.calls, sealed)
-			}
-			for _, record := range pending {
-				envelope, err := Parse(record.Payload)
-				if err != nil || envelope.Target.ConfigGeneration != captured.ConfigGeneration || envelope.Source.ScheduleDeclaration != 1 {
-					t.Fatal(envelope, err)
+				defer func() { _ = log.Close() }()
+				scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithSourceQueue(source))
+				if err = scheduler.ReconcileAll(nil, base.Add(time.Hour)); err != nil {
+					t.Fatal(err)
 				}
-			}
-		})
+				scheduler.Tick(t.Context(), base.Add(time.Hour))
+				pending, err := source.Queue.Pending(t.Context(), 10)
+				if err != nil || len(pending) != 2 {
+					t.Fatal("accepted demand stranded after policy edit", len(pending), err)
+				}
+				if (counter.calls == 0) != sealed {
+					t.Fatal("sealed count recounted or unsealed count not sized", counter.calls, sealed)
+				}
+				service := &Service{Queue: source.Queue, Build: source.Build, Now: func() time.Time { return base.Add(time.Hour) }, Scheduler: func() *localscheduler.Scheduler { return scheduler }, RunDirectory: func(context.Context, string) (string, error) { return "", nil }}
+				for _, record := range pending {
+					envelope, err := Parse(record.Payload)
+					if err != nil || envelope.Target.ConfigGeneration != captured.ConfigGeneration || envelope.Source.ScheduleDeclaration != declaration {
+						t.Fatal(envelope, err)
+					}
+					if err = service.Dispatch(t.Context(), t.Context(), record); err != nil {
+						t.Fatal(err)
+					}
+					scheduler.Wait()
+				}
+				if starter.calls.Load() != 2 || currentStarter.calls.Load() != 0 {
+					t.Fatal("accepted workers did not run their archived definition", starter.calls.Load(), currentStarter.calls.Load())
+				}
+			})
+		}
 	}
 }
 
@@ -440,4 +459,26 @@ func TestOccurrencePauseCapturesDemandWithoutProviderSizing(t *testing.T) {
 			t.Fatal("paused demand was sized", record)
 		}
 	}
+}
+
+func captureScheduleForPolicyEdit(t *testing.T, source *Sources, entry localscheduler.WorkflowEntry, base time.Time) int {
+	t.Helper()
+	if entry.ScheduleCatchUpAll {
+		positions, _, err := source.ScheduleOccurrences(t.Context(), entry, base, false, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = source.AcceptOccurrence(t.Context(), entry, 0, positions[0], base.Add(time.Hour), base.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		return 1
+	}
+	before, _, err := source.ScheduleCursor(t.Context(), entry, base, false, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = source.CaptureDemand(t.Context(), entry, before, base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	return 0
 }

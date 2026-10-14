@@ -29,6 +29,9 @@ type DemandSourceQueue interface {
 }
 
 func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tickCandidate, now time.Time) (bool, bool) {
+	if len(candidate.entry.Schedules) == 0 {
+		return s.queueAbsentSchedules(ctx, candidate, now)
+	}
 	if candidate.entry.ScheduleCatchUpAll {
 		if handled, advanced := s.queueAllOccurrences(ctx, candidate, now); handled {
 			return handled, advanced
@@ -37,15 +40,7 @@ func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tick
 	if candidate.entry.ScheduleDemandCounter == nil {
 		handled, advanced := s.queuePlainSchedule(ctx, candidate.entry, now)
 		if handled {
-			candidate.scheduleRemaining = 0
-			candidate.schedulePollDue = false
-			candidate.scheduleDemand = false
-			// Accepted demand owns its archived sizing definition even after
-			// current authoring returns to an ordinary scheduled workflow.
-			if queue, ok := s.sourceQueue.(DemandSourceQueue); ok {
-				candidate.demandWake = true
-				s.loadQueuedScheduleDemand(ctx, queue, candidate)
-			}
+			s.prepareRetainedScheduleDemand(ctx, candidate)
 		}
 		return handled, advanced
 	}
@@ -111,6 +106,37 @@ func (s *Scheduler) queueConfiguredSchedule(ctx context.Context, candidate *tick
 	candidate.scheduleDemand = false
 	s.loadQueuedScheduleDemand(ctx, queue, candidate)
 	return true, !before.Equal(state.LastEval)
+}
+
+// A host can fence a removed schedule revision without allocating a cursor for
+// every workflow that has never had scheduled sources.
+type scheduleAbsenceSourceQueue interface {
+	ObserveScheduleAbsence(context.Context, WorkflowEntry, time.Time) error
+}
+
+func (s *Scheduler) queueAbsentSchedules(ctx context.Context, candidate *tickCandidate, now time.Time) (bool, bool) {
+	if queue, ok := s.sourceQueue.(scheduleAbsenceSourceQueue); ok {
+		if err := queue.ObserveScheduleAbsence(ctx, candidate.entry, now); err != nil {
+			s.sourceQueueError(candidate.entry, err)
+		}
+	}
+	return s.prepareRetainedScheduleDemand(ctx, candidate), false
+}
+
+// prepareRetainedScheduleDemand reads accepted custody independently of the
+// current trigger declarations or sizing policy. Removing future schedules does
+// not abandon already accepted fires or change their archived definitions.
+func (s *Scheduler) prepareRetainedScheduleDemand(ctx context.Context, candidate *tickCandidate) bool {
+	candidate.scheduleRemaining = 0
+	candidate.schedulePollDue = false
+	candidate.scheduleDemand = false
+	queue, ok := s.sourceQueue.(DemandSourceQueue)
+	if !ok {
+		return false
+	}
+	candidate.demandWake = true
+	s.loadQueuedScheduleDemand(ctx, queue, candidate)
+	return true
 }
 
 func (s *Scheduler) loadQueuedScheduleDemand(ctx context.Context, queue DemandSourceQueue, candidate *tickCandidate) {

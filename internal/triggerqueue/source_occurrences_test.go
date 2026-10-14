@@ -126,3 +126,39 @@ func TestOccurrenceCursorPreservesPriorDemandFingerprint(t *testing.T) {
 		t.Fatal("declaration did not distinguish identity", changed, err)
 	}
 }
+
+func TestAbsentScheduleRevisionFencesCaptureWithoutAllocatingManualCursors(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "queue.db"))
+	base := time.Now().UTC().Truncate(time.Minute)
+	if err := s.ResetExistingSourceRevision(t.Context(), "never-scheduled", "absent", base); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.db.QueryRow(`SELECT count(*) FROM source_start_cursors`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("manual-only workflow allocated a cursor", count, err)
+	}
+	if _, _, err := s.SourceCursorRevision(t.Context(), "scope", "active", base, base, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SourceOccurrences(t.Context(), "scope", "active", 1); err != nil {
+		t.Fatal(err)
+	}
+	removed := base.Add(time.Hour)
+	if err := s.ResetExistingSourceRevision(t.Context(), "scope", "absent", removed); err != nil {
+		t.Fatal(err)
+	}
+	stale := SourceBatch{Key: "late", Actor: "scheduler", Fingerprint: "late", Starts: []SourceStart{{Payload: []byte("pins")}}, Advance: &SourceAdvance{Scope: "scope", Revision: "active", Occurrence: 1, Before: base, After: base.Add(time.Minute)}}
+	if _, _, err := s.AcceptSource(t.Context(), stale, removed); !errors.Is(err, ErrTransition) {
+		t.Fatal("removed declaration captured another fire", err)
+	}
+	if err := s.ResetExistingSourceRevision(t.Context(), "scope", "absent", removed.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	cursor, legacy, err := s.SourceCursorRevision(t.Context(), "scope", "absent", base, removed.Add(time.Hour), true)
+	if err != nil || legacy || !cursor.Equal(removed) {
+		t.Fatal("unchanged absence reset progress", cursor, legacy, err)
+	}
+	if err = s.ResetExistingSourceRevision(t.Context(), "scope", "", removed); err == nil {
+		t.Fatal("empty revision accepted")
+	}
+}

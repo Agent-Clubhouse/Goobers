@@ -8,12 +8,20 @@ that definition. A queued receipt is not a running workflow.
 ## Timing and capacity
 
 The scheduler stores an evaluation cursor for each gaggle and workflow, bound
-to a revision of its normalized schedules, configured timezone and catch-up policy. A schedule
-edit starts future evaluation at the first observation of that revision. Other
-workflow edits preserve the cursor. Previously accepted starts and partially
-transferred demand keep their original definitions; a stale revision cannot
-advance the new cursor. A due
-observation commits its start and advances that cursor in one transaction. By default, missed occurrences in the preceding hour coalesce into one catch-up start.
+to a revision of its normalized schedules, configured timezone and catch-up
+policy. A schedule edit starts future evaluation at the first observation of
+that revision. Other workflow edits preserve the cursor. Removing every enabled
+schedule records that absence for an existing cursor. Re-enabling scheduling
+starts future discovery at its next observation; it does not manufacture fires
+for the absent period. Workflows that have never been scheduled do not allocate
+a cursor for this check.
+
+Previously accepted starts and partially transferred demand keep their original
+definitions. They can still dispatch after future schedules are removed, subject
+to current workflow eligibility and authorization. A stale revision cannot advance
+the new cursor. A due observation commits its start and advances that cursor in
+one transaction. By default, missed occurrences in the preceding hour coalesce
+into one catch-up start.
 The captured source records the original evaluation span, eligible window and
 occurrence count. Older, newly discovered occurrences expire: an empty receipt
 and cursor advance prevent their resurrection after restart. Accepted starts
@@ -76,10 +84,9 @@ This LAND-E01 adapter covers plain cron/interval schedules, including schedules
 used for polling fallback when they have no demand counter.
 [Demand-sized schedules](queued-schedule-demand.md) and
 [counted workers](queued-counted-workers.md) have separate adapters. It does not complete the requirement
-that every workflow start use a durable queue. The default one-hour coalesced
-catch-up window is implemented. The accepted design’s explicit all-occurrences
-policy, bounded to 100 occurrences per sweep, still needs its own authoring and
-implementation.
+that every workflow start use a durable queue. Both the default one-hour coalesced catch-up window and the explicit `all`
+policy are implemented here. All-occurrence discovery is bounded to 100 captures
+per sweep; broader queue controls remain separate work.
 
 The implementation adapts the schedule cursor and pinned schedule-start pieces
 of reference snapshot `fa34a754148ea3076bfd04fe4976a5a461b063f2` to the current
