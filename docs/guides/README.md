@@ -48,6 +48,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Guide: GitHub token scopes for V0 (local runner)](github-token-scopes.md)
 - [GitHub webhook triggers](github-webhooks.md)
 - [The goobers-io MCP: run identity and artifact I/O for agentic stages](goobers-io-mcp.md)
+- [Harness host-process safety](harness-host-process-safety.md)
 - [Copilot launcher session contract](harness-launcher-contract.md)
 - [Harness prompt transport](harness-prompt-transport.md)
 - [Identify active and historical instance roots](instance-identity.md)
