@@ -290,6 +290,23 @@ func completeVerdict() apiv1.Verdict {
 		SourceRunID:    "review-run",
 		OverlapCluster: true,
 		Elected:        true,
+		Dispositions: []apiv1.FindingDisposition{{
+			FindingID: "finding-1690",
+			Outcome:   apiv1.FindingRejected,
+			Evidence:  "api/v1alpha1/envelope.go:300",
+			Reason:    "The earlier finding misread the bounded scan.",
+		}},
+		StandingFindings: []apiv1.Finding{{
+			ID:                     "finding-1688",
+			LearningSignature:      "merge-review|code-defect|substantive",
+			LearningClassification: apiv1.LearningCodeDefect,
+			EvidenceDigest:         "sha256:standing-evidence",
+			Severity:               apiv1.SeverityError,
+			Message:                "An earlier review's finding still stands.",
+			Location:               "api/v1alpha1/envelope.go:320",
+			Class:                  apiv1.FindingCrossPRBlocked,
+			BlockingPRs:            []int{1688},
+		}},
 	}
 }
 

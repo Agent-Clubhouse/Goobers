@@ -193,12 +193,21 @@ func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) s
 func completionContract(req RunRequest) (string, string) {
 	if req.Mode == ModeReview {
 		if req.Envelope.ReviewerDeferralAllowed {
-			return "verdict", strings.Replace(verdictShapeHint, `"pass"|"fail"|"needs-changes"`, `"pass"|"fail"|"needs-changes"|"defer"`, 1) + reviewerDeferralHint
+			return "verdict", strings.Replace(verdictShapeHint, `"pass"|"fail"|"needs-changes"`, `"pass"|"fail"|"needs-changes"|"defer"`, 1) + reviewerDeferralHint + standingFindingsHint
 		}
-		return "verdict", verdictShapeHint
+		return "verdict", verdictShapeHint + standingFindingsHint
 	}
 	return "result", resultShapeHint
 }
+
+// standingFindingsHint tells a pull-request reviewer how to answer
+// standingFindings (#5890): the findings an earlier review raised on the same
+// head and base that no later review resolved or rejected, which merge-review's
+// gather-sibling-context lists in the context it hands the reviewer. Worded
+// conditionally, so a review without them is unaffected.
+const standingFindingsHint = `
+
+If your context lists standingFindings (findings an earlier review raised on this same pull request head that no later review answered, even if the base branch has moved since), answer every one: raise it again in findings with the same id and its own class, or add an entry to a top-level "dispositions" array, either {"findingId": "<its id>", "outcome": "resolved", "evidence": "<where this diff addresses it>"} or {"findingId": "<its id>", "outcome": "rejected", "reason": "<why it does not hold>"}. Reusing a standing id on a different finding does not answer it. A standing finding you leave unanswered keeps blocking the merge, and a pass that leaves one unanswered is published as needs-changes.`
 
 const reviewerDeferralHint = `
 

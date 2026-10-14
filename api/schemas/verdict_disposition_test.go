@@ -51,6 +51,16 @@ func TestVerdictDispositionContract(t *testing.T) {
 		{"unknown code", `{"decision":"fail","reasonCode":"other","rationale":"Rejected."}`, false},
 		{"typed rejection needs rationale", `{"decision":"fail","reasonCode":"implementation-rejected"}`, false},
 		{"unknown decision", `{"decision":"skip"}`, false},
+		{"finding resolved with evidence", `{"decision":"pass","dispositions":[{"findingId":"f-1","outcome":"resolved","evidence":"runs.go:40 bounds the scan"}]}`, true},
+		{"finding rejected with reason", `{"decision":"pass","dispositions":[{"findingId":"f-1","outcome":"rejected","reason":"The lookup is already capped by the caller."}]}`, true},
+		{"resolution needs evidence", `{"decision":"pass","dispositions":[{"findingId":"f-1","outcome":"resolved"}]}`, false},
+		{"resolution evidence cannot be blank", `{"decision":"pass","dispositions":[{"findingId":"f-1","outcome":"resolved","evidence":" "}]}`, false},
+		{"rejection needs reason", `{"decision":"pass","dispositions":[{"findingId":"f-1","outcome":"rejected"}]}`, false},
+		{"disposition needs finding id", `{"decision":"pass","dispositions":[{"findingId":" ","outcome":"rejected","reason":"No."}]}`, false},
+		{"bare fail carries standing findings", `{"decision":"fail","standingFindings":[{"id":"f-1","severity":"error","message":"Still unbounded."}]}`, true},
+		{"synthesized verdict carries standing findings", `{"decision":"escalate","reasonCode":"empty-diff","rationale":"No diff.","synthesized":true,"standingFindings":[{"id":"f-1","severity":"error","message":"Still unbounded."}]}`, true},
+		{"standing finding is a finding", `{"decision":"pass","standingFindings":[{"id":"f-1"}]}`, false},
+		{"unknown disposition outcome", `{"decision":"pass","dispositions":[{"findingId":"f-1","outcome":"ignored","reason":"No."}]}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var value any
