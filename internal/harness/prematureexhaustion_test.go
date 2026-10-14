@@ -94,6 +94,35 @@ func TestPrematureExhaustionClaimIsNotAnExecutionTimeout(t *testing.T) {
 	}
 }
 
+// A completion-repair turn begins a second, shorter bounded execution with
+// whatever time the stage has left. The claim is judged against the stage's
+// first turn, never against the repair turn's leftover budget (#5871 review).
+func TestPrematureExhaustionJudgesAgainstTheFirstTurnAcrossRepair(t *testing.T) {
+	ctx, window := executiondeadline.Observe(context.Background(), nil, "", 1)
+	for _, budget := range []time.Duration{30 * time.Minute, 2 * time.Minute} { // initial turn, then repair
+		bounded, cancel := context.WithTimeout(ctx, budget)
+		_, done := invoke.BeginExecution(bounded)
+		done()
+		cancel()
+	}
+	started, deadline, _ := window.Observed()
+	if got := deadline.Sub(started); got < 29*time.Minute {
+		t.Fatalf("window = %s, want the initial turn's 30m", got)
+	}
+
+	late := exhaustionClaim(apiv1.ResultFailure, "EXECUTION_WINDOW_EXHAUSTED")
+	reclassifyPrematureExhaustionClaim(&late, nil, Outcome{execution: executionEvidence{window: window, returned: started.Add(28*time.Minute + 20*time.Second)}})
+	if late.Error.Code != "EXECUTION_WINDOW_EXHAUSTED" {
+		t.Fatalf("a claim 28m into a 30m stage was rewritten: %+v", late.Error)
+	}
+	// Past half of the repair turn's 2m but early in the stage: premature.
+	early := exhaustionClaim(apiv1.ResultFailure, "EXECUTION_WINDOW_EXHAUSTED")
+	reclassifyPrematureExhaustionClaim(&early, nil, Outcome{execution: executionEvidence{window: window, returned: started.Add(90 * time.Second)}})
+	if early.Error.Code != ErrorCodePrematureExhaustionClaim {
+		t.Fatalf("a claim 90s into a 30m stage kept %q", early.Error.Code)
+	}
+}
+
 func TestPrematureExhaustionClaimReclassificationBoundaries(t *testing.T) {
 	window, started := observedWindow(t)
 	early := Outcome{execution: executionEvidence{window: window, returned: started.Add(time.Minute)}}
@@ -112,7 +141,7 @@ func TestPrematureExhaustionClaimReclassificationBoundaries(t *testing.T) {
 		// An inner timeout the agent observed is a finding about the work.
 		"inner timeout": {exhaustionClaim(apiv1.ResultFailure, "TEST_TIMEOUT"), early, "TEST_TIMEOUT"},
 		"dependency":    {exhaustionClaim(apiv1.ResultBlocked, "DEPENDENCY_NOT_MET"), early, "DEPENDENCY_NOT_MET"},
-		"runner code":   {exhaustionClaim(apiv1.ResultFailure, "timeout"), early, ErrorCodePrematureExhaustionClaim},
+		"bare timeout":  {exhaustionClaim(apiv1.ResultFailure, "timeout"), early, "timeout"},
 		"run duration":  {exhaustionClaim(apiv1.ResultFailure, "run-duration-exceeded"), early, ErrorCodePrematureExhaustionClaim},
 	} {
 		t.Run(name, func(t *testing.T) {

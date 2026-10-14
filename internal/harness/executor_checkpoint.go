@@ -46,7 +46,7 @@ func (e *Executor) runAdapter(ctx context.Context, req RunRequest, nested Nested
 	}
 	// Taken the moment the adapter hands the completion back, so a claim the
 	// completion makes about time is judged against when it was made (#5871).
-	out.execution = executionEvidence{window: window, returned: time.Now().UTC(), readiness: readiness}
+	out.execution = executionEvidence{window: window, returned: time.Now(), readiness: readiness}
 	return out, err
 }
 

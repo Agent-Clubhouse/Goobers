@@ -18,6 +18,9 @@ const Kind = "execution-deadline.v1"
 
 type appender interface{ Append(journal.Event) error }
 
+// clock stamps a boundary's start; replaced only by this package's tests.
+var clock = time.Now
+
 // WithRecorder routes the boundary through the existing local or remote journal
 // recorder. Failure to retain evidence leaves health unknown, not a failed run.
 func WithRecorder(ctx context.Context, recorder any, stage string, attempt int) context.Context {
@@ -39,10 +42,14 @@ type Window struct {
 	deadline time.Time
 }
 
-// Observed reports the most recent bounded execution. A later boundary (a
-// completion-repair turn) replaces an earlier one, because the completion the
-// caller is judging was produced inside the latest. ok is false when no
-// bounded execution began, in which case there is no deadline to judge by.
+// Observed reports the invocation's FIRST bounded execution: when it began and
+// the deadline it carried. A later boundary — a completion-repair turn, whose
+// adapters bound it by whatever time the stage has left — never replaces it,
+// because judging against a repair turn's leftover budget would make a claim
+// made late in the stage look early. ok is false when no bounded execution
+// began, in which case there is no deadline to judge by. Both times keep
+// their monotonic clock readings, so durations between them are immune to
+// wall-clock steps.
 func (w *Window) Observed() (started, deadline time.Time, ok bool) {
 	if w == nil {
 		return time.Time{}, time.Time{}, false
@@ -55,6 +62,9 @@ func (w *Window) Observed() (started, deadline time.Time, ok bool) {
 func (w *Window) observe(started, deadline time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.deadline.IsZero() {
+		return
+	}
 	w.started, w.deadline = started, deadline
 }
 
@@ -70,7 +80,7 @@ func Observe(ctx context.Context, recorder any, stage string, attempt int) (cont
 		attempt = 1
 	}
 	return invoke.WithExecutionDeadlineObserver(ctx, func(deadline time.Time) func() {
-		window.observe(time.Now().UTC(), deadline)
+		window.observe(clock(), deadline)
 		if !journaled {
 			return func() {}
 		}

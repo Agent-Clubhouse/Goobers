@@ -29,11 +29,11 @@ var executionWindowClaimCodes = map[string]bool{
 	// Observed verbatim on a production backlog-curation prioritize stage
 	// that returned after 22s of a 30m window without inspecting its input.
 	"EXECUTION_WINDOW_EXHAUSTED": true,
-	// The runner's own wall-clock codes (telemetry.ErrCodeTimeout,
-	// runner.RunDurationExceededErrorCode). Only the runtime observes those
-	// deadlines; an agent authoring one is claiming a runner verdict, and
-	// "timeout" would otherwise classify as the timeout error class.
-	"TIMEOUT":               true,
+	// The runner's own run-duration verdict
+	// (runner.RunDurationExceededErrorCode). Only the runtime observes that
+	// deadline; an agent authoring it is claiming a runner verdict. A bare
+	// "timeout" is deliberately absent: it is the code an agent honestly
+	// writes when an inner step (a test suite, a provider call) timed out.
 	"RUN_DURATION_EXCEEDED": true,
 }
 

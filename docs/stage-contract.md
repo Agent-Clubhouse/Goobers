@@ -1099,9 +1099,11 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > `execution-deadline.v1` annotation, and a session that really runs out of
 > time ends as a harness timeout, not as a completion. A `failure` or
 > `blocked` result whose `error.code` claims the stage's own execution window
-> ran out — `EXECUTION_WINDOW_EXHAUSTED`, or one of the runner's own
-> wall-clock codes `timeout` / `run_duration_exceeded` — returned while less
-> than half of the observed window had elapsed is rewritten to a retryable
+> ran out — `EXECUTION_WINDOW_EXHAUSTED`, or the runner's own
+> `run_duration_exceeded` verdict — returned while less than half of the
+> stage's window had elapsed (measured from the first turn's start to its
+> deadline, so a completion-repair turn's shorter leftover budget never makes
+> a late claim look early) is rewritten to a retryable
 > `failure` with `error.code: PREMATURE_EXHAUSTION_CLAIM`. Its `error.message`
 > states the elapsed time, the window, the deadline and the time that
 > remained; for every artifact-backed context input, whether the goobers-io
@@ -1117,7 +1119,8 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > `validation`, never `timeout`, and like a missing declared artifact it
 > spends the stage's `retry.maxAttempts` budget. An inner timeout you observed
 > while doing the work (a test suite, a provider call) is a finding about the
-> work: report it under its own code and it is left alone. If the input you
+> work: report it under its own code (a bare `timeout` included) and it is
+> left alone. If the input you
 > need is large, page through it with `read_input` line ranges until you have
 > read all of it; do not stop early on the assumption that time has run out.
 
