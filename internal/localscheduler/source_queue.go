@@ -10,22 +10,24 @@ import (
 
 // SourceTrigger retains the host's accepted signal, schedule or counted-worker provenance.
 type SourceTrigger struct {
-	ScheduleCount   int       `json:"scheduleCount,omitempty"`
-	ScheduleOrdinal int       `json:"scheduleOrdinal,omitempty"`
-	WorkerKind      string    `json:"workerKind,omitempty"`
-	ObservedAt      time.Time `json:"observedAt,omitempty"`
-	ObservedCount   int       `json:"observedCount,omitempty"`
-	WorkerOrdinal   int       `json:"workerOrdinal,omitempty"`
-	Signal          string    `json:"signal,omitempty"`
-	Ref             string    `json:"ref,omitempty"`
-	Webhook         bool      `json:"webhook,omitempty"`
-	ScheduledFrom   time.Time `json:"scheduledFrom,omitempty"`
-	ScheduledAt     time.Time `json:"scheduledAt,omitempty"`
+	ScheduleWindowFrom time.Time `json:"scheduleWindowFrom,omitempty"`
+	ScheduleFireCount  int       `json:"scheduleFireCount,omitempty"`
+	ScheduleCount      int       `json:"scheduleCount,omitempty"`
+	ScheduleOrdinal    int       `json:"scheduleOrdinal,omitempty"`
+	WorkerKind         string    `json:"workerKind,omitempty"`
+	ObservedAt         time.Time `json:"observedAt,omitempty"`
+	ObservedCount      int       `json:"observedCount,omitempty"`
+	WorkerOrdinal      int       `json:"workerOrdinal,omitempty"`
+	Signal             string    `json:"signal,omitempty"`
+	Ref                string    `json:"ref,omitempty"`
+	Webhook            bool      `json:"webhook,omitempty"`
+	ScheduledFrom      time.Time `json:"scheduledFrom,omitempty"`
+	ScheduledAt        time.Time `json:"scheduledAt,omitempty"`
 }
 
 // SourceQueue commits starts under tickMu without reentering scheduler/catalog locks.
 type SourceQueue interface {
-	ScheduleCursor(context.Context, WorkflowEntry, time.Time, bool) (time.Time, bool, error)
+	ScheduleCursor(context.Context, WorkflowEntry, time.Time, bool, time.Time) (time.Time, bool, error)
 	AcceptSchedule(context.Context, WorkflowEntry, time.Time, time.Time, bool) error
 	AcceptSignal(context.Context, []WorkflowEntry, string, string, string, *webhookhttp.Delivery, time.Time) ([]string, error)
 }

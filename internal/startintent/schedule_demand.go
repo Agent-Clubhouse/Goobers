@@ -13,14 +13,22 @@ import (
 
 // CaptureDemand pins a due fire before observing provider demand.
 func (s *Sources) CaptureDemand(ctx context.Context, entry localscheduler.WorkflowEntry, before, after time.Time) error {
-	raw, release, err := s.pin(ctx, entry, localscheduler.SourceTrigger{ScheduledFrom: before.UTC(), ScheduledAt: after.UTC()})
+	source, err := capturedScheduleSource(entry, before, after)
+	if err != nil {
+		return err
+	}
+	raw, release, err := s.pin(ctx, entry, source)
 	if err != nil {
 		return err
 	}
 	defer release()
+	revision, err := localscheduler.ScheduleRevision(entry.Schedules)
+	if err != nil {
+		return err
+	}
 	scope := scheduleScope(entry)
-	id := sourceHash("schedule-demand", scope, before.UTC().Format(time.RFC3339Nano), after.UTC().Format(time.RFC3339Nano))
-	return s.Queue.CaptureScheduleDemand(ctx, id, triggerqueue.SourceAdvance{Scope: scope, Before: before, After: after}, raw, after)
+	id := sourceHash("schedule-demand", scope, revision, before.UTC().Format(time.RFC3339Nano), after.UTC().Format(time.RFC3339Nano))
+	return s.Queue.CaptureScheduleDemand(ctx, id, triggerqueue.SourceAdvance{Scope: scope, Revision: revision, Before: before, After: after}, raw, after)
 }
 
 // LoadDemand uses the captured counter only while sizing. Sealed counts need
