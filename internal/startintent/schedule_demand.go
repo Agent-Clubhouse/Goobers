@@ -28,7 +28,7 @@ func (s *Sources) CaptureDemand(ctx context.Context, entry localscheduler.Workfl
 	}
 	scope := scheduleScope(entry)
 	id := sourceHash("schedule-demand", scope, revision, before.UTC().Format(time.RFC3339Nano), after.UTC().Format(time.RFC3339Nano))
-	return s.Queue.CaptureScheduleDemand(ctx, id, triggerqueue.SourceAdvance{Scope: scope, Revision: revision, Before: before, After: after}, raw, after)
+	return s.Queue.CaptureScheduleDemand(ctx, triggerqueue.ScheduleDemandCapture{ID: id, Advance: triggerqueue.SourceAdvance{Scope: scope, Revision: revision, Before: before, After: after}, Payload: raw, AcceptedAt: after})
 }
 
 // LoadDemand uses the captured counter only while sizing. Sealed counts need
@@ -94,11 +94,11 @@ func (s *Sources) AcceptDemandWorkers(ctx context.Context, entry localscheduler.
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	record, err := s.Queue.ScheduleDemand(ctx, scheduleScope(entry))
+	record, err := s.Queue.ScheduleDemandByID(ctx, demand.ID)
 	if err != nil {
 		return err
 	}
-	if record.ID != demand.ID || record.Count != demand.Count || record.Queued != demand.Queued {
+	if record.Scope != scheduleScope(entry) || record.ID != demand.ID || record.Count != demand.Count || record.Queued != demand.Queued {
 		return triggerqueue.ErrTransition
 	}
 	batch := triggerqueue.SourceBatch{Key: key, Actor: "scheduler", Fingerprint: key, Demand: &triggerqueue.DemandTransfer{ID: demand.ID, Before: demand.Queued, After: demand.Queued + observation.Count}, PendingLimit: &triggerqueue.WorkflowPendingLimit{Gaggle: entry.Gaggle, Workflow: entry.Workflow, MaxPending: observation.MaxPending, ActiveRunIDs: observation.ActiveRunIDs}}

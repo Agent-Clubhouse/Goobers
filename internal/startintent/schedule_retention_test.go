@@ -34,7 +34,7 @@ func TestDemandScheduleRetentionPagesUnobservedGenerationsAndRejectsCorruption(t
 	if _, _, err := source.Queue.SourceCursorRevision(t.Context(), "corrupt", "test", base, base, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.Queue.CaptureScheduleDemand(t.Context(), "corrupt", triggerqueue.SourceAdvance{Scope: "corrupt", Revision: "test", Before: base, After: base.Add(time.Minute)}, []byte("corrupt envelope"), base); err != nil {
+	if err := source.Queue.CaptureScheduleDemand(t.Context(), triggerqueue.ScheduleDemandCapture{ID: "corrupt", Advance: triggerqueue.SourceAdvance{Scope: "corrupt", Revision: "test", Before: base, After: base.Add(time.Minute)}, Payload: []byte("corrupt envelope"), AcceptedAt: base}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RetainedGenerations(t.Context(), source.Queue); err == nil {
