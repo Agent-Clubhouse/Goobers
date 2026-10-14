@@ -158,7 +158,8 @@ The report lists each shadow run (from a workflow's `mode: shadow` or a
 gaggle override) with its actual phase. It then lists the findings the active
 fault audit would have filed: domain, recommended owner and action, the actual
 phases of the runs behind each finding, and whether the active audit also
-filed it. The report is read-only. It records no filing, cooldown, or
+filed it. Like the active audit, it uses the instance's filing threshold, so
+findings that are not fileable are left out. The report is read-only. It records no filing, cooldown, or
 verification state, and no gate, filing pass, or default portal view reads it.
 
 ### Promote

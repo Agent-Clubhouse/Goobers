@@ -333,7 +333,10 @@ func TestShadowBackpropReportEnrollsOverrideRunsWithoutReachingFiling(t *testing
 	reader := func() readmodel.Reader {
 		return &pagedAttributionReader{pages: []readmodel.ListPage{{Runs: rows}}}
 	}
-	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+	// The fixture's runs yield only a sparse mixed/unknown finding, which the
+	// default threshold never files; a low explicit threshold makes it fileable.
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1,
+		Filing: creditgraph.FilingThreshold{Confidence: 0.3, Source: creditgraph.FilingThresholdDefault}}
 	overrides := map[string]*apiv1.GaggleBackprop{"goobers": {Mode: apiv1.BackpropModeShadow}}
 
 	report, err := StoredShadowBackprop(context.Background(), root, reader(), StoredAttributionQuery{}, overrides, config)
@@ -359,6 +362,28 @@ func TestShadowBackpropReportEnrollsOverrideRunsWithoutReachingFiling(t *testing
 		t.Fatalf("report without override = %+v, want off workflows unobserved", unobserved.Runs)
 	}
 	assertShadowRunsInvisibleToFiling(t, root, reader, config, rows)
+}
+
+func TestShadowBackpropAppliesThePublishedFilingThreshold(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	rows := writeShadowAuditRuns(t, root, now, map[string]any{"mode": "shadow", "version": "v1"}, "shadow-1", "shadow-2")
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{Runs: rows}}}
+	if err := PublishAttributionEval(root, imprecisePublishedEval()); err != nil {
+		t.Fatal(err)
+	}
+	report, err := StoredShadowBackprop(context.Background(), root, reader, StoredAttributionQuery{}, nil,
+		creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := imprecisePublishedEval()
+	if got := report.WouldFile.FilingThreshold; got == nil || *got != creditgraph.DeriveFilingThreshold(&summary) {
+		t.Fatalf("shadow filing threshold = %+v, want one derived from the published eval", got)
+	}
+	if report.WouldFile.ObservationsScanned != 2 || len(report.Comparisons) != 0 {
+		t.Fatalf("shadow report = %+v, want findings scanned but none listed as would-file under a none-fileable threshold", report)
+	}
 }
 
 // writeShadowAuditRuns creates failed terminal runs whose trusted pinned
