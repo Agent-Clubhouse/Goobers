@@ -17,3 +17,9 @@ The additive migration preserves accepted custody and adds one fixed cursor row
 plus a pending-order index. Older binaries refuse the newer queue schema. Queue
 inspection, cancellation, deadlines, typed waiting and bounded-time admission
 remain separate implementation slices.
+
+A drain caller waiting behind another pass can cancel its wait. An already
+cancelled caller stops before retention, reconciliation, or cursor reservation.
+Cancelling a waiting caller does not interrupt the active pass or its accepted
+run. This does not impose a wall-clock limit on an active pass; eligibility and
+execution contexts still require their own bounded-admission policy.

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/childworkflow"
@@ -34,7 +33,7 @@ type durableTriggerService struct {
 	childFamilies      *childFamilyLifecycle
 	queue              *triggerqueue.Store
 	dispatch           *daemonTriggerService
-	sweepMu            sync.Mutex
+	sweepGuard         drainGuard
 	reconcileCursor    string
 	bootUncertain      map[string]bool
 	auditLog           *journal.InstanceLog
@@ -169,8 +168,11 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 // are never replayed here: crash reconciliation must prove whether a run exists
 // before releasing their custody. The request's HTTP context is never used.
 func (s *durableTriggerService) Drain(ctx context.Context) error {
-	s.sweepMu.Lock()
-	defer s.sweepMu.Unlock()
+	release, err := s.sweepGuard.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	// Child custody shares the ordinary queue database. Retention must run
 	// even while no scheduler is attached; otherwise inactive installations
 	// retain terminal lineages and cancellation fences indefinitely.
