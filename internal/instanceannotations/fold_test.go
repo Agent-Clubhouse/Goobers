@@ -2,6 +2,7 @@ package instanceannotations
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -198,11 +199,12 @@ func TestWorktreeStateAbsentJournalIsEmpty(t *testing.T) {
 }
 
 func TestFoldReadErrorsAreReturned(t *testing.T) {
-	file := t.TempDir() + "/file"
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+	// A malformed journal identity file fails the read on every platform. (A
+	// path under a regular file does not: Windows reports it as not-exist.)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".instance-journal-id"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dir := file + "/scheduler"
 	fold := new(Fold)
 	if _, err := fold.WorktreeState(dir, "run", "wt"); err == nil {
 		t.Fatal("WorktreeState: expected error")
