@@ -70,6 +70,14 @@ type State interface {
 	// VoidRemediationCharge refunds a pr-remediation cycle this run charged
 	// when the run ends on an infrastructure fault (#5588/#5598).
 	VoidRemediationCharge(ctx context.Context, poster gate.Commenter, runID string) error
+	// SettleSupersededRun recognises a completed run that ended because the
+	// pull request it was working on moved under it (#6019) — a reviewer or
+	// stage pod refusing to land the run's work on a head someone else
+	// pushed, or a pr-claim guard reporting a stale selection — and refunds
+	// the remediation charge that run recorded. superseded=true tells the
+	// caller the run is evidence about neither the work nor the item, so the
+	// failure and no-work streaks must be left exactly as they were.
+	SettleSupersededRun(ctx context.Context, poster gate.Commenter, runID, finalState string) (superseded bool, err error)
 	// SettleNoWorkStreak advances or resets the repeated-no-work streak for a
 	// completed run (#5379).
 	SettleNoWorkStreak(ctx context.Context, poster gate.Commenter, runID, finalState, runURL string) error
@@ -311,12 +319,7 @@ func (p *Policy) TerminalNotifier(inner runner.TerminalNotifier) runner.Terminal
 			attributedCtx, _ := AttributionContextForRun(ctx, p.RunsDir, runID, finalState)
 			runURL, _ := p.State.RunURL(runID)
 			if phase == journal.PhaseCompleted {
-				if err := p.resetCircuitBreaker(attributedCtx, runID, runURL); err != nil {
-					errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
-				}
-				if err := p.State.SettleNoWorkStreak(attributedCtx, p.Poster, runID, finalState, runURL); err != nil {
-					errs = append(errs, fmt.Errorf("settle no-work streak for run %q: %w", runID, err))
-				}
+				errs = append(errs, p.settleCompleted(attributedCtx, runID, finalState, runURL)...)
 			} else if err := p.applyCircuitBreaker(attributedCtx, runID, finalState, runURL); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
 			}
@@ -328,6 +331,31 @@ func (p *Policy) TerminalNotifier(inner runner.TerminalNotifier) runner.Terminal
 		}
 		return errors.Join(errs...)
 	}
+}
+
+// settleCompleted is TerminalNotifier's completed-run arm. A superseded run
+// (#6019) neither resets the failure streak nor touches the no-work streak:
+// its subject moved under it, so it says nothing about whether the work on
+// that item succeeds — crediting it would erase real strikes, and counting it
+// as no-work would walk the item toward a park it did nothing to earn. A
+// superseded check that could not be read is reported and treated as an
+// ordinary completion, which is what every completed run did before.
+func (p *Policy) settleCompleted(ctx context.Context, runID, finalState, runURL string) []error {
+	var errs []error
+	superseded, err := p.State.SettleSupersededRun(ctx, p.Poster, runID, finalState)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("settle superseded run %q: %w", runID, err))
+	}
+	if superseded {
+		return errs
+	}
+	if err := p.resetCircuitBreaker(ctx, runID, runURL); err != nil {
+		errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
+	}
+	if err := p.State.SettleNoWorkStreak(ctx, p.Poster, runID, finalState, runURL); err != nil {
+		errs = append(errs, fmt.Errorf("settle no-work streak for run %q: %w", runID, err))
+	}
+	return errs
 }
 
 // failureStreakExempt reports whether a failed terminal must stay out of the

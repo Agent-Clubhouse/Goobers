@@ -49,6 +49,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
@@ -319,6 +321,29 @@ func deltaBranchContext(dir string, reboundClause func(rebound string) string) s
 		return ""
 	}
 	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+// workspaceProvisionFailureCode is the code a pod surrenders when it could
+// not provision a stage's workspace.
+//
+// One refusal gets its own code (#6019): the ancestry guard refusing a delta
+// on a REBOUND branch (#392). That is a pull request head that moved under
+// the run — a person pushed while the run was working (#5948) — so landing
+// the delta would discard their push, and refusing is right. But nothing
+// about the run's work failed: its subject moved. The typed code is what
+// lets the engine end the run superseded instead of failed, so the moved PR
+// is neither charged a failure strike nor a remediation attempt, and the
+// next cycle picks it up at its new head.
+//
+// A divergence on a run's OWN branch (no rebind) keeps the generic code: the
+// run branch is written by push-branch alone, so its moving under the run is
+// a genuine fault, not someone else's legitimate push.
+func workspaceProvisionFailureCode(err error) string {
+	var diverged *workspacedelta.DivergedError
+	if errors.As(err, &diverged) && strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch)) != "" {
+		return runner.WorkspaceHeadMovedErrorCode
+	}
+	return telemetry.ErrCodeWorkspaceProvisionFailed
 }
 
 // preRebindDeltaClause words the rebind for a FETCH refusal: the thin

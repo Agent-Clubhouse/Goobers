@@ -452,6 +452,12 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   history on the trusted sticky status comment, and escalate immediately when
   remediation revisits a prior state (for example A→B→A), rather than waiting
   for the cycle budget to expire (#367).
+  A cycle whose PR head moved under the run before the run published — a
+  pr-claim guard's `stale_selection`, or a pod refusing to land the run's
+  workspace delta on the moved head (`workspace_head_moved`) — MUST end the run
+  completed rather than failed, MUST NOT touch the PR's failure or no-work
+  streaks, and MUST have its charged attempt refunded at the next checkpoint
+  without counting toward the infrastructure allowance (#6019).
 - **PRL-055 (MUST, Shipped):** A reviewer `fail` verdict inside remediation
   MUST escalate immediately with the terminal reason (skipping budget/stall
   checks), surfaced through the run's escalated phase — never retried against

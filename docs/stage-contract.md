@@ -1009,6 +1009,27 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > (#3364) — at attempt budgets of 1, the prior classification converted
 > transient infrastructure weather into permanent-looking work failures.
 >
+> **A pull request head that moved under the run is superseded, not failed
+> (#6019):** when a run has rebound its workspace to a pull request's own head
+> (`workspaceBranch`, #392) and someone pushes to that PR while the run works,
+> the next pod that checks the branch out refuses to land the run's workspace
+> delta — landing it would discard their push (#5948). The pod surrenders
+> `error.code` `workspace_head_moved` (non-retryable: a fresh pod clones the
+> same moved head). Whether the refusal comes from a task stage or from an
+> agentic gate's reviewer pod, the engine ends the run **completed** at that
+> stage or gate, before any `Next` gate, `continueOnError` or branch routing
+> applies, and journals an `error` event carrying the code there. The terminal
+> handlers read that marker (and pr-claim's `stale_selection` no-work, the
+> same situation detected at a stage boundary) and leave the claimed pull
+> request's failure streak and no-work streak exactly as they were; the
+> remediation attempt the run's checkpoint charged is refunded unless the run
+> had already published its own work. Terminal finalization releases the
+> claim like any other run's, so the next cycle selects the PR at its new
+> head. The code classifies as `item-judgment`. Only pod placement emits it:
+> the local runner carries no workspace delta between stages, and the worker's
+> mirror fetches a rebound branch once per run, so neither observes the push
+> at a stage boundary (pr-claim's revision guards cover them).
+>
 > **Reviewer sibling (#415):** at an agentic review gate whose subject is an
 > **agentic** stage, a run branch with **no committed change (an empty diff)**
 > fast-`fail`s on the first review — resolving the gate's own `fail` branch —

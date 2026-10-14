@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
@@ -806,6 +807,11 @@ func TestReboundBranchMovedUnderTheRunIsRefusedAndNamed(t *testing.T) {
 		}
 		if substrateRetryable(err) {
 			t.Error("substrateRetryable = true for a diverged delta; a fresh pod clones the same moved branch and refuses identically")
+		}
+		// #6019: the pod surrenders the refusal under its own code, so the
+		// engine ends the run superseded instead of failed.
+		if got := workspaceProvisionFailureCode(err); got != runner.WorkspaceHeadMovedErrorCode {
+			t.Errorf("surrendered code = %q, want %q", got, runner.WorkspaceHeadMovedErrorCode)
 		}
 	})
 }

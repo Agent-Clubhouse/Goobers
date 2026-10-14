@@ -379,7 +379,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that
 		// says nothing about provisioning.
-		return failureEnvelope("workspace_provision_failed", err.Error())
+		return failureEnvelope(workspaceProvisionFailureCode(err), err.Error())
 	}
 	// The STAGE's git needs the same exemption: it runs in the same
 	// differently-owned workspace, and real workflows commit and push from it.
